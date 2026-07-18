@@ -1478,7 +1478,13 @@ impl<'a> CfgLower<'a> {
             crate::value_plan::IntrinsicOperation::PtrRead => {
                 let ptr = plan.args[0].primary;
                 let count = plan.result_slots;
-                if count > 1 {
+                if let Some(map) = &plan.physical_slots {
+                    // A compact enum pointee: load each internal slot from its
+                    // physical byte position, extended into the slot-shaped vreg
+                    // (RUE-1000).
+                    slots = crate::agg_slots::load_enum_slots_through_ptr(self, ptr, map);
+                    slots[0]
+                } else if count > 1 {
                     slots = crate::agg_slots::load_slots_through_ptr(self, ptr, count);
                     slots[0]
                 } else {
@@ -1510,7 +1516,16 @@ impl<'a> CfgLower<'a> {
             crate::value_plan::IntrinsicOperation::PtrWrite => {
                 let ptr = plan.args[0].primary;
                 let value = &plan.args[1];
-                if value.slot_count == 0 {
+                if let Some(map) = &plan.physical_slots {
+                    // A compact enum value: truncate each internal slot to its
+                    // physical width at its compact byte offset (RUE-1000).
+                    let vals = if value.slots.is_empty() {
+                        vec![value.primary]
+                    } else {
+                        value.slots.clone()
+                    };
+                    crate::agg_slots::store_enum_slots_through_ptr(self, &vals, ptr, map);
+                } else if value.slot_count == 0 {
                     // Zero-sized values have no bytes to write.
                 } else if !value.slots.is_empty() {
                     crate::agg_slots::store_slots_through_ptr(self, &value.slots, ptr, 0);
@@ -2733,6 +2748,23 @@ impl crate::value_plan::ValueLowerAdapter for CfgLower<'_> {
     }
 }
 
+impl CfgLower<'_> {
+    /// Materialize `ptr + byte_offset` for a narrow access that encodes no
+    /// offset, returning `ptr` unchanged when the offset is zero (RUE-1000).
+    fn narrow_ptr_base(&mut self, ptr: VReg, byte_offset: i32) -> VReg {
+        if byte_offset == 0 {
+            return ptr;
+        }
+        let base = self.mir.alloc_vreg();
+        self.mir.push(Aarch64Inst::AddImm {
+            dst: Operand::Virtual(base),
+            src: Operand::Virtual(ptr),
+            imm: byte_offset,
+        });
+        base
+    }
+}
+
 impl crate::agg_slots::SlotBackend for CfgLower<'_> {
     fn ctx(&self) -> &crate::cfg_lower::CfgLowerContext<'_> {
         &self.ctx
@@ -2780,6 +2812,37 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
             dst: Operand::Virtual(dst),
             base: ptr,
             offset: byte_offset,
+        });
+    }
+    fn emit_narrow_store_through_ptr(
+        &mut self,
+        src: VReg,
+        ptr: VReg,
+        byte_offset: i32,
+        access: crate::types::NarrowScalar,
+    ) {
+        // The narrow store addresses `[base]` with no offset, so materialize the
+        // base pointer plus the byte offset first (RUE-1000).
+        let base = self.narrow_ptr_base(ptr, byte_offset);
+        self.mir.push(Aarch64Inst::NarrowStoreIndexed {
+            src: Operand::Virtual(src),
+            base,
+            width: access.width,
+        });
+    }
+    fn emit_narrow_load_through_ptr(
+        &mut self,
+        dst: VReg,
+        ptr: VReg,
+        byte_offset: i32,
+        access: crate::types::NarrowScalar,
+    ) {
+        let base = self.narrow_ptr_base(ptr, byte_offset);
+        self.mir.push(Aarch64Inst::NarrowLoadIndexed {
+            dst: Operand::Virtual(dst),
+            base,
+            width: access.width,
+            signed: access.signed,
         });
     }
 }
@@ -3166,6 +3229,70 @@ mod tests {
                 Aarch64Inst::NarrowStoreIndexed { .. } | Aarch64Inst::NarrowLoadIndexed { .. }
             )),
             "gate-off must not emit any narrow access"
+        );
+    }
+
+    /// RUE-1000: a compact enum with a variant-independent memory image
+    /// round-trips through a typed pointer on AArch64, marshalling the narrow
+    /// tag at offset 0 and the payload at its compact offset. Gate-off keeps the
+    /// eight-byte slot access.
+    #[test]
+    fn aggregate_layout_allows_compact_enum_memory() {
+        let source = "enum Opt { Some(i32), None } \
+                      fn main() -> i32 { checked { let p: ptr mut Opt = @alloc(1); \
+                      @ptr_write(p, Opt.Some(42)); let e = @ptr_read(p); \
+                      match e { Opt.Some(x) => @dbg(x), Opt.None => @dbg(0), }; \
+                      @free(p, 1); }; 0 }";
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::AggregateLayout);
+        let mir = try_lower_first_fn(source, preview)
+            .expect("a compact enum with a variant-independent image must lower");
+        assert!(
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, Aarch64Inst::NarrowStoreIndexed { width: 1, .. })),
+            "the enum write must store the u8 tag narrow at offset 0"
+        );
+        assert!(
+            mir.instructions().iter().any(|inst| matches!(
+                inst,
+                Aarch64Inst::NarrowLoadIndexed {
+                    width: 1,
+                    signed: false,
+                    ..
+                }
+            )),
+            "the enum read must load the u8 tag zero-extended"
+        );
+
+        let off = try_lower_first_fn(source, PreviewFeatures::new())
+            .expect("the same program lowers under the default slot model");
+        assert!(
+            off.instructions().iter().all(|inst| !matches!(
+                inst,
+                Aarch64Inst::NarrowStoreIndexed { .. } | Aarch64Inst::NarrowLoadIndexed { .. }
+            )),
+            "gate-off must not emit any narrow access"
+        );
+    }
+
+    /// RUE-1000 keeps refusing a compact enum whose union payload slots would
+    /// overlap (`A(i64)` versus `B(i32, i32)`) on AArch64: no
+    /// variant-independent slot→byte image, so it fails loudly.
+    #[test]
+    fn aggregate_layout_refuses_variant_dependent_enum_memory() {
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::AggregateLayout);
+        let err = try_lower_first_fn(
+            "enum Bad { A(i64), B(i32, i32) } \
+             fn main() -> i32 { checked { let p: ptr mut Bad = @alloc(1); \
+             @ptr_write(p, Bad.A(5)); }; 0 }",
+            preview,
+        )
+        .expect_err("a variant-dependent enum memory image must be refused");
+        assert!(
+            format!("{err:?}").contains("aggregate_layout"),
+            "refusal must name the feature, got: {err:?}"
         );
     }
 

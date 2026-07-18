@@ -61,6 +61,68 @@ pub(crate) trait SlotBackend: BoundsCheckBackend {
 
     /// Emit a load of the value at `byte_offset` from pointer `ptr` into `dst`.
     fn emit_load_through_ptr(&mut self, dst: VReg, ptr: VReg, byte_offset: i32);
+
+    /// Emit a narrow (1/2/4-byte) store of the low `access.width` bytes of `src`
+    /// through pointer `ptr` at `byte_offset` from it (RUE-1000).
+    fn emit_narrow_store_through_ptr(
+        &mut self,
+        src: VReg,
+        ptr: VReg,
+        byte_offset: i32,
+        access: crate::types::NarrowScalar,
+    );
+
+    /// Emit a narrow (1/2/4-byte) load at `byte_offset` from pointer `ptr` into
+    /// `dst`, extended per `access.signed` into the slot-shaped vreg (RUE-1000).
+    fn emit_narrow_load_through_ptr(
+        &mut self,
+        dst: VReg,
+        ptr: VReg,
+        byte_offset: i32,
+        access: crate::types::NarrowScalar,
+    );
+}
+
+/// Store a whole compact enum value's `vals` (one vreg per internal slot, slot 0
+/// first) through `ptr` using the enum's physical slot map (ADR-0052 phase 5.6,
+/// RUE-1000). Each slot truncates to its physical width at its compact byte
+/// offset: the discriminant to the narrow tag at offset 0, each payload slot to
+/// its union field position. `ptr` is the enum's low-end address (`@alloc` /
+/// `@raw` / `@ptr_offset`).
+pub(crate) fn store_enum_slots_through_ptr<B: SlotBackend>(
+    b: &mut B,
+    vals: &[VReg],
+    ptr: VReg,
+    map: &[crate::types::PhysicalEnumSlot],
+) {
+    for (val, slot) in vals.iter().zip(map.iter()) {
+        match slot.access {
+            None => b.emit_store_through_ptr(*val, ptr, slot.byte_offset),
+            Some(access) => b.emit_narrow_store_through_ptr(*val, ptr, slot.byte_offset, access),
+        }
+    }
+}
+
+/// Load a whole compact enum value's internal slots from `ptr` using the enum's
+/// physical slot map (ADR-0052 phase 5.6, RUE-1000), returning the vregs in
+/// internal slot order. Each slot extends its narrow physical bytes back into the
+/// slot-shaped vreg (the discriminant zero-extends; payload slots extend per the
+/// widest field's signedness). The counterpart of [`store_enum_slots_through_ptr`].
+pub(crate) fn load_enum_slots_through_ptr<B: SlotBackend>(
+    b: &mut B,
+    ptr: VReg,
+    map: &[crate::types::PhysicalEnumSlot],
+) -> Vec<VReg> {
+    let mut vregs = Vec::with_capacity(map.len());
+    for slot in map {
+        let dst = b.alloc_vreg();
+        match slot.access {
+            None => b.emit_load_through_ptr(dst, ptr, slot.byte_offset),
+            Some(access) => b.emit_narrow_load_through_ptr(dst, ptr, slot.byte_offset, access),
+        }
+        vregs.push(dst);
+    }
+    vregs
 }
 
 /// Get or compute the slot vregs for a multi-slot aggregate value

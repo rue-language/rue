@@ -306,3 +306,191 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = ["aggregate_layout", "not yet implemented"]
+
+# ADR-0052 phase 5.6 (RUE-1000): compact enum memory. A compact enum has a
+# smallest-sufficient unsigned tag at offset 0 and its payload placed at the
+# maximum variant alignment. A discriminant-only enum narrows to just its tag,
+# so @size_of reflects the u8 tag (1) rather than the eight-byte slot.
+[[case]]
+name = "compact_enum_tag_narrows_size"
+description = "A discriminant-only enum is one byte (u8 tag) under --preview aggregate_layout; a payload enum sizes tag + max-aligned payload."
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Flag { Off, On }
+enum Opt { Some(i32), None }
+enum Num { B(u8), W(i32), Big(i64) }
+fn main() -> i32 {
+    @dbg(@size_of(Flag) == 1);
+    @dbg(@size_of(Opt) == 8);
+    @dbg(@size_of(Num) == 16);
+    @dbg(@align_of(Num) == 8);
+    0
+}
+""" }]
+stdout = "true\ntrue\ntrue\ntrue\n"
+exit_code = 0
+
+# RUE-1000: a frame-resident enum keeps its slot-based value decomposition
+# (discriminant slot + payload slots) untouched by the compact layout, so
+# constructing and matching an enum that never reaches physical memory now
+# compiles and runs under the preview (RUE-989 refused every enum value).
+[[case]]
+name = "compact_enum_frame_match_allowed"
+description = "A frame-only enum construct-and-match compiles and runs under --preview aggregate_layout (RUE-1000)."
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Color { Red, Green, Blue }
+enum Shape { Circle(i32), Rect(i32, i32), Empty }
+fn main() -> i32 {
+    let c = Color.Green;
+    let base = match c { Color.Red => 1, Color.Green => 2, Color.Blue => 3, };
+    let s = Shape.Rect(3, 4);
+    let area = match s { Shape.Circle(r) => r, Shape.Rect(w, h) => w + h, Shape.Empty => 0, };
+    base + area
+}
+""" }]
+exit_code = 9
+
+# RUE-1000: an Option-like enum round-trips through heap memory. The tag is
+# written narrow at offset 0 and read back zero-extended; the i32 payload lives
+# at the compact payload offset. Some(42) reads back 42; None matches None.
+[[case]]
+name = "compact_enum_option_heap_roundtrip"
+description = "An Option-like enum write/read/match round-trips through heap memory under --preview aggregate_layout (RUE-1000)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Opt { Some(i32), None }
+fn main() -> i32 {
+    checked {
+        let p: ptr mut Opt = @alloc(1);
+        @ptr_write(p, Opt.Some(42));
+        let some = @ptr_read(p);
+        match some { Opt.Some(x) => @dbg(x), Opt.None => @dbg(-1), };
+        @ptr_write(p, Opt.None);
+        let none = @ptr_read(p);
+        match none { Opt.Some(x) => @dbg(x), Opt.None => @dbg(-1), };
+        @free(p, 1);
+    };
+    0
+}
+""" }]
+stdout = "42\n-1\n"
+exit_code = 0
+
+# RUE-1000: an enum whose variants carry payloads of mixed widths (u8/i32/i64)
+# round-trips through heap memory. Every variant's single field shares the same
+# payload position; the union slot writes/reads the widest width (8 bytes) and
+# the narrower values are clean in their slot, so each variant round-trips.
+[[case]]
+name = "compact_enum_mixed_payload_widths"
+description = "An enum with u8/i32/i64 payload variants round-trips each through heap memory under --preview aggregate_layout (RUE-1000)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Num { B(u8), W(i32), Big(i64) }
+fn main() -> i32 {
+    checked {
+        let p: ptr mut Num = @alloc(1);
+        @ptr_write(p, Num.B(200));
+        let a = @ptr_read(p);
+        match a { Num.B(x) => @dbg(x), Num.W(y) => @dbg(y), Num.Big(z) => { let zi: i64 = z; @dbg(zi); }, };
+        @ptr_write(p, Num.W(-12345));
+        let b = @ptr_read(p);
+        match b { Num.B(x) => @dbg(x), Num.W(y) => @dbg(y), Num.Big(z) => { let zi: i64 = z; @dbg(zi); }, };
+        @ptr_write(p, Num.Big(9000000000));
+        let c = @ptr_read(p);
+        match c { Num.B(x) => @dbg(x), Num.W(y) => @dbg(y), Num.Big(z) => { let zi: i64 = z; @dbg(zi); }, };
+        @free(p, 1);
+    };
+    0
+}
+""" }]
+stdout = "200\n-12345\n9000000000\n"
+exit_code = 0
+
+# RUE-1000: an enum whose variants carry uniform multi-field payloads
+# (Rect(i32,i32)) round-trips through heap memory: both payload slots occupy
+# distinct, non-overlapping compact positions (payload_offset and +4).
+[[case]]
+name = "compact_enum_uniform_multifield_heap"
+description = "A multi-field payload enum (Rect(i32,i32)) round-trips through heap memory under --preview aggregate_layout (RUE-1000)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Shape { Circle(i32), Rect(i32, i32), Empty }
+fn main() -> i32 {
+    checked {
+        let p: ptr mut Shape = @alloc(1);
+        @ptr_write(p, Shape.Rect(3, 4));
+        let r = @ptr_read(p);
+        match r { Shape.Circle(a) => @dbg(a), Shape.Rect(w, h) => @dbg(w + h), Shape.Empty => @dbg(0), };
+        @ptr_write(p, Shape.Circle(9));
+        let c = @ptr_read(p);
+        match c { Shape.Circle(a) => @dbg(a), Shape.Rect(w, h) => @dbg(w + h), Shape.Empty => @dbg(0), };
+        @free(p, 1);
+    };
+    0
+}
+""" }]
+stdout = "7\n9\n"
+exit_code = 0
+
+# RUE-1000 keeps refusing enums whose compact memory image is variant-dependent:
+# A(i64) and B(i32,i32) would need overlapping union slots (the i64 field spans
+# both i32 positions), so there is no single slot->byte map. Refused loudly.
+[[case]]
+name = "compact_enum_overlapping_union_still_fails"
+description = "An enum whose union payload slots overlap (i64 vs two i32) has no variant-independent memory image and is refused."
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Bad { A(i64), B(i32, i32) }
+fn main() -> i32 {
+    checked {
+        let p: ptr mut Bad = @alloc(1);
+        @ptr_write(p, Bad.A(5));
+    };
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["aggregate_layout", "not yet implemented"]
+
+# RUE-1000 keeps refusing a nested-aggregate enum payload through a pointer:
+# a struct payload has no single-slot scalar memory image in this phase.
+[[case]]
+name = "compact_enum_struct_payload_still_fails"
+description = "An enum with a struct payload marshalled through a pointer is still refused under --preview aggregate_layout."
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Res { id: i32 }
+enum Holder { Full(Res), Nothing }
+fn main() -> i32 {
+    checked {
+        let p: ptr mut Holder = @alloc(1);
+        @ptr_write(p, Holder.Full(Res { id: 7 }));
+    };
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["aggregate_layout", "not yet implemented"]
+
+# RUE-1000 keeps refusing a compact enum crossing a CALL boundary by value:
+# the preserved slot call convention cannot express it and the indirect
+# marshalling is the next phase (RUE-976's transitional indirect rule).
+[[case]]
+name = "compact_enum_crossing_call_still_fails"
+description = "A compact enum passed by value across a call is still refused under --preview aggregate_layout (call marshalling is the next phase)."
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Opt { Some(i32), None }
+fn unwrap(o: Opt) -> i32 {
+    match o { Opt.Some(x) => x, Opt.None => 0, }
+}
+fn main() -> i32 {
+    unwrap(Opt.Some(5))
+}
+""" }]
+compile_fail = true
+error_contains = ["aggregate_layout", "not yet implemented"]
