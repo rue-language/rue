@@ -22,13 +22,18 @@
 // (symbol numbering), ast.rue (POD arena), parse.rue (grammar + recovery),
 // fmtutil.rue (formatting helpers), this root (I/O, argv, driver).
 //
-// Usage:  ruelex [--pretty|--ast] <file.rue> [<file.rue> ...]
+// Usage:  ruelex [--pretty|--ast|--ast-shape] <file.rue> [<file.rue> ...]
 //
 // For each file argument, tokenizes the entire file and prints one line per
 // token. The default output reproduces the Rue compiler's own `--emit tokens`
 // dump — `{start:>4}..{end:<3}  KIND` with 0-based byte offsets — so the two
 // can be diffed. `--pretty` prints `LINE:COL KIND` with 1-based spans instead;
 // `--ast` parses and prints the arena tree, returning nonzero on syntax errors.
+// `--ast-shape` prints the same tree as a canonical preorder S-expression with
+// lexemes, spans, and interner identities erased but grammar-bearing modes,
+// flags, operators, list order, and optional children retained. The differential
+// harness always co-runs the byte-exact default token oracle before accepting a
+// structural match, so erased lexical identity cannot conceal a disagreement.
 //
 // Reading uses std.fs (open + chunked read loop); argv comes from std.env;
 // output goes to stdout via the `print` builtin (which writes a borrowed StrBuf
@@ -88,7 +93,7 @@ fn str_eq(borrow a: StrBuf, flag: StrBuf) -> bool {
 
 // Tokenize one file and print its dump. When `with_header`, precede it with a
 // `=== <path> ===` banner so multi-file output stays navigable.
-fn process_file(borrow path: StrBuf, pretty: bool, ast_mode: bool, with_header: bool) -> bool {
+fn process_file(borrow path: StrBuf, pretty: bool, ast_mode: bool, shape_mode: bool, with_header: bool) -> bool {
     if with_header {
         let mut h = StrBuf.new();
         h.push_str("=== ");
@@ -106,14 +111,14 @@ fn process_file(borrow path: StrBuf, pretty: bool, ast_mode: bool, with_header: 
         return false;
     }
     let data = input.data;
-    if ast_mode {
+    if ast_mode || shape_mode {
         let result = parse.parse(lex.scan(data));
         if result.errors.len() != 0 {
             print(result.errors);
-            print(result.dump);
+            if shape_mode { print(result.shape); } else { print(result.dump); }
             false
         } else {
-            print(result.dump);
+            if shape_mode { print(result.shape); } else { print(result.dump); }
             true
         }
     } else {
@@ -129,6 +134,7 @@ fn main() -> i32 {
     // First pass: pick up flags and count file arguments.
     let mut pretty = false;
     let mut ast_mode = false;
+    let mut shape_mode = false;
     let mut nfiles: u64 = 0;
     let mut i: u64 = 1;
     while i < argc {
@@ -138,6 +144,8 @@ fn main() -> i32 {
                     pretty = true;
                 } else if str_eq(borrow a, "--ast") {
                     ast_mode = true;
+                } else if str_eq(borrow a, "--ast-shape") {
+                    shape_mode = true;
                 } else {
                     nfiles = nfiles + 1;
                 }
@@ -167,8 +175,10 @@ fn main() -> i32 {
                     // flag, skip
                 } else if str_eq(borrow a, "--ast") {
                     // flag, skip
+                } else if str_eq(borrow a, "--ast-shape") {
+                    // flag, skip
                 } else {
-                    if !process_file(borrow a, pretty, ast_mode, with_header) {
+                    if !process_file(borrow a, pretty, ast_mode, shape_mode, with_header) {
                         ok = false;
                     }
                 }
@@ -183,6 +193,6 @@ fn main() -> i32 {
 
 fn usage_text() -> StrBuf {
     let mut u = StrBuf.new();
-    u.push_str("usage: ruelex [--pretty|--ast] <file.rue> [<file.rue> ...]\n");
+    u.push_str("usage: ruelex [--pretty|--ast|--ast-shape] <file.rue> [<file.rue> ...]\n");
     u
 }

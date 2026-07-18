@@ -11,6 +11,7 @@ const StrBuf = std.strbuf.StrBuf;
 
 pub struct ParseOutput {
     dump: StrBuf,
+    shape: StrBuf,
     errors: StrBuf,
     node_count: u64,
 }
@@ -33,7 +34,7 @@ pub struct Parser {
     }
 
     fn fallback() -> token.Token {
-        token.Token { kind: token.EOF, start: 0, end: 0, value: 0 }
+        token.Token { kind: token.EOF, start: 0, end: 0, value: 0, aux: 0 }
     }
 
     fn current(borrow self) -> token.Token {
@@ -319,7 +320,25 @@ pub struct Parser {
     fn parse_intrinsic(inout self) -> u64 {
         let at = self.bump();
         let name = if self.at(token.IDENT) || self.at(token.DROP) { self.bump() } else { self.expect(token.IDENT) };
-        let args = self.parse_call_args();
+        let _ = self.expect(token.LPAREN);
+        let mut args: u64 = 0;
+        let mut position: u64 = 0;
+        while !self.at(token.RPAREN) && !self.eof() {
+            let type_position = name.aux == 1 || (name.aux == 2 && position == 0);
+            let placeholder_type = name.aux == 0 &&
+                ((self.at(token.LPAREN) && self.kind_at(self.pos + 1) == token.RPAREN) ||
+                 (self.at(token.BANG) && (self.kind_at(self.pos + 1) == token.COMMA || self.kind_at(self.pos + 1) == token.RPAREN)) ||
+                 (self.at(token.LBRACKET) && self.bracket_has_semi()));
+            let value = if type_position || placeholder_type {
+                self.parse_type()
+            } else {
+                self.parse_expr(0, true)
+            };
+            args = self.append(args, self.add(ast.ARG, 0, self.arena.at(value).start, self.arena.at(value).end, value, 0, 0));
+            position = position + 1;
+            if !self.eat(token.COMMA) { break; }
+        }
+        let _ = self.expect(token.RPAREN);
         self.add_meta(ast.INTRINSIC, name.value, name.kind, at.start, self.previous().end, args, 0, 0, 0)
     }
 
@@ -528,6 +547,23 @@ pub struct Parser {
 
     fn is_primitive(kind: u64) -> bool { kind >= token.TYPE_I8 && kind <= token.TYPE_TYPE }
 
+    fn bracket_has_semi(borrow self) -> bool {
+        let mut p = self.pos;
+        let mut depth: u64 = 0;
+        loop {
+            let k = self.kind_at(p);
+            if k == token.EOF { return false; }
+            if k == token.LBRACKET || k == token.LPAREN || k == token.LBRACE { depth = depth + 1; }
+            else if k == token.RBRACKET {
+                if depth == 1 { return false; }
+                depth = depth - 1;
+            } else if k == token.RPAREN || k == token.RBRACE {
+                if depth != 0 { depth = depth - 1; }
+            } else if k == token.SEMI && depth == 1 { return true; }
+            p = p + 1;
+        }
+    }
+
     fn parse_type(inout self) -> u64 {
         let t = self.current();
         if Self.is_primitive(t.kind) || t.kind == token.SELFTYPE {
@@ -546,7 +582,10 @@ pub struct Parser {
         if t.kind == token.LBRACKET {
             let start = self.bump().start;
             let elem = self.parse_type();
-            let _ = self.expect(token.SEMI);
+            if !self.eat(token.SEMI) {
+                let close = self.expect(token.RBRACKET);
+                return self.add(ast.SLICE_TYPE, 0, start, close.end, elem, 0, 0);
+            }
             let len = self.parse_expr(0, true);
             let close = self.expect(token.RBRACKET);
             return self.add(ast.ARRAY_TYPE, 0, start, close.end, elem, len, 0);
@@ -784,7 +823,8 @@ pub struct Parser {
         let root = self.parse_program();
         let count = self.arena.len();
         let dump = self.arena.dump(root);
-        ParseOutput { dump: dump, errors: self.errors, node_count: count }
+        let shape = self.arena.dump_shape(root);
+        ParseOutput { dump: dump, shape: shape, errors: self.errors, node_count: count }
     }
 }
 

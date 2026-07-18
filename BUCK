@@ -58,6 +58,29 @@ filegroup(
     srcs = glob(["examples/**"]),
 )
 
+# Syntax-valid, checked-in Rue programs compared by the independent stage-1
+# frontend differential. Keeping the selection explicit excludes intentionally
+# malformed UI/spec/CLI fixtures without a filename heuristic.
+filegroup(
+    name = "frontend-diff-corpus",
+    srcs = dict([(path, path) for path in glob([
+        "benchmarks/**/*.rue",
+        "examples/**/*.rue",
+        "reproducibility/**/*.rue",
+        "std/**/*.rue",
+    ])] + [
+        ("benchmarks/scenarios/representative/labels.rue", "//benchmarks/scenarios/representative:labels.rue"),
+        ("benchmarks/scenarios/representative/labels_alt.rue", "//benchmarks/scenarios/representative:labels_alt.rue"),
+        ("benchmarks/scenarios/representative/main.rue", "//benchmarks/scenarios/representative:main.rue"),
+        ("benchmarks/scenarios/representative/model.rue", "//benchmarks/scenarios/representative:model.rue"),
+        ("benchmarks/scenarios/representative/report.rue", "//benchmarks/scenarios/representative:report.rue"),
+        ("benchmarks/scenarios/representative/std/_std.rue", "//benchmarks/scenarios/representative:std_root.rue"),
+        ("benchmarks/scenarios/representative/std/math.rue", "//benchmarks/scenarios/representative:std_math.rue"),
+        ("benchmarks/scenarios/representative/worker.rue", "//benchmarks/scenarios/representative:worker.rue"),
+    ]),
+    visibility = ["PUBLIC"],
+)
+
 # Checked-in repo-relative source_path fixtures for the CLI integration tests.
 filegroup(
     name = "cli-test-fixtures",

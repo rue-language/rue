@@ -62,6 +62,7 @@ pub const VARIANT: u64 = 50;
 pub const DROP_FN: u64 = 51;
 pub const CONST_DECL: u64 = 52;
 pub const ANON_ENUM_TYPE: u64 = 53;
+pub const SLICE_TYPE: u64 = 54;
 
 pub struct Node {
     kind: u64,
@@ -122,6 +123,7 @@ pub struct Arena {
         else if kind == TYPE { "type" }
         else if kind == TYPE_CALL { "type-call" }
         else if kind == ARRAY_TYPE { "array-type" }
+        else if kind == SLICE_TYPE { "slice-type" }
         else if kind == PTR_TYPE { "ptr-type" }
         else if kind == ANON_STRUCT_TYPE { "anon-struct-type" }
         else if kind == ANON_ENUM_TYPE { "anon-enum-type" }
@@ -194,6 +196,96 @@ pub struct Arena {
     fn dump(borrow self, root: u64) -> StrBuf {
         let mut out = StrBuf.new();
         self.dump_node(root, inout out);
+        out.push_str("\n");
+        out
+    }
+
+    // Structural oracle form. Names, literal payloads, spans, and interner ids
+    // are intentionally absent: the same harness co-runs the default token
+    // dump byte-for-byte before accepting this structural comparison.
+    // Every arena edge remains explicit (including absent optional children),
+    // while grammar-bearing modes, flags, and operators are retained.
+    fn shape_meta(borrow self, borrow n: Node, inout out: StrBuf) {
+        if n.kind == BINARY || n.kind == UNARY {
+            out.push_str(" op=");
+            Self.append_u(inout out, n.value);
+        } else if n.kind == TYPE {
+            out.push_str(" form=");
+            if n.value == 66 { out.push_str("never"); }
+            else if n.value == 73 { out.push_str("unit"); }
+            else { out.push_str("named"); }
+        } else if n.kind == PTR_TYPE || n.kind == ARG {
+            out.push_str(" mode=");
+            Self.append_u(inout out, n.value);
+        } else if n.kind == PARAM {
+            out.push_str(" mode=");
+            Self.append_u(inout out, n.aux);
+        } else if n.kind == FUNCTION || n.kind == STRUCT_DEF || n.kind == ENUM_DEF || n.kind == CONST_DECL {
+            out.push_str(" flags=");
+            Self.append_u(inout out, n.aux);
+        } else if n.kind == LET {
+            out.push_str(" flags=");
+            Self.append_u(inout out, n.aux);
+        } else if n.kind == FOR {
+            out.push_str(" binder=");
+            Self.append_u(inout out, n.aux);
+        } else if n.kind == FIELD_INIT {
+            out.push_str(" shorthand=");
+            Self.append_u(inout out, n.aux);
+        } else if n.kind == PATTERN {
+            out.push_str(" form=");
+            if n.a != NONE { out.push_str("path"); }
+            else if n.value == 95 { out.push_str("wildcard"); }
+            else if n.value == 27 { out.push_str("true"); }
+            else if n.value == 28 { out.push_str("false"); }
+            else if n.aux != 0 { out.push_str("neg-int"); }
+            else { out.push_str("int"); }
+        } else if n.kind == BOOL {
+            out.push_str(" value=");
+            Self.append_u(inout out, n.value);
+        }
+    }
+
+    fn dump_shape_node(borrow self, id: u64, inout out: StrBuf) {
+        if id == NONE {
+            out.push_str("_");
+            return;
+        }
+        let n = self.at(id);
+        out.push_str("(");
+        out.push_str(Self.kind_name(n.kind));
+        self.shape_meta(borrow n, inout out);
+        // The production parser promotes a final semicolon-terminated
+        // diverging statement into the block tail. Preserve the expression
+        // while erasing that storage-only difference.
+        if n.kind == BLOCK && n.b == NONE && n.a != NONE {
+            let link = self.at(n.a);
+            let statement = self.at(link.b);
+            let expr = self.at(statement.a);
+            if link.kind == LIST && statement.kind == EXPR_STMT &&
+                (expr.kind == BREAK || expr.kind == CONTINUE || expr.kind == RETURN || expr.kind == LOOP) {
+                out.push_str(" ");
+                self.dump_shape_node(link.a, inout out);
+                out.push_str(" ");
+                self.dump_shape_node(statement.a, inout out);
+                out.push_str(" _ _)");
+                return;
+            }
+        }
+        out.push_str(" ");
+        self.dump_shape_node(n.a, inout out);
+        out.push_str(" ");
+        self.dump_shape_node(n.b, inout out);
+        out.push_str(" ");
+        self.dump_shape_node(n.c, inout out);
+        out.push_str(" ");
+        self.dump_shape_node(n.d, inout out);
+        out.push_str(")");
+    }
+
+    fn dump_shape(borrow self, root: u64) -> StrBuf {
+        let mut out = StrBuf.new();
+        self.dump_shape_node(root, inout out);
         out.push_str("\n");
         out
     }

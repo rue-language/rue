@@ -1,0 +1,22 @@
+load("//crates:defs.bzl", "rue_binary")
+
+rue_binary(
+    name = "rue-frontend-diff",
+    deps = [
+        "//crates/rue-lexer:rue-lexer",
+        "//crates/rue-parser:rue-parser",
+        "//crates/rue-test-runner:rue-test-runner",
+        "//third-party:lasso",
+        "//third-party:tempfile",
+    ],
+)
+
+sh_test(
+    name = "frontend-diff-test",
+    test = ":rue-frontend-diff",
+    env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_FRONTEND_DIFF_CORPUS": "$(location root//:frontend-diff-corpus)",
+        "RUE_STD_PATH": "$(location root//:std)/std",
+    },
+)

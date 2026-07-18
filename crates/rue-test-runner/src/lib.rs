@@ -1735,7 +1735,57 @@ fn run_golden_ir_test(
 
 enum DrainMessage {
     Bytes(Vec<u8>),
+    Overflow,
     Done,
+}
+
+struct PipeDrain {
+    rx: mpsc::Receiver<DrainMessage>,
+    bytes: Vec<u8>,
+    done: bool,
+    overflowed: bool,
+}
+
+impl PipeDrain {
+    fn poll(&mut self) {
+        // Bound work per child-status poll. An unbounded producer must not keep
+        // the timeout loop inside `try_recv` forever.
+        for _ in 0..64 {
+            match self.rx.try_recv() {
+                Ok(message) => self.handle(message),
+                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.done = true;
+                    return;
+                }
+            }
+        }
+    }
+
+    fn finish(&mut self, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        while !self.done {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return;
+            }
+            match self.rx.recv_timeout(remaining) {
+                Ok(message) => self.handle(message),
+                Err(_) => {
+                    self.done = true;
+                    return;
+                }
+            }
+        }
+    }
+
+    fn handle(&mut self, message: DrainMessage) {
+        match message {
+            DrainMessage::Bytes(chunk) => self.bytes.extend(chunk),
+            DrainMessage::Overflow => self.overflowed = true,
+            DrainMessage::Done => self.done = true,
+        }
+    }
 }
 
 /// How long `run_with_timeout` waits for pipe-drain helpers after the child has
@@ -1753,17 +1803,36 @@ const PIPE_DRAIN_FINISH_TIMEOUT: Duration = Duration::from_millis(500);
 /// because a daemonized descendant inherited the write end, the caller can
 /// still recover the bytes that were already read instead of blocking on a
 /// thread join.
-fn spawn_pipe_drain<R: IoRead + Send + 'static>(pipe: Option<R>) -> mpsc::Receiver<DrainMessage> {
+fn spawn_pipe_drain<R: IoRead + Send + 'static>(
+    pipe: Option<R>,
+    output_limit: Option<usize>,
+) -> PipeDrain {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         if let Some(mut reader) = pipe {
             let mut buf = [0; 8192];
+            let mut retained = 0usize;
+            let mut overflowed = false;
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        if tx.send(DrainMessage::Bytes(buf[..n].to_vec())).is_err() {
-                            return;
+                        if !overflowed {
+                            let keep = output_limit
+                                .map(|limit| n.min(limit.saturating_sub(retained)))
+                                .unwrap_or(n);
+                            if keep > 0
+                                && tx.send(DrainMessage::Bytes(buf[..keep].to_vec())).is_err()
+                            {
+                                return;
+                            }
+                            retained += keep;
+                            if keep < n {
+                                overflowed = true;
+                                if tx.send(DrainMessage::Overflow).is_err() {
+                                    return;
+                                }
+                            }
                         }
                     }
                     Err(_) => break,
@@ -1772,24 +1841,11 @@ fn spawn_pipe_drain<R: IoRead + Send + 'static>(pipe: Option<R>) -> mpsc::Receiv
         }
         let _ = tx.send(DrainMessage::Done);
     });
-    rx
-}
-
-fn collect_drained_bytes(rx: mpsc::Receiver<DrainMessage>, timeout: Duration) -> Vec<u8> {
-    let deadline = Instant::now() + timeout;
-    let mut bytes = Vec::new();
-
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return bytes;
-        }
-
-        match rx.recv_timeout(remaining) {
-            Ok(DrainMessage::Bytes(chunk)) => bytes.extend(chunk),
-            Ok(DrainMessage::Done) | Err(mpsc::RecvTimeoutError::Disconnected) => return bytes,
-            Err(mpsc::RecvTimeoutError::Timeout) => return bytes,
-        }
+    PipeDrain {
+        rx,
+        bytes: Vec::new(),
+        done: false,
+        overflowed: false,
     }
 }
 
@@ -1875,9 +1931,35 @@ fn kill_process_group(child: &mut std::process::Child) {
 ///   A timeout error is prefixed with [`TIMEOUT_PREFIX`] so callers can report
 ///   it as a distinct failure class.
 pub fn run_with_timeout(
+    cmd: Command,
+    timeout: Duration,
+    stdin_input: Option<&str>,
+) -> TestResult<Output> {
+    run_with_timeout_impl(cmd, timeout, stdin_input, None)
+}
+
+/// Run a command with a timeout while retaining at most `output_limit` bytes
+/// from each of stdout and stderr.
+///
+/// Unlike checking [`Output`] after [`run_with_timeout`] returns, this limit is
+/// enforced by the pipe-drain threads as bytes arrive. Once either stream
+/// exceeds the limit, further bytes are discarded, the process group is
+/// killed, and the function returns a fatal failure identifying the stream.
+/// The limit applies independently to stdout and stderr.
+pub fn run_with_timeout_and_output_limit(
+    cmd: Command,
+    timeout: Duration,
+    stdin_input: Option<&str>,
+    output_limit: usize,
+) -> TestResult<Output> {
+    run_with_timeout_impl(cmd, timeout, stdin_input, Some(output_limit))
+}
+
+fn run_with_timeout_impl(
     mut cmd: Command,
     timeout: Duration,
     stdin_input: Option<&str>,
+    output_limit: Option<usize>,
 ) -> TestResult<Output> {
     configure_process_group(&mut cmd);
     let mut child = cmd
@@ -1896,8 +1978,8 @@ pub fn run_with_timeout(
     // The drains send chunks over channels instead of being joined directly:
     // if a descendant process inherits a pipe fd and keeps it open after the
     // direct child exits, a reader thread can block forever waiting for EOF.
-    let stdout_rx = spawn_pipe_drain(child.stdout.take());
-    let stderr_rx = spawn_pipe_drain(child.stderr.take());
+    let mut stdout_drain = spawn_pipe_drain(child.stdout.take(), output_limit);
+    let mut stderr_drain = spawn_pipe_drain(child.stderr.take(), output_limit);
 
     // Feed stdin on its own thread so a large input can't block the drain (and
     // vice versa). A program may exit without reading all of its input; a broken
@@ -1913,17 +1995,45 @@ pub fn run_with_timeout(
     let start = Instant::now();
 
     loop {
+        stdout_drain.poll();
+        stderr_drain.poll();
+        if stdout_drain.overflowed || stderr_drain.overflowed {
+            kill_process_group(&mut child);
+            let stream = match (stdout_drain.overflowed, stderr_drain.overflowed) {
+                (true, true) => "stdout and stderr",
+                (true, false) => "stdout",
+                (false, true) => "stderr",
+                (false, false) => unreachable!(),
+            };
+            return Err(TestFailure::fatal(format!(
+                "OUTPUT LIMIT: {stream} exceeded the {}-byte capture limit (process group killed)",
+                output_limit.expect("overflow requires an output limit")
+            )));
+        }
+
         match child.try_wait() {
             Ok(Some(status)) => {
                 // Process finished: collect any fully-drained output, but do
                 // not wait forever if a descendant inherited a pipe fd.
-                let stdout = collect_drained_bytes(stdout_rx, PIPE_DRAIN_FINISH_TIMEOUT);
-                let stderr = collect_drained_bytes(stderr_rx, PIPE_DRAIN_FINISH_TIMEOUT);
+                stdout_drain.finish(PIPE_DRAIN_FINISH_TIMEOUT);
+                stderr_drain.finish(PIPE_DRAIN_FINISH_TIMEOUT);
                 drop(stdin_writer);
+                if stdout_drain.overflowed || stderr_drain.overflowed {
+                    let stream = match (stdout_drain.overflowed, stderr_drain.overflowed) {
+                        (true, true) => "stdout and stderr",
+                        (true, false) => "stdout",
+                        (false, true) => "stderr",
+                        (false, false) => unreachable!(),
+                    };
+                    return Err(TestFailure::fatal(format!(
+                        "OUTPUT LIMIT: {stream} exceeded the {}-byte capture limit",
+                        output_limit.expect("overflow requires an output limit")
+                    )));
+                }
                 return Ok(Output {
                     status,
-                    stdout,
-                    stderr,
+                    stdout: stdout_drain.bytes,
+                    stderr: stderr_drain.bytes,
                 });
             }
             Ok(None) => {
@@ -1933,8 +2043,8 @@ pub fn run_with_timeout(
                     // drain helpers already captured without waiting forever
                     // for EOF from an escaped descendant.
                     kill_process_group(&mut child);
-                    let _stdout = collect_drained_bytes(stdout_rx, PIPE_DRAIN_FINISH_TIMEOUT);
-                    let _stderr = collect_drained_bytes(stderr_rx, PIPE_DRAIN_FINISH_TIMEOUT);
+                    stdout_drain.finish(PIPE_DRAIN_FINISH_TIMEOUT);
+                    stderr_drain.finish(PIPE_DRAIN_FINISH_TIMEOUT);
                     drop(stdin_writer);
                     return Err(TestFailure::fatal(format!(
                         "{} test execution timed out after {} ms (process group killed)",
@@ -3803,6 +3913,19 @@ chmod +x "$output"
         assert!(output.status.success());
         assert_eq!(output.stdout.len(), 200_000);
         assert_eq!(output.stderr.len(), 200_000);
+    }
+
+    #[test]
+    fn test_run_with_timeout_output_limit_rejects_overflow_while_draining() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("head -c 200000 /dev/zero");
+        let error =
+            run_with_timeout_and_output_limit(cmd, Duration::from_secs(10), None, 16 * 1024)
+                .expect_err("stdout beyond the retention limit must fail");
+
+        assert!(error.is_fatal());
+        assert!(error.contains("OUTPUT LIMIT: stdout exceeded"));
+        assert!(error.contains("16384-byte capture limit"));
     }
 
     #[test]
