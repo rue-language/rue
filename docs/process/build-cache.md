@@ -107,11 +107,33 @@ build + suite green). 1, 2, 4 live in the opt-in `.buckconfig.local` / the
 ## CI
 
 CI reads the key from the `BUILDBUDDY_API_KEY` repo secret (never from a file).
-The `cache-probe` workflow (`.github/workflows/cache-probe.yml`) writes a transient
-`.buckconfig.local` from the secret, does a cold build then a clean-and-rebuild, and
-reports buck2's `Commands: (cached / remote / local)` line. Run it with
-`gh workflow run cache-probe.yml`. Once proven green with real hit-rates, the cache
-config can be promoted into the main build and test jobs.
+The cache is provisioned (RUE-1006) in the `CI` workflow's `clippy`, `release`,
+and non-x64 `test` jobs, and in the sanitizer `valgrind` job, via
+`scripts/provision-build-cache install && apply` gated on secret presence.
+
+Availability rules, which the workflow steps must respect:
+
+- **Fork `pull_request` runs have no secret.** GitHub withholds repository
+  secrets from any workflow run whose head branch lives in a fork, regardless
+  of the author's permissions — and the normal contribution flow here is
+  fork-based. Those lanes build cold, exactly as before the cache existed. The
+  provisioning step therefore treats an empty key as "skip", never "fail".
+- **`merge_group` runs have the secret.** The merge queue is the serial
+  bottleneck, so this is where the warm cache pays off. These runs execute
+  already-approved, queued code, which is also why letting them write to the
+  shared cache (`allow_cache_uploads`) is acceptable.
+- **The linux-x64 `test` lane is intentionally cache-free.** It runs
+  `scripts/check-reproducible-compiler.sh` (RUE-617), which hard-errors on a
+  `.buckconfig.local`: the reference and relocated candidate builds must be
+  identically configured for the byte comparison to indict path/scheduling/
+  environment leaks rather than configuration drift. Warming that lane by
+  removing the config before the repro step is a possible follow-up once the
+  queue has demonstrated real hit-rates.
+
+The `cache-probe` workflow (`.github/workflows/cache-probe.yml`) remains the
+measurement tool: it writes a transient config from the secret, does a cold
+build then a clean-and-rebuild, and reports buck2's `Commands: (cached /
+remote / local)` line. Run it with `gh workflow run cache-probe.yml`.
 
 ## Toward a fully hermetic linker
 
