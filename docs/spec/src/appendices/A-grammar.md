@@ -63,13 +63,12 @@ let_stmt       = directives "let" [ "mut" ] let_pattern [ ":" type ] "=" express
 let_pattern    = IDENT | "_" ;
 assign_stmt    = place_expr "=" expression ";" ;
 expr_stmt      = expression ";"
-               | control_flow_expr ;   (* if/match/while/loop/for/break/continue/
-                                          return and bare blocks need no semicolon *)
+               | control_flow_expr
+               | block_expr ;          (* block-like expressions need no semicolon *)
 
 (* Place expressions: a variable — or `self`, inside a method — followed by
-   zero or more field/index projections. Used as assignment targets. A bare
-   `self` is not a place: when the base is `self`, at least one projection is
-   required (a legality rule). *)
+   zero or more field/index projections. Used as assignment targets. Assigning
+   to a bare `self` is legal only for a `mut self` receiver (a legality rule). *)
 place_expr     = ( IDENT | "self" ) { "." IDENT | "[" expression "]" } ;
 
 (* Types *)
@@ -77,19 +76,25 @@ type           = "i8" | "i16" | "i32" | "i64"
                | "u8" | "u16" | "u32" | "u64"
                | "usize" | "isize"
                | "bool" | "type" | "()" | "!"
-               | "[" type ";" array_length "]"
+               | "[" type [ ";" array_length ] "]"
                | "ptr" "const" type
                | "ptr" "mut" type
                | anon_struct_type
+               | anon_enum_type
                | "Self"
-               | type_call
-               | IDENT ;
-type_call      = IDENT "(" [ type_call_arg { "," type_call_arg } [ "," ] ] ")" ;  (* type-function application, e.g. Pair(i32), Result(Option(i32), i32), Buffer(2) *)
+               | named_type ;
+named_type     = qualified_ident [ "(" [ type_call_args ] ")" ] ;
+qualified_ident = IDENT { "." IDENT } ;
+type_call_args = type_call_arg { "," type_call_arg } [ "," ] ;
 type_call_arg  = type | [ "-" ] INTEGER ;  (* a type argument for a `comptime T: type` parameter, or an integer value argument for a comptime value parameter such as `comptime N: i32` *)
 array_length   = INTEGER | IDENT | length_call ;
 length_call    = IDENT "(" [ array_length { "," array_length } [ "," ] ] ")" ;  (* comptime-evaluable call, e.g. fact(4) *)
-anon_struct_type = "struct" "{" [ anon_struct_fields ] { method } "}" ;
+anon_struct_type = "struct" "{" [ anon_struct_fields ] "}" ;
+anon_struct_value = "struct" "{" [ anon_struct_fields ] { anon_struct_member } "}" ;
 anon_struct_fields = struct_field { "," struct_field } [ "," ] ;
+anon_struct_member = method | anon_drop_fn ;
+anon_drop_fn   = "drop" "fn" "(" "self" ")" "{" block "}" ;
+anon_enum_type = "enum" "{" [ enum_variants ] "}" ;
 
 (* Expressions: the precedence ladder, loosest first. This matches Rust's
    operator precedence: unary > * / % > + - > << >> > & > ^ > | >
@@ -114,6 +119,8 @@ unary          = ( "-" | "!" | "~" ) unary | postfix ;
 postfix        = primary { suffix } ;
 suffix         = "." IDENT                                     (* field access / Enum.Variant / assoc-fn path *)
                | "." IDENT "(" [ call_args ] ")"               (* method call / Type.function(args) *)
+               | "." IDENT "(" [ call_args ] ")"
+                   "{" [ field_inits ] "}"                    (* qualified generic struct literal *)
                | "[" expression "]"                            (* indexing *)
                | "?"                                           (* try / Option propagation *)
                | "." IDENT "{" [ field_inits ] "}" ;           (* qualified struct literal *)
@@ -131,7 +138,8 @@ primary        = INTEGER | STRING | BOOL | "()"
                | self_struct_literal
                | intrinsic
                | array_literal
-               | anon_struct_type        (* type used as a value, e.g. comptime *)
+               | anon_struct_value       (* type used as a value, e.g. comptime *)
+               | anon_enum_type          (* anonymous sum type used as a value *)
                | primitive_type_literal  (* e.g. `i32` as a comptime value *)
                | "(" expression ")"
                | comptime_expr
@@ -142,6 +150,8 @@ primary        = INTEGER | STRING | BOOL | "()"
 (* An identifier optionally followed by call arguments, a struct literal
    body, or a path. *)
 ident_expr     = IDENT "(" [ call_args ] ")"           (* function call *)
+               | IDENT "(" [ call_args ] ")"
+                   "{" [ field_inits ] "}"             (* generic struct literal *)
                | IDENT "{" [ field_inits ] "}"         (* struct literal *)
                | IDENT ;                               (* Enum.Variant / Type.function(args) parse via postfix `.` suffixes *)
 self_struct_literal = "Self" "{" [ field_inits ] "}" ;
@@ -162,9 +172,11 @@ match_arm      = pattern "=>" expression ;
 pattern        = "_"
                | [ "-" ] INTEGER
                | BOOL
-               | IDENT "." IDENT [ "(" pattern_bindings ")" ]         (* Enum.Variant *)
-               | IDENT "." IDENT { "." IDENT } [ "(" pattern_bindings ")" ] ; (* module.Enum.Variant *)
-pattern_bindings = IDENT { "," IDENT } [ "," ] ;
+               | path_pattern ;
+path_pattern   = pattern_head "." IDENT [ "(" pattern_bindings ")" ] ;
+pattern_head   = qualified_ident [ "(" [ call_args ] ")" ] ;
+pattern_bindings = pattern_binding { "," pattern_binding } [ "," ] ;
+pattern_binding = IDENT | "_" ;
 while_expr     = "while" expression "{" block "}" ;
 loop_expr      = "loop" "{" block "}" ;
 for_expr       = "for" ( IDENT | "_" ) "in" expression "{" block "}" ;
@@ -219,7 +231,8 @@ Notes:
   legality rule enforced during semantic analysis (6.1:17), not a syntactic
   restriction. A non-place argument such as `inout a + 1` parses but is
   rejected with an lvalue error (E0425).
-- **Type-function application in type position** (`type_call`): a name or
+- **Type-function application in type position** (`named_type` followed by
+  arguments): a name or
   module-qualified path applied to arguments, e.g. `Pair(i32)`,
   `Result(Option(i32), i32)`, `std.option.Option(i64)`, or `Buffer(2)`,
   denotes the type produced by a comptime `-> type` constructor (RUE-241).
@@ -227,11 +240,24 @@ Notes:
   `comptime T: type` parameter takes a type argument, and a comptime value
   parameter (`comptime N: i32`) takes an integer literal, a comptime
   parameter name, or a constant name (RUE-552). Nested applications compose.
-  Its result cannot yet head a struct literal (`Pair(i32) { … }` does not
-  parse); bind it via a `let` of that type instead.
-- **Anonymous struct types** carry inline methods only when a `struct { … }`
-  appears as a *value* (e.g. the body of a comptime `-> type` function); in
-  pure type position (a type annotation) a `struct { … }` parses fields only.
+  A local or module-qualified application may head a struct literal, as in
+  `Pair(i32) { first: 1, second: 2 }` or
+  `std.tuple.Pair(i32) { first: 1, second: 2 }`.
+- **Anonymous struct types** use the fields-only `anon_struct_type` production
+  in pure type position (a type annotation). When a `struct { … }` appears as a
+  *value* (e.g. the body of a comptime `-> type` function),
+  `anon_struct_value` also permits inline methods and one `drop fn(self)`
+  member. Unlike a top-level `drop_fn`, this form has no type name between `fn`
+  and the receiver list.
+- **Anonymous enum types** use the same variant grammar as named enums and may
+  appear in either type or value position. The value-position form is how a
+  comptime type constructor returns a sum type, as in
+  `fn Option(comptime T: type) -> type { enum { Some(T), None } }`.
+- **Generic enum patterns** may apply a local or module-qualified type
+  constructor immediately before the final variant segment, as in
+  `Result(i32, E).Ok(v)` or `std.result.Result(i32, E).Ok(v)`. The final
+  parenthesized group, when present, contains payload bindings rather than
+  constructor arguments.
 - **A parameter takes at most one mode** (`comptime`, `inout`, or `borrow`);
   duplicate or conflicting modes are a parse error.
 - **Statement termination**: `let`, assignment, and ordinary expression
