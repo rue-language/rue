@@ -90,7 +90,10 @@ pub use semantic_body::{
     SemanticSpecializedBodyExport, SemanticSpecializedCandidateInstallWork,
     SemanticStableResolutionFailure,
 };
-pub use semantic_identity::{StableDefinitionKind, StableDefinitionNamespace};
+pub use semantic_identity::{
+    STABLE_DEFINITION_KINDS, STABLE_DEFINITION_NAMESPACES, StableDefinitionKind,
+    StableDefinitionNamespace,
+};
 pub use semantic_import::{
     SEMANTIC_IMPORT_CONST_KINDS, SEMANTIC_IMPORT_TYPE_KINDS, SemanticImportConstKind,
     SemanticImportConstValue, SemanticImportEpoch, SemanticImportFailure, SemanticImportNominal,

@@ -95,6 +95,7 @@ fn facade_stays_small_and_session_centered() {
         .map(|(name, _)| *name)
         .chain([
             "api_inventory",
+            "durable_compatibility_tests",
             "integration_tests",
             "pipeline_tests",
             "test_support",

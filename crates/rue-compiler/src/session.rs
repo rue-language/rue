@@ -8071,6 +8071,63 @@ fn continues_discovery_lifecycle(
 }
 
 #[cfg(test)]
+impl CompilerSession {
+    pub(crate) fn corrupt_durable_body_schema_for_test(
+        &mut self,
+        owner_name: &str,
+        schema_version: u32,
+    ) {
+        let cache = self
+            .last_successful_body_cache
+            .as_mut()
+            .expect("test requires a published durable body cache");
+        let mut bodies = cache.bodies.to_vec();
+        bodies
+            .iter_mut()
+            .find(|body| body.payload.owner.name() == owner_name)
+            .expect("test requires the named durable body")
+            .payload
+            .schema_version = schema_version;
+        cache.bodies = bodies.into();
+    }
+
+    pub(crate) fn corrupt_durable_specialized_body_schema_for_test(
+        &mut self,
+        owner_name: &str,
+        specialization_index: usize,
+        schema_version: u32,
+    ) {
+        let cache = self
+            .last_successful_body_cache
+            .as_mut()
+            .expect("test requires a published durable body cache");
+        let candidate = Arc::make_mut(&mut cache.specialized_bodies)
+            .iter_mut()
+            .filter(|body| body.payload.identity.base.name() == owner_name)
+            .nth(specialization_index)
+            .expect("test requires the named durable specialization");
+        candidate.payload.schema_version = schema_version;
+    }
+
+    pub(crate) fn corrupt_durable_cfg_schema_for_test(
+        &mut self,
+        owner_name: &str,
+        schema_version: u32,
+    ) {
+        let cache = Arc::make_mut(
+            self.last_successful_cfg_cache
+                .as_mut()
+                .expect("test requires a published durable CFG cache"),
+        );
+        cache
+            .iter_mut()
+            .find(|cfg| cfg.input.body.owner.name() == owner_name)
+            .expect("test requires the named durable CFG")
+            .schema_version = schema_version;
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::{collections::HashMap, sync::Arc};
 
