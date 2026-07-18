@@ -959,6 +959,16 @@ fn main() {
         None => std::process::exit(1),
     };
 
+    // Reject incompatible output modes before any tracing, thread-pool, manifest,
+    // or source I/O work. This is a pure options check, so surfacing it first
+    // keeps an options error from being masked by — or nondeterministically
+    // ordered behind — an unrelated missing-file or manifest failure (RUE-798).
+    if let Err(message) = emit::validate_output_modes(&options.emit_stages, options.benchmark_json)
+    {
+        eprintln!("{message}");
+        std::process::exit(1);
+    }
+
     // Initialize tracing based on CLI options
     // Returns timing data if --time-passes or --benchmark-json was specified
     let timing_data = init_tracing(
@@ -1043,12 +1053,8 @@ fn main() {
         .collect();
     let diagnostics = DiagnosticOutput::new(options.error_format, source_infos);
 
-    // --emit and --benchmark-json both own stdout, so combining them would
-    // interleave IR text with the benchmark JSON and corrupt it — reject early.
-    if options.benchmark_json && !options.emit_stages.is_empty() {
-        eprintln!("Error: --emit cannot be combined with --benchmark-json (both write to stdout)");
-        std::process::exit(1);
-    }
+    // Output-mode compatibility (including `--emit` + `--benchmark-json`) was
+    // already validated before any I/O by `emit::validate_output_modes` (RUE-798).
 
     // Handle emit modes with multi-file support
     if !options.emit_stages.is_empty() {

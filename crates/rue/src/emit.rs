@@ -179,6 +179,37 @@ impl EmitStage {
     }
 }
 
+/// Reject output-mode combinations that cannot coexist, independent of any
+/// filesystem or session state.
+///
+/// This is the single authority for output-mode compatibility. The driver
+/// evaluates it immediately after argument parsing — before tracing, thread-pool
+/// configuration, manifest loading, or any source I/O — so an options error is
+/// never masked by an unrelated missing-file or manifest failure, and is never
+/// nondeterministically subordinate to it (RUE-798).
+///
+/// Two combinations are incompatible:
+///
+/// * `--emit deps` writes a dependency graph to stdout and cannot share the run
+///   with any other `--emit` stage.
+/// * `--emit` and `--benchmark-json` both own stdout, so their outputs would
+///   interleave and corrupt each other.
+pub(crate) fn validate_output_modes(
+    emit_stages: &[EmitStage],
+    benchmark_json: bool,
+) -> Result<(), String> {
+    if emit_stages.contains(&EmitStage::Deps) && emit_stages.len() != 1 {
+        return Err("Error: --emit deps cannot be combined with other --emit stages".to_string());
+    }
+    if benchmark_json && !emit_stages.is_empty() {
+        return Err(
+            "Error: --emit cannot be combined with --benchmark-json (both write to stdout)"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// Handle emit stages for multi-file compilation.
 ///
 /// For early stages (tokens, ast), each file is processed and labeled individually.
@@ -203,10 +234,13 @@ pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
     } = request;
 
     if stages.contains(&EmitStage::Deps) {
-        if stages.len() != 1 {
-            eprintln!("Error: --emit deps cannot be combined with other --emit stages");
-            return Err(());
-        }
+        // `validate_output_modes` already rejected `--emit deps` mixed with any
+        // other stage before this point, so only the sole-deps case reaches here.
+        debug_assert_eq!(
+            stages.len(),
+            1,
+            "validate_output_modes must reject --emit deps combined with other stages"
+        );
         let dependency_envelope = DependencyEnvelope::from_closed_revision(discovery_revision)
             .expect("closed valid or resolution-incomplete discovery has dependency topology");
         let incomplete = dependency_envelope.status == DependencyEnvelopeStatus::Incomplete;
@@ -351,4 +385,69 @@ pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod output_mode_tests {
+    use super::{EmitStage, validate_output_modes};
+
+    #[test]
+    fn accepts_sole_deps_stage() {
+        assert!(validate_output_modes(&[EmitStage::Deps], false).is_ok());
+    }
+
+    #[test]
+    fn accepts_single_ir_stage() {
+        assert!(validate_output_modes(&[EmitStage::Air], false).is_ok());
+    }
+
+    #[test]
+    fn accepts_multiple_non_deps_stages() {
+        assert!(validate_output_modes(&[EmitStage::Air, EmitStage::Cfg], false).is_ok());
+    }
+
+    #[test]
+    fn accepts_benchmark_json_without_emit() {
+        assert!(validate_output_modes(&[], true).is_ok());
+    }
+
+    #[test]
+    fn accepts_no_options() {
+        assert!(validate_output_modes(&[], false).is_ok());
+    }
+
+    #[test]
+    fn rejects_deps_with_other_stage() {
+        let error = validate_output_modes(&[EmitStage::Deps, EmitStage::Air], false).unwrap_err();
+        assert!(error.contains("--emit deps cannot be combined"));
+    }
+
+    #[test]
+    fn rejects_other_stage_before_deps() {
+        // Order-independent: deps discovered second must still be rejected.
+        let error = validate_output_modes(&[EmitStage::Air, EmitStage::Deps], false).unwrap_err();
+        assert!(error.contains("--emit deps cannot be combined"));
+    }
+
+    #[test]
+    fn rejects_benchmark_json_with_emit() {
+        let error = validate_output_modes(&[EmitStage::Air], true).unwrap_err();
+        assert!(error.contains("--emit cannot be combined with --benchmark-json"));
+    }
+
+    #[test]
+    fn rejects_benchmark_json_with_deps() {
+        // A sole-deps stage is fine on its own but still conflicts with
+        // --benchmark-json, since both write to stdout.
+        let error = validate_output_modes(&[EmitStage::Deps], true).unwrap_err();
+        assert!(error.contains("--emit cannot be combined with --benchmark-json"));
+    }
+
+    #[test]
+    fn deps_conflict_wins_over_benchmark_json() {
+        // When both rules apply, the mixed-deps message is reported first,
+        // matching the pre-RUE-798 ordering in the driver.
+        let error = validate_output_modes(&[EmitStage::Deps, EmitStage::Air], true).unwrap_err();
+        assert!(error.contains("--emit deps cannot be combined"));
+    }
 }
