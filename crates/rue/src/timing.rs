@@ -719,6 +719,7 @@ mod tests {
             ("main.rs", include_str!("main.rs")),
             ("compile.rs", include_str!("compile.rs")),
             ("emit.rs", include_str!("emit.rs")),
+            ("source_loader.rs", include_str!("source_loader.rs")),
         ] {
             assert!(
                 !source.contains(&retired_type),
