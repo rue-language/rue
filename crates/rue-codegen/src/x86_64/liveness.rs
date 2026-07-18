@@ -106,8 +106,8 @@ fn get_successors(
         | X86Inst::Jbe { label }
         | X86Inst::Jge { label }
         | X86Inst::Jle { label } => conditional_successors(idx, *label, label_to_idx, num_insts),
-        // Return has no successors
-        X86Inst::Ret => Vec::new(),
+        // Return and trap have no successors
+        X86Inst::Ret | X86Inst::Ud2 => Vec::new(),
         // Function calls fall through (callee returns)
         X86Inst::CallRel { .. } => fallthrough_successor(idx, num_insts),
         // All other instructions fall through to the next
@@ -693,6 +693,43 @@ mod tests {
         let v0_range = info.range(v0).expect("v0 should have a range");
         assert_eq!(v0_range.start, 0);
         assert!(v0_range.end >= 4, "v0 should be live through CMP");
+    }
+
+    #[test]
+    fn test_ud2_is_terminal() {
+        let mut mir = X86Mir::new();
+        let v0 = mir.alloc_vreg();
+        let label = mir.alloc_label();
+
+        // v0 = 42
+        mir.push(X86Inst::MovRI32 {
+            dst: Operand::Virtual(v0),
+            imm: 42,
+        });
+
+        // ud2 (unconditional trap; execution never falls through)
+        mir.push(X86Inst::Ud2);
+
+        // label:
+        mir.push(X86Inst::Label { id: label });
+
+        // Use v0 in the next layout block
+        mir.push(X86Inst::MovRR {
+            dst: Operand::Physical(Reg::Rax),
+            src: Operand::Virtual(v0),
+        });
+
+        mir.push(X86Inst::Ret);
+
+        let debug = analyze_debug(&mir);
+
+        // The use of v0 after the label must not flow backward through UD2.
+        let ud2 = &debug.instructions[1];
+        assert!(
+            ud2.live_out.is_empty(),
+            "UD2 is terminal and must have an empty live-out set; found: {:?}",
+            ud2.live_out
+        );
     }
 
     #[test]
