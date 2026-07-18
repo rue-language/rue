@@ -21,14 +21,9 @@ pub const DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION: u32 = 5;
 
 /// Durable specialization of AIR's canonical body algebra. These aliases keep
 /// compiler consumers explicit about the stable identity domain.
-pub type DurableAirRef = rue_air::SemanticBodyRef;
-pub type DurablePlaceRef = rue_air::SemanticBodyPlaceRef;
 pub type DurableBodyAnchor = rue_air::SemanticBodyAnchor;
-pub type DurablePattern = rue_air::SemanticBodyPattern<StableDefinitionKey>;
-pub type DurableMatchArm = rue_air::SemanticBodyMatchArm<StableDefinitionKey>;
-pub type DurableCallArg = rue_air::SemanticBodyCallArg;
 pub type DurableProjection = rue_air::SemanticBodyProjection<StableDefinitionKey, crate::ModuleId>;
-pub type DurablePlace = rue_air::SemanticBodyPlace<StableDefinitionKey, crate::ModuleId>;
+#[cfg(test)]
 pub type DurableAirInst = rue_air::SemanticBodyInst<StableDefinitionKey, crate::ModuleId>;
 pub type DurableAirInstData = rue_air::SemanticBodyInstData<StableDefinitionKey, crate::ModuleId>;
 

@@ -15,9 +15,6 @@ use rue_air::{
 };
 use rue_span::FileId;
 
-/// A fresh AIR epoch populated only from request-independent semantic values.
-pub type DurableSemanticImportEpoch = SemanticImportEpoch<StableDefinitionKey, Arc<str>>;
-
 /// Reconstruct the representable declaration universe in a new AIR epoch.
 ///
 /// Nominal shells are issued in stable-key order before any field or variant
@@ -25,7 +22,7 @@ pub type DurableSemanticImportEpoch = SemanticImportEpoch<StableDefinitionKey, A
 /// returned epoch contains no handles from the exporting semantic request.
 pub fn import_durable_declaration_semantics(
     declarations: &[DurableDeclarationSemantic],
-) -> Result<DurableSemanticImportEpoch, SemanticImportFailure> {
+) -> Result<SemanticImportEpoch<StableDefinitionKey, Arc<str>>, SemanticImportFailure> {
     fn payload_matches_key(declaration: &DurableDeclarationSemantic) -> bool {
         matches!(
             (declaration.key.kind(), &declaration.payload),
@@ -382,12 +379,9 @@ pub enum DurableSemanticProjectionFailure {
     MissingDefinition,
     DuplicateDefinition,
     ExtraDefinition,
-    MissingShell,
     DuplicateShell,
     AmbiguousDefinition,
-    NamespaceMismatch,
     KindMismatch,
-    OwnerMismatch,
     ModuleMismatch,
     VisibilityMismatch,
     UnsupportedDeclaration,
@@ -690,14 +684,11 @@ fn validate_payload_shape(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DurableSemanticExportFailure {
     ErrorType,
-    MissingTypePoolEntry,
     MissingStableNominalDefinition,
     MissingStableFunctionDefinition,
     UnresolvedModule,
     AnonymousNominalType,
-    UnsupportedLocalType,
     UnsupportedTypeForm,
-    UnsupportedConstValue,
     RecursiveStructuralType,
 }
 
