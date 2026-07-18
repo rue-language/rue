@@ -1,0 +1,179 @@
+// ASCII lexer for Rill. It recognizes comments, identifiers, decimal integers,
+// escaped strings, and the complete operator set consumed by compiler.rue.
+const std = @import("std");
+const token = @import("token.rue");
+const poolmod = @import("pool.rue");
+const StrBuf = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+
+pub struct ScanResult {
+    tokens: token.Tokens,
+    pool: poolmod.Pool,
+    errors: StrBuf,
+}
+
+fn is_alpha(b: u8) -> bool {
+    (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 95
+}
+fn is_digit(b: u8) -> bool { b >= 48 && b <= 57 }
+fn is_alnum(b: u8) -> bool { is_alpha(b) || is_digit(b) }
+
+struct Lexer {
+    source: Bytes,
+    at: u64,
+    tokens: token.Tokens,
+    pool: poolmod.Pool,
+    errors: StrBuf,
+
+    fn new(source: Bytes) -> Self {
+        Self {
+            source: source,
+            at: 0,
+            tokens: token.Tokens.new(),
+            pool: poolmod.Pool.new(),
+            errors: StrBuf.new(),
+        }
+    }
+
+    fn byte(borrow self, i: u64) -> u8 { self.source.get_or(i, 0) }
+    fn done(borrow self) -> bool { self.at >= self.source.len() }
+    fn advance(inout self) -> u8 {
+        let b = self.byte(self.at);
+        self.at = self.at + 1;
+        b
+    }
+    fn add(inout self, kind: u64, start: u64, value: u64) {
+        self.tokens.push(token.Token { kind: kind, start: start, end: self.at, value: value });
+    }
+    fn error(inout self, start: u64, message: StrBuf) {
+        self.errors.push_str("lex error at byte ");
+        self.errors.push_str(@to_string(start));
+        self.errors.push_str(": ");
+        self.errors.push_str(message);
+        self.errors.push_str("\n");
+    }
+
+    fn keyword(borrow word: StrBuf) -> u64 {
+        if Self.word_is(borrow word, "fn") { return token.FN; }
+        if Self.word_is(borrow word, "let") { return token.LET; }
+        if Self.word_is(borrow word, "if") { return token.IF; }
+        if Self.word_is(borrow word, "else") { return token.ELSE; }
+        if Self.word_is(borrow word, "while") { return token.WHILE; }
+        if Self.word_is(borrow word, "return") { return token.RETURN; }
+        if Self.word_is(borrow word, "true") { return token.TRUE; }
+        if Self.word_is(borrow word, "false") { return token.FALSE; }
+        if Self.word_is(borrow word, "print") { return token.PRINT; }
+        if Self.word_is(borrow word, "len") { return token.LEN; }
+        if Self.word_is(borrow word, "push") { return token.PUSH; }
+        if Self.word_is(borrow word, "get") { return token.GET; }
+        token.IDENT
+    }
+
+    fn word_is(borrow word: StrBuf, expected: StrBuf) -> bool {
+        StrBuf.equals_borrowed(borrow word, borrow expected)
+    }
+
+    fn identifier(inout self, start: u64) {
+        let mut text = StrBuf.new();
+        let mut i = start;
+        while i < self.at { text.push(self.byte(i)); i = i + 1; }
+        while !self.done() && is_alnum(self.byte(self.at)) {
+            text.push(self.advance());
+        }
+        let kind = Self.keyword(borrow text);
+        let value = if kind == token.IDENT { self.pool.intern(borrow text) } else { 0 };
+        self.add(kind, start, value);
+    }
+
+    fn number(inout self, start: u64, first: u8) {
+        let mut value: u64 = @intCast(first - 48);
+        while !self.done() && is_digit(self.byte(self.at)) {
+            let digit: u64 = @intCast(self.advance() - 48);
+            if value > 922337203685477580 || (value == 922337203685477580 && digit > 7) {
+                self.error(start, "integer literal is too large");
+                value = 0;
+            } else {
+                value = value * 10 + digit;
+            }
+        }
+        self.add(token.INT, start, value);
+    }
+
+    fn string(inout self, start: u64) {
+        let mut text = StrBuf.new();
+        let mut closed = false;
+        while !self.done() {
+            let b = self.advance();
+            if b == 34 {
+                closed = true;
+                break;
+            }
+            if b == 10 {
+                self.error(start, "unterminated string");
+                break;
+            }
+            if b == 92 {
+                if self.done() { break; }
+                let e = self.advance();
+                if e == 110 { text.push(10); }
+                else if e == 116 { text.push(9); }
+                else if e == 114 { text.push(13); }
+                else if e == 34 { text.push(34); }
+                else if e == 92 { text.push(92); }
+                else { self.error(start, "unknown string escape"); }
+            } else {
+                text.push(b);
+            }
+        }
+        if !closed { self.error(start, "unterminated string"); }
+        self.add(token.STRING, start, self.pool.intern(borrow text));
+    }
+
+    fn scan_one(inout self) {
+        let start = self.at;
+        let b = self.advance();
+        if b == 32 || b == 9 || b == 10 || b == 13 { return; }
+        if is_alpha(b) { self.identifier(start); return; }
+        if is_digit(b) { self.number(start, b); return; }
+        if b == 34 { self.string(start); return; }
+        if b == 47 && self.byte(self.at) == 47 {
+            while !self.done() && self.byte(self.at) != 10 { let _ = self.advance(); }
+            return;
+        }
+        if b == 43 { self.add(token.PLUS, start, 0); }
+        else if b == 45 { self.add(token.MINUS, start, 0); }
+        else if b == 42 { self.add(token.STAR, start, 0); }
+        else if b == 47 { self.add(token.SLASH, start, 0); }
+        else if b == 37 { self.add(token.PERCENT, start, 0); }
+        else if b == 40 { self.add(token.LPAREN, start, 0); }
+        else if b == 41 { self.add(token.RPAREN, start, 0); }
+        else if b == 123 { self.add(token.LBRACE, start, 0); }
+        else if b == 125 { self.add(token.RBRACE, start, 0); }
+        else if b == 44 { self.add(token.COMMA, start, 0); }
+        else if b == 59 { self.add(token.SEMI, start, 0); }
+        else if b == 91 { self.add(token.LBRACKET, start, 0); }
+        else if b == 93 { self.add(token.RBRACKET, start, 0); }
+        else if b == 61 && self.byte(self.at) == 61 { let _ = self.advance(); self.add(token.EQEQ, start, 0); }
+        else if b == 61 { self.add(token.EQ, start, 0); }
+        else if b == 33 && self.byte(self.at) == 61 { let _ = self.advance(); self.add(token.BANGEQ, start, 0); }
+        else if b == 33 { self.add(token.BANG, start, 0); }
+        else if b == 60 && self.byte(self.at) == 61 { let _ = self.advance(); self.add(token.LTEQ, start, 0); }
+        else if b == 60 { self.add(token.LT, start, 0); }
+        else if b == 62 && self.byte(self.at) == 61 { let _ = self.advance(); self.add(token.GTEQ, start, 0); }
+        else if b == 62 { self.add(token.GT, start, 0); }
+        else if b == 38 && self.byte(self.at) == 38 { let _ = self.advance(); self.add(token.AMPAMP, start, 0); }
+        else if b == 124 && self.byte(self.at) == 124 { let _ = self.advance(); self.add(token.PIPEPIPE, start, 0); }
+        else {
+            self.error(start, "unexpected character");
+            self.add(token.ERROR, start, 0);
+        }
+    }
+}
+
+pub fn scan(source: Bytes) -> ScanResult {
+    let mut lexer = Lexer.new(source);
+    while !lexer.done() { lexer.scan_one(); }
+    let at = lexer.at;
+    lexer.tokens.push(token.Token { kind: token.EOF, start: at, end: at, value: 0 });
+    ScanResult { tokens: lexer.tokens, pool: lexer.pool, errors: lexer.errors }
+}

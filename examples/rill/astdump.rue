@@ -1,0 +1,128 @@
+// Stable S-expression rendering of the POD AST. This is deliberately separate
+// from bytecode disassembly: it exposes parse grouping, declaration/statement
+// structure, source byte spans, and interned names before semantic lowering.
+const std = @import("std");
+const ast = @import("ast.rue");
+const token = @import("token.rue");
+const poolmod = @import("pool.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn kind_name(kind: u64) -> StrBuf {
+    if kind == ast.PROGRAM { "program" }
+    else if kind == ast.GLOBAL { "global" }
+    else if kind == ast.FUNCTION { "function" }
+    else if kind == ast.PARAM { "param" }
+    else if kind == ast.BLOCK { "block" }
+    else if kind == ast.LET { "let" }
+    else if kind == ast.ASSIGN { "assign" }
+    else if kind == ast.IF { "if" }
+    else if kind == ast.WHILE { "while" }
+    else if kind == ast.RETURN { "return" }
+    else if kind == ast.PRINT { "print" }
+    else if kind == ast.EXPR_STMT { "expr-stmt" }
+    else if kind == ast.INT { "int" }
+    else if kind == ast.BOOL { "bool" }
+    else if kind == ast.STRING { "string" }
+    else if kind == ast.VARIABLE { "variable" }
+    else if kind == ast.CALL { "call" }
+    else if kind == ast.LIST { "list" }
+    else if kind == ast.LEN { "len" }
+    else if kind == ast.PUSH { "push" }
+    else if kind == ast.GET { "get" }
+    else if kind == ast.UNARY { "unary" }
+    else if kind == ast.BINARY { "binary" }
+    else { "invalid" }
+}
+
+fn operator_name(kind: u64) -> StrBuf {
+    if kind == token.PLUS { "+" }
+    else if kind == token.MINUS { "-" }
+    else if kind == token.STAR { "*" }
+    else if kind == token.SLASH { "/" }
+    else if kind == token.PERCENT { "%" }
+    else if kind == token.EQEQ { "==" }
+    else if kind == token.BANGEQ { "!=" }
+    else if kind == token.LT { "<" }
+    else if kind == token.LTEQ { "<=" }
+    else if kind == token.GT { ">" }
+    else if kind == token.GTEQ { ">=" }
+    else if kind == token.AMPAMP { "&&" }
+    else if kind == token.PIPEPIPE { "||" }
+    else if kind == token.BANG { "!" }
+    else { "?" }
+}
+
+fn indent(inout out: StrBuf, depth: u64) {
+    let mut i: u64 = 0;
+    while i < depth { out.push_str("  "); i = i + 1; }
+}
+
+fn append_span(inout out: StrBuf, borrow node: ast.Node) {
+    out.push_str(" span=");
+    out.push_str(@to_string(node.start));
+    out.push_str("..");
+    out.push_str(@to_string(node.end));
+}
+
+fn append_name(inout out: StrBuf, borrow pool: poolmod.Pool, symbol: u64) {
+    out.push_str(" name=");
+    out.push_str(pool.materialize(symbol));
+}
+
+fn render_chain(inout out: StrBuf, borrow arena: ast.Arena, borrow pool: poolmod.Pool, first: u64, depth: u64) {
+    let mut id = first;
+    while id != ast.NONE {
+        render_node(inout out, borrow arena, borrow pool, id, depth);
+        id = arena.get(id).next;
+    }
+}
+
+fn render_child(inout out: StrBuf, borrow arena: ast.Arena, borrow pool: poolmod.Pool, id: u64, depth: u64) {
+    if id != ast.NONE { render_node(inout out, borrow arena, borrow pool, id, depth); }
+}
+
+fn render_node(inout out: StrBuf, borrow arena: ast.Arena, borrow pool: poolmod.Pool, id: u64, depth: u64) {
+    let node = arena.get(id);
+    indent(inout out, depth);
+    out.push_str("(");
+    out.push_str(kind_name(node.kind));
+    append_span(inout out, borrow node);
+    if node.kind == ast.GLOBAL || node.kind == ast.FUNCTION || node.kind == ast.PARAM ||
+        node.kind == ast.LET || node.kind == ast.ASSIGN || node.kind == ast.VARIABLE ||
+        node.kind == ast.CALL {
+        append_name(inout out, borrow pool, node.value);
+    } else if node.kind == ast.INT {
+        out.push_str(" value="); out.push_str(@to_string(node.value));
+    } else if node.kind == ast.BOOL {
+        out.push_str(" value="); if node.value == 0 { out.push_str("false"); } else { out.push_str("true"); }
+    } else if node.kind == ast.STRING {
+        out.push_str(" value=\""); out.push_str(pool.materialize(node.value)); out.push_str("\"");
+    } else if node.kind == ast.UNARY || node.kind == ast.BINARY {
+        out.push_str(" op="); out.push_str(operator_name(node.value));
+    }
+    out.push_str("\n");
+
+    if node.kind == ast.PROGRAM || node.kind == ast.BLOCK || node.kind == ast.LIST || node.kind == ast.CALL {
+        render_chain(inout out, borrow arena, borrow pool, node.first, depth + 1);
+    } else if node.kind == ast.FUNCTION {
+        render_chain(inout out, borrow arena, borrow pool, node.first, depth + 1);
+        render_child(inout out, borrow arena, borrow pool, node.second, depth + 1);
+    } else if node.kind == ast.IF {
+        render_child(inout out, borrow arena, borrow pool, node.first, depth + 1);
+        render_child(inout out, borrow arena, borrow pool, node.second, depth + 1);
+        render_child(inout out, borrow arena, borrow pool, node.third, depth + 1);
+    } else if node.kind == ast.BINARY || node.kind == ast.PUSH || node.kind == ast.GET {
+        render_child(inout out, borrow arena, borrow pool, node.first, depth + 1);
+        render_child(inout out, borrow arena, borrow pool, node.second, depth + 1);
+    } else if node.first != ast.NONE {
+        render_child(inout out, borrow arena, borrow pool, node.first, depth + 1);
+    }
+    indent(inout out, depth);
+    out.push_str(")\n");
+}
+
+pub fn dump(borrow arena: ast.Arena, borrow pool: poolmod.Pool, root: u64) -> StrBuf {
+    let mut out = StrBuf.new();
+    render_node(inout out, borrow arena, borrow pool, root, 0);
+    out
+}

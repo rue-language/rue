@@ -1,0 +1,45 @@
+// User-facing language reference kept beside the implementation so new syntax
+// has one executable documentation surface to update. `rill --help` prints it.
+// The text is assembled with StrBuf instead of one giant literal to exercise
+// repeated owned growth and to keep each grammar/rule line reviewable in diffs.
+// It is also a smoke-testable contract for the command-line modes.
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn help() -> StrBuf {
+    let mut out = StrBuf.new();
+    out.push_str("usage: rill [--ast|--dump|--stats] [program.rill]\n");
+    out.push_str("       rill --stress\n\n");
+    out.push_str("Rill is a small dynamically typed language compiled to verified stack bytecode.\n");
+    out.push_str("With no arguments, the interpreter runs its deterministic built-in demo.\n\n");
+    out.push_str("declarations:\n");
+    out.push_str("  let name = literal;             global mutable binding\n");
+    out.push_str("  fn name(a, b) { statements }    function declaration\n\n");
+    out.push_str("statements:\n");
+    out.push_str("  let name = expression;          scoped local binding\n");
+    out.push_str("  name = expression;              local or global assignment\n");
+    out.push_str("  if (condition) { ... } else { ... }\n");
+    out.push_str("  while (condition) { ... }\n");
+    out.push_str("  print(expression);\n");
+    out.push_str("  return expression;\n\n");
+    out.push_str("values and expressions:\n");
+    out.push_str("  integers, true/false, escaped strings, and immutable lists\n");
+    out.push_str("  + - * / %, == != < <= > >=, && ||, unary ! and -\n");
+    out.push_str("  name(arguments), [elements], len(list), push(list, value), get(list, index)\n\n");
+    out.push_str("runtime rules:\n");
+    out.push_str("  + adds integers or concatenates two strings; other mixed arithmetic is an error\n");
+    out.push_str("  conditions require booleans; && and || short-circuit from left to right\n");
+    out.push_str("  list operations are immutable: push returns a new list and preserves the old one\n");
+    out.push_str("  get rejects negative and out-of-range indexes; division by zero is an error\n");
+    out.push_str("  calls may refer to later functions, but names and arities are verified before execution\n");
+    out.push_str("  globals require literal initializers and must appear before function declarations\n");
+    out.push_str("  local bindings use lexical block scope; an inner binding may shadow an outer one\n");
+    out.push_str("  main must take no arguments; its integer return value becomes the process status\n");
+    out.push_str("  execution stops after ten million bytecode instructions to bound runaway programs\n\n");
+    out.push_str("inspection modes:\n");
+    out.push_str("  --ast     print the validated POD arena syntax tree\n");
+    out.push_str("  --dump    print optimized verified bytecode disassembly\n");
+    out.push_str("  --stats   print bytecode and metadata inventory\n");
+    out.push_str("  --stress  generate, compile, verify, and run a 300-function program\n");
+    out
+}

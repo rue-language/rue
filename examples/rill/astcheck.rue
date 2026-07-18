@@ -1,0 +1,130 @@
+// Structural validation for parser output. Lowering assumes indexes, sibling
+// chains, required children, and source spans are coherent; checking those
+// invariants at the phase boundary converts a parser defect into a deterministic
+// diagnostic instead of an accidental fallback Node or recursive cycle.
+const std = @import("std");
+const ast = @import("ast.rue");
+const StrBuf = std.strbuf.StrBuf;
+const States = std.arraybuf.ArrayBuf(u8);
+
+pub struct CheckResult { ok: bool, errors: StrBuf }
+
+struct Checker {
+    arena: ast.Arena,
+    states: States,
+    errors: StrBuf,
+
+    fn new(arena: ast.Arena) -> Self {
+        let mut states = States.new();
+        let mut i: u64 = 0;
+        while i < arena.nodes.len() { states.push(0); i = i + 1; }
+        Self { arena: arena, states: states, errors: StrBuf.new() }
+    }
+
+    fn report(inout self, id: u64, message: StrBuf) {
+        self.errors.push_str("AST error at node ");
+        self.errors.push_str(@to_string(id));
+        self.errors.push_str(": ");
+        self.errors.push_str(message);
+        self.errors.push_str("\n");
+    }
+
+    fn valid_id(borrow self, id: u64) -> bool { id == ast.NONE || id < self.arena.nodes.len() }
+
+    fn known_kind(kind: u64) -> bool {
+        (kind >= ast.PROGRAM && kind <= ast.EXPR_STMT) ||
+        (kind >= ast.INT && kind <= ast.BINARY)
+    }
+
+    fn needs_first(kind: u64) -> bool {
+        kind == ast.PROGRAM || kind == ast.FUNCTION || kind == ast.BLOCK ||
+        kind == ast.LET || kind == ast.ASSIGN || kind == ast.IF ||
+        kind == ast.WHILE || kind == ast.RETURN || kind == ast.PRINT ||
+        kind == ast.EXPR_STMT || kind == ast.CALL || kind == ast.LEN ||
+        kind == ast.PUSH || kind == ast.GET || kind == ast.UNARY || kind == ast.BINARY
+    }
+
+    fn allows_empty_first(kind: u64) -> bool {
+        kind == ast.PROGRAM || kind == ast.BLOCK || kind == ast.CALL || kind == ast.LIST ||
+        kind == ast.FUNCTION
+    }
+
+    fn check_shape(inout self, id: u64, node: ast.Node) {
+        if !Self.known_kind(node.kind) { self.report(id, "unknown node kind"); }
+        if node.end < node.start { self.report(id, "source span ends before it starts"); }
+        if !self.valid_id(node.first) || !self.valid_id(node.second) ||
+            !self.valid_id(node.third) || !self.valid_id(node.next) {
+            self.report(id, "child or sibling index is out of bounds");
+        }
+        if Self.needs_first(node.kind) && !Self.allows_empty_first(node.kind) && node.first == ast.NONE {
+            self.report(id, "required first child is absent");
+        }
+        if (node.kind == ast.BINARY || node.kind == ast.PUSH || node.kind == ast.GET ||
+            node.kind == ast.IF || node.kind == ast.WHILE || node.kind == ast.FUNCTION) &&
+            node.second == ast.NONE {
+            self.report(id, "required second child is absent");
+        }
+        if node.kind != ast.IF && node.third != ast.NONE {
+            self.report(id, "only if nodes may have a third child");
+        }
+    }
+
+    fn child(inout self, id: u64) {
+        if id != ast.NONE { self.visit(id); }
+    }
+
+    fn visit(inout self, id: u64) {
+        if id >= self.arena.nodes.len() {
+            self.report(id, "node index is out of bounds");
+            return;
+        }
+        let state = self.states.get_or(id, 0);
+        if state == 1 {
+            self.report(id, "cycle in AST edges");
+            return;
+        }
+        if state == 2 { return; }
+        self.states.set(id, 1);
+        let node = self.arena.get(id);
+        let first = node.first;
+        let second = node.second;
+        let third = node.third;
+        let next = node.next;
+        self.check_shape(id, node);
+        self.child(first);
+        self.child(second);
+        self.child(third);
+        self.child(next);
+        self.states.set(id, 2);
+    }
+
+    fn check_unreachable(inout self) {
+        let mut i: u64 = 0;
+        while i < self.states.len() {
+            if self.states.get_or(i, 0) == 0 { self.report(i, "node is unreachable from program root"); }
+            i = i + 1;
+        }
+    }
+}
+
+// Return the arena with the result because ArrayBuf-backed syntax trees are
+// move-only owners. This adapter keeps the phase sequence explicit without a
+// second parse or unsafe alias.
+pub struct CheckedAst { arena: ast.Arena, result: CheckResult }
+
+pub fn check(arena: ast.Arena, root: u64) -> CheckedAst {
+    let mut checker = Checker.new(arena);
+    if root >= checker.arena.nodes.len() {
+        checker.report(root, "program root is out of bounds");
+    } else if checker.arena.get(root).kind != ast.PROGRAM {
+        checker.report(root, "root is not a program node");
+    } else {
+        checker.visit(root);
+        checker.check_unreachable();
+    }
+    let ok = checker.errors.len() == 0;
+    CheckedAst {
+        arena: checker.arena,
+        result: CheckResult { ok: ok, errors: checker.errors },
+    }
+}

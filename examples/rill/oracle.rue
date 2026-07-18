@@ -1,0 +1,52 @@
+// Differential oracle for the AST pipeline. compiler.rue is the original
+// direct token-to-bytecode implementation retained as an independent lowering
+// path. Every valid normal execution compiles through both paths, optimizes
+// both, and compares deterministic disassembly before the AST result may run.
+// This equivalence covers bytecode, function/global metadata, pooled symbol
+// identity, and literal contents while intentionally ignoring AST-only spans.
+//
+// The direct path remains deliberately simple and independent: it does not call
+// parser.rue, astcheck.rue, or lower.rue. A shared lexer and bytecode definition
+// are the comparison boundary. Both sides run the same length-stable optimizer,
+// then the disassembler expands indexes back into names and string bytes. That
+// catches precedence, scope, slot, jump-patching, list-arity, global-layout, and
+// call-resolution drift with one byte-exact comparison. Invalid syntax returns
+// before the oracle because recovery trees need not match; all valid demo, file,
+// inspection, and generated-stress inputs exercise the comparison automatically.
+const std = @import("std");
+const lexer = @import("lexer.rue");
+const direct = @import("compiler.rue");
+const optimize = @import("optimize.rue");
+const disasm = @import("disasm.rue");
+const bytecode = @import("bytecode.rue");
+const StrBuf = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+
+pub struct OracleResult { ok: bool, error: StrBuf }
+
+fn failure(message: StrBuf) -> OracleResult {
+    let mut out = StrBuf.new();
+    out.push_str("differential error: ");
+    out.push_str(message);
+    out.push_str("\n");
+    OracleResult { ok: false, error: out }
+}
+
+pub fn check(source: Bytes, borrow ast_program: bytecode.Program) -> OracleResult {
+    let scanned = lexer.scan(source);
+    if scanned.errors.len() != 0 { return failure(scanned.errors); }
+    let compiled = direct.compile(scanned.tokens, scanned.pool);
+    if compiled.errors.len() != 0 { return failure(compiled.errors); }
+    let optimized = optimize.optimize(compiled.program);
+    let expected = disasm.disassemble(borrow optimized.program);
+    let actual = disasm.disassemble(borrow ast_program);
+    if !StrBuf.equals_borrowed(borrow expected, borrow actual) {
+        let mut message = StrBuf.new();
+        message.push_str("AST and direct bytecode disagree\n--- direct ---\n");
+        message.push_str(expected);
+        message.push_str("--- AST ---\n");
+        message.push_str(actual);
+        return OracleResult { ok: false, error: message };
+    }
+    OracleResult { ok: true, error: StrBuf.new() }
+}

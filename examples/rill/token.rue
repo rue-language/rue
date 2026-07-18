@@ -1,0 +1,53 @@
+// Rill tokens. The representation is POD so the compiler can revisit tokens
+// in an ArrayBuf without moving owned data.
+const std = @import("std");
+
+pub const EOF: u64 = 0;
+pub const ERROR: u64 = 1;
+pub const IDENT: u64 = 2;
+pub const INT: u64 = 3;
+pub const STRING: u64 = 4;
+pub const FN: u64 = 10;
+pub const LET: u64 = 11;
+pub const IF: u64 = 12;
+pub const ELSE: u64 = 13;
+pub const WHILE: u64 = 14;
+pub const RETURN: u64 = 15;
+pub const TRUE: u64 = 16;
+pub const FALSE: u64 = 17;
+pub const PRINT: u64 = 18;
+pub const LEN: u64 = 19;
+pub const PUSH: u64 = 20;
+pub const GET: u64 = 21;
+pub const PLUS: u64 = 30;
+pub const MINUS: u64 = 31;
+pub const STAR: u64 = 32;
+pub const SLASH: u64 = 33;
+pub const PERCENT: u64 = 34;
+pub const EQ: u64 = 35;
+pub const EQEQ: u64 = 36;
+pub const BANG: u64 = 37;
+pub const BANGEQ: u64 = 38;
+pub const LT: u64 = 39;
+pub const LTEQ: u64 = 40;
+pub const GT: u64 = 41;
+pub const GTEQ: u64 = 42;
+pub const AMPAMP: u64 = 43;
+pub const PIPEPIPE: u64 = 44;
+pub const LPAREN: u64 = 45;
+pub const RPAREN: u64 = 46;
+pub const LBRACE: u64 = 47;
+pub const RBRACE: u64 = 48;
+pub const COMMA: u64 = 49;
+pub const SEMI: u64 = 50;
+pub const LBRACKET: u64 = 51;
+pub const RBRACKET: u64 = 52;
+
+pub struct Token {
+    kind: u64,
+    start: u64,
+    end: u64,
+    value: u64,
+}
+
+pub const Tokens = std.arraybuf.ArrayBuf(Token);

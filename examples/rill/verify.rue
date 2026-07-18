@@ -1,0 +1,214 @@
+// Structural and stack-flow verification for Rill bytecode. The VM runs only
+// programs accepted here, turning compiler defects into deterministic messages
+// rather than allowing malformed code to underflow a stack or jump into data.
+const std = @import("std");
+const bytecode = @import("bytecode.rue");
+const StrBuf = std.strbuf.StrBuf;
+const I64s = std.arraybuf.ArrayBuf(i64);
+const U64s = std.arraybuf.ArrayBuf(u64);
+
+pub struct VerifyResult { ok: bool, errors: StrBuf }
+
+struct Verifier {
+    program: bytecode.Program,
+    errors: StrBuf,
+
+    fn new(program: bytecode.Program) -> Self { Self { program: program, errors: StrBuf.new() } }
+
+    fn report(inout self, at: u64, message: StrBuf) {
+        self.errors.push_str("bytecode error at instruction ");
+        self.errors.push_str(@to_string(at));
+        self.errors.push_str(": ");
+        self.errors.push_str(message);
+        self.errors.push_str("\n");
+    }
+
+    fn valid_opcode(op: u64) -> bool {
+        op == bytecode.NOP || op == bytecode.CONST_INT || op == bytecode.CONST_BOOL || op == bytecode.CONST_STR ||
+        op == bytecode.LOAD || op == bytecode.STORE || op == bytecode.LOAD_GLOBAL ||
+        op == bytecode.STORE_GLOBAL || op == bytecode.POP || op == bytecode.ADD ||
+        op == bytecode.SUB || op == bytecode.MUL || op == bytecode.DIV || op == bytecode.MOD ||
+        op == bytecode.NEG || op == bytecode.NOT || op == bytecode.EQ || op == bytecode.NE ||
+        op == bytecode.LT || op == bytecode.LE || op == bytecode.GT || op == bytecode.GE ||
+        op == bytecode.AND || op == bytecode.OR || op == bytecode.JUMP ||
+        op == bytecode.JUMP_FALSE || op == bytecode.CALL || op == bytecode.RETURN ||
+        op == bytecode.PRINT || op == bytecode.HALT || op == bytecode.LIST ||
+        op == bytecode.LIST_LEN || op == bytecode.LIST_PUSH || op == bytecode.LIST_GET
+    }
+
+    fn stack_delta(borrow ins: bytecode.Instruction) -> i64 {
+        if ins.op == bytecode.CONST_INT || ins.op == bytecode.CONST_BOOL ||
+            ins.op == bytecode.CONST_STR || ins.op == bytecode.LOAD ||
+            ins.op == bytecode.LOAD_GLOBAL { return 1; }
+        if ins.op == bytecode.STORE || ins.op == bytecode.STORE_GLOBAL ||
+            ins.op == bytecode.POP || ins.op == bytecode.PRINT ||
+            ins.op == bytecode.JUMP_FALSE || ins.op == bytecode.RETURN { return -1; }
+        if ins.op == bytecode.ADD || ins.op == bytecode.SUB || ins.op == bytecode.MUL ||
+            ins.op == bytecode.DIV || ins.op == bytecode.MOD || ins.op == bytecode.EQ ||
+            ins.op == bytecode.NE || ins.op == bytecode.LT || ins.op == bytecode.LE ||
+            ins.op == bytecode.GT || ins.op == bytecode.GE || ins.op == bytecode.AND ||
+            ins.op == bytecode.OR { return -1; }
+        if ins.op == bytecode.CALL { return 1 - ins.b; }
+        if ins.op == bytecode.LIST { return 1 - ins.a; }
+        if ins.op == bytecode.LIST_PUSH || ins.op == bytecode.LIST_GET { return -1; }
+        0
+    }
+
+    fn minimum_stack(borrow ins: bytecode.Instruction) -> i64 {
+        if ins.op == bytecode.ADD || ins.op == bytecode.SUB || ins.op == bytecode.MUL ||
+            ins.op == bytecode.DIV || ins.op == bytecode.MOD || ins.op == bytecode.EQ ||
+            ins.op == bytecode.NE || ins.op == bytecode.LT || ins.op == bytecode.LE ||
+            ins.op == bytecode.GT || ins.op == bytecode.GE || ins.op == bytecode.AND ||
+            ins.op == bytecode.OR { return 2; }
+        if ins.op == bytecode.STORE || ins.op == bytecode.STORE_GLOBAL ||
+            ins.op == bytecode.POP || ins.op == bytecode.PRINT ||
+            ins.op == bytecode.JUMP_FALSE || ins.op == bytecode.NEG ||
+            ins.op == bytecode.NOT || ins.op == bytecode.RETURN { return 1; }
+        if ins.op == bytecode.CALL { return ins.b; }
+        if ins.op == bytecode.LIST { return ins.a; }
+        if ins.op == bytecode.LIST_LEN { return 1; }
+        if ins.op == bytecode.LIST_PUSH || ins.op == bytecode.LIST_GET { return 2; }
+        0
+    }
+
+    fn check_metadata(inout self) {
+        let count = self.program.fn_names.len();
+        if self.program.fn_starts.len() != count || self.program.fn_arities.len() != count ||
+            self.program.fn_locals.len() != count {
+            self.report(0, "function metadata lengths disagree");
+            return;
+        }
+        let mut i: u64 = 0;
+        while i < count {
+            let start = self.program.fn_starts.get_or(i, self.program.code.len());
+            let arity = self.program.fn_arities.get_or(i, 0);
+            let locals = self.program.fn_locals.get_or(i, 0);
+            if start >= self.program.code.len() { self.report(start, "function entry is out of bounds"); }
+            if arity > locals { self.report(start, "function has fewer local slots than parameters"); }
+            let mut j: u64 = 0;
+            while j < i {
+                if self.program.fn_names.get_or(i, 0) == self.program.fn_names.get_or(j, 1) {
+                    self.report(start, "duplicate function name");
+                }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        if self.program.global_names.len() != self.program.global_tags.len() ||
+            self.program.global_names.len() != self.program.global_data.len() {
+            self.report(0, "global metadata lengths disagree");
+        }
+        i = 0;
+        while i < self.program.global_names.len() {
+            let tag = self.program.global_tags.get_or(i, 0);
+            if tag < 1 || tag > 3 { self.report(0, "global has invalid value tag"); }
+            let mut j: u64 = 0;
+            while j < i {
+                if self.program.global_names.get_or(i, 0) == self.program.global_names.get_or(j, 1) {
+                    self.report(0, "duplicate global name");
+                }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+    }
+
+    fn check_operands(inout self) {
+        let mut i: u64 = 0;
+        while i < self.program.code.len() {
+            let ins = self.program.code.get_or(i, bytecode.Instruction { op: bytecode.HALT, a: 0, b: 0 });
+            if !Self.valid_opcode(ins.op) { self.report(i, "unknown opcode"); }
+            if (ins.op == bytecode.JUMP || ins.op == bytecode.JUMP_FALSE) &&
+                (ins.a < 0 || @intCast(ins.a) >= self.program.code.len()) {
+                self.report(i, "jump target is out of bounds");
+            }
+            if ins.op == bytecode.LOAD || ins.op == bytecode.STORE {
+                if ins.a < 0 { self.report(i, "negative local slot"); }
+            }
+            if ins.op == bytecode.LOAD_GLOBAL || ins.op == bytecode.STORE_GLOBAL {
+                if ins.a < 0 || @intCast(ins.a) >= self.program.global_names.len() {
+                    self.report(i, "global slot is out of bounds");
+                }
+            }
+            if ins.op == bytecode.CONST_STR {
+                if ins.a < 0 || @intCast(ins.a) >= self.program.pool.len() {
+                    self.report(i, "string constant is out of bounds");
+                }
+            }
+            if ins.op == bytecode.CALL {
+                if ins.a < 0 || self.program.find_function(@intCast(ins.a)) == 18446744073709551615 {
+                    self.report(i, "call names an unknown function");
+                } else {
+                    let id = self.program.find_function(@intCast(ins.a));
+                    if ins.b < 0 || self.program.fn_arities.get_or(id, 0) != @intCast(ins.b) {
+                        self.report(i, "call has wrong arity");
+                    }
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    fn enqueue(inout self, inout work: U64s, inout heights: I64s, at: u64, height: i64) {
+        if at >= heights.len() { return; }
+        let old = heights.get_or(at, -2);
+        if old == -2 {
+            heights.set(at, height);
+            work.push(at);
+        } else if old != height {
+            self.report(at, "control-flow paths disagree on stack height");
+        }
+    }
+
+    fn check_function_flow(inout self, id: u64) {
+        let mut heights = I64s.new();
+        let mut i: u64 = 0;
+        while i < self.program.code.len() { heights.push(-2); i = i + 1; }
+        let mut work = U64s.new();
+        self.enqueue(inout work, inout heights, self.program.fn_starts.get_or(id, 0), 0);
+        while work.len() > 0 {
+            let at = work.pop_or(0);
+            let height = heights.get_or(at, 0);
+            let ins = self.program.code.get_or(at, bytecode.Instruction { op: bytecode.HALT, a: 0, b: 0 });
+            let need = Self.minimum_stack(borrow ins);
+            if height < need {
+                self.report(at, "operand stack underflow");
+                continue;
+            }
+            let after = height + Self.stack_delta(borrow ins);
+            if ins.op == bytecode.RETURN {
+                if height != 1 { self.report(at, "return requires exactly one result value"); }
+            } else if ins.op == bytecode.HALT {
+                self.report(at, "function falls into program halt");
+            } else if ins.op == bytecode.JUMP {
+                if ins.a >= 0 { self.enqueue(inout work, inout heights, @intCast(ins.a), after); }
+            } else if ins.op == bytecode.JUMP_FALSE {
+                if ins.a >= 0 { self.enqueue(inout work, inout heights, @intCast(ins.a), after); }
+                self.enqueue(inout work, inout heights, at + 1, after);
+            } else {
+                self.enqueue(inout work, inout heights, at + 1, after);
+            }
+        }
+    }
+
+    fn verify(inout self) {
+        self.check_metadata();
+        self.check_operands();
+        let mut i: u64 = 0;
+        while i < self.program.fn_names.len() { self.check_function_flow(i); i = i + 1; }
+    }
+}
+
+// Ownership is returned with the result so verification can sit between compile
+// and execution without copying Program's nested buffers.
+pub struct VerifiedProgram { program: bytecode.Program, result: VerifyResult }
+
+pub fn verify(program: bytecode.Program) -> VerifiedProgram {
+    let mut verifier = Verifier.new(program);
+    verifier.verify();
+    let ok = verifier.errors.len() == 0;
+    VerifiedProgram {
+        program: verifier.program,
+        result: VerifyResult { ok: ok, errors: verifier.errors },
+    }
+}

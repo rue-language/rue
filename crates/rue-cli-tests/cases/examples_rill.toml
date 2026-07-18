@@ -1,0 +1,173 @@
+# RUE-992: compile and execute the maintained Rill bytecode-language example.
+# These cases cover the real argv/file path in addition to examples discovery's
+# no-argument built-in workload.
+[section]
+id = "cli.examples_rill"
+name = "Rill bytecode language and VM written in Rue"
+description = "exercise source lexing, bytecode compilation, globals, calls, loops, pooled strings, and deterministic failures"
+
+[[case]]
+name = "rill_executes_nontrivial_file"
+description = "loops, functions, global/local mutation, strings, booleans, and arithmetic cross the compiler and VM"
+source_path = "examples/rill/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "workload.rill", source = """
+let calls = 0;
+let prefix = "item:";
+let adjustment = -2;
+
+fn repeat(word, n) {
+    let out = "";
+    let i = 0;
+    while (i < n) {
+        out = out + word;
+        i = i + 1;
+    }
+    return out;
+}
+
+fn triangular(n) {
+    calls = calls + 1;
+    let total = 0;
+    while (n > 0) {
+        total = total + n;
+        n = n - 1;
+    }
+    return total;
+}
+
+fn main() {
+    print(prefix + repeat("x", 4));
+    print(triangular(100) + adjustment);
+    let values = [1, 2, 3];
+    values = push(values, triangular(4));
+    print(values);
+    print(len(values));
+    print(get(values, 3));
+    if (calls == 2 && triangular(3) == 6) {
+        print("ok");
+    } else {
+        print("bad");
+    }
+    print(calls);
+    return 0;
+}
+""" }]
+program_args = ["workload.rill"]
+exit_code = 0
+stdout = """
+item:xxxx
+5048
+[1, 2, 3, 10]
+4
+10
+ok
+3
+"""
+
+[[case]]
+name = "rill_rejects_syntax_error"
+description = "invalid source reports a stable byte-oriented compiler diagnostic"
+source_path = "examples/rill/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "bad.rill", source = "fn main() { let x = ; return 0; }" }]
+program_args = ["bad.rill"]
+exit_code = 1
+stdout_contains = ["parse error at byte", "expected expression"]
+
+[[case]]
+name = "rill_rejects_oversized_integer"
+description = "the lexer rejects i64 literals at the exact positive boundary instead of trapping in compilation"
+source_path = "examples/rill/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "huge.rill", source = "fn main() { print(9223372036854775808); return 0; }" }]
+program_args = ["huge.rill"]
+exit_code = 1
+stdout_contains = ["lex error at byte", "integer literal is too large"]
+
+[[case]]
+name = "rill_reports_runtime_type_error"
+description = "invalid mixed-type addition is diagnosed without corrupting the operand stack"
+source_path = "examples/rill/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "type.rill", source = "fn main() { print(\"x\" + 1); return 0; }" }]
+program_args = ["type.rill"]
+exit_code = 1
+stdout = "runtime error: expected integer\n"
+
+[[case]]
+name = "rill_reports_unknown_function"
+description = "late-bound call resolution rejects a missing function deterministically"
+source_path = "examples/rill/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "missing.rill", source = "fn main() { return absent(1); }" }]
+program_args = ["missing.rill"]
+exit_code = 1
+stdout_contains = ["bytecode error at instruction", "call names an unknown function"]
+
+[[case]]
+name = "rill_reports_wrong_arity"
+description = "call metadata validates argument counts before entering a frame"
+source_path = "examples/rill/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "arity.rill", source = "fn f(a) { return a; } fn main() { return f(); }" }]
+program_args = ["arity.rill"]
+exit_code = 1
+stdout_contains = ["bytecode error at instruction", "call has wrong arity"]
+
+[[case]]
+name = "rill_missing_input_is_io_error"
+description = "file mode reports an unreadable input instead of running the built-in demo"
+source_path = "examples/rill/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_args = ["missing.rill"]
+exit_code = 1
+stdout = "rill: cannot read input file\n"
+
+[[case]]
+name = "rill_runs_generated_scaling_workload"
+description = "built-in generation compiles, verifies, and executes a 300-function forward-call chain"
+source_path = "examples/rill/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_args = ["--stress"]
+exit_code = 0
+stdout = "300\ntrue\n"
+
+[[case]]
+name = "rill_reports_bytecode_inventory"
+description = "stats mode walks the full compiled instruction stream without executing it"
+source_path = "examples/rill/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "stats.rill", source = "let answer = -4; fn main() { print(answer); return 0; }" }]
+program_args = ["--stats", "stats.rill"]
+exit_code = 0
+stdout_contains = ["functions=1", "globals=1", "instructions=", "returns=2"]
+
+[[case]]
+name = "rill_disassembles_symbolic_operands"
+description = "dump mode renders global names, function metadata, pooled strings, and calls deterministically"
+source_path = "examples/rill/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "dump.rill", source = "let greeting = \"hi\"; fn echo(x) { return x; } fn main() { print(echo(greeting)); return 0; }" }]
+program_args = ["--dump", "dump.rill"]
+exit_code = 0
+stdout_contains = ["global greeting = \"hi\"", "fn echo arity=1 locals=1", "call echo argc=1", "fn main arity=0"]
+
+[[case]]
+name = "rill_dumps_validated_ast"
+description = "AST mode exposes arena structure, lexical names, operators, lists, and source spans before lowering"
+source_path = "examples/rill/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "ast.rill", source = "fn main() { let xs = [1, 2]; if (len(xs) == 2) { print(get(xs, 0)); } return 0; }" }]
+program_args = ["--ast", "ast.rill"]
+exit_code = 0
+stdout_contains = ["(program span=", "(function span=", "name=main", "(list span=", "(binary span=", "op==="]
+
+[[case]]
+name = "rill_prints_language_reference"
+description = "help mode documents declarations, expressions, runtime rules, and inspection modes"
+source_path = "examples/rill/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_args = ["--help"]
+exit_code = 0
+stdout_contains = ["usage: rill", "global mutable binding", "&& and || short-circuit", "--stress"]

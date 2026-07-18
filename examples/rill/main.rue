@@ -1,0 +1,210 @@
+// rill — a small source language, bytecode compiler, and stack VM written in
+// Rue (RUE-992). Rill has integers, booleans, strings, bindings, structured
+// control flow, functions, calls, and returns. With a file argument it executes
+// that program; without arguments it runs the deterministic built-in workload
+// used by general example discovery.
+//
+// Usage: rill [program.rill]
+//
+// Pipeline and invariants:
+//   lexer.rue       bytes -> POD tokens + pooled symbols
+//   parser.rue      tokens -> POD arena syntax tree
+//   astcheck.rue    bounds/cycle/span/shape validation
+//   lower.rue       lexical/global resolution -> stack bytecode
+//   compiler.rue    independent direct-lowering differential oracle
+//   optimize.rue    length-stable, non-trapping peephole folds
+//   verify.rue      metadata, operands, calls, jumps, and stack-flow proof
+//   vm.rue          framed execution with pooled strings and immutable lists
+//
+// The AST and bytecode representations contain only integer-indexed POD nodes,
+// so both can live in ArrayBuf and support repeated random access. Owned string
+// bytes live once in pool.rue. Normal execution recompiles the source through
+// the direct oracle and compares deterministic disassemblies before entering
+// the VM; this keeps the larger staged compiler honest while dogfooding Rue.
+// Inspection flags stop at intentional phase boundaries: --ast after structural
+// validation, --dump after optimization, and --stats after bytecode verification.
+// --stress constructs a 300-function forward-call workload in memory, covering
+// a substantially larger source without storing generated artifacts in Git.
+const std = @import("std");
+const lexer = @import("lexer.rue");
+const parser = @import("parser.rue");
+const astdump = @import("astdump.rue");
+const astcheck = @import("astcheck.rue");
+const lower = @import("lower.rue");
+const language = @import("language.rue");
+const optimize = @import("optimize.rue");
+const oracle = @import("oracle.rue");
+const disasm = @import("disasm.rue");
+const stats = @import("stats.rue");
+const stress = @import("stress.rue");
+const verify = @import("verify.rue");
+const vm = @import("vm.rue");
+const StrBuf = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+const OptStr = std.option.Option(StrBuf);
+const OptU8 = std.option.Option(u8);
+const OptBytes = std.option.Option(Bytes);
+const FileRes = std.result.Result(std.fs.File, std.fs.FileError);
+const ReadRes = std.result.Result(u64, std.fs.FileError);
+
+fn bytes_of(borrow text: StrBuf) -> Bytes {
+    let mut bytes = Bytes.new();
+    let mut i: u64 = 0;
+    while i < text.len() {
+        match text.byte_at(i) {
+            OptU8.Some(b) => { bytes.push(b); },
+            OptU8.None => {},
+        }
+        i = i + 1;
+    }
+    bytes
+}
+
+fn copy_bytes(borrow source: Bytes) -> Bytes {
+    let mut copy = Bytes.new();
+    copy.reserve(source.len());
+    let mut i: u64 = 0;
+    while i < source.len() {
+        copy.push(source.get_or(i, 0));
+        i = i + 1;
+    }
+    copy
+}
+
+fn read_file(borrow path: StrBuf) -> OptBytes {
+    let O = OptBytes;
+    let mut data = Bytes.new();
+    let mut file = match std.fs.File.open(borrow path) {
+        FileRes.Ok(f) => f,
+        FileRes.Err(e) => { return O.None; },
+    };
+    loop {
+        data.reserve(65536);
+        let n = match file.read(inout data) {
+            ReadRes.Ok(count) => count,
+            ReadRes.Err(e) => { return O.None; },
+        };
+        if n == 0 { break; }
+    }
+    let _ = file.close();
+    O.Some(data)
+}
+
+fn demo_source() -> StrBuf {
+    let mut source = StrBuf.new();
+    source.push_str("fn banner(word, n) {\n");
+    source.push_str("  let out = \"\";\n");
+    source.push_str("  let i = 0;\n");
+    source.push_str("  while (i < n) { out = out + word; i = i + 1; }\n");
+    source.push_str("  return out;\n");
+    source.push_str("}\n");
+    source.push_str("fn sum(n) { let total = 0; while (n > 0) { total = total + n; n = n - 1; } return total; }\n");
+    source.push_str("fn main() { print(banner(\"rill\", 3)); print(sum(10)); print(sum(10) == 55); return 0; }\n");
+    source
+}
+
+fn execute(source: Bytes, dump: bool, dump_ast: bool, show_stats: bool) -> i32 {
+    let oracle_source = copy_bytes(borrow source);
+    let scanned = lexer.scan(source);
+    if scanned.errors.len() != 0 {
+        print(scanned.errors);
+        return 1;
+    }
+    let parsed = parser.parse(scanned.tokens);
+    if parsed.errors.len() != 0 {
+        print(parsed.errors);
+        return 1;
+    }
+    let checked_ast = astcheck.check(parsed.arena, parsed.root);
+    if !checked_ast.result.ok {
+        print(checked_ast.result.errors);
+        return 1;
+    }
+    if dump_ast {
+        print(astdump.dump(borrow checked_ast.arena, borrow scanned.pool, parsed.root));
+        return 0;
+    }
+    let compiled = lower.lower(checked_ast.arena, parsed.root, scanned.pool);
+    if compiled.errors.len() != 0 {
+        print(compiled.errors);
+        return 1;
+    }
+    let optimized = optimize.optimize(compiled.program);
+    let verified = verify.verify(optimized.program);
+    if !verified.result.ok {
+        print(verified.result.errors);
+        return 1;
+    }
+    let agreement = oracle.check(oracle_source, borrow verified.program);
+    if !agreement.ok {
+        print(agreement.error);
+        return 1;
+    }
+    if dump { print(disasm.disassemble(borrow verified.program)); return 0; }
+    if show_stats { print(stats.summarize(borrow verified.program)); return 0; }
+    let result = vm.run(verified.program);
+    if result.output.len() != 0 { print(result.output); }
+    if !result.ok { print(result.error); return 1; }
+    if result.value.tag == vm.INT { @intCast(result.value.data) } else { 0 }
+}
+
+fn main() -> i32 {
+    let mut dump = false;
+    let mut dump_ast = false;
+    let mut show_stats = false;
+    let mut stress_mode = false;
+    let mut help_mode = false;
+    let mut arg_index: u64 = 1;
+    match std.env.arg(1) {
+        OptStr.Some(first) => {
+            let dump_flag: StrBuf = "--dump";
+            if StrBuf.equals_borrowed(borrow first, borrow dump_flag) {
+                dump = true;
+                arg_index = 2;
+            } else {
+                let stats_flag: StrBuf = "--stats";
+                let stress_flag: StrBuf = "--stress";
+                if StrBuf.equals_borrowed(borrow first, borrow stats_flag) {
+                    show_stats = true;
+                    arg_index = 2;
+                } else if StrBuf.equals_borrowed(borrow first, borrow stress_flag) {
+                    stress_mode = true;
+                    arg_index = 2;
+                } else {
+                    let ast_flag: StrBuf = "--ast";
+                    if StrBuf.equals_borrowed(borrow first, borrow ast_flag) {
+                        dump_ast = true;
+                        arg_index = 2;
+                    } else {
+                        let help_flag: StrBuf = "--help";
+                        if StrBuf.equals_borrowed(borrow first, borrow help_flag) {
+                            help_mode = true;
+                            arg_index = 2;
+                        }
+                    }
+                }
+            }
+        },
+        OptStr.None => {},
+    }
+    if stress_mode {
+        let source = stress.generate(300);
+        return execute(bytes_of(borrow source), false, false, false);
+    }
+    if help_mode {
+        print(language.help());
+        return 0;
+    }
+    match std.env.arg(arg_index) {
+        OptStr.Some(path) => {
+            match read_file(borrow path) {
+                OptBytes.Some(source) => execute(source, dump, dump_ast, show_stats),
+                OptBytes.None => { println("rill: cannot read input file"); 1 },
+            }
+        },
+        OptStr.None => {
+            let demo = demo_source();
+            execute(bytes_of(borrow demo), dump, dump_ast, show_stats)
+        },
+    }
+}

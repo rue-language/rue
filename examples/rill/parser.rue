@@ -1,0 +1,296 @@
+// Rill recursive-descent parser. Parsing is syntax-only: it builds ast.Arena
+// nodes and never allocates bytecode, resolves a binding, or mutates program
+// metadata. lower.rue is the sole consumer that assigns runtime meaning.
+const std = @import("std");
+const token = @import("token.rue");
+const ast = @import("ast.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct ParseResult { arena: ast.Arena, root: u64, errors: StrBuf }
+
+struct Parser {
+    tokens: token.Tokens,
+    at: u64,
+    arena: ast.Arena,
+    errors: StrBuf,
+    saw_function: bool,
+
+    fn new(tokens: token.Tokens) -> Self {
+        Self { tokens: tokens, at: 0, arena: ast.Arena.new(), errors: StrBuf.new(), saw_function: false }
+    }
+
+    fn fallback() -> token.Token {
+        token.Token { kind: token.EOF, start: 0, end: 0, value: 0 }
+    }
+    fn peek(borrow self) -> token.Token { self.tokens.get_or(self.at, Self.fallback()) }
+    fn next(borrow self) -> token.Token { self.tokens.get_or(self.at + 1, Self.fallback()) }
+    fn previous(borrow self) -> token.Token {
+        if self.at == 0 { self.peek() } else { self.tokens.get_or(self.at - 1, Self.fallback()) }
+    }
+    fn check(borrow self, kind: u64) -> bool { self.peek().kind == kind }
+    fn advance(inout self) -> token.Token {
+        let result = self.peek();
+        if result.kind != token.EOF { self.at = self.at + 1; }
+        result
+    }
+    fn take(inout self, kind: u64) -> bool {
+        if self.check(kind) { let _ = self.advance(); true } else { false }
+    }
+    fn error_here(inout self, message: StrBuf) {
+        self.errors.push_str("parse error at byte ");
+        self.errors.push_str(@to_string(self.peek().start));
+        self.errors.push_str(": ");
+        self.errors.push_str(message);
+        self.errors.push_str("\n");
+    }
+    fn expect(inout self, kind: u64, message: StrBuf) -> token.Token {
+        if self.check(kind) { return self.advance(); }
+        self.error_here(message);
+        if !self.check(token.EOF) { return self.advance(); }
+        self.peek()
+    }
+    fn node(inout self, kind: u64, value: u64, first: u64, second: u64, third: u64, start: u64) -> u64 {
+        self.arena.add(kind, value, first, second, third, start, self.previous().end)
+    }
+
+    fn primary(inout self) -> u64 {
+        let value = self.advance();
+        if value.kind == token.INT {
+            return self.node(ast.INT, value.value, ast.NONE, ast.NONE, ast.NONE, value.start);
+        }
+        if value.kind == token.STRING {
+            return self.node(ast.STRING, value.value, ast.NONE, ast.NONE, ast.NONE, value.start);
+        }
+        if value.kind == token.TRUE || value.kind == token.FALSE {
+            let data: u64 = if value.kind == token.TRUE { 1 } else { 0 };
+            return self.node(ast.BOOL, data, ast.NONE, ast.NONE, ast.NONE, value.start);
+        }
+        if value.kind == token.LBRACKET {
+            let mut elements = ast.Chain.new();
+            if !self.check(token.RBRACKET) {
+                loop {
+                    let element = self.expression();
+                    elements.push(inout self.arena, element);
+                    if !self.take(token.COMMA) { break; }
+                }
+            }
+            let _ = self.expect(token.RBRACKET, "expected ']' after list elements");
+            return self.node(ast.LIST, 0, elements.head, ast.NONE, ast.NONE, value.start);
+        }
+        if value.kind == token.LEN {
+            let _ = self.expect(token.LPAREN, "expected '(' after len");
+            let argument = self.expression();
+            let _ = self.expect(token.RPAREN, "expected ')' after len argument");
+            return self.node(ast.LEN, 0, argument, ast.NONE, ast.NONE, value.start);
+        }
+        if value.kind == token.PUSH || value.kind == token.GET {
+            let _ = self.expect(token.LPAREN, "expected '(' after collection builtin");
+            let left = self.expression();
+            let _ = self.expect(token.COMMA, "expected ',' between builtin arguments");
+            let right = self.expression();
+            let _ = self.expect(token.RPAREN, "expected ')' after builtin arguments");
+            let kind = if value.kind == token.PUSH { ast.PUSH } else { ast.GET };
+            return self.node(kind, 0, left, right, ast.NONE, value.start);
+        }
+        if value.kind == token.IDENT {
+            if self.take(token.LPAREN) {
+                let mut arguments = ast.Chain.new();
+                if !self.check(token.RPAREN) {
+                    loop {
+                        let argument = self.expression();
+                        arguments.push(inout self.arena, argument);
+                        if !self.take(token.COMMA) { break; }
+                    }
+                }
+                let _ = self.expect(token.RPAREN, "expected ')' after arguments");
+                return self.node(ast.CALL, value.value, arguments.head, ast.NONE, ast.NONE, value.start);
+            }
+            return self.node(ast.VARIABLE, value.value, ast.NONE, ast.NONE, ast.NONE, value.start);
+        }
+        if value.kind == token.LPAREN {
+            let inner = self.expression();
+            let _ = self.expect(token.RPAREN, "expected ')' after expression");
+            return inner;
+        }
+        self.error_here("expected expression");
+        self.node(ast.BOOL, 0, ast.NONE, ast.NONE, ast.NONE, value.start)
+    }
+
+    fn unary(inout self) -> u64 {
+        if self.check(token.BANG) || self.check(token.MINUS) {
+            let operator = self.advance();
+            let operand = self.unary();
+            self.node(ast.UNARY, operator.kind, operand, ast.NONE, ast.NONE, operator.start)
+        } else {
+            self.primary()
+        }
+    }
+
+    fn binary(inout self, left: u64, operator: token.Token, right: u64) -> u64 {
+        self.node(ast.BINARY, operator.kind, left, right, ast.NONE, self.arena.get(left).start)
+    }
+    fn factor(inout self) -> u64 {
+        let mut left = self.unary();
+        while self.check(token.STAR) || self.check(token.SLASH) || self.check(token.PERCENT) {
+            let operator = self.advance();
+            left = self.binary(left, operator, self.unary());
+        }
+        left
+    }
+    fn term(inout self) -> u64 {
+        let mut left = self.factor();
+        while self.check(token.PLUS) || self.check(token.MINUS) {
+            let operator = self.advance();
+            left = self.binary(left, operator, self.factor());
+        }
+        left
+    }
+    fn comparison(inout self) -> u64 {
+        let mut left = self.term();
+        while self.check(token.LT) || self.check(token.LTEQ) ||
+            self.check(token.GT) || self.check(token.GTEQ) {
+            let operator = self.advance();
+            left = self.binary(left, operator, self.term());
+        }
+        left
+    }
+    fn equality(inout self) -> u64 {
+        let mut left = self.comparison();
+        while self.check(token.EQEQ) || self.check(token.BANGEQ) {
+            let operator = self.advance();
+            left = self.binary(left, operator, self.comparison());
+        }
+        left
+    }
+    fn conjunction(inout self) -> u64 {
+        let mut left = self.equality();
+        while self.check(token.AMPAMP) {
+            let operator = self.advance();
+            left = self.binary(left, operator, self.equality());
+        }
+        left
+    }
+    fn expression(inout self) -> u64 {
+        let mut left = self.conjunction();
+        while self.check(token.PIPEPIPE) {
+            let operator = self.advance();
+            left = self.binary(left, operator, self.conjunction());
+        }
+        left
+    }
+
+    fn block(inout self) -> u64 {
+        let open = self.expect(token.LBRACE, "expected '{'");
+        let mut statements = ast.Chain.new();
+        while !self.check(token.RBRACE) && !self.check(token.EOF) {
+            let statement = self.statement();
+            statements.push(inout self.arena, statement);
+        }
+        let _ = self.expect(token.RBRACE, "expected '}'");
+        self.node(ast.BLOCK, 0, statements.head, ast.NONE, ast.NONE, open.start)
+    }
+
+    fn statement(inout self) -> u64 {
+        let start = self.peek().start;
+        if self.take(token.LET) {
+            let name = self.expect(token.IDENT, "expected binding name");
+            let _ = self.expect(token.EQ, "expected '=' after binding name");
+            let initializer = self.expression();
+            let _ = self.expect(token.SEMI, "expected ';' after binding");
+            return self.node(ast.LET, name.value, initializer, ast.NONE, ast.NONE, start);
+        }
+        if self.take(token.IF) {
+            let _ = self.expect(token.LPAREN, "expected '(' after if");
+            let condition = self.expression();
+            let _ = self.expect(token.RPAREN, "expected ')' after condition");
+            let then_block = self.block();
+            let else_block = if self.take(token.ELSE) { self.block() } else { ast.NONE };
+            return self.node(ast.IF, 0, condition, then_block, else_block, start);
+        }
+        if self.take(token.WHILE) {
+            let _ = self.expect(token.LPAREN, "expected '(' after while");
+            let condition = self.expression();
+            let _ = self.expect(token.RPAREN, "expected ')' after condition");
+            let body = self.block();
+            return self.node(ast.WHILE, 0, condition, body, ast.NONE, start);
+        }
+        if self.take(token.RETURN) {
+            let value = if self.check(token.SEMI) {
+                self.arena.add(ast.BOOL, 0, ast.NONE, ast.NONE, ast.NONE, start, start)
+            } else { self.expression() };
+            let _ = self.expect(token.SEMI, "expected ';' after return");
+            return self.node(ast.RETURN, 0, value, ast.NONE, ast.NONE, start);
+        }
+        if self.take(token.PRINT) {
+            let _ = self.expect(token.LPAREN, "expected '(' after print");
+            let value = self.expression();
+            let _ = self.expect(token.RPAREN, "expected ')' after printed value");
+            let _ = self.expect(token.SEMI, "expected ';' after print");
+            return self.node(ast.PRINT, 0, value, ast.NONE, ast.NONE, start);
+        }
+        if self.check(token.LBRACE) { return self.block(); }
+        if self.check(token.IDENT) && self.next().kind == token.EQ {
+            let name = self.advance();
+            let _ = self.advance();
+            let value = self.expression();
+            let _ = self.expect(token.SEMI, "expected ';' after assignment");
+            return self.node(ast.ASSIGN, name.value, value, ast.NONE, ast.NONE, start);
+        }
+        let value = self.expression();
+        let _ = self.expect(token.SEMI, "expected ';' after expression");
+        self.node(ast.EXPR_STMT, 0, value, ast.NONE, ast.NONE, start)
+    }
+
+    fn global(inout self, start: u64) -> u64 {
+        let name = self.expect(token.IDENT, "expected global binding name");
+        let _ = self.expect(token.EQ, "expected '=' after global name");
+        let value = self.expression();
+        let _ = self.expect(token.SEMI, "expected ';' after global binding");
+        self.node(ast.GLOBAL, name.value, value, ast.NONE, ast.NONE, start)
+    }
+
+    fn function(inout self, start: u64) -> u64 {
+        let name = self.expect(token.IDENT, "expected function name");
+        let _ = self.expect(token.LPAREN, "expected '(' after function name");
+        let mut parameters = ast.Chain.new();
+        if !self.check(token.RPAREN) {
+            loop {
+                let parameter = self.expect(token.IDENT, "expected parameter name");
+                let id = self.arena.add(ast.PARAM, parameter.value, ast.NONE, ast.NONE, ast.NONE, parameter.start, parameter.end);
+                parameters.push(inout self.arena, id);
+                if !self.take(token.COMMA) { break; }
+            }
+        }
+        let _ = self.expect(token.RPAREN, "expected ')' after parameters");
+        let body = self.block();
+        self.node(ast.FUNCTION, name.value, parameters.head, body, ast.NONE, start)
+    }
+
+    fn program(inout self) -> u64 {
+        let mut items = ast.Chain.new();
+        while !self.check(token.EOF) {
+            let start = self.peek().start;
+            let item = if self.take(token.FN) {
+                self.saw_function = true;
+                self.function(start)
+            }
+            else if self.take(token.LET) {
+                if self.saw_function { self.error_here("global declarations must precede functions"); }
+                self.global(start)
+            }
+            else {
+                self.error_here("expected function or global declaration");
+                let _ = self.advance();
+                self.arena.add(0, 0, ast.NONE, ast.NONE, ast.NONE, start, start)
+            };
+            items.push(inout self.arena, item);
+        }
+        self.node(ast.PROGRAM, 0, items.head, ast.NONE, ast.NONE, 0)
+    }
+}
+
+pub fn parse(tokens: token.Tokens) -> ParseResult {
+    let mut parser = Parser.new(tokens);
+    let root = parser.program();
+    ParseResult { arena: parser.arena, root: root, errors: parser.errors }
+}

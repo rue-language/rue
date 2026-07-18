@@ -1,0 +1,282 @@
+// Semantic lowering from the POD AST to bytecode. This is the only phase that
+// resolves bindings, allocates frame/global slots, and chooses instructions;
+// parser.rue remains independent of runtime representation.
+const std = @import("std");
+const ast = @import("ast.rue");
+const token = @import("token.rue");
+const poolmod = @import("pool.rue");
+const bytecode = @import("bytecode.rue");
+const StrBuf = std.strbuf.StrBuf;
+const U64s = std.arraybuf.ArrayBuf(u64);
+
+pub struct LowerResult { program: bytecode.Program, errors: StrBuf }
+
+struct Lowerer {
+    arena: ast.Arena,
+    program: bytecode.Program,
+    errors: StrBuf,
+    locals: U64s,
+    scopes: U64s,
+    max_locals: u64,
+
+    fn new(arena: ast.Arena, pool: poolmod.Pool) -> Self {
+        Self {
+            arena: arena,
+            program: bytecode.Program.new(pool),
+            errors: StrBuf.new(),
+            locals: U64s.new(),
+            scopes: U64s.new(),
+            max_locals: 0,
+        }
+    }
+
+    fn report(inout self, node: ast.Node, message: StrBuf) {
+        self.errors.push_str("compile error at byte ");
+        self.errors.push_str(@to_string(node.start));
+        self.errors.push_str(": ");
+        self.errors.push_str(message);
+        self.errors.push_str("\n");
+    }
+    fn emit(inout self, op: u64, a: i64, b: i64) -> u64 { self.program.emit(op, a, b) }
+    fn local_slot(borrow self, symbol: u64) -> u64 {
+        let mut i = self.locals.len();
+        while i > 0 {
+            i = i - 1;
+            if self.locals.get_or(i, ast.NONE) == symbol { return i; }
+        }
+        ast.NONE
+    }
+    fn declare(inout self, node: ast.Node, symbol: u64) -> u64 {
+        let start = if self.scopes.len() == 0 { 0 }
+        else { self.scopes.get_or(self.scopes.len() - 1, 0) };
+        let mut i = self.locals.len();
+        while i > start {
+            i = i - 1;
+            if self.locals.get_or(i, ast.NONE) == symbol {
+                self.report(node, "duplicate local binding in the same scope");
+                return i;
+            }
+        }
+        let slot = self.locals.len();
+        self.locals.push(symbol);
+        if self.locals.len() > self.max_locals { self.max_locals = self.locals.len(); }
+        slot
+    }
+    fn begin_scope(inout self) { self.scopes.push(self.locals.len()); }
+    fn end_scope(inout self) {
+        let target = self.scopes.pop_or(0);
+        while self.locals.len() > target { let _ = self.locals.pop(); }
+    }
+
+    fn chain_len(borrow self, first: u64) -> u64 {
+        let mut count: u64 = 0;
+        let mut id = first;
+        while id != ast.NONE {
+            count = count + 1;
+            id = self.arena.get(id).next;
+        }
+        count
+    }
+
+    fn lower_binary(inout self, node: ast.Node) {
+        if node.value == token.AMPAMP {
+            self.expression(node.first);
+            let false_jump = self.emit(bytecode.JUMP_FALSE, 0, 0);
+            self.expression(node.second);
+            let end_jump = self.emit(bytecode.JUMP, 0, 0);
+            self.program.patch(false_jump, self.program.code.len());
+            let _ = self.emit(bytecode.CONST_BOOL, 0, 0);
+            self.program.patch(end_jump, self.program.code.len());
+            return;
+        }
+        if node.value == token.PIPEPIPE {
+            self.expression(node.first);
+            let rhs_jump = self.emit(bytecode.JUMP_FALSE, 0, 0);
+            let _ = self.emit(bytecode.CONST_BOOL, 1, 0);
+            let end_jump = self.emit(bytecode.JUMP, 0, 0);
+            self.program.patch(rhs_jump, self.program.code.len());
+            self.expression(node.second);
+            self.program.patch(end_jump, self.program.code.len());
+            return;
+        }
+        self.expression(node.first);
+        self.expression(node.second);
+        let op = if node.value == token.PLUS { bytecode.ADD }
+        else if node.value == token.MINUS { bytecode.SUB }
+        else if node.value == token.STAR { bytecode.MUL }
+        else if node.value == token.SLASH { bytecode.DIV }
+        else if node.value == token.PERCENT { bytecode.MOD }
+        else if node.value == token.EQEQ { bytecode.EQ }
+        else if node.value == token.BANGEQ { bytecode.NE }
+        else if node.value == token.LT { bytecode.LT }
+        else if node.value == token.LTEQ { bytecode.LE }
+        else if node.value == token.GT { bytecode.GT }
+        else if node.value == token.GTEQ { bytecode.GE }
+        else { bytecode.NOP };
+        if op == bytecode.NOP { self.report(node, "unknown binary operator"); }
+        let _ = self.emit(op, 0, 0);
+    }
+
+    fn expression(inout self, id: u64) {
+        let node = self.arena.get(id);
+        if node.kind == ast.INT { let _ = self.emit(bytecode.CONST_INT, @intCast(node.value), 0); }
+        else if node.kind == ast.BOOL { let _ = self.emit(bytecode.CONST_BOOL, @intCast(node.value), 0); }
+        else if node.kind == ast.STRING { let _ = self.emit(bytecode.CONST_STR, @intCast(node.value), 0); }
+        else if node.kind == ast.VARIABLE {
+            let local = self.local_slot(node.value);
+            if local != ast.NONE { let _ = self.emit(bytecode.LOAD, @intCast(local), 0); }
+            else {
+                let global = self.program.find_global(node.value);
+                if global == ast.NONE {
+                    self.report(node, "unknown variable");
+                    let _ = self.emit(bytecode.CONST_BOOL, 0, 0);
+                } else { let _ = self.emit(bytecode.LOAD_GLOBAL, @intCast(global), 0); }
+            }
+        }
+        else if node.kind == ast.UNARY {
+            self.expression(node.first);
+            if node.value == token.BANG { let _ = self.emit(bytecode.NOT, 0, 0); }
+            else if node.value == token.MINUS { let _ = self.emit(bytecode.NEG, 0, 0); }
+            else { self.report(node, "unknown unary operator"); }
+        }
+        else if node.kind == ast.BINARY { self.lower_binary(node); }
+        else if node.kind == ast.CALL {
+            let mut argument = node.first;
+            while argument != ast.NONE { self.expression(argument); argument = self.arena.get(argument).next; }
+            let _ = self.emit(bytecode.CALL, @intCast(node.value), @intCast(self.chain_len(node.first)));
+        }
+        else if node.kind == ast.LIST {
+            let mut element = node.first;
+            while element != ast.NONE { self.expression(element); element = self.arena.get(element).next; }
+            let _ = self.emit(bytecode.LIST, @intCast(self.chain_len(node.first)), 0);
+        }
+        else if node.kind == ast.LEN { self.expression(node.first); let _ = self.emit(bytecode.LIST_LEN, 0, 0); }
+        else if node.kind == ast.PUSH { self.expression(node.first); self.expression(node.second); let _ = self.emit(bytecode.LIST_PUSH, 0, 0); }
+        else if node.kind == ast.GET { self.expression(node.first); self.expression(node.second); let _ = self.emit(bytecode.LIST_GET, 0, 0); }
+        else { self.report(node, "invalid expression node"); let _ = self.emit(bytecode.CONST_BOOL, 0, 0); }
+    }
+
+    fn block(inout self, id: u64) {
+        self.begin_scope();
+        let mut statement = self.arena.get(id).first;
+        while statement != ast.NONE {
+            self.statement(statement);
+            statement = self.arena.get(statement).next;
+        }
+        self.end_scope();
+    }
+
+    fn statement(inout self, id: u64) {
+        let node = self.arena.get(id);
+        if node.kind == ast.LET {
+            let symbol = node.value;
+            let initializer = node.first;
+            let slot = self.declare(node, symbol);
+            self.expression(initializer);
+            let _ = self.emit(bytecode.STORE, @intCast(slot), 0);
+        } else if node.kind == ast.ASSIGN {
+            self.expression(node.first);
+            let local = self.local_slot(node.value);
+            if local != ast.NONE { let _ = self.emit(bytecode.STORE, @intCast(local), 0); }
+            else {
+                let global = self.program.find_global(node.value);
+                if global == ast.NONE { self.report(node, "assignment to unknown variable"); let _ = self.emit(bytecode.POP, 0, 0); }
+                else { let _ = self.emit(bytecode.STORE_GLOBAL, @intCast(global), 0); }
+            }
+        } else if node.kind == ast.IF {
+            self.expression(node.first);
+            let false_jump = self.emit(bytecode.JUMP_FALSE, 0, 0);
+            self.block(node.second);
+            if node.third != ast.NONE {
+                let end_jump = self.emit(bytecode.JUMP, 0, 0);
+                self.program.patch(false_jump, self.program.code.len());
+                self.block(node.third);
+                self.program.patch(end_jump, self.program.code.len());
+            } else { self.program.patch(false_jump, self.program.code.len()); }
+        } else if node.kind == ast.WHILE {
+            let start = self.program.code.len();
+            self.expression(node.first);
+            let exit = self.emit(bytecode.JUMP_FALSE, 0, 0);
+            self.block(node.second);
+            let _ = self.emit(bytecode.JUMP, @intCast(start), 0);
+            self.program.patch(exit, self.program.code.len());
+        } else if node.kind == ast.RETURN { self.expression(node.first); let _ = self.emit(bytecode.RETURN, 0, 0); }
+        else if node.kind == ast.PRINT { self.expression(node.first); let _ = self.emit(bytecode.PRINT, 0, 0); }
+        else if node.kind == ast.EXPR_STMT { self.expression(node.first); let _ = self.emit(bytecode.POP, 0, 0); }
+        else if node.kind == ast.BLOCK { self.block(id); }
+        else { self.report(node, "invalid statement node"); }
+    }
+
+    fn literal_global(inout self, node: ast.Node) -> bytecode.Instruction {
+        if node.kind == ast.INT { bytecode.Instruction { op: bytecode.CONST_INT, a: @intCast(node.value), b: 0 } }
+        else if node.kind == ast.BOOL { bytecode.Instruction { op: bytecode.CONST_BOOL, a: @intCast(node.value), b: 0 } }
+        else if node.kind == ast.STRING { bytecode.Instruction { op: bytecode.CONST_STR, a: @intCast(node.value), b: 0 } }
+        else if node.kind == ast.UNARY && node.value == token.MINUS {
+            let inner = self.arena.get(node.first);
+            if inner.kind == ast.INT {
+                let value: i64 = @intCast(inner.value);
+                bytecode.Instruction { op: bytecode.CONST_INT, a: 0 - value, b: 0 }
+            } else { self.report(node, "only integer globals may be negative"); bytecode.Instruction { op: bytecode.CONST_BOOL, a: 0, b: 0 } }
+        } else {
+            self.report(node, "global initializer must be a literal");
+            bytecode.Instruction { op: bytecode.CONST_BOOL, a: 0, b: 0 }
+        }
+    }
+
+    fn globals(inout self, root: u64) {
+        let mut item = self.arena.get(root).first;
+        while item != ast.NONE {
+            let node = self.arena.get(item);
+            let next = node.next;
+            if node.kind == ast.GLOBAL {
+                let name = node.value;
+                let initializer = node.first;
+                if self.program.find_global(name) != ast.NONE { self.report(node, "duplicate global binding"); }
+                let value = self.literal_global(self.arena.get(initializer));
+                let tag: u64 = if value.op == bytecode.CONST_INT { 1 }
+                    else if value.op == bytecode.CONST_BOOL { 2 } else { 3 };
+                let _ = self.program.add_global(name, tag, value.a);
+            }
+            item = next;
+        }
+    }
+
+    fn function(inout self, node: ast.Node) {
+        self.locals.clear();
+        self.scopes.clear();
+        self.max_locals = 0;
+        let mut arity: u64 = 0;
+        let mut parameter = node.first;
+        while parameter != ast.NONE {
+            let param = self.arena.get(parameter);
+            let symbol = param.value;
+            let next = param.next;
+            let _ = self.declare(param, symbol);
+            arity = arity + 1;
+            parameter = next;
+        }
+        let id = self.program.add_function(node.value, self.program.code.len(), arity);
+        self.block(node.second);
+        let _ = self.emit(bytecode.CONST_BOOL, 0, 0);
+        let _ = self.emit(bytecode.RETURN, 0, 0);
+        self.program.finish_function(id, self.max_locals);
+    }
+
+    fn lower(inout self, root: u64) {
+        self.globals(root);
+        let mut item = self.arena.get(root).first;
+        while item != ast.NONE {
+            let node = self.arena.get(item);
+            let next = node.next;
+            if node.kind == ast.FUNCTION { self.function(node); }
+            item = next;
+        }
+        let _ = self.emit(bytecode.HALT, 0, 0);
+    }
+}
+
+pub fn lower(arena: ast.Arena, root: u64, pool: poolmod.Pool) -> LowerResult {
+    let mut lowerer = Lowerer.new(arena, pool);
+    lowerer.lower(root);
+    LowerResult { program: lowerer.program, errors: lowerer.errors }
+}
