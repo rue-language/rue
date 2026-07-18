@@ -1,0 +1,38 @@
+# Type-position intrinsic grammar parity through the real driver (RUE-788).
+#
+# `@size_of`, `@align_of`, and the type position of `@offset_of` accept the
+# same type grammar annotations do. These cases exercise the forms that need
+# driver-level machinery the spec suite cannot reach: a module-qualified type
+# behind an `@import`, and the preview-gated slice type behind `--preview`.
+
+[section]
+id = "cli.type_intrinsic_args"
+name = "Type-position intrinsic arguments (RUE-788)"
+description = "Qualified and preview-gated type forms in @size_of/@offset_of through the CLI."
+
+# A module-qualified struct is a valid type argument, and @offset_of computes
+# the field offset from the imported struct's layout: 16 + 8 = 24.
+[[case]]
+name = "qualified_type_in_size_of_and_offset_of"
+files = [{ path = "geo.rue", source = """
+pub struct Point { x: i32, y: i64 }
+""" }, { path = "main.rue", source = """
+pub const geo = @import("geo.rue");
+fn main() -> i32 {
+    let size: i32 = @size_of(geo.Point);
+    let off: i32 = @intCast(@offset_of(geo.Point, y));
+    size + off
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 24
+
+# The preview-gated slice type reaches @size_of through the driver flag; the
+# slice is a two-word fat pointer.
+[[case]]
+name = "slice_type_in_size_of_with_preview"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 { @size_of([i32]) }
+""" }]
+args = ["main.rue", "--preview", "slices", "-o", "prog"]
+exit_code = 16

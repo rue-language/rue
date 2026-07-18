@@ -90,3 +90,21 @@ fn main() -> i32 { 0 }
 """
 compile_fail = true
 error_contains = ["E0489", "can only name a function parameter"]
+
+[[case]]
+name = "slice_type_intrinsic_requires_preview"
+description = "The slice type in @size_of's type position (RUE-788) is gated like any other slice spelling: E1100 without --preview slices."
+source = """
+fn main() -> i32 { @size_of([i32]) }
+"""
+compile_fail = true
+error_contains = "requires preview feature"
+
+[[case]]
+name = "slice_type_intrinsic_sizes_the_fat_pointer"
+description = "With the preview flag, @size_of([i32]) resolves the slice's synthetic fat-pointer struct: two 8-byte words."
+preview = "slices"
+source = """
+fn main() -> i32 { @size_of([i32]) }
+"""
+exit_code = 16
