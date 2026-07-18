@@ -1,8 +1,32 @@
-// Deterministic site navigation and previous/next page links.
+// Deterministic site navigation and previous/next page links. The rendered
+// primary navigation is a bounded window of WINDOW entries containing the
+// current page, so sitewide generated output volume stays linear in page
+// count instead of quadratic (RUE-1003). The navigation model still contains
+// every published page; only rendering is windowed. outputaudit and
+// complexity derive their expected counts from window_len/window_start, so
+// the rendered-link audit and the work-unit estimate share this computation.
 const std = @import("std");
 const escape = @import("escape.rue");
 const model = @import("model.rue");
 const StrBuf = std.strbuf.StrBuf;
+
+pub fn WINDOW() -> u64 { 16 }
+
+pub fn window_len(borrow site: model.Site) -> u64 {
+    if site.navigation.len() < WINDOW() { site.navigation.len() } else { WINDOW() }
+}
+
+pub fn window_start(borrow site: model.Site, current: u64) -> u64 {
+    let len = site.navigation.len();
+    if len <= WINDOW() { return 0; }
+    let pos = position(borrow site, current);
+    if pos == model.NONE() { return 0; }
+    let half = WINDOW() / 2;
+    if pos <= half { return 0; }
+    let max_start = len - WINDOW();
+    let start = pos - half;
+    if start > max_start { max_start } else { start }
+}
 
 fn append_page_link(borrow site: model.Site, page_index: u64, current: u64, inout out: StrBuf) {
     let page = site.pages.get_or(page_index, model.empty_page());
@@ -20,9 +44,11 @@ fn append_page_link(borrow site: model.Site, page_index: u64, current: u64, inou
 pub fn primary(borrow site: model.Site, current: u64) -> StrBuf {
     let mut out = StrBuf.new();
     out.push_str("<nav class=\"site-nav\" aria-label=\"Primary\"><ul>");
+    let start = window_start(borrow site, current);
+    let count = window_len(borrow site);
     let mut i: u64 = 0;
-    while i < site.navigation.len() {
-        append_page_link(borrow site, site.navigation.get_or(i, 0), current, inout out);
+    while i < count {
+        append_page_link(borrow site, site.navigation.get_or(start + i, 0), current, inout out);
         i = i + 1;
     }
     out.push_str("</ul></nav>");
