@@ -297,3 +297,104 @@ fn main() -> i32 {
 """ },
 ]
 exit_code = 42
+
+# --- RUE-993: named struct fields retaining specializations whose ctor
+# bodies contain module-qualified nested constructor calls. Field-type
+# resolution reduces the ctor body during declaration binding, before the
+# defining file's import constants are collected; the nested `mk.Mk(T)` /
+# `arraybuf.ArrayBuf(u64)` receiver must resolve through the declaration
+# namespace (on-demand), not the raw binding table, or the whole reduction
+# silently degrades to E1200. ---
+[[case]]
+name = "struct_field_retains_ctor_with_nested_module_call"
+description = "A named struct retains `wrap.Wrap(i32)` whose body opens with `let Inner = mk.Mk(T)` from a third module (RUE-993)."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "mk.rue", source = """
+pub fn Mk(comptime T: type) -> type {
+    struct { value: T }
+}
+""" },
+  { path = "wrap.rue", source = """
+const mk = @import("mk.rue");
+
+pub fn Wrap(comptime T: type) -> type {
+    let Inner = mk.Mk(T);
+    struct {
+        inner: Inner,
+        fn make(v: T) -> Self {
+            let I = mk.Mk(T);
+            Self { inner: I { value: v } }
+        }
+        fn get(borrow self) -> T { self.inner.value }
+    }
+}
+""" },
+  { path = "main.rue", source = """
+const wrap = @import("wrap.rue");
+
+pub struct Holder {
+    w: wrap.Wrap(i32),
+
+    fn new() -> Self {
+        let W = wrap.Wrap(i32);
+        Self { w: W.make(7) }
+    }
+}
+
+fn main() -> i32 {
+    let h = Holder.new();
+    h.w.get()
+}
+""" },
+]
+exit_code = 7
+
+[[case]]
+name = "struct_field_retains_std_strmap_specialization"
+description = "A public cross-module struct retains `std.strmap.StrMap(u64)` as a field and uses it at runtime (RUE-993)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "pool.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const OptU64 = std.option.Option(u64);
+
+pub struct Pool {
+    index: std.strmap.StrMap(u64),
+
+    fn new() -> Self {
+        let M = std.strmap.StrMap(u64);
+        Self { index: M.new(0) }
+    }
+
+    fn put(inout self, borrow key: StrBuf, value: u64) {
+        self.index.insert(borrow key, value);
+    }
+
+    fn get_or(borrow self, borrow key: StrBuf, fallback: u64) -> u64 {
+        match self.index.get(borrow key) { OptU64.Some(v) => v, OptU64.None => fallback }
+    }
+}
+""" },
+  { path = "main.rue", source = """
+const std = @import("std");
+const pool = @import("pool.rue");
+
+fn main() -> i32 {
+    let mut p = pool.Pool.new();
+    let k1: std.strbuf.StrBuf = "alpha";
+    let k2: std.strbuf.StrBuf = "beta";
+    let absent: std.strbuf.StrBuf = "absent";
+    p.put(borrow k1, 11);
+    p.put(borrow k2, 22);
+    println(@to_string(p.get_or(borrow k1, 0)));
+    println(@to_string(p.get_or(borrow k2, 0)));
+    println(@to_string(p.get_or(borrow absent, 99)));
+    0
+}
+""" },
+]
+exit_code = 0
+stdout = "11\n22\n99\n"
