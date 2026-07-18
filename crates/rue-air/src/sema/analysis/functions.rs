@@ -354,16 +354,17 @@ impl<'a> BodySema<'a> {
         // For struct parameters, the slot count is the number of fields.
         let mut next_abi_slot: u32 = 0;
         for (pname, ptype, mode, is_comptime) in params.iter() {
+            // Only the synthetic `self` entry of a `mut self` method can be a
+            // mutable by-value binding; ordinary parameters have no `mut`
+            // form.
+            let is_mut_binding = self_is_mut && *pname == self_sym && *mode == RirParamMode::Normal;
             param_vec.push(ParamInfo {
                 name: *pname,
                 abi_slot: next_abi_slot,
                 ty: *ptype,
                 mode: *mode,
                 is_comptime: *is_comptime,
-                // Only the synthetic `self` entry of a `mut self` method can
-                // be a mutable by-value binding; ordinary parameters have no
-                // `mut` form.
-                is_mut: self_is_mut && *pname == self_sym && *mode == RirParamMode::Normal,
+                is_mut: is_mut_binding,
             });
             // Inout and Borrow parameters are passed by reference.
             // Comptime parameters are VALUE params (like `comptime n: i32`), passed by value.
@@ -403,7 +404,12 @@ impl<'a> BodySema<'a> {
             };
             for _ in 0..slot_count {
                 param_by_ref.push(is_by_ref);
-                param_writable.push(*mode == RirParamMode::Inout);
+                // "Writable" means the body may store to the slot: `inout`
+                // (by-ref, written back to the caller) or a `mut self`
+                // receiver (by-value, callee-local). Optimizers and the
+                // oracle contract read this to know the slot can change
+                // between reads.
+                param_writable.push(*mode == RirParamMode::Inout || is_mut_binding);
             }
             next_abi_slot += slot_count;
         }

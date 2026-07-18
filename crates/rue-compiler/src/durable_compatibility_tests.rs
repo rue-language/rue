@@ -20,14 +20,16 @@ use crate::*;
 const REVIEWED_SEMANTIC_SCHEMA: DurableSemanticSchemaVersion = DurableSemanticSchemaVersion {
     major: 1,
     minor: 0,
-    implementation_epoch: 1,
+    // Epoch 2: const string values joined the durable const payloads
+    // (SemanticImportConstValue::String, RUE-957).
+    implementation_epoch: 2,
 };
 const REVIEWED_ORDINARY_BODY_SCHEMA: u32 = 6;
 const REVIEWED_SPECIALIZED_BODY_SCHEMA: u32 = 5;
 const REVIEWED_CFG_SCHEMA: u32 = 1;
 const REVIEWED_BODY_KINDS: usize = 58;
 const REVIEWED_TYPE_KINDS: usize = 19;
-const REVIEWED_CONST_KINDS: usize = 5;
+const REVIEWED_CONST_KINDS: usize = 6;
 const REVIEWED_DECLARATION_PAYLOAD_KINDS: usize = 5;
 const REVIEWED_DEFINITION_KINDS: usize = 8;
 const REVIEWED_DEFINITION_NAMESPACES: usize = 4;
@@ -227,6 +229,7 @@ fn every_type_const_and_specialization_identity_round_trips_same_version() {
         C::Type(types[14].clone()),
         C::Function(function.clone()),
         C::Unit,
+        C::String(Arc::from("hello")),
     ];
     assert_eq!(
         consts.iter().map(C::kind).collect::<BTreeSet<_>>(),

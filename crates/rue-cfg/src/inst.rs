@@ -1287,7 +1287,10 @@ impl Cfg {
             .unwrap_or(false)
     }
 
-    /// Get whether a parameter ABI slot is logically writable (`inout`).
+    /// Get whether a parameter ABI slot is logically writable: `inout`
+    /// (by-ref, written back to the caller) or a `mut self` receiver slot
+    /// (by-value, callee-local mutation only). Combine with
+    /// [`Cfg::is_param_by_ref`] to distinguish the two.
     #[inline]
     pub fn is_param_writable(&self, slot: u32) -> bool {
         self.param_modes

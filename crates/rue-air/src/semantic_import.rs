@@ -1442,7 +1442,7 @@ mod tests {
             );
         }
 
-        assert_eq!(SEMANTIC_IMPORT_CONST_KINDS.len(), 5);
+        assert_eq!(SEMANTIC_IMPORT_CONST_KINDS.len(), 6);
         for (tag, kind) in SEMANTIC_IMPORT_CONST_KINDS.iter().copied().enumerate() {
             assert_eq!(usize::from(kind.schema_tag()), tag);
             assert_eq!(kind.to_string(), kind.display_name());
@@ -1593,6 +1593,7 @@ mod tests {
             SemanticImportConstValue::Type(ImportType::Module("pkg/main.rue")),
             SemanticImportConstValue::Function("callable"),
             SemanticImportConstValue::Unit,
+            SemanticImportConstValue::String(std::sync::Arc::from("hello")),
         ];
         for value in values {
             let mapped = value
