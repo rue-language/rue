@@ -12,6 +12,7 @@
 //! - [`builtins`] - Built-in type injection (String, etc.)
 //! - [`typeck`] - Type resolution and checking helpers
 //! - [`analysis`] - Function analysis, type inference coordination, and RIR-to-AIR lowering
+//! - [`aggregates`] - Aggregate construction, fields, indexing, and enum operations
 //! - [`control_flow`] - Branch, loop, match, try, return, and block analysis
 //! - [`info`] - Function, method, and constant info types
 //! - [`gather`] - Declaration gathering output
@@ -26,6 +27,7 @@
 //! - [`Sema::analyze_all`] - Perform full semantic analysis
 //! - [`Sema::analyze_all_bodies`] - Analyze function bodies after declarations
 
+mod aggregates;
 pub(crate) mod analysis;
 mod analyze_ops;
 mod anon_structs;

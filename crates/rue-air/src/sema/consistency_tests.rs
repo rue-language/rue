@@ -104,16 +104,20 @@ mod tests {
         include_str!("analysis/ownership.rs"),
         include_str!("analysis/anon_methods.rs"),
         include_str!("analysis/pointers.rs"),
+        include_str!("aggregates.rs"),
         include_str!("control_flow.rs"),
     );
 
     const ANALYZE_OPS_SOURCE: &str = include_str!("analyze_ops.rs");
+    const AGGREGATES_SOURCE: &str = include_str!("aggregates.rs");
+    const BUILTIN_OPS_SOURCE: &str = include_str!("analysis/builtin_ops.rs");
     const ANALYSIS_ROOT_SOURCE: &str = include_str!("analysis.rs");
     const INSTRUCTIONS_SOURCE: &str = include_str!("analysis/instructions.rs");
     const OWNERSHIP_SOURCE: &str = include_str!("analysis/ownership.rs");
     const CONTROL_FLOW_SOURCE: &str = include_str!("control_flow.rs");
     const OWNERSHIP_PEER_SOURCES: &[(&str, &str)] = &[
         ("analysis.rs", ANALYSIS_ROOT_SOURCE),
+        ("aggregates.rs", AGGREGATES_SOURCE),
         ("analyze_ops.rs", ANALYZE_OPS_SOURCE),
         ("anon_methods.rs", include_str!("analysis/anon_methods.rs")),
         ("builtin_ops.rs", include_str!("analysis/builtin_ops.rs")),
@@ -414,5 +418,65 @@ mod tests {
         // shapes; neither site emits ownership or storage-lifetime operations.
         assert!(include_str!("semantic_body_export.rs").contains("AirInstData::Alloc"));
         assert!(include_str!("tests.rs").contains("AirInstData::StorageLive"));
+    }
+
+    #[test]
+    fn aggregate_analysis_has_one_cohesive_owner() {
+        for method in [
+            "analyze_struct_ops",
+            "analyze_struct_init",
+            "analyze_module_type_member_access",
+            "analyze_array_ops",
+            "reject_non_runtime_array_element",
+            "is_runtime_value_binding",
+            "try_module_id_of",
+            "try_analyze_module_qualified_type_call",
+            "try_analyze_module_dotted_enum_variant",
+            "try_analyze_dotted_enum_variant",
+            "analyze_array_init",
+            "analyze_array_repeat",
+            "analyze_enum_ops",
+            "validate_equality_operand_type",
+            "try_prepare_aggregate_equality",
+        ] {
+            let definition = format!("fn {method}(");
+            assert!(
+                AGGREGATES_SOURCE.contains(&definition),
+                "aggregates.rs must own {method}"
+            );
+            assert!(
+                !ANALYZE_OPS_SOURCE.contains(&definition),
+                "analyze_ops.rs must not retain {method}"
+            );
+            assert!(
+                !BUILTIN_OPS_SOURCE.contains(&definition),
+                "analysis/builtin_ops.rs must not retain {method}"
+            );
+        }
+
+        for dispatch in [
+            "self.analyze_field_get(",
+            "self.analyze_field_set(",
+            "self.analyze_index_get(",
+            "self.analyze_index_set(",
+        ] {
+            assert!(
+                AGGREGATES_SOURCE.contains(dispatch),
+                "aggregate dispatch must route {dispatch} through ownership.rs"
+            );
+        }
+        for forbidden in [
+            "ctx.moved_vars",
+            "AirInstData::PlaceRead",
+            "AirInstData::PlaceWrite",
+            "struct PlaceTrace",
+            "struct ProjectionInfo",
+            ".make_place(",
+        ] {
+            assert!(
+                !AGGREGATES_SOURCE.contains(forbidden),
+                "aggregates.rs must not duplicate ownership authority: {forbidden}"
+            );
+        }
     }
 }
