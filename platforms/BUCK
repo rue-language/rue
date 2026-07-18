@@ -43,3 +43,13 @@ remote_cache_platform(
     name = "remote_cache",
     visibility = ["PUBLIC"],
 )
+
+# Required merge-group canaries use the same remote executor without masking a
+# failed remote action by retrying it locally. Ordinary cache users retain the
+# forgiving hybrid platform above.
+remote_cache_platform(
+    name = "remote_execution",
+    allow_hybrid_fallbacks_on_failure = False,
+    mark_remote_execution = True,
+    visibility = ["PUBLIC"],
+)

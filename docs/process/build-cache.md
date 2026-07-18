@@ -3,29 +3,24 @@
 Buck2 rebuilds everything from scratch in each `buck-out`, and OSS buck2 has **no
 persistent action cache across daemon restarts** (noted in `ci.yml`). Every CI run
 and every isolated worktree rebuilds unchanged crates. We use **BuildBuddy** (free
-tier) for a shared remote action cache. Remote execution experiments established
-the remaining toolchain requirements, but complete remote builds are not a
-supported workflow while RUE-320 remains open.
+tier) for a shared remote action cache and opt-in remote execution.
 
-> **Status (RUE-316 landed the groundwork; RUE-320 finishes it).** The remote
-> platform + the `$ORIGIN` toolchain-tree fix are in place, but full RE is **not
-> enabled by default and not yet landable as-is**. It needs the linker driver to
-> be `cc` (so lld, not the absent `clang++`, links on the remote worker) — and
-> that override can only be applied to the **remote platform**, not globally:
-> making it the toolchain-wide default (`linker = "cc"` in `toolchains/BUCK`)
-> breaks native CI, whose system builds rely on the default linker path
-> (`collect2: cannot find 'ld'`). Platform-scoped linker selection is tracked as
-> **RUE-320**. Until then the `remote_cache` platform is opt-in/experimental and
-> its remote-execution actions require that linker override locally.
+> **Status (RUE-316/RUE-320).** The remote platform, `$ORIGIN` toolchain-tree
+> fix, and execution-platform-scoped linker are in place. Native/default builds
+> keep `clang++`; the BuildBuddy execution configuration selects the ubiquitous
+> `cc` driver through an exec-dep while Rust's bundled lld performs the real
+> Linux link via `-fuse-ld=lld`. Full remote execution is supported as an
+> explicit `--prefer-remote` mode, not the default local-development policy.
 
 - **Remote action cache**: the repository `./buck2` wrapper supplies
   `--prefer-local`, so cache misses execute locally while hits are shared across
   machines + daemon restarts. The cache can only affect *speed*, never
   correctness.
 - **`--prefer-remote`**: full remote **execution** — compiles + links on
-  BuildBuddy's container (~80 free-tier cores). Blocked on RUE-320.
+  BuildBuddy's container (~80 free-tier cores). Required merge-group CI runs a
+  cache-disabled canary so worker-toolchain regressions cannot hide as hits.
 
-Tracking: RUE-316 (groundwork), RUE-320 (platform-scoped linker to finish RE).
+Tracking: RUE-316 (groundwork), RUE-320 (platform-scoped linker).
 
 ## Local development across worktrees
 
@@ -48,10 +43,11 @@ insecure, Rue warns and continues without provisioning it. Existing local paths,
 including broken or unrelated symlinks, are left untouched. This keeps cache
 setup opt-in and prevents a credential problem from making local builds unusable.
 
-The setup is for the shared **action cache**. Do not add `--prefer-remote` to
-normal commands: full remote execution remains blocked on RUE-320. The checked-in
-`.buckconfig.local.example` remains a reference for the generated configuration,
-not the recommended per-worktree setup.
+The default setup is for the shared **action cache**. Normal commands stay on
+`--prefer-local`; add `--prefer-remote` explicitly when remote execution is the
+intended experiment. The checked-in `.buckconfig.local.example` remains a
+reference for the generated configuration, not the recommended per-worktree
+setup.
 
 ## Full-suite host coordination
 
@@ -100,18 +96,22 @@ they're recorded here so a future config change doesn't silently regress:
 5. **Container** (`platforms/remote_cache.bzl`): pinned to `rbe-ubuntu22-04`
    (Python 3.10 — the prelude's rustc wrapper needs ≥3.9; the default image ships
    3.6).
-6. **Linker** (RUE-320, NOT landed): the remote worker needs the linker driver to
-   be **`cc`** instead of `clang++` (lld — `-fuse-ld=lld`, shipped with rust — does
-   the real linking; the driver just needs to exist, and `cc` is everywhere while
-   `clang++` is not). This was proven with `linker = "cc"` in `toolchains/BUCK`, but
-   that override is **global** and breaks native CI (`cc` → `collect2` → `cannot
-   find 'ld'` when the hermetic lld flags aren't on the command). It has to be
-   **scoped to the remote platform** instead — tracked as RUE-320.
+6. **Linker** (RUE-320): the remote worker needs **`cc`** instead of the absent
+   `clang++`. A `remote-execution` constraint is inserted only into the explicit
+   full-remote execution configuration. The cache-only configuration omits it
+   because its misses execute natively under `--prefer-local`. The C++ tools
+   provider is an exec-dep, so its linker select sees that constraint and
+   chooses `cc`; native/default and cache-only execution configurations retain
+   the prelude's `clang++`. The pinned prelude adds `-fuse-ld=lld` for Linux,
+   keeping the actual linker hermetic.
+7. **Rust action memory** (RUE-320): a cache-disabled cold graph exceeded
+   BuildBuddy's default per-action memory estimate and the executor OOM-killed
+   rustc. The remote platform requests 4 GB per action; this is an execution
+   scheduling hint and does not affect native or cache-only builds.
 
-Change 4 (`$ORIGIN` toolchain-tree) is global and local-safe (verified: local
-build + suite green). 1, 2, 3, and 5 live in the opt-in
-`.buckconfig.local` / the `remote_cache` platform. 6 is the remaining blocker
-for default-on RE.
+Change 4 (`$ORIGIN` toolchain-tree) is global and local-safe. Changes 1, 2, 3,
+5, 6, and 7 live in the opt-in `.buckconfig.local` / `remote_cache` execution
+path.
 
 ## CI
 
@@ -153,6 +153,12 @@ whether unchanged actions are reusable; the job summaries answer the different
 question of how expensive a real change's remaining local actions were. Both
 signals matter: a central Rust or ThinLTO change can have a high numerical hit
 rate while a few invalidated actions remain on the critical path.
+
+RUE-320 also adds a merge-group-only remote-execution canary. It disables action
+cache reads, selects the no-fallback `//platforms:remote_execution` executor, and
+requires Buck to report remotely executed actions. This is deliberately
+separate from the cache probe: one proves worker execution, the other proves
+unchanged-action reuse.
 
 ## Toward a fully hermetic linker
 
