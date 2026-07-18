@@ -43,12 +43,13 @@
 //! yields the identical value. A `Param { index }`'s `index` is the parameter's
 //! ABI slot (the same numbering as [`Cfg::is_param_writable`] and a
 //! `ParamStore`'s `param_slot`; both flow from sema's `abi_slot`). A slot is
-//! treated as never-written when it is (a) not logically writable by-ref
-//! (`is_param_writable(slot) == false`, i.e. `borrow` or by-value, never
-//! `inout`) and (b) receives no `ParamStore` anywhere among the block-attached
-//! instructions. By-value (`Normal`) parameters are immutable in the callee
-//! (assignment is rejected, E0203) and `borrow` parameters cannot be written, so
-//! only `inout` slots — excluded by (a) — and any slot a `ParamStore` targets —
+//! treated as never-written when it is (a) not logically writable
+//! (`is_param_writable(slot) == false`, i.e. `borrow` or plain by-value —
+//! never `inout`, and never a `mut self` receiver slot) and (b) receives no
+//! `ParamStore` anywhere among the block-attached instructions. Plain
+//! by-value (`Normal`) parameters are immutable in the callee (assignment is
+//! rejected, E0203) and `borrow` parameters cannot be written, so only
+//! writable slots — excluded by (a) — and any slot a `ParamStore` targets —
 //! excluded by (b) — are left out. (As defense in depth, a projected
 //! `PlaceWrite` whose base is a parameter slot also excludes it, though such a
 //! write only ever targets an already-excluded `inout` slot.)

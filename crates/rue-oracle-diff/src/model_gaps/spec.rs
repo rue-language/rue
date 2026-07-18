@@ -599,6 +599,12 @@ const ENTRIES: &[Entry] = &[
         &[],
     ),
     Entry::new(
+        "items.impl-blocks",
+        "mut_self_allows_inout_method_call",
+        semantic(SemanticGapKind::InoutParameterForwarding),
+        &[],
+    ),
+    Entry::new(
         "items.unchecked",
         "ptr_ops_in_checked_ok",
         intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),

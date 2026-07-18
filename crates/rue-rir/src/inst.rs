@@ -5385,6 +5385,7 @@ mod typed_payload_tests {
                 body: reference,
                 has_self: false,
                 self_mode: RirParamMode::Normal,
+                self_is_mut: false,
             },
         );
 

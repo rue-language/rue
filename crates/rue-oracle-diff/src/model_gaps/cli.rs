@@ -278,6 +278,12 @@ const ENTRIES: &[Entry] = &[
         &[],
     ),
     Entry::new(
+        "cli.const_init",
+        "string_const_prints_and_measures",
+        runtime_call(UnsupportedRuntimeCallKind::Println),
+        &[],
+    ),
+    Entry::new(
         "cli.differential_opt",
         "fixed_string_inout_forwarding_and_projected_lvalues_across_opt_levels",
         semantic(SemanticGapKind::InoutParameterForwarding),
