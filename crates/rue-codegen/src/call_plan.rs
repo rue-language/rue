@@ -214,6 +214,10 @@ pub enum CallArgInput {
     IndirectValue {
         value: rue_cfg::CfgValue,
         image: Vec<crate::types::PhysicalEnumSlot>,
+        /// Byte ranges of the compact image that hold padding, zeroed before the
+        /// field stores so the caller-owned buffer is deterministically
+        /// initialized (ADR-0052 ruling 5).
+        padding: Vec<rue_air::layout::PaddingRange>,
         storage_bytes: u32,
     },
     ByRef {
@@ -268,11 +272,13 @@ impl CallInputs {
                         "a by-value indirect compact aggregate argument must have a \
                          variant-independent memory image (guaranteed by the refusal scan)",
                     );
+                    let padding = type_pool.compact_image_padding_ranges(arg_ty);
                     let storage_bytes =
                         align_up(types::type_size_bytes(type_pool, arg_ty) as u32, 16);
                     return CallArgInput::IndirectValue {
                         value: arg.value,
                         image,
+                        padding,
                         storage_bytes,
                     };
                 }
@@ -348,6 +354,7 @@ pub trait CallMaterializer {
         &mut self,
         value: rue_cfg::CfgValue,
         image: &[crate::types::PhysicalEnumSlot],
+        padding: &[rue_air::layout::PaddingRange],
         storage_bytes: u32,
     ) -> VReg;
 }
@@ -418,6 +425,7 @@ impl CallPlan {
                 CallArgInput::IndirectValue {
                     value,
                     image,
+                    padding,
                     storage_bytes,
                 } => {
                     // The caller writes the aggregate's compact image into its
@@ -425,8 +433,12 @@ impl CallPlan {
                     // are reserved below the sret storage and freed together
                     // after the call.
                     caller_indirect_bytes += *storage_bytes;
-                    let pointer =
-                        materializer.materialize_indirect_value_arg(*value, image, *storage_bytes);
+                    let pointer = materializer.materialize_indirect_value_arg(
+                        *value,
+                        image,
+                        padding,
+                        *storage_bytes,
+                    );
                     (UserArgMode::Value, vec![pointer])
                 }
                 CallArgInput::Value {
@@ -549,6 +561,7 @@ mod tests {
             &mut self,
             _value: rue_cfg::CfgValue,
             _image: &[crate::types::PhysicalEnumSlot],
+            _padding: &[rue_air::layout::PaddingRange],
             _storage_bytes: u32,
         ) -> VReg {
             VReg::new(50)

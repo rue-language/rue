@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 
 use rue_air::Type;
-use rue_air::layout::SLOT_BYTES;
+use rue_air::layout::{PaddingRange, SLOT_BYTES};
 use rue_cfg::CfgValue;
 
 use crate::allocation::BoundsCheckBackend;
@@ -81,6 +81,57 @@ pub(crate) trait SlotBackend: BoundsCheckBackend {
         byte_offset: i32,
         access: crate::types::NarrowScalar,
     );
+
+    /// Allocate a fresh vreg holding the constant zero, used to clear a compact
+    /// image's padding bytes (ADR-0052 ruling 5).
+    fn emit_zero_vreg(&mut self) -> VReg;
+}
+
+/// Zero the padding byte `ranges` of a compact memory image reached through
+/// `ptr` (ADR-0052 ruling 5, deterministic zero on construction). Each range is
+/// covered by the widest aligned zero stores (8/4/2/1 bytes) from one reused
+/// zero vreg; a compact aggregate's padding gaps are each at most `alignment - 1`
+/// (< 8) bytes, so this is a handful of stores per image. Empty `ranges` — every
+/// gate-off build, and any padding-free type — emit nothing, keeping gate-off
+/// code byte-identical.
+pub(crate) fn zero_padding_through_ptr<B: SlotBackend>(
+    b: &mut B,
+    ptr: VReg,
+    ranges: &[PaddingRange],
+) {
+    if ranges.is_empty() {
+        return;
+    }
+    let zero = b.emit_zero_vreg();
+    for range in ranges {
+        let mut offset = range.start as i32;
+        let end = range.end as i32;
+        while offset < end {
+            let remaining = (end - offset) as u32;
+            if remaining >= 8 {
+                b.emit_store_through_ptr(zero, ptr, offset);
+                offset += SLOT_BYTES as i32;
+            } else {
+                let width: u8 = if remaining >= 4 {
+                    4
+                } else if remaining >= 2 {
+                    2
+                } else {
+                    1
+                };
+                b.emit_narrow_store_through_ptr(
+                    zero,
+                    ptr,
+                    offset,
+                    crate::types::NarrowScalar {
+                        width,
+                        signed: false,
+                    },
+                );
+                offset += i32::from(width);
+            }
+        }
+    }
 }
 
 /// Store a whole compact enum value's `vals` (one vreg per internal slot, slot 0
@@ -94,7 +145,12 @@ pub(crate) fn store_enum_slots_through_ptr<B: SlotBackend>(
     vals: &[VReg],
     ptr: VReg,
     map: &[crate::types::PhysicalEnumSlot],
+    padding: &[PaddingRange],
 ) {
+    // Deterministic zero on construction (ADR-0052 ruling 5): clear the image's
+    // padding gaps first, then the field stores below overwrite every non-padding
+    // byte, so the whole image is initialized regardless of prior memory contents.
+    zero_padding_through_ptr(b, ptr, padding);
     for (val, slot) in vals.iter().zip(map.iter()) {
         match slot.access {
             None => b.emit_store_through_ptr(*val, ptr, slot.byte_offset),
@@ -310,11 +366,12 @@ pub(crate) fn store_slots_to_sret_compact<B: SlotBackend>(
     b: &mut B,
     vals: &[VReg],
     map: &[crate::types::PhysicalEnumSlot],
+    padding: &[PaddingRange],
 ) {
     let ptr = b.alloc_vreg();
     let sret_slot = b.ctx().sret_ptr_slot();
     b.emit_load_slot(ptr, sret_slot);
-    store_enum_slots_through_ptr(b, vals, ptr, map);
+    store_enum_slots_through_ptr(b, vals, ptr, map, padding);
 }
 
 /// Load `count` slots through `ptr` at ASCENDING byte offsets (slot k at

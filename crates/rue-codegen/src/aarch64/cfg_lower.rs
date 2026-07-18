@@ -101,12 +101,14 @@ impl crate::call_plan::CallMaterializer for CfgLower<'_> {
         &mut self,
         value: CfgValue,
         image: &[crate::types::PhysicalEnumSlot],
+        padding: &[rue_air::layout::PaddingRange],
         storage_bytes: u32,
     ) -> VReg {
         // Reserve a caller-owned buffer just below the sret storage (RUE-1005),
         // capture its address, and write the aggregate's compact image into it —
         // each slot truncated to its physical width at its compact byte offset,
-        // exactly the image the callee prologue unmarshals.
+        // exactly the image the callee prologue unmarshals. The image's padding is
+        // zeroed first (ADR-0052 ruling 5) so the buffer is fully initialized.
         self.mir.push(Aarch64Inst::SubImm {
             dst: Operand::Physical(Reg::Sp),
             src: Operand::Physical(Reg::Sp),
@@ -118,7 +120,7 @@ impl crate::call_plan::CallMaterializer for CfgLower<'_> {
             src: Operand::Physical(Reg::Sp),
         });
         let slots = self.require_aggregate_slots(value);
-        crate::agg_slots::store_enum_slots_through_ptr(self, &slots, pointer, image);
+        crate::agg_slots::store_enum_slots_through_ptr(self, &slots, pointer, image, padding);
         pointer
     }
 }
@@ -1565,13 +1567,20 @@ impl<'a> CfgLower<'a> {
                 let value = &plan.args[1];
                 if let Some(map) = &plan.physical_slots {
                     // A compact enum value: truncate each internal slot to its
-                    // physical width at its compact byte offset (RUE-1000).
+                    // physical width at its compact byte offset (RUE-1000). The
+                    // pointee's padding is zeroed first (ADR-0052 ruling 5).
                     let vals = if value.slots.is_empty() {
                         vec![value.primary]
                     } else {
                         value.slots.clone()
                     };
-                    crate::agg_slots::store_enum_slots_through_ptr(self, &vals, ptr, map);
+                    crate::agg_slots::store_enum_slots_through_ptr(
+                        self,
+                        &vals,
+                        ptr,
+                        map,
+                        &plan.image_padding,
+                    );
                 } else if value.slot_count == 0 {
                     // Zero-sized values have no bytes to write.
                 } else if !value.slots.is_empty() {
@@ -2589,13 +2598,20 @@ impl<'a> CfgLower<'a> {
                     }
                     ReturnValuePlan::Aggregate { slots, return_plan } => {
                         if return_plan.uses_sret() {
+                            let return_ty = self.ctx.cfg.return_type();
                             match crate::types::aggregate_physical_slot_map(
                                 self.ctx.type_pool,
-                                self.ctx.cfg.return_type(),
+                                return_ty,
                             ) {
-                                Some(map) => crate::agg_slots::store_slots_to_sret_compact(
-                                    self, &slots, &map,
-                                ),
+                                Some(map) => {
+                                    // The sret image is written compact; its padding
+                                    // is zeroed first (ADR-0052 ruling 5).
+                                    let padding =
+                                        self.ctx.type_pool.compact_image_padding_ranges(return_ty);
+                                    crate::agg_slots::store_slots_to_sret_compact(
+                                        self, &slots, &map, &padding,
+                                    )
+                                }
                                 None => crate::agg_slots::store_slots_to_sret(self, &slots),
                             }
                         } else {
@@ -2905,6 +2921,14 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
             width: access.width,
             signed: access.signed,
         });
+    }
+    fn emit_zero_vreg(&mut self) -> VReg {
+        let dst = self.mir.alloc_vreg();
+        self.mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Virtual(dst),
+            imm: 0,
+        });
+        dst
     }
 }
 
