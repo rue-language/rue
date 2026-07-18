@@ -14,6 +14,9 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
+    env:
+      # A rerun gets a fresh namespace too, so its first build must be cold.
+      CACHE_PROBE_NONCE: ${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v6
 
@@ -39,7 +42,7 @@ jobs:
       - name: Cold release build (populates the remote cache)
         run: |
           set +e
-          /usr/bin/time -v ./buck2 build --prefer-local //crates/... --target-platforms //platforms:release >cold.log 2>&1
+          /usr/bin/time -v ./buck2 build --prefer-local //crates/... --target-platforms //platforms:release -c "rue.cache_probe_nonce=$CACHE_PROBE_NONCE" >cold.log 2>&1
           status=$?
           set -e
           if [ "$status" -ne 0 ]; then
@@ -55,7 +58,7 @@ jobs:
         run: |
           ./buck2 clean
           set +e
-          /usr/bin/time -v ./buck2 build --prefer-local //crates/... --target-platforms //platforms:release >warm.log 2>&1
+          /usr/bin/time -v ./buck2 build --prefer-local //crates/... --target-platforms //platforms:release -c "rue.cache_probe_nonce=$CACHE_PROBE_NONCE" >warm.log 2>&1
           status=$?
           set -e
           if [ "$status" -ne 0 ]; then
@@ -67,27 +70,7 @@ jobs:
           fi
           grep -E '(Cache hits:|Commands:|Network:)' warm.log | tail -3 || tail -10 warm.log
 
-          command_field() {
-            grep -oE 'Commands: [0-9]+ \(cached: [0-9]+, remote: [0-9]+, local: [0-9]+\)' "$1" |
-              tail -1 |
-              sed -E "s/.*$2: ([0-9]+).*/\\1/"
-          }
-          cold_local="$(command_field cold.log local)"
-          warm_cached="$(command_field warm.log cached)"
-          warm_local="$(command_field warm.log local)"
-          if [ -z "$cold_local" ] || [ -z "$warm_cached" ] || [ -z "$warm_local" ]; then
-            echo "::error::Could not parse Buck command counters from the cache-probe logs."
-            exit 1
-          fi
-          if [ "$warm_cached" -eq 0 ]; then
-            echo "::error::Warm build reported zero remote-cache hits."
-            exit 1
-          fi
-          if [ "$cold_local" -gt 0 ] && [ "$warm_local" -ge "$cold_local" ]; then
-            echo "::error::Warm build did not convert any cold local actions into cache hits (cold local: $cold_local; warm local: $warm_local)."
-            exit 1
-          fi
-          echo "Warm cache reused cold results (cold local: $cold_local; warm cached: $warm_cached; warm local: $warm_local)."
+          scripts/check-cache-probe cold.log warm.log
 
       - name: Upload probe logs
         if: always()
@@ -115,5 +98,5 @@ jobs:
             echo "COLD: $(command_summary cold.log)"
             echo "WARM: $(command_summary warm.log)"
             echo '```'
-            echo "The probe step verifies that WARM converts cold local actions into cache hits."
+            echo "The per-attempt nonce makes COLD unique; the probe verifies that WARM reuses results populated by COLD."
           } >> "$GITHUB_STEP_SUMMARY"

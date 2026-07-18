@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Prove that one cache-probe attempt populated reusable remote action results.
+set -euo pipefail
+
+if [[ $# -ne 2 ]]; then
+    echo "usage: scripts/check-cache-probe COLD_LOG WARM_LOG" >&2
+    exit 2
+fi
+
+parse_counts() {
+    local line
+    line="$(grep -oE 'Commands: [0-9]+ \(cached: [0-9]+, remote: [0-9]+, local: [0-9]+\)' "$1" | tail -1 || true)"
+    if [[ ! "$line" =~ Commands:[[:space:]]+([0-9]+)[[:space:]]+\(cached:[[:space:]]+([0-9]+),[[:space:]]+remote:[[:space:]]+([0-9]+),[[:space:]]+local:[[:space:]]+([0-9]+)\) ]]; then
+        return 1
+    fi
+    printf '%s %s %s %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"
+}
+
+cold_counts="$(parse_counts "$1")" || {
+    echo "::error::Could not parse Buck command counters from cold cache-probe log $1." >&2
+    exit 1
+}
+warm_counts="$(parse_counts "$2")" || {
+    echo "::error::Could not parse Buck command counters from warm cache-probe log $2." >&2
+    exit 1
+}
+
+read -r cold_commands cold_cached cold_remote cold_local <<<"$cold_counts"
+read -r warm_commands warm_cached warm_remote warm_local <<<"$warm_counts"
+
+if [[ "$cold_local" -eq 0 ]]; then
+    echo "::error::Cold build reported zero local actions; the probe nonce did not create a unique cold namespace." >&2
+    exit 1
+fi
+if [[ "$warm_cached" -eq 0 ]]; then
+    echo "::error::Warm build reported zero remote-cache hits." >&2
+    exit 1
+fi
+if [[ "$warm_cached" -le "$cold_cached" ]]; then
+    echo "::error::Warm build did not increase cache hits (cold cached: $cold_cached; warm cached: $warm_cached)." >&2
+    exit 1
+fi
+if [[ "$warm_local" -ge "$cold_local" ]]; then
+    echo "::error::Warm build did not convert cold local actions into cache hits (cold local: $cold_local; warm local: $warm_local)." >&2
+    exit 1
+fi
+
+echo "Warm cache reused cold results (cold commands: $cold_commands; cold cached: $cold_cached; cold remote: $cold_remote; cold local: $cold_local; warm commands: $warm_commands; warm cached: $warm_cached; warm remote: $warm_remote; warm local: $warm_local)."

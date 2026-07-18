@@ -143,8 +143,10 @@ Availability rules, which the workflow steps must respect:
 The `cache-probe` workflow (`.github/workflows/cache-probe.yml`) remains the
 measurement tool: it writes a transient config from the secret, does a cold
 release build of `//crates/...` then a clean-and-rebuild, and reports buck2's
-`Commands: (cached / remote / local)` line. It fails when the warm build does
-not convert any cold local actions into cache hits. Run it with
+`Commands: (cached / remote / local)` line. Each workflow attempt injects a
+unique, otherwise-unused Rust cfg so prior runs cannot satisfy the nominal cold
+phase. The probe fails unless that phase executes local actions and the warm
+phase increases cache hits while reducing local actions. Run it with
 `gh workflow run cache-probe.yml`.
 
 Required CI also records per-step wall time and aggregate cached/remote/local
