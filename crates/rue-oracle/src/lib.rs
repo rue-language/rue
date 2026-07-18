@@ -1656,10 +1656,17 @@ impl<'a> Interp<'a> {
     /// views to `Normal`, while real `borrow` / `inout` arguments carry one
     /// pointer regardless of the pointee's logical width.
     fn call_arg_slot_width(&self, ty: Type, mode: CfgArgMode) -> usize {
-        match mode {
-            CfgArgMode::Normal => self.state.type_pool.abi_slot_count(ty) as usize,
-            CfgArgMode::Inout | CfgArgMode::Borrow => 1,
-        }
+        // Consume the canonical native call-ABI classifier (ADR-0052 phase 5)
+        // so the oracle's model of the argument contract agrees with the
+        // compiler by construction rather than by coincidence. This is the
+        // physical value-decomposition width (representation 2): by-value is
+        // one slot per leaf, a physical `borrow` / `inout` is one pointer.
+        let convention = match mode {
+            CfgArgMode::Normal => rue_air::ArgConvention::ByValue,
+            CfgArgMode::Inout | CfgArgMode::Borrow => rue_air::ArgConvention::ByReference,
+        };
+        rue_air::NativeCallAbi::for_arguments(&self.state.type_pool).arg_slot_width(ty, convention)
+            as usize
     }
 
     /// Validate the caller's complete physical argument layout against the

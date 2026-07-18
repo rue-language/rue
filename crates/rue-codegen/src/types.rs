@@ -253,36 +253,13 @@ pub fn struct_field_slot_offset(
 /// compact layout. When false, correct compact access requires narrow
 /// (one/two/four-byte) loads and stores at compact byte offsets, which is staged
 /// for a follow-up (see [`compact_physical_access_unsupported`]).
+///
+/// Delegates to the canonical layout authority `rue_air::is_slot_identical_layout`
+/// so the compact call-ABI classifier's transitional indirect rule (RUE-976) and
+/// this narrow-access refusal cannot disagree about which types the compact
+/// layout leaves unchanged.
 pub(crate) fn is_slot_identical_layout(type_pool: &FrozenTypeInternPool, ty: Type) -> bool {
-    match ty.kind() {
-        // Eight-byte leaves and the recovery scalar: identical in both models.
-        TypeKind::I64
-        | TypeKind::U64
-        | TypeKind::PtrConst(_)
-        | TypeKind::PtrMut(_)
-        | TypeKind::Error => true,
-        // Zero-sized and compile-time-only types have identical (zero) extent.
-        TypeKind::Unit | TypeKind::Never | TypeKind::ComptimeType | TypeKind::Module(_) => true,
-        // Narrow scalars: one/two/four bytes under the compact layout.
-        TypeKind::I8
-        | TypeKind::U8
-        | TypeKind::Bool
-        | TypeKind::I16
-        | TypeKind::U16
-        | TypeKind::I32
-        | TypeKind::U32 => false,
-        TypeKind::Struct(id) => type_pool
-            .struct_def(id)
-            .fields
-            .iter()
-            .all(|field| is_slot_identical_layout(type_pool, field.ty)),
-        TypeKind::Array(id) => {
-            let (element, _length) = type_pool.array_def(id);
-            is_slot_identical_layout(type_pool, element)
-        }
-        // Enums narrow their tag (u8/u16/u32 vs an eight-byte slot).
-        TypeKind::Enum(_) => false,
-    }
+    rue_air::is_slot_identical_layout(type_pool, ty)
 }
 
 /// The pointee of a pointer type, or the type itself when it is not a pointer.

@@ -20,7 +20,7 @@
 use std::fmt;
 
 use lasso::{Key, ThreadedRodeo};
-use rue_air::{FrozenTypeInternPool, StructId, TypeKind};
+use rue_air::{FrozenTypeInternPool, NativeCallAbi, StructId, TypeKind};
 use rue_cfg::{BlockId, Cfg, CfgValue, Type};
 
 use crate::types;
@@ -272,23 +272,16 @@ fn format_cfg_inst_data_impl(
 ///   slot through that pointer before returning. (RUE-13/78/91)
 ///
 /// Scalars and unit never use sret.
+///
+/// The decision itself is owned by the canonical call-ABI classifier
+/// [`rue_air::NativeCallAbi`] (ADR-0052 phase 5); this is the thin boolean
+/// predicate the sret decision sites and both backends consult.
 pub fn type_uses_sret_return(
     type_pool: &FrozenTypeInternPool,
     ty: Type,
     ret_reg_budget: u32,
 ) -> bool {
-    match ty.kind() {
-        TypeKind::Struct(struct_id) => {
-            if type_pool.is_strbuf(struct_id) {
-                return true;
-            }
-            types::type_slot_count(type_pool, ty) > ret_reg_budget
-        }
-        TypeKind::Array(_) | TypeKind::Enum(_) => {
-            types::type_slot_count(type_pool, ty) > ret_reg_budget
-        }
-        _ => false,
-    }
+    NativeCallAbi::new(type_pool, ret_reg_budget).return_is_sret(ty)
 }
 
 /// Does this function return its value via the sret convention?
