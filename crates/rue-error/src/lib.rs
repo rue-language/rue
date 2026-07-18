@@ -394,6 +394,7 @@ impl ErrorCode {
     pub const INVALID_COMPILER_INPUT: Self = Self(1400);
     pub const COMPILER_RESOURCE_LIMIT: Self = Self(1401);
     pub const COMPILER_RESOURCE_EXHAUSTION: Self = Self(1402);
+    pub const OUTPUT_PUBLICATION: Self = Self(1403);
 
     // ========================================================================
     // Internal compiler errors (E9000-E9999)
@@ -1607,6 +1608,12 @@ pub enum ErrorKind {
     #[error("compiler resource exhaustion: {0}")]
     CompilerResourceExhaustion(String),
 
+    /// The compiled executable could not be published to the output path
+    /// (write, permission, signing, or rename failure). Publication is
+    /// atomic: on this error no partial output artifact remains (RUE-781).
+    #[error("output publication failed: {0}")]
+    OutputPublication(String),
+
     // Internal compiler errors (bugs in the compiler itself)
     #[error("internal compiler producer invariant: {0}")]
     CompilerProducerInvariant(String),
@@ -1800,6 +1807,7 @@ impl ErrorKind {
             ErrorKind::InvalidCompilerInput(_) => ErrorCode::INVALID_COMPILER_INPUT,
             ErrorKind::CompilerResourceLimit(_) => ErrorCode::COMPILER_RESOURCE_LIMIT,
             ErrorKind::CompilerResourceExhaustion(_) => ErrorCode::COMPILER_RESOURCE_EXHAUSTION,
+            ErrorKind::OutputPublication(_) => ErrorCode::OUTPUT_PUBLICATION,
 
             // Internal compiler errors (E9000-E9999)
             ErrorKind::CompilerProducerInvariant(_) | ErrorKind::InternalError(_) => {

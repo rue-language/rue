@@ -561,6 +561,98 @@ fn check_output_clobbers_source<'a>(
     Ok(())
 }
 
+/// Publish the linked executable image to `output_path` atomically.
+///
+/// The image is written to a same-directory temporary file, finalized there
+/// (executable permissions; ad-hoc codesign for Mach-O targets on a macOS
+/// host, which Mach-O executables require to run), and renamed into place
+/// only once complete. On any failure the temporary file is removed and an
+/// `OutputPublication` error is returned, so the output path never holds a
+/// partial, mis-permissioned, or unsigned artifact: it either keeps its
+/// previous contents or receives the fully finalized executable (RUE-781).
+///
+/// Signing before the rename is sound because the signing identifier is
+/// pinned (`dev.rue-lang.program`, RUE-619): the temporary path does not
+/// influence the signed bytes.
+fn publish_executable(output_path: &str, image: &[u8], target: Target) -> Result<(), CompileError> {
+    #[cfg(not(target_os = "macos"))]
+    let _ = target;
+    let fail = |message: String| {
+        Err(CompileError::without_span(ErrorKind::OutputPublication(
+            message,
+        )))
+    };
+    let temp_path = format!("{}.tmp.{}", output_path, std::process::id());
+    let cleanup = |result| {
+        let _ = fs::remove_file(&temp_path);
+        result
+    };
+
+    if let Err(e) = fs::write(&temp_path, image) {
+        return cleanup(fail(format!("could not write {temp_path}: {e}")));
+    }
+
+    #[cfg(unix)]
+    {
+        let path = Path::new(&temp_path);
+        let metadata = match fs::metadata(path) {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                return cleanup(fail(format!(
+                    "could not read file metadata for {temp_path}: {e}"
+                )));
+            }
+        };
+        let mut perms = metadata.permissions();
+        perms.set_mode(0o755);
+        if let Err(e) = fs::set_permissions(path, perms) {
+            return cleanup(fail(format!(
+                "could not set executable permissions on {temp_path}: {e}"
+            )));
+        }
+    }
+
+    // Ad-hoc codesign for macOS-target executables (required to run on
+    // ARM64). A command-line Mach-O has no Info.plist, so codesign's default
+    // identifier would come from the file name; pin both identity and
+    // timestamp policy so the destination path never changes the program
+    // bytes (RUE-619).
+    #[cfg(target_os = "macos")]
+    if target.is_macho() {
+        let result = Command::new("codesign")
+            .args([
+                "-f",
+                "-s",
+                "-",
+                "--identifier",
+                "dev.rue-lang.program",
+                "--timestamp=none",
+                &temp_path,
+            ])
+            .output();
+        match result {
+            Ok(output) => {
+                if !output.status.success() {
+                    return cleanup(fail(format!(
+                        "codesign failed: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    )));
+                }
+            }
+            Err(e) => {
+                return cleanup(fail(format!("could not run codesign: {e}")));
+            }
+        }
+    }
+
+    if let Err(e) = fs::rename(&temp_path, output_path) {
+        return cleanup(fail(format!(
+            "could not move finished executable to {output_path}: {e}"
+        )));
+    }
+    Ok(())
+}
+
 fn parse_jobs_value(jobs_str: &str) -> Option<usize> {
     let jobs = match jobs_str.parse::<usize>() {
         Ok(jobs) => jobs,
@@ -2028,71 +2120,14 @@ fn main() {
             // Print warnings using the diagnostic formatter
             diagnostics.print_warnings(&output.warnings);
 
-            // Write output
-            if let Err(e) = fs::write(&options.output_path, &output.elf) {
-                eprintln!("Error writing {}: {}", options.output_path, e);
+            // Publish the executable atomically. Any failure is fatal: a
+            // partially written, mis-permissioned, or unsigned artifact must
+            // not be left at the output path behind a success exit (RUE-781).
+            if let Err(error) =
+                publish_executable(&options.output_path, &output.elf, compile_options.target)
+            {
+                diagnostics.print_error(&error);
                 std::process::exit(1);
-            }
-
-            // Make executable (Unix only)
-            #[cfg(unix)]
-            {
-                let path = Path::new(&options.output_path);
-                match fs::metadata(path) {
-                    Ok(metadata) => {
-                        let mut perms = metadata.permissions();
-                        perms.set_mode(0o755);
-                        if let Err(e) = fs::set_permissions(path, perms) {
-                            eprintln!(
-                                "Warning: could not set executable permissions on {}: {}",
-                                options.output_path, e
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "Warning: could not read file metadata for {}: {}",
-                            options.output_path, e
-                        );
-                    }
-                }
-            }
-
-            // Ad-hoc codesign for macOS (required for executables to run on ARM64)
-            #[cfg(target_os = "macos")]
-            {
-                // Only codesign if target is macOS (cross-compilation check)
-                if compile_options.target.is_macho() {
-                    // A command-line Mach-O has no Info.plist, so codesign's
-                    // default identifier comes from the output filename. Pin
-                    // both identity and timestamp policy: choosing a different
-                    // destination path must not change the program bytes
-                    // (RUE-619).
-                    let result = Command::new("codesign")
-                        .args([
-                            "-f",
-                            "-s",
-                            "-",
-                            "--identifier",
-                            "dev.rue-lang.program",
-                            "--timestamp=none",
-                            &options.output_path,
-                        ])
-                        .output();
-                    match result {
-                        Ok(output) => {
-                            if !output.status.success() {
-                                eprintln!(
-                                    "Warning: codesign failed: {}",
-                                    String::from_utf8_lossy(&output.stderr)
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Warning: could not run codesign: {}", e);
-                        }
-                    }
-                }
             }
 
             // Don't print normal compilation message when using --benchmark-json
@@ -3837,5 +3872,61 @@ mod tests {
     #[test]
     fn log_format_all_names() {
         assert_eq!(LogFormat::all_names(), "text, json");
+    }
+
+    // ========== Atomic executable publication (RUE-781) ==========
+
+    fn publish_test_dir(label: &str) -> std::path::PathBuf {
+        let dir = env::temp_dir().join(format!("rue-publish-{label}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create publish test dir");
+        dir
+    }
+
+    #[test]
+    fn publish_executable_success_installs_output_and_no_temp() {
+        let dir = publish_test_dir("ok");
+        let output = dir.join("prog");
+        let output_str = output.to_str().unwrap();
+        publish_executable(output_str, b"image-bytes", Target::X86_64Linux)
+            .expect("publication succeeds");
+        assert_eq!(fs::read(&output).unwrap(), b"image-bytes");
+        #[cfg(unix)]
+        assert_eq!(
+            fs::metadata(&output).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|name| name != "prog")
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left: {leftovers:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn publish_executable_failure_is_atomic() {
+        let dir = publish_test_dir("fail");
+        // The output path is an existing directory, so the final rename must
+        // fail after the temp file was fully written — the failure mode where
+        // a non-atomic implementation leaves debris.
+        let output = dir.join("occupied");
+        fs::create_dir_all(&output).unwrap();
+        let output_str = output.to_str().unwrap();
+        let error = publish_executable(output_str, b"image-bytes", Target::X86_64Linux)
+            .expect_err("publication must fail");
+        assert!(matches!(error.kind, ErrorKind::OutputPublication(_)));
+        assert!(output.is_dir(), "output path must be untouched");
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|name| name != "occupied")
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "failed publication left artifacts: {leftovers:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 }
