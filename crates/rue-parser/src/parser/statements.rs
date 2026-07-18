@@ -243,15 +243,30 @@ impl Parser {
         }
         self.expect(TokenKind::Dot)?;
         let mut segments = vec![self.ident()?];
+        // Exactly one identifier — the variant — may follow constructor
+        // arguments. Reject a group attached to an earlier module segment
+        // instead of silently moving it onto the final type-name segment.
+        let mut segments_after_ctor = ctor_args.as_ref().map(|_| 1usize);
         if ctor_args.is_none() && self.at(TokenKind::LParen) && self.paren_group_precedes_dot() {
             ctor_args = Some(self.call_args()?);
+            segments_after_ctor = Some(0);
         }
         while self.eat(TokenKind::Dot) {
             segments.push(self.ident()?);
+            if let Some(count) = &mut segments_after_ctor {
+                *count += 1;
+            }
             if ctor_args.is_none() && self.at(TokenKind::LParen) && self.paren_group_precedes_dot()
             {
                 ctor_args = Some(self.call_args()?);
+                segments_after_ctor = Some(0);
             }
+        }
+        if matches!(segments_after_ctor, Some(count) if count != 1) {
+            self.error(
+                "type-constructor arguments in a pattern must follow the final type path segment",
+            );
+            return Err(());
         }
         let variant = segments.pop().unwrap();
         let (type_name, base) = if segments.is_empty() {
@@ -563,5 +578,18 @@ mod tests {
     #[test]
     fn rejects_a_let_statement_without_a_terminator() {
         assert!(!parses("fn f() { let x = 1 x }"));
+    }
+
+    #[test]
+    fn pattern_constructor_arguments_follow_the_final_type_segment() {
+        assert!(parses(
+            "fn f(x: i32) -> i32 { match x { Result(i32, i32).Ok(v) => v } }"
+        ));
+        assert!(parses(
+            "fn f(x: i32) -> i32 { match x { std.result.Result(i32, i32).Ok(v) => v } }"
+        ));
+        assert!(!parses(
+            "fn f(x: i32) -> i32 { match x { std(i32).result.Result.Ok(v) => v } }"
+        ));
     }
 }
