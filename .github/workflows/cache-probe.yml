@@ -2,9 +2,9 @@ name: Cache probe
 
 # Validates + measures the BuildBuddy remote cache (RUE-316). Non-blocking:
 # never gates a merge. Run manually with `gh workflow run cache-probe.yml`
-# (on a repo that has the BUILDBUDDY_API_KEY secret). It does a cold build,
-# then clears the local buck-out and rebuilds — the second build should show
-# remote cache hits in buck2's "Commands:" line.
+# (on a repo that has the BUILDBUDDY_API_KEY secret). It builds the same release
+# target graph as CI, clears the local buck-out, and rebuilds. The workflow fails
+# unless the second build converts locally executed cold actions into cache hits.
 on:
   workflow_dispatch:
 
@@ -36,10 +36,10 @@ jobs:
           scripts/provision-build-cache install
           scripts/provision-build-cache apply
 
-      - name: Cold build (populates the remote cache)
+      - name: Cold release build (populates the remote cache)
         run: |
           set +e
-          /usr/bin/time -v ./buck2 build --prefer-local //crates/rue:rue >cold.log 2>&1
+          /usr/bin/time -v ./buck2 build --prefer-local //crates/... --target-platforms //platforms:release >cold.log 2>&1
           status=$?
           set -e
           if [ "$status" -ne 0 ]; then
@@ -49,13 +49,13 @@ jobs:
             echo "::error::Cold cache-probe build failed with exit $status"
             exit "$status"
           fi
-          grep -E '^(Cache hits:|Commands:|Network:)' cold.log | tail -3 || tail -10 cold.log
+          grep -E '(Cache hits:|Commands:|Network:)' cold.log | tail -3 || tail -10 cold.log
 
-      - name: Clear local buck-out, rebuild (should hit the remote cache)
+      - name: Clear local buck-out, rebuild release (should hit the remote cache)
         run: |
           ./buck2 clean
           set +e
-          /usr/bin/time -v ./buck2 build --prefer-local //crates/rue:rue >warm.log 2>&1
+          /usr/bin/time -v ./buck2 build --prefer-local //crates/... --target-platforms //platforms:release >warm.log 2>&1
           status=$?
           set -e
           if [ "$status" -ne 0 ]; then
@@ -65,7 +65,29 @@ jobs:
             echo "::error::Warm cache-probe build failed with exit $status"
             exit "$status"
           fi
-          grep -E '^(Cache hits:|Commands:|Network:)' warm.log | tail -3 || tail -10 warm.log
+          grep -E '(Cache hits:|Commands:|Network:)' warm.log | tail -3 || tail -10 warm.log
+
+          command_field() {
+            grep -oE 'Commands: [0-9]+ \(cached: [0-9]+, remote: [0-9]+, local: [0-9]+\)' "$1" |
+              tail -1 |
+              sed -E "s/.*$2: ([0-9]+).*/\\1/"
+          }
+          cold_local="$(command_field cold.log local)"
+          warm_cached="$(command_field warm.log cached)"
+          warm_local="$(command_field warm.log local)"
+          if [ -z "$cold_local" ] || [ -z "$warm_cached" ] || [ -z "$warm_local" ]; then
+            echo "::error::Could not parse Buck command counters from the cache-probe logs."
+            exit 1
+          fi
+          if [ "$warm_cached" -eq 0 ]; then
+            echo "::error::Warm build reported zero remote-cache hits."
+            exit 1
+          fi
+          if [ "$cold_local" -gt 0 ] && [ "$warm_local" -ge "$cold_local" ]; then
+            echo "::error::Warm build did not convert any cold local actions into cache hits (cold local: $cold_local; warm local: $warm_local)."
+            exit 1
+          fi
+          echo "Warm cache reused cold results (cold local: $cold_local; warm cached: $warm_cached; warm local: $warm_local)."
 
       - name: Upload probe logs
         if: always()
@@ -93,5 +115,5 @@ jobs:
             echo "COLD: $(command_summary cold.log)"
             echo "WARM: $(command_summary warm.log)"
             echo '```'
-            echo "A non-zero 'cached'/'remote' count on WARM means the remote cache is working."
+            echo "The probe step verifies that WARM converts cold local actions into cache hits."
           } >> "$GITHUB_STEP_SUMMARY"

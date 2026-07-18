@@ -84,15 +84,23 @@ they're recorded here so a future config change doesn't silently regress:
    wrapper adds `--prefer-local` to ordinary build/test/run/install commands.
    Remote cache lookup still happens before a local miss executes. An explicit
    execution-mode flag overrides the wrapper.
-3. **rustc under RE** (`toolchains/rust/defs.bzl`): rustc finds `librustc_driver.so`
+3. **Two cache-upload gates**: the execution platform's
+   `allow_cache_uploads = True` permits local-result uploads, but ordinary Rust
+   actions also defer to the OSS-default-off
+   `[buck2] default_allow_cache_upload = true` setting. Buck 2026-07-01 still
+   hard-disabled uploads for most Rust actions; Buck 2026-07-15 contains the
+   upstream fix that makes them honor this setting. Both the pin and the config
+   knob are required — without them the client connects and downloads CAS
+   inputs, but locally compiled Rust results never populate the action cache.
+4. **rustc under RE** (`toolchains/rust/defs.bzl`): rustc finds `librustc_driver.so`
    via its native `$ORIGIN/../lib` RPATH, which only resolves if the whole toolchain
    tree is materialized on the remote worker. The `compiler`/`rustdoc` RunInfo carry
    the full distribution as a hidden input so RE uploads it co-located. This is the
    relocatable, canonical fix — *not* an absolute-path `LD_LIBRARY_PATH` hack.
-4. **Container** (`platforms/remote_cache.bzl`): pinned to `rbe-ubuntu22-04`
+5. **Container** (`platforms/remote_cache.bzl`): pinned to `rbe-ubuntu22-04`
    (Python 3.10 — the prelude's rustc wrapper needs ≥3.9; the default image ships
    3.6).
-5. **Linker** (RUE-320, NOT landed): the remote worker needs the linker driver to
+6. **Linker** (RUE-320, NOT landed): the remote worker needs the linker driver to
    be **`cc`** instead of `clang++` (lld — `-fuse-ld=lld`, shipped with rust — does
    the real linking; the driver just needs to exist, and `cc` is everywhere while
    `clang++` is not). This was proven with `linker = "cc"` in `toolchains/BUCK`, but
@@ -100,9 +108,10 @@ they're recorded here so a future config change doesn't silently regress:
    find 'ld'` when the hermetic lld flags aren't on the command). It has to be
    **scoped to the remote platform** instead — tracked as RUE-320.
 
-Change 3 (`$ORIGIN` toolchain-tree) is global and local-safe (verified: local
-build + suite green). 1, 2, 4 live in the opt-in `.buckconfig.local` / the
-`remote_cache` platform. 5 is the remaining blocker for a default-on RE.
+Change 4 (`$ORIGIN` toolchain-tree) is global and local-safe (verified: local
+build + suite green). 1, 2, 3, and 5 live in the opt-in
+`.buckconfig.local` / the `remote_cache` platform. 6 is the remaining blocker
+for default-on RE.
 
 ## CI
 
@@ -132,8 +141,10 @@ Availability rules, which the workflow steps must respect:
 
 The `cache-probe` workflow (`.github/workflows/cache-probe.yml`) remains the
 measurement tool: it writes a transient config from the secret, does a cold
-build then a clean-and-rebuild, and reports buck2's `Commands: (cached /
-remote / local)` line. Run it with `gh workflow run cache-probe.yml`.
+release build of `//crates/...` then a clean-and-rebuild, and reports buck2's
+`Commands: (cached / remote / local)` line. It fails when the warm build does
+not convert any cold local actions into cache hits. Run it with
+`gh workflow run cache-probe.yml`.
 
 ## Toward a fully hermetic linker
 

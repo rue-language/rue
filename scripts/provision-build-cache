@@ -40,6 +40,10 @@ validate_config() {
         echo "error: BuildBuddy config does not contain a configured API key" >&2
         return 1
     fi
+    if ! grep -Eq '^[[:space:]]*default_allow_cache_upload[[:space:]]*=[[:space:]]*true([[:space:]]|$)' "$central_config"; then
+        echo "error: BuildBuddy config does not enable Rust action uploads; rerun scripts/provision-build-cache install" >&2
+        return 1
+    fi
 }
 
 install_config() {
@@ -70,6 +74,9 @@ EOF
 
 [buck2]
 digest_algorithms = SHA256
+# Buck 2026-07-15 lets ordinary Rust actions defer to this OSS-default-off
+# switch. The executor's allow_cache_uploads flag is a separate required gate.
+default_allow_cache_upload = true
 
 [build]
 execution_platforms = root//platforms:remote_cache

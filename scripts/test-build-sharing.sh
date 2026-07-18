@@ -34,6 +34,18 @@ test_cache_provisioning() {
     make_rue_root "$sb/primary"
     make_rue_root "$sb/worktree"
 
+    mkdir -p "$(dirname "$config")"
+    cat >"$config" <<EOF
+[buck2_re_client]
+http_headers = x-buildbuddy-api-key:$key
+EOF
+    chmod 600 "$config"
+    rc=0
+    HOME="$sb/home" XDG_CONFIG_HOME="$sb/config" \
+        "$SRC_ROOT/scripts/provision-build-cache" status "$sb/primary" >/dev/null 2>&1 || rc=$?
+    check "cache: pre-upload-gate configs require migration" \
+        "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
+
     rc=0
     out="$(HOME="$sb/home" XDG_CONFIG_HOME="$sb/config" BUILDBUDDY_API_KEY="$key" \
         "$SRC_ROOT/scripts/provision-build-cache" install 2>&1)" || rc=$?
@@ -41,6 +53,8 @@ test_cache_provisioning() {
     check "cache: install never prints the key" "$([[ "$out" != *"$key"* ]] && echo 0 || echo 1)"
     mode="$(stat -c '%a' "$config" 2>/dev/null || stat -f '%Lp' "$config")"
     check "cache: central config is private" "$([ $((8#$mode & 077)) -eq 0 ] && echo 0 || echo 1)"
+    check "cache: Rust action uploads are enabled" \
+        "$(grep -Eq '^default_allow_cache_upload = true$' "$config" && echo 0 || echo 1)"
 
     rc=0
     out="$(HOME="$sb/home" XDG_CONFIG_HOME="$sb/config" \
@@ -122,6 +136,8 @@ test_buck_wrapper_auto_provisions() {
     cat >"$config" <<'EOF'
 [buck2_re_client]
 http_headers = x-buildbuddy-api-key:test-secret
+[buck2]
+default_allow_cache_upload = true
 [build]
 execution_platforms = root//platforms:remote_cache
 EOF
