@@ -1,0 +1,45 @@
+# Atomic executable publication (RUE-781).
+#
+# Publication failures used to warn and exit 0, printing the success line
+# over an unusable artifact. They are now fatal E1403 output-publication
+# errors routed through the selected diagnostic format, and publication is
+# atomic: the image is finalized in a same-directory temp file and renamed
+# into place, so the output path never holds a partial artifact.
+
+[section]
+id = "cli.output_publication"
+name = "Atomic executable publication (RUE-781)"
+description = "Publication failures are fatal E1403 errors; no success line, no partial output."
+
+# The output path is an existing directory: the final rename fails after the
+# image was fully written, which is exactly the case where a non-atomic
+# implementation leaves debris and a warning-based one claims success.
+[[case]]
+name = "output_path_is_directory_fails"
+description = "-o pointing at a directory is a fatal E1403, not a warning + success."
+args = ["main.rue", "-o", "outdir"]
+compile_fail = true
+error_contains = ["output publication failed"]
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 { 42 }
+""" },
+    # Creates outdir/ so the publication rename target is a directory.
+    { path = "outdir/placeholder.txt", source = "occupied" },
+]
+
+# On a macOS host, a Mach-O target requires ad-hoc codesign; if codesign
+# cannot run, publication must fail closed instead of publishing an
+# unsignable binary behind a success message. An empty PATH makes the
+# codesign spawn fail deterministically without touching the toolchain.
+[[case]]
+name = "codesign_failure_is_fatal"
+description = "codesign spawn failure is a fatal E1403 on macOS hosts."
+args = ["main.rue", "-o", "prog"]
+only_on = ["aarch64-macos"]
+env = { PATH = "" }
+compile_fail = true
+error_contains = ["output publication failed", "codesign"]
+files = [{ path = "main.rue", source = """
+fn main() -> i32 { 42 }
+""" }]
