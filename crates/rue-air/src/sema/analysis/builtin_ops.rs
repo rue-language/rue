@@ -588,7 +588,7 @@ impl<'a> BodySema<'a> {
     }
 
     /// Resolve the type of a place without emitting AIR or recording a move.
-    pub(super) fn peek_place_type(&self, inst_ref: InstRef, ctx: &AnalysisContext) -> Option<Type> {
+    pub(crate) fn peek_place_type(&self, inst_ref: InstRef, ctx: &AnalysisContext) -> Option<Type> {
         match &self.rir.get(inst_ref).data {
             InstData::VarRef { name } => {
                 if let Some(local) = ctx.locals.get(name) {
