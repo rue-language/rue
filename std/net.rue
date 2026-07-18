@@ -23,6 +23,7 @@
 
 const binary = @import("binary.rue");
 const option = @import("option.rue");
+const result = @import("result.rue");
 
 // The AF_INET address-family value shared by both v1 Linux targets.
 fn _af_inet() -> u16 {
@@ -120,5 +121,537 @@ pub struct SockAddr {
         let port = binary.u16_from_be_bytes([b[2], b[3]]);
         let ip = Ipv4Addr.new(b[4], b[5], b[6], b[7]);
         O.Some(SockAddr.v4(ip, port))
+    }
+}
+
+// ===========================================================================
+// Blocking TCP v1 (RUE-983, ADR-0060 §1/§5/§6/§7).
+//
+// Pure Rue over `@syscall`, Linux x86-64 and aarch64 only. Constructors are
+// the fail-closed platform boundary: on macOS they return
+// `NetworkError.Unsupported` BEFORE any socket syscall (no guessed Darwin
+// numbers; real Darwin support is RUE-986). Because no constructor succeeds
+// off-Linux, every method and drop below runs only over Linux descriptors,
+// so the syscall tables carry Linux numbers keyed by architecture alone.
+//
+// Descriptor ownership follows ADR-0057 §4 exactly as std.fs.File: scope exit
+// closes a live fd via `drop fn`; consuming `close(self)` first swaps in the
+// `-1` sentinel so the moved-from value's drop is a no-op and the fd closes
+// exactly once. File/TcpStream IO names stay parallel (`read`, `write`,
+// `write_all`, `close`) without a trait abstraction (ADR-0060 §5).
+// ===========================================================================
+
+const arraybuf = @import("arraybuf.rue");
+
+// A normalized, target-independent network error (ADR-0060 §6). Useful stable
+// categories are mapped; everything else falls through to `Other(i64)` with
+// the raw errno, so no error is ever lost.
+pub enum NetworkError {
+    Unsupported,          // not a v1 platform (macOS until RUE-986)
+    PermissionDenied,     // EACCES, EPERM
+    AddressInUse,         // EADDRINUSE
+    AddressNotAvailable,  // EADDRNOTAVAIL
+    ConnectionRefused,    // ECONNREFUSED
+    ConnectionReset,      // ECONNRESET
+    ConnectionAborted,    // ECONNABORTED
+    NotConnected,         // ENOTCONN
+    TimedOut,             // ETIMEDOUT
+    Interrupted,          // EINTR
+    WouldBlock,           // EAGAIN / EWOULDBLOCK
+    InvalidInput,         // EINVAL, EBADF
+    Other(i64),           // any other raw errno
+}
+
+// How `TcpStream.shutdown` disables the connection's directions.
+pub enum Shutdown {
+    Read,   // SHUT_RD: further receives return EOF
+    Write,  // SHUT_WR: sends are done; the peer's read sees EOF
+    Both,   // SHUT_RDWR
+}
+
+// Whether this target runs real v1 network syscalls. The single fail-closed
+// platform gate (ADR-0060 §7): macOS waits for RUE-986.
+fn _net_supported() -> bool {
+    match @target_os() {
+        Os.Linux => true,
+        Os.Macos => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Linux socket syscall numbers, keyed by architecture. These are only issued
+// behind `_net_supported()` (see the section comment), so no Darwin numbers
+// appear here.
+// ---------------------------------------------------------------------------
+
+fn _sys_socket() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => 41,
+        Arch.Aarch64 => 198,
+    }
+}
+
+fn _sys_connect() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => 42,
+        Arch.Aarch64 => 203,
+    }
+}
+
+fn _sys_accept() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => 43,
+        Arch.Aarch64 => 202,
+    }
+}
+
+fn _sys_bind() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => 49,
+        Arch.Aarch64 => 200,
+    }
+}
+
+fn _sys_listen() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => 50,
+        Arch.Aarch64 => 201,
+    }
+}
+
+fn _sys_getsockname() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => 51,
+        Arch.Aarch64 => 204,
+    }
+}
+
+fn _sys_shutdown() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => 48,
+        Arch.Aarch64 => 210,
+    }
+}
+
+fn _sys_net_read() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => 0,
+        Arch.Aarch64 => 63,
+    }
+}
+
+fn _sys_net_write() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => 1,
+        Arch.Aarch64 => 64,
+    }
+}
+
+fn _sys_net_close() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => 3,
+        Arch.Aarch64 => 57,
+    }
+}
+
+// Linux socket constants, identical on both v1 architectures.
+fn _sock_stream() -> u64 { 1 }
+fn _default_backlog() -> u64 { 128 }
+
+// Normalize a POSITIVE Linux errno into `NetworkError` (asm-generic values,
+// same on x86-64 and aarch64).
+fn _normalize_net_errno(e: i64) -> NetworkError {
+    // EPERM=1 EINTR=4 EBADF=9 EAGAIN=11 EACCES=13 EINVAL=22 EADDRINUSE=98
+    // EADDRNOTAVAIL=99 ECONNABORTED=103 ECONNRESET=104 ENOTCONN=107
+    // ETIMEDOUT=110 ECONNREFUSED=111
+    if e == 1 {
+        NetworkError.PermissionDenied
+    } else if e == 13 {
+        NetworkError.PermissionDenied
+    } else if e == 98 {
+        NetworkError.AddressInUse
+    } else if e == 99 {
+        NetworkError.AddressNotAvailable
+    } else if e == 111 {
+        NetworkError.ConnectionRefused
+    } else if e == 104 {
+        NetworkError.ConnectionReset
+    } else if e == 103 {
+        NetworkError.ConnectionAborted
+    } else if e == 107 {
+        NetworkError.NotConnected
+    } else if e == 110 {
+        NetworkError.TimedOut
+    } else if e == 4 {
+        NetworkError.Interrupted
+    } else if e == 11 {
+        NetworkError.WouldBlock
+    } else if e == 22 {
+        NetworkError.InvalidInput
+    } else if e == 9 {
+        NetworkError.InvalidInput
+    } else {
+        NetworkError.Other(e)
+    }
+}
+
+// Serialize a marshalled sockaddr_in value into a kernel-addressable 16-byte
+// heap buffer. A `[u8; 16]` VALUE lives in 8-byte logical slots (ADR-0040),
+// so its storage is not the contiguous byte image the kernel needs; this is
+// the one copy from value space into byte space. Caller frees with
+// `@free_bytes(buf, sockaddr_in_len(), 1)`.
+fn _sockaddr_to_kernel_buf(b: [u8; 16]) -> ptr mut u8 {
+    let buf: ptr mut u8 = checked { @alloc_bytes(sockaddr_in_len(), 1) };
+    if checked { @ptr_to_int(buf) } == 0 {
+        @panic("out of memory");
+    }
+    let mut i: u64 = 0;
+    while i < 16 {
+        checked { @byte_write(buf, i, b[i]); };
+        i = i + 1;
+    }
+    buf
+}
+
+// Create an AF_INET SOCK_STREAM socket, or the normalized error.
+fn _new_stream_socket() -> result.Result(i32, NetworkError) {
+    let R = result.Result(i32, NetworkError);
+    let af: u64 = @intCast(_af_inet());
+    let proto: u64 = 0;
+    let ret: i64 = checked { @syscall(_sys_socket(), af, _sock_stream(), proto) };
+    if ret < 0 {
+        R.Err(_normalize_net_errno(0 - ret))
+    } else {
+        let fd: i32 = @intCast(ret);
+        R.Ok(fd)
+    }
+}
+
+// Close a raw fd on an error path where no owned value exists yet. The error
+// (if any) is unobservable by design, like drop-close.
+fn _close_raw(fd: i32) {
+    if fd >= 0 {
+        let fd_u: u64 = @intCast(fd);
+        checked { @syscall(_sys_net_close(), fd_u); };
+    }
+}
+
+// A connected TCP stream: an owned socket descriptor (ADR-0060 §5).
+//
+// `read`/`write`/`write_all` mirror `std.fs.File` byte-for-byte in shape:
+// read appends into the buffer's spare capacity and `Ok(0)` means the peer
+// closed (EOF, including after the peer's `shutdown(Write)`); write may be
+// short; `write_all` loops over short writes and retries EINTR.
+pub struct TcpStream {
+    fd: i32,
+
+    // Connect to `addr`, blocking until established or failed.
+    fn connect(addr: SockAddr) -> result.Result(TcpStream, NetworkError) {
+        let R = result.Result(TcpStream, NetworkError);
+        if !_net_supported() {
+            return R.Err(NetworkError.Unsupported);
+        }
+        let RS = result.Result(i32, NetworkError);
+        let fd = match _new_stream_socket() {
+            RS.Ok(fd) => fd,
+            RS.Err(e) => { return R.Err(e); },
+        };
+        let buf = _sockaddr_to_kernel_buf(addr.to_sockaddr_in());
+        let baddr: u64 = checked { @ptr_to_int(buf) };
+        let fd_u: u64 = @intCast(fd);
+        let ret: i64 = checked { @syscall(_sys_connect(), fd_u, baddr, sockaddr_in_len()) };
+        checked { @free_bytes(buf, sockaddr_in_len(), 1); };
+        if ret < 0 {
+            _close_raw(fd);
+            return R.Err(_normalize_net_errno(0 - ret));
+        }
+        R.Ok(TcpStream { fd: fd })
+    }
+
+    // Read up to the buffer's spare capacity, appending to `buf`; the count
+    // is returned. `Ok(0)` means the peer closed this direction (EOF) and
+    // nothing else: a spare-capacity-free buffer is the caller error
+    // `Err(InvalidInput)`, exactly as `File.read` (ADR-0057 §5).
+    fn read(inout self, inout buf: arraybuf.ArrayBuf(u8)) -> result.Result(u64, NetworkError) {
+        let R = result.Result(u64, NetworkError);
+        let want = buf.capacity() - buf.len();
+        if want == 0 {
+            return R.Err(NetworkError.InvalidInput);
+        }
+        let tmp: ptr mut u8 = checked { @alloc_bytes(want, 1) };
+        if checked { @ptr_to_int(tmp) } == 0 {
+            @panic("out of memory");
+        }
+        let addr: u64 = checked { @ptr_to_int(tmp) };
+        let fd_u: u64 = @intCast(self.fd);
+        let ret: i64 = checked { @syscall(_sys_net_read(), fd_u, addr, want) };
+        if ret < 0 {
+            checked { @free_bytes(tmp, want, 1); };
+            return R.Err(_normalize_net_errno(0 - ret));
+        }
+        let n: u64 = @intCast(ret);
+        let mut i: u64 = 0;
+        while i < n {
+            let b = checked { @byte_read(tmp, i) };
+            buf.push(b);
+            i = i + 1;
+        }
+        checked { @free_bytes(tmp, want, 1); };
+        R.Ok(n)
+    }
+
+    // Send the bytes of `buf` in a single write(2); may send fewer than
+    // `buf.len()` (the count is returned). Use `write_all` for the
+    // whole-buffer guarantee.
+    fn write(inout self, borrow buf: arraybuf.ArrayBuf(u8)) -> result.Result(u64, NetworkError) {
+        let R = result.Result(u64, NetworkError);
+        let n = buf.len();
+        if n == 0 {
+            return R.Ok(0);
+        }
+        let tmp: ptr mut u8 = checked { @alloc_bytes(n, 1) };
+        if checked { @ptr_to_int(tmp) } == 0 {
+            @panic("out of memory");
+        }
+        let mut i: u64 = 0;
+        while i < n {
+            checked { @byte_write(tmp, i, buf.get_or(i, 0)); };
+            i = i + 1;
+        }
+        let addr: u64 = checked { @ptr_to_int(tmp) };
+        let fd_u: u64 = @intCast(self.fd);
+        let ret: i64 = checked { @syscall(_sys_net_write(), fd_u, addr, n) };
+        checked { @free_bytes(tmp, n, 1); };
+        if ret < 0 {
+            R.Err(_normalize_net_errno(0 - ret))
+        } else {
+            R.Ok(@intCast(ret))
+        }
+    }
+
+    // Send every byte of `buf`, looping over short writes and retrying EINTR.
+    fn write_all(inout self, borrow buf: arraybuf.ArrayBuf(u8)) -> result.Result((), NetworkError) {
+        let R = result.Result((), NetworkError);
+        let n = buf.len();
+        if n == 0 {
+            return R.Ok(());
+        }
+        let tmp: ptr mut u8 = checked { @alloc_bytes(n, 1) };
+        if checked { @ptr_to_int(tmp) } == 0 {
+            @panic("out of memory");
+        }
+        let mut i: u64 = 0;
+        while i < n {
+            checked { @byte_write(tmp, i, buf.get_or(i, 0)); };
+            i = i + 1;
+        }
+        let base: u64 = checked { @ptr_to_int(tmp) };
+        let fd_u: u64 = @intCast(self.fd);
+        let mut off: u64 = 0;
+        while off < n {
+            let ret: i64 = checked { @syscall(_sys_net_write(), fd_u, base + off, n - off) };
+            if ret < 0 {
+                let e = _normalize_net_errno(0 - ret);
+                let retry = match e {
+                    NetworkError.Interrupted => true,
+                    _ => false,
+                };
+                if !retry {
+                    checked { @free_bytes(tmp, n, 1); };
+                    return R.Err(e);
+                }
+            } else {
+                let wrote: u64 = @intCast(ret);
+                if wrote == 0 {
+                    // No progress on a non-error write; stop rather than spin.
+                    checked { @free_bytes(tmp, n, 1); };
+                    return R.Err(NetworkError.Other(0));
+                }
+                off = off + wrote;
+            }
+        }
+        checked { @free_bytes(tmp, n, 1); };
+        R.Ok(())
+    }
+
+    // Disable one or both directions of the connection. After
+    // `shutdown(Write)`, the peer's read observes EOF (`Ok(0)`) once it
+    // drains buffered data; this value still owns the fd and must be closed.
+    fn shutdown(inout self, how: Shutdown) -> result.Result((), NetworkError) {
+        let R = result.Result((), NetworkError);
+        let mode: u64 = match how {
+            Shutdown.Read => 0,   // SHUT_RD
+            Shutdown.Write => 1,  // SHUT_WR
+            Shutdown.Both => 2,   // SHUT_RDWR
+        };
+        let fd_u: u64 = @intCast(self.fd);
+        let ret: i64 = checked { @syscall(_sys_shutdown(), fd_u, mode) };
+        if ret < 0 {
+            R.Err(_normalize_net_errno(0 - ret))
+        } else {
+            R.Ok(())
+        }
+    }
+
+    // Consuming close (ADR-0057 §4): the sentinel makes the moved-from
+    // value's drop a no-op, so the fd closes exactly once.
+    fn close(self) -> result.Result((), NetworkError) {
+        let R = result.Result((), NetworkError);
+        let mut me = self;
+        let fd = me.fd;
+        me.fd = -1;
+        if fd < 0 {
+            return R.Ok(());
+        }
+        let fd_u: u64 = @intCast(fd);
+        let ret: i64 = checked { @syscall(_sys_net_close(), fd_u) };
+        if ret < 0 {
+            R.Err(_normalize_net_errno(0 - ret))
+        } else {
+            R.Ok(())
+        }
+    }
+}
+
+// Scope-exit close, guarded by the consuming-close sentinel (ADR-0057 §4).
+drop fn TcpStream(self) {
+    if self.fd >= 0 {
+        let fd_u: u64 = @intCast(self.fd);
+        checked { @syscall(_sys_net_close(), fd_u); };
+    }
+}
+
+// A listening TCP socket: an owned descriptor distinct from `TcpStream`
+// (ADR-0060 §5) — a listener accepts connections, a stream transfers bytes.
+pub struct TcpListener {
+    fd: i32,
+
+    // Bind to `addr` and start listening (socket + bind + listen). Bind with
+    // port 0 to let the kernel choose an ephemeral port, then recover it with
+    // `local_addr`.
+    fn bind(addr: SockAddr) -> result.Result(TcpListener, NetworkError) {
+        let R = result.Result(TcpListener, NetworkError);
+        if !_net_supported() {
+            return R.Err(NetworkError.Unsupported);
+        }
+        let RS = result.Result(i32, NetworkError);
+        let fd = match _new_stream_socket() {
+            RS.Ok(fd) => fd,
+            RS.Err(e) => { return R.Err(e); },
+        };
+        let buf = _sockaddr_to_kernel_buf(addr.to_sockaddr_in());
+        let baddr: u64 = checked { @ptr_to_int(buf) };
+        let fd_u: u64 = @intCast(fd);
+        let bret: i64 = checked { @syscall(_sys_bind(), fd_u, baddr, sockaddr_in_len()) };
+        checked { @free_bytes(buf, sockaddr_in_len(), 1); };
+        if bret < 0 {
+            _close_raw(fd);
+            return R.Err(_normalize_net_errno(0 - bret));
+        }
+        let lret: i64 = checked { @syscall(_sys_listen(), fd_u, _default_backlog()) };
+        if lret < 0 {
+            _close_raw(fd);
+            return R.Err(_normalize_net_errno(0 - lret));
+        }
+        R.Ok(TcpListener { fd: fd })
+    }
+
+    // The local address this listener is bound to, decoded from the kernel
+    // via getsockname. This is how a port-0 bind learns its ephemeral port.
+    // The kernel-filled family and length are validated before decoding
+    // (ADR-0060 §3).
+    fn local_addr(inout self) -> result.Result(SockAddr, NetworkError) {
+        let R = result.Result(SockAddr, NetworkError);
+        let abuf: ptr mut u8 = checked { @alloc_bytes(sockaddr_in_len(), 1) };
+        if checked { @ptr_to_int(abuf) } == 0 {
+            @panic("out of memory");
+        }
+        // socklen_t in/out argument: starts at 16, kernel writes the actual
+        // length back (little-endian u32 on both v1 targets).
+        let lbuf: ptr mut u8 = checked { @alloc_bytes(4, 1) };
+        if checked { @ptr_to_int(lbuf) } == 0 {
+            @panic("out of memory");
+        }
+        checked { @byte_write(lbuf, 0, 16); };
+        checked { @byte_write(lbuf, 1, 0); };
+        checked { @byte_write(lbuf, 2, 0); };
+        checked { @byte_write(lbuf, 3, 0); };
+        let aaddr: u64 = checked { @ptr_to_int(abuf) };
+        let laddr: u64 = checked { @ptr_to_int(lbuf) };
+        let fd_u: u64 = @intCast(self.fd);
+        let ret: i64 = checked { @syscall(_sys_getsockname(), fd_u, aaddr, laddr) };
+        if ret < 0 {
+            checked { @free_bytes(abuf, sockaddr_in_len(), 1); };
+            checked { @free_bytes(lbuf, 4, 1); };
+            return R.Err(_normalize_net_errno(0 - ret));
+        }
+        let l0 = checked { @byte_read(lbuf, 0) };
+        let l1 = checked { @byte_read(lbuf, 1) };
+        let l2 = checked { @byte_read(lbuf, 2) };
+        let l3 = checked { @byte_read(lbuf, 3) };
+        checked { @free_bytes(lbuf, 4, 1); };
+        let written_len = binary.u32_from_le_bytes([l0, l1, l2, l3]);
+        if written_len != 16 {
+            checked { @free_bytes(abuf, sockaddr_in_len(), 1); };
+            return R.Err(NetworkError.InvalidInput);
+        }
+        let b0 = checked { @byte_read(abuf, 0) };
+        let b1 = checked { @byte_read(abuf, 1) };
+        let b2 = checked { @byte_read(abuf, 2) };
+        let b3 = checked { @byte_read(abuf, 3) };
+        let b4 = checked { @byte_read(abuf, 4) };
+        let b5 = checked { @byte_read(abuf, 5) };
+        let b6 = checked { @byte_read(abuf, 6) };
+        let b7 = checked { @byte_read(abuf, 7) };
+        checked { @free_bytes(abuf, sockaddr_in_len(), 1); };
+        let bytes: [u8; 16] = [b0, b1, b2, b3, b4, b5, b6, b7, 0, 0, 0, 0, 0, 0, 0, 0];
+        let O = option.Option(SockAddr);
+        match SockAddr.from_sockaddr_in(bytes) {
+            O.Some(a) => R.Ok(a),
+            O.None => R.Err(NetworkError.InvalidInput),
+        }
+    }
+
+    // Block until a connection arrives and return its stream. v1 does not
+    // expose the peer address (the kernel address arguments are null); a
+    // later peer_addr can add it without reshaping accept (ADR-0060 §3).
+    fn accept(inout self) -> result.Result(TcpStream, NetworkError) {
+        let R = result.Result(TcpStream, NetworkError);
+        let fd_u: u64 = @intCast(self.fd);
+        // Null kernel address arguments: v1 does not expose the peer address.
+        let null_ptr: u64 = 0;
+        let ret: i64 = checked { @syscall(_sys_accept(), fd_u, null_ptr, null_ptr) };
+        if ret < 0 {
+            R.Err(_normalize_net_errno(0 - ret))
+        } else {
+            let fd: i32 = @intCast(ret);
+            R.Ok(TcpStream { fd: fd })
+        }
+    }
+
+    // Consuming close (ADR-0057 §4), as `TcpStream.close`.
+    fn close(self) -> result.Result((), NetworkError) {
+        let R = result.Result((), NetworkError);
+        let mut me = self;
+        let fd = me.fd;
+        me.fd = -1;
+        if fd < 0 {
+            return R.Ok(());
+        }
+        let fd_u: u64 = @intCast(fd);
+        let ret: i64 = checked { @syscall(_sys_net_close(), fd_u) };
+        if ret < 0 {
+            R.Err(_normalize_net_errno(0 - ret))
+        } else {
+            R.Ok(())
+        }
+    }
+}
+
+// Scope-exit close, guarded by the consuming-close sentinel (ADR-0057 §4).
+drop fn TcpListener(self) {
+    if self.fd >= 0 {
+        let fd_u: u64 = @intCast(self.fd);
+        checked { @syscall(_sys_net_close(), fd_u); };
     }
 }
