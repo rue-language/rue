@@ -363,7 +363,7 @@ impl Parser {
                             .unwrap_or_else(|| {
                                 Span::point_in_file(self.file_id, self.end_offset())
                             });
-                        self.errors.push(
+                        self.record_error(
                             CompileError::new(
                                 ErrorKind::ParseError(
                                     "a block-like expression in statement position is a \

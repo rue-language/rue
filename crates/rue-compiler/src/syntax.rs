@@ -136,7 +136,9 @@ mod tests {
     use rue_span::FileId;
 
     use super::*;
-    use crate::{Item, SourceMetadata};
+    use crate::{
+        ColorChoice, DiagnosticFormatter, Item, JsonDiagnosticFormatter, SourceInfo, SourceMetadata,
+    };
 
     fn snapshot(entries: &[(u32, &str, &str)]) -> SourceSnapshot {
         let physical_paths: HashMap<_, _> = entries
@@ -214,6 +216,55 @@ mod tests {
                 .sum::<usize>()
         );
         assert_eq!(work.tokens, 13);
+    }
+
+    #[test]
+    fn parser_budget_is_per_file_and_later_files_are_still_parsed() {
+        fn malformed_items(prefix: &str) -> String {
+            let mut source = String::new();
+            for index in 0..rue_parser::PARSER_DIAGNOSTIC_BUDGET + 25 {
+                source.push_str(&format!("fn {prefix}_{index}(,) -> i32 {{ 0 }}\n"));
+            }
+            source
+        }
+
+        let first = malformed_items("first");
+        let second = malformed_items("second");
+        let snapshot = snapshot(&[
+            (10, "first.rue", &first),
+            (20, "good.rue", "fn good() {}"),
+            (30, "second.rue", &second),
+        ]);
+
+        let SyntaxPresentationOutcome { result, work } = parse_snapshot_for_presentation(&snapshot);
+        let errors = result.unwrap_err();
+        let summaries = errors
+            .iter()
+            .filter(|error| matches!(error.kind, ErrorKind::ParserDiagnosticsOmitted { .. }))
+            .collect::<Vec<_>>();
+
+        assert_eq!(errors.len(), 2 * (rue_parser::PARSER_DIAGNOSTIC_BUDGET + 1));
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].span().unwrap().file_id, FileId::new(10));
+        assert_eq!(summaries[1].span().unwrap().file_id, FileId::new(30));
+        assert_eq!(work.parser_invocations, 3);
+
+        let source_info = SourceInfo::new(&first, "first.rue");
+        let text = DiagnosticFormatter::with_color_choice(&source_info, ColorChoice::Never)
+            .format_error(summaries[0]);
+        assert!(
+            text.contains(
+                "[E0103]: additional parser diagnostics omitted after the first 100 errors"
+            )
+        );
+
+        let json_formatter = JsonDiagnosticFormatter::new(&source_info);
+        let json = json_formatter.format_error(summaries[0]).to_json();
+        assert_eq!(json, json_formatter.format_error(summaries[0]).to_json());
+        assert!(json.contains("\"code\":\"E0103\""));
+        assert!(json.contains(
+            "\"message\":\"additional parser diagnostics omitted after the first 100 errors\""
+        ));
     }
 
     #[test]

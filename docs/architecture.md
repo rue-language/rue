@@ -146,6 +146,16 @@ retain presentation order without constructing a second parsed or merged
 program. Duplicate, cross-kind, and program-wide `main` legality is implemented
 once by canonical merge candidate validation.
 
+The parser retains at most 100 detailed diagnostics per source file across
+grammar recovery and post-parse directive validation. Exact duplicates (the
+same error kind and complete primary span) are removed in first-occurrence
+order before that budget is applied; rich labels, notes, helps, and suggestions
+do not distinguish parser duplicates. If unique parser diagnostics exceed the
+budget, one E0103 summary is appended at the first omitted diagnostic's span.
+Each file gets a fresh budget, and snapshot parsing continues with later files.
+Lexer errors come from the preceding lexer phase and retain their separate
+phase-specific behavior.
+
 The `rue-compiler` facade mirrors implementation ownership rather than a
 monolithic driver:
 

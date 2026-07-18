@@ -484,7 +484,7 @@ impl Parser {
                         Ok(name) => name,
                         Err(()) => {
                             let previous_end = at.span.start.saturating_sub(5);
-                            self.errors.push(CompileError::new(
+                            self.record_error(CompileError::new(
                                 ErrorKind::UnexpectedToken {
                                     expected: "identifier".into(),
                                     found: "'@'".into(),

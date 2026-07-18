@@ -53,16 +53,19 @@ impl Parser {
             .get(self.cursor)
             .map(|t| t.span)
             .unwrap_or_else(|| Span::point_in_file(self.file_id, self.end_offset()));
-        self.errors.push(CompileError::new(
+        self.record_error(CompileError::new(
             ErrorKind::ParseError(message.into()),
             span,
         ));
     }
     pub(super) fn error_at(&mut self, message: impl Into<String>, span: Span) {
-        self.errors.push(CompileError::new(
+        self.record_error(CompileError::new(
             ErrorKind::ParseError(message.into()),
             span,
         ));
+    }
+    pub(super) fn record_error(&mut self, error: CompileError) {
+        self.errors.push(error);
     }
     pub(super) fn unexpected(&mut self, expected: impl Into<String>) {
         let expected = expected.into();
@@ -72,18 +75,6 @@ impl Parser {
             .get(self.cursor)
             .map(|token| token.span)
             .unwrap_or_else(|| Span::point_in_file(self.file_id, self.end_offset()));
-        if expected == "identifier"
-            && self.errors.iter().any(|error| {
-                error.span() == Some(span)
-                    && matches!(
-                        &error.kind,
-                        ErrorKind::UnexpectedToken { expected, found }
-                            if expected == "identifier or 'drop'" && found == found_kind.name()
-                    )
-            })
-        {
-            return;
-        }
         let mut error = CompileError::new(
             ErrorKind::UnexpectedToken {
                 expected: expected.into(),
@@ -104,27 +95,7 @@ impl Parser {
                  `Enum.Variant` or `Type.function()`",
             );
         }
-        self.errors.push(error);
-    }
-    pub(super) fn remove_subsumed_identifier_errors(&mut self) {
-        let mut retained = Vec::with_capacity(self.errors.len());
-        for error in std::mem::take(&mut self.errors) {
-            let subsumed = matches!(
-                &error.kind,
-                ErrorKind::UnexpectedToken { expected, .. } if expected == "identifier"
-            ) && retained.iter().any(|prior: &CompileError| {
-                prior.span() == error.span()
-                    && matches!(
-                        &prior.kind,
-                        ErrorKind::UnexpectedToken { expected, .. }
-                            if expected == "identifier or 'drop'"
-                    )
-            });
-            if !subsumed {
-                retained.push(error);
-            }
-        }
-        self.errors = retained;
+        self.record_error(error);
     }
     pub(super) fn eat(&mut self, kind: TokenKind) -> bool {
         if self.at(kind) {
@@ -220,6 +191,9 @@ impl Parser {
         // and re-parsing it as a fresh top-level item emits phantom errors at
         // valid lines (RUE-726). A stray close brace clamps to zero so text
         // after an over-closed item still synchronizes.
+        // Recovery advances the cursor in place and never copies the skipped
+        // token region into a diagnostic payload, so a long malformed region
+        // costs constant auxiliary recovery storage (RUE-792).
         let mut brace_depth: usize = 0;
         if !self.at(TokenKind::Eof) {
             debug_assert_eq!(
@@ -278,7 +252,7 @@ impl Parser {
                     _ => None,
                 };
                 if let Some(expected) = expected {
-                    self.errors.push(CompileError::new(
+                    self.record_error(CompileError::new(
                         ErrorKind::UnexpectedToken {
                             expected: expected.into(),
                             found: token.kind.name().to_owned().into(),
@@ -331,7 +305,7 @@ impl Parser {
                     .and_then(|index| self.tokens.get(index))
                     .map(|token| token.span.end)
                     .unwrap_or(token.span.start);
-                self.errors.push(CompileError::new(
+                self.record_error(CompileError::new(
                     ErrorKind::UnexpectedToken {
                         expected: "identifier".into(),
                         found: "'fn'".into(),
@@ -350,7 +324,7 @@ impl Parser {
                 if let Some(token) = self.tokens.get(pattern_index)
                     && !matches!(token.kind, TokenKind::Ident(_) | TokenKind::Underscore)
                 {
-                    self.errors.push(CompileError::new(
+                    self.record_error(CompileError::new(
                         ErrorKind::UnexpectedToken {
                             expected: "identifier or '_'".into(),
                             found: token.kind.name().to_owned().into(),

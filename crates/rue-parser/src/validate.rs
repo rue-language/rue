@@ -14,6 +14,7 @@
 //! unknown intrinsics.
 
 use crate::ast::{Ast, Directive, Expr, IntrinsicArg, Item, Method, Statement, TypeExpr};
+use crate::parser_policy::diagnostics::ParserDiagnostics;
 use lasso::ThreadedRodeo;
 use rue_error::{CompileError, ErrorKind};
 
@@ -34,22 +35,22 @@ pub const KNOWN_DIRECTIVES: &[&str] = &["allow", "copy"];
 pub const KNOWN_WARNING_NAMES: &[&str] =
     &["unused_variable", "unused_function", "unreachable_code"];
 
-/// Walk the AST and report every directive whose name is not in
-/// [`KNOWN_DIRECTIVES`].
+/// Walk the AST and report directive-validation diagnostics through the same
+/// bounded per-file policy as grammar recovery.
 pub fn check_directives(ast: &Ast, interner: &ThreadedRodeo) -> Vec<CompileError> {
     let mut v = Validator {
         interner,
-        errors: Vec::new(),
+        errors: ParserDiagnostics::default(),
     };
     for item in &ast.items {
         v.check_item(item);
     }
-    v.errors
+    v.errors.finish().0
 }
 
 struct Validator<'a> {
     interner: &'a ThreadedRodeo,
-    errors: Vec<CompileError>,
+    errors: ParserDiagnostics,
 }
 
 #[derive(Clone, Copy)]
