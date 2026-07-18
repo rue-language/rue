@@ -19,7 +19,7 @@ pub struct Parser {
     interner: ThreadedRodeo,
     syms: PrimitiveTypeSpurs,
     file_id: FileId,
-    errors: Vec<CompileError>,
+    errors: diagnostics::ParserDiagnostics,
 }
 struct PrimitiveTypeSpurs {
     i8: Spur,
@@ -81,7 +81,7 @@ impl Parser {
             interner,
             syms,
             file_id,
-            errors: Vec::new(),
+            errors: diagnostics::ParserDiagnostics::default(),
         }
     }
 
@@ -135,11 +135,10 @@ impl Parser {
             }
             items
         };
-        let raw_parse_error_count = self.errors.len();
-        self.remove_subsumed_identifier_errors();
-        diagnostics::dedupe_parse_errors(&mut self.errors);
-        let parse_error_count = self.errors.len();
-        if !self.errors.is_empty() {
+        let raw_parse_error_count = self.errors.raw_count();
+        let (errors, diagnostic_equality_checks) = std::mem::take(&mut self.errors).finish();
+        let parse_error_count = errors.len();
+        if !errors.is_empty() {
             info!(
                 outcome = "parse_error",
                 input_token_count,
@@ -147,10 +146,11 @@ impl Parser {
                 ast_item_count = 0,
                 raw_parse_error_count,
                 parse_error_count,
+                diagnostic_equality_checks,
                 validation_error_count = 0,
                 "parser complete"
             );
-            return Err((CompileErrors::from(self.errors), self.interner));
+            return Err((CompileErrors::from(errors), self.interner));
         }
 
         let ast = Ast { items };
@@ -305,6 +305,67 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![8, 29, 50]
         );
+    }
+
+    #[test]
+    fn thousands_of_recovery_points_have_a_bounded_diagnostic_result() {
+        let mut source = String::new();
+        for index in 0..2_000 {
+            source.push_str(&format!("fn broken{index}(,) -> i32 {{ 0 }}\n"));
+        }
+
+        let errors = parse_source(&source).unwrap_err();
+
+        assert_eq!(
+            errors.len(),
+            crate::PARSER_DIAGNOSTIC_BUDGET + 1,
+            "{errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .take(crate::PARSER_DIAGNOSTIC_BUDGET)
+                .all(|error| matches!(error.kind, ErrorKind::UnexpectedToken { .. }))
+        );
+        assert!(matches!(
+            errors.as_slice().last().map(|error| &error.kind),
+            Some(ErrorKind::ParserDiagnosticsOmitted { limit })
+                if *limit == crate::PARSER_DIAGNOSTIC_BUDGET
+        ));
+    }
+
+    #[test]
+    fn thousands_of_validation_errors_use_the_same_bounded_parser_budget() {
+        let mut source = String::new();
+        for index in 0..2_000 {
+            source.push_str(&format!("@unknown{index} fn valid{index}() {{}}\n"));
+        }
+
+        let errors = parse_source(&source).unwrap_err();
+
+        assert_eq!(errors.len(), crate::PARSER_DIAGNOSTIC_BUDGET + 1);
+        assert!(
+            errors
+                .iter()
+                .take(crate::PARSER_DIAGNOSTIC_BUDGET)
+                .all(|error| matches!(&error.kind, ErrorKind::ParseError(message)
+                if message.starts_with("unknown directive")))
+        );
+        assert!(matches!(
+            errors.as_slice().last().map(|error| &error.kind),
+            Some(ErrorKind::ParserDiagnosticsOmitted { limit })
+                if *limit == crate::PARSER_DIAGNOSTIC_BUDGET
+        ));
+    }
+
+    #[test]
+    fn one_long_discarded_region_makes_progress_without_payload_growth() {
+        let source = format!("fn broken( {}", "discarded ".repeat(50_000));
+
+        let errors = parse_source(&source).unwrap_err();
+
+        assert_eq!(errors.len(), 1);
+        assert!(errors.first().unwrap().to_string().len() < 100);
     }
 
     #[test]

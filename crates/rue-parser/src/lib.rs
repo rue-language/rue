@@ -8,6 +8,15 @@ mod validate;
 
 pub use validate::KNOWN_DIRECTIVES;
 
+/// Maximum number of detailed parser diagnostics retained for one source file.
+/// If more unique grammar-recovery or post-parse validation diagnostics are
+/// produced, the parser appends one
+/// [`rue_error::ErrorKind::ParserDiagnosticsOmitted`] summary.
+///
+/// The budget is local to each [`Parser`] invocation. Lexer diagnostics come
+/// from the preceding lexer phase and are intentionally outside this budget.
+pub const PARSER_DIAGNOSTIC_BUDGET: usize = 100;
+
 pub use ast::{
     ArgMode,
     ArrayLength,

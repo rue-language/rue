@@ -99,6 +99,9 @@ impl ErrorCode {
     // end-of-file as UnexpectedToken { found: "end of file" }. Keep the
     // number retired rather than reusing it.
     pub const PARSE_ERROR: Self = Self(102);
+    /// The per-file parser recovery diagnostic budget was exceeded. The
+    /// detailed diagnostics before this summary remain available.
+    pub const PARSER_DIAGNOSTICS_OMITTED: Self = Self(103);
 
     // ========================================================================
     // Semantic errors (E0200-E0399)
@@ -1085,6 +1088,10 @@ pub enum ErrorKind {
     /// Used for parser-generated errors that don't fit the "expected X, found Y" pattern.
     #[error("{0}")]
     ParseError(String),
+    /// Summary emitted after parser recovery reaches its per-file diagnostic
+    /// budget. `limit` is the number of detailed diagnostics retained.
+    #[error("additional parser diagnostics omitted after the first {limit} errors")]
+    ParserDiagnosticsOmitted { limit: usize },
     /// Source is nested more deeply than the compiler supports. Reported by
     /// the parser's nesting pre-scan and by the AstGen depth guard so that
     /// pathologically nested input yields a clean diagnostic instead of a
@@ -1644,6 +1651,7 @@ impl ErrorKind {
             // Parser errors (E0100-E0199)
             ErrorKind::UnexpectedToken { .. } => ErrorCode::UNEXPECTED_TOKEN,
             ErrorKind::ParseError(_) => ErrorCode::PARSE_ERROR,
+            ErrorKind::ParserDiagnosticsOmitted { .. } => ErrorCode::PARSER_DIAGNOSTICS_OMITTED,
             ErrorKind::NestingLimitExceeded { .. } => ErrorCode::NESTING_LIMIT_EXCEEDED,
 
             // Semantic errors (E0200-E0399)
@@ -2937,6 +2945,10 @@ mod tests {
         assert_eq!(
             ErrorKind::ParseError("custom error".into()).code(),
             ErrorCode::PARSE_ERROR
+        );
+        assert_eq!(
+            ErrorKind::ParserDiagnosticsOmitted { limit: 100 }.code(),
+            ErrorCode::PARSER_DIAGNOSTICS_OMITTED
         );
     }
 
