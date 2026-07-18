@@ -206,3 +206,9 @@ fn main() -> i32 {
     add(xs[0], xs[1],)             // trailing comma in call arguments
 }
 ```
+
+## Symbol Interning in the Reference Token Dump
+
+{{ rule(id="2.1:25", cat="informative") }}
+
+The reference implementation's token dump (`rue --emit tokens`) prints identifier and string tokens as `IDENT(sym:N)` and `STRING(sym:N)`, where `N` indexes a single symbol table shared by identifiers and string literals and keyed by *decoded* value: the string literal `"ab"` and the identifier `ab` receive the same symbol, and an escape such as `"\t"` interns identically to a string containing a literal tab. Symbols are numbered in first-occurrence order over the token stream. Primitive type names print as `TYPE(name)` and are not interned, while `usize` and `isize` lex as ordinary identifiers. These are properties of the reference tooling's presentation, not language semantics; they are recorded here so a second implementation can reproduce the dump byte-for-byte without reverse-engineering it.

@@ -1106,7 +1106,7 @@ impl Parser {
                     Ok(Expr::Ident(name))
                 }
             }
-            TokenKind::At | TokenKind::AtImport(_) => self.intrinsic(),
+            TokenKind::At => self.intrinsic(),
             TokenKind::If => self.if_expr(),
             TokenKind::While => self.while_expr(),
             TokenKind::Loop => self.loop_expr(),
@@ -1452,10 +1452,6 @@ impl Parser {
     fn intrinsic(&mut self) -> PResult<Expr> {
         let start = self.start();
         let name = match self.kind() {
-            TokenKind::AtImport(name) => {
-                let span = self.bump().span;
-                Ident { name, span }
-            }
             TokenKind::At => {
                 let at = self.bump();
                 if self.at(TokenKind::Drop) {
