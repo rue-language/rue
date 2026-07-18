@@ -59,7 +59,10 @@
 
 use rue_error::{CompileError, CompileResult, ErrorKind, ice_error};
 
-use super::mir::{Aarch64Inst, Aarch64Mir, BLOCK_LABEL_BASE, Cond, LabelId, Reg};
+use super::mir::{
+    Aarch64Inst, Aarch64Mir, BLOCK_LABEL_BASE, Cond, LabelId, Reg, narrow_load_mnemonic,
+    narrow_store_mnemonic,
+};
 use crate::{EmittedCode, EmittedInst, EmittedRelocation};
 
 // ========== AArch64 Instruction Encoding Constants ==========
@@ -486,6 +489,8 @@ impl<'a> Emitter<'a> {
                     | Aarch64Inst::StrbIndexed { .. }
                     | Aarch64Inst::LdrIndexedOffset { .. }
                     | Aarch64Inst::StrIndexedOffset { .. }
+                    | Aarch64Inst::NarrowLoadIndexed { .. }
+                    | Aarch64Inst::NarrowStoreIndexed { .. }
             ) {
                 return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
                     format!(
@@ -680,6 +685,50 @@ impl<'a> Emitter<'a> {
                 self.begin_inst();
                 self.emit_strb(rs, *base, adjusted_offset);
                 end_inst!(self, "strb {}, [{}, #{}]", rs.as_w(), base, adjusted_offset);
+            }
+
+            Aarch64Inst::NarrowLoad {
+                dst,
+                base,
+                width,
+                signed,
+            } => {
+                let rd = dst.as_physical();
+                self.begin_inst();
+                self.emit_narrow_load(rd, *base, *width, *signed);
+                // A sign-extending load targets the 64-bit X register; a
+                // zero-extending load targets the 32-bit W register (which
+                // implicitly clears the upper half).
+                if *signed {
+                    end_inst!(
+                        self,
+                        "{} {}, [{}]",
+                        narrow_load_mnemonic(*width, *signed),
+                        rd,
+                        base
+                    );
+                } else {
+                    end_inst!(
+                        self,
+                        "{} {}, [{}]",
+                        narrow_load_mnemonic(*width, *signed),
+                        rd.as_w(),
+                        base
+                    );
+                }
+            }
+
+            Aarch64Inst::NarrowStore { src, base, width } => {
+                let rs = src.as_physical();
+                self.begin_inst();
+                self.emit_narrow_store(rs, *base, *width);
+                end_inst!(
+                    self,
+                    "{} {}, [{}]",
+                    narrow_store_mnemonic(*width),
+                    rs.as_w(),
+                    base
+                );
             }
 
             Aarch64Inst::AddRR { dst, src1, src2 } => {
@@ -1211,7 +1260,9 @@ impl<'a> Emitter<'a> {
             | Aarch64Inst::LdrbIndexed { .. }
             | Aarch64Inst::StrbIndexed { .. }
             | Aarch64Inst::LdrIndexedOffset { .. }
-            | Aarch64Inst::StrIndexedOffset { .. } => {
+            | Aarch64Inst::StrIndexedOffset { .. }
+            | Aarch64Inst::NarrowLoadIndexed { .. }
+            | Aarch64Inst::NarrowStoreIndexed { .. } => {
                 unreachable!(
                     "LdrIndexed/StrIndexed variants should be caught by emit() verification"
                 )
@@ -1642,6 +1693,38 @@ impl<'a> Emitter<'a> {
             | ((offset as u32) << 10)
             | ((base.encoding() as u32) << 5)
             | rs.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    /// Emit a narrow (1/2/4-byte) load of `[base]` extended into the 64-bit `rd`
+    /// (RUE-989). The address is fully materialized in `base` (imm12 = 0), so
+    /// there is no offset to scale. The unsigned forms (`ldrb`/`ldrh`/`ldr w`)
+    /// zero-extend into the X register; the signed forms
+    /// (`ldrsb`/`ldrsh`/`ldrsw`, 64-bit variant) sign-extend into it.
+    fn emit_narrow_load(&mut self, rd: Reg, base: Reg, width: u8, signed: bool) {
+        let base_opcode: u32 = match (width, signed) {
+            (1, false) => 0x3940_0000, // ldrb  w, [base]
+            (1, true) => 0x3980_0000,  // ldrsb x, [base]
+            (2, false) => 0x7940_0000, // ldrh  w, [base]
+            (2, true) => 0x7980_0000,  // ldrsh x, [base]
+            (4, false) => 0xB940_0000, // ldr   w, [base]  (zero-extends)
+            (4, true) => 0xB980_0000,  // ldrsw x, [base]
+            _ => unreachable!("narrow load width must be 1, 2, or 4: {width}"),
+        };
+        let inst = base_opcode | ((base.encoding() as u32) << 5) | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    /// Emit a narrow (1/2/4-byte) store of the low `width` bytes of `rs` to
+    /// `[base]` (RUE-989), the address fully materialized in `base` (imm12 = 0).
+    fn emit_narrow_store(&mut self, rs: Reg, base: Reg, width: u8) {
+        let base_opcode: u32 = match width {
+            1 => 0x3900_0000, // strb w, [base]
+            2 => 0x7900_0000, // strh w, [base]
+            4 => 0xB900_0000, // str  w, [base]
+            _ => unreachable!("narrow store width must be 1, 2, or 4: {width}"),
+        };
+        let inst = base_opcode | ((base.encoding() as u32) << 5) | rs.encoding() as u32;
         self.emit_u32(inst);
     }
 
@@ -2540,6 +2623,46 @@ mod tests {
             }),
             vec![0x62, 0x00, 0x00, 0x39]
         );
+    }
+
+    /// RUE-989: the narrow physical load through a pointer selects
+    /// ldrb/ldrsb/ldrh/ldrsh/ldr(w)/ldrsw per width and signedness, extending
+    /// into the 64-bit destination. dst X0, base X1, imm12 0 (address fully in
+    /// base).
+    #[test]
+    fn test_narrow_load_encoding() {
+        let word = |width, signed| {
+            let code = emit_single(Aarch64Inst::NarrowLoad {
+                dst: Operand::Physical(Reg::X0),
+                base: Reg::X1,
+                width,
+                signed,
+            });
+            u32::from_le_bytes(code[0..4].try_into().unwrap())
+        };
+        assert_eq!(word(1, false), 0x3940_0020); // ldrb  w0, [x1]
+        assert_eq!(word(1, true), 0x3980_0020); // ldrsb x0, [x1]
+        assert_eq!(word(2, false), 0x7940_0020); // ldrh  w0, [x1]
+        assert_eq!(word(2, true), 0x7980_0020); // ldrsh x0, [x1]
+        assert_eq!(word(4, false), 0xB940_0020); // ldr   w0, [x1]
+        assert_eq!(word(4, true), 0xB980_0020); // ldrsw x0, [x1]
+    }
+
+    /// RUE-989: the narrow physical store through a pointer selects
+    /// strb/strh/str(w) per width. src X2, base X3.
+    #[test]
+    fn test_narrow_store_encoding() {
+        let word = |width| {
+            let code = emit_single(Aarch64Inst::NarrowStore {
+                src: Operand::Physical(Reg::X2),
+                base: Reg::X3,
+                width,
+            });
+            u32::from_le_bytes(code[0..4].try_into().unwrap())
+        };
+        assert_eq!(word(1), 0x3900_0062); // strb w2, [x3]
+        assert_eq!(word(2), 0x7900_0062); // strh w2, [x3]
+        assert_eq!(word(4), 0xB900_0062); // str  w2, [x3]
     }
 
     #[test]

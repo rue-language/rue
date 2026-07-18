@@ -262,6 +262,56 @@ pub(crate) fn is_slot_identical_layout(type_pool: &FrozenTypeInternPool, ty: Typ
     rue_air::is_slot_identical_layout(type_pool, ty)
 }
 
+/// Physical width (1/2/4 bytes) and extension of a narrow scalar accessed
+/// through a pointer under the compact layout (ADR-0052, RUE-989).
+///
+/// A load extends the narrow physical value into its slot-shaped virtual
+/// register — zero-extend for unsigned integers and `bool` (whose 0/1 validity
+/// is preserved, ruling 1), sign-extend for signed integers — and a store
+/// truncates the slot value to the narrow width. This is the explicit
+/// pack/unpack at the slot-value ↔ physical-memory boundary of ADR-0052's
+/// three-representation split.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NarrowScalar {
+    /// Physical byte width: 1, 2, or 4.
+    pub width: u8,
+    /// Whether a load sign-extends (`true`) or zero-extends (`false`).
+    pub signed: bool,
+}
+
+/// The narrow-access description for a scalar accessed through a pointer, or
+/// `None` when the value occupies a full eight-byte slot (`i64`/`u64`/pointers)
+/// or the compact layout is inactive. When `None`, the existing eight-byte
+/// slot-shaped load/store is byte-for-byte correct, so gate-off behavior is
+/// unchanged.
+///
+/// Only scalar leaves narrow: aggregates crossing the pointer boundary as whole
+/// values remain refused by [`compact_physical_access_unsupported`].
+pub(crate) fn narrow_scalar_access(
+    type_pool: &FrozenTypeInternPool,
+    ty: Type,
+) -> Option<NarrowScalar> {
+    if !type_pool.compact_layout() {
+        return None;
+    }
+    let (width, signed) = match ty.kind() {
+        TypeKind::I8 => (1, true),
+        TypeKind::U8 | TypeKind::Bool => (1, false),
+        TypeKind::I16 => (2, true),
+        TypeKind::U16 => (2, false),
+        TypeKind::I32 => (4, true),
+        TypeKind::U32 => (4, false),
+        // i64/u64/pointers occupy a full slot; aggregates never take this path.
+        _ => return None,
+    };
+    debug_assert_eq!(
+        u64::from(width),
+        type_pool.layout(ty).size,
+        "narrow scalar width must equal the compact physical size"
+    );
+    Some(NarrowScalar { width, signed })
+}
+
 /// The pointee of a pointer type, or the type itself when it is not a pointer.
 fn pointee_or_self(type_pool: &FrozenTypeInternPool, ty: Type) -> Type {
     match ty.kind() {
@@ -271,27 +321,43 @@ fn pointee_or_self(type_pool: &FrozenTypeInternPool, ty: Type) -> Type {
     }
 }
 
-/// If the compact physical layout is active and this CFG would require narrow
-/// physical memory access that code generation does not yet implement, return
-/// the first offending type so the backend can fail loudly rather than emit
-/// slot-shaped access against a compact layout (ADR-0052 phase 3, RUE-974).
+/// If the compact physical layout is active and this CFG would require physical
+/// memory access that code generation does not yet implement, return the first
+/// offending type so the backend can fail loudly rather than emit slot-shaped
+/// access against a compact layout (ADR-0052, RUE-974 refusal narrowed by
+/// RUE-989).
 ///
-/// The scan is conservative — it refuses whenever a non-slot-identical aggregate
-/// or enum is materialized as a value, a pointer to a non-slot-identical
-/// aggregate appears, a by-reference parameter is non-slot-identical, the
-/// function returns a non-slot-identical aggregate, or a typed pointer
-/// read/write or typed allocation targets a non-slot-identical pointee. Purely
-/// compile-time layout queries (`@size_of`/`@align_of`/`@offset_of`) fold to
-/// constants before code generation and introduce none of these, so they still
-/// compile and run. Slot-identical aggregates (all eight-byte leaves, e.g.
-/// `StrBuf`) marshal correctly and are allowed, as is the byte-addressed
-/// raw-byte family (`@byte_read`/`@byte_write`/`@alloc_bytes`), which is correct
-/// under any layout.
+/// RUE-989 implements narrow (one/two/four-byte) **scalar** access through typed
+/// pointers with the correct zero/sign extension, so a narrow scalar
+/// `@ptr_read`/`@ptr_write`/`@alloc`/`@free`/`@realloc` (including a scalar
+/// struct field reached with `@field_ptr` or a scalar heap element reached with
+/// `@ptr_offset`) now compiles and executes. A non-slot-identical **struct**
+/// value may also exist in the slot-based frame, because its field access uses
+/// static slot offsets and its scalar fields are reached with narrow access.
 ///
-/// Returning `None` never weakens correctness: when it returns `None` every
-/// physical access the function performs is byte-for-byte identical to the slot
-/// model. The follow-up that adds narrow load/store codegen (RUE-975/RUE-976)
-/// removes the refusals this reports.
+/// The scan still refuses what remains unimplemented, always consulting the
+/// canonical [`is_slot_identical_layout`] authority rather than a parallel local
+/// judgment:
+///
+/// - a non-slot-identical **array** or **enum** value (dynamic array indexing
+///   strides by the compact element size while the slot-based frame stores
+///   elements at the slot stride, and compact enum memory is unimplemented);
+/// - a **pointer to a non-slot-identical aggregate** (whole-aggregate
+///   marshalling through a pointer is unimplemented, and frame-versus-heap
+///   pointer provenance is ambiguous, so `@raw`/`@field_ptr` of an aggregate and
+///   an aggregate-pointee `@alloc` are refused);
+/// - a **by-reference non-slot-identical aggregate** parameter;
+/// - a non-slot-identical aggregate that **crosses a call boundary** as an
+///   argument or as the **return value** (RUE-976's transitional indirect rule).
+///
+/// Purely compile-time layout queries (`@size_of`/`@align_of`/`@offset_of`) fold
+/// to constants before code generation. Slot-identical aggregates (all
+/// eight-byte leaves, e.g. `StrBuf`) marshal correctly, as does the
+/// byte-addressed raw-byte family (`@byte_read`/`@byte_write`/`@alloc_bytes`).
+///
+/// Returning `None` never weakens correctness: every remaining physical access
+/// is either byte-for-byte identical to the slot model or a narrow scalar access
+/// RUE-989 lowers correctly.
 pub(crate) fn compact_physical_access_unsupported(
     cfg: &Cfg,
     type_pool: &FrozenTypeInternPool,
@@ -301,31 +367,20 @@ pub(crate) fn compact_physical_access_unsupported(
         return None;
     }
 
-    // A value or pointer position that would place a non-slot-identical type in
-    // physical memory (aggregate value, pointer to a non-slot-identical
-    // aggregate). Narrow scalar pointers are deliberately excluded here: they
-    // are the element type of the byte-addressed raw-byte family (`ptr mut u8`
-    // in `StrBuf`) and are correct under any layout; typed reads/writes through
-    // them are caught by the operation-aware check below instead.
-    let flag_value = |ty: Type| -> bool {
-        match ty.kind() {
-            TypeKind::Struct(_) | TypeKind::Array(_) | TypeKind::Enum(_) => {
-                !is_slot_identical_layout(type_pool, ty)
-            }
-            TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => {
-                let pointee = pointee_or_self(type_pool, ty);
-                matches!(
-                    pointee.kind(),
-                    TypeKind::Struct(_) | TypeKind::Array(_) | TypeKind::Enum(_)
-                ) && !is_slot_identical_layout(type_pool, pointee)
-            }
-            _ => false,
-        }
+    // A non-slot-identical aggregate (struct/array/enum) whose whole-value
+    // marshalling across a memory or call boundary RUE-989 does not implement.
+    // Narrow SCALAR access through typed pointers IS implemented, so scalars
+    // never trigger a refusal here.
+    let unimplemented_aggregate = |ty: Type| -> bool {
+        matches!(
+            ty.kind(),
+            TypeKind::Struct(_) | TypeKind::Array(_) | TypeKind::Enum(_)
+        ) && !is_slot_identical_layout(type_pool, ty)
     };
 
     // Returned aggregates are written to the caller's sret buffer in physical
-    // memory.
-    if flag_value(cfg.return_type()) {
+    // memory (RUE-976's transitional indirect rule; unimplemented).
+    if unimplemented_aggregate(cfg.return_type()) {
         return Some(cfg.return_type());
     }
 
@@ -333,22 +388,54 @@ pub(crate) fn compact_physical_access_unsupported(
         let value = CfgValue::from_raw(raw as u32);
         let inst = cfg.get_inst(value);
 
-        if flag_value(inst.ty) {
+        // A non-slot-identical ARRAY or ENUM value is refused outright: dynamic
+        // array indexing strides by the compact element size while the frame is
+        // slot-based, and compact enum memory is unimplemented. A non-slot-
+        // identical STRUCT value, by contrast, is allowed to exist in the frame
+        // (static slot-offset field access, narrow scalar field pointers); the
+        // boundary checks below still refuse a struct that crosses a pointer,
+        // call, return, or by-ref boundary.
+        if matches!(inst.ty.kind(), TypeKind::Array(_) | TypeKind::Enum(_))
+            && !is_slot_identical_layout(type_pool, inst.ty)
+        {
             return Some(inst.ty);
         }
 
+        // A pointer to a non-slot-identical aggregate: whole-aggregate
+        // marshalling through a pointer is unimplemented and the pointer's
+        // frame-versus-heap provenance is ambiguous.
+        if matches!(inst.ty.kind(), TypeKind::PtrConst(_) | TypeKind::PtrMut(_)) {
+            let pointee = pointee_or_self(type_pool, inst.ty);
+            if unimplemented_aggregate(pointee) {
+                return Some(pointee);
+            }
+        }
+
         match &inst.data {
-            // A by-reference scalar parameter is a physical pointer dereference
-            // whose bare narrow type the value scan above does not catch.
+            // A by-reference aggregate parameter is a pointer into the caller's
+            // slot-based frame; whole-aggregate compact access is unimplemented.
+            // A by-reference narrow scalar reads/writes its eight-byte slot
+            // through the pointer and is correct, so scalars are allowed.
             CfgInstData::Param { index } => {
-                if cfg.is_param_by_ref(*index) && !is_slot_identical_layout(type_pool, inst.ty) {
+                if cfg.is_param_by_ref(*index) && unimplemented_aggregate(inst.ty) {
                     return Some(inst.ty);
                 }
             }
+            // A non-slot-identical aggregate passed by value crosses the call
+            // boundary indirectly (RUE-976); that marshalling is unimplemented.
+            CfgInstData::Call { .. } => {
+                for arg in cfg.get_call_args(&inst.data) {
+                    let arg_ty = cfg.get_inst(arg.value).ty;
+                    if unimplemented_aggregate(arg_ty) {
+                        return Some(arg_ty);
+                    }
+                }
+            }
             // Typed pointer reads/writes and typed allocation address memory by
-            // the pointee's physical layout. The byte-addressed raw-byte family
-            // (`byte_read`/`byte_write`/`alloc_bytes`/...) is intentionally not
-            // matched here — it is correct under any layout.
+            // the pointee's physical layout. A narrow scalar pointee is now
+            // lowered correctly; a non-slot-identical aggregate pointee is
+            // refused. The byte-addressed raw-byte family is not matched here —
+            // it is correct under any layout.
             CfgInstData::Intrinsic { name, .. } => {
                 let op = interner.resolve(name);
                 if matches!(op, "ptr_read" | "ptr_write" | "alloc" | "free" | "realloc") {
@@ -358,7 +445,7 @@ pub(crate) fn compact_physical_access_unsupported(
                     }
                     for ty in relevant {
                         let pointee = pointee_or_self(type_pool, ty);
-                        if !is_slot_identical_layout(type_pool, pointee) {
+                        if unimplemented_aggregate(pointee) {
                             return Some(pointee);
                         }
                     }
@@ -386,10 +473,10 @@ pub(crate) fn ensure_compact_layout_codegen_supported(
         return Err(rue_error::CompileError::without_span(
             rue_error::ErrorKind::InternalCodegenError(format!(
                 "aggregate_layout: physical-layout code generation for type `{name}` (in function \
-                 `{}`) is not yet implemented. RUE-974 provides the compact layout authority and \
-                 the compile-time @size_of / @align_of / @offset_of queries; narrow \
-                 (one/two/four-byte) memory load and store code generation is staged for \
-                 RUE-975/RUE-976.",
+                 `{}`) is not yet implemented. RUE-989 lowers narrow (one/two/four-byte) scalar \
+                 access through typed pointers, but whole-aggregate marshalling through pointers \
+                 and across call boundaries, and compact enum memory, are still staged for a \
+                 follow-up.",
                 cfg.fn_name()
             )),
         ));

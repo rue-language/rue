@@ -1738,11 +1738,23 @@ impl<'a> CfgLower<'a> {
                 } else {
                     let dst = self.mir.alloc_vreg();
                     if count != 0 {
-                        self.mir.push(X86Inst::MovRMIndexed {
-                            dst: Operand::Virtual(dst),
-                            base: ptr,
-                            offset: 0,
-                        });
+                        // A narrow scalar pointee reads 1/2/4 physical bytes and
+                        // extends into the slot-shaped vreg (RUE-989); a full-slot
+                        // pointee keeps the eight-byte load.
+                        if let Some(narrow) = plan.narrow_access {
+                            self.mir.push(X86Inst::NarrowLoadIndexed {
+                                dst: Operand::Virtual(dst),
+                                base: ptr,
+                                width: narrow.width,
+                                signed: narrow.signed,
+                            });
+                        } else {
+                            self.mir.push(X86Inst::MovRMIndexed {
+                                dst: Operand::Virtual(dst),
+                                base: ptr,
+                                offset: 0,
+                            });
+                        }
                     }
                     if count != 0 {
                         slots.push(dst);
@@ -1757,6 +1769,13 @@ impl<'a> CfgLower<'a> {
                     // Zero-sized values have no bytes to write.
                 } else if !value.slots.is_empty() {
                     crate::agg_slots::store_slots_through_ptr(self, &value.slots, ptr, 0);
+                } else if let Some(narrow) = plan.narrow_access {
+                    // A narrow scalar truncates to 1/2/4 physical bytes (RUE-989).
+                    self.mir.push(X86Inst::NarrowStoreIndexed {
+                        base: ptr,
+                        src: Operand::Virtual(value.primary),
+                        width: narrow.width,
+                    });
                 } else {
                     self.mir.push(X86Inst::MovMRIndexed {
                         base: ptr,
@@ -2947,21 +2966,65 @@ mod tests {
         CfgLower::new(cfg_output.cfg.as_ref().unwrap(), type_pool, &interner).lower()
     }
 
-    /// Under `aggregate_layout`, a non-slot-identical aggregate that would need
-    /// narrow physical memory codegen is refused loudly rather than miscompiled
-    /// with slot-shaped access (ADR-0052 phase 3; RUE-975/RUE-976 follow-up).
+    /// Under `aggregate_layout`, a non-slot-identical **array** value is still
+    /// refused loudly rather than miscompiled: dynamic indexing strides by the
+    /// compact element size while the slot-based frame stores elements at the
+    /// slot stride (ADR-0052; RUE-989 narrows the refusal to what remains
+    /// unimplemented — aggregates through pointers/calls, arrays, and enums).
     #[test]
-    fn aggregate_layout_refuses_narrow_physical_layout_codegen() {
+    fn aggregate_layout_refuses_unimplemented_aggregate_codegen() {
         let mut preview = PreviewFeatures::new();
         preview.insert(PreviewFeature::AggregateLayout);
         let err = try_lower_first_fn(
-            "struct Pair { a: i32, b: i32 } fn main() -> i32 { let p = Pair { a: 7, b: 9 }; p.a }",
+            "fn main() -> i32 { let a: [i32; 3] = [1, 2, 3]; a[0] }",
             preview,
         )
-        .expect_err("a narrow aggregate must refuse compact codegen, not miscompile");
+        .expect_err("a narrow array value must refuse compact codegen, not miscompile");
         assert!(
             format!("{err:?}").contains("aggregate_layout"),
             "refusal must name the feature, got: {err:?}"
+        );
+    }
+
+    /// RUE-989: under `aggregate_layout`, narrow scalar access through a typed
+    /// pointer now lowers, emitting the narrow (1/2/4-byte) load/store pseudos
+    /// instead of a full eight-byte slot access. Gate-off, the same program uses
+    /// the eight-byte `MovRMIndexed`/`MovMRIndexed`.
+    #[test]
+    fn aggregate_layout_allows_narrow_scalar_physical_access() {
+        let source = "fn main() -> i32 { checked { let p: ptr mut i32 = @alloc(1); \
+                      @ptr_write(p, 5); @dbg(@ptr_read(p)); @free(p, 1); }; 0 }";
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::AggregateLayout);
+        let mir = try_lower_first_fn(source, preview)
+            .expect("a narrow scalar through a typed pointer must lower under compact layout");
+        assert!(
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::NarrowStoreIndexed { width: 4, .. })),
+            "a narrow i32 @ptr_write must emit a 4-byte narrow store"
+        );
+        assert!(
+            mir.instructions().iter().any(|inst| matches!(
+                inst,
+                X86Inst::NarrowLoadIndexed {
+                    width: 4,
+                    signed: true,
+                    ..
+                }
+            )),
+            "a narrow i32 @ptr_read must emit a sign-extending 4-byte narrow load"
+        );
+
+        // Gate-off, the identical program keeps the eight-byte slot access.
+        let off = try_lower_first_fn(source, PreviewFeatures::new())
+            .expect("the same program lowers under the default slot model");
+        assert!(
+            off.instructions().iter().all(|inst| !matches!(
+                inst,
+                X86Inst::NarrowStoreIndexed { .. } | X86Inst::NarrowLoadIndexed { .. }
+            )),
+            "gate-off must not emit any narrow access"
         );
     }
 

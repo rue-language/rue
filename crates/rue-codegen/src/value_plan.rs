@@ -318,6 +318,12 @@ pub struct IntrinsicPlan {
     pub result_ty: Type,
     pub result_slots: u32,
     pub scale: Option<crate::allocation::ScalePlan>,
+    /// For a typed `@ptr_read`/`@ptr_write` of a narrow scalar under the compact
+    /// layout, the physical width and extension of the memory access (RUE-989).
+    /// `None` for a full eight-byte slot access or when the compact layout is
+    /// inactive, so both backends fall back to their existing slot-shaped
+    /// load/store and gate-off behavior is unchanged.
+    pub narrow_access: Option<crate::types::NarrowScalar>,
 }
 
 /// Place with every dynamic index already materialized. The plan contains no
@@ -1587,6 +1593,22 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                 };
                 let result_slots = ctx.type_slot_count(inst.ty);
                 let runtime_call = intrinsic_runtime_call(&operation, &values, scale, result_slots);
+                // A narrow-scalar `@ptr_read`/`@ptr_write` under the compact
+                // layout accesses 1/2/4 physical bytes with the pointee's
+                // extension (RUE-989). The read's pointee is its result type; the
+                // write's pointee is the value operand's type. Every other
+                // operation, a full-slot scalar, or the gate being off yields
+                // `None`, preserving the slot-shaped path.
+                let narrow_access = match operation {
+                    IntrinsicOperation::PtrRead => {
+                        crate::types::narrow_scalar_access(ctx.type_pool, inst.ty)
+                    }
+                    IntrinsicOperation::PtrWrite => crate::types::narrow_scalar_access(
+                        ctx.type_pool,
+                        ctx.cfg.get_inst(args[1]).ty,
+                    ),
+                    _ => None,
+                };
                 let result = adapter.emit_intrinsic(IntrinsicPlan {
                     operation,
                     runtime_call,
@@ -1594,6 +1616,7 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     result_ty: inst.ty,
                     result_slots,
                     scale,
+                    narrow_access,
                 });
                 cache_result(adapter, value, result);
                 Some(ValueKind::Intrinsic)

@@ -808,6 +808,56 @@ impl RegAlloc {
                 });
             }
 
+            Aarch64Inst::NarrowLoadIndexed {
+                dst,
+                base,
+                width,
+                signed,
+            } => {
+                let base_reg = Self::load_operand(context, mir, Operand::Virtual(base), Reg::X9)?;
+                let base_phys = base_reg.as_physical();
+                match Self::get_allocation(context, dst) {
+                    Some(Allocation::Register(reg)) => mir.push(Aarch64Inst::NarrowLoad {
+                        dst: Operand::Physical(reg),
+                        base: base_phys,
+                        width,
+                        signed,
+                    }),
+                    Some(Allocation::Spill(offset)) => {
+                        mir.push(Aarch64Inst::NarrowLoad {
+                            dst: Operand::Physical(Reg::X10),
+                            base: base_phys,
+                            width,
+                            signed,
+                        });
+                        mir.push_after(Aarch64Inst::Str {
+                            src: Operand::Physical(Reg::X10),
+                            base: Reg::Fp,
+                            offset,
+                        });
+                    }
+                    Some(Allocation::Rematerialize(_)) => {
+                        unreachable!("destination cannot be rematerializable")
+                    }
+                    None => mir.push(Aarch64Inst::NarrowLoad {
+                        dst,
+                        base: base_phys,
+                        width,
+                        signed,
+                    }),
+                }
+            }
+
+            Aarch64Inst::NarrowStoreIndexed { src, base, width } => {
+                let src_op = Self::load_operand(context, mir, src, Reg::X9)?;
+                let base_reg = Self::load_operand(context, mir, Operand::Virtual(base), Reg::X10)?;
+                mir.push(Aarch64Inst::NarrowStore {
+                    src: src_op,
+                    base: base_reg.as_physical(),
+                    width,
+                });
+            }
+
             Aarch64Inst::LdrIndexedOffset { dst, base, offset } => {
                 // Load base vreg into scratch, then emit load with offset
                 let base_op = Operand::Virtual(base);
@@ -984,6 +1034,23 @@ impl RegAlloc {
             Aarch64Inst::Ret => mir.push(Aarch64Inst::Ret),
             Aarch64Inst::Brk => mir.push(Aarch64Inst::Brk),
             Aarch64Inst::Svc { imm } => mir.push(Aarch64Inst::Svc { imm }),
+            // The physical-base narrow forms are produced by this pass from the
+            // indexed pseudos above with already-allocated operands; they never
+            // appear in the pre-allocation input, so pass them through unchanged.
+            Aarch64Inst::NarrowLoad {
+                dst,
+                base,
+                width,
+                signed,
+            } => mir.push(Aarch64Inst::NarrowLoad {
+                dst,
+                base,
+                width,
+                signed,
+            }),
+            Aarch64Inst::NarrowStore { src, base, width } => {
+                mir.push(Aarch64Inst::NarrowStore { src, base, width })
+            }
         }
         Ok(())
     }
