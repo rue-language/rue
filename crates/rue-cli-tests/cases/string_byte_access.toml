@@ -114,3 +114,35 @@ fn main() -> i32 {
 """ }]
 exit_code = 0
 stdout = "195\n"
+
+[[case]]
+name = "borrow_rooted_strbuf_byte_reads"
+description = "RUE-725: StrBuf byte indexing reads through borrow/inout parameters and self-field projections without moving their roots."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+struct Lexer {
+    src: StrBuf,
+    pos: u64,
+    fn peek(borrow self) -> u8 { self.src[self.pos] }
+    fn advance(inout self) -> u8 {
+        let byte = self.src[self.pos];
+        self.pos = self.pos + 1;
+        byte
+    }
+}
+
+fn first(borrow src: StrBuf) -> u8 { src[0] }
+
+fn main() -> i32 {
+    let mut lexer = Lexer { src: "abc", pos: 0 };
+    let a = lexer.peek();
+    let b = lexer.advance();
+    let c = lexer.peek();
+    let d = first(borrow lexer.src);
+    if a == 97 && b == 97 && c == 98 && d == 97 { 7 } else { 0 }
+}
+""" }]
+exit_code = 7

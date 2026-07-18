@@ -1107,6 +1107,12 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "cli.string_byte_access",
+        "borrow_rooted_strbuf_byte_reads",
+        semantic(SemanticGapKind::TextProjectionRead),
+        &[],
+    ),
+    Entry::new(
+        "cli.string_byte_access",
         "substring_byte_range",
         semantic(SemanticGapKind::TextProjectionRead),
         &[],

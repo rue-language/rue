@@ -5177,7 +5177,23 @@ impl<'a> BodySema<'a> {
         // String index (see below).
         let base_root = self.extract_root_variable(base);
         let base_move_state_before = base_root.and_then(|v| ctx.moved_vars.get(&v).cloned());
-        let base_result = self.analyze_inst(air, base, ctx)?;
+
+        // A byte/element index of StrBuf, str/Str(N), or a slice reads through
+        // its base place; it does not consume that place. Classify a statically
+        // typed place base before analyzing it so a StrBuf field rooted at a
+        // `borrow`/`inout` parameter is read as a borrow instead of failing the
+        // move check with E0429/E0437 before the type-specific path below can
+        // restore its move state (RUE-725). Non-place expressions still use
+        // normal value semantics and may be consumed into a temporary.
+        let borrowing_base_root = base_root.filter(|_| {
+            self.peek_place_type(base, ctx).is_some_and(|ty| {
+                self.is_strbuf(ty) || self.is_str_like(ty) || self.slice_element_type(ty).is_some()
+            })
+        });
+        let prev_byref_root = std::mem::replace(&mut ctx.byref_arg_root, borrowing_base_root);
+        let base_result = self.analyze_inst(air, base, ctx);
+        ctx.byref_arg_root = prev_byref_root;
+        let base_result = base_result?;
         let base_type = base_result.ty;
 
         // String byte indexing: `s[i]` reads the i-th BYTE of a String as `u8`
