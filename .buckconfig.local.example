@@ -21,11 +21,13 @@
 # $ORIGIN under RE) and links via `cc`+lld; the remote_cache platform pins the
 # rbe-ubuntu22-04 container image (Python 3.10 for the prelude's rustc wrapper).
 #
-# The exact knobs below matter (all three were required to connect):
+# The exact knobs below matter (all four are required for useful Rust hits):
 #   - grpc:// scheme on the addresses (buck2 rejects grpcs://; tls=true upgrades)
 #   - digest_algorithms = SHA256 (BuildBuddy's CAS digest)
 #   - remote_enabled=True in the platform (OSS buck2 only opens the RE connection
 #     when remote is enabled — even for cache-only use)
+#   - default_allow_cache_upload=true (the upload-enabled executor is one gate;
+#     ordinary Rust actions defer to this separate OSS-default-off gate)
 
 [buck2_re_client]
 engine_address = grpc://remote.buildbuddy.io
@@ -36,6 +38,7 @@ http_headers = x-buildbuddy-api-key:<YOUR_BUILDBUDDY_API_KEY>
 
 [buck2]
 digest_algorithms = SHA256
+default_allow_cache_upload = true
 
 [build]
 # Route commands through the remote-cache platform. The repository ./buck2
