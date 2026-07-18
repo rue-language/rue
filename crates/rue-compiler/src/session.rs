@@ -9523,6 +9523,63 @@ mod tests {
     }
 
     #[test]
+    fn switching_update_modes_is_a_distinct_diagnostic_identity() {
+        // RUE-775: canonical `update()` and `update_for_presentation()` over
+        // one byte-identical snapshot must not reuse each other's merge
+        // diagnostics — the presentation provenance is part of the attempt
+        // key — while returning to an already-computed mode reuses it.
+        let source = snapshot(
+            &[
+                (
+                    1,
+                    "/p/main.rue",
+                    "main.rue",
+                    "fn same() {} fn same() {} fn main() {}",
+                ),
+                (2, "/p/a.rue", "a.rue", "fn a() {}"),
+            ],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session.merge().unwrap_err();
+        session
+            .update_for_presentation(&source)
+            .into_result()
+            .unwrap();
+        session.merge().unwrap_err();
+        assert_eq!(session.work().merge.executions, 2);
+
+        let identities = session
+            .queries
+            .merge
+            .attempt_history()
+            .filter(|attempt| attempt.execution == QueryAttemptExecution::Computed)
+            .map(|attempt| {
+                (
+                    attempt.key.source.revision.clone(),
+                    attempt.key.presentation.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(identities.len(), 2);
+        assert_eq!(identities[0].0, identities[1].0);
+        assert!(identities[0].1.is_none(), "canonical attempt has no order");
+        assert!(identities[1].1.is_some(), "presentation attempt has order");
+
+        // Returning to each already-attempted mode reuses its own result
+        // instead of recomputing or crossing modes.
+        session.update(&source).into_result().unwrap();
+        session.merge().unwrap_err();
+        session
+            .update_for_presentation(&source)
+            .into_result()
+            .unwrap();
+        session.merge().unwrap_err();
+        assert_eq!(session.work().merge.executions, 2);
+    }
+
+    #[test]
     fn root_relocation_file_id_and_logical_changes_invalidate_correctly() {
         let base = snapshot(
             &[
