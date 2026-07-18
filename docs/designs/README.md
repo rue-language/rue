@@ -222,4 +222,5 @@ The table is generated from ADR frontmatter. Run
 | [0057](0057-file-io-v0.md) | File IO v0: pure-Rue fs over @syscall with normalized FileError | Accepted | stdlib, io, syscalls, runtime, error-handling, ownership |
 | [0058](0058-canonical-semantic-artifact-algebra.md) | Canonical semantic artifact algebra | Accepted | architecture, compiler, incremental, semantics, validation |
 | [0059](0059-byte-oriented-memory-intrinsics.md) | Byte-oriented memory intrinsics: unify the two low-level families | Accepted | intrinsics, memory, pointers, allocator, bytes, semantics, stdlib, abi |
+| [0060](0060-network-io-v1.md) | Network IO v1: blocking IPv4 TCP in pure Rue | Accepted | stdlib, io, networking, tcp, syscalls, error-handling, ownership |
 <!-- ADR-INDEX:END -->
