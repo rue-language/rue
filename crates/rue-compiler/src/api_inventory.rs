@@ -137,23 +137,217 @@ const RUE_866_INTERNAL_VOCABULARY: &[&str] = &[
     "SourceStats",
 ];
 
-fn public_signatures(source: &str) -> String {
-    let mut result = String::new();
-    let mut collecting = false;
-    for line in source.lines() {
+const RUE_867_DURABLE_VOCABULARY: &[&str] = &[
+    "DURABLE_ORDINARY_BODY_SCHEMA_VERSION",
+    "DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION",
+    "DurableAirInst",
+    "DurableAirInstData",
+    "DurableAirRef",
+    "DurableBodyAnchor",
+    "DurableBodyConversionFailure",
+    "DurableBodyProjectionFailure",
+    "DurableBodyWork",
+    "DurableCallArg",
+    "DurableMatchArm",
+    "DurableOrdinaryBody",
+    "DurableOrdinaryBodyPayload",
+    "DurablePattern",
+    "DurablePlace",
+    "DurablePlaceRef",
+    "DurableProjection",
+    "DurableSpecializedBody",
+    "DurableSpecializedBodyPayload",
+    "convert_semantic_specialized_body_exports",
+    "DURABLE_SEMANTIC_SCHEMA_VERSION",
+    "DurableConstValue",
+    "DurableDeclarationPayload",
+    "DurableDeclarationSemantic",
+    "DurableParameterMode",
+    "DurableSemanticExportFailure",
+    "DurableSemanticImportEpoch",
+    "DurableSemanticParameter",
+    "DurableSemanticProjectionFailure",
+    "DurableSemanticProjectionWork",
+    "DurableSemanticSchemaVersion",
+    "DurableType",
+];
+
+fn public_declarations(source: &str) -> Vec<String> {
+    let mut declarations = Vec::new();
+    let mut lines = source.lines();
+    while let Some(line) = lines.next() {
         let trimmed = line.trim_start();
-        if trimmed.starts_with("pub ") && !trimmed.starts_with("pub(crate)") {
-            collecting = true;
+        if !trimmed.starts_with("pub ") || trimmed.starts_with("pub(crate)") {
+            continue;
         }
-        if collecting {
-            result.push_str(line);
-            result.push('\n');
-            if line.contains('{') || line.contains(';') {
-                collecting = false;
+
+        let identifiers = code_identifiers(trimmed);
+        let owns_body = identifiers
+            .iter()
+            .any(|identifier| matches!(*identifier, "struct" | "enum" | "union" | "trait"));
+        let field_owned_body = identifiers
+            .iter()
+            .any(|identifier| matches!(*identifier, "struct" | "union"));
+        let field = !identifiers.iter().any(|identifier| {
+            matches!(
+                *identifier,
+                "fn" | "struct"
+                    | "enum"
+                    | "union"
+                    | "trait"
+                    | "type"
+                    | "use"
+                    | "const"
+                    | "static"
+                    | "mod"
+            )
+        });
+        let mut declaration = String::new();
+        let mut brace_depth = 0isize;
+        let mut opened_body = false;
+        let mut current = Some(line);
+        loop {
+            let declaration_line = current.take().expect("public declaration has a line");
+            declaration.push_str(declaration_line);
+            declaration.push('\n');
+            for byte in declaration_line.bytes() {
+                match byte {
+                    b'{' => {
+                        opened_body = true;
+                        brace_depth += 1;
+                    }
+                    b'}' if opened_body => brace_depth -= 1,
+                    _ => {}
+                }
+            }
+
+            let complete = if owns_body {
+                (opened_body && brace_depth == 0)
+                    || (!opened_body && declaration_line.contains(';'))
+            } else if field {
+                declaration_line.contains(',')
+            } else {
+                declaration_line.contains(';') || declaration_line.contains('{')
+            };
+            if complete {
+                break;
+            }
+            current = lines.next();
+            if current.is_none() {
+                break;
+            }
+        }
+        if field_owned_body && opened_body {
+            let open = declaration.find('{').expect("opened aggregate has a body");
+            let close = declaration
+                .rfind('}')
+                .expect("balanced aggregate has a body");
+            let mut public_shape = declaration[..=open].to_owned();
+            public_shape.push_str(&public_declarations(&declaration[open + 1..close]).concat());
+            public_shape.push('}');
+            declarations.push(public_shape);
+        } else {
+            declarations.push(declaration);
+        }
+    }
+    declarations
+}
+
+fn public_signatures(source: &str) -> String {
+    public_declarations(source).concat()
+}
+
+fn public_declaration_name(declaration: &str) -> Option<&str> {
+    let identifiers = code_identifiers(declaration);
+    let keyword = identifiers.iter().position(|identifier| {
+        matches!(
+            *identifier,
+            "fn" | "struct" | "enum" | "union" | "trait" | "type" | "const" | "static" | "mod"
+        )
+    })?;
+    identifiers.get(keyword + 1).copied()
+}
+
+fn impl_blocks(source: &str) -> Vec<&str> {
+    let mut blocks = Vec::new();
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("impl ") || trimmed.starts_with("impl<") {
+            let leading = line.len() - trimmed.len();
+            let start = offset + leading;
+            let rest = &source[start..];
+            let Some(open) = rest.find('{') else {
+                offset += line.len();
+                continue;
+            };
+            let mut depth = 0usize;
+            for (index, byte) in rest[open..].bytes().enumerate() {
+                match byte {
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            blocks.push(&rest[..open + index + 1]);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        offset += line.len();
+    }
+    blocks
+}
+
+fn supported_public_surface(facade: &str, modules: &[(&str, &str)]) -> String {
+    let root_declarations = public_declarations(facade);
+    let public_module_names = root_declarations
+        .iter()
+        .filter_map(|declaration| {
+            declaration
+                .trim_start()
+                .strip_prefix("pub mod ")
+                .and_then(|module| module.split(';').next())
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let public_uses = public_use_declarations(facade);
+    let exported_identifiers = public_uses
+        .iter()
+        .flat_map(|declaration| code_identifiers(declaration))
+        .filter(|identifier| {
+            !matches!(
+                *identifier,
+                "pub" | "use" | "self" | "crate" | "super" | "as"
+            )
+        })
+        .map(str::to_owned)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut surface = root_declarations.concat();
+
+    for (module, source) in modules {
+        if public_module_names.contains(module) {
+            surface.push_str(&public_signatures(source));
+        }
+        for declaration in public_declarations(source) {
+            if public_declaration_name(&declaration)
+                .is_some_and(|name| exported_identifiers.contains(name))
+            {
+                surface.push_str(&declaration);
+            }
+        }
+        for implementation in impl_blocks(source) {
+            if code_identifiers(implementation)
+                .into_iter()
+                .take_while(|identifier| *identifier != "pub")
+                .any(|identifier| exported_identifiers.contains(identifier))
+            {
+                surface.push_str(&public_signatures(implementation));
             }
         }
     }
-    result
+    surface
 }
 
 fn public_use_declarations(source: &str) -> Vec<String> {
@@ -331,7 +525,10 @@ fn query_engine_records_cannot_return_to_the_supported_root() {
             }
         }
     }
-    for forbidden in RUE_866_INTERNAL_VOCABULARY {
+    for forbidden in RUE_866_INTERNAL_VOCABULARY
+        .iter()
+        .chain(RUE_867_DURABLE_VOCABULARY)
+    {
         assert!(
             !supported_exports.contains(forbidden),
             "query-engine implementation record returned to the supported root: {forbidden}"
@@ -377,17 +574,12 @@ fn unstable_views_do_not_alias_query_engine_records() {
             "internal vocabulary leaked through a supported public signature or field: {forbidden}"
         );
     }
-    for line in unstable
-        .lines()
-        .map(str::trim_start)
-        .filter(|line| line.starts_with("pub "))
-    {
-        for forbidden in RUE_866_INTERNAL_VOCABULARY {
-            assert!(
-                !line.contains(forbidden),
-                "unstable public item directly exposes internal vocabulary: {line}"
-            );
-        }
+    let supported_public = supported_public_surface(facade, PRODUCTION_MODULES);
+    for forbidden in RUE_867_DURABLE_VOCABULARY {
+        assert!(
+            !supported_public.contains(forbidden),
+            "durable cache schema leaked through the complete supported public surface: {forbidden}"
+        );
     }
     assert!(reviewed_public.contains("pub fn stage(&self) -> DiagnosticStage"));
 
@@ -417,6 +609,76 @@ fn qualified_public_globs_are_rejected() {
                 .iter()
                 .any(|declaration| public_use_is_glob(declaration)),
             "qualified glob fixture escaped the public-use guard: {fixture}"
+        );
+    }
+}
+
+#[test]
+fn supported_surface_scanner_closes_multiline_and_alias_escapes() {
+    let facade = r#"
+pub mod unstable;
+pub use session::{Exported, ExportedRecord};
+pub type Alias = durable_body::DurableType;
+"#;
+    let session = r#"
+pub struct ExportedRecord {
+    pub safe: usize,
+    pub leaked:
+        DurableOrdinaryBody,
+}
+pub struct Exported;
+impl Exported {
+    pub fn leaked(
+        &self,
+    ) -> DurableSpecializedBodyPayload {
+        unreachable!()
+    }
+}
+"#;
+    let unstable = r#"
+pub fn leaked(
+    value: usize,
+) -> DurableType {
+    unreachable!()
+}
+"#;
+    let surface = supported_public_surface(facade, &[("session", session), ("unstable", unstable)]);
+    for escaped in [
+        "durable_body::DurableType",
+        "DurableOrdinaryBody",
+        "DurableSpecializedBodyPayload",
+        "DurableType",
+    ] {
+        assert!(
+            surface.contains(escaped),
+            "balanced public-surface scanner missed adversarial escape: {escaped}"
+        );
+    }
+}
+
+#[test]
+fn durable_cache_schema_cannot_return_to_the_public_facade() {
+    let facade = include_str!("lib.rs");
+    assert!(facade.contains("mod durable_body;"));
+    assert!(facade.contains("mod durable_semantics;"));
+    assert!(!facade.contains("pub mod durable_body;"));
+    assert!(!facade.contains("pub mod durable_semantics;"));
+
+    let session = include_str!("session.rs");
+    let manifest_public =
+        public_signatures(inherent_impl(session, "SemanticDependencyInputManifest"));
+    let semantic_public = public_signatures(inherent_impl(
+        include_str!("canonical_semantic.rs"),
+        "CanonicalSemanticOutput",
+    ));
+    for raw_accessor in [
+        "durable_specialized_body_payloads",
+        "durable_ordinary_bodies",
+    ] {
+        assert!(
+            !manifest_public.contains(&format!("pub fn {raw_accessor}"))
+                && !semantic_public.contains(&format!("pub fn {raw_accessor}")),
+            "raw durable schema accessor returned to a public signature: {raw_accessor}"
         );
     }
 }

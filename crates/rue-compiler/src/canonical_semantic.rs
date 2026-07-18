@@ -561,7 +561,9 @@ impl CanonicalSemanticOutput {
         &self.durable_ordinary_body_payloads
     }
 
-    pub fn durable_specialized_body_payloads(&self) -> &[crate::DurableSpecializedBodyPayload] {
+    pub(crate) fn durable_specialized_body_payloads(
+        &self,
+    ) -> &[crate::DurableSpecializedBodyPayload] {
         &self.durable_specialized_body_payloads
     }
     /// Explicitly unstable equality status for durable-cache instrumentation.

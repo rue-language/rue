@@ -619,10 +619,8 @@ impl StableBodyDependencyInputRecord {
     pub fn direct_dependency_inputs(&self) -> &[StableDefinitionInputFingerprint] {
         &self.direct_dependency_inputs
     }
-    pub fn builtin_type_call_heads(&self) -> &[StableBuiltinTypeCallHeadInput] {
-        &self.builtin_type_call_heads
-    }
-    pub fn blockers(&self) -> &[SemanticDependencyBlocker] {
+    #[cfg(test)]
+    pub(crate) fn blockers(&self) -> &[SemanticDependencyBlocker] {
         &self.blockers
     }
     pub fn reusable_boundary_supported(&self) -> bool {
@@ -1023,9 +1021,6 @@ mod durable_body_integration_tests {
 pub struct StableDefinitionFingerprint([u8; 32]);
 
 impl StableDefinitionFingerprint {
-    pub fn bytes(self) -> [u8; 32] {
-        self.0
-    }
     #[cfg(test)]
     pub(crate) fn for_test(byte: u8) -> Self {
         Self([byte; 32])
@@ -1041,9 +1036,6 @@ pub enum StableDefinitionFingerprintPrecision {
     /// All declaration bytes are semantic signature input and there is no
     /// independently executable payload.
     ExactSignature,
-    /// The parser has no authoritative executable-payload boundary for this
-    /// declaration kind, so its complete declaration is hashed as a signature.
-    ConservativeFullDeclaration,
 }
 
 /// Immutable, relocation-independent inputs for one stable definition.
@@ -1410,9 +1402,8 @@ impl SemanticDependencyInputManifest {
     pub fn body_dependencies(&self) -> &[StableBodyDependencyInputRecord] {
         &self.body_dependencies
     }
-    /// Durable candidates published by this successful dependency manifest.
-    /// Production reuse consumes the session's last-successful canonical body
-    /// baseline; this accessor exposes the same stable artifacts to planners.
+    /// Test-only inspection of candidates owned by this successful manifest.
+    /// Production cache operations consume the owned field directly.
     #[cfg(test)]
     pub(crate) fn durable_ordinary_bodies(&self) -> &[crate::DurableOrdinaryBody] {
         &self.durable_ordinary_bodies
@@ -6854,7 +6845,6 @@ fn declaration_surfaces_match(
         ) && !matches!(
             left.precision,
             StableDefinitionFingerprintPrecision::SignatureAndInitializer
-                | StableDefinitionFingerprintPrecision::ConservativeFullDeclaration
         );
         let matches = supported
             && left.schema_version == right.schema_version

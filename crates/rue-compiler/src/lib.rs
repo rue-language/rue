@@ -170,19 +170,22 @@ pub use definition_snapshot::{
     DefinitionId, DefinitionKind, DefinitionNameKey, DefinitionNamespace, DefinitionOccurrenceId,
     DefinitionRecord, DefinitionShard, DefinitionSnapshot, ModuleDefinition,
 };
-pub use durable_body::{
-    DURABLE_ORDINARY_BODY_SCHEMA_VERSION, DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION, DurableAirInst,
-    DurableAirInstData, DurableAirRef, DurableBodyAnchor, DurableBodyConversionFailure,
-    DurableBodyProjectionFailure, DurableCallArg, DurableMatchArm, DurableOrdinaryBody,
-    DurableOrdinaryBodyPayload, DurablePattern, DurablePlace, DurablePlaceRef, DurableProjection,
-    DurableSpecializedBody, DurableSpecializedBodyPayload,
+#[cfg(test)]
+pub(crate) use durable_body::DurableBodyProjectionFailure;
+pub(crate) use durable_body::{
+    DURABLE_ORDINARY_BODY_SCHEMA_VERSION, DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION,
+    DurableAirInstData, DurableBodyAnchor, DurableOrdinaryBody, DurableOrdinaryBodyPayload,
+    DurableProjection, DurableSpecializedBody, DurableSpecializedBodyPayload,
     convert_semantic_specialized_body_exports,
 };
-pub use durable_semantics::{
-    DURABLE_SEMANTIC_SCHEMA_VERSION, DurableConstValue, DurableDeclarationPayload,
-    DurableDeclarationSemantic, DurableParameterMode, DurableSemanticExportFailure,
-    DurableSemanticImportEpoch, DurableSemanticParameter, DurableSemanticProjectionFailure,
-    DurableSemanticProjectionWork, DurableSemanticSchemaVersion, DurableType,
+pub(crate) use durable_semantics::{
+    DURABLE_SEMANTIC_SCHEMA_VERSION, DurableDeclarationSemantic, DurableSemanticExportFailure,
+    DurableSemanticProjectionFailure, DurableSemanticSchemaVersion,
+};
+#[cfg(test)]
+pub(crate) use durable_semantics::{
+    DurableConstValue, DurableDeclarationPayload, DurableParameterMode, DurableSemanticParameter,
+    DurableSemanticProjectionWork, DurableType,
 };
 
 // Backend presentation queries used by the command-line emit modes.

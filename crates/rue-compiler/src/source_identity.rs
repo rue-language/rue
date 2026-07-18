@@ -452,7 +452,8 @@ impl StablePreviewFeatures {
         names.dedup();
         Self(names.into())
     }
-    pub fn names(&self) -> &[Arc<str>] {
+    #[cfg(test)]
+    pub(crate) fn names(&self) -> &[Arc<str>] {
         &self.0
     }
 }
