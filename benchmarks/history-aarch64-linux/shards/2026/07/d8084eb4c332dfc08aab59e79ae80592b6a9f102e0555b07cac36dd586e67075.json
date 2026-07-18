@@ -1,0 +1,3779 @@
+{
+  "platform": "aarch64-linux",
+  "runs": [
+    {
+      "benchmarks": [
+        {
+          "binary_size_bytes": 131072,
+          "dimensions": {
+            "function_declarations": 1001,
+            "source_lines": 2120
+          },
+          "interpretation": "Primarily exposes declaration parsing, indexing, and symbol-resolution cost as function count grows.",
+          "iterations": 5,
+          "kind": "synthetic_phase_probe",
+          "mean_ms": 98.828,
+          "name": "many_functions",
+          "non_representative": "Synthetic compiler phase probe; not representative of application mixes or runtime performance.",
+          "passes": {
+            "cfg_construction": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 8.562,
+              "root_invocations": 0
+            },
+            "codegen": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 12.312,
+              "root_invocations": 0
+            },
+            "definition_snapshot_modules": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.118,
+              "root_invocations": 0
+            },
+            "lexer": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 1.075,
+              "root_invocations": 0
+            },
+            "linker": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 10.4,
+              "root_invocations": 0
+            },
+            "parser_directive_validation": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.08,
+              "root_invocations": 0
+            },
+            "parser_grammar_execution": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 1.147,
+              "root_invocations": 0
+            },
+            "parser_nesting_scan": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.05,
+              "root_invocations": 0
+            },
+            "parser_state_setup": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.01,
+              "root_invocations": 0
+            },
+            "rir_declaration_index": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.28,
+              "root_invocations": 0
+            },
+            "sema": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 41.721,
+              "root_invocations": 0
+            }
+          },
+          "peak_memory_bytes": 47408742,
+          "samples_ms": [
+            98.702346,
+            98.676972,
+            100.097718,
+            97.227428,
+            99.43586
+          ],
+          "source_metrics": {
+            "bytes": 70112,
+            "files": 1,
+            "lines": 2120,
+            "tokens": 25820
+          },
+          "std_ms": 0.957298,
+          "subsystem": "frontend/declarations",
+          "timing_schema_version": 2,
+          "workload_family": "declaration-volume"
+        },
+        {
+          "binary_size_bytes": 163840,
+          "dimensions": {
+            "function_declarations": 151,
+            "source_lines": 12198
+          },
+          "interpretation": "Pins parser/scope behavior on repeated block, if, while, and expression nesting; the separate fixed timeout remains the pathology gate.",
+          "iterations": 5,
+          "kind": "synthetic_phase_probe",
+          "mean_ms": 72.982,
+          "name": "deep_nesting",
+          "non_representative": "Adversarial nesting corpus; not representative of normal source shape or runtime performance.",
+          "passes": {
+            "cfg_construction": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 4.122,
+              "root_invocations": 0
+            },
+            "codegen": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 9.506,
+              "root_invocations": 0
+            },
+            "definition_snapshot_modules": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.084,
+              "root_invocations": 0
+            },
+            "lexer": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 1.523,
+              "root_invocations": 0
+            },
+            "linker": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 7.026,
+              "root_invocations": 0
+            },
+            "parser_directive_validation": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.172,
+              "root_invocations": 0
+            },
+            "parser_grammar_execution": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 2.368,
+              "root_invocations": 0
+            },
+            "parser_nesting_scan": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.074,
+              "root_invocations": 0
+            },
+            "parser_state_setup": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.012,
+              "root_invocations": 0
+            },
+            "rir_declaration_index": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.149,
+              "root_invocations": 0
+            },
+            "sema": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 23.775,
+              "root_invocations": 0
+            }
+          },
+          "peak_memory_bytes": 45378764,
+          "samples_ms": [
+            72.540199,
+            72.69758499999999,
+            72.39039799999999,
+            72.774077,
+            74.509226
+          ],
+          "source_metrics": {
+            "bytes": 882648,
+            "files": 1,
+            "lines": 12198,
+            "tokens": 41208
+          },
+          "std_ms": 0.774818,
+          "subsystem": "frontend/parser-nesting",
+          "timing_schema_version": 2,
+          "workload_family": "nesting-pathology"
+        },
+        {
+          "binary_size_bytes": 143360,
+          "dimensions": {
+            "function_declarations": 701,
+            "source_lines": 2187,
+            "struct_declarations": 700
+          },
+          "interpretation": "Primarily exposes type declaration, field, and semantic-analysis cost for many flat structs.",
+          "iterations": 5,
+          "kind": "synthetic_phase_probe",
+          "mean_ms": 127.25,
+          "name": "large_structs",
+          "non_representative": "Synthetic flat-type probe; not representative of application type graphs or runtime performance.",
+          "passes": {
+            "cfg_construction": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 6.216,
+              "root_invocations": 0
+            },
+            "codegen": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 8.79,
+              "root_invocations": 0
+            },
+            "definition_snapshot_modules": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.212,
+              "root_invocations": 0
+            },
+            "lexer": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 2.251,
+              "root_invocations": 0
+            },
+            "linker": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 9.668,
+              "root_invocations": 0
+            },
+            "parser_directive_validation": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.135,
+              "root_invocations": 0
+            },
+            "parser_grammar_execution": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 1.778,
+              "root_invocations": 0
+            },
+            "parser_nesting_scan": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.101,
+              "root_invocations": 0
+            },
+            "parser_state_setup": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.009,
+              "root_invocations": 0
+            },
+            "rir_declaration_index": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.208,
+              "root_invocations": 0
+            },
+            "sema": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 67.884,
+              "root_invocations": 0
+            }
+          },
+          "peak_memory_bytes": 52359168,
+          "samples_ms": [
+            128.628129,
+            126.507546,
+            124.983947,
+            127.996556,
+            128.135269
+          ],
+          "source_metrics": {
+            "bytes": 122938,
+            "files": 1,
+            "lines": 2187,
+            "tokens": 55458
+          },
+          "std_ms": 1.336152,
+          "subsystem": "semantic/types",
+          "timing_schema_version": 2,
+          "workload_family": "type-volume"
+        },
+        {
+          "binary_size_bytes": 548864,
+          "dimensions": {
+            "function_declarations": 251,
+            "source_lines": 5312
+          },
+          "interpretation": "Exposes expression parsing, semantic lowering, and code generation for repeated long arithmetic chains; it does not isolate one pass.",
+          "iterations": 5,
+          "kind": "synthetic_phase_probe",
+          "mean_ms": 113.801,
+          "name": "arithmetic_heavy",
+          "non_representative": "Synthetic repeated-expression probe; not representative of application mixes or runtime performance.",
+          "passes": {
+            "cfg_construction": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 5.329,
+              "root_invocations": 0
+            },
+            "codegen": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 29.945,
+              "root_invocations": 0
+            },
+            "definition_snapshot_modules": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.05,
+              "root_invocations": 0
+            },
+            "lexer": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 1.987,
+              "root_invocations": 0
+            },
+            "linker": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 9.605,
+              "root_invocations": 0
+            },
+            "parser_directive_validation": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.434,
+              "root_invocations": 0
+            },
+            "parser_grammar_execution": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 3.634,
+              "root_invocations": 0
+            },
+            "parser_nesting_scan": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.121,
+              "root_invocations": 0
+            },
+            "parser_state_setup": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.011,
+              "root_invocations": 0
+            },
+            "rir_declaration_index": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.19,
+              "root_invocations": 0
+            },
+            "sema": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 50.215,
+              "root_invocations": 0
+            }
+          },
+          "peak_memory_bytes": 70268518,
+          "samples_ms": [
+            112.923079,
+            115.301506,
+            113.148573,
+            114.267279,
+            113.3691
+          ],
+          "source_metrics": {
+            "bytes": 178615,
+            "files": 1,
+            "lines": 5312,
+            "tokens": 65568
+          },
+          "std_ms": 0.87771,
+          "subsystem": "frontend-expressions/backend",
+          "timing_schema_version": 2,
+          "workload_family": "expression-volume"
+        },
+        {
+          "binary_size_bytes": 262144,
+          "dimensions": {
+            "function_declarations": 391,
+            "source_lines": 10678
+          },
+          "interpretation": "Primarily exposes CFG construction and lowering for repeated if, while, and match shapes.",
+          "iterations": 5,
+          "kind": "synthetic_phase_probe",
+          "mean_ms": 83.087,
+          "name": "control_flow",
+          "non_representative": "Synthetic repeated-control-flow probe; not representative of application branch distributions or runtime performance.",
+          "passes": {
+            "cfg_construction": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 5.869,
+              "root_invocations": 0
+            },
+            "codegen": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 16.875,
+              "root_invocations": 0
+            },
+            "definition_snapshot_modules": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.088,
+              "root_invocations": 0
+            },
+            "lexer": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 1.485,
+              "root_invocations": 0
+            },
+            "linker": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 7.936,
+              "root_invocations": 0
+            },
+            "parser_directive_validation": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.203,
+              "root_invocations": 0
+            },
+            "parser_grammar_execution": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 2.483,
+              "root_invocations": 0
+            },
+            "parser_nesting_scan": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.089,
+              "root_invocations": 0
+            },
+            "parser_state_setup": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.011,
+              "root_invocations": 0
+            },
+            "rir_declaration_index": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.17,
+              "root_invocations": 0
+            },
+            "sema": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 34.847,
+              "root_invocations": 0
+            }
+          },
+          "peak_memory_bytes": 51295846,
+          "samples_ms": [
+            81.267189,
+            83.27163999999999,
+            83.78273999999999,
+            85.391887,
+            81.726084
+          ],
+          "source_metrics": {
+            "bytes": 201693,
+            "files": 1,
+            "lines": 10678,
+            "tokens": 47108
+          },
+          "std_ms": 1.482865,
+          "subsystem": "cfg",
+          "timing_schema_version": 2,
+          "workload_family": "control-flow-volume"
+        },
+        {
+          "binary_size_bytes": 503808,
+          "dimensions": {
+            "function_declarations": 201,
+            "source_lines": 6185
+          },
+          "interpretation": "Exposes semantic checking and lowering for repeated array declarations, indexing, and mutation.",
+          "iterations": 5,
+          "kind": "synthetic_phase_probe",
+          "mean_ms": 100.816,
+          "name": "array_heavy",
+          "non_representative": "Synthetic repeated-array probe; not representative of application data structures or runtime performance.",
+          "passes": {
+            "cfg_construction": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 4.461,
+              "root_invocations": 0
+            },
+            "codegen": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 28.277,
+              "root_invocations": 0
+            },
+            "definition_snapshot_modules": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.044,
+              "root_invocations": 0
+            },
+            "lexer": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 2.151,
+              "root_invocations": 0
+            },
+            "linker": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 8.664,
+              "root_invocations": 0
+            },
+            "parser_directive_validation": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.283,
+              "root_invocations": 0
+            },
+            "parser_grammar_execution": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 3.176,
+              "root_invocations": 0
+            },
+            "parser_nesting_scan": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.121,
+              "root_invocations": 0
+            },
+            "parser_state_setup": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.011,
+              "root_invocations": 0
+            },
+            "rir_declaration_index": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.165,
+              "root_invocations": 0
+            },
+            "sema": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 40.954,
+              "root_invocations": 0
+            }
+          },
+          "peak_memory_bytes": 57577472,
+          "samples_ms": [
+            100.477084,
+            101.489913,
+            99.922611,
+            100.986614,
+            101.205685
+          ],
+          "source_metrics": {
+            "bytes": 172571,
+            "files": 1,
+            "lines": 6185,
+            "tokens": 63862
+          },
+          "std_ms": 0.55644,
+          "subsystem": "semantic/arrays",
+          "timing_schema_version": 2,
+          "workload_family": "array-operation-volume"
+        },
+        {
+          "binary_size_bytes": 221184,
+          "dimensions": {
+            "function_declarations": 211,
+            "source_lines": 6109,
+            "struct_declarations": 10
+          },
+          "interpretation": "Primarily exposes backend lowering and register allocation for repeated functions with many simultaneously live values.",
+          "iterations": 5,
+          "kind": "synthetic_phase_probe",
+          "mean_ms": 71.28,
+          "name": "register_pressure",
+          "non_representative": "Synthetic register-pressure probe; not representative of application code or generated-program runtime performance.",
+          "passes": {
+            "cfg_construction": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 3.456,
+              "root_invocations": 0
+            },
+            "codegen": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 12.454,
+              "root_invocations": 0
+            },
+            "definition_snapshot_modules": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.051,
+              "root_invocations": 0
+            },
+            "lexer": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 1.761,
+              "root_invocations": 0
+            },
+            "linker": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 7.911,
+              "root_invocations": 0
+            },
+            "parser_directive_validation": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.21,
+              "root_invocations": 0
+            },
+            "parser_grammar_execution": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 2.228,
+              "root_invocations": 0
+            },
+            "parser_nesting_scan": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.088,
+              "root_invocations": 0
+            },
+            "parser_state_setup": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.011,
+              "root_invocations": 0
+            },
+            "rir_declaration_index": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 0.143,
+              "root_invocations": 0
+            },
+            "sema": {
+              "invocations": 1,
+              "leaf_invocations": 1,
+              "mean_ms": 32.599,
+              "root_invocations": 0
+            }
+          },
+          "peak_memory_bytes": 50936217,
+          "samples_ms": [
+            70.237846,
+            71.457011,
+            72.3765,
+            70.971576,
+            71.36081499999999
+          ],
+          "source_metrics": {
+            "bytes": 145803,
+            "files": 1,
+            "lines": 6109,
+            "tokens": 46333
+          },
+          "std_ms": 0.6959,
+          "subsystem": "backend/register-allocation",
+          "timing_schema_version": 2,
+          "workload_family": "live-value-volume"
+        }
+      ],
+      "build_mode": "release",
+      "commit": "fec9f5dbc48f962db90ccf629f1cbc7888832c78",
+      "host": {
+        "arch": "aarch64",
+        "os": "linux"
+      },
+      "iterations": 5,
+      "measurement_family": "compiler",
+      "probe_suite": {
+        "aggregate_interpretation": "synthetic compiler phase diagnostics only",
+        "kind": "synthetic_phase_probe",
+        "representative": false
+      },
+      "publication": {
+        "build_mode": "release",
+        "comparable": true,
+        "compiler": {
+          "commit": "fec9f5dbc48f962db90ccf629f1cbc7888832c78",
+          "identity": "rue@fec9f5dbc48f962db90ccf629f1cbc7888832c78"
+        },
+        "corpus": {
+          "files": [
+            "stress/many_functions.rue",
+            "stress/deep_nesting.rue",
+            "stress/large_structs.rue",
+            "stress/arithmetic_heavy.rue",
+            "stress/control_flow.rue",
+            "stress/array_heavy.rue",
+            "stress/register_pressure.rue",
+            "../scripts/scaling_workloads.py",
+            "../scripts/benchmark_scenarios.py",
+            "../crates/rue/src/main.rs",
+            "../crates/rue-compiler-session-bench/src/main.rs",
+            "../crates/rue-compiler-session-bench/src/representative.rs",
+            "scenarios/representative/main.rue",
+            "scenarios/representative/model.rue",
+            "scenarios/representative/worker.rue",
+            "scenarios/representative/report.rue",
+            "scenarios/representative/labels.rue",
+            "scenarios/representative/labels_alt.rue",
+            "scenarios/representative/std/_std.rue",
+            "scenarios/representative/std/math.rue"
+          ],
+          "schema_version": 2,
+          "sha256": "11d5b9e2585496c1afc51d698fd0607c366c6b5dea0b7f132adf97033c186dd0"
+        },
+        "coverage": {
+          "gap_unknown": false,
+          "measured_commit": "fec9f5dbc48f962db90ccf629f1cbc7888832c78",
+          "represented_commits": [
+            "fec9f5dbc48f962db90ccf629f1cbc7888832c78"
+          ],
+          "skipped_commits": []
+        },
+        "iteration_policy": {
+          "iterations": 5,
+          "kind": "fixed"
+        },
+        "metric_semantics": {
+          "measurement_family": "compiler",
+          "scenario_family": "cold_compilation"
+        },
+        "platform": "aarch64-linux",
+        "regime": {
+          "build_mode": "release",
+          "corpus_schema_version": 2,
+          "corpus_sha256": "11d5b9e2585496c1afc51d698fd0607c366c6b5dea0b7f132adf97033c186dd0",
+          "iteration_policy": {
+            "iterations": 5,
+            "kind": "fixed"
+          },
+          "measurement_family": "compiler",
+          "platform": "aarch64-linux",
+          "runner_image": "ubuntu24-arm64:20260714.61.1:ARM64",
+          "scenario_family": "cold_compilation",
+          "timing_schema_versions": [
+            2
+          ]
+        },
+        "regime_id": "3cebac32c39e7196d33f9aa93d67636ae08f543b0a551abf4ac6dcb07dbf609c",
+        "runner": {
+          "host": {
+            "arch": "aarch64",
+            "os": "linux"
+          },
+          "image": "ubuntu24-arm64:20260714.61.1:ARM64"
+        },
+        "schema_version": 3,
+        "timing_schema_versions": [
+          2
+        ],
+        "trigger_reason": "push"
+      },
+      "runner_image": "ubuntu24-arm64:20260714.61.1:ARM64",
+      "scaling": {
+        "budget_status": "passed",
+        "families": [
+          {
+            "adjacent_growth": [
+              {
+                "classification": "within_normalized_growth_budget",
+                "focus_pass": "parser_grammar_execution",
+                "focus_pass_ratio": 2.7797,
+                "from_size": 100,
+                "latency_per_unit_growth": {
+                  "budget": 2.0,
+                  "center": 0.4724,
+                  "classification": "within_budget",
+                  "lower_bound": 0.4575,
+                  "reason": null,
+                  "upper_bound": 0.488
+                },
+                "memory_per_unit_growth": {
+                  "budget": 2.0,
+                  "center": 0.3474,
+                  "classification": "within_budget",
+                  "lower_bound": 0.3462,
+                  "reason": null,
+                  "upper_bound": 0.3485
+                },
+                "size_ratio": 3.0,
+                "to_size": 300
+              },
+              {
+                "classification": "within_normalized_growth_budget",
+                "focus_pass": "parser_grammar_execution",
+                "focus_pass_ratio": 3.0305,
+                "from_size": 300,
+                "latency_per_unit_growth": {
+                  "budget": 2.0,
+                  "center": 0.7411,
+                  "classification": "within_budget",
+                  "lower_bound": 0.7295,
+                  "reason": null,
+                  "upper_bound": 0.7529
+                },
+                "memory_per_unit_growth": {
+                  "budget": 2.0,
+                  "center": 0.3738,
+                  "classification": "within_budget",
+                  "lower_bound": 0.3737,
+                  "reason": null,
+                  "upper_bound": 0.3739
+                },
+                "size_ratio": 3.0,
+                "to_size": 900
+              }
+            ],
+            "budgets": {
+              "latency_per_unit_growth": 2.0,
+              "memory_per_unit_growth": 2.0,
+              "per_tier_compile_timeout_seconds": 20,
+              "policy": "adjacent tier metric growth divided by input-size growth"
+            },
+            "classification": "within_normalized_growth_budget",
+            "focus_pass": "parser_grammar_execution",
+            "input_axis": "function declarations",
+            "interpretation": "Input size grows only the count of same-shape function declarations; inspect lexer/parser/declaration-index counters together.",
+            "kind": "synthetic_scaling_probe",
+            "name": "frontend_declarations",
+            "non_representative": "Synthetic scaling diagnostic, excluded from representative scenarios and the phase-probe aggregate headline; it does not measure runtime performance.",
+            "subsystem": "frontend/declarations",
+            "tiers": [
+              {
+                "input_size": 100,
+                "latency_summary_ms": {
+                  "center": 9.143159,
+                  "dispersion_classification": "robust",
+                  "maximum": 9.622218,
+                  "minimum": 9.012332,
+                  "range": 0.6098859999999995,
+                  "relative_range": 0.0667040789731426,
+                  "sample_count": 5,
+                  "scaled_mad": 0.19396411020000004
+                },
+                "median_ms": 9.143159,
+                "passes": {
+                  "cfg_construction": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.315,
+                    "root_invocations": 0
+                  },
+                  "codegen": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.091,
+                    "root_invocations": 0
+                  },
+                  "definition_snapshot_modules": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.022,
+                    "root_invocations": 0
+                  },
+                  "lexer": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.073,
+                    "root_invocations": 0
+                  },
+                  "linker": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 6.522,
+                    "root_invocations": 0
+                  },
+                  "parser_directive_validation": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.003,
+                    "root_invocations": 0
+                  },
+                  "parser_grammar_execution": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.059,
+                    "root_invocations": 0
+                  },
+                  "parser_nesting_scan": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.003,
+                    "root_invocations": 0
+                  },
+                  "parser_state_setup": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.009,
+                    "root_invocations": 0
+                  },
+                  "rir_declaration_index": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.065,
+                    "root_invocations": 0
+                  },
+                  "sema": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.607,
+                    "root_invocations": 0
+                  }
+                },
+                "peak_memory_bytes": 21815296,
+                "peak_memory_samples_bytes": [
+                  21815296,
+                  21815296,
+                  21749760,
+                  21864448,
+                  21749760
+                ],
+                "peak_memory_summary_bytes": {
+                  "center": 21815296.0,
+                  "dispersion_classification": "robust",
+                  "maximum": 21864448.0,
+                  "minimum": 21749760.0,
+                  "range": 114688.0,
+                  "relative_range": 0.005257228689447991,
+                  "sample_count": 5,
+                  "scaled_mad": 72872.7552
+                },
+                "samples_ms": [
+                  9.622218,
+                  9.143159,
+                  9.134806,
+                  9.012332,
+                  9.479592
+                ],
+                "source_metrics": {
+                  "bytes": 3572,
+                  "files": 1,
+                  "lines": 102,
+                  "tokens": 1413
+                }
+              },
+              {
+                "input_size": 300,
+                "latency_summary_ms": {
+                  "center": 12.95875,
+                  "dispersion_classification": "robust",
+                  "maximum": 13.127438,
+                  "minimum": 12.737775999999998,
+                  "range": 0.3896620000000013,
+                  "relative_range": 0.030069412559081802,
+                  "sample_count": 5,
+                  "scaled_mad": 0.14302197420000076
+                },
+                "median_ms": 12.95875,
+                "passes": {
+                  "cfg_construction": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.344,
+                    "root_invocations": 0
+                  },
+                  "codegen": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.098,
+                    "root_invocations": 0
+                  },
+                  "definition_snapshot_modules": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.041,
+                    "root_invocations": 0
+                  },
+                  "lexer": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.207,
+                    "root_invocations": 0
+                  },
+                  "linker": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 6.3,
+                    "root_invocations": 0
+                  },
+                  "parser_directive_validation": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.007,
+                    "root_invocations": 0
+                  },
+                  "parser_grammar_execution": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.164,
+                    "root_invocations": 0
+                  },
+                  "parser_nesting_scan": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.008,
+                    "root_invocations": 0
+                  },
+                  "parser_state_setup": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.008,
+                    "root_invocations": 0
+                  },
+                  "rir_declaration_index": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.118,
+                    "root_invocations": 0
+                  },
+                  "sema": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 1.98,
+                    "root_invocations": 0
+                  }
+                },
+                "peak_memory_bytes": 22732800,
+                "peak_memory_samples_bytes": [
+                  22732800,
+                  22618112,
+                  22732800,
+                  22732800,
+                  22732800
+                ],
+                "peak_memory_summary_bytes": {
+                  "center": 22732800.0,
+                  "dispersion_classification": "robust",
+                  "maximum": 22732800.0,
+                  "minimum": 22618112.0,
+                  "range": 114688.0,
+                  "relative_range": 0.005045045045045045,
+                  "sample_count": 5,
+                  "scaled_mad": 0.0
+                },
+                "samples_ms": [
+                  12.951301,
+                  12.737775999999998,
+                  13.055217,
+                  13.127438,
+                  12.95875
+                ],
+                "source_metrics": {
+                  "bytes": 10772,
+                  "files": 1,
+                  "lines": 302,
+                  "tokens": 4213
+                }
+              },
+              {
+                "input_size": 900,
+                "latency_summary_ms": {
+                  "center": 28.811273,
+                  "dispersion_classification": "robust",
+                  "maximum": 29.159746,
+                  "minimum": 28.718573,
+                  "range": 0.44117299999999915,
+                  "relative_range": 0.01531251326520696,
+                  "sample_count": 5,
+                  "scaled_mad": 0.137437020000001
+                },
+                "median_ms": 28.811273,
+                "passes": {
+                  "cfg_construction": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.374,
+                    "root_invocations": 0
+                  },
+                  "codegen": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.102,
+                    "root_invocations": 0
+                  },
+                  "definition_snapshot_modules": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.114,
+                    "root_invocations": 0
+                  },
+                  "lexer": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.562,
+                    "root_invocations": 0
+                  },
+                  "linker": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 6.13,
+                    "root_invocations": 0
+                  },
+                  "parser_directive_validation": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.026,
+                    "root_invocations": 0
+                  },
+                  "parser_grammar_execution": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.497,
+                    "root_invocations": 0
+                  },
+                  "parser_nesting_scan": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.022,
+                    "root_invocations": 0
+                  },
+                  "parser_state_setup": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.011,
+                    "root_invocations": 0
+                  },
+                  "rir_declaration_index": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.313,
+                    "root_invocations": 0
+                  },
+                  "sema": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 10.081,
+                    "root_invocations": 0
+                  }
+                },
+                "peak_memory_bytes": 25493504,
+                "peak_memory_samples_bytes": [
+                  25427968,
+                  25493504,
+                  25440256,
+                  25497600,
+                  25493504
+                ],
+                "peak_memory_summary_bytes": {
+                  "center": 25493504.0,
+                  "dispersion_classification": "robust",
+                  "maximum": 25497600.0,
+                  "minimum": 25427968.0,
+                  "range": 69632.0,
+                  "relative_range": 0.002731362467866324,
+                  "sample_count": 5,
+                  "scaled_mad": 6072.7296
+                },
+                "samples_ms": [
+                  29.159746,
+                  28.759635,
+                  28.811273,
+                  29.068598,
+                  28.718573
+                ],
+                "source_metrics": {
+                  "bytes": 32372,
+                  "files": 1,
+                  "lines": 902,
+                  "tokens": 12613
+                }
+              }
+            ],
+            "violations": [],
+            "workload_family": "declaration-volume"
+          },
+          {
+            "adjacent_growth": [
+              {
+                "classification": "within_normalized_growth_budget",
+                "focus_pass": "parser_grammar_execution",
+                "focus_pass_ratio": 2.2308,
+                "from_size": 16,
+                "latency_per_unit_growth": {
+                  "budget": 2.0,
+                  "center": 0.4228,
+                  "classification": "within_budget",
+                  "lower_bound": 0.4119,
+                  "reason": null,
+                  "upper_bound": 0.4341
+                },
+                "memory_per_unit_growth": {
+                  "budget": 2.0,
+                  "center": 0.3444,
+                  "classification": "within_budget",
+                  "lower_bound": 0.3429,
+                  "reason": null,
+                  "upper_bound": 0.3459
+                },
+                "size_ratio": 3.0,
+                "to_size": 48
+              },
+              {
+                "classification": "within_normalized_growth_budget",
+                "focus_pass": "parser_grammar_execution",
+                "focus_pass_ratio": 2.7069,
+                "from_size": 48,
+                "latency_per_unit_growth": {
+                  "budget": 2.0,
+                  "center": 0.5651,
+                  "classification": "within_budget",
+                  "lower_bound": 0.5562,
+                  "reason": null,
+                  "upper_bound": 0.5741
+                },
+                "memory_per_unit_growth": {
+                  "budget": 2.0,
+                  "center": 0.3787,
+                  "classification": "within_budget",
+                  "lower_bound": 0.3784,
+                  "reason": null,
+                  "upper_bound": 0.379
+                },
+                "size_ratio": 3.0,
+                "to_size": 144
+              }
+            ],
+            "budgets": {
+              "latency_per_unit_growth": 2.0,
+              "memory_per_unit_growth": 2.0,
+              "per_tier_compile_timeout_seconds": 20,
+              "policy": "adjacent tier metric growth divided by input-size growth"
+            },
+            "classification": "within_normalized_growth_budget",
+            "focus_pass": "parser_grammar_execution",
+            "input_axis": "imported leaf modules",
+            "interpretation": "Input size grows direct imports and same-shape leaf modules, exercising discovery, per-module syntax, and merge work.",
+            "kind": "synthetic_scaling_probe",
+            "name": "module_fanout",
+            "non_representative": "Synthetic import-fanout diagnostic, not a representative project dependency graph or runtime scenario.",
+            "subsystem": "frontend/module-discovery",
+            "tiers": [
+              {
+                "input_size": 16,
+                "latency_summary_ms": {
+                  "center": 8.609613,
+                  "dispersion_classification": "robust",
+                  "maximum": 9.173493,
+                  "minimum": 8.331832,
+                  "range": 0.8416610000000002,
+                  "relative_range": 0.09775828483812225,
+                  "sample_count": 5,
+                  "scaled_mad": 0.11104822260000081
+                },
+                "median_ms": 8.609613,
+                "passes": {
+                  "cfg_construction": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.328,
+                    "root_invocations": 0
+                  },
+                  "codegen": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.073,
+                    "root_invocations": 0
+                  },
+                  "definition_snapshot_modules": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.032,
+                    "root_invocations": 0
+                  },
+                  "lexer": {
+                    "invocations": 17,
+                    "leaf_invocations": 17,
+                    "mean_ms": 0.026,
+                    "root_invocations": 0
+                  },
+                  "linker": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 6.358,
+                    "root_invocations": 0
+                  },
+                  "parser_directive_validation": {
+                    "invocations": 17,
+                    "leaf_invocations": 17,
+                    "mean_ms": 0.003,
+                    "root_invocations": 0
+                  },
+                  "parser_grammar_execution": {
+                    "invocations": 17,
+                    "leaf_invocations": 17,
+                    "mean_ms": 0.026,
+                    "root_invocations": 0
+                  },
+                  "parser_nesting_scan": {
+                    "invocations": 17,
+                    "leaf_invocations": 17,
+                    "mean_ms": 0.004,
+                    "root_invocations": 0
+                  },
+                  "parser_state_setup": {
+                    "invocations": 17,
+                    "leaf_invocations": 17,
+                    "mean_ms": 0.037,
+                    "root_invocations": 0
+                  },
+                  "rir_declaration_index": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.08,
+                    "root_invocations": 0
+                  },
+                  "sema": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.225,
+                    "root_invocations": 0
+                  }
+                },
+                "peak_memory_bytes": 21876736,
+                "peak_memory_samples_bytes": [
+                  21876736,
+                  21934080,
+                  21819392,
+                  21876736,
+                  21815296
+                ],
+                "peak_memory_summary_bytes": {
+                  "center": 21876736.0,
+                  "dispersion_classification": "robust",
+                  "maximum": 21934080.0,
+                  "minimum": 21815296.0,
+                  "range": 118784.0,
+                  "relative_range": 0.005429694813705299,
+                  "sample_count": 5,
+                  "scaled_mad": 85018.2144
+                },
+                "samples_ms": [
+                  8.684514,
+                  9.173493,
+                  8.538967999999999,
+                  8.331832,
+                  8.609613
+                ],
+                "source_metrics": {
+                  "bytes": 1248,
+                  "files": 17,
+                  "lines": 34,
+                  "tokens": 334
+                }
+              },
+              {
+                "input_size": 48,
+                "latency_summary_ms": {
+                  "center": 10.921708,
+                  "dispersion_classification": "robust",
+                  "maximum": 11.16021,
+                  "minimum": 10.740195,
+                  "range": 0.42001499999999936,
+                  "relative_range": 0.038456897034786074,
+                  "sample_count": 5,
+                  "scaled_mad": 0.14506351439999776
+                },
+                "median_ms": 10.921708,
+                "passes": {
+                  "cfg_construction": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.323,
+                    "root_invocations": 0
+                  },
+                  "codegen": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.082,
+                    "root_invocations": 0
+                  },
+                  "definition_snapshot_modules": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.093,
+                    "root_invocations": 0
+                  },
+                  "lexer": {
+                    "invocations": 49,
+                    "leaf_invocations": 49,
+                    "mean_ms": 0.067,
+                    "root_invocations": 0
+                  },
+                  "linker": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 6.254,
+                    "root_invocations": 0
+                  },
+                  "parser_directive_validation": {
+                    "invocations": 49,
+                    "leaf_invocations": 49,
+                    "mean_ms": 0.006,
+                    "root_invocations": 0
+                  },
+                  "parser_grammar_execution": {
+                    "invocations": 49,
+                    "leaf_invocations": 49,
+                    "mean_ms": 0.058,
+                    "root_invocations": 0
+                  },
+                  "parser_nesting_scan": {
+                    "invocations": 49,
+                    "leaf_invocations": 49,
+                    "mean_ms": 0.009,
+                    "root_invocations": 0
+                  },
+                  "parser_state_setup": {
+                    "invocations": 49,
+                    "leaf_invocations": 49,
+                    "mean_ms": 0.102,
+                    "root_invocations": 0
+                  },
+                  "rir_declaration_index": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.139,
+                    "root_invocations": 0
+                  },
+                  "sema": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.367,
+                    "root_invocations": 0
+                  }
+                },
+                "peak_memory_bytes": 22601728,
+                "peak_memory_samples_bytes": [
+                  22593536,
+                  22601728,
+                  22667264,
+                  22777856,
+                  22601728
+                ],
+                "peak_memory_summary_bytes": {
+                  "center": 22601728.0,
+                  "dispersion_classification": "robust",
+                  "maximum": 22777856.0,
+                  "minimum": 22593536.0,
+                  "range": 184320.0,
+                  "relative_range": 0.008155128669807901,
+                  "sample_count": 5,
+                  "scaled_mad": 12145.4592
+                },
+                "samples_ms": [
+                  11.019552,
+                  10.921708,
+                  11.16021,
+                  10.906596,
+                  10.740195
+                ],
+                "source_metrics": {
+                  "bytes": 3584,
+                  "files": 49,
+                  "lines": 98,
+                  "tokens": 974
+                }
+              },
+              {
+                "input_size": 144,
+                "latency_summary_ms": {
+                  "center": 18.514073999999997,
+                  "dispersion_classification": "robust",
+                  "maximum": 18.67146,
+                  "minimum": 18.332523,
+                  "range": 0.3389370000000014,
+                  "relative_range": 0.018306991751248343,
+                  "sample_count": 5,
+                  "scaled_mad": 0.04666780019999832
+                },
+                "median_ms": 18.514073999999997,
+                "passes": {
+                  "cfg_construction": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.359,
+                    "root_invocations": 0
+                  },
+                  "codegen": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.097,
+                    "root_invocations": 0
+                  },
+                  "definition_snapshot_modules": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.249,
+                    "root_invocations": 0
+                  },
+                  "lexer": {
+                    "invocations": 145,
+                    "leaf_invocations": 145,
+                    "mean_ms": 0.205,
+                    "root_invocations": 0
+                  },
+                  "linker": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 6.31,
+                    "root_invocations": 0
+                  },
+                  "parser_directive_validation": {
+                    "invocations": 145,
+                    "leaf_invocations": 145,
+                    "mean_ms": 0.016,
+                    "root_invocations": 0
+                  },
+                  "parser_grammar_execution": {
+                    "invocations": 145,
+                    "leaf_invocations": 145,
+                    "mean_ms": 0.157,
+                    "root_invocations": 0
+                  },
+                  "parser_nesting_scan": {
+                    "invocations": 145,
+                    "leaf_invocations": 145,
+                    "mean_ms": 0.025,
+                    "root_invocations": 0
+                  },
+                  "parser_state_setup": {
+                    "invocations": 145,
+                    "leaf_invocations": 145,
+                    "mean_ms": 0.287,
+                    "root_invocations": 0
+                  },
+                  "rir_declaration_index": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.398,
+                    "root_invocations": 0
+                  },
+                  "sema": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.89,
+                    "root_invocations": 0
+                  }
+                },
+                "peak_memory_bytes": 25677824,
+                "peak_memory_samples_bytes": [
+                  25616384,
+                  25620480,
+                  25681920,
+                  25681920,
+                  25677824
+                ],
+                "peak_memory_summary_bytes": {
+                  "center": 25677824.0,
+                  "dispersion_classification": "robust",
+                  "maximum": 25681920.0,
+                  "minimum": 25616384.0,
+                  "range": 65536.0,
+                  "relative_range": 0.002552241186792152,
+                  "sample_count": 5,
+                  "scaled_mad": 6072.7296
+                },
+                "samples_ms": [
+                  18.52985,
+                  18.67146,
+                  18.482597,
+                  18.514073999999997,
+                  18.332523
+                ],
+                "source_metrics": {
+                  "bytes": 10636,
+                  "files": 145,
+                  "lines": 290,
+                  "tokens": 2894
+                }
+              }
+            ],
+            "violations": [],
+            "workload_family": "module-volume"
+          },
+          {
+            "adjacent_growth": [
+              {
+                "classification": "within_normalized_growth_budget",
+                "focus_pass": "sema",
+                "focus_pass_ratio": 3.2443,
+                "from_size": 100,
+                "latency_per_unit_growth": {
+                  "budget": 2.0,
+                  "center": 0.4665,
+                  "classification": "within_budget",
+                  "lower_bound": 0.4508,
+                  "reason": null,
+                  "upper_bound": 0.4831
+                },
+                "memory_per_unit_growth": {
+                  "budget": 2.0,
+                  "center": 0.3453,
+                  "classification": "within_budget",
+                  "lower_bound": 0.3453,
+                  "reason": null,
+                  "upper_bound": 0.3453
+                },
+                "size_ratio": 3.0,
+                "to_size": 300
+              },
+              {
+                "classification": "within_normalized_growth_budget",
+                "focus_pass": "sema",
+                "focus_pass_ratio": 5.0603,
+                "from_size": 300,
+                "latency_per_unit_growth": {
+                  "budget": 2.0,
+                  "center": 0.7258,
+                  "classification": "within_budget",
+                  "lower_bound": 0.72,
+                  "reason": null,
+                  "upper_bound": 0.7317
+                },
+                "memory_per_unit_growth": {
+                  "budget": 2.0,
+                  "center": 0.3669,
+                  "classification": "within_budget",
+                  "lower_bound": 0.3667,
+                  "reason": null,
+                  "upper_bound": 0.3672
+                },
+                "size_ratio": 3.0,
+                "to_size": 900
+              }
+            ],
+            "budgets": {
+              "latency_per_unit_growth": 2.0,
+              "memory_per_unit_growth": 2.0,
+              "per_tier_compile_timeout_seconds": 20,
+              "policy": "adjacent tier metric growth divided by input-size growth"
+            },
+            "classification": "within_normalized_growth_budget",
+            "focus_pass": "sema",
+            "input_axis": "flat struct declarations",
+            "interpretation": "Input size grows same-shape flat struct declarations to expose semantic/type-table scaling.",
+            "kind": "synthetic_scaling_probe",
+            "name": "semantic_types",
+            "non_representative": "Synthetic flat-type diagnostic, not a representative application type graph or runtime scenario.",
+            "subsystem": "semantic/types",
+            "tiers": [
+              {
+                "input_size": 100,
+                "latency_summary_ms": {
+                  "center": 8.713513,
+                  "dispersion_classification": "robust",
+                  "maximum": 8.893993,
+                  "minimum": 8.43478,
+                  "range": 0.4592130000000001,
+                  "relative_range": 0.05270124690236878,
+                  "sample_count": 5,
+                  "scaled_mad": 0.23951996040000093
+                },
+                "median_ms": 8.713513,
+                "passes": {
+                  "cfg_construction": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.31,
+                    "root_invocations": 0
+                  },
+                  "codegen": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.07,
+                    "root_invocations": 0
+                  },
+                  "definition_snapshot_modules": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.026,
+                    "root_invocations": 0
+                  },
+                  "lexer": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.099,
+                    "root_invocations": 0
+                  },
+                  "linker": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 6.229,
+                    "root_invocations": 0
+                  },
+                  "parser_directive_validation": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.001,
+                    "root_invocations": 0
+                  },
+                  "parser_grammar_execution": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.033,
+                    "root_invocations": 0
+                  },
+                  "parser_nesting_scan": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.004,
+                    "root_invocations": 0
+                  },
+                  "parser_state_setup": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.008,
+                    "root_invocations": 0
+                  },
+                  "rir_declaration_index": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.038,
+                    "root_invocations": 0
+                  },
+                  "sema": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.618,
+                    "root_invocations": 0
+                  }
+                },
+                "peak_memory_bytes": 21876736,
+                "peak_memory_samples_bytes": [
+                  21868544,
+                  21684224,
+                  21876736,
+                  21876736,
+                  21876736
+                ],
+                "peak_memory_summary_bytes": {
+                  "center": 21876736.0,
+                  "dispersion_classification": "robust",
+                  "maximum": 21876736.0,
+                  "minimum": 21684224.0,
+                  "range": 192512.0,
+                  "relative_range": 0.008799850215315484,
+                  "sample_count": 5,
+                  "scaled_mad": 0.0
+                },
+                "samples_ms": [
+                  8.713513,
+                  8.893993,
+                  8.759879,
+                  8.43478,
+                  8.551959
+                ],
+                "source_metrics": {
+                  "bytes": 4920,
+                  "files": 1,
+                  "lines": 102,
+                  "tokens": 1934
+                }
+              },
+              {
+                "input_size": 300,
+                "latency_summary_ms": {
+                  "center": 12.195149,
+                  "dispersion_classification": "robust",
+                  "maximum": 12.261859,
+                  "minimum": 11.870091,
+                  "range": 0.391767999999999,
+                  "relative_range": 0.03212490474696119,
+                  "sample_count": 5,
+                  "scaled_mad": 0.08608272119999942
+                },
+                "median_ms": 12.195149,
+                "passes": {
+                  "cfg_construction": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.344,
+                    "root_invocations": 0
+                  },
+                  "codegen": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.075,
+                    "root_invocations": 0
+                  },
+                  "definition_snapshot_modules": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.045,
+                    "root_invocations": 0
+                  },
+                  "lexer": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.28,
+                    "root_invocations": 0
+                  },
+                  "linker": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 6.246,
+                    "root_invocations": 0
+                  },
+                  "parser_directive_validation": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.002,
+                    "root_invocations": 0
+                  },
+                  "parser_grammar_execution": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.104,
+                    "root_invocations": 0
+                  },
+                  "parser_nesting_scan": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.01,
+                    "root_invocations": 0
+                  },
+                  "parser_state_setup": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.008,
+                    "root_invocations": 0
+                  },
+                  "rir_declaration_index": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.042,
+                    "root_invocations": 0
+                  },
+                  "sema": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 2.005,
+                    "root_invocations": 0
+                  }
+                },
+                "peak_memory_bytes": 22663168,
+                "peak_memory_samples_bytes": [
+                  22663168,
+                  22650880,
+                  22339584,
+                  22663168,
+                  22663168
+                ],
+                "peak_memory_summary_bytes": {
+                  "center": 22663168.0,
+                  "dispersion_classification": "robust",
+                  "maximum": 22663168.0,
+                  "minimum": 22339584.0,
+                  "range": 323584.0,
+                  "relative_range": 0.01427796855232243,
+                  "sample_count": 5,
+                  "scaled_mad": 0.0
+                },
+                "samples_ms": [
+                  12.261859,
+                  11.870091,
+                  12.195149,
+                  12.253211,
+                  12.145871
+                ],
+                "source_metrics": {
+                  "bytes": 14520,
+                  "files": 1,
+                  "lines": 302,
+                  "tokens": 5734
+                }
+              },
+              {
+                "input_size": 900,
+                "latency_summary_ms": {
+                  "center": 26.552872,
+                  "dispersion_classification": "robust",
+                  "maximum": 26.570361,
+                  "minimum": 26.288117,
+                  "range": 0.2822439999999986,
+                  "relative_range": 0.010629509305057419,
+                  "sample_count": 5,
+                  "scaled_mad": 0.02592919139999651
+                },
+                "median_ms": 26.552872,
+                "passes": {
+                  "cfg_construction": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.408,
+                    "root_invocations": 0
+                  },
+                  "codegen": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.09,
+                    "root_invocations": 0
+                  },
+                  "definition_snapshot_modules": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.122,
+                    "root_invocations": 0
+                  },
+                  "lexer": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.743,
+                    "root_invocations": 0
+                  },
+                  "linker": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 6.093,
+                    "root_invocations": 0
+                  },
+                  "parser_directive_validation": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.006,
+                    "root_invocations": 0
+                  },
+                  "parser_grammar_execution": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.334,
+                    "root_invocations": 0
+                  },
+                  "parser_nesting_scan": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.03,
+                    "root_invocations": 0
+                  },
+                  "parser_state_setup": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.01,
+                    "root_invocations": 0
+                  },
+                  "rir_declaration_index": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.051,
+                    "root_invocations": 0
+                  },
+                  "sema": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 10.146,
+                    "root_invocations": 0
+                  }
+                },
+                "peak_memory_bytes": 24948736,
+                "peak_memory_samples_bytes": [
+                  25022464,
+                  24948736,
+                  24948736,
+                  24936448,
+                  25059328
+                ],
+                "peak_memory_summary_bytes": {
+                  "center": 24948736.0,
+                  "dispersion_classification": "robust",
+                  "maximum": 25059328.0,
+                  "minimum": 24936448.0,
+                  "range": 122880.0,
+                  "relative_range": 0.004925299622393696,
+                  "sample_count": 5,
+                  "scaled_mad": 18218.1888
+                },
+                "samples_ms": [
+                  26.570361,
+                  26.288117,
+                  26.568888,
+                  26.552872,
+                  26.441277
+                ],
+                "source_metrics": {
+                  "bytes": 43320,
+                  "files": 1,
+                  "lines": 902,
+                  "tokens": 17134
+                }
+              }
+            ],
+            "violations": [],
+            "workload_family": "type-volume"
+          },
+          {
+            "adjacent_growth": [
+              {
+                "classification": "within_normalized_growth_budget",
+                "focus_pass": "cfg_construction",
+                "focus_pass_ratio": 1.0841,
+                "from_size": 100,
+                "latency_per_unit_growth": {
+                  "budget": 2.0,
+                  "center": 0.508,
+                  "classification": "within_budget",
+                  "lower_bound": 0.4942,
+                  "reason": null,
+                  "upper_bound": 0.5223
+                },
+                "memory_per_unit_growth": {
+                  "budget": 2.0,
+                  "center": 0.3534,
+                  "classification": "within_budget",
+                  "lower_bound": 0.3517,
+                  "reason": null,
+                  "upper_bound": 0.355
+                },
+                "size_ratio": 3.0,
+                "to_size": 300
+              },
+              {
+                "classification": "within_normalized_growth_budget",
+                "focus_pass": "cfg_construction",
+                "focus_pass_ratio": 1.0526,
+                "from_size": 300,
+                "latency_per_unit_growth": {
+                  "budget": 2.0,
+                  "center": 0.7495,
+                  "classification": "within_budget",
+                  "lower_bound": 0.7442,
+                  "reason": null,
+                  "upper_bound": 0.7548
+                },
+                "memory_per_unit_growth": {
+                  "budget": 2.0,
+                  "center": 0.3908,
+                  "classification": "within_budget",
+                  "lower_bound": 0.3889,
+                  "reason": null,
+                  "upper_bound": 0.3927
+                },
+                "size_ratio": 3.0,
+                "to_size": 900
+              }
+            ],
+            "budgets": {
+              "latency_per_unit_growth": 2.0,
+              "memory_per_unit_growth": 2.0,
+              "per_tier_compile_timeout_seconds": 20,
+              "policy": "adjacent tier metric growth divided by input-size growth"
+            },
+            "classification": "within_normalized_growth_budget",
+            "focus_pass": "cfg_construction",
+            "input_axis": "fixed-shape branch functions",
+            "interpretation": "Input size grows independent functions with one fixed branch shape to expose CFG construction/lowering scaling.",
+            "kind": "synthetic_scaling_probe",
+            "name": "cfg_functions",
+            "non_representative": "Synthetic CFG diagnostic, not a representative application control-flow mix or runtime scenario.",
+            "subsystem": "cfg",
+            "tiers": [
+              {
+                "input_size": 100,
+                "latency_summary_ms": {
+                  "center": 9.190181,
+                  "dispersion_classification": "robust",
+                  "maximum": 9.482224,
+                  "minimum": 8.924008,
+                  "range": 0.5582159999999998,
+                  "relative_range": 0.06074047943125383,
+                  "sample_count": 5,
+                  "scaled_mad": 0.19560090060000232
+                },
+                "median_ms": 9.190181,
+                "passes": {
+                  "cfg_construction": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.333,
+                    "root_invocations": 0
+                  },
+                  "codegen": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.125,
+                    "root_invocations": 0
+                  },
+                  "definition_snapshot_modules": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.025,
+                    "root_invocations": 0
+                  },
+                  "lexer": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.143,
+                    "root_invocations": 0
+                  },
+                  "linker": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 6.141,
+                    "root_invocations": 0
+                  },
+                  "parser_directive_validation": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.007,
+                    "root_invocations": 0
+                  },
+                  "parser_grammar_execution": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.123,
+                    "root_invocations": 0
+                  },
+                  "parser_nesting_scan": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.006,
+                    "root_invocations": 0
+                  },
+                  "parser_state_setup": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.008,
+                    "root_invocations": 0
+                  },
+                  "rir_declaration_index": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.067,
+                    "root_invocations": 0
+                  },
+                  "sema": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.613,
+                    "root_invocations": 0
+                  }
+                },
+                "peak_memory_bytes": 22073344,
+                "peak_memory_samples_bytes": [
+                  22077440,
+                  22073344,
+                  22061056,
+                  21962752,
+                  22077440
+                ],
+                "peak_memory_summary_bytes": {
+                  "center": 22073344.0,
+                  "dispersion_classification": "robust",
+                  "maximum": 22077440.0,
+                  "minimum": 21962752.0,
+                  "range": 114688.0,
+                  "relative_range": 0.005195769159398776,
+                  "sample_count": 5,
+                  "scaled_mad": 6072.7296
+                },
+                "samples_ms": [
+                  9.482224,
+                  9.190181,
+                  9.05825,
+                  8.924008,
+                  9.258273
+                ],
+                "source_metrics": {
+                  "bytes": 8650,
+                  "files": 1,
+                  "lines": 102,
+                  "tokens": 3213
+                }
+              },
+              {
+                "input_size": 300,
+                "latency_summary_ms": {
+                  "center": 14.005177,
+                  "dispersion_classification": "robust",
+                  "maximum": 14.337547,
+                  "minimum": 13.869039999999998,
+                  "range": 0.46850700000000245,
+                  "relative_range": 0.033452415488929736,
+                  "sample_count": 5,
+                  "scaled_mad": 0.08870247540000085
+                },
+                "median_ms": 14.005177,
+                "passes": {
+                  "cfg_construction": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.361,
+                    "root_invocations": 0
+                  },
+                  "codegen": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.135,
+                    "root_invocations": 0
+                  },
+                  "definition_snapshot_modules": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.044,
+                    "root_invocations": 0
+                  },
+                  "lexer": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.362,
+                    "root_invocations": 0
+                  },
+                  "linker": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 6.319,
+                    "root_invocations": 0
+                  },
+                  "parser_directive_validation": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.028,
+                    "root_invocations": 0
+                  },
+                  "parser_grammar_execution": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.439,
+                    "root_invocations": 0
+                  },
+                  "parser_nesting_scan": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.017,
+                    "root_invocations": 0
+                  },
+                  "parser_state_setup": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.009,
+                    "root_invocations": 0
+                  },
+                  "rir_declaration_index": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.111,
+                    "root_invocations": 0
+                  },
+                  "sema": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 2.068,
+                    "root_invocations": 0
+                  }
+                },
+                "peak_memory_bytes": 23400448,
+                "peak_memory_samples_bytes": [
+                  23470080,
+                  23154688,
+                  23400448,
+                  23261184,
+                  23400448
+                ],
+                "peak_memory_summary_bytes": {
+                  "center": 23400448.0,
+                  "dispersion_classification": "robust",
+                  "maximum": 23470080.0,
+                  "minimum": 23154688.0,
+                  "range": 315392.0,
+                  "relative_range": 0.013478032557325399,
+                  "sample_count": 5,
+                  "scaled_mad": 103236.4032
+                },
+                "samples_ms": [
+                  14.042352,
+                  14.337547,
+                  14.005177,
+                  13.869039999999998,
+                  13.945348
+                ],
+                "source_metrics": {
+                  "bytes": 26250,
+                  "files": 1,
+                  "lines": 302,
+                  "tokens": 9613
+                }
+              },
+              {
+                "input_size": 900,
+                "latency_summary_ms": {
+                  "center": 31.491304,
+                  "dispersion_classification": "robust",
+                  "maximum": 31.669489,
+                  "minimum": 31.381796000000005,
+                  "range": 0.28769299999999376,
+                  "relative_range": 0.009135633125893858,
+                  "sample_count": 5,
+                  "scaled_mad": 0.023223446400006766
+                },
+                "median_ms": 31.491304,
+                "passes": {
+                  "cfg_construction": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.38,
+                    "root_invocations": 0
+                  },
+                  "codegen": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.139,
+                    "root_invocations": 0
+                  },
+                  "definition_snapshot_modules": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.126,
+                    "root_invocations": 0
+                  },
+                  "lexer": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 1.043,
+                    "root_invocations": 0
+                  },
+                  "linker": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 6.125,
+                    "root_invocations": 0
+                  },
+                  "parser_directive_validation": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.075,
+                    "root_invocations": 0
+                  },
+                  "parser_grammar_execution": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 1.243,
+                    "root_invocations": 0
+                  },
+                  "parser_nesting_scan": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.056,
+                    "root_invocations": 0
+                  },
+                  "parser_state_setup": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.013,
+                    "root_invocations": 0
+                  },
+                  "rir_declaration_index": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.322,
+                    "root_invocations": 0
+                  },
+                  "sema": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 10.246,
+                    "root_invocations": 0
+                  }
+                },
+                "peak_memory_bytes": 27435008,
+                "peak_memory_samples_bytes": [
+                  27435008,
+                  27426816,
+                  27443200,
+                  27373568,
+                  27443200
+                ],
+                "peak_memory_summary_bytes": {
+                  "center": 27435008.0,
+                  "dispersion_classification": "robust",
+                  "maximum": 27443200.0,
+                  "minimum": 27373568.0,
+                  "range": 69632.0,
+                  "relative_range": 0.0025380710659898475,
+                  "sample_count": 5,
+                  "scaled_mad": 12145.4592
+                },
+                "samples_ms": [
+                  31.491304,
+                  31.381796000000005,
+                  31.506968000000004,
+                  31.669489,
+                  31.476337
+                ],
+                "source_metrics": {
+                  "bytes": 79050,
+                  "files": 1,
+                  "lines": 902,
+                  "tokens": 28813
+                }
+              }
+            ],
+            "violations": [],
+            "workload_family": "control-flow-volume"
+          },
+          {
+            "adjacent_growth": [
+              {
+                "classification": "within_normalized_growth_budget",
+                "focus_pass": "codegen",
+                "focus_pass_ratio": 1.0345,
+                "from_size": 40,
+                "latency_per_unit_growth": {
+                  "budget": 2.0,
+                  "center": 0.5105,
+                  "classification": "within_budget",
+                  "lower_bound": 0.4953,
+                  "reason": null,
+                  "upper_bound": 0.526
+                },
+                "memory_per_unit_growth": {
+                  "budget": 2.0,
+                  "center": 0.3749,
+                  "classification": "within_budget",
+                  "lower_bound": 0.3719,
+                  "reason": null,
+                  "upper_bound": 0.3779
+                },
+                "size_ratio": 3.0,
+                "to_size": 120
+              },
+              {
+                "classification": "within_normalized_growth_budget",
+                "focus_pass": "codegen",
+                "focus_pass_ratio": 1.0444,
+                "from_size": 120,
+                "latency_per_unit_growth": {
+                  "budget": 2.0,
+                  "center": 0.6678,
+                  "classification": "within_budget",
+                  "lower_bound": 0.6524,
+                  "reason": null,
+                  "upper_bound": 0.6838
+                },
+                "memory_per_unit_growth": {
+                  "budget": 2.0,
+                  "center": 0.4527,
+                  "classification": "within_budget",
+                  "lower_bound": 0.4524,
+                  "reason": null,
+                  "upper_bound": 0.4531
+                },
+                "size_ratio": 3.0,
+                "to_size": 360
+              }
+            ],
+            "budgets": {
+              "latency_per_unit_growth": 2.0,
+              "memory_per_unit_growth": 2.0,
+              "per_tier_compile_timeout_seconds": 20,
+              "policy": "adjacent tier metric growth divided by input-size growth"
+            },
+            "classification": "within_normalized_growth_budget",
+            "focus_pass": "codegen",
+            "input_axis": "fixed-pressure functions",
+            "interpretation": "Input size grows independent functions with 24 same-shape live values to expose backend/codegen scaling.",
+            "kind": "synthetic_scaling_probe",
+            "name": "backend_pressure",
+            "non_representative": "Synthetic backend diagnostic, not a representative application mix or generated-program runtime scenario.",
+            "subsystem": "backend/register-allocation",
+            "tiers": [
+              {
+                "input_size": 40,
+                "latency_summary_ms": {
+                  "center": 10.454111,
+                  "dispersion_classification": "robust",
+                  "maximum": 10.54002,
+                  "minimum": 10.218833,
+                  "range": 0.3211870000000001,
+                  "relative_range": 0.030723511544884126,
+                  "sample_count": 5,
+                  "scaled_mad": 0.12060654479999765
+                },
+                "median_ms": 10.454111,
+                "passes": {
+                  "cfg_construction": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.393,
+                    "root_invocations": 0
+                  },
+                  "codegen": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.348,
+                    "root_invocations": 0
+                  },
+                  "definition_snapshot_modules": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.013,
+                    "root_invocations": 0
+                  },
+                  "lexer": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.36,
+                    "root_invocations": 0
+                  },
+                  "linker": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 6.284,
+                    "root_invocations": 0
+                  },
+                  "parser_directive_validation": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.037,
+                    "root_invocations": 0
+                  },
+                  "parser_grammar_execution": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.439,
+                    "root_invocations": 0
+                  },
+                  "parser_nesting_scan": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.017,
+                    "root_invocations": 0
+                  },
+                  "parser_state_setup": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.009,
+                    "root_invocations": 0
+                  },
+                  "rir_declaration_index": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.068,
+                    "root_invocations": 0
+                  },
+                  "sema": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.555,
+                    "root_invocations": 0
+                  }
+                },
+                "peak_memory_bytes": 23306240,
+                "peak_memory_samples_bytes": [
+                  23306240,
+                  23306240,
+                  23179264,
+                  23425024,
+                  23171072
+                ],
+                "peak_memory_summary_bytes": {
+                  "center": 23306240.0,
+                  "dispersion_classification": "robust",
+                  "maximum": 23425024.0,
+                  "minimum": 23171072.0,
+                  "range": 253952.0,
+                  "relative_range": 0.010896309314586995,
+                  "sample_count": 5,
+                  "scaled_mad": 176109.1584
+                },
+                "samples_ms": [
+                  10.54002,
+                  10.454111,
+                  10.218833,
+                  10.372763,
+                  10.522788
+                ],
+                "source_metrics": {
+                  "bytes": 23256,
+                  "files": 1,
+                  "lines": 42,
+                  "tokens": 9053
+                }
+              },
+              {
+                "input_size": 120,
+                "latency_summary_ms": {
+                  "center": 16.009261,
+                  "dispersion_classification": "robust",
+                  "maximum": 16.445066,
+                  "minimum": 15.721097,
+                  "range": 0.7239690000000003,
+                  "relative_range": 0.04522188750623782,
+                  "sample_count": 5,
+                  "scaled_mad": 0.2976452934000022
+                },
+                "median_ms": 16.009261,
+                "passes": {
+                  "cfg_construction": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.446,
+                    "root_invocations": 0
+                  },
+                  "codegen": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.36,
+                    "root_invocations": 0
+                  },
+                  "definition_snapshot_modules": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.028,
+                    "root_invocations": 0
+                  },
+                  "lexer": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 1.051,
+                    "root_invocations": 0
+                  },
+                  "linker": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 6.381,
+                    "root_invocations": 0
+                  },
+                  "parser_directive_validation": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.138,
+                    "root_invocations": 0
+                  },
+                  "parser_grammar_execution": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 1.34,
+                    "root_invocations": 0
+                  },
+                  "parser_nesting_scan": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.048,
+                    "root_invocations": 0
+                  },
+                  "parser_state_setup": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.01,
+                    "root_invocations": 0
+                  },
+                  "rir_declaration_index": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.105,
+                    "root_invocations": 0
+                  },
+                  "sema": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 1.02,
+                    "root_invocations": 0
+                  }
+                },
+                "peak_memory_bytes": 26210304,
+                "peak_memory_samples_bytes": [
+                  26214400,
+                  26341376,
+                  26202112,
+                  26083328,
+                  26210304
+                ],
+                "peak_memory_summary_bytes": {
+                  "center": 26210304.0,
+                  "dispersion_classification": "robust",
+                  "maximum": 26341376.0,
+                  "minimum": 26083328.0,
+                  "range": 258048.0,
+                  "relative_range": 0.009845288326300985,
+                  "sample_count": 5,
+                  "scaled_mad": 12145.4592
+                },
+                "samples_ms": [
+                  15.854083,
+                  16.445066,
+                  15.721097,
+                  16.009261,
+                  16.21002
+                ],
+                "source_metrics": {
+                  "bytes": 69576,
+                  "files": 1,
+                  "lines": 122,
+                  "tokens": 27133
+                }
+              },
+              {
+                "input_size": 360,
+                "latency_summary_ms": {
+                  "center": 32.072160000000004,
+                  "dispersion_classification": "robust",
+                  "maximum": 32.344452000000004,
+                  "minimum": 31.965133,
+                  "range": 0.3793190000000024,
+                  "relative_range": 0.011827048755057419,
+                  "sample_count": 5,
+                  "scaled_mad": 0.15867823020000327
+                },
+                "median_ms": 32.072160000000004,
+                "passes": {
+                  "cfg_construction": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.495,
+                    "root_invocations": 0
+                  },
+                  "codegen": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.376,
+                    "root_invocations": 0
+                  },
+                  "definition_snapshot_modules": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.083,
+                    "root_invocations": 0
+                  },
+                  "lexer": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 3.045,
+                    "root_invocations": 0
+                  },
+                  "linker": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 6.26,
+                    "root_invocations": 0
+                  },
+                  "parser_directive_validation": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.435,
+                    "root_invocations": 0
+                  },
+                  "parser_grammar_execution": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 4.028,
+                    "root_invocations": 0
+                  },
+                  "parser_nesting_scan": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.147,
+                    "root_invocations": 0
+                  },
+                  "parser_state_setup": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.011,
+                    "root_invocations": 0
+                  },
+                  "rir_declaration_index": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 0.205,
+                    "root_invocations": 0
+                  },
+                  "sema": {
+                    "invocations": 1,
+                    "leaf_invocations": 1,
+                    "mean_ms": 3.099,
+                    "root_invocations": 0
+                  }
+                },
+                "peak_memory_bytes": 35598336,
+                "peak_memory_samples_bytes": [
+                  35602432,
+                  35590144,
+                  35454976,
+                  35647488,
+                  35598336
+                ],
+                "peak_memory_summary_bytes": {
+                  "center": 35598336.0,
+                  "dispersion_classification": "robust",
+                  "maximum": 35647488.0,
+                  "minimum": 35454976.0,
+                  "range": 192512.0,
+                  "relative_range": 0.005407893222874238,
+                  "sample_count": 5,
+                  "scaled_mad": 12145.4592
+                },
+                "samples_ms": [
+                  32.072160000000004,
+                  31.997289999999996,
+                  32.344452000000004,
+                  31.965133,
+                  32.269712
+                ],
+                "source_metrics": {
+                  "bytes": 208536,
+                  "files": 1,
+                  "lines": 362,
+                  "tokens": 81373
+                }
+              }
+            ],
+            "violations": [],
+            "workload_family": "live-value-volume"
+          }
+        ],
+        "iterations": 5,
+        "measurement_family": "compiler_scaling_diagnostics",
+        "representative": false,
+        "scenario_family": "synthetic_phase_probes",
+        "schema_version": 1
+      },
+      "scenario_family": "cold_compilation",
+      "scenarios": {
+        "cross_family_emitted_output": {
+          "cold_batch_vs_fresh_and_reused_session": "byte_exact",
+          "representation": "raw_compiler_executable_before_platform_postprocessing",
+          "sha256": "e1979be96f31c042aade6d382c59061a404be6fdcb889178b16820a94b8c8c14",
+          "size_bytes": 12288
+        },
+        "families": [
+          {
+            "interpretation": "Fresh real-driver compilations of the representative root module and its transitive import graph.",
+            "name": "cold_batch_root_compiler",
+            "not_runtime": "Measures compiler build/query latency and emitted-output parity, not generated-program runtime.",
+            "scenarios": [
+              {
+                "emitted_output": {
+                  "parity": "byte_exact",
+                  "representation": "raw_compiler_executable_before_platform_postprocessing",
+                  "sha256": "e1979be96f31c042aade6d382c59061a404be6fdcb889178b16820a94b8c8c14",
+                  "size_bytes": 12288
+                },
+                "mean_ms": 8.613,
+                "name": "cold_batch_root_compiler",
+                "samples_ms": [
+                  8.936519,
+                  8.422637,
+                  8.559815,
+                  8.585861999999999,
+                  8.560663
+                ]
+              }
+            ]
+          },
+          {
+            "interpretation": "Fixed edits queried through the canonical CompilerSession graph, with fresh-session parity and authoritative structural work counters.",
+            "name": "reused_compiler_session",
+            "not_runtime": "Measures compiler build/query latency and cache behavior, not generated-program runtime.",
+            "scenarios": [
+              {
+                "differential_parity": {
+                  "cold_semantic_work": {
+                    "air_instructions_produced": 100,
+                    "bind_invocations": 1,
+                    "bodies_attempted": 6,
+                    "bodies_failed": 0,
+                    "bodies_succeeded": 6,
+                    "body_dependency_air_instructions_observed": 100,
+                    "body_free_function_lookups": 6,
+                    "body_owner_tokens": {
+                      "authoritative_slots": 6,
+                      "provisional_slots": 6,
+                      "slots_validated": 6,
+                      "tokens_installed": 6,
+                      "validation_failures": 0
+                    },
+                    "body_readiness_finalization_invocations": 1,
+                    "cfg": {
+                      "air_instructions_consumed": 100,
+                      "builds_attempted": 6,
+                      "builds_failed": 0,
+                      "builds_succeeded": 6,
+                      "comptime_functions_filtered": 0,
+                      "drop_glue_functions_synthesized": 0,
+                      "export_attempts": 5,
+                      "export_rejections": 2,
+                      "export_successes": 3,
+                      "fallbacks": 0,
+                      "functions_considered": 6,
+                      "implicit_destructor_targets_emitted": 0,
+                      "implicit_destructor_targets_reused": 0,
+                      "import_attempts": 0,
+                      "import_failures": 0,
+                      "import_successes": 0,
+                      "optimization_attempts": 6,
+                      "optimization_completions": 6,
+                      "optimized_level_attempts": 0,
+                      "reuse_candidates": 0,
+                      "reuses": 0,
+                      "warnings_emitted": 0,
+                      "warnings_reused": 0
+                    },
+                    "declaration_indexes_built": 1,
+                    "declaration_resolution_failures": 0,
+                    "declaration_resolution_invocations": 1,
+                    "declaration_reuse": {
+                      "declaration_indexes_built": 1,
+                      "durable_cache_population_exports": 0,
+                      "durable_records_compared": 0,
+                      "durable_records_reused": 0,
+                      "fallback_epochs_started": 0,
+                      "fallbacks": 0,
+                      "install_invocations": 0,
+                      "ordinary_declaration_resolutions_skipped": 0,
+                      "plan_executions": 0,
+                      "semantic_epochs_started": 1,
+                      "shell_predeclaration_epochs": 1
+                    },
+                    "declaration_type_call_head_dependency_events": 0,
+                    "declaration_type_dependency_events": 0,
+                    "durable_bodies": {
+                      "atomic_discards": 0,
+                      "candidate_comparisons": 0,
+                      "candidate_fallbacks": 0,
+                      "conversion_attempts": 5,
+                      "conversion_completions": 5,
+                      "conversion_failures": 0,
+                      "export_attempts": 6,
+                      "export_rejections": 1,
+                      "export_successes": 5,
+                      "finalization_attempts": 0,
+                      "finalization_completions": 0,
+                      "finalization_failures": 0,
+                      "import_attempts": 0,
+                      "import_failures": 0,
+                      "import_successes": 0,
+                      "installed_instructions": 0,
+                      "installed_places": 0,
+                      "installed_strings": 0,
+                      "instructions_exported": 54,
+                      "instructions_projected": 0,
+                      "places_exported": 0,
+                      "places_projected": 0,
+                      "projection_attempts": 0,
+                      "projection_completions": 0,
+                      "projection_failures": 0,
+                      "reused_bodies": 0,
+                      "skipped_body_analyses": 0,
+                      "specialized_mapping_attempts": 0,
+                      "specialized_mapping_failures": 0,
+                      "specialized_mapping_successes": 0,
+                      "stable_key_joins": 3,
+                      "strings_exported": 0,
+                      "strings_projected": 0
+                    },
+                    "durable_cache_population_exports": 0,
+                    "failed_requests": 0,
+                    "failure_phases": {
+                      "body_analysis": 0,
+                      "cfg_construction": 0,
+                      "declaration": 0
+                    },
+                    "fallback_epochs_started": 0,
+                    "generic_calls_observed": 0,
+                    "local_strings_produced": 1,
+                    "manifest_build_invocations": 1,
+                    "named_const_dependency_events": 7,
+                    "named_destructor_dependency_events": 0,
+                    "named_method_dependency_events": 0,
+                    "ordinary_free_function_dependency_events": 6,
+                    "semantic_epochs_started": 1,
+                    "shell_predeclaration_epochs": 1,
+                    "specialization_air_instructions_scanned": 100,
+                    "specialization_driver_failures": 0,
+                    "specialization_requests_duplicate": 0,
+                    "specialization_requests_unique": 0,
+                    "specialization_rewrites": 0,
+                    "specialization_rounds": 0,
+                    "specialized_bodies_attempted": 0,
+                    "specialized_bodies_failed": 0,
+                    "specialized_bodies_succeeded": 0,
+                    "specialized_free_function_dependency_events": 0,
+                    "specialized_origin_records": 0,
+                    "string_ids_remapped": 1
+                  },
+                  "dependency_records": "exact",
+                  "diagnostics": "exact",
+                  "durable_ordinary_body_manifest_artifacts": "exact",
+                  "durable_specialized_body_payloads": "exact",
+                  "emitted_output": "byte_exact",
+                  "emitted_output_sha256": "e1979be96f31c042aade6d382c59061a404be6fdcb889178b16820a94b8c8c14",
+                  "emitted_output_size_bytes": 12288,
+                  "public_semantic_cfg_artifacts": "exact",
+                  "public_type_universe": "exact_ordered_entries",
+                  "session_private_durable_cfg_cache": "not_exposed_compared_via_public_cfgs_and_emitted_output",
+                  "stable_identities": "exact",
+                  "warnings": "exact",
+                  "work_counters": "reused_and_cold_serialized_with_structural_assertions"
+                },
+                "mean_ms": 0.04,
+                "name": "no_change_query",
+                "required_vs_reused_work": {
+                  "cfgs": {
+                    "required": 0,
+                    "reused": 0
+                  },
+                  "modules": {
+                    "required": 0,
+                    "reused": 0
+                  },
+                  "semantic_bodies": {
+                    "required": 0,
+                    "reused": 0
+                  },
+                  "semantic_queries": {
+                    "required": 0,
+                    "reused": 1
+                  }
+                },
+                "samples_ms": [
+                  0.037446,
+                  0.03767,
+                  0.039526,
+                  0.041862,
+                  0.041726
+                ]
+              },
+              {
+                "differential_parity": {
+                  "cold_semantic_work": {
+                    "air_instructions_produced": 100,
+                    "bind_invocations": 1,
+                    "bodies_attempted": 6,
+                    "bodies_failed": 0,
+                    "bodies_succeeded": 6,
+                    "body_dependency_air_instructions_observed": 100,
+                    "body_free_function_lookups": 6,
+                    "body_owner_tokens": {
+                      "authoritative_slots": 6,
+                      "provisional_slots": 6,
+                      "slots_validated": 6,
+                      "tokens_installed": 6,
+                      "validation_failures": 0
+                    },
+                    "body_readiness_finalization_invocations": 1,
+                    "cfg": {
+                      "air_instructions_consumed": 100,
+                      "builds_attempted": 6,
+                      "builds_failed": 0,
+                      "builds_succeeded": 6,
+                      "comptime_functions_filtered": 0,
+                      "drop_glue_functions_synthesized": 0,
+                      "export_attempts": 5,
+                      "export_rejections": 2,
+                      "export_successes": 3,
+                      "fallbacks": 0,
+                      "functions_considered": 6,
+                      "implicit_destructor_targets_emitted": 0,
+                      "implicit_destructor_targets_reused": 0,
+                      "import_attempts": 0,
+                      "import_failures": 0,
+                      "import_successes": 0,
+                      "optimization_attempts": 6,
+                      "optimization_completions": 6,
+                      "optimized_level_attempts": 0,
+                      "reuse_candidates": 0,
+                      "reuses": 0,
+                      "warnings_emitted": 0,
+                      "warnings_reused": 0
+                    },
+                    "declaration_indexes_built": 1,
+                    "declaration_resolution_failures": 0,
+                    "declaration_resolution_invocations": 1,
+                    "declaration_reuse": {
+                      "declaration_indexes_built": 1,
+                      "durable_cache_population_exports": 0,
+                      "durable_records_compared": 0,
+                      "durable_records_reused": 0,
+                      "fallback_epochs_started": 0,
+                      "fallbacks": 0,
+                      "install_invocations": 0,
+                      "ordinary_declaration_resolutions_skipped": 0,
+                      "plan_executions": 0,
+                      "semantic_epochs_started": 1,
+                      "shell_predeclaration_epochs": 1
+                    },
+                    "declaration_type_call_head_dependency_events": 0,
+                    "declaration_type_dependency_events": 0,
+                    "durable_bodies": {
+                      "atomic_discards": 0,
+                      "candidate_comparisons": 0,
+                      "candidate_fallbacks": 0,
+                      "conversion_attempts": 5,
+                      "conversion_completions": 5,
+                      "conversion_failures": 0,
+                      "export_attempts": 6,
+                      "export_rejections": 1,
+                      "export_successes": 5,
+                      "finalization_attempts": 0,
+                      "finalization_completions": 0,
+                      "finalization_failures": 0,
+                      "import_attempts": 0,
+                      "import_failures": 0,
+                      "import_successes": 0,
+                      "installed_instructions": 0,
+                      "installed_places": 0,
+                      "installed_strings": 0,
+                      "instructions_exported": 54,
+                      "instructions_projected": 0,
+                      "places_exported": 0,
+                      "places_projected": 0,
+                      "projection_attempts": 0,
+                      "projection_completions": 0,
+                      "projection_failures": 0,
+                      "reused_bodies": 0,
+                      "skipped_body_analyses": 0,
+                      "specialized_mapping_attempts": 0,
+                      "specialized_mapping_failures": 0,
+                      "specialized_mapping_successes": 0,
+                      "stable_key_joins": 3,
+                      "strings_exported": 0,
+                      "strings_projected": 0
+                    },
+                    "durable_cache_population_exports": 0,
+                    "failed_requests": 0,
+                    "failure_phases": {
+                      "body_analysis": 0,
+                      "cfg_construction": 0,
+                      "declaration": 0
+                    },
+                    "fallback_epochs_started": 0,
+                    "generic_calls_observed": 0,
+                    "local_strings_produced": 1,
+                    "manifest_build_invocations": 1,
+                    "named_const_dependency_events": 7,
+                    "named_destructor_dependency_events": 0,
+                    "named_method_dependency_events": 0,
+                    "ordinary_free_function_dependency_events": 6,
+                    "semantic_epochs_started": 1,
+                    "shell_predeclaration_epochs": 1,
+                    "specialization_air_instructions_scanned": 100,
+                    "specialization_driver_failures": 0,
+                    "specialization_requests_duplicate": 0,
+                    "specialization_requests_unique": 0,
+                    "specialization_rewrites": 0,
+                    "specialization_rounds": 0,
+                    "specialized_bodies_attempted": 0,
+                    "specialized_bodies_failed": 0,
+                    "specialized_bodies_succeeded": 0,
+                    "specialized_free_function_dependency_events": 0,
+                    "specialized_origin_records": 0,
+                    "string_ids_remapped": 1
+                  },
+                  "dependency_records": "exact",
+                  "diagnostics": "exact",
+                  "durable_ordinary_body_manifest_artifacts": "exact",
+                  "durable_specialized_body_payloads": "exact",
+                  "emitted_output": "byte_exact",
+                  "emitted_output_sha256": "cdab5c0d43d786b4480d2592539e38ad10bc3bb50b92a6d494a96903c342e293",
+                  "emitted_output_size_bytes": 12288,
+                  "public_semantic_cfg_artifacts": "exact",
+                  "public_type_universe": "exact_ordered_entries",
+                  "session_private_durable_cfg_cache": "not_exposed_compared_via_public_cfgs_and_emitted_output",
+                  "stable_identities": "exact",
+                  "warnings": "exact",
+                  "work_counters": "reused_and_cold_serialized_with_structural_assertions"
+                },
+                "mean_ms": 0.939,
+                "name": "leaf_edit",
+                "required_vs_reused_work": {
+                  "cfgs": {
+                    "required": 4,
+                    "reused": 2
+                  },
+                  "modules": {
+                    "required": 1,
+                    "reused": 6
+                  },
+                  "semantic_bodies": {
+                    "required": 6,
+                    "reused": 0
+                  },
+                  "semantic_queries": {
+                    "required": 1,
+                    "reused": 0
+                  }
+                },
+                "samples_ms": [
+                  0.879283,
+                  0.934744,
+                  0.94712,
+                  1.019499,
+                  0.912672
+                ]
+              },
+              {
+                "differential_parity": {
+                  "cold_semantic_work": {
+                    "air_instructions_produced": 100,
+                    "bind_invocations": 1,
+                    "bodies_attempted": 6,
+                    "bodies_failed": 0,
+                    "bodies_succeeded": 6,
+                    "body_dependency_air_instructions_observed": 100,
+                    "body_free_function_lookups": 6,
+                    "body_owner_tokens": {
+                      "authoritative_slots": 6,
+                      "provisional_slots": 6,
+                      "slots_validated": 6,
+                      "tokens_installed": 6,
+                      "validation_failures": 0
+                    },
+                    "body_readiness_finalization_invocations": 1,
+                    "cfg": {
+                      "air_instructions_consumed": 100,
+                      "builds_attempted": 6,
+                      "builds_failed": 0,
+                      "builds_succeeded": 6,
+                      "comptime_functions_filtered": 0,
+                      "drop_glue_functions_synthesized": 0,
+                      "export_attempts": 5,
+                      "export_rejections": 2,
+                      "export_successes": 3,
+                      "fallbacks": 0,
+                      "functions_considered": 6,
+                      "implicit_destructor_targets_emitted": 0,
+                      "implicit_destructor_targets_reused": 0,
+                      "import_attempts": 0,
+                      "import_failures": 0,
+                      "import_successes": 0,
+                      "optimization_attempts": 6,
+                      "optimization_completions": 6,
+                      "optimized_level_attempts": 0,
+                      "reuse_candidates": 0,
+                      "reuses": 0,
+                      "warnings_emitted": 0,
+                      "warnings_reused": 0
+                    },
+                    "declaration_indexes_built": 1,
+                    "declaration_resolution_failures": 0,
+                    "declaration_resolution_invocations": 1,
+                    "declaration_reuse": {
+                      "declaration_indexes_built": 1,
+                      "durable_cache_population_exports": 0,
+                      "durable_records_compared": 0,
+                      "durable_records_reused": 0,
+                      "fallback_epochs_started": 0,
+                      "fallbacks": 0,
+                      "install_invocations": 0,
+                      "ordinary_declaration_resolutions_skipped": 0,
+                      "plan_executions": 0,
+                      "semantic_epochs_started": 1,
+                      "shell_predeclaration_epochs": 1
+                    },
+                    "declaration_type_call_head_dependency_events": 0,
+                    "declaration_type_dependency_events": 0,
+                    "durable_bodies": {
+                      "atomic_discards": 0,
+                      "candidate_comparisons": 0,
+                      "candidate_fallbacks": 0,
+                      "conversion_attempts": 5,
+                      "conversion_completions": 5,
+                      "conversion_failures": 0,
+                      "export_attempts": 6,
+                      "export_rejections": 1,
+                      "export_successes": 5,
+                      "finalization_attempts": 0,
+                      "finalization_completions": 0,
+                      "finalization_failures": 0,
+                      "import_attempts": 0,
+                      "import_failures": 0,
+                      "import_successes": 0,
+                      "installed_instructions": 0,
+                      "installed_places": 0,
+                      "installed_strings": 0,
+                      "instructions_exported": 54,
+                      "instructions_projected": 0,
+                      "places_exported": 0,
+                      "places_projected": 0,
+                      "projection_attempts": 0,
+                      "projection_completions": 0,
+                      "projection_failures": 0,
+                      "reused_bodies": 0,
+                      "skipped_body_analyses": 0,
+                      "specialized_mapping_attempts": 0,
+                      "specialized_mapping_failures": 0,
+                      "specialized_mapping_successes": 0,
+                      "stable_key_joins": 3,
+                      "strings_exported": 0,
+                      "strings_projected": 0
+                    },
+                    "durable_cache_population_exports": 0,
+                    "failed_requests": 0,
+                    "failure_phases": {
+                      "body_analysis": 0,
+                      "cfg_construction": 0,
+                      "declaration": 0
+                    },
+                    "fallback_epochs_started": 0,
+                    "generic_calls_observed": 0,
+                    "local_strings_produced": 1,
+                    "manifest_build_invocations": 1,
+                    "named_const_dependency_events": 7,
+                    "named_destructor_dependency_events": 0,
+                    "named_method_dependency_events": 0,
+                    "ordinary_free_function_dependency_events": 6,
+                    "semantic_epochs_started": 1,
+                    "shell_predeclaration_epochs": 1,
+                    "specialization_air_instructions_scanned": 100,
+                    "specialization_driver_failures": 0,
+                    "specialization_requests_duplicate": 0,
+                    "specialization_requests_unique": 0,
+                    "specialization_rewrites": 0,
+                    "specialization_rounds": 0,
+                    "specialized_bodies_attempted": 0,
+                    "specialized_bodies_failed": 0,
+                    "specialized_bodies_succeeded": 0,
+                    "specialized_free_function_dependency_events": 0,
+                    "specialized_origin_records": 0,
+                    "string_ids_remapped": 1
+                  },
+                  "dependency_records": "exact",
+                  "diagnostics": "exact",
+                  "durable_ordinary_body_manifest_artifacts": "exact",
+                  "durable_specialized_body_payloads": "exact",
+                  "emitted_output": "byte_exact",
+                  "emitted_output_sha256": "a1510a3b8baeeb99305fe28d58f33b58ec88225b2012523cc66ec7ad42e8a565",
+                  "emitted_output_size_bytes": 12288,
+                  "public_semantic_cfg_artifacts": "exact",
+                  "public_type_universe": "exact_ordered_entries",
+                  "session_private_durable_cfg_cache": "not_exposed_compared_via_public_cfgs_and_emitted_output",
+                  "stable_identities": "exact",
+                  "warnings": "exact",
+                  "work_counters": "reused_and_cold_serialized_with_structural_assertions"
+                },
+                "mean_ms": 0.941,
+                "name": "widely_depended_definition_edit",
+                "required_vs_reused_work": {
+                  "cfgs": {
+                    "required": 4,
+                    "reused": 2
+                  },
+                  "modules": {
+                    "required": 1,
+                    "reused": 6
+                  },
+                  "semantic_bodies": {
+                    "required": 6,
+                    "reused": 0
+                  },
+                  "semantic_queries": {
+                    "required": 1,
+                    "reused": 0
+                  }
+                },
+                "samples_ms": [
+                  0.915026,
+                  0.916849,
+                  0.956816,
+                  0.95431,
+                  0.961998
+                ]
+              },
+              {
+                "differential_parity": {
+                  "cold_semantic_work": {
+                    "air_instructions_produced": 102,
+                    "bind_invocations": 1,
+                    "bodies_attempted": 6,
+                    "bodies_failed": 0,
+                    "bodies_succeeded": 6,
+                    "body_dependency_air_instructions_observed": 102,
+                    "body_free_function_lookups": 6,
+                    "body_owner_tokens": {
+                      "authoritative_slots": 6,
+                      "provisional_slots": 6,
+                      "slots_validated": 6,
+                      "tokens_installed": 6,
+                      "validation_failures": 0
+                    },
+                    "body_readiness_finalization_invocations": 1,
+                    "cfg": {
+                      "air_instructions_consumed": 102,
+                      "builds_attempted": 6,
+                      "builds_failed": 0,
+                      "builds_succeeded": 6,
+                      "comptime_functions_filtered": 0,
+                      "drop_glue_functions_synthesized": 0,
+                      "export_attempts": 5,
+                      "export_rejections": 2,
+                      "export_successes": 3,
+                      "fallbacks": 0,
+                      "functions_considered": 6,
+                      "implicit_destructor_targets_emitted": 0,
+                      "implicit_destructor_targets_reused": 0,
+                      "import_attempts": 0,
+                      "import_failures": 0,
+                      "import_successes": 0,
+                      "optimization_attempts": 6,
+                      "optimization_completions": 6,
+                      "optimized_level_attempts": 0,
+                      "reuse_candidates": 0,
+                      "reuses": 0,
+                      "warnings_emitted": 0,
+                      "warnings_reused": 0
+                    },
+                    "declaration_indexes_built": 1,
+                    "declaration_resolution_failures": 0,
+                    "declaration_resolution_invocations": 1,
+                    "declaration_reuse": {
+                      "declaration_indexes_built": 1,
+                      "durable_cache_population_exports": 0,
+                      "durable_records_compared": 0,
+                      "durable_records_reused": 0,
+                      "fallback_epochs_started": 0,
+                      "fallbacks": 0,
+                      "install_invocations": 0,
+                      "ordinary_declaration_resolutions_skipped": 0,
+                      "plan_executions": 0,
+                      "semantic_epochs_started": 1,
+                      "shell_predeclaration_epochs": 1
+                    },
+                    "declaration_type_call_head_dependency_events": 0,
+                    "declaration_type_dependency_events": 0,
+                    "durable_bodies": {
+                      "atomic_discards": 0,
+                      "candidate_comparisons": 0,
+                      "candidate_fallbacks": 0,
+                      "conversion_attempts": 5,
+                      "conversion_completions": 5,
+                      "conversion_failures": 0,
+                      "export_attempts": 6,
+                      "export_rejections": 1,
+                      "export_successes": 5,
+                      "finalization_attempts": 0,
+                      "finalization_completions": 0,
+                      "finalization_failures": 0,
+                      "import_attempts": 0,
+                      "import_failures": 0,
+                      "import_successes": 0,
+                      "installed_instructions": 0,
+                      "installed_places": 0,
+                      "installed_strings": 0,
+                      "instructions_exported": 56,
+                      "instructions_projected": 0,
+                      "places_exported": 0,
+                      "places_projected": 0,
+                      "projection_attempts": 0,
+                      "projection_completions": 0,
+                      "projection_failures": 0,
+                      "reused_bodies": 0,
+                      "skipped_body_analyses": 0,
+                      "specialized_mapping_attempts": 0,
+                      "specialized_mapping_failures": 0,
+                      "specialized_mapping_successes": 0,
+                      "stable_key_joins": 3,
+                      "strings_exported": 0,
+                      "strings_projected": 0
+                    },
+                    "durable_cache_population_exports": 0,
+                    "failed_requests": 0,
+                    "failure_phases": {
+                      "body_analysis": 0,
+                      "cfg_construction": 0,
+                      "declaration": 0
+                    },
+                    "fallback_epochs_started": 0,
+                    "generic_calls_observed": 0,
+                    "local_strings_produced": 1,
+                    "manifest_build_invocations": 1,
+                    "named_const_dependency_events": 7,
+                    "named_destructor_dependency_events": 0,
+                    "named_method_dependency_events": 0,
+                    "ordinary_free_function_dependency_events": 6,
+                    "semantic_epochs_started": 1,
+                    "shell_predeclaration_epochs": 1,
+                    "specialization_air_instructions_scanned": 102,
+                    "specialization_driver_failures": 0,
+                    "specialization_requests_duplicate": 0,
+                    "specialization_requests_unique": 0,
+                    "specialization_rewrites": 0,
+                    "specialization_rounds": 0,
+                    "specialized_bodies_attempted": 0,
+                    "specialized_bodies_failed": 0,
+                    "specialized_bodies_succeeded": 0,
+                    "specialized_free_function_dependency_events": 0,
+                    "specialized_origin_records": 0,
+                    "string_ids_remapped": 1
+                  },
+                  "dependency_records": "exact",
+                  "diagnostics": "exact",
+                  "durable_ordinary_body_manifest_artifacts": "exact",
+                  "durable_specialized_body_payloads": "exact",
+                  "emitted_output": "byte_exact",
+                  "emitted_output_sha256": "68708aeba5c362ca17d239ca759c88211c03bdf59bb1625a404dff4f274b8713",
+                  "emitted_output_size_bytes": 12288,
+                  "public_semantic_cfg_artifacts": "exact",
+                  "public_type_universe": "exact_ordered_entries",
+                  "session_private_durable_cfg_cache": "not_exposed_compared_via_public_cfgs_and_emitted_output",
+                  "stable_identities": "exact",
+                  "warnings": "exact",
+                  "work_counters": "reused_and_cold_serialized_with_structural_assertions"
+                },
+                "mean_ms": 0.966,
+                "name": "import_change",
+                "required_vs_reused_work": {
+                  "cfgs": {
+                    "required": 4,
+                    "reused": 2
+                  },
+                  "modules": {
+                    "required": 2,
+                    "reused": 5
+                  },
+                  "semantic_bodies": {
+                    "required": 6,
+                    "reused": 0
+                  },
+                  "semantic_queries": {
+                    "required": 1,
+                    "reused": 0
+                  }
+                },
+                "samples_ms": [
+                  0.898346,
+                  0.932625,
+                  0.933135,
+                  1.077897,
+                  0.988797
+                ]
+              },
+              {
+                "diagnostic_parity": {
+                  "error_count": 1,
+                  "fresh_session": "exact",
+                  "last_good_preserved": true,
+                  "warning_count": 0
+                },
+                "mean_ms": 0.802,
+                "name": "diagnostic_error_edit",
+                "required_vs_reused_work": {
+                  "cfgs": {
+                    "required": 0,
+                    "reused": 0
+                  },
+                  "modules": {
+                    "required": 1,
+                    "reused": 6
+                  },
+                  "semantic_bodies": {
+                    "required": 5,
+                    "reused": 0
+                  },
+                  "semantic_queries": {
+                    "required": 1,
+                    "reused": 0
+                  }
+                },
+                "samples_ms": [
+                  0.773567,
+                  0.793974,
+                  0.81142,
+                  0.805581,
+                  0.825084
+                ]
+              },
+              {
+                "differential_parity": {
+                  "cold_semantic_work": {
+                    "air_instructions_produced": 100,
+                    "bind_invocations": 1,
+                    "bodies_attempted": 6,
+                    "bodies_failed": 0,
+                    "bodies_succeeded": 6,
+                    "body_dependency_air_instructions_observed": 100,
+                    "body_free_function_lookups": 6,
+                    "body_owner_tokens": {
+                      "authoritative_slots": 6,
+                      "provisional_slots": 6,
+                      "slots_validated": 6,
+                      "tokens_installed": 6,
+                      "validation_failures": 0
+                    },
+                    "body_readiness_finalization_invocations": 1,
+                    "cfg": {
+                      "air_instructions_consumed": 100,
+                      "builds_attempted": 6,
+                      "builds_failed": 0,
+                      "builds_succeeded": 6,
+                      "comptime_functions_filtered": 0,
+                      "drop_glue_functions_synthesized": 0,
+                      "export_attempts": 5,
+                      "export_rejections": 2,
+                      "export_successes": 3,
+                      "fallbacks": 0,
+                      "functions_considered": 6,
+                      "implicit_destructor_targets_emitted": 0,
+                      "implicit_destructor_targets_reused": 0,
+                      "import_attempts": 0,
+                      "import_failures": 0,
+                      "import_successes": 0,
+                      "optimization_attempts": 6,
+                      "optimization_completions": 6,
+                      "optimized_level_attempts": 0,
+                      "reuse_candidates": 0,
+                      "reuses": 0,
+                      "warnings_emitted": 0,
+                      "warnings_reused": 0
+                    },
+                    "declaration_indexes_built": 1,
+                    "declaration_resolution_failures": 0,
+                    "declaration_resolution_invocations": 1,
+                    "declaration_reuse": {
+                      "declaration_indexes_built": 1,
+                      "durable_cache_population_exports": 0,
+                      "durable_records_compared": 0,
+                      "durable_records_reused": 0,
+                      "fallback_epochs_started": 0,
+                      "fallbacks": 0,
+                      "install_invocations": 0,
+                      "ordinary_declaration_resolutions_skipped": 0,
+                      "plan_executions": 0,
+                      "semantic_epochs_started": 1,
+                      "shell_predeclaration_epochs": 1
+                    },
+                    "declaration_type_call_head_dependency_events": 0,
+                    "declaration_type_dependency_events": 0,
+                    "durable_bodies": {
+                      "atomic_discards": 0,
+                      "candidate_comparisons": 0,
+                      "candidate_fallbacks": 0,
+                      "conversion_attempts": 5,
+                      "conversion_completions": 5,
+                      "conversion_failures": 0,
+                      "export_attempts": 6,
+                      "export_rejections": 1,
+                      "export_successes": 5,
+                      "finalization_attempts": 0,
+                      "finalization_completions": 0,
+                      "finalization_failures": 0,
+                      "import_attempts": 0,
+                      "import_failures": 0,
+                      "import_successes": 0,
+                      "installed_instructions": 0,
+                      "installed_places": 0,
+                      "installed_strings": 0,
+                      "instructions_exported": 54,
+                      "instructions_projected": 0,
+                      "places_exported": 0,
+                      "places_projected": 0,
+                      "projection_attempts": 0,
+                      "projection_completions": 0,
+                      "projection_failures": 0,
+                      "reused_bodies": 0,
+                      "skipped_body_analyses": 0,
+                      "specialized_mapping_attempts": 0,
+                      "specialized_mapping_failures": 0,
+                      "specialized_mapping_successes": 0,
+                      "stable_key_joins": 3,
+                      "strings_exported": 0,
+                      "strings_projected": 0
+                    },
+                    "durable_cache_population_exports": 0,
+                    "failed_requests": 0,
+                    "failure_phases": {
+                      "body_analysis": 0,
+                      "cfg_construction": 0,
+                      "declaration": 0
+                    },
+                    "fallback_epochs_started": 0,
+                    "generic_calls_observed": 0,
+                    "local_strings_produced": 1,
+                    "manifest_build_invocations": 1,
+                    "named_const_dependency_events": 7,
+                    "named_destructor_dependency_events": 0,
+                    "named_method_dependency_events": 0,
+                    "ordinary_free_function_dependency_events": 6,
+                    "semantic_epochs_started": 1,
+                    "shell_predeclaration_epochs": 1,
+                    "specialization_air_instructions_scanned": 100,
+                    "specialization_driver_failures": 0,
+                    "specialization_requests_duplicate": 0,
+                    "specialization_requests_unique": 0,
+                    "specialization_rewrites": 0,
+                    "specialization_rounds": 0,
+                    "specialized_bodies_attempted": 0,
+                    "specialized_bodies_failed": 0,
+                    "specialized_bodies_succeeded": 0,
+                    "specialized_free_function_dependency_events": 0,
+                    "specialized_origin_records": 0,
+                    "string_ids_remapped": 1
+                  },
+                  "dependency_records": "exact",
+                  "diagnostics": "exact",
+                  "durable_ordinary_body_manifest_artifacts": "exact",
+                  "durable_specialized_body_payloads": "exact",
+                  "emitted_output": "byte_exact",
+                  "emitted_output_sha256": "cdab5c0d43d786b4480d2592539e38ad10bc3bb50b92a6d494a96903c342e293",
+                  "emitted_output_size_bytes": 12288,
+                  "public_semantic_cfg_artifacts": "exact",
+                  "public_type_universe": "exact_ordered_entries",
+                  "session_private_durable_cfg_cache": "not_exposed_compared_via_public_cfgs_and_emitted_output",
+                  "stable_identities": "exact",
+                  "warnings": "exact",
+                  "work_counters": "reused_and_cold_serialized_with_structural_assertions"
+                },
+                "mean_ms": 1.006,
+                "name": "diagnostic_recovery",
+                "recovered_from_diagnostic_error": true,
+                "required_vs_reused_work": {
+                  "cfgs": {
+                    "required": 4,
+                    "reused": 2
+                  },
+                  "modules": {
+                    "required": 2,
+                    "reused": 5
+                  },
+                  "semantic_bodies": {
+                    "required": 6,
+                    "reused": 0
+                  },
+                  "semantic_queries": {
+                    "required": 1,
+                    "reused": 0
+                  }
+                },
+                "samples_ms": [
+                  0.973303,
+                  0.994158,
+                  1.023756,
+                  1.010588,
+                  1.027235
+                ]
+              }
+            ]
+          }
+        ],
+        "generated_program_runtime": false,
+        "iterations": 5,
+        "measurement_family": "compiler_build_and_query_performance",
+        "representative": true,
+        "schema_version": 1
+      },
+      "timestamp": "2026-07-18T11:56:27Z",
+      "version": 3
+    }
+  ],
+  "version": 3
+}
