@@ -748,6 +748,14 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
         &[],
     ),
+    // ADR-0052 phase 7 (RUE-978): the unaligned-access round trip allocates
+    // through @alloc, which the oracle model does not model.
+    Entry::new(
+        "runtime.raw_bytes",
+        "ptr_unaligned_round_trip",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
     Entry::new(
         "runtime.pointers",
         "field_ptr_first_field",

@@ -1460,14 +1460,15 @@ impl<'a> ConstraintGenerator<'a> {
                         self.generate(*arg_ref, ctx);
                     }
                     InferType::Concrete(Type::U64)
-                } else if intrinsic_name == "ptr_write" {
-                    // @ptr_write: takes a pointer and value, returns unit
+                } else if intrinsic_name == "ptr_write" || intrinsic_name == "ptr_write_unaligned" {
+                    // @ptr_write / @ptr_write_unaligned: takes a pointer and
+                    // value, returns unit (ADR-0059 Phase 4, RUE-978).
                     for arg_ref in args.iter() {
                         self.generate(*arg_ref, ctx);
                     }
                     InferType::Concrete(Type::UNIT)
-                } else if intrinsic_name == "ptr_read" {
-                    // @ptr_read: takes ptr const T or ptr mut T, returns T
+                } else if intrinsic_name == "ptr_read" || intrinsic_name == "ptr_read_unaligned" {
+                    // @ptr_read / @ptr_read_unaligned: takes ptr const T or ptr mut T, returns T
                     // The return type depends on the pointee type of the argument.
                     // We create a fresh type variable that will be resolved during
                     // semantic analysis when the actual pointer type is known.

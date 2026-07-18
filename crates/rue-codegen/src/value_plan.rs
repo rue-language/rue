@@ -1562,8 +1562,14 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     "random_u64" => IntrinsicOperation::RandomU64,
                     "ptr_to_int" => IntrinsicOperation::PtrToInt,
                     "int_to_ptr" => IntrinsicOperation::IntToPtr,
-                    "ptr_read" => IntrinsicOperation::PtrRead,
-                    "ptr_write" => IntrinsicOperation::PtrWrite,
+                    // The `_unaligned` scalar access pair (ADR-0059 Phase 4,
+                    // RUE-978/RUE-962) shares the aligned lowering: on x86-64 and
+                    // AArch64 a scalar load/store tolerates any address, so the
+                    // interim distinction is a semantic contract (spec 9.2:14k),
+                    // not a distinct instruction. Folding the names here keeps the
+                    // narrow-access and image-marshalling plans identical.
+                    "ptr_read" | "ptr_read_unaligned" => IntrinsicOperation::PtrRead,
+                    "ptr_write" | "ptr_write_unaligned" => IntrinsicOperation::PtrWrite,
                     "ptr_offset" => IntrinsicOperation::PtrOffset,
                     "alloc" => IntrinsicOperation::Alloc {
                         element_size: crate::allocation::pointer_element_align(
@@ -1635,6 +1641,17 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                         ctx.type_pool,
                         ctx.cfg.get_inst(args[1]).ty,
                     ),
+                    // Under the compact layout (`aggregate_layout`) the raw-byte
+                    // family folds into the ordinary typed `ptr u8` path: a byte
+                    // access is exactly the one-byte narrow scalar access
+                    // (RUE-989) that `@ptr_read`/`@ptr_write` of a `u8` pointee
+                    // take, so `@byte_read`/`@byte_write` reuse that single
+                    // emission path (ADR-0052 phase 7, RUE-978). Keying on
+                    // `Type::U8` makes the gate the sole switch: gate-off this is
+                    // `None`, preserving the bespoke byte load/store byte-for-byte.
+                    IntrinsicOperation::ByteRead | IntrinsicOperation::ByteWrite => {
+                        crate::types::narrow_scalar_access(ctx.type_pool, Type::U8)
+                    }
                     _ => None,
                 };
                 // A compact aggregate pointee marshals its whole value through the

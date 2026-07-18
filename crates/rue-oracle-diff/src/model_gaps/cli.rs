@@ -674,6 +674,32 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::IntToPointer),
         &[],
     ),
+    // ADR-0052 phase 7 (RUE-978): the de-gate readiness differential cases
+    // allocate through @alloc_bytes, which the oracle model does not model.
+    Entry::new(
+        "cli.raw_bytes_degate_readiness",
+        "byte_family_roundtrip_aggregate_layout",
+        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        &[],
+    ),
+    Entry::new(
+        "cli.raw_bytes_degate_readiness",
+        "byte_family_roundtrip_raw_bytes",
+        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        &[],
+    ),
+    Entry::new(
+        "cli.raw_bytes_degate_readiness",
+        "packed_subrange_copy_aggregate_layout",
+        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        &[],
+    ),
+    Entry::new(
+        "cli.raw_bytes_degate_readiness",
+        "packed_subrange_copy_raw_bytes",
+        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        &[],
+    ),
     Entry::new(
         "cli.partial_move_depth",
         "disjoint_sibling_after_subfield_move_ok",
