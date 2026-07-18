@@ -2,10 +2,11 @@
 // integer id, keeping the site model trivially copyable and arena-friendly.
 // An open-addressed hash index makes interning amortized O(length), so total
 // intern work stays linear in input volume instead of quadratic in pool size
-// (RUE-1003). The index is hand-rolled from the pool's own primitive arrays
-// because a StrMap(u64) field on this cross-module public struct fails
-// comptime type reduction while RUE-993 is open. Ids are never removed, so
-// the table needs no tombstones: a slot holds id + 1, and 0 means empty.
+// (RUE-1003). A retained StrMap(u64) field works since RUE-993, but it would
+// copy every key's bytes into a second table; this index is built from the
+// pool's own primitive arrays so the pooled bytes stay the only copy
+// (RUE-1008). Ids are never removed, so the table needs no tombstones: a
+// slot holds id + 1, and 0 means empty.
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
 const U64s = std.arraybuf.ArrayBuf(u64);
