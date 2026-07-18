@@ -5,14 +5,14 @@
 use std::{collections::HashMap, env, process, sync::Arc, time::Instant};
 
 use rue_air::{FrozenTypeInternPool, TypeKind};
+use rue_compiler::unstable::{
+    DependencyBaseline, DependencyIncompleteReason, DependencySurface, FullInvalidationReason,
+    InvalidationMetrics, InvalidationScope, MetricsSnapshot, ParseMetrics,
+};
 use rue_compiler::{
     AcceptedReadManifestEntry, CanonicalSemanticOutput, CompileOptions, CompilerSession,
-    CompilerSessionWork, DiscoverySourceAssembler, DurableBodyWork,
-    FRONTEND_DIAGNOSTIC_RETENTION_LIMIT, FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT,
-    FileMetadataFingerprint, FrontendDiagnosticSnapshot, ImportDiscoveryContext,
-    ImportObservationLedger, OptLevel, ParsedModulesWork, PhysicalFileIdentity,
-    SemanticDependencyIncompleteReason, SemanticDependencyInputManifest, SemanticDependencySurface,
-    SemanticFullInvalidationReason, SemanticInvalidationPlan, SemanticInvalidationScope,
+    DiscoverySourceAssembler, FileMetadataFingerprint, FrontendDiagnosticSnapshot,
+    ImportDiscoveryContext, ImportObservationLedger, OptLevel, PhysicalFileIdentity,
     SourceMetadata, SourceSnapshot,
 };
 use rue_span::FileId;
@@ -59,29 +59,30 @@ struct QueryCounts {
 }
 
 impl QueryCounts {
-    fn from(work: &CompilerSessionWork) -> Self {
+    fn from(work: &MetricsSnapshot) -> Self {
         Self {
-            merge_executions: work.merge.executions,
-            merge_reuses: work.merge.reuses,
-            rir_executions: work.rir.executions,
-            rir_reuses: work.rir.reuses,
-            semantic_executions: work.semantic.executions,
-            semantic_reuses: work.semantic.reuses,
-            definition_executions: work.definitions.executions,
-            definition_reuses: work.definitions.reuses,
-            downstream_invalidations: work.downstream_invalidations,
-            semantic_entries_invalidated: work.semantic_entries_invalidated,
-            definition_entries_invalidated: work.definition_entries_invalidated,
-            dependency_manifest_executions: work.dependency_manifests.executions,
-            dependency_manifest_reuses: work.dependency_manifests.reuses,
-            invalidation_plan_executions: work.invalidation_plans.executions,
-            invalidation_plan_reuses: work.invalidation_plans.reuses,
-            declaration_reuse_plans: work.declaration_reuse_plans,
-            durable_records_compared: work.durable_records_compared,
-            durable_records_reused: work.durable_records_reused,
-            ordinary_declaration_resolutions_skipped: work.ordinary_declaration_resolutions_skipped,
-            durable_installs: work.durable_installs,
-            declaration_reuse_fallbacks: work.declaration_reuse_fallbacks,
+            merge_executions: work.merge().executions,
+            merge_reuses: work.merge().reuses,
+            rir_executions: work.rir().executions,
+            rir_reuses: work.rir().reuses,
+            semantic_executions: work.semantic().executions,
+            semantic_reuses: work.semantic().reuses,
+            definition_executions: work.definitions().executions,
+            definition_reuses: work.definitions().reuses,
+            downstream_invalidations: work.downstream_invalidations(),
+            semantic_entries_invalidated: work.semantic_entries_invalidated(),
+            definition_entries_invalidated: work.definition_entries_invalidated(),
+            dependency_manifest_executions: work.dependency_manifests().executions,
+            dependency_manifest_reuses: work.dependency_manifests().reuses,
+            invalidation_plan_executions: work.invalidation_plans().executions,
+            invalidation_plan_reuses: work.invalidation_plans().reuses,
+            declaration_reuse_plans: work.declaration_reuse_plans(),
+            durable_records_compared: work.durable_records_compared(),
+            durable_records_reused: work.durable_records_reused(),
+            ordinary_declaration_resolutions_skipped: work
+                .ordinary_declaration_resolutions_skipped(),
+            durable_installs: work.durable_installs(),
+            declaration_reuse_fallbacks: work.declaration_reuse_fallbacks(),
         }
     }
 
@@ -386,12 +387,12 @@ fn snapshot(modules: usize, variant: Variant) -> SourceSnapshot {
     SourceSnapshot::new(metadata, sources).unwrap()
 }
 
-fn parse_json(work: ParsedModulesWork) -> Value {
+fn parse_json(work: ParseMetrics) -> Value {
     json!({
-        "lexer_invocations": work.syntax.lexer_invocations,
-        "parser_invocations": work.syntax.parser_invocations,
-        "lexed_bytes": work.syntax.lexed_bytes,
-        "tokens": work.syntax.tokens,
+        "lexer_invocations": work.lexer_invocations,
+        "parser_invocations": work.parser_invocations,
+        "lexed_bytes": work.lexed_bytes,
+        "tokens": work.tokens,
         "modules_considered": work.modules_considered,
         "modules_reused": work.modules_reused,
         "modules_rebound": work.modules_rebound,
@@ -401,216 +402,49 @@ fn parse_json(work: ParsedModulesWork) -> Value {
     })
 }
 
-fn durable_body_work_json(work: DurableBodyWork) -> Value {
-    json!({
-        "candidate_comparisons": work.candidate_comparisons,
-        "candidate_fallbacks": work.candidate_fallbacks,
-        "specialized_mapping_attempts": work.specialized_mapping_attempts,
-        "specialized_mapping_successes": work.specialized_mapping_successes,
-        "specialized_mapping_failures": work.specialized_mapping_failures,
-        "export_attempts": work.export_attempts,
-        "export_successes": work.export_successes,
-        "export_rejections": work.export_rejections,
-        "instructions_exported": work.instructions_exported,
-        "places_exported": work.places_exported,
-        "strings_exported": work.strings_exported,
-        "conversion_attempts": work.conversion_attempts,
-        "conversion_completions": work.conversion_completions,
-        "conversion_failures": work.conversion_failures,
-        "stable_key_joins": work.stable_key_joins,
-        "finalization_attempts": work.finalization_attempts,
-        "finalization_completions": work.finalization_completions,
-        "finalization_failures": work.finalization_failures,
-        "projection_attempts": work.projection_attempts,
-        "projection_completions": work.projection_completions,
-        "projection_failures": work.projection_failures,
-        "instructions_projected": work.instructions_projected,
-        "places_projected": work.places_projected,
-        "strings_projected": work.strings_projected,
-        "import_attempts": work.import_attempts,
-        "import_successes": work.import_successes,
-        "import_failures": work.import_failures,
-        "installed_instructions": work.installed_instructions,
-        "installed_places": work.installed_places,
-        "installed_strings": work.installed_strings,
-        "atomic_discards": work.atomic_discards,
-        "reused_bodies": work.reused_bodies,
-        "skipped_body_analyses": work.skipped_body_analyses,
-    })
+fn semantic_work_json(work: &MetricsSnapshot, from: usize) -> Value {
+    work.semantic_work_json(from)
 }
 
-fn semantic_work_json(work: &CompilerSessionWork, from: usize) -> Value {
-    let records = &work.semantic_records[from..];
-    json!({
-        "failed_requests": records.iter().filter(|record| record.failure.is_some()).count(),
-        "failure_phases": {
-            "declaration": records.iter().filter(|record| matches!(record.failure.map(|failure| failure.phase), Some(rue_compiler::CanonicalSemanticFailurePhase::Declaration))).count(),
-            "body_analysis": records.iter().filter(|record| matches!(record.failure.map(|failure| failure.phase), Some(rue_compiler::CanonicalSemanticFailurePhase::BodyAnalysis))).count(),
-            "cfg_construction": records.iter().filter(|record| matches!(record.failure.map(|failure| failure.phase), Some(rue_compiler::CanonicalSemanticFailurePhase::CfgConstruction))).count(),
-        },
-        "bind_invocations": records.iter().map(|record| record.work.binding.bind_invocations).sum::<usize>(),
-        "declaration_resolution_invocations": records.iter().map(|record| record.work.binding.declaration_resolution_invocations).sum::<usize>(),
-        "declaration_resolution_failures": records.iter().map(|record| record.work.binding.declaration_resolution_failures).sum::<usize>(),
-        "body_readiness_finalization_invocations": records.iter().map(|record| record.work.binding.body_readiness_finalization_invocations).sum::<usize>(),
-        "body_free_function_lookups": records.iter().map(|record| record.work.body_analysis.free_function_record_lookups).sum::<usize>(),
-        "bodies_attempted": records.iter().map(|record| record.work.body_analysis.bodies_attempted).sum::<usize>(),
-        "bodies_succeeded": records.iter().map(|record| record.work.body_analysis.bodies_succeeded).sum::<usize>(),
-        "bodies_failed": records.iter().map(|record| record.work.body_analysis.bodies_failed).sum::<usize>(),
-        "air_instructions_produced": records.iter().map(|record| record.work.body_analysis.air_instructions_produced).sum::<usize>(),
-        "body_dependency_air_instructions_observed": records.iter().map(|record| record.work.body_analysis.body_dependency_air_instructions_observed).sum::<usize>(),
-        "local_strings_produced": records.iter().map(|record| record.work.body_analysis.local_strings_produced).sum::<usize>(),
-        "string_ids_remapped": records.iter().map(|record| record.work.body_analysis.string_ids_remapped).sum::<usize>(),
-        "specialization_air_instructions_scanned": records.iter().map(|record| record.work.body_analysis.specialization_air_instructions_scanned).sum::<usize>(),
-        "generic_calls_observed": records.iter().map(|record| record.work.body_analysis.generic_calls_observed).sum::<usize>(),
-        "specialization_requests_unique": records.iter().map(|record| record.work.body_analysis.specialization_requests_unique).sum::<usize>(),
-        "specialization_requests_duplicate": records.iter().map(|record| record.work.body_analysis.specialization_requests_duplicate).sum::<usize>(),
-        "specialization_rewrites": records.iter().map(|record| record.work.body_analysis.specialization_rewrites).sum::<usize>(),
-        "specialization_rounds": records.iter().map(|record| record.work.body_analysis.specialization_rounds).sum::<usize>(),
-        "specialization_driver_failures": records.iter().map(|record| record.work.body_analysis.specialization_driver_failures).sum::<usize>(),
-        "specialized_bodies_attempted": records.iter().map(|record| record.work.body_analysis.specialized_bodies_attempted).sum::<usize>(),
-        "specialized_bodies_succeeded": records.iter().map(|record| record.work.body_analysis.specialized_bodies_succeeded).sum::<usize>(),
-        "specialized_bodies_failed": records.iter().map(|record| record.work.body_analysis.specialized_bodies_failed).sum::<usize>(),
-        "durable_bodies": {
-            "candidate_comparisons": records.iter().map(|record| record.work.durable_bodies.candidate_comparisons).sum::<usize>(),
-            "candidate_fallbacks": records.iter().map(|record| record.work.durable_bodies.candidate_fallbacks).sum::<usize>(),
-            "specialized_mapping_attempts": records.iter().map(|record| record.work.durable_bodies.specialized_mapping_attempts).sum::<usize>(),
-            "specialized_mapping_successes": records.iter().map(|record| record.work.durable_bodies.specialized_mapping_successes).sum::<usize>(),
-            "specialized_mapping_failures": records.iter().map(|record| record.work.durable_bodies.specialized_mapping_failures).sum::<usize>(),
-            "export_attempts": records.iter().map(|record| record.work.durable_bodies.export_attempts).sum::<usize>(),
-            "export_successes": records.iter().map(|record| record.work.durable_bodies.export_successes).sum::<usize>(),
-            "export_rejections": records.iter().map(|record| record.work.durable_bodies.export_rejections).sum::<usize>(),
-            "instructions_exported": records.iter().map(|record| record.work.durable_bodies.instructions_exported).sum::<usize>(),
-            "places_exported": records.iter().map(|record| record.work.durable_bodies.places_exported).sum::<usize>(),
-            "strings_exported": records.iter().map(|record| record.work.durable_bodies.strings_exported).sum::<usize>(),
-            "conversion_attempts": records.iter().map(|record| record.work.durable_bodies.conversion_attempts).sum::<usize>(),
-            "conversion_completions": records.iter().map(|record| record.work.durable_bodies.conversion_completions).sum::<usize>(),
-            "conversion_failures": records.iter().map(|record| record.work.durable_bodies.conversion_failures).sum::<usize>(),
-            "finalization_attempts": records.iter().map(|record| record.work.durable_bodies.finalization_attempts).sum::<usize>(),
-            "finalization_completions": records.iter().map(|record| record.work.durable_bodies.finalization_completions).sum::<usize>(),
-            "finalization_failures": records.iter().map(|record| record.work.durable_bodies.finalization_failures).sum::<usize>(),
-            "stable_key_joins": records.iter().map(|record| record.work.durable_bodies.stable_key_joins).sum::<usize>(),
-            "projection_attempts": records.iter().map(|record| record.work.durable_bodies.projection_attempts).sum::<usize>(),
-            "projection_completions": records.iter().map(|record| record.work.durable_bodies.projection_completions).sum::<usize>(),
-            "projection_failures": records.iter().map(|record| record.work.durable_bodies.projection_failures).sum::<usize>(),
-            "instructions_projected": records.iter().map(|record| record.work.durable_bodies.instructions_projected).sum::<usize>(),
-            "places_projected": records.iter().map(|record| record.work.durable_bodies.places_projected).sum::<usize>(),
-            "strings_projected": records.iter().map(|record| record.work.durable_bodies.strings_projected).sum::<usize>(),
-            "import_attempts": records.iter().map(|record| record.work.durable_bodies.import_attempts).sum::<usize>(),
-            "import_successes": records.iter().map(|record| record.work.durable_bodies.import_successes).sum::<usize>(),
-            "import_failures": records.iter().map(|record| record.work.durable_bodies.import_failures).sum::<usize>(),
-            "installed_instructions": records.iter().map(|record| record.work.durable_bodies.installed_instructions).sum::<usize>(),
-            "installed_places": records.iter().map(|record| record.work.durable_bodies.installed_places).sum::<usize>(),
-            "installed_strings": records.iter().map(|record| record.work.durable_bodies.installed_strings).sum::<usize>(),
-            "atomic_discards": records.iter().map(|record| record.work.durable_bodies.atomic_discards).sum::<usize>(),
-            "reused_bodies": records.iter().map(|record| record.work.durable_bodies.reused_bodies).sum::<usize>(),
-            "skipped_body_analyses": records.iter().map(|record| record.work.durable_bodies.skipped_body_analyses).sum::<usize>(),
-        },
-        "cfg": {
-            "drop_glue_functions_synthesized": records.iter().map(|record| record.work.cfg.drop_glue_functions_synthesized).sum::<usize>(),
-            "functions_considered": records.iter().map(|record| record.work.cfg.functions_considered).sum::<usize>(),
-            "comptime_functions_filtered": records.iter().map(|record| record.work.cfg.comptime_functions_filtered).sum::<usize>(),
-            "builds_attempted": records.iter().map(|record| record.work.cfg.cfg_builds_attempted).sum::<usize>(),
-            "builds_succeeded": records.iter().map(|record| record.work.cfg.cfg_builds_succeeded).sum::<usize>(),
-            "builds_failed": records.iter().map(|record| record.work.cfg.cfg_builds_failed).sum::<usize>(),
-            "air_instructions_consumed": records.iter().map(|record| record.work.cfg.air_instructions_consumed).sum::<usize>(),
-            "optimization_attempts": records.iter().map(|record| record.work.cfg.optimization_attempts).sum::<usize>(),
-            "optimization_completions": records.iter().map(|record| record.work.cfg.optimization_completions).sum::<usize>(),
-            "optimized_level_attempts": records.iter().map(|record| record.work.cfg.optimized_level_attempts).sum::<usize>(),
-            "warnings_emitted": records.iter().map(|record| record.work.cfg.cfg_warnings_emitted).sum::<usize>(),
-            "implicit_destructor_targets_emitted": records.iter().map(|record| record.work.cfg.implicit_destructor_targets_emitted).sum::<usize>(),
-            "reuse_candidates": records.iter().map(|record| record.work.cfg.cfg_reuse_candidates).sum::<usize>(),
-            "import_attempts": records.iter().map(|record| record.work.cfg.cfg_import_attempts).sum::<usize>(),
-            "import_successes": records.iter().map(|record| record.work.cfg.cfg_import_successes).sum::<usize>(),
-            "import_failures": records.iter().map(|record| record.work.cfg.cfg_import_failures).sum::<usize>(),
-            "reuses": records.iter().map(|record| record.work.cfg.cfg_reuses).sum::<usize>(),
-            "fallbacks": records.iter().map(|record| record.work.cfg.cfg_fallbacks).sum::<usize>(),
-            "warnings_reused": records.iter().map(|record| record.work.cfg.cfg_warnings_reused).sum::<usize>(),
-            "implicit_destructor_targets_reused": records.iter().map(|record| record.work.cfg.implicit_destructor_targets_reused).sum::<usize>(),
-            "export_attempts": records.iter().map(|record| record.work.cfg.cfg_export_attempts).sum::<usize>(),
-            "export_successes": records.iter().map(|record| record.work.cfg.cfg_export_successes).sum::<usize>(),
-            "export_rejections": records.iter().map(|record| record.work.cfg.cfg_export_rejections).sum::<usize>(),
-        },
-        "ordinary_free_function_dependency_events": records.iter().map(|record| record.work.body_analysis.ordinary_free_function_dependency_events).sum::<usize>(),
-        "specialized_origin_records": records.iter().map(|record| record.work.body_analysis.specialized_origin_records).sum::<usize>(),
-        "specialized_free_function_dependency_events": records.iter().map(|record| record.work.body_analysis.specialized_free_function_dependency_events).sum::<usize>(),
-        "named_method_dependency_events": records.iter().map(|record| record.work.body_analysis.named_method_dependency_events).sum::<usize>(),
-        "named_destructor_dependency_events": records.iter().map(|record| record.work.body_analysis.named_destructor_dependency_events).sum::<usize>(),
-        "declaration_type_dependency_events": records.iter().map(|record| record.work.body_analysis.declaration_type_dependency_events).sum::<usize>(),
-        "declaration_type_call_head_dependency_events": records.iter().map(|record| record.work.body_analysis.declaration_type_call_head_dependency_events).sum::<usize>(),
-        "named_const_dependency_events": records.iter().map(|record| record.work.body_analysis.named_const_dependency_events).sum::<usize>(),
-        "manifest_build_invocations": records.iter().map(|record| record.work.manifest.build_invocations).sum::<usize>(),
-        "body_owner_tokens": {
-            "provisional_slots": records.iter().map(|record| record.work.body_owner_tokens.provisional_slots).sum::<usize>(),
-            "authoritative_slots": records.iter().map(|record| record.work.body_owner_tokens.authoritative_slots).sum::<usize>(),
-            "slots_validated": records.iter().map(|record| record.work.body_owner_tokens.slots_validated).sum::<usize>(),
-            "tokens_installed": records.iter().map(|record| record.work.body_owner_tokens.tokens_installed).sum::<usize>(),
-            "validation_failures": records.iter().map(|record| record.work.body_owner_tokens.validation_failures).sum::<usize>(),
-        },
-        "declaration_reuse": {
-            "plan_executions": records.iter().map(|record| record.work.declaration_reuse.plan_executions).sum::<usize>(),
-            "durable_records_compared": records.iter().map(|record| record.work.declaration_reuse.durable_records_compared).sum::<usize>(),
-            "durable_records_reused": records.iter().map(|record| record.work.declaration_reuse.durable_records_reused).sum::<usize>(),
-            "ordinary_declaration_resolutions_skipped": records.iter().map(|record| record.work.declaration_reuse.ordinary_declaration_resolutions_skipped).sum::<usize>(),
-            "install_invocations": records.iter().map(|record| record.work.declaration_reuse.install_invocations).sum::<usize>(),
-            "fallbacks": records.iter().map(|record| record.work.declaration_reuse.fallbacks).sum::<usize>(),
-            "semantic_epochs_started": records.iter().map(|record| record.work.declaration_reuse.semantic_epochs_started).sum::<usize>(),
-            "declaration_indexes_built": records.iter().map(|record| record.work.declaration_reuse.declaration_indexes_built).sum::<usize>(),
-            "shell_predeclaration_epochs": records.iter().map(|record| record.work.declaration_reuse.shell_predeclaration_epochs).sum::<usize>(),
-            "durable_cache_population_exports": records.iter().map(|record| record.work.declaration_reuse.durable_cache_population_exports).sum::<usize>(),
-            "fallback_epochs_started": records.iter().map(|record| record.work.declaration_reuse.fallback_epochs_started).sum::<usize>(),
-        },
-        "semantic_epochs_started": records.iter().map(|record| record.work.declaration_reuse.semantic_epochs_started).sum::<usize>(),
-        "declaration_indexes_built": records.iter().map(|record| record.work.declaration_reuse.declaration_indexes_built).sum::<usize>(),
-        "shell_predeclaration_epochs": records.iter().map(|record| record.work.declaration_reuse.shell_predeclaration_epochs).sum::<usize>(),
-        "durable_cache_population_exports": records.iter().map(|record| record.work.declaration_reuse.durable_cache_population_exports).sum::<usize>(),
-        "fallback_epochs_started": records.iter().map(|record| record.work.declaration_reuse.fallback_epochs_started).sum::<usize>(),
-    })
+fn definition_work_json(work: &MetricsSnapshot, from: usize) -> Value {
+    work.definition_work_json(from)
 }
 
-fn definition_work_json(work: &CompilerSessionWork, from: usize) -> Value {
-    let records = &work.definition_records[from..];
+fn retention_json(work: &MetricsSnapshot) -> Value {
     json!({
-        "bind_invocations": records.iter().map(|record| record.binding.bind_invocations).sum::<usize>(),
-        "manifest_build_invocations": records.iter().map(|record| record.manifest.build_invocations).sum::<usize>(),
-        "manifest_bindings_visited": records.iter().map(|record| record.issuance.manifest_bindings_visited).sum::<usize>(),
-        "ids_issued": records.iter().map(|record| record.issuance.ids_issued).sum::<usize>(),
-    })
-}
-
-fn retention_json(work: &CompilerSessionWork) -> Value {
-    json!({
-        "diagnostic_entries": work.retention.diagnostic_entries,
-        "diagnostic_source_attempts": work.retention.diagnostic_source_attempts,
-        "diagnostic_source_bytes": work.retention.diagnostic_source_bytes,
-        "dependency_manifests": work.retention.dependency_manifests,
-        "invalidation_plans": work.retention.invalidation_plans,
+        "diagnostic_entries": work.retention().diagnostic_entries,
+        "diagnostic_source_attempts": work.retention().diagnostic_source_attempts,
+        "diagnostic_source_bytes": work.retention().diagnostic_source_bytes,
+        "dependency_manifests": work.retention().dependency_manifests,
+        "invalidation_plans": work.retention().invalidation_plans,
     })
 }
 
 fn measure<F>(session: &mut CompilerSession, operation: F) -> Value
 where
-    F: FnOnce(&mut CompilerSession) -> ParsedModulesWork,
+    F: FnOnce(&mut CompilerSession) -> ParseMetrics,
 {
-    let before = QueryCounts::from(session.work());
-    let semantic_records = session.work().semantic_records.len();
-    let definition_records = session.work().definition_records.len();
+    let before_metrics = session.unstable_metrics();
+    let before = QueryCounts::from(&before_metrics);
+    let semantic_records = before_metrics.semantic_record_count();
+    let definition_records = before_metrics.definition_record_count();
     let started = Instant::now();
     let parse = operation(session);
     let elapsed = started.elapsed();
-    let work = session.work();
-    let query_delta = QueryCounts::from(work).delta(before);
+    let work = session.unstable_metrics();
+    let query_delta = QueryCounts::from(&work).delta(before);
     // Successful updates replace the current-revision record vectors. Treat
     // that reset as a new zero-based measurement window.
-    let semantic_records = if work.semantic_records.len() < semantic_records
-        || (query_delta.semantic_executions > 0 && work.semantic_records.len() <= semantic_records)
+    let semantic_records = if work.semantic_record_count() < semantic_records
+        || (query_delta.semantic_executions > 0 && work.semantic_record_count() <= semantic_records)
     {
         0
     } else {
         semantic_records
     };
-    let definition_records = if work.definition_records.len() < definition_records
+    let definition_records = if work.definition_record_count() < definition_records
         || (query_delta.definition_executions > 0
-            && work.definition_records.len() <= definition_records)
+            && work.definition_record_count() <= definition_records)
     {
         0
     } else {
@@ -621,39 +455,35 @@ where
         "parse": parse_json(parse),
         "queries": query_delta.json(),
         "merge_work": {
-            "definition_shards_indexed": work.last_merge.definition_shards_indexed,
-            "definition_shards_reused": work.last_merge.definition_shards_reused,
-            "definition_shards_rebuilt": work.last_merge.definition_shards_rebuilt,
+            "definition_shards_indexed": work.merge_metrics().definition_shards_indexed,
+            "definition_shards_reused": work.merge_metrics().definition_shards_reused,
+            "definition_shards_rebuilt": work.merge_metrics().definition_shards_rebuilt,
         },
-        "semantic_work": semantic_work_json(work, semantic_records),
-        "definition_work": definition_work_json(work, definition_records),
-        "retention": retention_json(work),
+        "semantic_work": semantic_work_json(&work, semantic_records),
+        "definition_work": definition_work_json(&work, definition_records),
+        "retention": retention_json(&work),
     })
 }
 
-fn invalidation_plan_json(plan: &SemanticInvalidationPlan) -> Value {
+fn invalidation_plan_json(plan: &InvalidationMetrics) -> Value {
     let mut dependency_blockers = Vec::new();
     let (scope, reasons) = match plan.scope() {
-        SemanticInvalidationScope::Full { reasons } => (
+        InvalidationScope::Full { reasons } => (
             "full",
             reasons
                 .iter()
                 .map(|reason| match reason {
-                    SemanticFullInvalidationReason::RootChanged => "root_changed",
-                    SemanticFullInvalidationReason::ModuleImportsChanged => {
-                        "module_imports_changed"
-                    }
-                    SemanticFullInvalidationReason::TargetChanged => "target_changed",
-                    SemanticFullInvalidationReason::PreviewFeaturesChanged => {
-                        "preview_features_changed"
-                    }
-                    SemanticFullInvalidationReason::IncompleteDefinitionUniverse => {
+                    FullInvalidationReason::RootChanged => "root_changed",
+                    FullInvalidationReason::ModuleImportsChanged => "module_imports_changed",
+                    FullInvalidationReason::TargetChanged => "target_changed",
+                    FullInvalidationReason::PreviewFeaturesChanged => "preview_features_changed",
+                    FullInvalidationReason::IncompleteDefinitionUniverse => {
                         "incomplete_definition_universe"
                     }
-                    SemanticFullInvalidationReason::IncompleteDependencyGraph(blockers) => {
+                    FullInvalidationReason::IncompleteDependencyGraph(blockers) => {
                         dependency_blockers.extend(blockers.iter().map(|blocker| {
                             json!({
-                                "owner": blocker.owner().map(|owner| owner.name()),
+                                "owner": blocker.owner(),
                                 "surface": dependency_surface_name(blocker.surface()),
                                 "reason": dependency_reason_name(blocker.reason()),
                             })
@@ -663,7 +493,7 @@ fn invalidation_plan_json(plan: &SemanticInvalidationPlan) -> Value {
                 })
                 .collect::<Vec<_>>(),
         ),
-        SemanticInvalidationScope::Incremental => ("incremental", Vec::new()),
+        InvalidationScope::Incremental => ("incremental", Vec::new()),
     };
     let work = plan.work();
     json!({
@@ -684,73 +514,70 @@ fn invalidation_plan_json(plan: &SemanticInvalidationPlan) -> Value {
     })
 }
 
-fn dependency_surface_name(surface: SemanticDependencySurface) -> &'static str {
+fn dependency_surface_name(surface: DependencySurface) -> &'static str {
     match surface {
-        SemanticDependencySurface::BodyOwner => "body_owner",
-        SemanticDependencySurface::FreeFunctionCall => "free_function_call",
-        SemanticDependencySurface::NonGenericNamedMethodCall => "non_generic_named_method_call",
-        SemanticDependencySurface::GenericNamedMethodCall => "generic_named_method_call",
-        SemanticDependencySurface::NamedDestructorCall => "named_destructor_call",
-        SemanticDependencySurface::ImplicitNamedDestructor => "implicit_named_destructor",
-        SemanticDependencySurface::DeclarationType => "declaration_type",
-        SemanticDependencySurface::DeclarationTypeCallHead => "declaration_type_call_head",
-        SemanticDependencySurface::SupportedTypeCallHead => "supported_type_call_head",
-        SemanticDependencySurface::NamedValueConst => "named_value_const",
+        DependencySurface::BodyOwner => "body_owner",
+        DependencySurface::FreeFunctionCall => "free_function_call",
+        DependencySurface::NonGenericNamedMethodCall => "non_generic_named_method_call",
+        DependencySurface::GenericNamedMethodCall => "generic_named_method_call",
+        DependencySurface::NamedDestructorCall => "named_destructor_call",
+        DependencySurface::ImplicitNamedDestructor => "implicit_named_destructor",
+        DependencySurface::DeclarationType => "declaration_type",
+        DependencySurface::DeclarationTypeCallHead => "declaration_type_call_head",
+        DependencySurface::SupportedTypeCallHead => "supported_type_call_head",
+        DependencySurface::NamedValueConst => "named_value_const",
     }
 }
 
-fn dependency_reason_name(reason: SemanticDependencyIncompleteReason) -> &'static str {
+fn dependency_reason_name(reason: DependencyIncompleteReason) -> &'static str {
     match reason {
-        SemanticDependencyIncompleteReason::AnonymousBodyOwnerUnavailable => {
+        DependencyIncompleteReason::AnonymousBodyOwnerUnavailable => {
             "anonymous_body_owner_unavailable"
         }
-        SemanticDependencyIncompleteReason::CallerEndpointUnavailable => {
-            "caller_endpoint_unavailable"
-        }
-        SemanticDependencyIncompleteReason::GenericSubstitutionIdentityUnavailable => {
+        DependencyIncompleteReason::CallerEndpointUnavailable => "caller_endpoint_unavailable",
+        DependencyIncompleteReason::GenericSubstitutionIdentityUnavailable => {
             "generic_substitution_identity_unavailable"
         }
-        SemanticDependencyIncompleteReason::DestructorEndpointUnavailable => {
+        DependencyIncompleteReason::DestructorEndpointUnavailable => {
             "destructor_endpoint_unavailable"
         }
-        SemanticDependencyIncompleteReason::AnonymousDropOwnerUnavailable => {
+        DependencyIncompleteReason::AnonymousDropOwnerUnavailable => {
             "anonymous_drop_owner_unavailable"
         }
-        SemanticDependencyIncompleteReason::ResolvedTypeIdentityUnavailable => {
+        DependencyIncompleteReason::ResolvedTypeIdentityUnavailable => {
             "resolved_type_identity_unavailable"
         }
-        SemanticDependencyIncompleteReason::TypeCallHeadIdentityUnavailable => {
+        DependencyIncompleteReason::TypeCallHeadIdentityUnavailable => {
             "type_call_head_identity_unavailable"
         }
-        SemanticDependencyIncompleteReason::UnsupportedDynamicTypeCallHead => {
+        DependencyIncompleteReason::UnsupportedDynamicTypeCallHead => {
             "unsupported_dynamic_type_call_head"
         }
-        SemanticDependencyIncompleteReason::ConstEndpointUnavailable => {
-            "const_endpoint_unavailable"
-        }
+        DependencyIncompleteReason::ConstEndpointUnavailable => "const_endpoint_unavailable",
     }
 }
 
 fn measure_manifest_plan(
     session: &mut CompilerSession,
     source: &SourceSnapshot,
-    previous: Option<&Arc<SemanticDependencyInputManifest>>,
+    previous: Option<&Arc<DependencyBaseline>>,
     options: &CompileOptions,
-) -> (Value, Arc<SemanticDependencyInputManifest>) {
-    let before = QueryCounts::from(session.work());
+) -> (Value, Arc<DependencyBaseline>) {
+    let before = QueryCounts::from(&session.unstable_metrics());
     let update = session.update(source);
-    let parse = update.work();
+    let parse = update.unstable_metrics();
     update.into_result().unwrap();
     let manifest_started = Instant::now();
-    let current = session.semantic_dependency_inputs(options, None).unwrap();
+    let current = session.unstable_dependency_baseline(options, None).unwrap();
     let manifest_elapsed = manifest_started.elapsed();
-    let manifest_work = current.work();
-    let after_manifest = QueryCounts::from(session.work());
+    let manifest_work = current.unstable_metrics();
+    let after_manifest = QueryCounts::from(&session.unstable_metrics());
     let plan_started = Instant::now();
-    let plan = session.semantic_invalidation_plan(previous.unwrap_or(&current), &current);
+    let plan = session
+        .unstable_invalidation_metrics(previous.unwrap_or(&current), &current)
+        .unwrap();
     let plan_elapsed = plan_started.elapsed();
-    let after_plan = QueryCounts::from(session.work());
-    let durable_body_work = durable_body_work_json(manifest_work.durable_bodies);
+    let after_plan = QueryCounts::from(&session.unstable_metrics());
     (
         json!({
             "manifest_wall_time_ns": manifest_elapsed.as_nanos(),
@@ -762,11 +589,11 @@ fn measure_manifest_plan(
                 "body_named_events_translated": manifest_work.body_named_events_translated,
                 "body_dependency_records_built": manifest_work.body_dependency_records_built,
                 "extra_rir_instructions_visited": manifest_work.extra_rir_instructions_visited,
-                "durable_bodies": durable_body_work,
+                "durable_bodies": manifest_work.durable_bodies,
             },
             "planner_queries": after_plan.delta(after_manifest).json(),
             "plan": invalidation_plan_json(&plan),
-            "retention": retention_json(session.work()),
+            "retention": retention_json(&session.unstable_metrics()),
         }),
         current,
     )
@@ -780,7 +607,7 @@ fn measured_semantic(
     let mut output = None;
     let value = measure(session, |session| {
         let update = session.update(source);
-        let parse = update.work();
+        let parse = update.unstable_metrics();
         update.into_result().unwrap();
         output = Some(session.semantic(options).unwrap());
         parse
@@ -863,7 +690,7 @@ where
     cold_session.update(source).into_result().unwrap();
     prepare_semantic(&mut cold_session, source);
     let cold = cold_session.semantic(options).unwrap();
-    let cold_semantic_work = semantic_work_json(cold_session.work(), 0);
+    let cold_semantic_work = semantic_work_json(&cold_session.unstable_metrics(), 0);
     let cold_count = |path: &[&str]| count(&cold_semantic_work, path);
     assert!(cold_count(&["bodies_attempted"]) > 0);
     assert_eq!(
@@ -882,7 +709,7 @@ where
         format!("{:?}", reused.functions()),
         format!("{:?}", cold.functions())
     );
-    assert_eq!(reused.input(), cold.input());
+    assert_eq!(reused.unstable_input_debug(), cold.unstable_input_debug());
     assert_eq!(reused.type_pool().stats(), cold.type_pool().stats());
     assert_eq!(
         type_pool_snapshot(reused.type_pool()),
@@ -935,8 +762,8 @@ where
         format!("{:?}", cold.specialized_free_function_dependencies())
     );
     assert_eq!(
-        reused.durable_specialized_body_payloads(),
-        cold.durable_specialized_body_payloads()
+        reused.unstable_durable_artifact_status(),
+        cold.unstable_durable_artifact_status()
     );
     assert_eq!(
         reused.ordinary_free_function_dependencies_complete(),
@@ -980,10 +807,10 @@ where
     );
 
     let reused_manifest = reused_session
-        .semantic_dependency_inputs(options, std_dir)
+        .unstable_dependency_baseline(options, std_dir)
         .unwrap();
     let cold_manifest = cold_session
-        .semantic_dependency_inputs(options, std_dir)
+        .unstable_dependency_baseline(options, std_dir)
         .unwrap();
     // Dependency queries may publish import-stage diagnostics on only the
     // cold side when the reused side already retained the manifest. Re-query
@@ -1032,8 +859,8 @@ where
     assert_manifest_field!(body_dependency_blockers);
     assert_manifest_field!(dependency_blockers);
     assert_eq!(
-        reused_manifest.durable_ordinary_bodies(),
-        cold_manifest.durable_ordinary_bodies()
+        reused_manifest.unstable_durable_artifact_status(),
+        cold_manifest.unstable_durable_artifact_status()
     );
     assert_eq!(
         reused_manifest.free_function_caller_dependencies_complete(),
@@ -1252,7 +1079,7 @@ fn completion_workloads(functions: usize) -> Vec<Value> {
     measured_semantic(&mut recovery, &fixture.direct, &o1);
     let failed = measure(&mut recovery, |session| {
         let update = session.update(&fixture.semantic_error);
-        let parse = update.work();
+        let parse = update.unstable_metrics();
         update.into_result().unwrap();
         session.semantic(&o1).unwrap_err();
         parse
@@ -1283,7 +1110,7 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
     scenarios.push(named(
         "cold",
         measure(&mut session, |session| {
-            let parse = session.update(&fixture.base).work();
+            let parse = session.update(&fixture.base).unstable_metrics();
             session.merge().unwrap();
             session.rir().unwrap();
             session.semantic(&options).unwrap();
@@ -1293,7 +1120,7 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
     scenarios.push(named(
         "exact_noop",
         measure(&mut session, |session| {
-            let parse = session.update(&fixture.base).work();
+            let parse = session.update(&fixture.base).unstable_metrics();
             session.merge().unwrap();
             session.rir().unwrap();
             session.semantic(&options).unwrap();
@@ -1305,7 +1132,7 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
         measure(&mut session, |session| {
             let update = session.update(&fixture.reachable_root_body_edit);
             assert!(update.downstream_invalidated());
-            let parse = update.work();
+            let parse = update.unstable_metrics();
             update.into_result().unwrap();
             session.merge().unwrap();
             session.rir().unwrap();
@@ -1318,7 +1145,7 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
         measure(&mut session, |session| {
             let update = session.update(&fixture.identity_edit);
             assert!(update.downstream_invalidated());
-            let parse = update.work();
+            let parse = update.unstable_metrics();
             update.into_result().unwrap();
             session.merge().unwrap();
             session.rir().unwrap();
@@ -1331,7 +1158,7 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
         measure(&mut session, |session| {
             let update = session.update(&fixture.syntax_error);
             assert!(update.result().is_err());
-            let parse = update.work();
+            let parse = update.unstable_metrics();
             session.merge().unwrap();
             session.rir().unwrap();
             session.semantic(&options).unwrap();
@@ -1341,7 +1168,7 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
     scenarios.push(named(
         "syntax_recovery",
         measure(&mut session, |session| {
-            let parse = session.update(&fixture.identity_edit).work();
+            let parse = session.update(&fixture.identity_edit).unstable_metrics();
             session.merge().unwrap();
             session.rir().unwrap();
             session.semantic(&options).unwrap();
@@ -1353,7 +1180,7 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
         measure(&mut session, |session| {
             let update = session.update(&fixture.semantic_error);
             assert!(update.downstream_invalidated());
-            let parse = update.work();
+            let parse = update.unstable_metrics();
             update.into_result().unwrap();
             session.semantic(&options).unwrap_err();
             parse
@@ -1362,7 +1189,7 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
     scenarios.push(named(
         "semantic_recovery",
         measure(&mut session, |session| {
-            let parse = session.update(&fixture.identity_edit).work();
+            let parse = session.update(&fixture.identity_edit).unstable_metrics();
             session.semantic(&options).unwrap();
             parse
         }),
@@ -1372,7 +1199,7 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
     scenarios.push(named(
         "stable_definitions_cold",
         measure(&mut stable, |session| {
-            let parse = session.update(&fixture.base).work();
+            let parse = session.update(&fixture.base).unstable_metrics();
             session.stable_definitions(&options).unwrap();
             parse
         }),
@@ -1381,7 +1208,7 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
         "stable_definitions_reuse",
         measure(&mut stable, |session| {
             session.stable_definitions(&options).unwrap();
-            ParsedModulesWork::default()
+            ParseMetrics::default()
         }),
     ));
     let mut planner = CompilerSession::new();
@@ -1430,17 +1257,11 @@ fn count(value: &Value, path: &[&str]) -> u64 {
 
 fn assert_structure(scenarios: &[Value], modules: usize) {
     for scenario in scenarios {
-        assert!(
-            count(scenario, &["retention", "diagnostic_entries"])
-                <= FRONTEND_DIAGNOSTIC_RETENTION_LIMIT as u64
-        );
-        assert!(
-            count(scenario, &["retention", "invalidation_plans"])
-                <= FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT as u64
-        );
+        assert!(count(scenario, &["retention", "diagnostic_entries"]) < scenarios.len() as u64);
+        assert!(count(scenario, &["retention", "invalidation_plans"]) < scenarios.len() as u64);
         assert!(
             count(scenario, &["retention", "dependency_manifests"])
-                <= (FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT * 2 + 1) as u64
+                <= (scenarios.len() * 2 + 1) as u64
         );
     }
     let get = |name: &str| {

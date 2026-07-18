@@ -500,9 +500,17 @@ pub struct CompileOutput {
     /// Warnings generated during compilation.
     pub warnings: Vec<CompileWarning>,
     /// Source volume measured while executing the session queries.
-    pub source_stats: SourceStats,
+    pub(crate) source_stats: SourceStats,
     /// Structural work performed by the session query graph.
-    pub work: PipelineWork,
+    pub(crate) work: PipelineWork,
+}
+
+impl CompileOutput {
+    /// Return instrumentation from this one-shot compilation without exposing
+    /// query-engine work records.
+    pub fn unstable_metrics(&self) -> crate::unstable::OneShotMetrics {
+        crate::unstable::OneShotMetrics::new(self.source_stats, self.work)
+    }
 }
 
 /// Compile an immutable owned source snapshot through a one-shot canonical
@@ -569,7 +577,7 @@ impl CompilerSession {
 
     fn committed_snapshot_for_executable(&self) -> MultiErrorResult<SourceSnapshot> {
         let snapshot = self
-            .committed_import_discovery()
+            .committed_import_discovery_artifact()
             .ok_or_else(|| {
                 CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
                     "compilation requires a closed-valid import discovery revision".into(),

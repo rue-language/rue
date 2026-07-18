@@ -2387,7 +2387,7 @@ mod tests {
             .unwrap_err();
         let second = session.import_diagnostics().unwrap();
         assert!(!Arc::ptr_eq(&first, &second));
-        let crate::FrontendDiagnosticStage::Import(input) = second.stage() else {
+        let crate::FrontendDiagnosticIdentity::Import(input) = second.identity() else {
             panic!("failed discovery must publish the import diagnostic stage")
         };
         assert_eq!(input.source_revision(), source.source_revision());
@@ -2433,10 +2433,10 @@ mod tests {
             .unwrap_err();
         let second = session.import_diagnostics().unwrap();
         assert!(!Arc::ptr_eq(&first, &second));
-        let crate::FrontendDiagnosticStage::Import(first_input) = first.stage() else {
+        let crate::FrontendDiagnosticIdentity::Import(first_input) = first.identity() else {
             unreachable!()
         };
-        let crate::FrontendDiagnosticStage::Import(second_input) = second.stage() else {
+        let crate::FrontendDiagnosticIdentity::Import(second_input) = second.identity() else {
             unreachable!()
         };
         assert_ne!(first_input.context(), second_input.context());
@@ -2464,7 +2464,7 @@ mod tests {
         session.close_import_discovery(partial.clone()).unwrap_err();
         let third = session.import_diagnostics().unwrap();
         assert!(!Arc::ptr_eq(&second, &third));
-        let crate::FrontendDiagnosticStage::Import(third_input) = third.stage() else {
+        let crate::FrontendDiagnosticIdentity::Import(third_input) = third.identity() else {
             unreachable!()
         };
         assert_eq!(second_input.context(), third_input.context());
@@ -2607,7 +2607,7 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(session.work().import_diagnostics.executions, 1);
         assert_eq!(session.work().import_diagnostics.reuses, 2);
-        let crate::FrontendDiagnosticStage::Import(input) = first.stage() else {
+        let crate::FrontendDiagnosticIdentity::Import(input) = first.identity() else {
             panic!("direct batch import preflight must use the import diagnostic stage")
         };
         assert!(input.context().is_none());

@@ -7,12 +7,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use crate::{
-    CompileOptions, ModuleId, ModuleResolutionInputs, SemanticInputDescriptor, StableLinkerInput,
-    StableOptLevel,
-};
+use crate::{ModuleId, ModuleResolutionInputs, SemanticInputDescriptor, StableOptLevel};
 use rue_air::normalize_module_path;
-use rue_error::{CompileError, CompileResult, ErrorKind};
 
 /// One valid import call, identified independently of request-local file IDs.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -255,7 +251,7 @@ impl CanonicalImportGraphValidation {
 
 /// Complete downstream semantic identity after import resolution.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ResolvedProgramRevision {
+pub(crate) struct ResolvedProgramRevision {
     semantic: SemanticInputDescriptor,
     imports: CanonicalImportGraph,
 }
@@ -266,106 +262,37 @@ impl ResolvedProgramRevision {
     /// The canonical graph itself ignores physical relocation, while this
     /// complete revision intentionally retains the explicit physical
     /// resolution inputs embedded in `semantic`.
-    pub fn new(semantic: SemanticInputDescriptor, imports: CanonicalImportGraph) -> Self {
+    pub(crate) fn new(semantic: SemanticInputDescriptor, imports: CanonicalImportGraph) -> Self {
         Self { semantic, imports }
     }
 
-    pub fn semantic(&self) -> &SemanticInputDescriptor {
-        &self.semantic
-    }
-
-    pub fn imports(&self) -> &CanonicalImportGraph {
+    #[cfg(test)]
+    pub(crate) fn imports(&self) -> &CanonicalImportGraph {
         &self.imports
     }
 }
 
 /// Complete code-generation identity after canonical import resolution.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ResolvedCodegenRevision {
+pub(crate) struct ResolvedCodegenRevision {
     program: ResolvedProgramRevision,
     opt_level: StableOptLevel,
 }
 
 impl ResolvedCodegenRevision {
-    pub fn new(program: ResolvedProgramRevision, opt_level: StableOptLevel) -> Self {
+    pub(crate) fn new(program: ResolvedProgramRevision, opt_level: StableOptLevel) -> Self {
         Self { program, opt_level }
     }
 
-    /// Add code-generation options to an already-resolved program revision.
-    ///
-    /// Requiring `program` prevents this path from omitting canonical imports.
-    pub fn from_compile_options(
-        program: ResolvedProgramRevision,
-        options: &CompileOptions,
-    ) -> CompileResult<Self> {
-        validate_resolved_compile_options(&program, options)?;
-        Ok(Self::new(program, options.opt_level.into()))
-    }
-
-    pub fn program(&self) -> &ResolvedProgramRevision {
+    #[cfg(test)]
+    pub(crate) fn program(&self) -> &ResolvedProgramRevision {
         &self.program
     }
 
-    pub fn opt_level(&self) -> StableOptLevel {
+    #[cfg(test)]
+    pub(crate) fn opt_level(&self) -> StableOptLevel {
         self.opt_level
     }
-}
-
-/// Complete link identity after canonical import resolution and code generation.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ResolvedLinkRevision {
-    codegen: ResolvedCodegenRevision,
-    linker: StableLinkerInput,
-}
-
-impl ResolvedLinkRevision {
-    pub fn new(codegen: ResolvedCodegenRevision, linker: StableLinkerInput) -> Self {
-        Self { codegen, linker }
-    }
-
-    /// Add code-generation and linker options to an already-resolved program.
-    pub fn from_compile_options(
-        program: ResolvedProgramRevision,
-        options: &CompileOptions,
-    ) -> CompileResult<Self> {
-        Ok(Self::new(
-            ResolvedCodegenRevision::from_compile_options(program, options)?,
-            (&options.linker).into(),
-        ))
-    }
-
-    pub fn codegen(&self) -> &ResolvedCodegenRevision {
-        &self.codegen
-    }
-
-    pub fn linker(&self) -> &StableLinkerInput {
-        &self.linker
-    }
-}
-
-fn validate_resolved_compile_options(
-    program: &ResolvedProgramRevision,
-    options: &CompileOptions,
-) -> CompileResult<()> {
-    if program.semantic().target != options.target {
-        return Err(provenance_error(format!(
-            "resolved program target {} does not match compile options target {}",
-            program.semantic().target,
-            options.target
-        )));
-    }
-    let features = crate::StablePreviewFeatures::new(&options.preview_features);
-    if program.semantic().preview_features != features {
-        return Err(provenance_error(
-            "resolved program preview features do not match compile options preview features"
-                .to_string(),
-        ));
-    }
-    Ok(())
-}
-
-fn provenance_error(message: String) -> CompileError {
-    CompileError::without_span(ErrorKind::InvalidCompilerInput(message))
 }
 
 /// Validate a canonical graph against the explicit resolved module set.
