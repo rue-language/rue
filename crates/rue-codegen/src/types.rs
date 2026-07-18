@@ -180,25 +180,17 @@ fn push_leaf_types(type_pool: &FrozenTypeInternPool, ty: Type, out: &mut Vec<Typ
 
 /// Slot offset of payload field `field_index` within an enum's payload area.
 ///
-/// The discriminant occupies slot 0, so payload fields begin at slot 1. This
-/// accounts for the slot sizes of all preceding payload fields of the same
-/// variant (RUE-221).
+/// The discriminant occupies slot 0, so payload fields begin at slot 1
+/// (RUE-221). Derived from the canonical layout authority's payload byte offset
+/// divided by the slot width, so payload addressing agrees with the enum layout
+/// by construction.
 pub fn enum_payload_slot_offset(
     type_pool: &FrozenTypeInternPool,
     enum_id: EnumId,
     variant_index: u32,
     field_index: u32,
 ) -> u32 {
-    let enum_def = type_pool.enum_def(enum_id);
-    let payload = enum_def.variant_payload(variant_index as usize);
-    // 1 for the discriminant slot.
-    let mut offset = 1u32;
-    for i in 0..(field_index as usize) {
-        if let Some(&ty) = payload.get(i) {
-            offset += type_slot_count(type_pool, ty);
-        }
-    }
-    offset
+    (type_pool.enum_payload_field_offset(enum_id, variant_index, field_index) / SLOT_BYTES) as u32
 }
 
 /// Calculate the slot count for a single element of an array type.

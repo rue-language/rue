@@ -630,6 +630,32 @@ impl TypeInternPoolInner {
         offset
     }
 
+    /// Byte offset of payload field `field_index` of `variant_index` within
+    /// `enum_id`. The discriminant occupies the first slot, so every payload
+    /// begins one [`SLOT_BYTES`] slot in, and each preceding payload field of
+    /// the same variant contributes its layout size. This is the same
+    /// computation [`Self::layout`] records in each entry of
+    /// [`LayoutKind::Enum`]'s `variants`; code generation's
+    /// `enum_payload_slot_offset` divides the result by [`SLOT_BYTES`] so
+    /// payload addressing agrees with the canonical layout by construction.
+    fn enum_payload_field_offset(
+        &self,
+        enum_id: EnumId,
+        variant_index: u32,
+        field_index: u32,
+    ) -> u64 {
+        let def = self.enum_def(enum_id);
+        let mut offset = SLOT_BYTES;
+        for &field_ty in def
+            .variant_payload(variant_index as usize)
+            .iter()
+            .take(field_index as usize)
+        {
+            offset = offset.saturating_add(self.layout_size(field_ty));
+        }
+        offset
+    }
+
     /// Compute the canonical physical [`Layout`] of `ty`.
     ///
     /// `size`/`stride`/`alignment` follow the flattened eight-byte slot model
@@ -1915,6 +1941,18 @@ impl FrozenTypeInternPool {
     /// `@offset_of` and field addressing during lowering.
     pub fn struct_field_offset(&self, struct_id: StructId, field_index: u32) -> u64 {
         self.inner.struct_field_offset(struct_id, field_index)
+    }
+
+    /// Byte offset of an enum variant's payload field, the shared source for
+    /// code generation's payload addressing (`enum_payload_slot_offset`).
+    pub fn enum_payload_field_offset(
+        &self,
+        enum_id: EnumId,
+        variant_index: u32,
+        field_index: u32,
+    ) -> u64 {
+        self.inner
+            .enum_payload_field_offset(enum_id, variant_index, field_index)
     }
 
     /// Validate a complete type relative to this frozen owner pool.

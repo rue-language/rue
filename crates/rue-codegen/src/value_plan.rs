@@ -277,12 +277,16 @@ pub enum IntrinsicOperation {
     PtrWrite,
     PtrOffset,
     Alloc {
+        /// The pointee's canonical byte alignment (from the layout authority),
+        /// passed as the runtime allocator's `align` operand.
         element_size: u64,
     },
     Free {
+        /// The pointee's canonical byte alignment (see [`Self::Alloc`]).
         element_size: u64,
     },
     Realloc {
+        /// The pointee's canonical byte alignment (see [`Self::Alloc`]).
         element_size: u64,
     },
     AllocBytes,
@@ -1527,9 +1531,24 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     "ptr_read" => IntrinsicOperation::PtrRead,
                     "ptr_write" => IntrinsicOperation::PtrWrite,
                     "ptr_offset" => IntrinsicOperation::PtrOffset,
-                    "alloc" => IntrinsicOperation::Alloc { element_size: 8 },
-                    "free" => IntrinsicOperation::Free { element_size: 8 },
-                    "realloc" => IntrinsicOperation::Realloc { element_size: 8 },
+                    "alloc" => IntrinsicOperation::Alloc {
+                        element_size: crate::allocation::pointer_element_align(
+                            ctx.type_pool,
+                            inst.ty,
+                        ),
+                    },
+                    "free" => IntrinsicOperation::Free {
+                        element_size: crate::allocation::pointer_element_align(
+                            ctx.type_pool,
+                            ctx.cfg.get_inst(args[0]).ty,
+                        ),
+                    },
+                    "realloc" => IntrinsicOperation::Realloc {
+                        element_size: crate::allocation::pointer_element_align(
+                            ctx.type_pool,
+                            ctx.cfg.get_inst(args[0]).ty,
+                        ),
+                    },
                     "alloc_bytes" => IntrinsicOperation::AllocBytes,
                     "free_bytes" => IntrinsicOperation::FreeBytes,
                     "realloc_bytes" => IntrinsicOperation::ReallocBytes,
@@ -1672,6 +1691,56 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
     }
 }
 
+/// Realize an allocation-family runtime call's operand list from its manifest
+/// (`RuntimeCallKind::operands()`) — the single description the AIR validator in
+/// `rue_air::runtime_call` also consumes, so the two encodings of the alloc ABI
+/// the ADR-0052 audit found are reconciled to one authority (RUE-973). Each
+/// operand's semantic origin selects how it is materialized: a size scales its
+/// count by the pointee's canonical layout size (`scale`), an alignment takes
+/// the pointee's canonical alignment (`pointee_align`, from the layout
+/// authority), a pointer passes straight through, and a plain byte-family value
+/// operand passes its AIR argument. Ordering, arity, and ABI types come from the
+/// manifest and are re-checked by `RuntimeCallPlan::expect_manifest`.
+fn realize_alloc_operands(
+    kind: rue_air::RuntimeCallKind,
+    args: &[IntrinsicArgPlan],
+    scale: Option<crate::allocation::ScalePlan>,
+    pointee_align: u64,
+) -> Vec<crate::runtime_call_plan::RuntimeCallArg> {
+    use crate::runtime_call_plan::RuntimeCallArg;
+    use rue_air::RuntimeOperandOrigin;
+    use rue_runtime_abi::AbiType;
+
+    kind.operands()
+        .iter()
+        .map(|origin| match *origin {
+            RuntimeOperandOrigin::MutablePointerArgument { index, .. } => {
+                RuntimeCallArg::mut_pointer(args[index as usize].primary, AbiType::Byte)
+            }
+            RuntimeOperandOrigin::ScaledByResultPointeeSize(index) => RuntimeCallArg::scaled(
+                args[index as usize].primary,
+                scale.expect("typed allocation size scale"),
+                AbiType::U64,
+            ),
+            RuntimeOperandOrigin::ScaledByPointerPointeeSize { count, .. } => {
+                RuntimeCallArg::scaled(
+                    args[count as usize].primary,
+                    scale.expect("typed allocation size scale"),
+                    AbiType::U64,
+                )
+            }
+            RuntimeOperandOrigin::ResultPointeeAlign
+            | RuntimeOperandOrigin::PointerPointeeAlign(_) => {
+                RuntimeCallArg::immediate(pointee_align, AbiType::U64)
+            }
+            RuntimeOperandOrigin::ValueArgument { index, ty } => {
+                RuntimeCallArg::value(args[index as usize].primary, ty)
+            }
+            other => unreachable!("unexpected allocation operand origin {other:?}"),
+        })
+        .collect()
+}
+
 fn intrinsic_runtime_call(
     operation: &IntrinsicOperation,
     args: &[IntrinsicArgPlan],
@@ -1679,6 +1748,7 @@ fn intrinsic_runtime_call(
     result_slots: u32,
 ) -> Option<crate::runtime_call_plan::RuntimeCallPlan> {
     use crate::runtime_call_plan::{RuntimeCallArg, RuntimeCallPlan};
+    use rue_air::RuntimeCallKind;
     use rue_runtime_abi::{AbiType, AggregateShapeId};
 
     let (helper, call_args) = match operation {
@@ -1734,35 +1804,19 @@ fn intrinsic_runtime_call(
         ),
         IntrinsicOperation::Alloc { element_size } => (
             RuntimeHelperId::Alloc,
-            vec![
-                RuntimeCallArg::scaled(args[0].primary, scale?, AbiType::U64),
-                RuntimeCallArg::immediate(*element_size, AbiType::U64),
-            ],
+            realize_alloc_operands(RuntimeCallKind::AllocTyped, args, scale, *element_size),
         ),
         IntrinsicOperation::AllocBytes => (
             RuntimeHelperId::Alloc,
-            vec![
-                RuntimeCallArg::value(args[0].primary, AbiType::U64),
-                // Explicit alignment argument (ADR-0059 Phase 2, RUE-960).
-                RuntimeCallArg::value(args[1].primary, AbiType::U64),
-            ],
+            realize_alloc_operands(RuntimeCallKind::AllocBytes, args, scale, 0),
         ),
         IntrinsicOperation::Free { element_size } => (
             RuntimeHelperId::Free,
-            vec![
-                RuntimeCallArg::mut_pointer(args[0].primary, AbiType::Byte),
-                RuntimeCallArg::scaled(args[1].primary, scale?, AbiType::U64),
-                RuntimeCallArg::immediate(*element_size, AbiType::U64),
-            ],
+            realize_alloc_operands(RuntimeCallKind::FreeTyped, args, scale, *element_size),
         ),
         IntrinsicOperation::FreeBytes => (
             RuntimeHelperId::Free,
-            vec![
-                RuntimeCallArg::mut_pointer(args[0].primary, AbiType::Byte),
-                RuntimeCallArg::value(args[1].primary, AbiType::U64),
-                // Explicit alignment argument (ADR-0059 Phase 2, RUE-960).
-                RuntimeCallArg::value(args[2].primary, AbiType::U64),
-            ],
+            realize_alloc_operands(RuntimeCallKind::FreeBytes, args, scale, 0),
         ),
         IntrinsicOperation::ByteCopy => (
             RuntimeHelperId::ByteCopy,
@@ -1780,41 +1834,14 @@ fn intrinsic_runtime_call(
                 RuntimeCallArg::value(args[2].primary, AbiType::U64),
             ],
         ),
-        IntrinsicOperation::Realloc { .. } | IntrinsicOperation::ReallocBytes => {
-            // `@realloc(p, old_count, new_count)` scales element counts and
-            // passes `align = @align_of(T)` as an immediate; `@realloc_bytes(p,
-            // old_size, align, new_size)` passes byte sizes straight through
-            // with an explicit `align` value operand (ADR-0059 Phase 2).
-            let is_typed = matches!(operation, IntrinsicOperation::Realloc { .. });
-            let old = if is_typed {
-                RuntimeCallArg::scaled(args[1].primary, scale?, AbiType::U64)
-            } else {
-                RuntimeCallArg::value(args[1].primary, AbiType::U64)
-            };
-            let new = if is_typed {
-                RuntimeCallArg::scaled(args[2].primary, scale?, AbiType::U64)
-            } else {
-                RuntimeCallArg::value(args[3].primary, AbiType::U64)
-            };
-            let align = match operation {
-                IntrinsicOperation::Realloc { element_size } => {
-                    RuntimeCallArg::immediate(*element_size, AbiType::U64)
-                }
-                IntrinsicOperation::ReallocBytes => {
-                    RuntimeCallArg::value(args[2].primary, AbiType::U64)
-                }
-                _ => unreachable!(),
-            };
-            (
-                RuntimeHelperId::Realloc,
-                vec![
-                    RuntimeCallArg::mut_pointer(args[0].primary, AbiType::Byte),
-                    old,
-                    new,
-                    align,
-                ],
-            )
-        }
+        IntrinsicOperation::Realloc { element_size } => (
+            RuntimeHelperId::Realloc,
+            realize_alloc_operands(RuntimeCallKind::ReallocTyped, args, scale, *element_size),
+        ),
+        IntrinsicOperation::ReallocBytes => (
+            RuntimeHelperId::Realloc,
+            realize_alloc_operands(RuntimeCallKind::ReallocBytes, args, scale, 0),
+        ),
         IntrinsicOperation::Debug => {
             let arg = args.first()?;
             if arg.slots.len() >= 2 {

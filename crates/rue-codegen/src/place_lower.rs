@@ -108,7 +108,7 @@ fn resolved_access<B: PlaceLowerBackend + ?Sized>(
         ),
         crate::value_plan::PlaceBasePlan::Param { slot, by_ref: true } => {
             let ptr = b.ensure_by_ref_param_ptr(slot);
-            let byte_offset = offsets.static_slot_offset as i32 * 8;
+            let byte_offset = offsets.static_slot_offset as i32 * allocation::SLOT_BYTES as i32;
             if let Some(dynamic) = dynamic_offset {
                 let addr = b.alloc_vreg();
                 b.emit_reg_move(addr, ptr);
@@ -255,7 +255,7 @@ fn lower_place_addr_plan_with_bounds<B: PlaceLowerBackend + ?Sized>(
         crate::value_plan::PlaceBasePlan::Param { slot, by_ref: true } => {
             let ptr = b.ensure_by_ref_param_ptr(slot);
             b.emit_reg_move(dst, ptr);
-            let byte_offset = offsets.static_slot_offset as i32 * 8;
+            let byte_offset = offsets.static_slot_offset as i32 * allocation::SLOT_BYTES as i32;
             if byte_offset != 0 {
                 b.emit_addr_add_imm(dst, byte_offset);
             }
