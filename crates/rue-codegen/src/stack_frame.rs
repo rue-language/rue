@@ -293,38 +293,34 @@ fn generate_x86_64_stack_frame(
     let (_mir, num_spills, used_callee_saved) =
         RegAlloc::new(mir, existing_slots).allocate_with_spills()?;
 
-    // Calculate stack layout (ALL params get frame slots: the prologue copies
-    // stack-passed args into the frame param area)
-    let callee_saved_size = used_callee_saved.len() * 8;
+    // Calculate stack layout through the byte-based frame-layout authority
+    // (ALL params get frame slots: the prologue copies stack-passed args into
+    // the frame param area). Every slot cell is one frame cell today.
+    use crate::frame_layout::{FrameLayout, SavedRegScheme, frame_cell_bytes};
     let total_slots = num_locals + num_spills + num_params + sret_slots;
-    let needed_bytes = total_slots as i32 * 8;
-    let current_offset = callee_saved_size as i32;
-    let total_needed = current_offset + needed_bytes;
-    let stack_size = ((total_needed + 15) / 16) * 16;
+    let frame = FrameLayout::new(SavedRegScheme::X86_64, used_callee_saved.len(), total_slots);
+    let stack_size = frame.frame_size() as i32;
 
     let mut slots = Vec::new();
 
-    // Add callee-saved registers
+    // Add callee-saved registers (each an 8-byte push just below rbp).
     for (i, reg) in used_callee_saved.iter().enumerate() {
-        let offset = -((i as i32 + 1) * 8);
+        let offset = crate::frame_layout::slot_offset_pre_saved(i as u32);
         slots.push(StackSlot {
             name: Some(format!("saved {}", reg)),
             offset,
-            size: 8,
+            size: frame_cell_bytes() as usize,
             ty: "i64".to_string(),
             kind: StackSlotKind::CalleeSaved,
         });
     }
 
-    let callee_saved_size_i32 = callee_saved_size as i32;
-
     // Add local variables
     for i in 0..num_locals {
-        let slot_offset = -callee_saved_size_i32 - ((i as i32 + 1) * 8);
         slots.push(StackSlot {
             name: None, // We don't have variable names from CFG yet
-            offset: slot_offset,
-            size: 8,
+            offset: frame.slot_offset(i),
+            size: frame.slot_size(i) as usize,
             ty: "i64".to_string(), // Generic - we don't track types at CFG level
             kind: StackSlotKind::Local,
         });
@@ -332,15 +328,12 @@ fn generate_x86_64_stack_frame(
 
     // Add parameter spill slots (ALL params: stack-passed args are copied
     // into the frame param area by the prologue)
-    #[allow(unused_variables)]
-    let arg_regs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
     for i in 0..num_params {
         let slot = num_locals + i;
-        let slot_offset = -callee_saved_size_i32 - ((slot as i32 + 1) * 8);
         slots.push(StackSlot {
             name: None, // We don't have param names from CFG yet
-            offset: slot_offset,
-            size: 8,
+            offset: frame.slot_offset(slot),
+            size: frame.slot_size(slot) as usize,
             ty: "i64".to_string(),
             kind: StackSlotKind::Parameter,
         });
@@ -349,11 +342,10 @@ fn generate_x86_64_stack_frame(
     // Add the sret pointer slot (one past the param area)
     if has_sret {
         let slot = num_locals + num_params;
-        let slot_offset = -callee_saved_size_i32 - ((slot as i32 + 1) * 8);
         slots.push(StackSlot {
             name: Some("sret ptr".to_string()),
-            offset: slot_offset,
-            size: 8,
+            offset: frame.slot_offset(slot),
+            size: frame.slot_size(slot) as usize,
             ty: "ptr".to_string(),
             kind: StackSlotKind::Parameter,
         });
@@ -362,15 +354,17 @@ fn generate_x86_64_stack_frame(
     // Add spill slots
     for i in 0..num_spills {
         let slot = num_locals + num_params + sret_slots + i;
-        let slot_offset = -callee_saved_size_i32 - ((slot as i32 + 1) * 8);
         slots.push(StackSlot {
             name: None,
-            offset: slot_offset,
-            size: 8,
+            offset: frame.slot_offset(slot),
+            size: frame.slot_size(slot) as usize,
             ty: "i64".to_string(),
             kind: StackSlotKind::Spill,
         });
     }
+
+    #[allow(unused_variables)]
+    let arg_regs = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
 
     // Build argument locations (the hidden sret pointer occupies the first
     // ABI slot when present, shifting user args by one)
@@ -441,21 +435,21 @@ fn generate_aarch64_stack_frame(
     let (_mir, num_spills, used_callee_saved) =
         RegAlloc::new(mir, existing_slots).allocate_with_spills()?;
 
-    // Calculate stack layout for AArch64
-    // Callee-saved registers are saved in pairs (16 bytes per pair)
-    let num_callee_regs = used_callee_saved.len();
-    let callee_saved_pairs = (num_callee_regs + 1) / 2;
-    let callee_saved_size = callee_saved_pairs * 16;
-
-    // FP and LR are saved separately (16 bytes)
-    let fp_lr_size = 16;
-
-    // ALL params get frame slots: the prologue copies stack-passed args into
-    // the frame param area
+    // Calculate stack layout for AArch64 through the byte-based frame-layout
+    // authority. Callee-saved registers are saved in pairs (16 bytes per pair)
+    // and the FP/LR pair (16 bytes) sits above them; ALL params get frame slots
+    // (the prologue copies stack-passed args into the frame param area).
+    use crate::frame_layout::{FrameLayout, SavedRegScheme};
     let total_slots = num_locals + num_spills + num_params + sret_slots;
-    let locals_size = ((total_slots as i32 * 8 + 15) / 16) * 16;
+    let frame = FrameLayout::new(
+        SavedRegScheme::Aarch64,
+        used_callee_saved.len(),
+        total_slots,
+    );
+    let frame_size = frame.frame_size() as usize;
 
-    let frame_size = fp_lr_size + callee_saved_size + locals_size as usize;
+    // FP and LR are saved separately (16 bytes) at the very top of the frame.
+    let fp_lr_size = 16;
 
     let mut slots = Vec::new();
 
@@ -493,15 +487,12 @@ fn generate_aarch64_stack_frame(
         });
     }
 
-    let locals_base_offset = -(fp_lr_size as i32 + callee_saved_size as i32);
-
     // Add local variables
     for i in 0..num_locals {
-        let slot_offset = locals_base_offset - ((i as i32 + 1) * 8);
         slots.push(StackSlot {
             name: None,
-            offset: slot_offset,
-            size: 8,
+            offset: frame.slot_offset(i),
+            size: frame.slot_size(i) as usize,
             ty: "i64".to_string(),
             kind: StackSlotKind::Local,
         });
@@ -511,11 +502,10 @@ fn generate_aarch64_stack_frame(
     // into the frame param area by the prologue)
     for i in 0..num_params {
         let slot = num_locals + i;
-        let slot_offset = locals_base_offset - ((slot as i32 + 1) * 8);
         slots.push(StackSlot {
             name: None,
-            offset: slot_offset,
-            size: 8,
+            offset: frame.slot_offset(slot),
+            size: frame.slot_size(slot) as usize,
             ty: "i64".to_string(),
             kind: StackSlotKind::Parameter,
         });
@@ -524,11 +514,10 @@ fn generate_aarch64_stack_frame(
     // Add the sret pointer slot (one past the param area)
     if has_sret {
         let slot = num_locals + num_params;
-        let slot_offset = locals_base_offset - ((slot as i32 + 1) * 8);
         slots.push(StackSlot {
             name: Some("sret ptr".to_string()),
-            offset: slot_offset,
-            size: 8,
+            offset: frame.slot_offset(slot),
+            size: frame.slot_size(slot) as usize,
             ty: "ptr".to_string(),
             kind: StackSlotKind::Parameter,
         });
@@ -537,11 +526,10 @@ fn generate_aarch64_stack_frame(
     // Add spill slots
     for i in 0..num_spills {
         let slot = num_locals + num_params + sret_slots + i;
-        let slot_offset = locals_base_offset - ((slot as i32 + 1) * 8);
         slots.push(StackSlot {
             name: None,
-            offset: slot_offset,
-            size: 8,
+            offset: frame.slot_offset(slot),
+            size: frame.slot_size(slot) as usize,
             ty: "i64".to_string(),
             kind: StackSlotKind::Spill,
         });

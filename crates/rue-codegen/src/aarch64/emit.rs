@@ -428,10 +428,10 @@ impl<'a> Emitter<'a> {
     /// Calculate the total stack space used by callee-saved registers.
     ///
     /// On AArch64, registers are saved in pairs (16 bytes per pair), rounded up.
+    /// This is the callee-saved GPR area only (the FP/LR pair is separate);
+    /// sourced from the frame-layout authority so it cannot drift.
     fn callee_saved_stack_size(&self) -> i32 {
-        let num_regs = self.callee_saved.len();
-        let pairs = (num_regs + 1) / 2;
-        (pairs * 16) as i32
+        crate::frame_layout::aarch64_callee_saved_pairs_bytes(self.callee_saved.len()) as i32
     }
 
     /// Adjust an FP-relative offset to account for callee-saved registers.
@@ -557,7 +557,9 @@ impl<'a> Emitter<'a> {
         // sret pointer slot, if any.
         let total_slots = self.num_locals + self.num_params + self.has_sret as u32;
         if total_slots > 0 {
-            let stack_size = ((total_slots as i32 * 8 + 15) / 16) * 16;
+            let stack_size = crate::frame_layout::align_frame_size(
+                crate::frame_layout::slot_region_bytes(total_slots),
+            );
             if stack_size > 0 {
                 self.begin_inst();
                 self.emit_sub_imm(Reg::Sp, Reg::Sp, stack_size as u32);
@@ -599,7 +601,7 @@ impl<'a> Emitter<'a> {
             // pre-spill count. (RUE-129)
             let slot = self.num_locals_original + i;
             // Skip past callee-saved registers in the offset calculation
-            let offset = -callee_saved_size - ((slot as i32 + 1) * 8);
+            let offset = -callee_saved_size + crate::frame_layout::slot_offset_pre_saved(slot);
             let abi_index = (i + abi_shift) as usize;
 
             if abi_index < param_regs.len() {
@@ -623,7 +625,7 @@ impl<'a> Emitter<'a> {
         // loads it back to store the result through.
         if self.has_sret {
             let slot = self.num_locals_original + self.num_params;
-            let offset = -callee_saved_size - ((slot as i32 + 1) * 8);
+            let offset = -callee_saved_size + crate::frame_layout::slot_offset_pre_saved(slot);
             self.begin_inst();
             self.emit_str(param_regs[0], Reg::Fp, offset);
             end_inst!(self, "str {}, [x29, #{}] ; sret ptr", param_regs[0], offset);
@@ -1330,7 +1332,9 @@ impl<'a> Emitter<'a> {
             // Must mirror the prologue's allocation exactly: locals + ALL
             // params + the sret pointer slot.
             let total_slots = self.num_locals + self.num_params + self.has_sret as u32;
-            let stack_size = ((total_slots as i32 * 8 + 15) / 16) * 16;
+            let stack_size = crate::frame_layout::align_frame_size(
+                crate::frame_layout::slot_region_bytes(total_slots),
+            );
             if stack_size > 0 {
                 self.begin_inst();
                 self.emit_add_imm(Reg::Sp, Reg::Sp, stack_size as u32);

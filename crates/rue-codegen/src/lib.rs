@@ -58,6 +58,7 @@ pub mod aggregate_eq;
 mod api_inventory;
 pub mod byref_args;
 pub mod cfg_lower;
+pub mod frame_layout;
 pub mod index_map;
 pub mod liveness;
 pub mod place_lower;

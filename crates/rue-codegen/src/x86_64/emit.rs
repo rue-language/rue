@@ -317,9 +317,10 @@ impl<'a> Emitter<'a> {
 
     /// Calculate the total stack space used by callee-saved registers.
     ///
-    /// On x86-64, each register is pushed individually (8 bytes each).
+    /// On x86-64, each register is pushed individually (8 bytes each). Sourced
+    /// from the frame-layout authority's saved-register scheme.
     fn callee_saved_size(&self) -> i32 {
-        self.callee_saved.len() as i32 * 8
+        crate::frame_layout::SavedRegScheme::X86_64.saved_area_bytes(self.callee_saved.len()) as i32
     }
 
     /// Adjust an RBP-relative offset to account for callee-saved registers.
@@ -464,17 +465,16 @@ impl<'a> Emitter<'a> {
         //   args are copied into the frame param area below so the body can
         //   address every param slot uniformly)
         // - one slot for the incoming sret pointer, if any
-        // Each slot is 8 bytes, total aligned to 16
+        // Each slot is one frame cell; the total (including callee-saved
+        // pushes) is 16-byte aligned by the frame-layout authority.
         let total_slots = self.num_locals + self.num_params + self.has_sret as u32;
-        let needed_bytes = total_slots as i32 * 8;
-        // Account for callee-saved pushes for alignment calculation
-        let pushes_so_far = callee_saved.len() as i32;
-        // We need total stack usage (including callee-saved) to be 16-byte aligned
-        // At this point: rbp is set, callee_saved are pushed
-        // After sub rsp, N: rsp should be 16-byte aligned
-        let current_offset = pushes_so_far * 8;
-        let total_needed = current_offset + needed_bytes;
-        let stack_size = ((total_needed + 15) / 16) * 16 - current_offset;
+        let needed_bytes = crate::frame_layout::slot_region_bytes(total_slots);
+        // Account for callee-saved pushes for alignment calculation.
+        // At this point: rbp is set, callee_saved are pushed.
+        // After sub rsp, N: rsp should be 16-byte aligned.
+        let current_offset = self.callee_saved_size();
+        let stack_size =
+            crate::frame_layout::align_frame_size(current_offset + needed_bytes) - current_offset;
 
         if stack_size > 0 {
             // sub rsp, imm32: 48 81 EC imm32
@@ -510,7 +510,7 @@ impl<'a> Emitter<'a> {
             // because CfgLower generates param offsets based on the original count
             let slot = self.num_locals_original + i;
             // Skip past callee-saved registers in the offset calculation
-            let offset = -callee_saved_size - ((slot as i32 + 1) * 8);
+            let offset = -callee_saved_size + crate::frame_layout::slot_offset_pre_saved(slot);
             let abi_index = i + abi_shift;
 
             if (abi_index as usize) < ARG_REGS.len() {
@@ -536,7 +536,7 @@ impl<'a> Emitter<'a> {
         // loads it back to store the result through.
         if self.has_sret {
             let slot = self.num_locals_original + self.num_params;
-            let offset = -callee_saved_size - ((slot as i32 + 1) * 8);
+            let offset = -callee_saved_size + crate::frame_layout::slot_offset_pre_saved(slot);
             self.begin_inst();
             self.emit_mov_mr(Reg::Rbp, offset, ARG_REGS[0]);
             end_inst!(self, "mov [rbp{}], {} ; sret ptr", offset, ARG_REGS[0]);
