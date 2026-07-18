@@ -1,0 +1,43 @@
+[section]
+id = "cli.output_mode_validation"
+name = "Output-mode validation precedes project I/O"
+description = """
+RUE-798: incompatible output modes are a pure options error and must be
+rejected immediately after argument parsing, before any manifest loading or
+source I/O. Each case names a source that does not exist on disk: the options
+error must win and no filesystem diagnostic ("Error reading ...") may appear.
+"""
+
+[[case]]
+name = "emit_deps_mixed_stages_wins_over_missing_source"
+description = """
+`--emit deps` combined with another stage is rejected before the nonexistent
+root is read, so the mixed-stage error surfaces and no read error does.
+"""
+args = ["--emit", "deps", "--emit", "air", "does_not_exist.rue"]
+compile_fail = true
+error_contains = ["--emit deps cannot be combined with other --emit stages"]
+compile_stderr_not_contains = ["Error reading", "does_not_exist.rue"]
+
+[[case]]
+name = "benchmark_json_with_emit_wins_over_missing_source"
+description = """
+`--benchmark-json` combined with `--emit` is rejected before the nonexistent
+root is read, so the stdout-conflict error surfaces and no read error does.
+"""
+args = ["--benchmark-json", "--emit", "air", "does_not_exist.rue"]
+compile_fail = true
+error_contains = ["--emit cannot be combined with --benchmark-json"]
+compile_stderr_not_contains = ["Error reading", "does_not_exist.rue"]
+
+[[case]]
+name = "benchmark_json_with_deps_wins_over_missing_source"
+description = """
+A sole `--emit deps` stage is otherwise valid, but paired with
+`--benchmark-json` both own stdout; the conflict is caught before the
+nonexistent root is read.
+"""
+args = ["--benchmark-json", "--emit", "deps", "does_not_exist.rue"]
+compile_fail = true
+error_contains = ["--emit cannot be combined with --benchmark-json"]
+compile_stderr_not_contains = ["Error reading", "does_not_exist.rue"]
