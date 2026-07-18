@@ -111,10 +111,43 @@ mod tests {
     const ANALYZE_OPS_SOURCE: &str = include_str!("analyze_ops.rs");
     const AGGREGATES_SOURCE: &str = include_str!("aggregates.rs");
     const BUILTIN_OPS_SOURCE: &str = include_str!("analysis/builtin_ops.rs");
+    const CALLS_SOURCE: &str = include_str!("analysis/calls.rs");
+    const INTRINSICS_SOURCE: &str = include_str!("analysis/intrinsics.rs");
+    const SEMA_ROOT_SOURCE: &str = include_str!("mod.rs");
     const ANALYSIS_ROOT_SOURCE: &str = include_str!("analysis.rs");
     const INSTRUCTIONS_SOURCE: &str = include_str!("analysis/instructions.rs");
     const OWNERSHIP_SOURCE: &str = include_str!("analysis/ownership.rs");
     const CONTROL_FLOW_SOURCE: &str = include_str!("control_flow.rs");
+    const CALL_INTRINSIC_PEER_SOURCE: &str = concat!(
+        include_str!("mod.rs"),
+        include_str!("aggregates.rs"),
+        include_str!("analysis.rs"),
+        include_str!("analysis/anon_methods.rs"),
+        include_str!("analysis/builtin_ops.rs"),
+        include_str!("analysis/functions.rs"),
+        include_str!("analysis/instructions.rs"),
+        include_str!("analysis/ownership.rs"),
+        include_str!("analysis/pointers.rs"),
+        include_str!("analysis/type_inference.rs"),
+        include_str!("analyze_ops.rs"),
+        include_str!("anon_structs.rs"),
+        include_str!("binding_manifest.rs"),
+        include_str!("builtins.rs"),
+        include_str!("comptime_eval.rs"),
+        include_str!("context.rs"),
+        include_str!("control_flow.rs"),
+        include_str!("declaration_index.rs"),
+        include_str!("declarations.rs"),
+        include_str!("file_paths.rs"),
+        include_str!("inference_ctx.rs"),
+        include_str!("info.rs"),
+        include_str!("known_symbols.rs"),
+        include_str!("metadata.rs"),
+        include_str!("output.rs"),
+        include_str!("semantic_body_export.rs"),
+        include_str!("typeck.rs"),
+        include_str!("visibility.rs"),
+    );
     const OWNERSHIP_PEER_SOURCES: &[(&str, &str)] = &[
         ("analysis.rs", ANALYSIS_ROOT_SOURCE),
         ("aggregates.rs", AGGREGATES_SOURCE),
@@ -433,6 +466,9 @@ mod tests {
             "try_analyze_module_qualified_type_call",
             "try_analyze_module_dotted_enum_variant",
             "try_analyze_dotted_enum_variant",
+            "resolve_enum_type_name",
+            "resolve_struct_type_name",
+            "analyze_enum_variant_construction",
             "analyze_array_init",
             "analyze_array_repeat",
             "analyze_enum_ops",
@@ -478,5 +514,104 @@ mod tests {
                 "aggregates.rs must not duplicate ownership authority: {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn call_and_intrinsic_analysis_have_cohesive_owners() {
+        for method in [
+            "analyze_call_ops",
+            "analyze_call",
+            "analyze_resolved_function_call",
+            "analyze_method_call",
+            "analyze_method_call_impl",
+            "analyze_module_member_call_impl",
+            "analyze_assoc_fn_call",
+            "analyze_assoc_fn_call_impl",
+            "validate_call_contract",
+            "analyze_call_operands",
+            "emit_call_result",
+        ] {
+            let definition = format!("fn {method}(");
+            assert!(
+                CALLS_SOURCE.contains(&definition),
+                "analysis/calls.rs must own {method}"
+            );
+            assert!(
+                !CALL_INTRINSIC_PEER_SOURCE.contains(&definition),
+                "call-analysis peers must not define {method}"
+            );
+        }
+
+        // The four runtime call paths (free, method, module-qualified, and
+        // associated) must all pass through the same contract, operand, and
+        // result seams. Exact call-site counts make a dormant helper plus a
+        // reintroduced hand-rolled path fail this inventory.
+        for seam in [
+            "self.validate_call_contract(",
+            "self.analyze_call_operands(",
+            "self.emit_call_result(",
+        ] {
+            assert_eq!(
+                CALLS_SOURCE.matches(seam).count(),
+                4,
+                "all four call forms must route through {seam}"
+            );
+        }
+        assert_eq!(
+            CALLS_SOURCE.matches("air.add_call(").count(),
+            1,
+            "only emit_call_result may construct an ordinary AIR call"
+        );
+        assert_eq!(
+            CALLS_SOURCE
+                .matches("self.analyze_call_args_coerced(")
+                .count(),
+            1,
+            "only analyze_call_operands may enter ownership argument coercion"
+        );
+
+        for method in [
+            "analyze_intrinsic_ops",
+            "analyze_intrinsic",
+            "analyze_intrinsic_impl",
+            "analyze_internal_intrinsic_impl",
+            "analyze_type_intrinsic",
+            "analyze_offset_of",
+        ] {
+            let definition = format!("fn {method}(");
+            assert!(
+                INTRINSICS_SOURCE.contains(&definition),
+                "analysis/intrinsics.rs must own {method}"
+            );
+            assert!(
+                !CALL_INTRINSIC_PEER_SOURCE.contains(&definition),
+                "intrinsic-analysis peers must not define {method}"
+            );
+        }
+
+        // Calls coordinate source modes and results, but place construction,
+        // loans, moves, and coercing by-reference operands remain canonical in
+        // ownership.rs (RUE-857).
+        for ownership_method in ["analyze_call_args_coerced", "check_exclusive_access"] {
+            let definition = format!("fn {ownership_method}");
+            assert!(
+                OWNERSHIP_SOURCE.contains(&definition),
+                "analysis/ownership.rs must own {ownership_method}"
+            );
+            assert!(
+                !CALLS_SOURCE.contains(&definition),
+                "analysis/calls.rs must not duplicate {ownership_method}"
+            );
+        }
+
+        assert!(SEMA_ROOT_SOURCE.contains("fn validate_explicit_call_modes"));
+        assert!(!CALLS_SOURCE.contains("fn validate_explicit_call_modes"));
+
+        assert!(CALLS_SOURCE.contains("self.analyze_call_args_coerced("));
+        assert!(CALLS_SOURCE.contains("fn check_module_member_access("));
+        assert!(!ANALYSIS_ROOT_SOURCE.contains("fn check_module_member_call("));
+        assert!(!ANALYSIS_ROOT_SOURCE.contains("fn emit_module_member_call("));
+        assert!(INTRINSICS_SOURCE.contains("let known = &self.known;"));
+        assert!(!ANALYZE_OPS_SOURCE.contains("KnownSymbols"));
     }
 }
