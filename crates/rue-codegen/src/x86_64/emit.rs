@@ -244,6 +244,9 @@ pub struct Emitter<'a> {
     inst_start: usize,
     /// Whether to generate assembly text (only needed for --emit asm).
     emit_asm: bool,
+    /// Per-source-parameter prologue homing plan (RUE-1005). Empty means one
+    /// incoming register per parameter slot (the historical prologue).
+    param_homing: Vec<crate::codegen_pipeline::ParamHoming>,
 }
 
 impl<'a> Emitter<'a> {
@@ -288,7 +291,18 @@ impl<'a> Emitter<'a> {
             has_frame: false,
             inst_start: 0,
             emit_asm: false,
+            param_homing: Vec::new(),
         }
+    }
+
+    /// Supply the per-source-parameter prologue homing plan (RUE-1005). Without
+    /// it the prologue homes one incoming register per parameter slot.
+    pub(crate) fn with_param_homing(
+        mut self,
+        param_homing: Vec<crate::codegen_pipeline::ParamHoming>,
+    ) -> Self {
+        self.param_homing = param_homing;
+        self
     }
 
     /// Mark the function as returning via sret (hidden buffer pointer as the
@@ -448,6 +462,21 @@ impl<'a> Emitter<'a> {
     /// pop rbp              ; restore rbp
     /// ret
     /// ```
+    /// The prologue homing plan, falling back to one incoming register per
+    /// parameter slot when no grouped plan was supplied (RUE-1005).
+    fn param_homing_or_per_slot(&self) -> Vec<crate::codegen_pipeline::ParamHoming> {
+        if self.param_homing.is_empty() {
+            (0..self.num_params)
+                .map(|slot| crate::codegen_pipeline::ParamHoming {
+                    start_slot: slot,
+                    reg_count: 1,
+                })
+                .collect()
+        } else {
+            self.param_homing.clone()
+        }
+    }
+
     fn emit_prologue(&mut self) {
         self.record_comment("prologue");
 
@@ -518,29 +547,41 @@ impl<'a> Emitter<'a> {
         let callee_saved_size = self.callee_saved_size();
         let abi_shift = self.has_sret as u32;
 
-        for i in 0..self.num_params {
-            // Use num_locals_original (not num_locals which includes spills)
-            // because CfgLower generates param offsets based on the original count
-            let slot = self.num_locals_original + i;
-            // Skip past callee-saved registers in the offset calculation
-            let offset = -callee_saved_size + crate::frame_layout::slot_offset_pre_saved(slot);
-            let abi_index = i + abi_shift;
+        // Home incoming argument registers into the frame parameter area. Each
+        // source parameter consumes `reg_count` consecutive incoming registers
+        // (RUE-1005): normally one per frame slot, but a by-value indirect
+        // compact aggregate arrives as one pointer register while reserving
+        // `slot_count` frame slots, shifting later parameters' registers. The
+        // running `abi_index` counts consumed argument registers; frame slots
+        // come from each parameter's `start_slot`. Gate-off every parameter is
+        // direct with `reg_count == slot_count`, so this is byte-identical to
+        // the historical one-register-per-slot loop.
+        let mut abi_index = abi_shift;
+        for homing in self.param_homing_or_per_slot() {
+            for k in 0..homing.reg_count {
+                // Use num_locals_original (not num_locals which includes spills)
+                // because CfgLower generates param offsets based on the original count
+                let slot = self.num_locals_original + homing.start_slot + k;
+                // Skip past callee-saved registers in the offset calculation
+                let offset = -callee_saved_size + crate::frame_layout::slot_offset_pre_saved(slot);
 
-            if (abi_index as usize) < ARG_REGS.len() {
-                let reg = ARG_REGS[abi_index as usize];
-                // Emit: mov [rbp + offset], reg
-                self.begin_inst();
-                self.emit_mov_mr(Reg::Rbp, offset, reg);
-                end_inst!(self, "mov [rbp{}], {}", offset, reg);
-            } else {
-                // Stack-passed arg: copy from above the frame into the param area
-                let src_offset = 16 + (abi_index as i32 - ARG_REGS.len() as i32) * 8;
-                self.begin_inst();
-                self.emit_mov_rm(Reg::Rax, Reg::Rbp, src_offset);
-                end_inst!(self, "mov rax, [rbp+{}]", src_offset);
-                self.begin_inst();
-                self.emit_mov_mr(Reg::Rbp, offset, Reg::Rax);
-                end_inst!(self, "mov [rbp{}], rax", offset);
+                if (abi_index as usize) < ARG_REGS.len() {
+                    let reg = ARG_REGS[abi_index as usize];
+                    // Emit: mov [rbp + offset], reg
+                    self.begin_inst();
+                    self.emit_mov_mr(Reg::Rbp, offset, reg);
+                    end_inst!(self, "mov [rbp{}], {}", offset, reg);
+                } else {
+                    // Stack-passed arg: copy from above the frame into the param area
+                    let src_offset = 16 + (abi_index as i32 - ARG_REGS.len() as i32) * 8;
+                    self.begin_inst();
+                    self.emit_mov_rm(Reg::Rax, Reg::Rbp, src_offset);
+                    end_inst!(self, "mov rax, [rbp+{}]", src_offset);
+                    self.begin_inst();
+                    self.emit_mov_mr(Reg::Rbp, offset, Reg::Rax);
+                    end_inst!(self, "mov [rbp{}], rax", offset);
+                }
+                abi_index += 1;
             }
         }
 

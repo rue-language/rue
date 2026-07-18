@@ -125,6 +125,29 @@ pub(crate) fn load_enum_slots_through_ptr<B: SlotBackend>(
     vregs
 }
 
+/// Unmarshal a by-value indirect compact aggregate parameter into its frame
+/// slots at function entry (ADR-0052 phase 5.8, RUE-1005).
+///
+/// The callee prologue homed a single incoming pointer to the parameter's base
+/// frame slot `base_slot`. This reads that pointer, loads the aggregate's
+/// compact memory image through it (each slot extended from its physical width
+/// at its compact byte offset), and stores the resulting slot-shaped values back
+/// into the parameter's frame region in the ascending layout every consumer
+/// reads — so ordinary field projection and whole-value materialization both see
+/// the correct decomposition without a special parameter path. The pointer is
+/// fully consumed (its loads emitted) before the frame stores overwrite
+/// `base_slot`.
+pub(crate) fn unmarshal_indirect_value_param<B: SlotBackend>(
+    b: &mut B,
+    base_slot: u32,
+    map: &[crate::types::PhysicalEnumSlot],
+) {
+    let ptr = b.alloc_vreg();
+    b.emit_load_slot(ptr, base_slot);
+    let vals = load_enum_slots_through_ptr(b, ptr, map);
+    store_slots(b, &vals, base_slot);
+}
+
 /// Get or compute the slot vregs for a multi-slot aggregate value
 /// (struct, builtin String, or fixed-size array).
 ///

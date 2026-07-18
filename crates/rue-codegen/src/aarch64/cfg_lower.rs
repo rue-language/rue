@@ -96,6 +96,31 @@ impl crate::call_plan::CallMaterializer for CfgLower<'_> {
         });
         pointer
     }
+
+    fn materialize_indirect_value_arg(
+        &mut self,
+        value: CfgValue,
+        image: &[crate::types::PhysicalEnumSlot],
+        storage_bytes: u32,
+    ) -> VReg {
+        // Reserve a caller-owned buffer just below the sret storage (RUE-1005),
+        // capture its address, and write the aggregate's compact image into it —
+        // each slot truncated to its physical width at its compact byte offset,
+        // exactly the image the callee prologue unmarshals.
+        self.mir.push(Aarch64Inst::SubImm {
+            dst: Operand::Physical(Reg::Sp),
+            src: Operand::Physical(Reg::Sp),
+            imm: storage_bytes as i32,
+        });
+        let pointer = self.mir.alloc_vreg();
+        self.mir.push(Aarch64Inst::MovRR {
+            dst: Operand::Virtual(pointer),
+            src: Operand::Physical(Reg::Sp),
+        });
+        let slots = self.require_aggregate_slots(value);
+        crate::agg_slots::store_enum_slots_through_ptr(self, &slots, pointer, image);
+        pointer
+    }
 }
 
 impl<'a> CfgLower<'a> {
@@ -743,6 +768,16 @@ impl<'a> CfgLower<'a> {
                 dst: Operand::Physical(Reg::Sp),
                 src: Operand::Physical(Reg::Sp),
                 imm: plan.stack_bytes as i32,
+            });
+        }
+        // Free the by-value indirect argument buffers (RUE-1005), restoring sp
+        // to the sret storage (or the pre-call baseline) before the sret
+        // read-back reads its buffer at a fixed offset.
+        if plan.caller_indirect_bytes > 0 {
+            self.mir.push(Aarch64Inst::AddImm {
+                dst: Operand::Physical(Reg::Sp),
+                src: Operand::Physical(Reg::Sp),
+                imm: plan.caller_indirect_bytes as i32,
             });
         }
         let slots = match plan.return_plan {
@@ -2658,6 +2693,12 @@ impl crate::terminator_plan::TerminatorAdapter for CfgLower<'_> {
 impl crate::terminator_plan::CfgLowerAdapter for CfgLower<'_> {
     fn preload_by_ref_params(&mut self) {
         self.preload_by_ref_param_ptrs();
+        // Unmarshal each by-value indirect compact aggregate parameter from the
+        // homed pointer into its frame slots at entry (RUE-1005), so field
+        // projection and whole-value reads see the correct decomposition.
+        for (base_slot, map) in crate::value_plan::indirect_value_params(&self.ctx) {
+            crate::agg_slots::unmarshal_indirect_value_param(self, base_slot, &map);
+        }
     }
 
     fn prepare_block_param(&mut self, block: BlockId, index: u32, value: CfgValue, ty: Type) {
@@ -3162,6 +3203,16 @@ mod tests {
         source: &str,
         preview: PreviewFeatures,
     ) -> rue_error::CompileResult<Aarch64Mir> {
+        try_lower_named_fn(source, preview, None)
+    }
+
+    /// Lower a specific function by name (or the first function when `None`),
+    /// so tests can exercise a callee whose caller sorts ahead of it.
+    fn try_lower_named_fn(
+        source: &str,
+        preview: PreviewFeatures,
+        name: Option<&str>,
+    ) -> rue_error::CompileResult<Aarch64Mir> {
         let lexer = Lexer::new(source);
         let (tokens, interner) = lexer.tokenize().unwrap();
         let parser = Parser::new(tokens, interner);
@@ -3172,7 +3223,14 @@ mod tests {
         let output = Sema::new_synthetic(&rir, &mut interner, preview)
             .analyze_all()
             .unwrap();
-        let func = &output.functions[0];
+        let func = match name {
+            Some(name) => output
+                .functions
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("no function named `{name}`")),
+            None => &output.functions[0],
+        };
         let type_pool = &output.type_pool;
         let cfg_output = CfgBuilder::build(
             &func.air,
@@ -3341,23 +3399,62 @@ mod tests {
         .expect("an inout compact struct argument must lower");
     }
 
-    /// RUE-1004 keeps refusing a non-slot-identical struct passed BY VALUE across
-    /// a call on AArch64: the callee parameter ABI is not yet remapped from the
-    /// CFG's N decomposition slots to one incoming compact-buffer pointer.
+    /// RUE-1005: on AArch64, a non-slot-identical struct passed BY VALUE across a
+    /// call now lowers. The caller (`main`, first here) writes the compact image
+    /// into a caller-owned buffer with narrow stores and passes one pointer;
+    /// gate-off it passes slot-shaped registers with no narrow store.
     #[test]
-    fn aggregate_layout_refuses_by_value_compact_struct_arg() {
+    fn aggregate_layout_allows_by_value_compact_struct_arg_caller() {
+        let source = "struct Padded { a: u8, b: i32, c: u8 } \
+                      fn main() -> i32 { sum(Padded { a: 1, b: 5, c: 3 }) } \
+                      fn sum(p: Padded) -> i32 { p.b }";
         let mut preview = PreviewFeatures::new();
         preview.insert(PreviewFeature::AggregateLayout);
-        let err = try_lower_first_fn(
-            "struct Padded { a: u8, b: i32, c: u8 } \
-             fn main() -> i32 { sum(Padded { a: 1, b: 5, c: 3 }) } \
-             fn sum(p: Padded) -> i32 { p.b }",
-            preview,
-        )
-        .expect_err("a by-value compact struct argument must be refused");
+        let mir = try_lower_first_fn(source, preview)
+            .expect("a by-value compact struct argument must lower");
         assert!(
-            format!("{err:?}").contains("aggregate_layout"),
-            "refusal must name the feature, got: {err:?}"
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, Aarch64Inst::NarrowStoreIndexed { width: 1, .. })),
+            "the caller must write the u8 fields narrow into the compact argument buffer"
+        );
+
+        let off = try_lower_first_fn(source, PreviewFeatures::new())
+            .expect("the same program lowers under the default slot model");
+        assert!(
+            off.instructions()
+                .iter()
+                .all(|inst| !matches!(inst, Aarch64Inst::NarrowStoreIndexed { .. })),
+            "gate-off must not emit any narrow argument-buffer store"
+        );
+    }
+
+    /// RUE-1005 callee side on AArch64: the receiving function unmarshals the
+    /// compact image (narrow loads) from the homed pointer into its frame slots
+    /// at entry; gate-off it reads slot-shaped registers with no narrow load.
+    #[test]
+    fn aggregate_layout_allows_by_value_compact_struct_arg_callee() {
+        let source = "struct Padded { a: u8, b: i32, c: u8 } \
+                      fn sum(p: Padded) -> i32 { p.b } \
+                      fn main() -> i32 { sum(Padded { a: 1, b: 5, c: 3 }) }";
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::AggregateLayout);
+        let mir = try_lower_named_fn(source, preview, Some("sum"))
+            .expect("the callee of a by-value compact struct argument must lower");
+        assert!(
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, Aarch64Inst::NarrowLoadIndexed { width: 1, .. })),
+            "the callee must unmarshal the u8 fields narrow from the homed pointer"
+        );
+
+        let off = try_lower_named_fn(source, PreviewFeatures::new(), Some("sum"))
+            .expect("the same program lowers under the default slot model");
+        assert!(
+            off.instructions()
+                .iter()
+                .all(|inst| !matches!(inst, Aarch64Inst::NarrowLoadIndexed { .. })),
+            "gate-off must not emit any narrow parameter unmarshalling"
         );
     }
 

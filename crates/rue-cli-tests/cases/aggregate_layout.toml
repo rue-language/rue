@@ -476,20 +476,22 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = ["aggregate_layout", "not yet implemented"]
 
-# RUE-1000 keeps refusing a compact enum crossing a CALL boundary by value:
-# the preserved slot call convention cannot express it and the indirect
-# marshalling is the next phase (RUE-976's transitional indirect rule).
+# An IMAGELESS compact enum crossing a CALL boundary by value stays refused
+# (RUE-1005): overlapping union payload slots (`A(i64)` versus `B(i32, i32)`)
+# give no variant-independent memory image, so the caller cannot build a compact
+# buffer and the callee cannot unmarshal one. A compact enum WITH an image now
+# crosses by value (see `compact_enum_by_value_match`).
 [[case]]
-name = "compact_enum_crossing_call_still_fails"
-description = "A compact enum passed by value across a call is still refused under --preview aggregate_layout (call marshalling is the next phase)."
+name = "imageless_enum_crossing_call_still_fails"
+description = "A variant-dependent (imageless) compact enum passed by value across a call is still refused under --preview aggregate_layout (RUE-1005)."
 args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
 files = [{ path = "main.rue", source = """
-enum Opt { Some(i32), None }
-fn unwrap(o: Opt) -> i32 {
-    match o { Opt.Some(x) => x, Opt.None => 0, }
+enum Bad { A(i64), B(i32, i32) }
+fn first(v: Bad) -> i64 {
+    match v { Bad.A(x) => x, Bad.B(y, z) => @intCast(y + z), }
 }
 fn main() -> i32 {
-    unwrap(Opt.Some(5))
+    @intCast(first(Bad.A(5)))
 }
 """ }]
 compile_fail = true
@@ -598,20 +600,138 @@ fn main() -> i32 {
 stdout = "777\n"
 exit_code = 0
 
-# A by-value non-slot-identical struct argument still crosses indirectly by the
-# classifier, but its caller-owned compact-buffer marshalling is not yet
-# implemented: the callee parameter ABI would have to consume one incoming
-# pointer for a value the CFG models as N decomposition slots. Refused loudly.
+# RUE-1005: a by-value non-slot-identical struct argument now crosses indirectly.
+# The caller writes the aggregate's compact image (a@0, b@4, c@8) into a
+# caller-owned buffer and passes one pointer; the callee prologue homes that
+# pointer and unmarshals the image into its frame slots at entry, so every field
+# reads back correctly. Gate-off passes slot-shaped registers identically.
 [[case]]
-name = "compact_struct_by_value_arg_still_fails"
-description = "A compact struct passed by value across a call is still refused under --preview aggregate_layout (indirect by-value argument marshalling is the next phase)."
+name = "compact_struct_by_value_read_fields"
+description = "A compact struct passed by value has all fields read in the callee via the caller-written compact image and homed pointer under --preview aggregate_layout (RUE-1005)."
+differential_opt = true
 args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Padded { a: u8, b: i32, c: u8 }
-fn sum(p: Padded) -> i32 { p.b }
+fn sum(p: Padded) -> i32 {
+    @dbg(p.a);
+    @dbg(p.b);
+    @dbg(p.c);
+    p.b
+}
 fn main() -> i32 {
     let s = Padded { a: 1, b: 5, c: 3 };
-    sum(s)
+    @dbg(sum(s));
+    0
+}
+""" }]
+stdout = "1\n5\n3\n5\n"
+exit_code = 0
+
+# A compact Option-like enum passed BY VALUE crosses through its caller-owned
+# compact image (u8 tag @0, i32 payload @4); the callee unmarshals it and matches
+# both variants correctly.
+[[case]]
+name = "compact_enum_by_value_match"
+description = "An Option-like enum passed by value is matched in the callee through the compact image and homed pointer under --preview aggregate_layout (RUE-1005)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum Opt { Some(i32), None }
+fn unwrap_or(o: Opt, d: i32) -> i32 {
+    match o { Opt.Some(x) => x, Opt.None => d, }
+}
+fn main() -> i32 {
+    @dbg(unwrap_or(Opt.Some(42), 0));
+    @dbg(unwrap_or(Opt.None, -7));
+    0
+}
+""" }]
+stdout = "42\n-7\n"
+exit_code = 0
+
+# A two-level call chain (main -> f -> g) re-passes the compact struct by value
+# at each rung: each callee re-materializes the compact image into its own buffer
+# for the next call, and the deepest callee reads every field.
+[[case]]
+name = "compact_struct_by_value_two_level_chain"
+description = "A compact struct passed by value through a two-level call chain (caller -> f -> g) reads correctly at the bottom under --preview aggregate_layout (RUE-1005)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Padded { a: u8, b: i32, c: u8 }
+fn g(p: Padded) -> i32 { @intCast(p.a) + p.b + @intCast(p.c) }
+fn f(p: Padded) -> i32 { g(p) }
+fn main() -> i32 {
+    let s = Padded { a: 1, b: 100, c: 2 };
+    @dbg(f(s));
+    0
+}
+""" }]
+stdout = "103\n"
+exit_code = 0
+
+# A mixed-signature call: a scalar (i64), a by-value compact struct forced
+# indirect, and a bool. The compact struct crosses as one pointer while the
+# scalars stay direct, and the argument-register shift is handled per the
+# preserved convention.
+[[case]]
+name = "compact_mixed_signature_by_value"
+description = "A call mixing i64, a by-value compact struct, and bool passes the struct indirectly while scalars stay direct under --preview aggregate_layout (RUE-1005)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Padded { a: u8, b: i32, c: u8 }
+fn mix(x: i64, p: Padded, flag: bool) -> i64 {
+    let bb: i64 = @intCast(p.b);
+    if flag { x + bb } else { x }
+}
+fn main() -> i32 {
+    let s = Padded { a: 1, b: 40, c: 2 };
+    let t = Padded { a: 1, b: 40, c: 2 };
+    @dbg(mix(1000, s, true));
+    @dbg(mix(1000, t, false));
+    0
+}
+""" }]
+stdout = "1040\n1000\n"
+exit_code = 0
+
+# A function that BOTH takes a compact aggregate by value AND returns one by
+# value exercises the caller-owned argument buffer and the sret compact image in
+# the same call: the argument buffer is freed after the call, before the sret
+# read-back reads its buffer.
+[[case]]
+name = "compact_struct_takes_and_returns_by_value"
+description = "A call that both takes and returns a compact aggregate by value round-trips under --preview aggregate_layout (RUE-1005)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Padded { a: u8, b: i32, c: u8 }
+fn bump(p: Padded) -> Padded { Padded { a: p.a, b: p.b + 1, c: p.c } }
+fn main() -> i32 {
+    let s = Padded { a: 3, b: 10, c: 7 };
+    let r = bump(s);
+    @dbg(r.a);
+    @dbg(r.b);
+    @dbg(r.c);
+    0
+}
+""" }]
+stdout = "3\n11\n7\n"
+exit_code = 0
+
+# A by-value ARRAY argument stays refused: a fixed array's compact stride differs
+# from the slot stride, so it has no variant-independent compact image and call
+# marshalling for it is not implemented.
+[[case]]
+name = "compact_array_by_value_arg_still_fails"
+description = "A by-value fixed array crossing a call is still refused under --preview aggregate_layout (no variant-independent compact image)."
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn sum(a: [i32; 3]) -> i32 { a[0] + a[1] + a[2] }
+fn main() -> i32 {
+    let xs = [1, 2, 3];
+    sum(xs)
 }
 """ }]
 compile_fail = true

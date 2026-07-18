@@ -73,7 +73,8 @@ pub use output::{
     ImplicitNamedDestructorDependencyEvent, NamedConstDependencyEvent,
     NamedConstDependencyTargetEvent, NamedDestructorDependencyEvent, NamedMethodDependencyEvent,
     NamedMethodDependencyTargetEvent, OrdinaryFreeFunctionDependencyEvent, ParamSlotModes,
-    SemaOutput, SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
+    SemaOutput, SourceParamAbi, SpecializedFreeFunctionDependencyEvent,
+    SpecializedFreeFunctionOrigin,
 };
 
 use std::collections::{HashMap, HashSet};

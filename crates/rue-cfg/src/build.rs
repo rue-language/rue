@@ -6,7 +6,8 @@
 use lasso::ThreadedRodeo;
 use rue_air::{
     AirArgMode, AirInstData, AirPattern, AirPlaceBase, AirPlaceRef, AirProjection, AirRef,
-    FrozenTypeInternPool, ParamSlotModes, StructId, Type, TypeKind, ValidatedAir,
+    ArgConvention, FrozenTypeInternPool, NativeCallAbi, ParamSlotModes, SourceParamAbi, StructId,
+    Type, TypeKind, ValidatedAir,
 };
 use rue_error::{CompileError, CompileWarning, ErrorKind, WarningKind};
 
@@ -248,6 +249,76 @@ pub struct CfgBuilder<'a> {
     anonymous_destructor_dependency_incomplete: bool,
 }
 
+/// Derive the grouped per-source-parameter ABI descriptors (ADR-0052 phase 5.8,
+/// RUE-1005) from the AIR and the per-slot by-reference vector.
+///
+/// The parameter type at each slot span comes from the AIR: every by-value
+/// (`Normal`) parameter — used or not — is recorded in `param_drops` with its
+/// start slot and type, and any additional used parameter (a destructor `self`,
+/// whose drops are cleared) is recovered from its `Param` instruction. Each
+/// parameter's incoming-register crossing width is decided by the native
+/// call-ABI classifier and stored as a plain integer; the descriptor carries no
+/// `Type`, so a pointer-only consumer's CFG stays layout-independent and
+/// reusable when a pointee struct's layout changes. Walking the slots and
+/// advancing by each parameter's decomposition width reconstructs the exact
+/// grouping identically for a fresh analysis and a durable/imported body, since
+/// both rebuild from the same AIR.
+fn derive_source_param_abi(builder: &CfgBuilder<'_>) -> Vec<SourceParamAbi> {
+    let air = builder.air;
+    let type_pool = builder.type_pool;
+    let num_params = builder.cfg.num_params();
+    let by_ref: Vec<bool> = builder.cfg.param_modes().to_vec();
+    let abi = NativeCallAbi::for_arguments(type_pool);
+
+    // Slot -> source type. `param_drops` covers every Normal by-value parameter
+    // (including unused ones); `Param` instructions supplement any used
+    // parameter whose drop entry was cleared (destructor receivers).
+    let mut ty_at: std::collections::HashMap<u32, Type> = std::collections::HashMap::new();
+    for &(slot, ty) in air.param_drops() {
+        ty_at.entry(slot).or_insert(ty);
+    }
+    for i in 0..air.len() {
+        let inst = air.get(AirRef::from_raw(i as u32));
+        if let AirInstData::Param { index } = inst.data {
+            ty_at.entry(index).or_insert(inst.ty);
+        }
+    }
+
+    let mut descriptors = Vec::new();
+    let mut slot = 0u32;
+    while slot < num_params {
+        let is_by_ref = by_ref.get(slot as usize).copied().unwrap_or(false);
+        let (slot_count, crossing_regs, ty) = if is_by_ref {
+            // A by-reference parameter is always one pointer slot; its type is
+            // never consulted by code generation.
+            (1, 1, None)
+        } else if let Some(&ty) = ty_at.get(&slot) {
+            let width = type_pool.abi_slot_count(ty).max(1);
+            let crossing = abi
+                .classify_arg(ty, ArgConvention::ByValue)
+                .crossing_slots()
+                .max(1);
+            // Carry the type only when the parameter crosses indirectly (one
+            // pointer over a multi-slot span), so a direct parameter's CFG stays
+            // layout-independent.
+            let carried_ty = (crossing < width).then_some(ty);
+            (width, crossing, carried_ty)
+        } else {
+            // No recorded type for a by-value slot: a single direct slot, which
+            // homes exactly as the historical prologue.
+            (1, 1, None)
+        };
+        descriptors.push(SourceParamAbi {
+            start_slot: slot,
+            slot_count,
+            crossing_regs,
+            ty,
+        });
+        slot += slot_count;
+    }
+    descriptors
+}
+
 impl<'a> CfgBuilder<'a> {
     fn payload_or<T>(
         &mut self,
@@ -477,6 +548,13 @@ impl<'a> CfgBuilder<'a> {
             .all_struct_ids()
             .filter(|id| builder.implicit_named_destructors.contains(id))
             .collect();
+
+        // Derive the grouped per-source-parameter ABI descriptors (RUE-1005)
+        // from the AIR, which both a fresh analysis and a durable/imported body
+        // rebuild identically, so the CFG's grouping matches across reuse.
+        let source_param_abi = derive_source_param_abi(&builder);
+        builder.cfg.set_source_param_abi(source_param_abi);
+
         let cfg = match builder.cfg.finish(builder.type_pool) {
             Ok(cfg) => Some(cfg),
             Err(error) => {

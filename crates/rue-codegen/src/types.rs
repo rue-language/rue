@@ -713,23 +713,17 @@ pub(crate) fn compact_physical_access_unsupported(
             }
             // An aggregate crossing a call boundary. A by-reference (`inout` /
             // `borrow`) argument uses the same slot-shaped by-ref transport as a
-            // by-ref parameter and is allowed with a compact image (RUE-1004). A
-            // by-value non-slot-identical aggregate still crosses indirectly by the
-            // classifier (RUE-976); its caller-owned compact-buffer marshalling is
-            // not implemented, because the callee-side parameter ABI would have to
-            // consume one incoming pointer for a value the CFG still models as N
-            // decomposition slots, and per-source-parameter types are not plumbed
-            // to code generation to recompute that mapping. Refused loudly.
+            // by-ref parameter (RUE-1004). A by-value non-slot-identical aggregate
+            // crosses indirectly by the classifier (RUE-976): the caller writes
+            // its compact image to a caller-owned buffer and passes one pointer,
+            // and the callee prologue homes that pointer and unmarshals the image
+            // (RUE-1005, per-source-parameter ABI descriptors now plumbed). Both
+            // are allowed exactly when the aggregate has a variant-independent
+            // compact image; arrays and imageless enums stay refused.
             CfgInstData::Call { .. } => {
                 for arg in cfg.get_call_args(&inst.data) {
                     let arg_ty = cfg.get_inst(arg.value).ty;
-                    let unsupported = match arg.mode {
-                        rue_cfg::CfgArgMode::Inout | rue_cfg::CfgArgMode::Borrow => {
-                            call_boundary_unsupported(arg_ty)
-                        }
-                        rue_cfg::CfgArgMode::Normal => unimplemented_aggregate(arg_ty),
-                    };
-                    if unsupported {
+                    if call_boundary_unsupported(arg_ty) {
                         return Some(arg_ty);
                     }
                 }
@@ -781,10 +775,10 @@ pub(crate) fn ensure_compact_layout_codegen_supported(
                  `{}`) is not yet implemented. Narrow scalar access through typed pointers \
                  (RUE-989), compact enum memory for enums with a variant-independent memory image \
                  (RUE-1000), and call-boundary marshalling of a compact aggregate through its \
-                 memory image — sret returns and `inout`/`borrow` parameters (RUE-1004) — are \
-                 lowered, but whole struct/array marshalling through arbitrary pointers, a compact \
-                 aggregate passed BY VALUE across a call, arrays crossing a call, and enums \
-                 without a variant-independent memory image are still staged for a follow-up.",
+                 memory image — sret returns and `inout`/`borrow` parameters (RUE-1004), and \
+                 by-value arguments (RUE-1005) — are lowered, but whole struct/array marshalling \
+                 through arbitrary pointers, arrays crossing a call, and enums without a \
+                 variant-independent memory image are still staged for a follow-up.",
                 cfg.fn_name()
             )),
         ));

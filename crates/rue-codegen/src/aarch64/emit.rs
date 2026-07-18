@@ -351,6 +351,9 @@ pub struct Emitter<'a> {
     inst_start: usize,
     /// Whether to generate assembly text (only needed for --emit asm).
     emit_asm: bool,
+    /// Per-source-parameter prologue homing plan (RUE-1005). Empty means one
+    /// incoming register per parameter slot (the historical prologue).
+    param_homing: Vec<crate::codegen_pipeline::ParamHoming>,
 }
 
 impl<'a> Emitter<'a> {
@@ -390,7 +393,18 @@ impl<'a> Emitter<'a> {
             strings,
             inst_start: 0,
             emit_asm: false,
+            param_homing: Vec::new(),
         }
+    }
+
+    /// Supply the per-source-parameter prologue homing plan (RUE-1005). Without
+    /// it the prologue homes one incoming register per parameter slot.
+    pub(crate) fn with_param_homing(
+        mut self,
+        param_homing: Vec<crate::codegen_pipeline::ParamHoming>,
+    ) -> Self {
+        self.param_homing = param_homing;
+        self
     }
 
     /// Mark the function as returning via sret (hidden buffer pointer as the
@@ -399,6 +413,21 @@ impl<'a> Emitter<'a> {
     pub fn with_sret(mut self, has_sret: bool) -> Self {
         self.has_sret = has_sret;
         self
+    }
+
+    /// The prologue homing plan, falling back to one incoming register per
+    /// parameter slot when no grouped plan was supplied (RUE-1005).
+    fn param_homing_or_per_slot(&self) -> Vec<crate::codegen_pipeline::ParamHoming> {
+        if self.param_homing.is_empty() {
+            (0..self.num_params)
+                .map(|slot| crate::codegen_pipeline::ParamHoming {
+                    start_slot: slot,
+                    reg_count: 1,
+                })
+                .collect()
+        } else {
+            self.param_homing.clone()
+        }
     }
 
     // ==================== Instruction recording helpers ====================
@@ -600,28 +629,38 @@ impl<'a> Emitter<'a> {
         ];
         let callee_saved_size = self.callee_saved_stack_size();
         let abi_shift = self.has_sret as u32;
-        for i in 0..self.num_params {
-            // Use num_locals_original (not num_locals, which includes spill
-            // slots): CfgLower generated the body's param reads against the
-            // pre-spill count. (RUE-129)
-            let slot = self.num_locals_original + i;
-            // Skip past callee-saved registers in the offset calculation
-            let offset = -callee_saved_size + crate::frame_layout::slot_offset_pre_saved(slot);
-            let abi_index = (i + abi_shift) as usize;
+        // Home incoming argument registers into the frame parameter area. Each
+        // source parameter consumes `reg_count` consecutive incoming registers
+        // (RUE-1005): a by-value indirect compact aggregate arrives as one
+        // pointer register while reserving `slot_count` frame slots, shifting
+        // later parameters. Gate-off every parameter is direct with
+        // `reg_count == slot_count`, so this is byte-identical to the historical
+        // one-register-per-slot loop.
+        let mut abi_index = abi_shift as usize;
+        for homing in self.param_homing_or_per_slot() {
+            for k in 0..homing.reg_count {
+                // Use num_locals_original (not num_locals, which includes spill
+                // slots): CfgLower generated the body's param reads against the
+                // pre-spill count. (RUE-129)
+                let slot = self.num_locals_original + homing.start_slot + k;
+                // Skip past callee-saved registers in the offset calculation
+                let offset = -callee_saved_size + crate::frame_layout::slot_offset_pre_saved(slot);
 
-            if abi_index < param_regs.len() {
-                self.begin_inst();
-                self.emit_str(param_regs[abi_index], Reg::Fp, offset);
-                end_inst!(self, "str {}, [x29, #{}]", param_regs[abi_index], offset);
-            } else {
-                // Stack-passed arg: copy from above the frame into the param area
-                let src_offset = 16 + (abi_index as i32 - param_regs.len() as i32) * 8;
-                self.begin_inst();
-                self.emit_ldr(Reg::X9, Reg::Fp, src_offset);
-                end_inst!(self, "ldr x9, [x29, #{}]", src_offset);
-                self.begin_inst();
-                self.emit_str(Reg::X9, Reg::Fp, offset);
-                end_inst!(self, "str x9, [x29, #{}]", offset);
+                if abi_index < param_regs.len() {
+                    self.begin_inst();
+                    self.emit_str(param_regs[abi_index], Reg::Fp, offset);
+                    end_inst!(self, "str {}, [x29, #{}]", param_regs[abi_index], offset);
+                } else {
+                    // Stack-passed arg: copy from above the frame into the param area
+                    let src_offset = 16 + (abi_index as i32 - param_regs.len() as i32) * 8;
+                    self.begin_inst();
+                    self.emit_ldr(Reg::X9, Reg::Fp, src_offset);
+                    end_inst!(self, "ldr x9, [x29, #{}]", src_offset);
+                    self.begin_inst();
+                    self.emit_str(Reg::X9, Reg::Fp, offset);
+                    end_inst!(self, "str x9, [x29, #{}]", offset);
+                }
+                abi_index += 1;
             }
         }
 

@@ -225,6 +225,16 @@ impl RuntimeCallPlan {
                 CallArgInput::ByRef { address, .. } => {
                     slots.push(materializer.materialize_by_ref(address));
                 }
+                // A by-value indirect compact aggregate (RUE-1005) only arises
+                // for a Rue-target call under `aggregate_layout`; the register-
+                // only TargetC memory builtins take scalars and pointers, never a
+                // by-value compact aggregate, so it cannot reach a runtime call.
+                CallArgInput::IndirectValue { .. } => {
+                    unreachable!(
+                        "a compiler-built memory routine cannot take a by-value indirect \
+                         compact aggregate argument"
+                    )
+                }
                 CallArgInput::Value {
                     value,
                     slot_count,

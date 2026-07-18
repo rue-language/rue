@@ -2133,6 +2133,32 @@ pub(crate) fn by_ref_param_slots(ctx: &CfgLowerContext<'_>) -> Vec<u32> {
         .collect()
 }
 
+/// Return each by-value indirect compact aggregate parameter's base frame slot
+/// and compact memory image (ADR-0052 phase 5.8, RUE-1005), for the entry-time
+/// unmarshalling both backends perform before the block walk.
+///
+/// The CFG's grouped descriptors flag which parameters cross as one pointer over
+/// a multi-slot span ([`rue_air::SourceParamAbi::is_by_value_indirect`]). The
+/// parameter's type — needed only to build its compact image — is recovered from
+/// its `Param` instruction; a parameter never read has no such instruction and
+/// needs no unmarshalling (nothing observes its frame slots), so it is skipped.
+/// Empty with the gate off, for functions with no such parameter, and for a
+/// directly constructed CFG with no grouped layout.
+pub(crate) fn indirect_value_params(
+    ctx: &CfgLowerContext<'_>,
+) -> Vec<(u32, Vec<crate::types::PhysicalEnumSlot>)> {
+    ctx.cfg
+        .source_param_abi()
+        .iter()
+        .filter(|param| param.is_by_value_indirect())
+        .filter_map(|param| {
+            let ty = param.ty?;
+            let map = crate::types::aggregate_physical_slot_map(ctx.type_pool, ty)?;
+            Some((ctx.num_locals + param.start_slot, map))
+        })
+        .collect()
+}
+
 /// Validate the shared slot policy for a value and its materialized cache.
 pub fn assert_slot_policy(plan: ValuePlan, actual: usize) {
     if plan.shape.requires_complete_slots() {
