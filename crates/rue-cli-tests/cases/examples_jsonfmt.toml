@@ -1,0 +1,70 @@
+# std.json dogfood (RUE-690): compile the checked-in jsonfmt example, parse a
+# representative nested document, and pin its compact serialized form.
+
+[section]
+id = "cli.examples_jsonfmt"
+name = "JSON parser and formatter written in Rue"
+description = "exercise std.json through the real argv/file-IO jsonfmt program"
+
+[[case]]
+name = "jsonfmt_compacts_nested_document"
+description = "objects, arrays, booleans, null, number lexemes, escapes, and Unicode all round-trip"
+source_path = "examples/jsonfmt/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "input.json", source = """
+ { "name": "Rue\\nlang", "ok": true, "n": -12.5e+2,
+   "items": [null, false, "\\u03bb"] }
+""" }]
+program_args = ["input.json", "output.json"]
+exit_code = 0
+stdout = """
+{"name":"Rue\\nlang","ok":true,"n":-12.5e+2,"items":[null,false,"λ"]}
+"""
+
+[[case]]
+name = "jsonfmt_rejects_trailing_comma"
+description = "invalid JSON returns a meaningful nonzero status without producing formatted output"
+source_path = "examples/jsonfmt/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "bad.json", source = "[1, 2,]" }]
+program_args = ["bad.json", "output.json"]
+exit_code = 3
+stdout = """
+error: invalid JSON
+"""
+
+[[case]]
+name = "jsonfmt_decodes_surrogate_pair"
+description = "a UTF-16 surrogate pair escape becomes one UTF-8 scalar and an escaped slash is accepted"
+source_path = "examples/jsonfmt/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "unicode.json", source = '{"music":"\uD834\uDD1E","slash":"\/"}' }]
+program_args = ["unicode.json", "output.json"]
+exit_code = 0
+stdout = """
+{"music":"𝄞","slash":"/"}
+"""
+
+[[case]]
+name = "jsonfmt_rejects_leading_zero"
+description = "strict JSON number grammar rejects a leading zero before another digit"
+source_path = "examples/jsonfmt/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "bad-number.json", source = "[01]" }]
+program_args = ["bad-number.json", "output.json"]
+exit_code = 3
+stdout = """
+error: invalid JSON
+"""
+
+[[case]]
+name = "jsonfmt_preserves_number_lexeme"
+description = "number serialization preserves the validated source spelling without requiring floating point"
+source_path = "examples/jsonfmt/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "number.json", source = " -0.25E-2 " }]
+program_args = ["number.json", "output.json"]
+exit_code = 0
+stdout = """
+-0.25E-2
+"""

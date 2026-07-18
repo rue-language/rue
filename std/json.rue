@@ -1,0 +1,581 @@
+// std.json — owned JSON values, parsing, and compact serialization (RUE-690).
+//
+// Numbers are stored as their validated source spelling. Rue does not yet have
+// floating-point types, and retaining the lexeme also makes parse/serialize
+// round trips lossless for large integers and exponent notation.
+
+const arraybuf = @import("arraybuf.rue");
+const option = @import("option.rue");
+const result = @import("result.rue");
+const strbuf = @import("strbuf.rue");
+const StrBuf = strbuf.StrBuf;
+
+pub struct Object {
+    keys: arraybuf.ArrayBuf(StrBuf),
+    values: arraybuf.ArrayBuf(Json),
+}
+
+pub enum Json {
+    Null,
+    Bool(bool),
+    Number(StrBuf),
+    String(StrBuf),
+    Array(arraybuf.ArrayBuf(Json)),
+    Object(Object),
+}
+
+pub enum ParseError {
+    UnexpectedEnd(u64),
+    UnexpectedByte(u64),
+    InvalidNumber(u64),
+    InvalidEscape(u64),
+    InvalidUnicode(u64),
+    TrailingCharacters(u64),
+    NestingTooDeep(u64),
+}
+
+const ParseResult = result.Result(Json, ParseError);
+const StringResult = result.Result(StrBuf, ParseError);
+
+fn byte(borrow input: StrBuf, at: u64) -> u8 {
+    StrBuf.byte_at_borrowed(borrow input, at)
+}
+
+fn is_digit(b: u8) -> bool { b >= 48 && b <= 57 }
+
+fn skip_space(borrow input: StrBuf, inout at: u64) {
+    while at < input.len() {
+        let b = byte(borrow input, at);
+        if b == 32 || b == 9 || b == 10 || b == 13 {
+            at = at + 1;
+        } else {
+            return;
+        }
+    }
+}
+
+fn parse_literal(
+    borrow input: StrBuf,
+    inout at: u64,
+    expected: str,
+    value: Json,
+) -> ParseResult {
+    let R = ParseResult;
+    let mut i: u64 = 0;
+    while i < expected.len() {
+        if at >= input.len() {
+            return R.Err(ParseError.UnexpectedEnd(at));
+        }
+        if byte(borrow input, at) != expected[i] {
+            return R.Err(ParseError.UnexpectedByte(at));
+        }
+        at = at + 1;
+        i = i + 1;
+    }
+    R.Ok(value)
+}
+
+fn hex_value(b: u8) -> i32 {
+    if b >= 48 && b <= 57 {
+        @intCast(b - 48)
+    } else if b >= 65 && b <= 70 {
+        @intCast(b - 65 + 10)
+    } else if b >= 97 && b <= 102 {
+        @intCast(b - 97 + 10)
+    } else {
+        -1
+    }
+}
+
+fn parse_hex4(borrow input: StrBuf, inout at: u64) -> result.Result(u64, ParseError) {
+    let R = result.Result(u64, ParseError);
+    let start = at;
+    let mut value: u64 = 0;
+    let mut i: u64 = 0;
+    while i < 4 {
+        if at >= input.len() {
+            return R.Err(ParseError.UnexpectedEnd(at));
+        }
+        let digit = hex_value(byte(borrow input, at));
+        if digit < 0 {
+            return R.Err(ParseError.InvalidUnicode(start));
+        }
+        value = value * 16 + @intCast(digit);
+        at = at + 1;
+        i = i + 1;
+    }
+    R.Ok(value)
+}
+
+fn push_codepoint(inout out: StrBuf, cp: u64, position: u64) -> result.Result((), ParseError) {
+    let R = result.Result((), ParseError);
+    if cp <= 127 {
+        out.push(@intCast(cp));
+    } else if cp <= 2047 {
+        out.push(@intCast(192 | (cp >> 6)));
+        out.push(@intCast(128 | (cp & 63)));
+    } else if cp <= 65535 {
+        out.push(@intCast(224 | (cp >> 12)));
+        out.push(@intCast(128 | ((cp >> 6) & 63)));
+        out.push(@intCast(128 | (cp & 63)));
+    } else if cp <= 1114111 {
+        out.push(@intCast(240 | (cp >> 18)));
+        out.push(@intCast(128 | ((cp >> 12) & 63)));
+        out.push(@intCast(128 | ((cp >> 6) & 63)));
+        out.push(@intCast(128 | (cp & 63)));
+    } else {
+        return R.Err(ParseError.InvalidUnicode(position));
+    }
+    R.Ok(())
+}
+
+fn parse_unicode_escape(
+    borrow input: StrBuf,
+    inout at: u64,
+    inout out: StrBuf,
+    position: u64,
+) -> result.Result((), ParseError) {
+    let R = result.Result((), ParseError);
+    let first = match parse_hex4(borrow input, inout at) {
+        result.Result(u64, ParseError).Ok(v) => v,
+        result.Result(u64, ParseError).Err(e) => return R.Err(e),
+    };
+    if first >= 55296 && first <= 56319 {
+        if at + 2 > input.len() || byte(borrow input, at) != 92 || byte(borrow input, at + 1) != 117 {
+            return R.Err(ParseError.InvalidUnicode(position));
+        }
+        at = at + 2;
+        let second = match parse_hex4(borrow input, inout at) {
+            result.Result(u64, ParseError).Ok(v) => v,
+            result.Result(u64, ParseError).Err(e) => return R.Err(e),
+        };
+        if second < 56320 || second > 57343 {
+            return R.Err(ParseError.InvalidUnicode(position));
+        }
+        let cp = 65536 + (first - 55296) * 1024 + (second - 56320);
+        push_codepoint(inout out, cp, position)
+    } else if first >= 56320 && first <= 57343 {
+        R.Err(ParseError.InvalidUnicode(position))
+    } else {
+        push_codepoint(inout out, first, position)
+    }
+}
+
+fn continuation(b: u8) -> bool { b >= 128 && b <= 191 }
+
+// Validate one unescaped UTF-8 sequence and copy it to the decoded string.
+// JSON text is Unicode: accepting arbitrary high bytes would let parse()
+// manufacture a value that no standards-conforming JSON consumer can read.
+fn copy_utf8(
+    borrow input: StrBuf,
+    inout at: u64,
+    inout out: StrBuf,
+    lead: u8,
+    position: u64,
+) -> result.Result((), ParseError) {
+    let R = result.Result((), ParseError);
+    let mut needed: u64 = 0;
+    if lead >= 194 && lead <= 223 {
+        needed = 1;
+    } else if lead >= 224 && lead <= 239 {
+        needed = 2;
+    } else if lead >= 240 && lead <= 244 {
+        needed = 3;
+    } else {
+        return R.Err(ParseError.InvalidUnicode(position));
+    }
+    if needed > input.len() - at {
+        return R.Err(ParseError.UnexpectedEnd(at));
+    }
+    let second = byte(borrow input, at);
+    if !continuation(second) {
+        return R.Err(ParseError.InvalidUnicode(at));
+    }
+    // Exclude overlong encodings, UTF-16 surrogate code points, and values
+    // above U+10FFFF by constraining the second byte of boundary leaders.
+    if lead == 224 && second < 160 {
+        return R.Err(ParseError.InvalidUnicode(position));
+    }
+    if lead == 237 && second > 159 {
+        return R.Err(ParseError.InvalidUnicode(position));
+    }
+    if lead == 240 && second < 144 {
+        return R.Err(ParseError.InvalidUnicode(position));
+    }
+    if lead == 244 && second > 143 {
+        return R.Err(ParseError.InvalidUnicode(position));
+    }
+    let mut i: u64 = 1;
+    while i < needed {
+        if !continuation(byte(borrow input, at + i)) {
+            return R.Err(ParseError.InvalidUnicode(at + i));
+        }
+        i = i + 1;
+    }
+    out.push(lead);
+    i = 0;
+    while i < needed {
+        out.push(byte(borrow input, at));
+        at = at + 1;
+        i = i + 1;
+    }
+    R.Ok(())
+}
+
+fn parse_string(borrow input: StrBuf, inout at: u64) -> StringResult {
+    let R = StringResult;
+    let start = at;
+    if at >= input.len() || byte(borrow input, at) != 34 {
+        return R.Err(ParseError.UnexpectedByte(at));
+    }
+    at = at + 1;
+    let mut out = StrBuf.new();
+    while at < input.len() {
+        let b = byte(borrow input, at);
+        at = at + 1;
+        if b == 34 {
+            return R.Ok(out);
+        }
+        if b < 32 {
+            return R.Err(ParseError.UnexpectedByte(at - 1));
+        }
+        if b >= 128 {
+            match copy_utf8(borrow input, inout at, inout out, b, at - 1) {
+                result.Result((), ParseError).Ok(unit) => {},
+                result.Result((), ParseError).Err(err) => return R.Err(err),
+            }
+        } else if b != 92 {
+            out.push(b);
+        } else {
+            if at >= input.len() {
+                return R.Err(ParseError.UnexpectedEnd(at));
+            }
+            let escape_at = at - 1;
+            let e = byte(borrow input, at);
+            at = at + 1;
+            if e == 34 || e == 92 || e == 47 {
+                out.push(e);
+            } else if e == 98 {
+                out.push(8);
+            } else if e == 102 {
+                out.push(12);
+            } else if e == 110 {
+                out.push(10);
+            } else if e == 114 {
+                out.push(13);
+            } else if e == 116 {
+                out.push(9);
+            } else if e == 117 {
+                match parse_unicode_escape(borrow input, inout at, inout out, escape_at) {
+                    result.Result((), ParseError).Ok(unit) => {},
+                    result.Result((), ParseError).Err(err) => return R.Err(err),
+                }
+            } else {
+                return R.Err(ParseError.InvalidEscape(escape_at));
+            }
+        }
+    }
+    R.Err(ParseError.UnexpectedEnd(start))
+}
+
+fn consume_digits(borrow input: StrBuf, inout at: u64) -> u64 {
+    let start = at;
+    while at < input.len() && is_digit(byte(borrow input, at)) {
+        at = at + 1;
+    }
+    at - start
+}
+
+fn parse_number(borrow input: StrBuf, inout at: u64) -> ParseResult {
+    let R = ParseResult;
+    let start = at;
+    if byte(borrow input, at) == 45 {
+        at = at + 1;
+        if at >= input.len() {
+            return R.Err(ParseError.InvalidNumber(start));
+        }
+    }
+    if byte(borrow input, at) == 48 {
+        at = at + 1;
+        if at < input.len() && is_digit(byte(borrow input, at)) {
+            return R.Err(ParseError.InvalidNumber(at));
+        }
+    } else if byte(borrow input, at) >= 49 && byte(borrow input, at) <= 57 {
+        let _ = consume_digits(borrow input, inout at);
+    } else {
+        return R.Err(ParseError.InvalidNumber(at));
+    }
+    if at < input.len() && byte(borrow input, at) == 46 {
+        at = at + 1;
+        if consume_digits(borrow input, inout at) == 0 {
+            return R.Err(ParseError.InvalidNumber(at));
+        }
+    }
+    if at < input.len() {
+        let e = byte(borrow input, at);
+        if e == 101 || e == 69 {
+            at = at + 1;
+            if at < input.len() {
+                let sign = byte(borrow input, at);
+                if sign == 43 || sign == 45 {
+                    at = at + 1;
+                }
+            }
+            if consume_digits(borrow input, inout at) == 0 {
+                return R.Err(ParseError.InvalidNumber(at));
+            }
+        }
+    }
+    R.Ok(Json.Number(input.substring(start, at - start)))
+}
+
+fn parse_array(borrow input: StrBuf, inout at: u64, depth: u64) -> ParseResult {
+    let R = ParseResult;
+    let Items = arraybuf.ArrayBuf(Json);
+    let mut items = Items.new();
+    at = at + 1;
+    skip_space(borrow input, inout at);
+    if at < input.len() && byte(borrow input, at) == 93 {
+        at = at + 1;
+        return R.Ok(Json.Array(items));
+    }
+    loop {
+        let value = match parse_value(borrow input, inout at, depth + 1) {
+            ParseResult.Ok(v) => v,
+            ParseResult.Err(e) => return R.Err(e),
+        };
+        items.push(value);
+        skip_space(borrow input, inout at);
+        if at >= input.len() {
+            return R.Err(ParseError.UnexpectedEnd(at));
+        }
+        let delimiter = byte(borrow input, at);
+        at = at + 1;
+        if delimiter == 93 {
+            return R.Ok(Json.Array(items));
+        }
+        if delimiter != 44 {
+            return R.Err(ParseError.UnexpectedByte(at - 1));
+        }
+        skip_space(borrow input, inout at);
+    }
+}
+
+fn parse_object(borrow input: StrBuf, inout at: u64, depth: u64) -> ParseResult {
+    let R = ParseResult;
+    let Keys = arraybuf.ArrayBuf(StrBuf);
+    let Values = arraybuf.ArrayBuf(Json);
+    let mut keys = Keys.new();
+    let mut values = Values.new();
+    at = at + 1;
+    skip_space(borrow input, inout at);
+    if at < input.len() && byte(borrow input, at) == 125 {
+        at = at + 1;
+        return R.Ok(Json.Object(Object { keys: keys, values: values }));
+    }
+    loop {
+        if at >= input.len() {
+            return R.Err(ParseError.UnexpectedEnd(at));
+        }
+        let key = match parse_string(borrow input, inout at) {
+            StringResult.Ok(v) => v,
+            StringResult.Err(e) => return R.Err(e),
+        };
+        skip_space(borrow input, inout at);
+        if at >= input.len() {
+            return R.Err(ParseError.UnexpectedEnd(at));
+        }
+        if byte(borrow input, at) != 58 {
+            return R.Err(ParseError.UnexpectedByte(at));
+        }
+        at = at + 1;
+        let value = match parse_value(borrow input, inout at, depth + 1) {
+            ParseResult.Ok(v) => v,
+            ParseResult.Err(e) => return R.Err(e),
+        };
+        keys.push(key);
+        values.push(value);
+        skip_space(borrow input, inout at);
+        if at >= input.len() {
+            return R.Err(ParseError.UnexpectedEnd(at));
+        }
+        let delimiter = byte(borrow input, at);
+        at = at + 1;
+        if delimiter == 125 {
+            return R.Ok(Json.Object(Object { keys: keys, values: values }));
+        }
+        if delimiter != 44 {
+            return R.Err(ParseError.UnexpectedByte(at - 1));
+        }
+        skip_space(borrow input, inout at);
+    }
+}
+
+fn parse_value(borrow input: StrBuf, inout at: u64, depth: u64) -> ParseResult {
+    let R = ParseResult;
+    if depth > 256 {
+        return R.Err(ParseError.NestingTooDeep(at));
+    }
+    skip_space(borrow input, inout at);
+    if at >= input.len() {
+        return R.Err(ParseError.UnexpectedEnd(at));
+    }
+    let b = byte(borrow input, at);
+    if b == 110 {
+        parse_literal(borrow input, inout at, "null", Json.Null)
+    } else if b == 116 {
+        parse_literal(borrow input, inout at, "true", Json.Bool(true))
+    } else if b == 102 {
+        parse_literal(borrow input, inout at, "false", Json.Bool(false))
+    } else if b == 34 {
+        match parse_string(borrow input, inout at) {
+            StringResult.Ok(v) => R.Ok(Json.String(v)),
+            StringResult.Err(e) => R.Err(e),
+        }
+    } else if b == 91 {
+        parse_array(borrow input, inout at, depth)
+    } else if b == 123 {
+        parse_object(borrow input, inout at, depth)
+    } else if b == 45 || is_digit(b) {
+        parse_number(borrow input, inout at)
+    } else {
+        R.Err(ParseError.UnexpectedByte(at))
+    }
+}
+
+/// Parse exactly one JSON value. Leading and trailing JSON whitespace is
+/// accepted; any other trailing byte is an error.
+pub fn parse(input: StrBuf) -> ParseResult {
+    let R = ParseResult;
+    let mut at: u64 = 0;
+    let value = match parse_value(borrow input, inout at, 0) {
+        ParseResult.Ok(v) => v,
+        ParseResult.Err(e) => return R.Err(e),
+    };
+    skip_space(borrow input, inout at);
+    if at != input.len() {
+        R.Err(ParseError.TrailingCharacters(at))
+    } else {
+        R.Ok(value)
+    }
+}
+
+fn hex_digit(value: u8) -> u8 {
+    if value < 10 { 48 + value } else { 97 + value - 10 }
+}
+
+fn write_string(value: StrBuf, inout out: StrBuf) {
+    out.push(34);
+    let mut i: u64 = 0;
+    while i < value.len() {
+        let b = byte(borrow value, i);
+        if b == 34 {
+            out.push_str("\\\"");
+        } else if b == 92 {
+            out.push_str("\\\\");
+        } else if b == 8 {
+            out.push_str("\\b");
+        } else if b == 12 {
+            out.push_str("\\f");
+        } else if b == 10 {
+            out.push_str("\\n");
+        } else if b == 13 {
+            out.push_str("\\r");
+        } else if b == 9 {
+            out.push_str("\\t");
+        } else if b < 32 {
+            out.push_str("\\u00");
+            out.push(hex_digit(b >> 4));
+            out.push(hex_digit(b & 15));
+        } else {
+            out.push(b);
+        }
+        i = i + 1;
+    }
+    out.push(34);
+}
+
+fn append_array(items: arraybuf.ArrayBuf(Json), inout out: StrBuf) {
+    let Strings = arraybuf.ArrayBuf(StrBuf);
+    let OJ = option.Option(Json);
+    let OS = option.Option(StrBuf);
+    let mut source = items;
+    let mut rendered = Strings.new();
+    while source.len() > 0 {
+        let item = match source.pop() {
+            OJ.Some(v) => v,
+            OJ.None => return,
+        };
+        let mut text = StrBuf.new();
+        write_value(item, inout text);
+        rendered.push(text);
+    }
+    out.push(91);
+    let mut first = true;
+    while rendered.len() > 0 {
+        let text = match rendered.pop() {
+            OS.Some(v) => v,
+            OS.None => return,
+        };
+        if !first { out.push(44); }
+        first = false;
+        out.push_str(text);
+    }
+    out.push(93);
+}
+
+fn append_object(object: Object, inout out: StrBuf) {
+    let Strings = arraybuf.ArrayBuf(StrBuf);
+    let OJ = option.Option(Json);
+    let OS = option.Option(StrBuf);
+    let mut keys = object.keys;
+    let mut values = object.values;
+    let mut rendered = Strings.new();
+    while values.len() > 0 {
+        let value = match values.pop() {
+            OJ.Some(v) => v,
+            OJ.None => return,
+        };
+        let key = match keys.pop() {
+            OS.Some(v) => v,
+            OS.None => return,
+        };
+        let mut entry = StrBuf.new();
+        write_string(key, inout entry);
+        entry.push(58);
+        write_value(value, inout entry);
+        rendered.push(entry);
+    }
+    out.push(123);
+    let mut first = true;
+    while rendered.len() > 0 {
+        let entry = match rendered.pop() {
+            OS.Some(v) => v,
+            OS.None => return,
+        };
+        if !first { out.push(44); }
+        first = false;
+        out.push_str(entry);
+    }
+    out.push(125);
+}
+
+fn write_value(value: Json, inout out: StrBuf) {
+    match value {
+        Json.Null => out.push_str("null"),
+        Json.Bool(v) => if v { out.push_str("true"); } else { out.push_str("false"); },
+        Json.Number(v) => out.push_str(v),
+        Json.String(v) => write_string(v, inout out),
+        Json.Array(v) => append_array(v, inout out),
+        Json.Object(v) => append_object(v, inout out),
+    }
+}
+
+/// Serialize a JSON value to its compact, standards-compliant spelling.
+/// Serialization consumes the value because Rue's owning collections do not
+/// yet expose borrow-returning element accessors for non-Copy elements.
+pub fn to_string(value: Json) -> StrBuf {
+    let mut out = StrBuf.new();
+    write_value(value, inout out);
+    out
+}
