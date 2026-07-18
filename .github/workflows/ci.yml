@@ -1,12 +1,18 @@
 name: CI
 
+# No `push: [trunk]` trigger (RUE-1006): trunk only advances through the merge
+# queue, and the merge_group run's checks are attached to the exact commit that
+# lands, so a trunk push run would re-validate an identical tree — ~8 duplicate
+# (including a macOS slot) per merge, usually cancelled mid-flight by the
+# concurrency group after burning runner time. Benchmarks keep their push
+# trigger (per-commit history is their purpose); use workflow_dispatch for a
+# manual re-validation of trunk.
 on:
-  push:
-    branches: [trunk]
   pull_request:
     branches: [trunk]
   merge_group:
     branches: [trunk]
+  workflow_dispatch:
 
 # Cancel in-progress runs for the same branch
 concurrency:
@@ -46,6 +52,23 @@ jobs:
           key: dotslash-linux-x64-${{ hashFiles('buck2') }}
           restore-keys: |
             dotslash-linux-x64-
+
+      # BuildBuddy remote action cache (RUE-316/RUE-1006). GitHub withholds
+      # repo secrets from pull_request runs whose head branch lives in a fork —
+      # the normal contribution flow here — so the key is only present on
+      # merge_group and workflow_dispatch runs. That is where it matters: the
+      # merge queue serializes on this workflow. The cold fallback is
+      # mandatory; this step must never fail because the secret is absent.
+      - name: Provision remote build cache
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          if [ -z "${BUILDBUDDY_API_KEY:-}" ]; then
+            echo "BUILDBUDDY_API_KEY unavailable (fork PR or unset); building without the remote cache."
+            exit 0
+          fi
+          scripts/provision-build-cache install
+          scripts/provision-build-cache apply
 
       - name: Run clippy
         # Builds the [clippy.txt] subtarget for every first-party crate and
@@ -118,6 +141,26 @@ jobs:
           restore-keys: |
             dotslash-${{ matrix.name }}-
 
+      # BuildBuddy remote action cache (RUE-316/RUE-1006); see the clippy job
+      # for the secret-availability contract. NOT on linux-x64: that lane runs
+      # the compiler reproducibility check, whose guard requires a cache-free,
+      # .buckconfig-only configuration so the reference and relocated candidate
+      # builds are identically configured — a `.buckconfig.local` is a hard
+      # error in scripts/check-reproducible-compiler.sh. Warming that lane by
+      # dropping the config before the repro step is a possible follow-up once
+      # cache behavior is proven in the queue (RUE-1006).
+      - name: Provision remote build cache
+        if: matrix.name != 'linux-x64'
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          if [ -z "${BUILDBUDDY_API_KEY:-}" ]; then
+            echo "BUILDBUDDY_API_KEY unavailable (fork PR or unset); building without the remote cache."
+            exit 0
+          fi
+          scripts/provision-build-cache install
+          scripts/provision-build-cache apply
+
       # Uses hermetic Rust toolchain downloaded by Buck2
       # First verify everything builds (catches issues tests might miss)
       - name: Build all targets
@@ -173,6 +216,23 @@ jobs:
           key: dotslash-linux-x64-${{ hashFiles('buck2') }}
           restore-keys: |
             dotslash-linux-x64-
+
+      # BuildBuddy remote action cache (RUE-316/RUE-1006); see the clippy job
+      # for the secret-availability contract. This job is the workflow's
+      # critical path (~16 min cold, dominated by the full release build), so
+      # it benefits the most. The RUE-277 debug-vs-release assertion below is
+      # a byte comparison of two separately keyed configurations and is
+      # unaffected by where the artifacts were produced.
+      - name: Provision remote build cache
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          if [ -z "${BUILDBUDDY_API_KEY:-}" ]; then
+            echo "BUILDBUDDY_API_KEY unavailable (fork PR or unset); building without the remote cache."
+            exit 0
+          fi
+          scripts/provision-build-cache install
+          scripts/provision-build-cache apply
 
       # Regression guard for RUE-277: `//platforms:release` must produce a
       # genuinely-optimized binary that differs from the debug build. If the

@@ -1,7 +1,22 @@
 # Required CI
 
 The `CI` workflow (`.github/workflows/ci.yml`) supplies the required pull-request
-and merge-group checks. Containers executed by that workflow must use a reviewed,
+and merge-group checks.
+
+## Triggers
+
+`CI` and `Sanitizer` run on `pull_request` and `merge_group` only (plus
+`workflow_dispatch` for manual re-validation). There is deliberately no
+`push: [trunk]` trigger (RUE-1006): trunk only advances through the merge
+queue, and the merge_group run's checks are attached to the exact commit that
+lands, so a post-merge trunk run would re-test an identical tree. Do not
+re-add a push trigger to these workflows; `Benchmarks` keeps its push trigger
+because per-commit measurement on trunk is its purpose.
+
+The build jobs use the shared BuildBuddy remote action cache when the
+`BUILDBUDDY_API_KEY` secret is available (merge_group runs; fork PRs build
+cold) — see `docs/process/build-cache.md` for the availability rules,
+including why the linux-x64 test lane stays cache-free. Containers executed by that workflow must use a reviewed,
 human-readable release tag and the immutable OCI index digest for that tag. The
 repository gate `//:required-ci-container-pin-validation` rejects a moving
 `latest` image reference, and the normal `./test.sh` run includes that gate.

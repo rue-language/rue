@@ -22,9 +22,10 @@ name: Sanitizer
 # Separate workflow so both jobs run in parallel with the fast `test` job in
 # ci.yml rather than serializing behind it.
 
+# No `push: [trunk]` trigger (RUE-1006): trunk only advances through the merge
+# queue, whose merge_group run already validated the exact commit that lands —
+# a trunk push run would re-test an identical tree. See ci.yml.
 on:
-  push:
-    branches: [trunk]
   pull_request:
     branches: [trunk]
   merge_group:
@@ -55,6 +56,19 @@ jobs:
           key: dotslash-linux-x64-${{ hashFiles('buck2') }}
           restore-keys: |
             dotslash-linux-x64-
+
+      # BuildBuddy remote action cache (RUE-316/RUE-1006); see ci.yml's clippy
+      # job for the secret-availability contract (absent on fork PRs → cold).
+      - name: Provision remote build cache
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          if [ -z "${BUILDBUDDY_API_KEY:-}" ]; then
+            echo "BUILDBUDDY_API_KEY unavailable (fork PR or unset); building without the remote cache."
+            exit 0
+          fi
+          scripts/provision-build-cache install
+          scripts/provision-build-cache apply
 
       - name: Install valgrind
         run: |
