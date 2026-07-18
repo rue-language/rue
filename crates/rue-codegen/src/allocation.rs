@@ -1,11 +1,11 @@
 //! Shared allocation, index-scaling, and bounds-check policy.
 //!
 //! This module owns the facts that must not be rediscovered by an instruction
-//! selector: every ABI slot is eight bytes, a pointer's element width is the
-//! pointee's aggregate slot width, index scaling is unsigned byte arithmetic,
-//! and array bounds use an unsigned `index < length` condition.  Backends only
-//! lower the resulting plans to their arithmetic, compare, branch, and trap
-//! instructions.
+//! selector: a pointer's element width is the pointee's canonical layout size,
+//! index scaling is unsigned byte arithmetic, and array bounds use an unsigned
+//! `index < length` condition.  Byte sizes come from the canonical layout
+//! authority ([`rue_air::layout`]); backends only lower the resulting plans to
+//! their arithmetic, compare, branch, and trap instructions.
 
 use rue_air::{FrozenTypeInternPool, Type, TypeKind};
 use rue_runtime_abi::RuntimeHelperId;
@@ -13,8 +13,9 @@ use rue_runtime_abi::RuntimeHelperId;
 use crate::types;
 use crate::vreg::{LabelId, VReg};
 
-/// The byte width of one logical ABI/storage slot.
-pub const SLOT_BYTES: u64 = 8;
+/// The byte width of one logical ABI/storage slot, re-exported from the
+/// canonical layout authority.
+pub use rue_air::layout::SLOT_BYTES;
 
 /// The semantic purpose of a scaling operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,9 +73,16 @@ impl SlotWidth {
 }
 
 /// Compute the canonical aggregate/storage width for `ty`.
+///
+/// The slot count is the internal value decomposition; the byte size is the
+/// canonical physical layout. They agree by construction (`bytes == slots *
+/// SLOT_BYTES`).
 #[inline]
 pub fn type_width(type_pool: &FrozenTypeInternPool, ty: Type) -> SlotWidth {
-    SlotWidth::from_slots(types::type_slot_count(type_pool, ty))
+    SlotWidth {
+        slots: types::type_slot_count(type_pool, ty),
+        bytes: type_pool.layout(ty).size,
+    }
 }
 
 /// Compute the canonical element width for a pointer type.

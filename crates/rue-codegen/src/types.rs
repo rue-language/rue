@@ -6,6 +6,7 @@
 //! Struct, enum, array, and pointer definitions are resolved through the
 //! canonical `FrozenTypeInternPool` (ADR-0024).
 
+use rue_air::layout::SLOT_BYTES;
 use rue_air::{ArrayTypeId, EnumId, FrozenTypeInternPool, StructId, TypeKind};
 use rue_cfg::{CfgInstData, CfgValue, Type, ValidatedCfg};
 use std::collections::HashMap;
@@ -209,17 +210,12 @@ pub fn array_element_slot_count(
     type_slot_count(type_pool, element_type)
 }
 
-/// Calculate the size in bytes of a type.
+/// Calculate the size in bytes of a type from the canonical layout authority.
 ///
-/// This is used for pointer arithmetic where we need the actual byte size,
-/// not the slot count. Each slot is 8 bytes, but primitive types may use
-/// fewer bytes (e.g., i8 uses 1 byte, i16 uses 2 bytes).
-///
-/// However, for simplicity and alignment purposes, all types currently use
-/// 8 bytes per slot. This function returns `slot_count * 8`.
+/// This is the physical byte size (used, e.g., for pointer arithmetic), as
+/// opposed to [`type_slot_count`]'s internal value decomposition.
 pub fn type_size_bytes(type_pool: &FrozenTypeInternPool, ty: Type) -> u64 {
-    let slots = type_slot_count(type_pool, ty);
-    (slots as u64) * 8
+    type_pool.layout(ty).size
 }
 
 /// Total slot count of a struct: the sum of every field's slot count. Equal to
@@ -237,20 +233,15 @@ pub fn struct_slot_count(type_pool: &FrozenTypeInternPool, struct_id: StructId) 
 
 /// Calculate the slot offset for a field within a struct.
 ///
-/// This accounts for the sizes of all preceding fields.
+/// Derived from the canonical layout authority's field byte offset (shared with
+/// `@offset_of`) divided by the slot width, so field addressing agrees with the
+/// layout intrinsic by construction.
 pub fn struct_field_slot_offset(
     type_pool: &FrozenTypeInternPool,
     struct_id: StructId,
     field_index: u32,
 ) -> u32 {
-    let struct_def = type_pool.struct_def(struct_id);
-    let mut offset = 0u32;
-    for i in 0..(field_index as usize) {
-        if let Some(field) = struct_def.fields.get(i) {
-            offset += type_slot_count(type_pool, field.ty);
-        }
-    }
-    offset
+    (type_pool.struct_field_offset(struct_id, field_index) / SLOT_BYTES) as u32
 }
 
 /// Recursively collect all scalar vregs from an array value.
@@ -419,6 +410,74 @@ pub fn collect_struct_scalar_vregs(
                 vregs
             } else {
                 vec![get_vreg(value)]
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod layout_authority_tests {
+    use rue_air::Sema;
+    use rue_air::layout::{LayoutKind, SLOT_BYTES};
+    use rue_error::PreviewFeatures;
+    use rue_lexer::Lexer;
+    use rue_parser::Parser;
+    use rue_rir::AstGen;
+
+    use super::{struct_field_slot_offset, type_size_bytes, type_slot_count};
+
+    /// The layout authority, the slot decomposition, and code generation's
+    /// field/size helpers agree across every type in a real compiled program.
+    #[test]
+    fn layout_agrees_with_slot_model_over_a_compiled_fixture() {
+        let source = r#"
+            struct Point { x: i32, y: i64 }
+            struct Outer { tag: bool, points: [Point; 3] }
+            fn main() -> i32 {
+                let o = Outer {
+                    tag: true,
+                    points: [
+                        Point { x: 1, y: 2 },
+                        Point { x: 3, y: 4 },
+                        Point { x: 5, y: 6 },
+                    ],
+                };
+                o.points[0].x
+            }
+        "#;
+
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().expect("fixture should lex");
+        let parser = Parser::new(tokens, interner);
+        let (ast, mut interner) = parser.parse().expect("fixture should parse");
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
+        let output = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new())
+            .analyze_all()
+            .expect("fixture should analyze");
+        let pool = &output.type_pool;
+
+        for ty in pool.all_types() {
+            let layout = pool.layout(ty);
+            assert_eq!(
+                layout.size,
+                u64::from(pool.abi_slot_count(ty)) * SLOT_BYTES,
+                "layout size disagrees with slot count for {ty:?}"
+            );
+            assert_eq!(type_size_bytes(pool, ty), layout.size);
+            assert_eq!(layout.stride, layout.size);
+
+            // Struct field addressing and the layout's field offsets are one
+            // computation.
+            if let (Some(struct_id), LayoutKind::Struct { field_offsets, .. }) =
+                (ty.as_struct(), &layout.kind)
+            {
+                for (index, &offset) in field_offsets.iter().enumerate() {
+                    let slot_offset = struct_field_slot_offset(pool, struct_id, index as u32);
+                    assert_eq!(u64::from(slot_offset) * SLOT_BYTES, offset);
+                }
+                let _ = type_slot_count(pool, ty);
             }
         }
     }

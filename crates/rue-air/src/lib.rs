@@ -16,6 +16,7 @@ mod canonical_imports;
 mod inference;
 mod inst;
 mod intern_pool;
+pub mod layout;
 mod module_registry;
 mod param_arena;
 mod path_norm;
@@ -48,6 +49,7 @@ pub use intern_pool::{
     EnumData, FrozenTypeInternPool, StructData, TypeData, TypeInternPool, TypeInternPoolStats,
     TypeValidationError,
 };
+pub use layout::{Layout, LayoutKind, PaddingRange, SLOT_BYTES};
 pub use module_registry::ModuleRegistry;
 pub use param_arena::{ParamArena, ParamRange};
 pub use path_norm::normalize_module_path;

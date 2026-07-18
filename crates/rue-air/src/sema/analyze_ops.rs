@@ -6672,14 +6672,15 @@ impl<'a> BodySema<'a> {
         // count (RUE-561).
         let value: u64 = match intrinsic_name.as_str() {
             "size_of" => {
-                // Calculate size in bytes (slot count * 8)
-                let slot_count = self.require_layout_slots(ty, span)?;
-                u64::from(slot_count) * 8
+                // Reject oversized layouts (E0906) before observing the
+                // canonical layout authority, which owns the bytes-per-slot
+                // conversion.
+                self.require_layout_slots(ty, span)?;
+                self.type_pool.provisional_layout(ty).size
             }
             "align_of" => {
-                // Zero-sized types have 1-byte alignment, others have 8-byte
-                let slot_count = self.require_layout_slots(ty, span)?;
-                if slot_count == 0 { 1u64 } else { 8u64 }
+                self.require_layout_slots(ty, span)?;
+                self.type_pool.provisional_layout(ty).alignment
             }
             _ => {
                 return Err(CompileError::new(
@@ -6700,15 +6701,13 @@ impl<'a> BodySema<'a> {
     /// Analyze `@offset_of(T, field)` (RUE-301): the compile-time byte offset of
     /// `field` within struct type `T`.
     ///
-    /// The offset is computed from the layout the compiler assigns — the sum of
-    /// the ABI slot counts of all preceding fields, times the 8-byte slot size
-    /// (spec 3.6). This MUST match `struct_field_slot_offset` in
-    /// `rue-codegen::types` (which multiplies the same preceding-field slot sum
-    /// by 8 when addressing a field), so that `@offset_of(T, f)` and
-    /// `@field_ptr(s.f)` agree with direct `s.f` access under any layout. The
-    /// result is a comptime-known `u64`, mirroring Rust's
-    /// `core::mem::offset_of!` (return type) and `@size_of`/`@align_of` (which
-    /// likewise fold to a `Const` at analysis time).
+    /// The offset comes from the canonical layout authority
+    /// (`struct_field_offset`, spec 3.6), the same query code generation
+    /// addresses fields through, so `@offset_of(T, f)`, `@field_ptr(s.f)`, and
+    /// direct `s.f` access agree by construction. The result is a comptime-known
+    /// `u64`, mirroring Rust's `core::mem::offset_of!` (return type) and
+    /// `@size_of`/`@align_of` (which likewise fold to a `Const` at analysis
+    /// time).
     fn analyze_offset_of(
         &mut self,
         air: &mut Air,
@@ -6756,21 +6755,9 @@ impl<'a> BodySema<'a> {
             }
         };
 
-        // Sum the slot counts of every field preceding `field`, then scale by
-        // the 8-byte slot size. Cloning the field types first keeps the
-        // immutable borrow of `struct_def` from colliding with `abi_slot_count`
-        // (which borrows `self`).
-        let preceding_field_types: Vec<Type> = struct_def
-            .fields
-            .iter()
-            .take(field_index)
-            .map(|f| f.ty)
-            .collect();
-        let slot_offset: u32 = preceding_field_types
-            .iter()
-            .map(|&fty| self.abi_slot_count(fty))
-            .sum();
-        let byte_offset = (slot_offset as u64) * 8;
+        let byte_offset = self
+            .type_pool
+            .provisional_struct_field_offset(struct_id, field_index as u32);
 
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Const(byte_offset),
