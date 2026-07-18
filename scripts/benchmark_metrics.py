@@ -122,13 +122,14 @@ def robust_summary(values: object) -> dict | None:
     sample_range = maximum - minimum
     # MAD intentionally ignores a minority of outliers. That is useful for a
     # center estimate, but a zero/tiny MAD must not certify benchmark evidence
-    # when the observed range is repeatedly extreme. With at least five
-    # samples, trim the single most isolated edge observation for this guard
-    # only so an isolated scheduler delay cannot fail an otherwise stable run.
-    # The public minimum, maximum, and range below continue to preserve every
-    # observation.
+    # when the observed range is repeatedly extreme. For this guard only, trim
+    # the most isolated edge observation once per five samples so a minority of
+    # isolated scheduler delays cannot fail an otherwise stable run, while a
+    # sample set that stays dispersed after additional evidence collection
+    # still classifies as extreme. The public minimum, maximum, and range below
+    # continue to preserve every observation.
     guarded = sorted(numeric)
-    if len(guarded) >= 5:
+    for _ in range(len(numeric) // 5):
         low_gap = guarded[1] - guarded[0]
         high_gap = guarded[-1] - guarded[-2]
         guarded = guarded[1:] if low_gap >= high_gap else guarded[:-1]

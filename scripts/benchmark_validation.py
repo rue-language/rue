@@ -11,7 +11,7 @@ from benchmark_manifest import (
     validate_readme_inventory,
     validate_static_dimensions,
 )
-from benchmark_scaling import budget_status, derive_family
+from benchmark_scaling import MAX_SAMPLE_MULTIPLIER, budget_status, derive_family
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -78,10 +78,14 @@ def validate_scaling_results(data: object, manifest_path: Path) -> list[str]:
                 continue
             latency = tier.get("samples_ms")
             memory = tier.get("peak_memory_samples_bytes")
+            # Noise-driven top-up appends whole extra rounds per tier, so a
+            # valid tier holds between one and MAX_SAMPLE_MULTIPLIER rounds.
+            valid_iterations = isinstance(iterations, int) and not isinstance(iterations, bool)
             for label, samples in (("latency", latency), ("peak memory", memory)):
                 if (
                     not isinstance(samples, list)
-                    or len(samples) != iterations
+                    or not valid_iterations
+                    or not iterations <= len(samples) <= iterations * MAX_SAMPLE_MULTIPLIER
                     or any(
                         not _is_finite_non_negative_number(value) or value <= 0
                         for value in samples

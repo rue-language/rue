@@ -20,8 +20,13 @@ on:
         default: '5'
         type: string
 
+# issues:write is required by the notify job below; without it the
+# github-script call fails with "Resource not accessible by integration"
+# and trunk benchmark failures are found but never reported (the same
+# silent-failure mode the fuzz workflow hit on 2026-07-03/04).
 permissions:
   contents: write  # collect job pushes history to the perf branch
+  issues: write    # notify job files/updates the benchmark-failure issue
 
 concurrency:
   group: benchmarks
@@ -204,3 +209,77 @@ jobs:
             git commit -m "Benchmark results for $short_sha ($platform_count platforms)"
             git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" HEAD:perf
           fi
+
+  # Trunk benchmark failures previously only turned the Actions run red;
+  # nobody is watching that page, so they sat unnoticed until someone
+  # looked at the performance dashboard. Mirror the fuzz workflow: keep one
+  # open tracking issue and append later failures to it as comments.
+  # Runs cancelled by the concurrency group (rapid trunk merges) are not
+  # failures and do not report.
+  notify-failure:
+    name: Notify on failure
+    needs: [benchmark, collect-results]
+    runs-on: ubuntu-latest
+    if: ${{ failure() }}
+
+    steps:
+      - name: Create or comment on the benchmark-failure issue
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const results = [
+              ['benchmark', '${{ needs.benchmark.result }}'],
+              ['collect-results', '${{ needs.collect-results.result }}'],
+            ];
+            const failed = results.filter(([, r]) => r === 'failure').map(([n]) => n);
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const summary = `**Run:** ${runUrl}\n**Commit:** ${context.sha}\n**Failed jobs:** ${failed.join(', ') || '(job-level failure)'}\n`;
+            const body = `## Benchmark Workflow Failure
+
+            The trunk benchmark workflow failed.
+
+            ${summary}
+            ### Next Steps
+            1. Open the run above and check which platform job failed and why.
+               Common failure classes:
+               - \`Budget violation ...\` (exit 2): a scaling family's growth
+                 lower bound exceeded its manifest budget — a real complexity
+                 regression until proven otherwise.
+               - \`Insufficient scaling evidence ...\` (exit 3): evidence stayed
+                 indeterminate even after the runner's noise-driven sample
+                 top-up — usually a very noisy runner, worth a rerun before
+                 deeper digging.
+               - Validation errors from \`validate-benchmark.py\`: the results
+                 schema or corpus drifted from the manifest.
+            2. Reproduce locally with \`./bench.sh --iterations 5 --output
+               results.json --no-history\`.
+            3. Fix the regression (or harness bug) on a feature branch and let
+               the next trunk run confirm.
+            `;
+
+            // One open tracking issue at a time; failures while it is open
+            // are appended as comments instead of being silently dropped.
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'benchmark-failure'
+            });
+
+            if (issues.data.length === 0) {
+              const title = `Benchmark workflow failed on trunk (${new Date().toISOString().split('T')[0]})`;
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['benchmark-failure', 'bug']
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issues.data[0].number,
+                body: `Another trunk benchmark failure while this issue is open.\n\n${summary}`
+              });
+            }
