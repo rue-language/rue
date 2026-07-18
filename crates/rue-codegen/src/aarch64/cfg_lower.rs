@@ -750,17 +750,29 @@ impl<'a> CfgLower<'a> {
                 slot_count,
                 storage_bytes,
             } => {
-                let slots: Vec<_> = (0..slot_count)
-                    .map(|index| {
-                        let slot = self.mir.alloc_vreg();
-                        self.mir.push(Aarch64Inst::Ldr {
-                            dst: Operand::Virtual(slot),
-                            base: Reg::Sp,
-                            offset: (index * 8) as i32,
-                        });
-                        slot
-                    })
-                    .collect();
+                let slots = if let Some(map) = &plan.compact_return_image {
+                    // Compact aggregate return (RUE-1004): read the callee-written
+                    // compact image back from the sret buffer, extending each slot
+                    // from its physical width at its compact byte offset.
+                    let base = self.mir.alloc_vreg();
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Virtual(base),
+                        src: Operand::Physical(Reg::Sp),
+                    });
+                    crate::agg_slots::load_enum_slots_through_ptr(self, base, map)
+                } else {
+                    (0..slot_count)
+                        .map(|index| {
+                            let slot = self.mir.alloc_vreg();
+                            self.mir.push(Aarch64Inst::Ldr {
+                                dst: Operand::Virtual(slot),
+                                base: Reg::Sp,
+                                offset: (index * 8) as i32,
+                            });
+                            slot
+                        })
+                        .collect()
+                };
                 self.mir.push(Aarch64Inst::AddImm {
                     dst: Operand::Physical(Reg::Sp),
                     src: Operand::Physical(Reg::Sp),
@@ -2542,7 +2554,15 @@ impl<'a> CfgLower<'a> {
                     }
                     ReturnValuePlan::Aggregate { slots, return_plan } => {
                         if return_plan.uses_sret() {
-                            crate::agg_slots::store_slots_to_sret(self, &slots);
+                            match crate::types::aggregate_physical_slot_map(
+                                self.ctx.type_pool,
+                                self.ctx.cfg.return_type(),
+                            ) {
+                                Some(map) => crate::agg_slots::store_slots_to_sret_compact(
+                                    self, &slots, &map,
+                                ),
+                                None => crate::agg_slots::store_slots_to_sret(self, &slots),
+                            }
                         } else {
                             for (index, slot) in slots.iter().enumerate() {
                                 if index < RET_REGS.len() {
@@ -3273,6 +3293,71 @@ mod tests {
                 Aarch64Inst::NarrowStoreIndexed { .. } | Aarch64Inst::NarrowLoadIndexed { .. }
             )),
             "gate-off must not emit any narrow access"
+        );
+    }
+
+    /// RUE-1004: on AArch64, a non-slot-identical struct returned by value is
+    /// forced indirect (sret); the caller reads the callee-written compact image
+    /// back from the sret buffer with narrow loads at the compact offsets (`main`
+    /// is the caller here). Gate-off reads eight-byte slots, no narrow access.
+    #[test]
+    fn aggregate_layout_allows_compact_struct_sret_return() {
+        let source = "struct Padded { a: u8, b: i32, c: u8 } \
+                      fn make() -> Padded { Padded { a: 7, b: 1000, c: 9 } } \
+                      fn main() -> i32 { let p = make(); @dbg(p.b); 0 }";
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::AggregateLayout);
+        let mir =
+            try_lower_first_fn(source, preview).expect("a compact struct sret return must lower");
+        assert!(
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, Aarch64Inst::NarrowLoadIndexed { width: 1, .. })),
+            "the caller must read the u8 fields narrow from the compact sret image"
+        );
+
+        let off = try_lower_first_fn(source, PreviewFeatures::new())
+            .expect("the same program lowers under the default slot model");
+        assert!(
+            off.instructions()
+                .iter()
+                .all(|inst| !matches!(inst, Aarch64Inst::NarrowLoadIndexed { .. })),
+            "gate-off must not emit any narrow sret read-back"
+        );
+    }
+
+    /// RUE-1004: on AArch64, an `inout` non-slot-identical struct argument is
+    /// accepted (slot-shaped by-ref transport to the caller's frame storage).
+    #[test]
+    fn aggregate_layout_allows_inout_compact_struct_param() {
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::AggregateLayout);
+        try_lower_first_fn(
+            "struct Padded { a: u8, b: i32, c: u8 } \
+             fn bump(inout p: Padded) { p.b = p.b + 1; } \
+             fn main() -> i32 { let mut s = Padded { a: 1, b: 2, c: 3 }; bump(inout s); s.b }",
+            preview,
+        )
+        .expect("an inout compact struct argument must lower");
+    }
+
+    /// RUE-1004 keeps refusing a non-slot-identical struct passed BY VALUE across
+    /// a call on AArch64: the callee parameter ABI is not yet remapped from the
+    /// CFG's N decomposition slots to one incoming compact-buffer pointer.
+    #[test]
+    fn aggregate_layout_refuses_by_value_compact_struct_arg() {
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::AggregateLayout);
+        let err = try_lower_first_fn(
+            "struct Padded { a: u8, b: i32, c: u8 } \
+             fn main() -> i32 { sum(Padded { a: 1, b: 5, c: 3 }) } \
+             fn sum(p: Padded) -> i32 { p.b }",
+            preview,
+        )
+        .expect_err("a by-value compact struct argument must be refused");
+        assert!(
+            format!("{err:?}").contains("aggregate_layout"),
+            "refusal must name the feature, got: {err:?}"
         );
     }
 

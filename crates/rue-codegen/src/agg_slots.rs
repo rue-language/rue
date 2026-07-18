@@ -278,6 +278,22 @@ pub(crate) fn store_slots_to_sret<B: SlotBackend>(b: &mut B, vals: &[VReg]) {
     }
 }
 
+/// Compact counterpart of [`store_slots_to_sret`] (ADR-0052 phase 5.7,
+/// RUE-1004): load the sret buffer pointer and store the return value's slots as
+/// the aggregate's compact memory image — each slot truncated to its physical
+/// width at its compact byte offset (`map`) — rather than one eight-byte slot
+/// per field. The caller reads the same image back with the matching map.
+pub(crate) fn store_slots_to_sret_compact<B: SlotBackend>(
+    b: &mut B,
+    vals: &[VReg],
+    map: &[crate::types::PhysicalEnumSlot],
+) {
+    let ptr = b.alloc_vreg();
+    let sret_slot = b.ctx().sret_ptr_slot();
+    b.emit_load_slot(ptr, sret_slot);
+    store_enum_slots_through_ptr(b, vals, ptr, map);
+}
+
 /// Load `count` slots through `ptr` at ASCENDING byte offsets (slot k at
 /// `ptr + k*8`), returning the freshly-allocated vregs in logical slot order.
 /// The public counterpart of [`store_slots_through_ptr`]: used by `@ptr_read`

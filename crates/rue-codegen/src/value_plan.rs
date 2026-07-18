@@ -1405,6 +1405,7 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                 let plan = crate::call_plan::CallPlan::from_inputs_with_result(
                     crate::call_plan::CallTarget::rue(symbol),
                     inputs.return_plan,
+                    inputs.compact_return_image.clone(),
                     &inputs.args,
                     adapter.call_arg_register_budget(),
                     adapter,

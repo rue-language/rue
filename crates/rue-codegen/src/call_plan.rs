@@ -175,6 +175,12 @@ pub struct CallPlan {
     /// present.  This is the only slot vector the adapters may marshal.
     pub abi_slots: Vec<VReg>,
     pub return_plan: ReturnPlan,
+    /// For a compact aggregate returned via sret under `aggregate_layout`
+    /// (ADR-0052 phase 5.7, RUE-1004), the internal-slot → physical-byte image
+    /// the callee writes and the caller reads back through the sret buffer.
+    /// `None` for a slot-identical sret return (read back one slot per eight
+    /// bytes, unchanged) and for every non-sret return.
+    pub compact_return_image: Option<Vec<crate::types::PhysicalEnumSlot>>,
     /// Result vreg reserved by the shared dispatcher before argument leaves
     /// materialize, preserving the canonical event allocation order.
     pub result: Option<VReg>,
@@ -204,6 +210,10 @@ pub enum CallArgInput {
 pub struct CallInputs {
     pub args: Vec<CallArgInput>,
     pub return_plan: ReturnPlan,
+    /// The compact sret image for the return type, when it is a non-slot-identical
+    /// aggregate returned via sret under `aggregate_layout` (RUE-1004). See
+    /// [`CallPlan::compact_return_image`].
+    pub compact_return_image: Option<Vec<crate::types::PhysicalEnumSlot>>,
 }
 
 impl CallInputs {
@@ -235,9 +245,18 @@ impl CallInputs {
                 .unwrap_or_else(|message| panic!("{message}"))
             })
             .collect();
+        let return_plan = return_plan(type_pool, return_ty, ret_reg_budget);
+        // A compact aggregate returned via sret carries its physical image so both
+        // the callee write and the caller read-back marshal the same bytes.
+        let compact_return_image = if return_plan.uses_sret() {
+            types::aggregate_physical_slot_map(type_pool, return_ty)
+        } else {
+            None
+        };
         Self {
             args,
-            return_plan: return_plan(type_pool, return_ty, ret_reg_budget),
+            return_plan,
+            compact_return_image,
         }
     }
 }
@@ -299,6 +318,7 @@ impl CallPlan {
         Self::from_inputs_with_result(
             target,
             return_plan,
+            None,
             args,
             arg_reg_budget,
             materializer,
@@ -309,6 +329,7 @@ impl CallPlan {
     pub fn from_inputs_with_result<M: CallMaterializer>(
         target: CallTarget,
         return_plan: ReturnPlan,
+        compact_return_image: Option<Vec<crate::types::PhysicalEnumSlot>>,
         args: &[CallArgInput],
         arg_reg_budget: usize,
         materializer: &mut M,
@@ -382,6 +403,7 @@ impl CallPlan {
             user_args,
             abi_slots,
             return_plan,
+            compact_return_image,
             result,
             stack_slot_count,
             stack_bytes,
@@ -402,6 +424,7 @@ impl CallPlan {
             }],
             abi_slots: slots.to_vec(),
             return_plan: ReturnPlan::ZeroSized,
+            compact_return_image: None,
             result: None,
             stack_slot_count,
             stack_bytes: align_up((stack_slot_count * 8) as u32, 16),
@@ -539,6 +562,7 @@ mod tests {
             ],
             abi_slots: slots.clone(),
             return_plan: ReturnPlan::ZeroSized,
+            compact_return_image: None,
             result: None,
             stack_slot_count: 0,
             stack_bytes: 0,
