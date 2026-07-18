@@ -524,3 +524,61 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "[E0701]"
+
+# Unaligned typed scalar access (ADR-0059 Phase 4, RUE-978). Same shape as the
+# aligned pair but the address need not satisfy @align_of(T).
+[[case]]
+name = "ptr_unaligned_round_trip"
+spec = ["9.2:14k", "9.2:14m"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut i32 = @alloc(1);
+        @ptr_write_unaligned(p, 1234);
+        let v: i32 = @ptr_read_unaligned(p);
+        @free(p, 1);
+        @intCast(v % 200)
+    }
+}
+"""
+exit_code = 34
+
+[[case]]
+name = "ptr_unaligned_requires_preview"
+spec = ["9.2:14a", "9.2:14l"]
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut i32 = @alloc(1);
+        @ptr_write_unaligned(p, 7);
+        @free(p, 1);
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = "--preview raw_bytes"
+
+[[case]]
+name = "ptr_unaligned_requires_checked"
+spec = ["9.2:14l"]
+preview = "raw_bytes"
+preview_should_pass = true
+source = """
+fn read(p: ptr mut i32) -> i32 {
+    @ptr_read_unaligned(p)
+}
+fn main() -> i32 {
+    checked {
+        let p: ptr mut i32 = @alloc(1);
+        @ptr_write(p, 0);
+        let v: i32 = read(p);
+        @free(p, 1);
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = "[E1300]"

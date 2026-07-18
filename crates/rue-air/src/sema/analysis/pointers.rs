@@ -6,8 +6,15 @@
 use super::*;
 
 impl<'a> BodySema<'a> {
-    /// Analyze @ptr_read intrinsic: reads value through pointer.
-    /// Signature: @ptr_read(ptr: ptr const T) -> T
+    /// Analyze @ptr_read / @ptr_read_unaligned intrinsic: reads value through
+    /// pointer. Signature: `@ptr_read(ptr: ptr const T) -> T`.
+    ///
+    /// `unaligned` selects `@ptr_read_unaligned` (ADR-0059 Phase 4, RUE-978):
+    /// same pointee-typed shape, but the caller does not promise the address is
+    /// aligned. It is part of the interim byte surface and so requires the
+    /// `raw_bytes` preview. On x86-64 and AArch64 the emitted access is
+    /// identical to the aligned variant (both tolerate unaligned scalars); the
+    /// distinction is the semantic contract of spec 9.2:14k.
     pub(super) fn analyze_ptr_read_intrinsic(
         &mut self,
         air: &mut Air,
@@ -16,11 +23,24 @@ impl<'a> BodySema<'a> {
         args: &[RirCallArg],
         span: Span,
         ctx: &mut AnalysisContext,
+        unaligned: bool,
     ) -> CompileResult<AnalysisResult> {
+        let diag = if unaligned {
+            "ptr_read_unaligned"
+        } else {
+            "ptr_read"
+        };
+        if unaligned {
+            self.require_preview(
+                PreviewFeature::RawBytes,
+                "@ptr_read_unaligned intrinsic",
+                span,
+            )?;
+        }
         if args.len() != 1 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
-                    name: "ptr_read".to_string(),
+                    name: diag.to_string(),
                     expected: 1,
                     found: args.len(),
                 },
@@ -38,7 +58,7 @@ impl<'a> BodySema<'a> {
             _ => {
                 return Err(CompileError::new(
                     ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
-                        name: "ptr_read".to_string(),
+                        name: diag.to_string(),
                         expected: "ptr const T or ptr mut T".to_string(),
                         found: self.format_type_name(ptr_type),
                     })),
@@ -69,8 +89,11 @@ impl<'a> BodySema<'a> {
         Ok(AnalysisResult::new(air_ref, pointee_type))
     }
 
-    /// Analyze @ptr_write intrinsic: writes value through pointer.
-    /// Signature: @ptr_write(ptr: ptr mut T, value: T) -> ()
+    /// Analyze @ptr_write / @ptr_write_unaligned intrinsic: writes value through
+    /// pointer. Signature: `@ptr_write(ptr: ptr mut T, value: T) -> ()`.
+    ///
+    /// `unaligned` selects `@ptr_write_unaligned` (ADR-0059 Phase 4, RUE-978);
+    /// see [`Self::analyze_ptr_read_intrinsic`] for the aligned/unaligned split.
     pub(super) fn analyze_ptr_write_intrinsic(
         &mut self,
         air: &mut Air,
@@ -78,11 +101,24 @@ impl<'a> BodySema<'a> {
         args: &[RirCallArg],
         span: Span,
         ctx: &mut AnalysisContext,
+        unaligned: bool,
     ) -> CompileResult<AnalysisResult> {
+        let diag = if unaligned {
+            "ptr_write_unaligned"
+        } else {
+            "ptr_write"
+        };
+        if unaligned {
+            self.require_preview(
+                PreviewFeature::RawBytes,
+                "@ptr_write_unaligned intrinsic",
+                span,
+            )?;
+        }
         if args.len() != 2 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
-                    name: "ptr_write".to_string(),
+                    name: diag.to_string(),
                     expected: 2,
                     found: args.len(),
                 },
@@ -102,7 +138,7 @@ impl<'a> BodySema<'a> {
             TypeKind::PtrConst(_) => {
                 return Err(CompileError::new(
                     ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
-                        name: "ptr_write".to_string(),
+                        name: diag.to_string(),
                         expected: "ptr mut T (cannot write through ptr const)".to_string(),
                         found: self.format_type_name(ptr_type),
                     })),
@@ -112,7 +148,7 @@ impl<'a> BodySema<'a> {
             _ => {
                 return Err(CompileError::new(
                     ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
-                        name: "ptr_write".to_string(),
+                        name: diag.to_string(),
                         expected: "ptr mut T".to_string(),
                         found: self.format_type_name(ptr_type),
                     })),

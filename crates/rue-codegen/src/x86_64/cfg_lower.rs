@@ -1963,11 +1963,17 @@ impl<'a> CfgLower<'a> {
                     src: Operand::Virtual(plan.args[1].primary),
                 });
                 let dst = self.mir.alloc_vreg();
-                self.mir.push(X86Inst::Movzx8RMIndexed {
-                    dst: Operand::Virtual(dst),
-                    base: addr,
-                    offset: 0,
-                });
+                if let Some(narrow) = plan.narrow_access {
+                    // Gate-on: fold into the typed `ptr u8` narrow load (RUE-978).
+                    self.emit_narrow_load_through_ptr(dst, addr, 0, narrow);
+                } else {
+                    // Gate-off: the bespoke packed byte load, byte-for-byte.
+                    self.mir.push(X86Inst::Movzx8RMIndexed {
+                        dst: Operand::Virtual(dst),
+                        base: addr,
+                        offset: 0,
+                    });
+                }
                 dst
             }
             crate::value_plan::IntrinsicOperation::ByteWrite => {
@@ -1980,11 +1986,17 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(addr),
                     src: Operand::Virtual(plan.args[1].primary),
                 });
-                self.mir.push(X86Inst::MovMR8Indexed {
-                    base: addr,
-                    offset: 0,
-                    src: Operand::Virtual(plan.args[2].primary),
-                });
+                if let Some(narrow) = plan.narrow_access {
+                    // Gate-on: fold into the typed `ptr u8` narrow store (RUE-978).
+                    self.emit_narrow_store_through_ptr(plan.args[2].primary, addr, 0, narrow);
+                } else {
+                    // Gate-off: the bespoke packed byte store, byte-for-byte.
+                    self.mir.push(X86Inst::MovMR8Indexed {
+                        base: addr,
+                        offset: 0,
+                        src: Operand::Virtual(plan.args[2].primary),
+                    });
+                }
                 let dst = self.mir.alloc_vreg();
                 self.mir.push(X86Inst::MovRI32 {
                     dst: Operand::Virtual(dst),
@@ -3788,5 +3800,46 @@ mod tests {
         let free = runtime_call_index(&mir, rue_runtime_abi::RuntimeHelperId::Free);
         assert_eq!(immediate_call_arg(&mir, free, Reg::Rsi), Some(5));
         assert_eq!(immediate_call_arg(&mir, free, Reg::Rdx), Some(1));
+    }
+
+    /// RUE-978: under the compact layout the raw-byte access family folds into
+    /// the ordinary typed `ptr u8` narrow path — `@byte_read`/`@byte_write`
+    /// emit the same one-byte `NarrowLoadIndexed`/`NarrowStoreIndexed` a typed
+    /// `@ptr_read`/`@ptr_write` of a `u8` pointee does, not the bespoke
+    /// `Movzx8RMIndexed`/`MovMR8Indexed`. Gate-off keeps the bespoke path
+    /// (asserted by `raw_bytes_runtime_helper_identity_and_slots_match_shared_plan`).
+    #[test]
+    fn aggregate_layout_folds_byte_access_into_narrow_typed_path() {
+        let source = "fn main() -> i32 { checked { let p = @alloc_bytes(2, 1); \
+             @byte_write(p, 0, 65); let b = @byte_read(p, 1); \
+             @free_bytes(p, 2, 1); @intCast(b) } }";
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::RawBytes);
+        preview.insert(PreviewFeature::AggregateLayout);
+        let mir = lower_to_mir_with_preview(source, preview);
+        assert!(
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::NarrowStoreIndexed { width: 1, .. })),
+            "gated @byte_write must fold into the one-byte narrow store"
+        );
+        assert!(
+            mir.instructions().iter().any(|inst| matches!(
+                inst,
+                X86Inst::NarrowLoadIndexed {
+                    width: 1,
+                    signed: false,
+                    ..
+                }
+            )),
+            "gated @byte_read must fold into the one-byte zero-extended narrow load"
+        );
+        assert!(
+            mir.instructions().iter().all(|inst| !matches!(
+                inst,
+                X86Inst::Movzx8RMIndexed { .. } | X86Inst::MovMR8Indexed { .. }
+            )),
+            "the bespoke packed byte load/store must not survive the fold-in"
+        );
     }
 }

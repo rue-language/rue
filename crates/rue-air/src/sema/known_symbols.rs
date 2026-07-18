@@ -111,6 +111,12 @@ pub struct KnownSymbols {
     pub ptr_read: Spur,
     /// The `ptr_write` intrinsic symbol - writes value through pointer.
     pub ptr_write: Spur,
+    /// The `ptr_read_unaligned` / `ptr_write_unaligned` intrinsics: the
+    /// explicit unaligned scalar access pair for packed/parsed data
+    /// (ADR-0059 Phase 4, RUE-978/RUE-962). Gated behind `raw_bytes` with the
+    /// rest of the interim byte surface until RUE-971 stabilizes.
+    pub ptr_read_unaligned: Spur,
+    pub ptr_write_unaligned: Spur,
     /// The `ptr_offset` intrinsic symbol - pointer arithmetic.
     pub ptr_offset: Spur,
     /// The `ptr_to_int` intrinsic symbol - converts pointer to usize.
@@ -194,6 +200,8 @@ impl KnownSymbols {
             // Pointer intrinsics
             ptr_read: interner.get_or_intern_static("ptr_read"),
             ptr_write: interner.get_or_intern_static("ptr_write"),
+            ptr_read_unaligned: interner.get_or_intern_static("ptr_read_unaligned"),
+            ptr_write_unaligned: interner.get_or_intern_static("ptr_write_unaligned"),
             ptr_offset: interner.get_or_intern_static("ptr_offset"),
             ptr_to_int: interner.get_or_intern_static("ptr_to_int"),
             int_to_ptr: interner.get_or_intern_static("int_to_ptr"),
@@ -277,6 +285,14 @@ mod tests {
         assert_eq!(interner.resolve(&known.env_len), "env_len");
         assert_eq!(interner.resolve(&known.ptr_read), "ptr_read");
         assert_eq!(interner.resolve(&known.ptr_write), "ptr_write");
+        assert_eq!(
+            interner.resolve(&known.ptr_read_unaligned),
+            "ptr_read_unaligned"
+        );
+        assert_eq!(
+            interner.resolve(&known.ptr_write_unaligned),
+            "ptr_write_unaligned"
+        );
         assert_eq!(interner.resolve(&known.ptr_offset), "ptr_offset");
         assert_eq!(interner.resolve(&known.ptr_to_int), "ptr_to_int");
         assert_eq!(interner.resolve(&known.int_to_ptr), "int_to_ptr");

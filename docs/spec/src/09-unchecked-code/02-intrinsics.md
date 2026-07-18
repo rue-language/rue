@@ -159,11 +159,12 @@ fn main() -> i32 {
 {{ rule(id="9.2:14a", cat="normative") }}
 
 The `@alloc_bytes`, `@realloc_bytes`, `@free_bytes`, `@byte_read`,
-`@byte_write`, `@byte_copy`, and `@byte_set` intrinsics provide raw access to
-packed physical bytes. They are enabled by the `raw_bytes` preview feature and
-may only appear inside a `checked` block. They do not change the element-scaled
-semantics of `@alloc`, `@realloc`, `@free`, `@ptr_offset`, `@ptr_read`, or
-`@ptr_write`.
+`@byte_write`, `@byte_copy`, `@byte_set`, `@ptr_read_unaligned`, and
+`@ptr_write_unaligned` intrinsics provide raw access to packed physical bytes
+and to potentially unaligned typed scalars. They are enabled by the `raw_bytes`
+preview feature and may only appear inside a `checked` block. They do not change
+the element-scaled semantics of `@alloc`, `@realloc`, `@free`, `@ptr_offset`,
+`@ptr_read`, or `@ptr_write`.
 
 {{ rule(id="9.2:14b", cat="dynamic-semantics") }}
 
@@ -269,6 +270,40 @@ that is zero or not a power of two, the program is rejected at compile time.
 A non-constant `align` is not checked at compile time; supplying a value that is
 zero or not a power of two is then undefined behavior (§9.1, ADR-0028), like the
 other unchecked contracts of this family.
+
+{{ rule(id="9.2:14k", cat="dynamic-semantics") }}
+
+`@ptr_read_unaligned(p)` and `@ptr_write_unaligned(p, value)` are the unaligned
+counterparts of `@ptr_read`/`@ptr_write` (ADR-0059). Their pointee type,
+operands, result, and value semantics are exactly those of the aligned pair —
+`p` is `ptr const T` or `ptr mut T` for the read and `ptr mut T` for the write,
+the read returns `T` and the write returns `()` — except that the caller does
+not promise the address satisfies `@align_of(T)`. Reading or writing an
+underaligned address is well defined for these two intrinsics and undefined
+behavior (§9.1, ADR-0028) for the aligned pair. They exist to access packed and
+parsed data (integers embedded in a byte buffer) without a per-byte assembly.
+
+{{ rule(id="9.2:14l", cat="legality-rule") }}
+
+`@ptr_read_unaligned` and `@ptr_write_unaligned` each require both
+`--preview raw_bytes` and an enclosing `checked` block. Aside from the alignment
+obligation they carry the same legality rules as `@ptr_read`/`@ptr_write`: the
+write pointer is `ptr mut T`, the read pointer is `ptr const T` or `ptr mut T`,
+and a written value has type `T`.
+
+{{ rule(id="9.2:14m", cat="example") }}
+
+```rue
+fn main() -> i32 {
+    checked {
+        let p: ptr mut i32 = @alloc(1);
+        @ptr_write_unaligned(p, 1234);
+        let v: i32 = @ptr_read_unaligned(p);
+        @free(p, 1);
+        v // 1234
+    }
+}
+```
 
 ## Field Pointer Intrinsic
 

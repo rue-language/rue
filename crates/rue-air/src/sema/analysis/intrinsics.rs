@@ -250,6 +250,8 @@ impl<'a> BodySema<'a> {
         if ctx.checked_depth == 0
             && (name == known.ptr_read
                 || name == known.ptr_write
+                || name == known.ptr_read_unaligned
+                || name == known.ptr_write_unaligned
                 || name == known.ptr_offset
                 || name == known.ptr_to_int
                 || name == known.int_to_ptr
@@ -392,9 +394,13 @@ impl<'a> BodySema<'a> {
         {
             self.analyze_wrapping_arith_intrinsic(air, name, &args, span, ctx)
         } else if name == known.ptr_read {
-            self.analyze_ptr_read_intrinsic(air, name, inst_ref, &args, span, ctx)
+            self.analyze_ptr_read_intrinsic(air, name, inst_ref, &args, span, ctx, false)
         } else if name == known.ptr_write {
-            self.analyze_ptr_write_intrinsic(air, name, &args, span, ctx)
+            self.analyze_ptr_write_intrinsic(air, name, &args, span, ctx, false)
+        } else if name == known.ptr_read_unaligned {
+            self.analyze_ptr_read_intrinsic(air, name, inst_ref, &args, span, ctx, true)
+        } else if name == known.ptr_write_unaligned {
+            self.analyze_ptr_write_intrinsic(air, name, &args, span, ctx, true)
         } else if name == known.ptr_offset {
             self.analyze_ptr_offset_intrinsic(air, name, &args, span, ctx)
         } else if name == known.ptr_to_int {
