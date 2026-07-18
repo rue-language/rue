@@ -109,6 +109,12 @@ pub enum SemanticDeclarationPayload {
         ty: SemanticExportType,
         value: SemanticExportConstValue,
     },
+    /// A top-level constant whose initializer resolved to a module. The
+    /// target is the canonical semantic epoch's durable module identity, not
+    /// its compact request-local module handle.
+    ModuleBinding {
+        target: SemanticExportType,
+    },
     Destructor,
 }
 
@@ -409,6 +415,13 @@ impl<'a> DeclarationShells<'a> {
         self.binding_work.durable_install_invocations += 1;
         let mut records = BTreeMap::new();
         for export in exports {
+            if matches!(
+                export.payload,
+                SemanticDeclarationPayload::ModuleBinding { .. }
+            ) != (export.identity.kind == StableDefinitionKind::ModuleBinding)
+            {
+                return Err(DeclarationInstallFailure::KindMismatch);
+            }
             let module_path = self
                 .sema
                 .get_symbol_path(export.identity.file_id)
@@ -421,7 +434,15 @@ impl<'a> DeclarationShells<'a> {
                     .trusted_standard_library_files
                     .contains(&export.identity.file_id),
                 namespace: export.identity.namespace,
-                kind: export.identity.kind,
+                // Const shells are captured before initializer evaluation can
+                // classify module bindings. The distinct payload and exported
+                // kind are validated above, then joined to that exact const
+                // shell for installation.
+                kind: if export.identity.kind == StableDefinitionKind::ModuleBinding {
+                    StableDefinitionKind::ValueConst
+                } else {
+                    export.identity.kind
+                },
                 name: export.identity.name.clone(),
                 owner: export.identity.owner.clone(),
             };
@@ -439,6 +460,36 @@ impl<'a> DeclarationShells<'a> {
                 .ok_or(DeclarationInstallFailure::MissingPayload)?;
             if record.identity.is_public != shell.is_public {
                 return Err(DeclarationInstallFailure::VisibilityMismatch);
+            }
+        }
+
+        // Resolve every module target before mutating any nominal or callable
+        // state. An absent or ambiguous durable ID therefore fails the whole
+        // installation atomically.
+        let mut module_by_durable_id = BTreeMap::new();
+        for index in 0..self.sema.module_registry.len() {
+            let id = crate::ModuleId::new(index as u32);
+            let durable_id = self.sema.module_registry.get_def(id).durable_id;
+            if module_by_durable_id.insert(durable_id, id).is_some() {
+                return Err(DeclarationInstallFailure::UnsupportedType);
+            }
+        }
+        let mut module_targets = BTreeMap::new();
+        for pending in &self.pending_payloads {
+            let record = records[&pending.shell.identity];
+            if let SemanticDeclarationPayload::ModuleBinding { target } = &record.payload {
+                let SemanticExportType::Module(target) = target else {
+                    return Err(DeclarationInstallFailure::UnsupportedType);
+                };
+                let target = *module_by_durable_id
+                    .get(target.as_ref())
+                    .ok_or(DeclarationInstallFailure::UnsupportedType)?;
+                let InstData::ConstDecl { ty: None, .. } =
+                    &self.sema.rir.get(pending.declaration).data
+                else {
+                    return Err(DeclarationInstallFailure::KindMismatch);
+                };
+                module_targets.insert(pending.shell.identity.clone(), Type::new_module(target));
             }
         }
 
@@ -711,6 +762,27 @@ impl<'a> DeclarationShells<'a> {
                     self.sema
                         .collect_destructor(owner, pending.shell.declaration_span)
                         .map_err(|_| DeclarationInstallFailure::NominalShapeMismatch)?;
+                }
+                (
+                    SemanticDeclarationPayload::ModuleBinding { .. },
+                    DeclarationPayloadSource::Const { .. },
+                ) => {
+                    let target = *module_targets
+                        .get(&pending.shell.identity)
+                        .ok_or(DeclarationInstallFailure::UnsupportedType)?;
+                    let name = self
+                        .sema
+                        .interner
+                        .get_or_intern(pending.shell.identity.name.as_ref());
+                    self.sema.module_bindings.insert(
+                        (pending.shell.declaration_span.file_id, name),
+                        super::ConstInfo {
+                            is_pub: pending.shell.is_public,
+                            ty: target,
+                            value: ConstValue::Type(target),
+                            span: pending.shell.declaration_span,
+                        },
+                    );
                 }
                 (_, DeclarationPayloadSource::Const { .. }) => {
                     return Err(DeclarationInstallFailure::UnsupportedDeclaration);
@@ -1514,12 +1586,18 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
         SemanticExportFailure,
     > {
         let mut records = Vec::with_capacity(manifest.bindings.len());
-        for identity in manifest
-            .bindings
-            .iter()
-            .filter(|b| b.kind != StableDefinitionKind::ModuleBinding)
-        {
+        for identity in manifest.bindings.iter() {
             let name = self.interner.get_or_intern(identity.name.as_ref());
+            // Pre-resolution const shells cannot distinguish value constants
+            // from module bindings. Classify them from the successfully bound
+            // namespace while exporting, then carry that exact kind across
+            // the owned declaration boundary.
+            let mut identity = identity.clone();
+            if identity.kind == StableDefinitionKind::ValueConst
+                && self.module_bindings.contains_key(&(identity.file_id, name))
+            {
+                identity.kind = StableDefinitionKind::ModuleBinding;
+            }
             let payload = match identity.kind {
                 StableDefinitionKind::Function => {
                     let internal = *self
@@ -1651,13 +1729,18 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                         value,
                     }
                 }
+                StableDefinitionKind::ModuleBinding => {
+                    let info = self
+                        .module_bindings
+                        .get(&(identity.file_id, name))
+                        .ok_or(SemanticExportFailure::UnmappedFunction)?;
+                    SemanticDeclarationPayload::ModuleBinding {
+                        target: self.export_type(info.ty, &mut Vec::new())?,
+                    }
+                }
                 StableDefinitionKind::Destructor => SemanticDeclarationPayload::Destructor,
-                StableDefinitionKind::ModuleBinding => unreachable!(),
             };
-            records.push(SemanticDeclarationExport {
-                identity: identity.clone(),
-                payload,
-            });
+            records.push(SemanticDeclarationExport { identity, payload });
         }
         let len = records.len();
         Ok((

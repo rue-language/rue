@@ -656,7 +656,7 @@ pub(crate) fn analyze_prepared_canonical_program_with_durable_export(
         definitions,
         declaration_index,
     } = prepared;
-    let mut declaration_reuse = CanonicalDeclarationReuseWork {
+    let declaration_reuse = CanonicalDeclarationReuseWork {
         semantic_epochs_started: 1,
         declaration_indexes_built: declaration_index.build_invocations,
         shell_predeclaration_epochs: 1,
@@ -666,29 +666,11 @@ pub(crate) fn analyze_prepared_canonical_program_with_durable_export(
         declaration_resolution_failure(failure, declaration_index, false, declaration_reuse)
     })?;
 
-    let durable_declarations =
-        match bound.with_declaration_semantics_from_shells(&shell_records, |records, _work| {
-            crate::durable_semantics::convert_declaration_semantics(merged, &definitions, records)
-        }) {
-            Ok(Ok(values)) => Some(values),
-            Ok(Err(reason)) => {
-                declaration_reuse.unsupported_export_fallbacks += 1;
-                declaration_reuse.last_fallback_reason = Some(
-                    CanonicalDeclarationFallbackReason::UnsupportedExport(reason),
-                );
-                None
-            }
-            Err(reason) => {
-                let reason = crate::DurableSemanticExportFailure::from(reason);
-                declaration_reuse.unsupported_export_fallbacks += 1;
-                declaration_reuse.last_fallback_reason = Some(
-                    CanonicalDeclarationFallbackReason::UnsupportedExport(reason),
-                );
-                None
-            }
-        };
+    let declaration_exports = bound
+        .with_declaration_semantics_from_shells(&shell_records, |records, _work| records.to_vec())
+        .map_err(crate::DurableSemanticExportFailure::from);
 
-    let output = finish_canonical_analysis(
+    let mut output = finish_canonical_analysis(
         input,
         merged,
         rir,
@@ -697,19 +679,41 @@ pub(crate) fn analyze_prepared_canonical_program_with_durable_export(
         declaration_index,
         bound,
         definitions.clone(),
-        CanonicalDeclarationReuseWork {
-            durable_cache_population_exports: usize::from(durable_declarations.is_some()),
-            ..declaration_reuse
-        },
+        declaration_reuse,
         body_candidates,
         specialized_body_candidates,
         durable_cfg_candidates,
         body_work,
         sema_span,
     )?;
+    // Final analysis has now issued the authoritative post-classification
+    // definition universe. Join the already-owned AIR exports to that exact
+    // universe without a second definition-issuance pass or RIR traversal.
+    let durable_declarations = declaration_exports.and_then(|records| {
+        crate::durable_semantics::convert_declaration_semantics(
+            merged,
+            &output.body_owner_issuer,
+            &records,
+        )
+    });
+    let durable_declarations = match durable_declarations {
+        Ok(values) => Some(values),
+        Err(reason) => {
+            output.work.declaration_reuse.unsupported_export_fallbacks += 1;
+            output.work.declaration_reuse.last_fallback_reason = Some(
+                CanonicalDeclarationFallbackReason::UnsupportedExport(reason),
+            );
+            None
+        }
+    };
+    output
+        .work
+        .declaration_reuse
+        .durable_cache_population_exports = usize::from(durable_declarations.is_some());
+    let durable_definitions = output.body_owner_issuer.clone();
     Ok(CanonicalOrdinaryAnalysis {
         output,
-        definitions,
+        definitions: durable_definitions,
         durable_declarations,
     })
 }
@@ -763,8 +767,7 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
         Err(reason) => {
             reuse.fallbacks = 1;
             match reason {
-                crate::DurableSemanticProjectionFailure::UnsupportedDeclaration
-                | crate::DurableSemanticProjectionFailure::UnsupportedType => {
+                crate::DurableSemanticProjectionFailure::UnsupportedDeclaration => {
                     reuse.structural_validation_fallbacks = 1;
                 }
                 _ => reuse.stable_join_fallbacks = 1,

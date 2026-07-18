@@ -43,6 +43,9 @@ pub fn import_durable_declaration_semantics(
             ) | (
                 StableDefinitionKind::Destructor,
                 DurableDeclarationPayload::Destructor
+            ) | (
+                StableDefinitionKind::ModuleBinding,
+                DurableDeclarationPayload::ModuleBinding { .. }
             )
         )
     }
@@ -96,6 +99,9 @@ pub fn import_durable_declaration_semantics(
                 if let DurableConstValue::Type(ty) = value {
                     collect_modules(ty, &mut modules);
                 }
+            }
+            DurableDeclarationPayload::ModuleBinding { target } => {
+                modules.insert(Arc::from(target.as_str()));
             }
             DurableDeclarationPayload::Destructor => {}
         }
@@ -194,6 +200,9 @@ pub fn import_durable_declaration_semantics(
                 epoch.validate_callable_signature(&parameters, &result.import_dto())?;
             }
             DurableDeclarationPayload::Destructor => {}
+            DurableDeclarationPayload::ModuleBinding { target } => {
+                epoch.import_type(&DurableType::Module(target.clone()).import_dto())?;
+            }
         }
     }
     Ok(epoch)
@@ -216,9 +225,9 @@ pub const DURABLE_SEMANTIC_SCHEMA_VERSION: DurableSemanticSchemaVersion =
     DurableSemanticSchemaVersion {
         major: 1,
         minor: 0,
-        // Epoch 2: const string values joined the durable const payloads
-        // (SemanticImportConstValue::String, RUE-957).
-        implementation_epoch: 2,
+        // Epoch 3: const string values and canonical module bindings are part
+        // of the durable declaration algebra (RUE-957, RUE-727).
+        implementation_epoch: 3,
     };
 
 const DURABLE_SEMANTIC_COMPATIBLE_MINORS: &[u16] = &[0];
@@ -312,6 +321,10 @@ pub enum DurableDeclarationPayload {
         ty: DurableType,
         value: DurableConstValue,
     },
+    /// The resolved canonical target of a top-level module-valued constant.
+    ModuleBinding {
+        target: ModuleId,
+    },
     Destructor,
 }
 
@@ -385,7 +398,6 @@ pub enum DurableSemanticProjectionFailure {
     ModuleMismatch,
     VisibilityMismatch,
     UnsupportedDeclaration,
-    UnsupportedType,
 }
 
 /// Project stable-keyed semantics into exact-current-revision AIR DTOs.
@@ -431,22 +443,55 @@ pub fn project_durable_declaration_semantics(
         }
     }
 
-    let mut shell_by_key = BTreeMap::new();
-    for shell in shells {
-        let join_key = ProjectionJoinKey::from_shell(shell)
-            .ok_or(DurableSemanticProjectionFailure::UnsupportedDeclaration)?;
-        let key = definition_by_join_key
-            .get(&join_key)
-            .cloned()
-            .ok_or(DurableSemanticProjectionFailure::MissingDefinition)?;
-        if shell_by_key.insert(key, shell).is_some() {
-            return Err(DurableSemanticProjectionFailure::DuplicateShell);
-        }
-    }
     let mut durable_by_key = BTreeMap::new();
     for record in durable {
         if durable_by_key.insert(record.key.clone(), record).is_some() {
             return Err(DurableSemanticProjectionFailure::DuplicateDefinition);
+        }
+    }
+    let durable_by_join_key = durable_by_key
+        .keys()
+        .map(|key| (ProjectionJoinKey::from_definition(key), key.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut shell_by_key = BTreeMap::new();
+    for shell in shells {
+        let join_key = ProjectionJoinKey::from_shell(shell)
+            .ok_or(DurableSemanticProjectionFailure::UnsupportedDeclaration)?;
+        let exact_definition = definition_by_join_key.get(&join_key).cloned();
+        let exact_durable = exact_definition
+            .as_ref()
+            .filter(|key| durable_by_key.contains_key(*key))
+            .cloned();
+        let key = if let Some(key) = exact_durable {
+            key
+        } else if shell.identity.kind == StableDefinitionKind::ValueConst {
+            // Const shells are deliberately captured before initializer
+            // evaluation. A previous durable module payload may reclassify
+            // only this exact current const declaration; either the current
+            // provisional ValueConst definition or an authoritative
+            // ModuleBinding definition must prove its provenance.
+            let mut module_join = join_key.clone();
+            module_join.kind = StableDefinitionKind::ModuleBinding;
+            let authoritative = definition_by_join_key.get(&module_join);
+            if exact_definition.is_none() && authoritative.is_none() {
+                return Err(DurableSemanticProjectionFailure::MissingDefinition);
+            }
+            let key = durable_by_join_key
+                .get(&module_join)
+                .cloned()
+                .ok_or(DurableSemanticProjectionFailure::MissingDefinition)?;
+            if !matches!(
+                durable_by_key[&key].payload,
+                DurableDeclarationPayload::ModuleBinding { .. }
+            ) {
+                return Err(DurableSemanticProjectionFailure::KindMismatch);
+            }
+            key
+        } else {
+            return Err(DurableSemanticProjectionFailure::MissingDefinition);
+        };
+        if shell_by_key.insert(key, shell).is_some() {
+            return Err(DurableSemanticProjectionFailure::DuplicateShell);
         }
     }
     let expected = shell_by_key.keys().cloned().collect::<BTreeSet<_>>();
@@ -481,7 +526,11 @@ pub fn project_durable_declaration_semantics(
                 file_id,
                 declaration_span: shell.declaration_span,
                 namespace: shell.identity.namespace,
-                kind: shell.identity.kind,
+                kind: if key.kind() == StableDefinitionKind::ModuleBinding {
+                    StableDefinitionKind::ModuleBinding
+                } else {
+                    shell.identity.kind
+                },
                 name: shell.identity.name.clone(),
                 owner: shell.identity.owner.clone(),
                 is_public: shell.is_public,
@@ -578,9 +627,10 @@ fn project_type(
             },
             F::PtrConst(value) => SemanticExportType::PtrConst(Box::new(value)),
             F::PtrMut(value) => SemanticExportType::PtrMut(Box::new(value)),
-            F::Module(_) => {
-                return Err(DurableSemanticProjectionFailure::UnsupportedType);
-            }
+            F::Module(module) => module_files
+                .contains_key(module)
+                .then(|| SemanticExportType::Module(Arc::from(module.as_str())))
+                .ok_or(DurableSemanticProjectionFailure::ModuleMismatch)?,
         })
     })
 }
@@ -646,6 +696,15 @@ fn project_payload(
                 .into(),
         },
         DurableDeclarationPayload::Destructor => SemanticDeclarationPayload::Destructor,
+        DurableDeclarationPayload::ModuleBinding { target } => {
+            SemanticDeclarationPayload::ModuleBinding {
+                target: project_type(
+                    &DurableType::Module(target.clone()),
+                    definitions,
+                    module_files,
+                )?,
+            }
+        }
         DurableDeclarationPayload::Const { .. } => {
             return Err(DurableSemanticProjectionFailure::UnsupportedDeclaration);
         }
@@ -675,6 +734,10 @@ fn validate_payload_shape(
         }
         (StableDefinitionKind::Struct, SemanticDeclarationPayload::Struct { .. })
         | (StableDefinitionKind::Enum, SemanticDeclarationPayload::Enum { .. })
+        | (
+            StableDefinitionKind::ValueConst | StableDefinitionKind::ModuleBinding,
+            SemanticDeclarationPayload::ModuleBinding { .. },
+        )
         | (StableDefinitionKind::Destructor, SemanticDeclarationPayload::Destructor) => Ok(()),
         _ => Err(DurableSemanticProjectionFailure::KindMismatch),
     }
@@ -720,7 +783,7 @@ pub(crate) fn convert_declaration_semantics(
             StableDefinitionKind::Destructor => StableDefinitionKind::Destructor,
             StableDefinitionKind::Method => StableDefinitionKind::Method,
             StableDefinitionKind::AssociatedFunction => StableDefinitionKind::AssociatedFunction,
-            StableDefinitionKind::ModuleBinding => return None,
+            StableDefinitionKind::ModuleBinding => StableDefinitionKind::ModuleBinding,
         })
     }
     let module_for_file = |file_id| {
@@ -919,6 +982,12 @@ pub(crate) fn convert_declaration_semantics(
                 }
             }
             SemanticDeclarationPayload::Destructor => DurableDeclarationPayload::Destructor,
+            SemanticDeclarationPayload::ModuleBinding { target } => {
+                let DurableType::Module(target) = ty(target, merged, definitions)? else {
+                    return Err(DurableSemanticExportFailure::UnresolvedModule);
+                };
+                DurableDeclarationPayload::ModuleBinding { target }
+            }
         };
         result.push(DurableDeclarationSemantic {
             key,

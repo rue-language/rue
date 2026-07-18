@@ -20,9 +20,9 @@ use crate::*;
 const REVIEWED_SEMANTIC_SCHEMA: DurableSemanticSchemaVersion = DurableSemanticSchemaVersion {
     major: 1,
     minor: 0,
-    // Epoch 2: const string values joined the durable const payloads
-    // (SemanticImportConstValue::String, RUE-957).
-    implementation_epoch: 2,
+    // Epoch 3: const string values and canonical module bindings joined the
+    // durable declaration payloads (RUE-957, RUE-727).
+    implementation_epoch: 3,
 };
 const REVIEWED_ORDINARY_BODY_SCHEMA: u32 = 6;
 const REVIEWED_SPECIALIZED_BODY_SCHEMA: u32 = 5;
@@ -30,7 +30,7 @@ const REVIEWED_CFG_SCHEMA: u32 = 1;
 const REVIEWED_BODY_KINDS: usize = 58;
 const REVIEWED_TYPE_KINDS: usize = 19;
 const REVIEWED_CONST_KINDS: usize = 6;
-const REVIEWED_DECLARATION_PAYLOAD_KINDS: usize = 5;
+const REVIEWED_DECLARATION_PAYLOAD_KINDS: usize = 6;
 const REVIEWED_DEFINITION_KINDS: usize = 8;
 const REVIEWED_DEFINITION_NAMESPACES: usize = 4;
 
@@ -275,6 +275,11 @@ fn every_declaration_payload_and_parameter_mode_imports_in_one_bounded_epoch() {
         StableDefinitionNamespace::Value,
         "ANSWER",
     );
+    let module_binding = key(
+        StableDefinitionKind::ModuleBinding,
+        StableDefinitionNamespace::Value,
+        "support",
+    );
     let destructor = key(
         StableDefinitionKind::Destructor,
         StableDefinitionNamespace::Destructor,
@@ -342,6 +347,13 @@ fn every_declaration_payload_and_parameter_mode_imports_in_one_bounded_epoch() {
             },
         },
         DurableDeclarationSemantic {
+            key: module_binding,
+            is_public: false,
+            payload: DurableDeclarationPayload::ModuleBinding {
+                target: module("pkg/support.rue"),
+            },
+        },
+        DurableDeclarationSemantic {
             key: destructor,
             is_public: false,
             payload: DurableDeclarationPayload::Destructor,
@@ -374,6 +386,7 @@ fn every_declaration_payload_and_parameter_mode_imports_in_one_bounded_epoch() {
             DurableDeclarationPayload::Struct { .. } => "struct",
             DurableDeclarationPayload::Enum { .. } => "enum",
             DurableDeclarationPayload::Const { .. } => "const",
+            DurableDeclarationPayload::ModuleBinding { .. } => "module_binding",
             DurableDeclarationPayload::Destructor => "destructor",
         })
         .collect::<BTreeSet<_>>();
