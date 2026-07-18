@@ -6,19 +6,10 @@
 // on 83/83 `.rue` files across the repository — every checked-in example, std
 // module, and test fixture.
 //
-// To match the reference lexer exactly, ruelex deliberately mirrors two of its
-// *implementation* behaviors that diverge from the language spec (2.5), rather
-// than the spec's uniform `@ IDENT` rule. Both are recorded as accepted
-// spec-drift in RUE-949, and both live in lex.rue `lex_op`:
-//   1. AT_IMPORT single-token special case: `@import` lexes as ONE dedicated
-//      `AT_IMPORT` token, not the general `AT` + `IDENT("import")` pair that
-//      every other builtin (`@syscall`, `@size_of`, ...) produces.
-//   2. Its interner side effect: even though no separate `import` IDENT token
-//      is emitted, the compiler still interns the word `import` (bumping the
-//      shared symbol counter). ruelex interns it too and discards the index, so
-//      subsequent `IDENT(sym:N)` numbers stay in lockstep with the reference.
-// These are mirrored intentionally — do not "fix" them to match the spec, or
-// differential agreement breaks. See RUE-949 for the drift record.
+// Builtins lex uniformly as `AT` + `IDENT` per spec 2.5 — including `@import`,
+// which the reference lexer once fused into a dedicated AT_IMPORT token with a
+// phantom intern of the word `import`. RUE-949 resolved that drift by making
+// the compiler conform to the spec, so ruelex needs no special cases.
 //
 // The modules: lex.rue (tokenizer), interner.rue (symbol numbering),
 // fmtutil.rue (StrBuf/padding helpers), this root (I/O, argv, driver).

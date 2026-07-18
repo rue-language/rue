@@ -458,21 +458,6 @@ pub enum LogosTokenKind {
     At,
     #[token("?")]
     Question,
-
-    // Builtins. Exactly "@import" is its own token; the regex below wins the
-    // longest-match for "@import" followed by more identifier chars (e.g.
-    // "@important"), which tokenize() splits into At + Ident. Without it,
-    // logos would fail the fused-token match and report a confusing
-    // "unexpected character: @" lex error instead of letting the parser see
-    // an ordinary @-directive. (RUE-133)
-    #[token("@import")]
-    AtImport,
-
-    // "@import" with identifier chars attached: an ordinary @-directive whose
-    // name merely starts with "import". The callback interns the name (the
-    // slice minus '@'); tokenize() emits At + Ident.
-    #[regex(r"@import[a-zA-Z0-9_]+", |lex| lex.extras.get_or_intern(&lex.slice()[1..]))]
-    AtImportPrefixedIdent(Spur),
 }
 
 use crate::{Token, TokenKind};
@@ -560,12 +545,6 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::Dot => TokenKind::Dot,
             LogosTokenKind::At => TokenKind::At,
             LogosTokenKind::Question => TokenKind::Question,
-            // AtImport is handled specially in tokenize() to provide the interned "import" Spur
-            LogosTokenKind::AtImport => unreachable!("AtImport should be handled specially"),
-            // AtImportPrefixedIdent is split into At + Ident in tokenize()
-            LogosTokenKind::AtImportPrefixedIdent(_) => {
-                unreachable!("AtImportPrefixedIdent should be handled specially")
-            }
         }
     }
 }
@@ -647,39 +626,8 @@ impl<'a> LogosLexer<'a> {
                     let span = lexer.span();
                     match result {
                         Ok(logos_kind) => {
-                            // Convert LogosTokenKind to TokenKind, handling @import specially
-                            // because it needs to carry the interned "import" symbol
-                            let token_kind = match logos_kind {
-                                LogosTokenKind::AtImport => {
-                                    let import_spur = lexer.extras.get_or_intern("import");
-                                    TokenKind::AtImport(import_spur)
-                                }
-                                LogosTokenKind::AtImportPrefixedIdent(name) => {
-                                    // An @-directive whose name starts with "import"
-                                    // (e.g. @important): split into At + Ident so the
-                                    // parser sees an ordinary directive. (RUE-133)
-                                    tokens.push(Token {
-                                        kind: TokenKind::At,
-                                        span: Span::with_file(
-                                            self.file_id,
-                                            span.start as u32,
-                                            span.start as u32 + 1,
-                                        ),
-                                    });
-                                    tokens.push(Token {
-                                        kind: TokenKind::Ident(name),
-                                        span: Span::with_file(
-                                            self.file_id,
-                                            span.start as u32 + 1,
-                                            span.end as u32,
-                                        ),
-                                    });
-                                    continue;
-                                }
-                                _ => logos_kind.into(),
-                            };
                             tokens.push(Token {
-                                kind: token_kind,
+                                kind: logos_kind.into(),
                                 span: Span::with_file(
                                     self.file_id,
                                     span.start as u32,
@@ -873,33 +821,15 @@ mod tests {
 
     #[test]
     fn test_logos_at_import_token() {
-        // @import should be recognized as a single token with interned "import" Spur
+        // @import lexes uniformly as At + Ident per spec 2.5:1-2 — no fused
+        // token, and "import" is interned at its natural position (RUE-949).
         let lexer = LogosLexer::new("@import");
         let (tokens, interner) = lexer.tokenize().unwrap();
-        if let TokenKind::AtImport(spur) = tokens[0].kind {
-            assert_eq!(interner.resolve(&spur), "import");
-        } else {
-            panic!("Expected AtImport token");
-        }
-        assert!(matches!(tokens[1].kind, TokenKind::Eof));
-    }
-
-    #[test]
-    fn test_logos_at_import_vs_at_other() {
-        // @import as single token vs @other (At + Ident)
-        let lexer = LogosLexer::new("@import @other");
-        let (tokens, interner) = lexer.tokenize().unwrap();
-        assert!(matches!(tokens[0].kind, TokenKind::AtImport(_)));
-        assert!(matches!(tokens[1].kind, TokenKind::At));
-        assert_eq!(get_ident_str(&tokens[2].kind, &interner), Some("other"));
-    }
-
-    #[test]
-    fn test_logos_at_import_span() {
-        // Verify the span covers the entire @import token
-        let lexer = LogosLexer::new("@import");
-        let (tokens, _) = lexer.tokenize().unwrap();
-        assert_eq!(tokens[0].span, Span::new(0, 7)); // "@import" is 7 chars
+        assert!(matches!(tokens[0].kind, TokenKind::At));
+        assert_eq!(tokens[0].span, Span::new(0, 1));
+        assert_eq!(get_ident_str(&tokens[1].kind, &interner), Some("import"));
+        assert_eq!(tokens[1].span, Span::new(1, 7));
+        assert!(matches!(tokens[2].kind, TokenKind::Eof));
     }
 
     #[test]
@@ -907,17 +837,17 @@ mod tests {
         // @import("path.rue") pattern
         let lexer = LogosLexer::new(r#"@import("math.rue")"#);
         let (tokens, interner) = lexer.tokenize().unwrap();
-        assert!(matches!(tokens[0].kind, TokenKind::AtImport(_)));
-        assert!(matches!(tokens[1].kind, TokenKind::LParen));
-        assert_eq!(get_string_str(&tokens[2].kind, &interner), Some("math.rue"));
-        assert!(matches!(tokens[3].kind, TokenKind::RParen));
+        assert!(matches!(tokens[0].kind, TokenKind::At));
+        assert_eq!(get_ident_str(&tokens[1].kind, &interner), Some("import"));
+        assert!(matches!(tokens[2].kind, TokenKind::LParen));
+        assert_eq!(get_string_str(&tokens[3].kind, &interner), Some("math.rue"));
+        assert!(matches!(tokens[4].kind, TokenKind::RParen));
     }
 
     #[test]
     fn test_logos_at_import_prefixed_ident_splits() {
         // A directive whose name merely starts with "import" (@importx,
-        // @important) is an ordinary @-directive: At + Ident. The word-boundary
-        // check must permit fallback to those two tokens (RUE-133).
+        // @important) is an ordinary @-directive: At + Ident (RUE-133).
         let lexer = LogosLexer::new("@importx");
         let (tokens, interner) = lexer.tokenize().unwrap();
         assert!(matches!(tokens[0].kind, TokenKind::At));

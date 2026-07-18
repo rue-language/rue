@@ -7,11 +7,10 @@
 # The whole point of ruelex is byte-for-byte agreement with the compiler's own
 # `rue --emit tokens`, so the pinned `stdout` below is exactly what that command
 # emits (token-lines section) for the same `sample.rue` — verified at authoring
-# time. The fixture is chosen to exercise the two implementation behaviors the
-# lexer deliberately mirrors (RUE-949): `@import` lexes as a single `AT_IMPORT`
-# token, and interning `import` as a side effect bumps the shared symbol counter
-# — which is why the emitted identifiers jump `sym:0` (`std`) straight to `sym:2`
-# (`add`): `sym:1` was spent on the never-emitted `import`.
+# time. The fixture pins the uniform builtin form (RUE-949): `@import` lexes as
+# `AT` + `IDENT`, interning `import` at its natural position (`sym:1`), and the
+# shared identifier/string interner gives the string literal `"std"` the same
+# `sym:0` as the identifier `std`.
 
 [section]
 id = "cli.examples_ruelex"
@@ -20,7 +19,7 @@ description = "compile examples/ruelex and tokenize a fixture, asserting the exa
 
 [[case]]
 name = "ruelex_tokenizes_fixture_matching_emit_tokens"
-description = "ruelex on a small fixture reproduces `rue --emit tokens` exactly, including the AT_IMPORT special case and its symbol-counter side effect (sym:0 -> sym:2)."
+description = "ruelex on a small fixture reproduces `rue --emit tokens` exactly, including the uniform AT + IDENT form for @import and shared ident/string interning."
 source_path = "examples/ruelex/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "sample.rue", source = """
@@ -33,7 +32,8 @@ stdout = """
    0..5    CONST
    6..9    IDENT(sym:0)
   10..11   EQ
-  12..19   AT_IMPORT
+  12..13   AT
+  13..19   IDENT(sym:1)
   19..20   LPAREN
   20..25   STRING(sym:0)
   25..26   RPAREN

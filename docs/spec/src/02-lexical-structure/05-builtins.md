@@ -22,6 +22,10 @@ builtin_arg = IDENT | expression | type ;
 
 The `@` prefix distinguishes builtins from user-defined constructs.
 
+{{ rule(id="2.5:32", cat="informative") }}
+
+Tokenization of builtins is uniform: `@` is its own token and the builtin name is an ordinary identifier token. No builtin name — including `import` — forms a fused single token, and the name is interned like any other identifier.
+
 {{ rule(id="2.5:4", cat="legality-rule") }}
 
 Using an unknown builtin name is a compile-time error.
