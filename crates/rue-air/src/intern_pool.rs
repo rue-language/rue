@@ -100,6 +100,30 @@ pub enum TypeValidationError {
     RecoveryType,
 }
 
+/// Canonical ownership properties derived from the by-value containment graph.
+///
+/// The mutable pool may temporarily leave an entry unanalyzed while named
+/// declarations are incomplete. Semantic finalization computes the whole graph
+/// in one bounded pass; types created later by specialization derive their facts
+/// from already-finalized children as they are interned.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TypeContainmentFacts {
+    carries_linear: bool,
+    needs_drop: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TypeContainmentCycle {
+    pub(crate) root: Type,
+    pub(crate) path: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TypeContainmentWork {
+    pub(crate) nodes: usize,
+    pub(crate) edges: usize,
+}
+
 impl TypeData {
     fn is_incomplete(&self) -> bool {
         matches!(
@@ -302,6 +326,11 @@ struct TypeInternPoolInner {
     /// Structural type deduplication: pointee -> canonical ptr mut `Type`.
     ptr_mut_map: HashMap<Type, Type>,
 
+    /// Ownership facts indexed in lockstep with `types`. `None` is permitted
+    /// only while declaration shells or a metadata mutation await the next
+    /// canonical containment pass.
+    containment_facts: Vec<Option<TypeContainmentFacts>>,
+
     /// Nominal struct lookup: (defining file, source name) -> canonical `Type`.
     struct_by_file_name: HashMap<(FileId, Spur), Type>,
 
@@ -390,6 +419,238 @@ impl TypeInternPoolInner {
     fn next_pool_index(&self) -> u32 {
         checked_pool_index(self.types.len())
             .expect("type intern pool exceeds the 24-bit Type payload capacity")
+    }
+
+    fn by_value_child_index(&self, ty: Type) -> Option<usize> {
+        match ty.kind() {
+            TypeKind::Struct(id) => Some(id.pool_index() as usize),
+            TypeKind::Enum(id) => Some(id.pool_index() as usize),
+            TypeKind::Array(id) => Some(id.pool_index() as usize),
+            _ => None,
+        }
+    }
+
+    fn containment_edges(&self) -> Vec<Vec<usize>> {
+        self.types
+            .iter()
+            .map(|entry| match entry {
+                TypeData::Struct(data) => data
+                    .def
+                    .fields
+                    .iter()
+                    .filter_map(|field| self.by_value_child_index(field.ty))
+                    .collect(),
+                TypeData::Enum(data) => data
+                    .def
+                    .variant_payloads
+                    .iter()
+                    .flatten()
+                    .filter_map(|&ty| self.by_value_child_index(ty))
+                    .collect(),
+                // Preserve the language's recursive-type diagnostic even for
+                // zero-length arrays: arrays are inline structural edges. The
+                // fact fold below gives a zero-length node zero ownership
+                // multiplicity, so it carries neither linearity nor drop glue.
+                TypeData::Array { element, .. } => {
+                    self.by_value_child_index(*element).into_iter().collect()
+                }
+                TypeData::ReservedStruct
+                | TypeData::DeclaredStruct(_)
+                | TypeData::DeclaredEnum(_)
+                | TypeData::PtrConst { .. }
+                | TypeData::PtrMut { .. } => Vec::new(),
+            })
+            .collect()
+    }
+
+    fn containment_cycle_path(&self, path: &[usize], repeated: usize) -> Vec<String> {
+        path.iter()
+            .copied()
+            .chain(std::iter::once(repeated))
+            .filter_map(|index| match &self.types[index] {
+                TypeData::Struct(data) => Some(data.def.name.clone()),
+                TypeData::Enum(data) => Some(data.def.name.clone()),
+                TypeData::Array { .. }
+                | TypeData::PtrConst { .. }
+                | TypeData::PtrMut { .. }
+                | TypeData::ReservedStruct
+                | TypeData::DeclaredStruct(_)
+                | TypeData::DeclaredEnum(_) => None,
+            })
+            .collect()
+    }
+
+    fn type_for_index(&self, index: usize) -> Type {
+        match &self.types[index] {
+            TypeData::Struct(_) | TypeData::DeclaredStruct(_) => {
+                Type::new_struct(StructId::from_pool_index(index as u32))
+            }
+            TypeData::Enum(_) | TypeData::DeclaredEnum(_) => {
+                Type::new_enum(EnumId::from_pool_index(index as u32))
+            }
+            TypeData::Array { .. } => Type::new_array(ArrayTypeId::from_pool_index(index as u32)),
+            TypeData::PtrConst { .. } => {
+                Type::new_ptr_const(PtrConstTypeId::from_pool_index(index as u32))
+            }
+            TypeData::PtrMut { .. } => {
+                Type::new_ptr_mut(PtrMutTypeId::from_pool_index(index as u32))
+            }
+            TypeData::ReservedStruct => Type::new_struct(StructId::from_pool_index(index as u32)),
+        }
+    }
+
+    /// Compute cycle, linearity, and drop facts from the one canonical
+    /// by-value graph. The explicit DFS stack makes both cycle detection and
+    /// postorder construction independent of the host call stack.
+    fn finalize_containment_metadata(
+        &mut self,
+    ) -> Result<TypeContainmentWork, TypeContainmentCycle> {
+        debug_assert_eq!(self.types.len(), self.containment_facts.len());
+        let edges = self.containment_edges();
+        let work = TypeContainmentWork {
+            nodes: edges.len(),
+            edges: edges.iter().map(Vec::len).sum(),
+        };
+        let mut color = vec![0u8; edges.len()];
+        let mut postorder = Vec::with_capacity(edges.len());
+        let mut path = Vec::new();
+
+        for root in 0..edges.len() {
+            if color[root] != 0 {
+                continue;
+            }
+            color[root] = 1;
+            path.push(root);
+            let mut stack = vec![(root, 0usize)];
+            while let Some((node, next_child)) = stack.last_mut() {
+                if let Some(&child) = edges[*node].get(*next_child) {
+                    *next_child += 1;
+                    match color[child] {
+                        0 => {
+                            color[child] = 1;
+                            path.push(child);
+                            stack.push((child, 0));
+                        }
+                        1 => {
+                            return Err(TypeContainmentCycle {
+                                root: self.type_for_index(root),
+                                path: self.containment_cycle_path(&path, child),
+                            });
+                        }
+                        2 => {}
+                        _ => unreachable!("containment DFS color"),
+                    }
+                } else {
+                    let (finished, _) = stack.pop().expect("non-empty DFS stack");
+                    let popped = path.pop().expect("DFS path matches stack");
+                    debug_assert_eq!(finished, popped);
+                    color[finished] = 2;
+                    postorder.push(finished);
+                }
+            }
+        }
+
+        let mut facts = vec![TypeContainmentFacts::default(); self.types.len()];
+        for &index in &postorder {
+            let mut value = match &self.types[index] {
+                TypeData::Struct(data) => TypeContainmentFacts {
+                    carries_linear: data.def.is_linear,
+                    needs_drop: data.def.destructor.is_some(),
+                },
+                TypeData::Enum(_)
+                | TypeData::Array { .. }
+                | TypeData::PtrConst { .. }
+                | TypeData::PtrMut { .. } => TypeContainmentFacts::default(),
+                TypeData::ReservedStruct
+                | TypeData::DeclaredStruct(_)
+                | TypeData::DeclaredEnum(_) => continue,
+            };
+            let has_values = !matches!(self.types[index], TypeData::Array { len: 0, .. });
+            if has_values {
+                for &child in &edges[index] {
+                    value.carries_linear |= facts[child].carries_linear;
+                    value.needs_drop |= facts[child].needs_drop;
+                }
+            }
+            facts[index] = value;
+        }
+
+        for (index, value) in facts.iter().copied().enumerate() {
+            if value.carries_linear {
+                if let TypeData::Struct(data) = &mut self.types[index] {
+                    data.def.is_linear = true;
+                }
+            }
+        }
+        self.containment_facts = facts.into_iter().map(Some).collect();
+        Ok(work)
+    }
+
+    fn facts_for_type(&self, ty: Type) -> Option<TypeContainmentFacts> {
+        match ty.kind() {
+            TypeKind::Struct(id) => self
+                .containment_facts
+                .get(id.pool_index() as usize)
+                .copied()?,
+            TypeKind::Enum(id) => self
+                .containment_facts
+                .get(id.pool_index() as usize)
+                .copied()?,
+            TypeKind::Array(id) => self
+                .containment_facts
+                .get(id.pool_index() as usize)
+                .copied()?,
+            TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => Some(TypeContainmentFacts::default()),
+            _ => Some(TypeContainmentFacts::default()),
+        }
+    }
+
+    fn incremental_facts(&self, entry: &TypeData) -> Option<TypeContainmentFacts> {
+        let mut facts = match entry {
+            TypeData::Struct(data) => TypeContainmentFacts {
+                carries_linear: data.def.is_linear,
+                needs_drop: data.def.destructor.is_some(),
+            },
+            TypeData::Enum(_)
+            | TypeData::Array { .. }
+            | TypeData::PtrConst { .. }
+            | TypeData::PtrMut { .. } => TypeContainmentFacts::default(),
+            TypeData::ReservedStruct | TypeData::DeclaredStruct(_) | TypeData::DeclaredEnum(_) => {
+                return None;
+            }
+        };
+        let mut merge = |child: Type| -> Option<()> {
+            if self.by_value_child_index(child).is_none() {
+                return Some(());
+            }
+            let child = self.facts_for_type(child)?;
+            facts.carries_linear |= child.carries_linear;
+            facts.needs_drop |= child.needs_drop;
+            Some(())
+        };
+        match entry {
+            TypeData::Struct(data) => {
+                for field in &data.def.fields {
+                    merge(field.ty)?;
+                }
+            }
+            TypeData::Enum(data) => {
+                for &child in data.def.variant_payloads.iter().flatten() {
+                    merge(child)?;
+                }
+            }
+            TypeData::Array { element, len } if *len != 0 => merge(*element)?,
+            TypeData::Array { .. } => {}
+            TypeData::PtrConst { .. } | TypeData::PtrMut { .. } => {}
+            TypeData::ReservedStruct | TypeData::DeclaredStruct(_) | TypeData::DeclaredEnum(_) => {
+                unreachable!()
+            }
+        }
+        Some(facts)
+    }
+
+    fn invalidate_containment_metadata(&mut self) {
+        self.containment_facts.fill(None);
     }
 
     #[inline]
@@ -537,6 +798,53 @@ impl TypeInternPoolInner {
 
     fn validate_complete_type(&self, ty: Type) -> Result<(), TypeValidationError> {
         self.validate_type_inner(ty, ValidationMode::Complete, &mut TypeVisitSet::new())
+    }
+
+    /// Validate a query's root handle without rewalking a frozen pool's
+    /// already-validated graph. This catches invalid encodings, out-of-range
+    /// indices, and wrong-kind compact handles while keeping canonical fact
+    /// queries O(1) and independent of the host call stack.
+    fn validate_complete_root(&self, ty: Type) -> Result<(), TypeValidationError> {
+        let kind = ty.try_kind().ok_or(TypeValidationError::InvalidEncoding)?;
+        let (index, expected) = match kind {
+            TypeKind::I8
+            | TypeKind::I16
+            | TypeKind::I32
+            | TypeKind::I64
+            | TypeKind::U8
+            | TypeKind::U16
+            | TypeKind::U32
+            | TypeKind::U64
+            | TypeKind::Bool
+            | TypeKind::Unit
+            | TypeKind::Never
+            | TypeKind::ComptimeType
+            | TypeKind::Module(_) => return Ok(()),
+            TypeKind::Error => return Err(TypeValidationError::RecoveryType),
+            TypeKind::Struct(id) => (id.pool_index(), PoolEntryKind::Struct),
+            TypeKind::Enum(id) => (id.pool_index(), PoolEntryKind::Enum),
+            TypeKind::Array(id) => (id.pool_index(), PoolEntryKind::Array),
+            TypeKind::PtrConst(id) => (id.pool_index(), PoolEntryKind::PtrConst),
+            TypeKind::PtrMut(id) => (id.pool_index(), PoolEntryKind::PtrMut),
+        };
+        let entry = self
+            .types
+            .get(index as usize)
+            .ok_or(TypeValidationError::PoolIndexOutOfRange)?;
+        if entry.kind() != expected {
+            return if matches!(entry, TypeData::ReservedStruct) {
+                Err(TypeValidationError::ReservedEntry)
+            } else {
+                Err(TypeValidationError::KindMismatch)
+            };
+        }
+        if matches!(
+            entry,
+            TypeData::DeclaredStruct(_) | TypeData::DeclaredEnum(_)
+        ) {
+            return Err(TypeValidationError::IncompleteDefinition);
+        }
+        Ok(())
     }
 
     fn validate_type_inner(
@@ -1158,6 +1466,7 @@ impl TypeInternPool {
                 array_map: HashMap::new(),
                 ptr_const_map: HashMap::new(),
                 ptr_mut_map: HashMap::new(),
+                containment_facts: Vec::new(),
                 struct_by_file_name: HashMap::new(),
                 enum_by_file_name: HashMap::new(),
                 symbol_paths: HashMap::new(),
@@ -1174,7 +1483,7 @@ impl TypeInternPool {
     /// remain separate: type definitions retain stable string names rather than
     /// storing a [`Spur`] from a CFG or codegen request.
     pub fn freeze(self) -> FrozenTypeInternPool {
-        let inner = self
+        let mut inner = self
             .inner
             .into_inner()
             .unwrap_or_else(PoisonError::into_inner);
@@ -1186,6 +1495,14 @@ impl TypeInternPool {
         {
             panic!("cannot freeze incomplete type-pool entry {index}: {entry:?}");
         }
+        inner
+            .finalize_containment_metadata()
+            .unwrap_or_else(|cycle| {
+                panic!(
+                    "cannot freeze cyclic by-value type graph: {}",
+                    cycle.path.join(" -> ")
+                )
+            });
         FrozenTypeInternPool {
             inner: Arc::new(inner),
         }
@@ -1362,7 +1679,16 @@ impl TypeInternPool {
         let struct_id = StructId::from_pool_index(pool_index);
         let ty = Type::new_struct(struct_id);
 
-        inner.types.push(TypeData::Struct(StructData { name, def }));
+        let mut entry = TypeData::Struct(StructData { name, def });
+        let facts = inner.incremental_facts(&entry);
+        if facts.is_some_and(|facts| facts.carries_linear) {
+            let TypeData::Struct(data) = &mut entry else {
+                unreachable!()
+            };
+            data.def.is_linear = true;
+        }
+        inner.types.push(entry);
+        inner.containment_facts.push(facts);
         inner.struct_by_file_name.insert(key, ty);
 
         (struct_id, true)
@@ -1395,6 +1721,7 @@ impl TypeInternPool {
         inner
             .types
             .push(TypeData::DeclaredStruct(StructData { name, def: shell }));
+        inner.containment_facts.push(None);
         inner.struct_by_file_name.insert(key, ty);
         (StructId::from_pool_index(pool_index), true)
     }
@@ -1424,6 +1751,7 @@ impl TypeInternPool {
 
         let pool_index = inner.next_pool_index();
         inner.types.push(TypeData::ReservedStruct);
+        inner.containment_facts.push(None);
 
         StructId::from_pool_index(pool_index)
     }
@@ -1469,7 +1797,16 @@ impl TypeInternPool {
 
         // Update the placeholder with actual data
         let key = (def.file_id, name);
-        inner.types[pool_index] = TypeData::Struct(StructData { name, def });
+        let mut entry = TypeData::Struct(StructData { name, def });
+        let facts = inner.incremental_facts(&entry);
+        if facts.is_some_and(|facts| facts.carries_linear) {
+            let TypeData::Struct(data) = &mut entry else {
+                unreachable!()
+            };
+            data.def.is_linear = true;
+        }
+        inner.types[pool_index] = entry;
+        inner.containment_facts[pool_index] = facts;
 
         // Register in the defining-file lookup.
         inner
@@ -1506,6 +1843,9 @@ impl TypeInternPool {
                 pool_index, other
             ),
         }
+        // Named declarations are still collecting explicit linear/destructor
+        // metadata. Keep their facts unknown until semantic finalization.
+        inner.containment_facts[pool_index] = None;
     }
 
     /// Register a new enum (nominal - no deduplication).
@@ -1542,7 +1882,10 @@ impl TypeInternPool {
         let enum_id = EnumId::from_pool_index(pool_index);
         let ty = Type::new_enum(enum_id);
 
-        inner.types.push(TypeData::Enum(EnumData { name, def }));
+        let entry = TypeData::Enum(EnumData { name, def });
+        let facts = inner.incremental_facts(&entry);
+        inner.types.push(entry);
+        inner.containment_facts.push(facts);
         inner.enum_by_file_name.insert(key, ty);
 
         (enum_id, true)
@@ -1575,6 +1918,7 @@ impl TypeInternPool {
         inner
             .types
             .push(TypeData::DeclaredEnum(EnumData { name, def: shell }));
+        inner.containment_facts.push(None);
         inner.enum_by_file_name.insert(key, ty);
         (EnumId::from_pool_index(pool_index), true)
     }
@@ -1608,6 +1952,7 @@ impl TypeInternPool {
                 pool_index, other
             ),
         }
+        inner.containment_facts[pool_index] = None;
     }
 
     /// Intern an array after validating its canonical child in this pool.
@@ -1636,7 +1981,10 @@ impl TypeInternPool {
         let pool_index = inner.next_pool_index();
         let ty = Type::new_array(ArrayTypeId::from_pool_index(pool_index));
 
-        inner.types.push(TypeData::Array { element, len });
+        let entry = TypeData::Array { element, len };
+        let facts = inner.incremental_facts(&entry);
+        inner.types.push(entry);
+        inner.containment_facts.push(facts);
         inner.array_map.insert(key, ty);
 
         Ok(ty)
@@ -1666,7 +2014,10 @@ impl TypeInternPool {
         let pool_index = inner.next_pool_index();
         let ty = Type::new_ptr_const(PtrConstTypeId::from_pool_index(pool_index));
 
-        inner.types.push(TypeData::PtrConst { pointee });
+        let entry = TypeData::PtrConst { pointee };
+        let facts = inner.incremental_facts(&entry);
+        inner.types.push(entry);
+        inner.containment_facts.push(facts);
         inner.ptr_const_map.insert(pointee, ty);
 
         Ok(ty)
@@ -1696,7 +2047,10 @@ impl TypeInternPool {
         let pool_index = inner.next_pool_index();
         let ty = Type::new_ptr_mut(PtrMutTypeId::from_pool_index(pool_index));
 
-        inner.types.push(TypeData::PtrMut { pointee });
+        let entry = TypeData::PtrMut { pointee };
+        let facts = inner.incremental_facts(&entry);
+        inner.types.push(entry);
+        inner.containment_facts.push(facts);
         inner.ptr_mut_map.insert(pointee, ty);
 
         Ok(ty)
@@ -1997,16 +2351,6 @@ impl TypeInternPool {
         inner.enum_symbol_name(enum_id)
     }
 
-    /// Monotonically mark a complete struct as linear during semantic
-    /// metadata finalization.
-    ///
-    /// This operation is idempotent and cannot change nominal identity,
-    /// fields, or any other completed definition data.
-    pub(crate) fn mark_struct_linear(&self, struct_id: StructId) {
-        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
-        inner.struct_def_mut(struct_id).is_linear = true;
-    }
-
     /// Assign a complete struct's destructor symbol exactly once.
     ///
     /// Destructor discovery is a semantic metadata-finalization step. It
@@ -2024,6 +2368,7 @@ impl TypeInternPool {
             "struct destructor metadata can only be assigned once"
         );
         def.destructor = Some(symbol);
+        inner.invalidate_containment_metadata();
     }
 
     /// Requalify an already-assigned destructor symbol after nominal-name
@@ -2047,6 +2392,43 @@ impl TypeInternPool {
             "destructor requalification requires a different symbol"
         );
         *destructor = symbol;
+    }
+
+    /// Finalize the canonical by-value graph after declaration fields,
+    /// payloads, destructors, and explicit linear markers are known.
+    pub(crate) fn finalize_containment_metadata(
+        &self,
+    ) -> Result<TypeContainmentWork, TypeContainmentCycle> {
+        self.inner
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .finalize_containment_metadata()
+    }
+
+    pub(crate) fn try_type_carries_linear(&self, ty: Type) -> Option<bool> {
+        self.inner
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .facts_for_type(ty)
+            .map(|facts| facts.carries_linear)
+    }
+
+    pub(crate) fn try_type_needs_drop(&self, ty: Type) -> Option<bool> {
+        self.inner
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .facts_for_type(ty)
+            .map(|facts| facts.needs_drop)
+    }
+
+    pub(crate) fn type_carries_linear(&self, ty: Type) -> bool {
+        self.try_type_carries_linear(ty)
+            .expect("linearity query requires finalized containment metadata")
+    }
+
+    pub(crate) fn type_needs_drop(&self, ty: Type) -> bool {
+        self.try_type_needs_drop(ty)
+            .expect("drop query requires finalized containment metadata")
     }
 
     /// Get an array type definition by ArrayTypeId.
@@ -2252,6 +2634,28 @@ impl TypeInternPool {
 impl FrozenTypeInternPool {
     pub fn new() -> Self {
         TypeInternPool::new().freeze()
+    }
+
+    /// Whether `ty` transitively contains a linear value by value.
+    pub fn type_carries_linear(&self, ty: Type) -> bool {
+        self.inner
+            .validate_complete_root(ty)
+            .expect("containment query requires a complete canonical type handle");
+        self.inner
+            .facts_for_type(ty)
+            .expect("frozen type pool has complete containment metadata")
+            .carries_linear
+    }
+
+    /// Whether dropping `ty` requires a destructor or nested drop glue.
+    pub fn type_needs_drop(&self, ty: Type) -> bool {
+        self.inner
+            .validate_complete_root(ty)
+            .expect("containment query requires a complete canonical type handle");
+        self.inner
+            .facts_for_type(ty)
+            .expect("frozen type pool has complete containment metadata")
+            .needs_drop
     }
 
     /// Return the flattened runtime ABI width of `ty` in eight-byte slots.
@@ -2552,6 +2956,7 @@ impl Clone for TypeInternPool {
                 array_map: inner.array_map.clone(),
                 ptr_const_map: inner.ptr_const_map.clone(),
                 ptr_mut_map: inner.ptr_mut_map.clone(),
+                containment_facts: inner.containment_facts.clone(),
                 struct_by_file_name: inner.struct_by_file_name.clone(),
                 enum_by_file_name: inner.enum_by_file_name.clone(),
                 symbol_paths: inner.symbol_paths.clone(),
@@ -2856,19 +3261,16 @@ mod tests {
     fn struct_metadata_finalization_is_narrow_and_monotonic() {
         let declarations = ThreadedRodeo::default();
         let pool = TypeInternPool::new();
-        let (owner, _) = pool.register_struct(
-            declarations.get_or_intern("Owner"),
-            struct_def(
-                "Owner",
-                vec![StructField {
-                    name: "value".into(),
-                    ty: Type::I64,
-                }],
-            ),
+        let mut owner_def = struct_def(
+            "Owner",
+            vec![StructField {
+                name: "value".into(),
+                ty: Type::I64,
+            }],
         );
+        owner_def.is_linear = true;
+        let (owner, _) = pool.register_struct(declarations.get_or_intern("Owner"), owner_def);
 
-        pool.mark_struct_linear(owner);
-        pool.mark_struct_linear(owner);
         pool.set_struct_destructor(owner, "Owner.__drop".into());
         pool.requalify_struct_destructor(owner, "Owner$left.__drop".into());
 
@@ -2878,6 +3280,106 @@ mod tests {
         assert_eq!(def.name, "Owner");
         assert_eq!(def.fields.len(), 1);
         assert_eq!(def.fields[0].ty, Type::I64);
+    }
+
+    #[test]
+    fn containment_metadata_work_is_linear_for_eight_thousand_types() {
+        const COUNT: usize = 8_000;
+        let declarations = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let ids = (0..COUNT)
+            .map(|_| pool.reserve_struct_id())
+            .collect::<Vec<_>>();
+
+        for (index, &id) in ids.iter().enumerate() {
+            let name = format!("Chain{index}");
+            let fields = ids
+                .get(index + 1)
+                .map(|&next| {
+                    vec![StructField {
+                        name: "next".into(),
+                        ty: Type::new_struct(next),
+                    }]
+                })
+                .unwrap_or_default();
+            let mut def = struct_def(&name, fields);
+            if index + 1 == COUNT {
+                def.is_linear = true;
+                def.destructor = Some(format!("{name}.__drop"));
+            }
+            pool.complete_struct_registration(id, declarations.get_or_intern(&name), def);
+        }
+
+        let work = pool.finalize_containment_metadata().unwrap();
+        assert_eq!(work.nodes, COUNT);
+        assert_eq!(work.edges, COUNT - 1);
+        assert!(pool.type_carries_linear(Type::new_struct(ids[0])));
+        assert!(pool.type_needs_drop(Type::new_struct(ids[0])));
+    }
+
+    #[test]
+    fn late_types_derive_facts_and_zero_arrays_and_pointers_terminate_containment() {
+        let declarations = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let mut resource = struct_def("Resource", vec![]);
+        resource.is_linear = true;
+        resource.destructor = Some("Resource.__drop".into());
+        let (resource, _) = pool.register_struct(declarations.get_or_intern("Resource"), resource);
+        pool.finalize_containment_metadata().unwrap();
+
+        let empty_array = pool
+            .try_intern_array(Type::new_struct(resource), 0)
+            .unwrap();
+        let one_array = pool
+            .try_intern_array(Type::new_struct(resource), 1)
+            .unwrap();
+        let pointer = pool.try_intern_ptr_mut(Type::new_struct(resource)).unwrap();
+        let choice = EnumDef {
+            name: "Choice".into(),
+            variants: vec!["Some".into(), "None".into()],
+            variant_payloads: vec![vec![one_array], vec![pointer]],
+            is_pub: false,
+            file_id: FileId::DEFAULT,
+        };
+        let (choice, _) = pool.register_enum(declarations.get_or_intern("Choice"), choice);
+        let (wrapper, _) = pool.register_struct(
+            declarations.get_or_intern("Wrapper"),
+            struct_def(
+                "Wrapper",
+                vec![StructField {
+                    name: "choice".into(),
+                    ty: Type::new_enum(choice),
+                }],
+            ),
+        );
+
+        assert!(!pool.type_carries_linear(empty_array));
+        assert!(!pool.type_needs_drop(empty_array));
+        assert!(pool.type_carries_linear(one_array));
+        assert!(pool.type_needs_drop(one_array));
+        assert!(!pool.type_carries_linear(pointer));
+        assert!(!pool.type_needs_drop(pointer));
+        assert!(pool.type_carries_linear(Type::new_enum(choice)));
+        assert!(pool.type_needs_drop(Type::new_enum(choice)));
+        assert!(pool.struct_def(wrapper).is_linear);
+
+        let frozen = pool.freeze();
+        assert!(frozen.type_carries_linear(Type::new_struct(wrapper)));
+        assert!(frozen.type_needs_drop(Type::new_struct(wrapper)));
+    }
+
+    #[test]
+    #[should_panic(expected = "complete canonical type handle")]
+    fn frozen_containment_queries_reject_wrong_kind_handles() {
+        let declarations = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let (owner, _) = pool.register_struct(
+            declarations.get_or_intern("Owner"),
+            struct_def("Owner", vec![]),
+        );
+        let frozen = pool.freeze();
+        let wrong_kind = Type::new_array(ArrayTypeId::from_pool_index(owner.pool_index()));
+        let _ = frozen.type_needs_drop(wrong_kind);
     }
 
     #[test]

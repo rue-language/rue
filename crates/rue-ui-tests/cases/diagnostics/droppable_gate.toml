@@ -83,6 +83,21 @@ compile_fail = false
 exit_code = 0
 
 [[case]]
+name = "zero_linear_array_is_droppable"
+description = "A zero-length array holds no linear values, so the droppable gate accepts it under spec 3.8:74."
+source = """
+linear struct Token { v: i32 }
+fn Gated(comptime T: type) -> type {
+    @require_droppable(T);
+    struct { y: T }
+}
+const G = Gated([Token; 0]);
+fn main() -> i32 { 0 }
+"""
+compile_fail = false
+exit_code = 0
+
+[[case]]
 name = "e0499_linear_names_and_labels"
 description = "The linear-element rejection (E0499) gets the same application-site label (RUE-610)"
 source = """

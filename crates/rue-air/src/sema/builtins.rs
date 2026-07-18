@@ -7,6 +7,12 @@ use rue_builtins::BUILTIN_ENUMS;
 use super::{DeclarationPhase, Sema};
 use crate::types::{EnumDef, Type, TypeKind};
 
+#[derive(Clone, Copy)]
+enum OwnershipProperty {
+    Linearity,
+    Drop,
+}
+
 impl<'a> Sema<'a> {
     /// Phase 0: Inject compiler-provided enums.
     pub(crate) fn inject_builtin_types(&mut self) {
@@ -68,22 +74,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         self.type_pool.lang_item_type(crate::LangItem::StrBuf)
     }
 
-    /// Check if a type is a linear type.
-    /// Only struct types can be linear - primitives and other types are not linear.
-    pub(crate) fn is_type_linear(&self, ty: Type) -> bool {
-        match ty.kind() {
-            TypeKind::Struct(struct_id) => {
-                let struct_def = self
-                    .type_pool
-                    .try_struct_def(struct_id)
-                    .expect("linearity queries require a complete struct definition");
-                struct_def.is_linear
-            }
-            // Only struct types can be linear
-            _ => false,
-        }
-    }
-
     /// Check if a type carries a linear value when stored by value: a linear
     /// struct itself, or an array whose element type carries one.
     ///
@@ -95,30 +85,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// declaration fixpoint the struct flags are the values being converged;
     /// outside that fixpoint callers require finalized declaration ownership.
     pub(crate) fn type_carries_linear(&self, ty: Type) -> bool {
-        match ty.kind() {
-            TypeKind::Struct(_) => self.is_type_linear(ty),
-            TypeKind::Array(array_id) => {
-                let (element_type, _length) = self.type_pool.array_def(array_id);
-                self.type_carries_linear(element_type)
-            }
-            // An enum carries a linear value when any variant payload does
-            // (RUE-221, multiplicity join: a linear-payload variant makes the
-            // whole enum linear/must-consume). The discriminant selects the
-            // active variant at runtime, so a conservative static check
-            // requires consumption if *any* variant could carry one.
-            TypeKind::Enum(enum_id) => {
-                let enum_def = self
-                    .type_pool
-                    .try_enum_def(enum_id)
-                    .expect("linearity queries require a complete enum definition");
-                enum_def
-                    .variant_payloads
-                    .iter()
-                    .flatten()
-                    .any(|&payload_ty| self.type_carries_linear(payload_ty))
-            }
-            _ => false,
-        }
+        self.type_pool.type_carries_linear(ty)
     }
 
     /// Whether a type has drop glue — a destructor that runs at scope exit,
@@ -134,35 +101,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// Every reachable nominal definition and destructor assignment must be
     /// finalized before this query is authoritative.
     pub(crate) fn type_has_drop_glue(&self, ty: Type) -> bool {
-        match ty.kind() {
-            TypeKind::Struct(struct_id) => {
-                let struct_def = self
-                    .type_pool
-                    .try_struct_def(struct_id)
-                    .expect("drop-glue queries require a complete struct definition");
-                struct_def.destructor.is_some()
-                    || struct_def
-                        .fields
-                        .iter()
-                        .any(|f| self.type_has_drop_glue(f.ty))
-            }
-            TypeKind::Enum(enum_id) => {
-                let enum_def = self
-                    .type_pool
-                    .try_enum_def(enum_id)
-                    .expect("drop-glue queries require a complete enum definition");
-                enum_def
-                    .variant_payloads
-                    .iter()
-                    .flatten()
-                    .any(|&payload_ty| self.type_has_drop_glue(payload_ty))
-            }
-            TypeKind::Array(array_id) => {
-                let (element_type, _length) = self.type_pool.array_def(array_id);
-                self.type_has_drop_glue(element_type)
-            }
-            _ => false,
-        }
+        self.type_pool.type_needs_drop(ty)
     }
 
     /// Whether declaration finalization can still change an ownership query
@@ -182,52 +121,88 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// Return only declaration-time ownership facts that cannot be invalidated
     /// by later payload completion or infectious-linearity propagation.
     pub(crate) fn known_linear_during_binding(&self, ty: Type) -> Option<bool> {
-        match ty.kind() {
-            TypeKind::Struct(id) => self
-                .type_pool
-                .struct_metadata(id)
-                .and_then(|metadata| metadata.is_linear.then_some(true)),
-            TypeKind::Enum(id) => {
-                let def = self.type_pool.try_enum_def(id)?;
-                let mut deferred = false;
-                for payload in def.variant_payloads.iter().flatten() {
-                    match self.known_linear_during_binding(*payload) {
-                        Some(true) => return Some(true),
-                        Some(false) => {}
-                        None => deferred = true,
-                    }
-                }
-                (!deferred).then_some(false)
-            }
-            TypeKind::Array(id) => self.known_linear_during_binding(self.type_pool.array_def(id).0),
-            _ => Some(false),
-        }
+        self.known_ownership_during_binding(ty, OwnershipProperty::Linearity)
     }
 
     /// Return only declaration-time drop-glue facts that cannot be invalidated
     /// by later payload completion or destructor collection.
     pub(crate) fn known_drop_glue_during_binding(&self, ty: Type) -> Option<bool> {
-        match ty.kind() {
-            TypeKind::Struct(id) => self
-                .type_pool
-                .struct_metadata(id)
-                .and_then(|metadata| metadata.destructor.is_some().then_some(true)),
-            TypeKind::Enum(id) => {
-                let def = self.type_pool.try_enum_def(id)?;
-                let mut deferred = false;
-                for payload in def.variant_payloads.iter().flatten() {
-                    match self.known_drop_glue_during_binding(*payload) {
-                        Some(true) => return Some(true),
-                        Some(false) => {}
-                        None => deferred = true,
+        self.known_ownership_during_binding(ty, OwnershipProperty::Drop)
+    }
+
+    fn known_ownership_during_binding(
+        &self,
+        root: Type,
+        property: OwnershipProperty,
+    ) -> Option<bool> {
+        let mut results = std::collections::HashMap::<Type, Option<bool>>::new();
+        let mut visiting = std::collections::HashSet::new();
+        let mut stack = vec![(root, false)];
+        while let Some((ty, expanded)) = stack.pop() {
+            if results.contains_key(&ty) {
+                continue;
+            }
+            if expanded {
+                visiting.remove(&ty);
+                let value = match ty.kind() {
+                    TypeKind::Struct(id) => {
+                        self.type_pool
+                            .struct_metadata(id)
+                            .and_then(|metadata| match property {
+                                OwnershipProperty::Linearity => metadata.is_linear.then_some(true),
+                                OwnershipProperty::Drop => {
+                                    metadata.destructor.is_some().then_some(true)
+                                }
+                            })
+                    }
+                    TypeKind::Enum(id) => self.type_pool.try_enum_def(id).and_then(|def| {
+                        let mut unknown = false;
+                        for &child in def.variant_payloads.iter().flatten() {
+                            match results.get(&child).copied().flatten() {
+                                Some(true) => return Some(true),
+                                Some(false) => {}
+                                None => unknown = true,
+                            }
+                        }
+                        (!unknown).then_some(false)
+                    }),
+                    TypeKind::Array(id) => {
+                        let (element, len) = self.type_pool.array_def(id);
+                        if len == 0 {
+                            Some(false)
+                        } else {
+                            results.get(&element).copied().flatten()
+                        }
+                    }
+                    _ => Some(false),
+                };
+                results.insert(ty, value);
+                continue;
+            }
+
+            if !visiting.insert(ty) {
+                continue;
+            }
+            stack.push((ty, true));
+            match ty.kind() {
+                TypeKind::Enum(id) => {
+                    if let Some(def) = self.type_pool.try_enum_def(id) {
+                        for &child in def.variant_payloads.iter().flatten().rev() {
+                            if !visiting.contains(&child) {
+                                stack.push((child, false));
+                            }
+                        }
                     }
                 }
-                (!deferred).then_some(false)
+                TypeKind::Array(id) => {
+                    let (child, len) = self.type_pool.array_def(id);
+                    if len != 0 && !visiting.contains(&child) {
+                        stack.push((child, false));
+                    }
+                }
+                _ => {}
             }
-            TypeKind::Array(id) => {
-                self.known_drop_glue_during_binding(self.type_pool.array_def(id).0)
-            }
-            _ => Some(false),
         }
+        results.get(&root).copied().flatten()
     }
 }

@@ -29,64 +29,7 @@ use rue_span::Span;
 
 /// Check if a type needs drop.
 fn type_needs_drop(ty: Type, type_pool: &FrozenTypeInternPool) -> bool {
-    match ty.kind() {
-        // Primitive types are trivially droppable
-        // ComptimeType is comptime-only, no runtime representation
-        TypeKind::I8
-        | TypeKind::I16
-        | TypeKind::I32
-        | TypeKind::I64
-        | TypeKind::U8
-        | TypeKind::U16
-        | TypeKind::U32
-        | TypeKind::U64
-        | TypeKind::Bool
-        | TypeKind::Unit
-        | TypeKind::Never
-        | TypeKind::Error
-        | TypeKind::ComptimeType => false,
-
-        // An enum needs drop if any variant payload needs drop (RUE-221): at
-        // scope exit its active-variant drop glue switches on the discriminant
-        // and drops the selected payload. Discriminant-only enums are trivial.
-        TypeKind::Enum(enum_id) => {
-            let enum_def = type_pool.enum_def(enum_id);
-            enum_def
-                .variant_payloads
-                .iter()
-                .flatten()
-                .any(|&ty| type_needs_drop(ty, type_pool))
-        }
-
-        // Struct types need drop if they have a destructor (e.g., builtin String)
-        // or if any field needs drop
-        TypeKind::Struct(struct_id) => {
-            let struct_def = type_pool.struct_def(struct_id);
-            // Builtins with destructors (like String) need drop
-            if struct_def.destructor.is_some() {
-                return true;
-            }
-            // Otherwise, check if any field needs drop
-            struct_def
-                .fields
-                .iter()
-                .any(|f| type_needs_drop(f.ty, type_pool))
-        }
-
-        // Note: String is now Type::Struct with is_builtin=true, handled above
-
-        // Array types need drop if element type needs drop
-        TypeKind::Array(array_id) => {
-            let (element_type, _length) = type_pool.array_def(array_id);
-            type_needs_drop(element_type, type_pool)
-        }
-
-        // Pointer types don't need drop (they're just addresses)
-        TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => false,
-
-        // Module types don't need drop (compile-time only)
-        TypeKind::Module(_) => false,
-    }
+    type_pool.type_needs_drop(ty)
 }
 
 /// Synthesize drop glue functions for all structs and arrays that need them.

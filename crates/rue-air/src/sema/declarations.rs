@@ -23,16 +23,6 @@ use crate::inference::{FunctionSig, MethodSig};
 use crate::path_norm::{mangle_symbol_component, normalize_module_path};
 use crate::types::{EnumDef, EnumId, StructDef, StructField, StructId, Type, TypeKind};
 
-/// A node in the "contains by value" type graph, used by
-/// [`Sema::check_recursive_value_types`] to detect infinite-size cycles
-/// (RUE-264). Only aggregate types (struct, enum) can participate in such a
-/// cycle; the array element is followed transitively but is not itself a node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum TypeNode {
-    Struct(StructId),
-    Enum(EnumId),
-}
-
 impl<'a, D: DeclarationPhase> Sema<'a, D> {
     pub(crate) fn source_function_name(&self, internal_name: Spur) -> Spur {
         self.function_source_names
@@ -522,8 +512,13 @@ impl<'a> Sema<'a> {
             // recurses through the field graph and overflows the host stack
             // (RUE-264).
             self.check_recursive_value_types()?;
-            self.propagate_field_linearity();
             self.resolve_remaining_declarations()?;
+            // Destructor discovery can change drop facts without changing the
+            // already-proven-acyclic graph. Refresh the same canonical metadata
+            // before deferred ownership gates and body analysis query it.
+            self.type_pool
+                .finalize_containment_metadata()
+                .expect("destructor collection cannot introduce containment cycles");
             self.validate_deferred_ownership_gates()?;
             // Now that value constants are separated from module bindings, reject
             // any value-constant name that collides with a function/struct/enum
@@ -853,42 +848,6 @@ impl<'a> Sema<'a> {
         Ok(())
     }
 
-    /// Propagate linearity from fields to containing structs (infectious
-    /// linearity, spec 3.8:57 / RUE-40).
-    ///
-    /// A struct with a field whose type carries a linear value (directly,
-    /// through an array, or through a nested struct) must itself be linear:
-    /// if the container could be implicitly dropped, the linear field would
-    /// be silently dropped with it. Runs to a fixpoint so linearity flows
-    /// through arbitrarily deep nestings. The causing field is recorded in
-    /// [`Sema::infectious_linear`] for diagnostics.
-    pub(crate) fn propagate_field_linearity(&mut self) {
-        let struct_ids: Vec<StructId> = self.type_pool.all_struct_ids();
-        loop {
-            let mut changed = false;
-            for &struct_id in &struct_ids {
-                let def = self.type_pool.struct_def(struct_id);
-                if def.is_linear {
-                    continue;
-                }
-                let Some(cause) = def
-                    .fields
-                    .iter()
-                    .find(|field| self.type_carries_linear(field.ty))
-                else {
-                    continue;
-                };
-                let cause = (cause.name.clone(), self.format_type_name(cause.ty));
-                self.type_pool.mark_struct_linear(struct_id);
-                self.infectious_linear.insert(struct_id, cause);
-                changed = true;
-            }
-            if !changed {
-                break;
-            }
-        }
-    }
-
     /// Resolve struct field types. Must run before @copy validation.
     pub(crate) fn resolve_struct_fields(&mut self) -> CompileResult<()> {
         for (_, inst) in self.rir.iter() {
@@ -1009,101 +968,68 @@ impl<'a> Sema<'a> {
     /// A pointer field (`ptr const T` / `ptr mut T`) is indirection, not
     /// by-value containment, so it breaks the cycle and is allowed — that is
     /// how a recursive data structure is written.
-    pub(crate) fn check_recursive_value_types(&self) -> CompileResult<()> {
-        // Drive from each user-declared struct/enum so the diagnostic points at
-        // the offending declaration (the RIR carries the span; the type pool
-        // does not).
-        for (_, inst) in self.rir.iter() {
-            let (name_sym, span) = match &inst.data {
-                InstData::StructDecl { name, .. } | InstData::EnumDecl { name, .. } => {
-                    (*name, inst.span)
+    pub(crate) fn check_recursive_value_types(&mut self) -> CompileResult<()> {
+        let explicitly_linear: HashSet<_> = self
+            .type_pool
+            .all_struct_ids()
+            .into_iter()
+            .filter(|&id| self.type_pool.struct_def(id).is_linear)
+            .collect();
+        if let Err(cycle) = self.type_pool.finalize_containment_metadata() {
+            // Drive diagnostics from the source declaration so the canonical
+            // graph remains span-free while E0483 retains its exact span.
+            for (_, inst) in self.rir.iter() {
+                let (name_sym, span) = match &inst.data {
+                    InstData::StructDecl { name, .. } | InstData::EnumDecl { name, .. } => {
+                        (*name, inst.span)
+                    }
+                    _ => continue,
+                };
+                let key = (span.file_id, name_sym);
+                let start_ty = if let Some(&struct_id) = self.structs_by_file_name.get(&key) {
+                    Type::new_struct(struct_id)
+                } else if let Some(&enum_id) = self.enums_by_file_name.get(&key) {
+                    Type::new_enum(enum_id)
+                } else {
+                    continue;
+                };
+                if start_ty != cycle.root {
+                    continue;
                 }
-                _ => continue,
-            };
-            let key = (span.file_id, name_sym);
-            let start_ty = if let Some(&struct_id) = self.structs_by_file_name.get(&key) {
-                Type::new_struct(struct_id)
-            } else if let Some(&enum_id) = self.enums_by_file_name.get(&key) {
-                Type::new_enum(enum_id)
-            } else {
-                continue;
-            };
-
-            let mut on_path: HashSet<TypeNode> = HashSet::new();
-            let mut path: Vec<String> = Vec::new();
-            if let Some(cycle) = self.find_value_cycle(start_ty, &mut on_path, &mut path) {
                 let name = self.interner.resolve(&name_sym).to_string();
                 return Err(CompileError::new(
                     ErrorKind::RecursiveTypeInfiniteSize {
                         name,
-                        cycle: cycle.join(" -> "),
+                        cycle: cycle.path.join(" -> "),
                     },
                     span,
                 ));
             }
+            unreachable!("containment cycle root must be a source nominal declaration");
+        }
+
+        // The canonical pass has propagated infectious linearity. Preserve the
+        // first declaration-order causing field for the existing diagnostic
+        // note without maintaining a second propagation authority.
+        for struct_id in self.type_pool.all_struct_ids() {
+            if explicitly_linear.contains(&struct_id) {
+                continue;
+            }
+            let def = self.type_pool.struct_def(struct_id);
+            if !def.is_linear {
+                continue;
+            }
+            let Some(cause) = def
+                .fields
+                .iter()
+                .find(|field| self.type_pool.type_carries_linear(field.ty))
+            else {
+                continue;
+            };
+            let cause = (cause.name.clone(), self.format_type_name(cause.ty));
+            self.infectious_linear.insert(struct_id, cause);
         }
         Ok(())
-    }
-
-    /// Depth-first search for a by-value containment cycle in the type graph,
-    /// mirroring the traversal `drop_glue::type_needs_drop` performs (structs
-    /// recurse through fields, enums through variant payloads, arrays through
-    /// the element type; pointers and scalars terminate). Returns the cyclic
-    /// containment path (as type names) if `ty` transitively contains a struct
-    /// or enum already on the current path.
-    fn find_value_cycle(
-        &self,
-        ty: Type,
-        on_path: &mut HashSet<TypeNode>,
-        path: &mut Vec<String>,
-    ) -> Option<Vec<String>> {
-        match ty.kind() {
-            TypeKind::Struct(id) => {
-                let def = self.type_pool.struct_def(id);
-                if !on_path.insert(TypeNode::Struct(id)) {
-                    // Back-edge: this struct is already on the current path.
-                    let mut cycle = path.clone();
-                    cycle.push(def.name.clone());
-                    return Some(cycle);
-                }
-                path.push(def.name.clone());
-                for field in &def.fields {
-                    if let Some(cycle) = self.find_value_cycle(field.ty, on_path, path) {
-                        return Some(cycle);
-                    }
-                }
-                path.pop();
-                on_path.remove(&TypeNode::Struct(id));
-                None
-            }
-            TypeKind::Enum(id) => {
-                let def = self.type_pool.enum_def(id);
-                if !on_path.insert(TypeNode::Enum(id)) {
-                    let mut cycle = path.clone();
-                    cycle.push(def.name.clone());
-                    return Some(cycle);
-                }
-                path.push(def.name.clone());
-                for payload_ty in def.variant_payloads.iter().flatten() {
-                    if let Some(cycle) = self.find_value_cycle(*payload_ty, on_path, path) {
-                        return Some(cycle);
-                    }
-                }
-                path.pop();
-                on_path.remove(&TypeNode::Enum(id));
-                None
-            }
-            // An array stores its elements inline, so a by-value cycle can run
-            // through the element type (`struct A { a: [A; 1] }`).
-            TypeKind::Array(array_id) => {
-                let (element_ty, _length) = self.type_pool.array_def(array_id);
-                self.find_value_cycle(element_ty, on_path, path)
-            }
-            // Pointers are indirection (they break the cycle); scalars, unit,
-            // never, error, module and comptime-type carry no by-value struct
-            // containment.
-            _ => None,
-        }
     }
 
     /// Resolve @copy validation, destructors, functions, and methods.
