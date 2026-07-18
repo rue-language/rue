@@ -1,0 +1,72 @@
+// Length-preserving bytecode simplification. Keeping instruction indexes stable
+// means absolute branch targets and function entries need no relocation table;
+// eliminated operations become NOPs. The pass folds only operations that cannot
+// trap, leaving checked integer arithmetic to the VM.
+const bytecode = @import("bytecode.rue");
+
+pub struct OptimizeResult { program: bytecode.Program, folded: u64 }
+
+fn nop() -> bytecode.Instruction { bytecode.Instruction { op: bytecode.NOP, a: 0, b: 0 } }
+fn boolean(value: bool) -> bytecode.Instruction {
+    bytecode.Instruction { op: bytecode.CONST_BOOL, a: if value { 1 } else { 0 }, b: 0 }
+}
+
+fn fold_comparison(op: u64, a: i64, b: i64) -> bytecode.Instruction {
+    if op == bytecode.EQ { boolean(a == b) }
+    else if op == bytecode.NE { boolean(a != b) }
+    else if op == bytecode.LT { boolean(a < b) }
+    else if op == bytecode.LE { boolean(a <= b) }
+    else if op == bytecode.GT { boolean(a > b) }
+    else { boolean(a >= b) }
+}
+
+fn is_comparison(op: u64) -> bool {
+    op == bytecode.EQ || op == bytecode.NE || op == bytecode.LT ||
+    op == bytecode.LE || op == bytecode.GT || op == bytecode.GE
+}
+
+fn fold_triples(inout program: bytecode.Program) -> u64 {
+    let mut folded: u64 = 0;
+    let mut pc: u64 = 0;
+    while pc + 2 < program.code.len() {
+        let a = program.code.get_or(pc, nop());
+        let b = program.code.get_or(pc + 1, nop());
+        let op = program.code.get_or(pc + 2, nop());
+        if a.op == bytecode.CONST_INT && b.op == bytecode.CONST_INT && is_comparison(op.op) {
+            program.code.set(pc, fold_comparison(op.op, a.a, b.a));
+            program.code.set(pc + 1, nop());
+            program.code.set(pc + 2, nop());
+            folded = folded + 1;
+            pc = pc + 3;
+        } else {
+            pc = pc + 1;
+        }
+    }
+    folded
+}
+
+fn fold_pairs(inout program: bytecode.Program) -> u64 {
+    let mut folded: u64 = 0;
+    let mut pc: u64 = 0;
+    while pc + 1 < program.code.len() {
+        let value = program.code.get_or(pc, nop());
+        let op = program.code.get_or(pc + 1, nop());
+        if value.op == bytecode.CONST_BOOL && op.op == bytecode.NOT {
+            program.code.set(pc, boolean(value.a == 0));
+            program.code.set(pc + 1, nop());
+            folded = folded + 1;
+        } else if op.op == bytecode.JUMP && op.a >= 0 && @intCast(op.a) == pc + 2 {
+            program.code.set(pc + 1, nop());
+            folded = folded + 1;
+        }
+        pc = pc + 1;
+    }
+    folded
+}
+
+pub fn optimize(program: bytecode.Program) -> OptimizeResult {
+    let mut result = program;
+    let mut folded = fold_triples(inout result);
+    folded = folded + fold_pairs(inout result);
+    OptimizeResult { program: result, folded: folded }
+}

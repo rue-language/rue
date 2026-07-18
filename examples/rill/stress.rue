@@ -1,0 +1,49 @@
+// Deterministic large Rill-program generator. This gives the dogfood binary a
+// built-in scaling workload without checking in a generated fixture: hundreds
+// of distinct functions stress symbol interning, call metadata, verification,
+// VM frames, and forward resolution. `rill --stress` compiles and runs it.
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn function_name(index: u64) -> StrBuf {
+    let mut name = StrBuf.new();
+    name.push_str("step");
+    name.push_str(@to_string(index));
+    name
+}
+
+fn append_function(inout out: StrBuf, index: u64, count: u64) {
+    out.push_str("fn ");
+    out.push_str(function_name(index));
+    out.push_str("(value) {\n");
+    out.push_str("  let adjusted = value + 1;\n");
+    out.push_str("  if (adjusted < 0) { return 0; }\n");
+    if index + 1 < count {
+        out.push_str("  return ");
+        out.push_str(function_name(index + 1));
+        out.push_str("(adjusted);\n");
+    } else {
+        out.push_str("  return adjusted;\n");
+    }
+    out.push_str("}\n\n");
+}
+
+pub fn generate(count: u64) -> StrBuf {
+    let mut out = StrBuf.new();
+    out.push_str("// generated Rill compiler/VM scaling workload\n");
+    out.push_str("let expected = ");
+    out.push_str(@to_string(count));
+    out.push_str(";\n\n");
+    let mut i: u64 = 0;
+    while i < count {
+        append_function(inout out, i, count);
+        i = i + 1;
+    }
+    out.push_str("fn main() {\n");
+    out.push_str("  let answer = step0(0);\n");
+    out.push_str("  print(answer);\n");
+    out.push_str("  print(answer == expected);\n");
+    out.push_str("  return 0;\n");
+    out.push_str("}\n");
+    out
+}

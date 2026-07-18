@@ -1,0 +1,27 @@
+let calls = 0;
+let prefix = "item:";
+let adjustment = -2;
+fn repeat(word, n) {
+    let out = "";
+    let i = 0;
+    while (i < n) { out = out + word; i = i + 1; }
+    return out;
+}
+fn triangular(n) {
+    calls = calls + 1;
+    let total = 0;
+    while (n > 0) { total = total + n; n = n - 1; }
+    return total;
+}
+fn main() {
+    print(prefix + repeat("x", 4));
+    print(triangular(100) + adjustment);
+    let values = [1, 2, 3];
+    values = push(values, triangular(4));
+    print(values);
+    print(len(values));
+    print(get(values, 3));
+    if (calls == 2 && triangular(3) == 6) { print("ok"); } else { print("bad"); }
+    print(calls);
+    return 0;
+}

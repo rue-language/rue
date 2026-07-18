@@ -1,0 +1,76 @@
+// Bytecode inventory used by --stats. Beyond being useful output, computing
+// these metrics exercises the complete instruction set independently of the
+// VM dispatch and verifier, making additions update three explicit consumers.
+const std = @import("std");
+const bytecode = @import("bytecode.rue");
+const StrBuf = std.strbuf.StrBuf;
+const U64s = std.arraybuf.ArrayBuf(u64);
+
+struct Inventory {
+    counts: U64s,
+    jumps: u64,
+    backward_jumps: u64,
+    calls: u64,
+    returns: u64,
+    max_call_arity: u64,
+
+    fn new() -> Self {
+        let mut counts = U64s.new();
+        let mut i: u64 = 0;
+        while i < 40 { counts.push(0); i = i + 1; }
+        Self {
+            counts: counts,
+            jumps: 0,
+            backward_jumps: 0,
+            calls: 0,
+            returns: 0,
+            max_call_arity: 0,
+        }
+    }
+
+    fn observe(inout self, pc: u64, ins: bytecode.Instruction) {
+        if ins.op < self.counts.len() {
+            self.counts.set(ins.op, self.counts.get_or(ins.op, 0) + 1);
+        }
+        if ins.op == bytecode.JUMP || ins.op == bytecode.JUMP_FALSE {
+            self.jumps = self.jumps + 1;
+            if ins.a >= 0 && @intCast(ins.a) <= pc {
+                self.backward_jumps = self.backward_jumps + 1;
+            }
+        }
+        if ins.op == bytecode.CALL {
+            self.calls = self.calls + 1;
+            if ins.b >= 0 && @intCast(ins.b) > self.max_call_arity {
+                self.max_call_arity = @intCast(ins.b);
+            }
+        }
+        if ins.op == bytecode.RETURN { self.returns = self.returns + 1; }
+    }
+}
+
+fn append_metric(inout out: StrBuf, name: StrBuf, value: u64) {
+    out.push_str(name);
+    out.push_str("=");
+    out.push_str(@to_string(value));
+    out.push_str("\n");
+}
+
+pub fn summarize(borrow program: bytecode.Program) -> StrBuf {
+    let mut inventory = Inventory.new();
+    let mut pc: u64 = 0;
+    while pc < program.code.len() {
+        inventory.observe(pc, program.code.get_or(pc, bytecode.Instruction { op: 0, a: 0, b: 0 }));
+        pc = pc + 1;
+    }
+    let mut out = StrBuf.new();
+    append_metric(inout out, "functions", program.fn_names.len());
+    append_metric(inout out, "globals", program.global_names.len());
+    append_metric(inout out, "strings", program.pool.len());
+    append_metric(inout out, "instructions", program.code.len());
+    append_metric(inout out, "jumps", inventory.jumps);
+    append_metric(inout out, "backward_jumps", inventory.backward_jumps);
+    append_metric(inout out, "calls", inventory.calls);
+    append_metric(inout out, "returns", inventory.returns);
+    append_metric(inout out, "max_call_arity", inventory.max_call_arity);
+    out
+}

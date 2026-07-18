@@ -1,0 +1,339 @@
+// Stack virtual machine for Rill. Values are compact tagged words: strings are
+// indexes into Program.pool, so concatenation can extend one canonical pool
+// without moving owned strings through the operand stack.
+const std = @import("std");
+const bytecode = @import("bytecode.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub const INT: u64 = 1;
+pub const BOOL: u64 = 2;
+pub const STRING: u64 = 3;
+pub const LIST_VALUE: u64 = 4;
+
+pub struct Value { tag: u64, data: i64 }
+const Values = std.arraybuf.ArrayBuf(Value);
+const U64s = std.arraybuf.ArrayBuf(u64);
+
+// Immutable list heap. Each list is one contiguous range in `values`; push
+// creates a new range, which makes list Values cheap Copy words and avoids
+// aliasing mutable owned buffers through VM locals and operand stacks.
+struct ListHeap {
+    values: Values,
+    offs: U64s,
+    lens: U64s,
+
+    fn new() -> Self { Self { values: Values.new(), offs: U64s.new(), lens: U64s.new() } }
+    fn len(borrow self, id: u64) -> u64 { self.lens.get_or(id, 0) }
+    fn get(borrow self, id: u64, index: u64) -> Value {
+        let len = self.len(id);
+        if index >= len { return Value { tag: 0, data: 0 }; }
+        self.values.get_or(self.offs.get_or(id, 0) + index, Value { tag: 0, data: 0 })
+    }
+    fn from_stack(inout self, borrow stack: Values, start: u64, count: u64) -> u64 {
+        let id = self.offs.len();
+        self.offs.push(self.values.len());
+        self.lens.push(count);
+        let mut i: u64 = 0;
+        while i < count {
+            self.values.push(stack.get_or(start + i, Value { tag: 0, data: 0 }));
+            i = i + 1;
+        }
+        id
+    }
+    fn appended(inout self, id: u64, value: Value) -> u64 {
+        let result = self.offs.len();
+        let len = self.len(id);
+        self.offs.push(self.values.len());
+        self.lens.push(len + 1);
+        let mut i: u64 = 0;
+        while i < len { self.values.push(self.get(id, i)); i = i + 1; }
+        self.values.push(value);
+        result
+    }
+}
+
+struct Frame { return_pc: u64, base: u64 }
+const Frames = std.arraybuf.ArrayBuf(Frame);
+
+pub struct RunResult { ok: bool, value: Value, output: StrBuf, error: StrBuf }
+
+struct VM {
+    program: bytecode.Program,
+    stack: Values,
+    globals: Values,
+    lists: ListHeap,
+    frames: Frames,
+    pc: u64,
+    base: u64,
+    output: StrBuf,
+    error: StrBuf,
+    failed: bool,
+    steps: u64,
+
+    fn new(program: bytecode.Program) -> Self {
+        let mut globals = Values.new();
+        let mut i: u64 = 0;
+        while i < program.global_names.len() {
+            globals.push(Value {
+                tag: program.global_tags.get_or(i, BOOL),
+                data: program.global_data.get_or(i, 0),
+            });
+            i = i + 1;
+        }
+        Self {
+            program: program,
+            stack: Values.new(),
+            globals: globals,
+            lists: ListHeap.new(),
+            frames: Frames.new(),
+            pc: 0,
+            base: 0,
+            output: StrBuf.new(),
+            error: StrBuf.new(),
+            failed: false,
+            steps: 0,
+        }
+    }
+
+    fn false_value() -> Value { Value { tag: BOOL, data: 0 } }
+    fn push(inout self, v: Value) { self.stack.push(v); }
+    fn pop(inout self) -> Value {
+        if self.stack.len() == 0 {
+            self.fail("stack underflow");
+            return Self.false_value();
+        }
+        self.stack.pop_or(Self.false_value())
+    }
+    fn fail(inout self, message: StrBuf) {
+        if !self.failed {
+            self.error.push_str("runtime error: ");
+            self.error.push_str(message);
+            self.error.push_str("\n");
+        }
+        self.failed = true;
+    }
+    fn require_int(inout self, v: Value) -> i64 {
+        if v.tag != INT { self.fail("expected integer"); return 0; }
+        v.data
+    }
+    fn require_bool(inout self, v: Value) -> bool {
+        if v.tag != BOOL { self.fail("expected boolean"); return false; }
+        v.data != 0
+    }
+    fn trim(inout self, len: u64) {
+        while self.stack.len() > len { let _ = self.stack.pop(); }
+    }
+    fn allocate_locals(inout self, count: u64) {
+        let mut i: u64 = 0;
+        while i < count { self.stack.push(Self.false_value()); i = i + 1; }
+    }
+
+    fn value_equal(borrow self, a: Value, b: Value) -> bool {
+        if a.tag != b.tag { return false; }
+        if a.tag == STRING {
+            self.program.pool.equals_entry(@intCast(a.data), @intCast(b.data))
+        } else { a.data == b.data }
+    }
+
+    fn binary(inout self, op: u64) {
+        let right = self.pop();
+        let left = self.pop();
+        if self.failed { return; }
+        if op == bytecode.ADD && left.tag == STRING && right.tag == STRING {
+            let id = self.program.pool.concat(@intCast(left.data), @intCast(right.data));
+            self.push(Value { tag: STRING, data: @intCast(id) });
+            return;
+        }
+        if op == bytecode.EQ || op == bytecode.NE {
+            let equal = self.value_equal(left, right);
+            self.push(Value { tag: BOOL, data: if (op == bytecode.EQ) == equal { 1 } else { 0 } });
+            return;
+        }
+        if op == bytecode.AND || op == bytecode.OR {
+            let a = self.require_bool(left);
+            let b = self.require_bool(right);
+            let answer = if op == bytecode.AND { a && b } else { a || b };
+            self.push(Value { tag: BOOL, data: if answer { 1 } else { 0 } });
+            return;
+        }
+        let a = self.require_int(left);
+        let b = self.require_int(right);
+        if self.failed { return; }
+        if op == bytecode.ADD { self.push(Value { tag: INT, data: a + b }); }
+        else if op == bytecode.SUB { self.push(Value { tag: INT, data: a - b }); }
+        else if op == bytecode.MUL { self.push(Value { tag: INT, data: a * b }); }
+        else if op == bytecode.DIV {
+            if b == 0 { self.fail("division by zero"); }
+            else { self.push(Value { tag: INT, data: a / b }); }
+        }
+        else if op == bytecode.MOD {
+            if b == 0 { self.fail("division by zero"); }
+            else { self.push(Value { tag: INT, data: a % b }); }
+        }
+        else if op == bytecode.LT { self.push(Value { tag: BOOL, data: if a < b { 1 } else { 0 } }); }
+        else if op == bytecode.LE { self.push(Value { tag: BOOL, data: if a <= b { 1 } else { 0 } }); }
+        else if op == bytecode.GT { self.push(Value { tag: BOOL, data: if a > b { 1 } else { 0 } }); }
+        else if op == bytecode.GE { self.push(Value { tag: BOOL, data: if a >= b { 1 } else { 0 } }); }
+        else { self.fail("unknown binary instruction"); }
+    }
+
+    fn append_value(inout self, v: Value) {
+        if v.tag == INT { self.output.push_str(@to_string(v.data)); }
+        else if v.tag == BOOL { if v.data == 0 { self.output.push_str("false"); } else { self.output.push_str("true"); } }
+        else if v.tag == STRING { self.output.push_str(self.program.pool.materialize(@intCast(v.data))); }
+        else if v.tag == LIST_VALUE {
+            self.output.push_str("[");
+            let id: u64 = @intCast(v.data);
+            let n = self.lists.len(id);
+            let mut i: u64 = 0;
+            while i < n {
+                if i > 0 { self.output.push_str(", "); }
+                self.append_value(self.lists.get(id, i));
+                i = i + 1;
+            }
+            self.output.push_str("]");
+        }
+        else { self.output.push_str("<invalid>"); }
+    }
+
+    fn call(inout self, name: u64, argc: u64) {
+        let id = self.program.find_function(name);
+        if id == 18446744073709551615 { self.fail("unknown function"); return; }
+        let expected = self.program.fn_arities.get_or(id, 18446744073709551615);
+        if argc != expected { self.fail("wrong number of arguments"); return; }
+        if argc > self.stack.len() { self.fail("stack underflow in call"); return; }
+        let next_base = self.stack.len() - argc;
+        self.frames.push(Frame { return_pc: self.pc, base: self.base });
+        self.base = next_base;
+        self.pc = self.program.fn_starts.get_or(id, self.program.code.len());
+        let locals = self.program.fn_locals.get_or(id, argc);
+        if locals > argc { self.allocate_locals(locals - argc); }
+    }
+
+    fn do_return(inout self) -> bool {
+        let result = self.pop();
+        if self.failed { return true; }
+        self.trim(self.base);
+        if self.frames.len() == 0 {
+            self.push(result);
+            return true;
+        }
+        let frame = self.frames.pop_or(Frame { return_pc: 0, base: 0 });
+        self.pc = frame.return_pc;
+        self.base = frame.base;
+        self.push(result);
+        false
+    }
+
+    fn execute(inout self) -> Value {
+        loop {
+            if self.failed { return Self.false_value(); }
+            if self.steps >= 10000000 { self.fail("instruction limit exceeded"); return Self.false_value(); }
+            self.steps = self.steps + 1;
+            if self.pc >= self.program.code.len() { self.fail("instruction pointer out of bounds"); return Self.false_value(); }
+            let ins = self.program.code.get_or(self.pc, bytecode.Instruction { op: bytecode.HALT, a: 0, b: 0 });
+            self.pc = self.pc + 1;
+            if ins.op == bytecode.NOP {}
+            else if ins.op == bytecode.CONST_INT { self.push(Value { tag: INT, data: ins.a }); }
+            else if ins.op == bytecode.CONST_BOOL { self.push(Value { tag: BOOL, data: ins.a }); }
+            else if ins.op == bytecode.CONST_STR { self.push(Value { tag: STRING, data: ins.a }); }
+            else if ins.op == bytecode.LOAD {
+                let slot = self.base + @intCast(ins.a);
+                if slot >= self.stack.len() { self.fail("local slot out of bounds"); }
+                else { self.push(self.stack.get_or(slot, Self.false_value())); }
+            }
+            else if ins.op == bytecode.STORE {
+                let value = self.pop();
+                let slot = self.base + @intCast(ins.a);
+                if slot >= self.stack.len() { self.fail("local slot out of bounds"); }
+                else { self.stack.set(slot, value); }
+            }
+            else if ins.op == bytecode.LOAD_GLOBAL {
+                let slot: u64 = @intCast(ins.a);
+                if slot >= self.globals.len() { self.fail("global slot out of bounds"); }
+                else { self.push(self.globals.get_or(slot, Self.false_value())); }
+            }
+            else if ins.op == bytecode.STORE_GLOBAL {
+                let value = self.pop();
+                let slot: u64 = @intCast(ins.a);
+                if slot >= self.globals.len() { self.fail("global slot out of bounds"); }
+                else { self.globals.set(slot, value); }
+            }
+            else if ins.op == bytecode.POP { let _ = self.pop(); }
+            else if ins.op >= bytecode.ADD && ins.op <= bytecode.OR { self.binary(ins.op); }
+            else if ins.op == bytecode.NEG {
+                let value = self.pop();
+                let n = self.require_int(value);
+                if !self.failed { self.push(Value { tag: INT, data: 0 - n }); }
+            }
+            else if ins.op == bytecode.NOT {
+                let value = self.pop();
+                let b = self.require_bool(value);
+                if !self.failed { self.push(Value { tag: BOOL, data: if b { 0 } else { 1 } }); }
+            }
+            else if ins.op == bytecode.JUMP { self.pc = @intCast(ins.a); }
+            else if ins.op == bytecode.JUMP_FALSE {
+                let value = self.pop();
+                if !self.require_bool(value) { self.pc = @intCast(ins.a); }
+            }
+            else if ins.op == bytecode.CALL { self.call(@intCast(ins.a), @intCast(ins.b)); }
+            else if ins.op == bytecode.PRINT { let value = self.pop(); self.append_value(value); self.output.push_str("\n"); }
+            else if ins.op == bytecode.LIST {
+                if ins.a < 0 || @intCast(ins.a) > self.stack.len() { self.fail("stack underflow building list"); }
+                else {
+                    let count: u64 = @intCast(ins.a);
+                    let mut elements = Values.new();
+                    let mut i: u64 = 0;
+                    while i < count { elements.push(self.pop()); i = i + 1; }
+                    elements.reverse();
+                    let id = self.lists.from_stack(borrow elements, 0, count);
+                    self.push(Value { tag: LIST_VALUE, data: @intCast(id) });
+                }
+            }
+            else if ins.op == bytecode.LIST_LEN {
+                let list = self.pop();
+                if list.tag != LIST_VALUE { self.fail("len expects a list"); }
+                else { self.push(Value { tag: INT, data: @intCast(self.lists.len(@intCast(list.data))) }); }
+            }
+            else if ins.op == bytecode.LIST_PUSH {
+                let value = self.pop();
+                let list = self.pop();
+                if list.tag != LIST_VALUE { self.fail("push expects a list"); }
+                else {
+                    let id = self.lists.appended(@intCast(list.data), value);
+                    self.push(Value { tag: LIST_VALUE, data: @intCast(id) });
+                }
+            }
+            else if ins.op == bytecode.LIST_GET {
+                let index = self.pop();
+                let list = self.pop();
+                let at = self.require_int(index);
+                if list.tag != LIST_VALUE { self.fail("get expects a list"); }
+                else if at < 0 || @intCast(at) >= self.lists.len(@intCast(list.data)) {
+                    self.fail("list index out of bounds");
+                } else { self.push(self.lists.get(@intCast(list.data), @intCast(at))); }
+            }
+            else if ins.op == bytecode.RETURN { if self.do_return() { return self.pop(); } }
+            else if ins.op == bytecode.HALT { return self.pop(); }
+            else { self.fail("unknown instruction"); }
+        }
+    }
+
+    fn start(inout self, function: u64) -> Value {
+        let id = self.program.find_function(function);
+        if id == 18446744073709551615 { self.fail("missing main function"); return Self.false_value(); }
+        if self.program.fn_arities.get_or(id, 1) != 0 { self.fail("main must take no arguments"); return Self.false_value(); }
+        self.pc = self.program.fn_starts.get_or(id, 0);
+        self.base = 0;
+        self.allocate_locals(self.program.fn_locals.get_or(id, 0));
+        self.execute()
+    }
+}
+
+pub fn run(program: bytecode.Program) -> RunResult {
+    let mut vm = VM.new(program);
+    let main_name: StrBuf = "main";
+    let main_symbol = vm.program.pool.find(borrow main_name);
+    let value = vm.start(main_symbol);
+    RunResult { ok: !vm.failed, value: value, output: vm.output, error: vm.error }
+}

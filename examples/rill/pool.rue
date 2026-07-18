@@ -1,0 +1,110 @@
+// A pooled string table used for source identifiers, literals, and runtime
+// concatenation. Entries are described by offsets and lengths; no owned
+// StrBuf ever needs to be read by copy from an ArrayBuf.
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const U64s = std.arraybuf.ArrayBuf(u64);
+const OptU8 = std.option.Option(u8);
+
+pub struct Pool {
+    bytes: StrBuf,
+    offs: U64s,
+    lens: U64s,
+
+    fn new() -> Self {
+        Self { bytes: StrBuf.new(), offs: U64s.new(), lens: U64s.new() }
+    }
+
+    fn byte_of(borrow value: StrBuf, i: u64) -> u8 {
+        match value.byte_at(i) {
+            OptU8.Some(b) => b,
+            OptU8.None => 0,
+        }
+    }
+
+    fn len(borrow self) -> u64 { self.offs.len() }
+
+    fn entry_byte(borrow self, id: u64, i: u64) -> u8 {
+        let off = self.offs.get_or(id, 0);
+        let len = self.lens.get_or(id, 0);
+        if i >= len { 0 } else { Self.byte_of(borrow self.bytes, off + i) }
+    }
+
+    fn entry_len(borrow self, id: u64) -> u64 { self.lens.get_or(id, 0) }
+
+    fn equals_buf(borrow self, id: u64, borrow text: StrBuf) -> bool {
+        let n = self.entry_len(id);
+        if n != text.len() { return false; }
+        let mut i: u64 = 0;
+        while i < n {
+            if self.entry_byte(id, i) != Self.byte_of(borrow text, i) { return false; }
+            i = i + 1;
+        }
+        true
+    }
+
+    fn equals_entry(borrow self, a: u64, b: u64) -> bool {
+        let n = self.entry_len(a);
+        if n != self.entry_len(b) { return false; }
+        let mut i: u64 = 0;
+        while i < n {
+            if self.entry_byte(a, i) != self.entry_byte(b, i) { return false; }
+            i = i + 1;
+        }
+        true
+    }
+
+    fn intern(inout self, borrow text: StrBuf) -> u64 {
+        // A StrMap index would make this lookup amortized O(1), but retaining
+        // StrMap(u64) as a field of this cross-module public struct currently
+        // fails comptime type reduction (RUE-993). Keep the canonical pool and
+        // a correct linear lookup until that generic-field restriction lifts.
+        let n = self.len();
+        let mut i: u64 = 0;
+        while i < n {
+            if self.equals_buf(i, borrow text) { return i; }
+            i = i + 1;
+        }
+        let off = self.bytes.len();
+        let len = text.len();
+        let mut j: u64 = 0;
+        while j < len {
+            self.bytes.push(Self.byte_of(borrow text, j));
+            j = j + 1;
+        }
+        self.offs.push(off);
+        self.lens.push(len);
+        n
+    }
+
+    fn find(borrow self, borrow text: StrBuf) -> u64 {
+        let mut i: u64 = 0;
+        while i < self.len() {
+            if self.equals_buf(i, borrow text) { return i; }
+            i = i + 1;
+        }
+        18446744073709551615
+    }
+
+    fn intern_range(inout self, borrow source: StrBuf, start: u64, len: u64) -> u64 {
+        let text = source.substring(start, len);
+        self.intern(borrow text)
+    }
+
+    fn concat(inout self, a: u64, b: u64) -> u64 {
+        let mut out = StrBuf.new();
+        let mut i: u64 = 0;
+        while i < self.entry_len(a) { out.push(self.entry_byte(a, i)); i = i + 1; }
+        i = 0;
+        while i < self.entry_len(b) { out.push(self.entry_byte(b, i)); i = i + 1; }
+        self.intern(borrow out)
+    }
+
+    fn materialize(borrow self, id: u64) -> StrBuf {
+        let mut out = StrBuf.new();
+        let n = self.entry_len(id);
+        let mut i: u64 = 0;
+        while i < n { out.push(self.entry_byte(id, i)); i = i + 1; }
+        out
+    }
+}

@@ -1,0 +1,118 @@
+// Rill bytecode and program metadata. Instructions have two machine-word
+// operands to keep decoding simple and make patching structured jumps cheap.
+const std = @import("std");
+const poolmod = @import("pool.rue");
+
+pub const NOP: u64 = 0;
+pub const CONST_INT: u64 = 1;
+pub const CONST_BOOL: u64 = 2;
+pub const CONST_STR: u64 = 3;
+pub const LOAD: u64 = 4;
+pub const STORE: u64 = 5;
+pub const POP: u64 = 6;
+pub const LOAD_GLOBAL: u64 = 7;
+pub const STORE_GLOBAL: u64 = 8;
+pub const ADD: u64 = 10;
+pub const SUB: u64 = 11;
+pub const MUL: u64 = 12;
+pub const DIV: u64 = 13;
+pub const MOD: u64 = 14;
+pub const NEG: u64 = 15;
+pub const NOT: u64 = 16;
+pub const EQ: u64 = 20;
+pub const NE: u64 = 21;
+pub const LT: u64 = 22;
+pub const LE: u64 = 23;
+pub const GT: u64 = 24;
+pub const GE: u64 = 25;
+pub const AND: u64 = 26;
+pub const OR: u64 = 27;
+pub const JUMP: u64 = 30;
+pub const JUMP_FALSE: u64 = 31;
+pub const CALL: u64 = 32;
+pub const RETURN: u64 = 33;
+pub const PRINT: u64 = 34;
+pub const HALT: u64 = 35;
+pub const LIST: u64 = 36;
+pub const LIST_LEN: u64 = 37;
+pub const LIST_PUSH: u64 = 38;
+pub const LIST_GET: u64 = 39;
+
+pub struct Instruction { op: u64, a: i64, b: i64 }
+pub const Code = std.arraybuf.ArrayBuf(Instruction);
+const U64s = std.arraybuf.ArrayBuf(u64);
+const I64s = std.arraybuf.ArrayBuf(i64);
+
+pub struct Program {
+    code: Code,
+    pool: poolmod.Pool,
+    fn_names: U64s,
+    fn_starts: U64s,
+    fn_arities: U64s,
+    fn_locals: U64s,
+    global_names: U64s,
+    global_tags: U64s,
+    global_data: I64s,
+
+    fn new(pool: poolmod.Pool) -> Self {
+        Self {
+            code: Code.new(),
+            pool: pool,
+            fn_names: U64s.new(),
+            fn_starts: U64s.new(),
+            fn_arities: U64s.new(),
+            fn_locals: U64s.new(),
+            global_names: U64s.new(),
+            global_tags: U64s.new(),
+            global_data: I64s.new(),
+        }
+    }
+
+    fn emit(inout self, op: u64, a: i64, b: i64) -> u64 {
+        let at = self.code.len();
+        self.code.push(Instruction { op: op, a: a, b: b });
+        at
+    }
+
+    fn patch(inout self, at: u64, target: u64) {
+        let old = self.code.get_or(at, Instruction { op: HALT, a: 0, b: 0 });
+        self.code.set(at, Instruction { op: old.op, a: @intCast(target), b: old.b });
+    }
+
+    fn add_function(inout self, name: u64, start: u64, arity: u64) -> u64 {
+        let id = self.fn_names.len();
+        self.fn_names.push(name);
+        self.fn_starts.push(start);
+        self.fn_arities.push(arity);
+        self.fn_locals.push(arity);
+        id
+    }
+
+    fn finish_function(inout self, id: u64, locals: u64) { self.fn_locals.set(id, locals); }
+
+    fn find_function(borrow self, name: u64) -> u64 {
+        let mut i: u64 = 0;
+        while i < self.fn_names.len() {
+            if self.fn_names.get_or(i, 18446744073709551615) == name { return i; }
+            i = i + 1;
+        }
+        18446744073709551615
+    }
+
+    fn add_global(inout self, name: u64, tag: u64, data: i64) -> u64 {
+        let id = self.global_names.len();
+        self.global_names.push(name);
+        self.global_tags.push(tag);
+        self.global_data.push(data);
+        id
+    }
+
+    fn find_global(borrow self, name: u64) -> u64 {
+        let mut i: u64 = 0;
+        while i < self.global_names.len() {
+            if self.global_names.get_or(i, 18446744073709551615) == name { return i; }
+            i = i + 1;
+        }
+        18446744073709551615
+    }
+}

@@ -1,0 +1,133 @@
+// Deterministic text disassembly for inspecting compiler output. Symbolic call
+// operands and pooled strings are rendered as source names/values; jumps and
+// slots retain their numeric form so control-flow and frame layout stay clear.
+const std = @import("std");
+const bytecode = @import("bytecode.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn opcode_name(op: u64) -> StrBuf {
+    if op == bytecode.NOP { "nop" }
+    else if op == bytecode.CONST_INT { "const.int" }
+    else if op == bytecode.CONST_BOOL { "const.bool" }
+    else if op == bytecode.CONST_STR { "const.str" }
+    else if op == bytecode.LOAD { "load" }
+    else if op == bytecode.STORE { "store" }
+    else if op == bytecode.LOAD_GLOBAL { "load.global" }
+    else if op == bytecode.STORE_GLOBAL { "store.global" }
+    else if op == bytecode.POP { "pop" }
+    else if op == bytecode.ADD { "add" }
+    else if op == bytecode.SUB { "sub" }
+    else if op == bytecode.MUL { "mul" }
+    else if op == bytecode.DIV { "div" }
+    else if op == bytecode.MOD { "mod" }
+    else if op == bytecode.NEG { "neg" }
+    else if op == bytecode.NOT { "not" }
+    else if op == bytecode.EQ { "eq" }
+    else if op == bytecode.NE { "ne" }
+    else if op == bytecode.LT { "lt" }
+    else if op == bytecode.LE { "le" }
+    else if op == bytecode.GT { "gt" }
+    else if op == bytecode.GE { "ge" }
+    else if op == bytecode.AND { "and" }
+    else if op == bytecode.OR { "or" }
+    else if op == bytecode.JUMP { "jump" }
+    else if op == bytecode.JUMP_FALSE { "jump.false" }
+    else if op == bytecode.CALL { "call" }
+    else if op == bytecode.RETURN { "return" }
+    else if op == bytecode.PRINT { "print" }
+    else if op == bytecode.HALT { "halt" }
+    else if op == bytecode.LIST { "list" }
+    else if op == bytecode.LIST_LEN { "list.len" }
+    else if op == bytecode.LIST_PUSH { "list.push" }
+    else if op == bytecode.LIST_GET { "list.get" }
+    else { "unknown" }
+}
+
+fn has_a(op: u64) -> bool {
+    op == bytecode.CONST_INT || op == bytecode.CONST_BOOL || op == bytecode.CONST_STR ||
+    op == bytecode.LOAD || op == bytecode.STORE || op == bytecode.LOAD_GLOBAL ||
+    op == bytecode.STORE_GLOBAL || op == bytecode.JUMP || op == bytecode.JUMP_FALSE ||
+    op == bytecode.CALL || op == bytecode.LIST
+}
+
+fn append_quoted(inout out: StrBuf, borrow value: StrBuf) {
+    out.push_str("\"");
+    let O = std.option.Option(u8);
+    let mut i: u64 = 0;
+    while i < value.len() {
+        let b = match value.byte_at(i) { O.Some(x) => x, O.None => 0 };
+        if b == 10 { out.push_str("\\n"); }
+        else if b == 9 { out.push_str("\\t"); }
+        else if b == 34 { out.push_str("\\\""); }
+        else if b == 92 { out.push_str("\\\\"); }
+        else { out.push(b); }
+        i = i + 1;
+    }
+    out.push_str("\"");
+}
+
+fn append_global(inout out: StrBuf, borrow program: bytecode.Program, id: u64) {
+    out.push_str("global ");
+    out.push_str(program.pool.materialize(program.global_names.get_or(id, 0)));
+    out.push_str(" = ");
+    let tag = program.global_tags.get_or(id, 0);
+    let data = program.global_data.get_or(id, 0);
+    if tag == 1 { out.push_str(@to_string(data)); }
+    else if tag == 2 { if data == 0 { out.push_str("false"); } else { out.push_str("true"); } }
+    else if tag == 3 {
+        let value = program.pool.materialize(@intCast(data));
+        append_quoted(inout out, borrow value);
+    }
+    else { out.push_str("<invalid>"); }
+    out.push_str("\n");
+}
+
+fn function_at(borrow program: bytecode.Program, pc: u64) -> u64 {
+    let mut i: u64 = 0;
+    while i < program.fn_starts.len() {
+        if program.fn_starts.get_or(i, 18446744073709551615) == pc { return i; }
+        i = i + 1;
+    }
+    18446744073709551615
+}
+
+pub fn disassemble(borrow program: bytecode.Program) -> StrBuf {
+    let mut out = StrBuf.new();
+    let mut g: u64 = 0;
+    while g < program.global_names.len() { append_global(inout out, borrow program, g); g = g + 1; }
+    if g > 0 { out.push_str("\n"); }
+    let mut pc: u64 = 0;
+    while pc < program.code.len() {
+        let function = function_at(borrow program, pc);
+        if function != 18446744073709551615 {
+            out.push_str("fn ");
+            out.push_str(program.pool.materialize(program.fn_names.get_or(function, 0)));
+            out.push_str(" arity=");
+            out.push_str(@to_string(program.fn_arities.get_or(function, 0)));
+            out.push_str(" locals=");
+            out.push_str(@to_string(program.fn_locals.get_or(function, 0)));
+            out.push_str("\n");
+        }
+        let ins = program.code.get_or(pc, bytecode.Instruction { op: bytecode.HALT, a: 0, b: 0 });
+        out.push_str("  ");
+        out.push_str(@to_string(pc));
+        out.push_str("  ");
+        out.push_str(opcode_name(ins.op));
+        if has_a(ins.op) {
+            out.push_str(" ");
+            if ins.op == bytecode.CONST_STR && ins.a >= 0 {
+                let value = program.pool.materialize(@intCast(ins.a));
+                append_quoted(inout out, borrow value);
+            } else if ins.op == bytecode.CALL && ins.a >= 0 {
+                out.push_str(program.pool.materialize(@intCast(ins.a)));
+                out.push_str(" argc=");
+                out.push_str(@to_string(ins.b));
+            } else {
+                out.push_str(@to_string(ins.a));
+            }
+        }
+        out.push_str("\n");
+        pc = pc + 1;
+    }
+    out
+}
