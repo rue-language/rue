@@ -12,8 +12,10 @@
 // - std.option.Option: Optional values
 // - std.result.Result: Fallible values (Ok/Err), propagated with `?`
 // - std.intmap.IntMap / std.strmap.StrMap: open-addressing hash maps
-// - std.strbuf.StrBuf: Source-defined growable string buffer header
-// - std.arraybuf.ArrayBuf: Growable heap-backed collections
+// - std.strbuf.StrBuf: Growable strings, with copying bridges to str and
+//   ArrayBuf(u8) (`from_str`, `from_bytes`, `to_bytes`, and append variants)
+// - std.arraybuf.ArrayBuf: Growable heap-backed collections; ArrayBuf(u8) can
+//   copy from str with `from_str` / `extend_str`
 // - std.fs.File: File IO v0 (open/create/append/read/write/close over @syscall)
 
 // Re-export library modules.

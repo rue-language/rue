@@ -36,28 +36,8 @@ fn read_file(borrow path: StrBuf) -> OptBytes {
     O.Some(data)
 }
 
-fn bytes_to_string(borrow data: Bytes) -> StrBuf {
-    let mut out = StrBuf.with_capacity(data.len());
-    let mut i: u64 = 0;
-    while i < data.len() {
-        out.push(data.get_or(i, 0));
-        i = i + 1;
-    }
-    out
-}
-
-fn string_to_bytes(borrow text: StrBuf) -> Bytes {
-    let mut out = Bytes.with_capacity(text.len());
-    let mut i: u64 = 0;
-    while i < text.len() {
-        out.push(StrBuf.byte_at_borrowed(borrow text, i));
-        i = i + 1;
-    }
-    out
-}
-
 fn write_file(borrow path: StrBuf, borrow text: StrBuf) -> bool {
-    let bytes = string_to_bytes(borrow text);
+    let bytes = text.to_bytes();
     let mut file = match std.fs.File.create(borrow path) {
         FileRes.Ok(f) => f,
         FileRes.Err(e) => return false,
@@ -94,7 +74,7 @@ fn main() -> i32 {
             return 2;
         },
     };
-    let source = bytes_to_string(borrow bytes);
+    let source = StrBuf.from_bytes(borrow bytes);
     let value = match std.json.parse(source) {
         JsonRes.Ok(v) => v,
         JsonRes.Err(e) => {

@@ -2,13 +2,7 @@
 const std = @import("std");
 const escape = @import("escape.rue");
 const model = @import("model.rue");
-const text = @import("text.rue");
 const StrBuf = std.strbuf.StrBuf;
-
-fn append_borrowed(borrow value: StrBuf, inout out: StrBuf) {
-    let mut i: u64 = 0;
-    while i < value.len() { out.push(text.byte_of(borrow value, i)); i = i + 1; }
-}
 
 fn append_page_link(borrow site: model.Site, page_index: u64, current: u64, inout out: StrBuf) {
     let page = site.pages.get_or(page_index, model.empty_page());
@@ -47,7 +41,7 @@ fn position(borrow site: model.Site, page_index: u64) -> u64 {
 fn adjacent_link(borrow site: model.Site, nav_index: u64, borrow relation: StrBuf, inout out: StrBuf) {
     let page_index = site.navigation.get_or(nav_index, 0);
     let page = site.pages.get_or(page_index, model.empty_page());
-    out.push_str("<a rel=\""); append_borrowed(borrow relation, inout out); out.push_str("\" href=\"");
+    out.push_str("<a rel=\""); out.append_borrowed(borrow relation); out.push_str("\" href=\"");
     let path = site.strings.copy(page.output_id);
     escape.url_attribute(borrow path, inout out);
     out.push_str("\">");

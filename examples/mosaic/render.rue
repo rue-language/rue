@@ -5,11 +5,6 @@ const model = @import("model.rue");
 const text = @import("text.rue");
 const StrBuf = std.strbuf.StrBuf;
 
-fn append_borrowed(borrow value: StrBuf, inout out: StrBuf) {
-    let mut i: u64 = 0;
-    while i < value.len() { out.push(text.byte_of(borrow value, i)); i = i + 1; }
-}
-
 fn render_inline(borrow site: model.Site, inline_index: u64, inout out: StrBuf) {
     let node = site.inlines.get_or(inline_index, model.Inline { tag: 0, text_id: 0, target_id: 0, line: 0 });
     let value = site.strings.copy(node.text_id);
@@ -53,9 +48,9 @@ fn render_text_block(
     inout out: StrBuf,
 ) {
     let block = site.blocks.get_or(block_index, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
-    append_borrowed(borrow open, inout out);
+    out.append_borrowed(borrow open);
     render_inline_range(borrow site, block.first, block.count, inout out);
-    append_borrowed(borrow close, inout out);
+    out.append_borrowed(borrow close);
 }
 
 fn render_heading(borrow site: model.Site, page_index: u64, block_index: u64, inout out: StrBuf) {
