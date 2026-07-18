@@ -254,16 +254,19 @@ sugar can still be layered on top later without disturbing this choice.)
 
 ## Implementation Phases
 
+Tracked in Linear under the RUE-1015 epic:
+
 - [ ] **Phase 0: Ratify syntax; spec + grammar + preview gate scaffolding** — RUE-662
 - [ ] **Phase 1: Read accessors** (`borrow self` → shared result; parser,
       sema/AIR loan checking, mandatory inlining, formal-core amendment,
       spec coverage) — RUE-662
 - [ ] **Phase 2: Mutable accessors** (`inout self` → exclusive result;
-      assignment through the result) — new issue at phase 1 exit
+      assignment through the result) — RUE-1016 (blocked by RUE-662)
 - [ ] **Phase 3: std adoption** (`ArrayBuf.get_ref` + E0711 diagnostic
       pointing at it; grid/deque/intmap accessors; owned-children tree
-      example replacing an arena) — new issue at phase 1 exit
-- [ ] **Phase 4: preview-gate removal** after dogfooding — new issue
+      example replacing an arena) — RUE-1017 (blocked by RUE-662)
+- [ ] **Phase 4: preview-gate removal** after dogfooding — RUE-1018
+      (blocked by RUE-1016 and RUE-1017)
 
 Each phase follows the `docs/designs/0005-preview-features.md` layer
 checklist under the single `borrow-accessors` flag.
