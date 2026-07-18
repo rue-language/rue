@@ -97,10 +97,8 @@ mod tests {
     use rue_span::FileId;
 
     use super::*;
-    use crate::{
-        ColorChoice, CompilerSession, DiagnosticFormatter, Item, JsonDiagnosticFormatter,
-        SourceInfo, SourceMetadata, SourceSnapshot,
-    };
+    use crate::unstable::{ColorChoice, DiagnosticFormatter, JsonDiagnosticFormatter, SourceInfo};
+    use crate::{CompilerSession, Item, SourceMetadata, SourceSnapshot};
 
     fn snapshot(entries: &[(u32, &str, &str)]) -> SourceSnapshot {
         let physical_paths: HashMap<_, _> = entries

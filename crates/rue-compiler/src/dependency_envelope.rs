@@ -23,19 +23,19 @@ pub struct DependencyEnvelope {
     pub version: u32,
     pub status: DependencyEnvelopeStatus,
     pub revision: String,
-    pub context: DependencyContext,
+    pub(crate) context: DependencyContext,
     pub topology: DependencyTopology,
-    pub observations: Vec<DependencyObservation>,
-    pub accepted_reads: Vec<DependencyAcceptedRead>,
+    pub(crate) observations: Vec<DependencyObservation>,
+    pub(crate) accepted_reads: Vec<DependencyAcceptedRead>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DependencyContext {
-    pub import_policy_version: u32,
-    pub epoch: String,
-    pub project_root: String,
-    pub std_root: Option<String>,
-    pub read_policy_revision: String,
+pub(crate) struct DependencyContext {
+    pub(crate) import_policy_version: u32,
+    pub(crate) epoch: String,
+    pub(crate) project_root: String,
+    pub(crate) std_root: Option<String>,
+    pub(crate) read_policy_revision: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -66,32 +66,32 @@ pub enum DependencyResolutionOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DependencyObservation {
-    pub request: DependencyRequest,
-    pub outcome: DependencyObservationOutcome,
+pub(crate) struct DependencyObservation {
+    pub(crate) request: DependencyRequest,
+    pub(crate) outcome: DependencyObservationOutcome,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DependencyRequest {
-    pub policy_version: u32,
-    pub epoch: String,
-    pub read_policy_revision: String,
-    pub importer: String,
-    pub source_offset: u32,
-    pub source_end: u32,
-    pub exact_specifier: String,
-    pub normalized_specifier: String,
-    pub importer_anchor: String,
-    pub root_anchor: String,
-    pub group: u32,
-    pub position: u32,
-    pub requested_path: String,
-    pub role: &'static str,
+pub(crate) struct DependencyRequest {
+    pub(crate) policy_version: u32,
+    pub(crate) epoch: String,
+    pub(crate) read_policy_revision: String,
+    pub(crate) importer: String,
+    pub(crate) source_offset: u32,
+    pub(crate) source_end: u32,
+    pub(crate) exact_specifier: String,
+    pub(crate) normalized_specifier: String,
+    pub(crate) importer_anchor: String,
+    pub(crate) root_anchor: String,
+    pub(crate) group: u32,
+    pub(crate) position: u32,
+    pub(crate) requested_path: String,
+    pub(crate) role: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
-pub enum DependencyObservationOutcome {
+pub(crate) enum DependencyObservationOutcome {
     Absent,
     PresentReadable {
         canonical_path: String,
@@ -116,22 +116,20 @@ pub enum DependencyObservationOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DependencyAcceptedRead {
-    pub module: String,
-    pub requested_path: String,
-    pub canonical_path: String,
-    pub physical_identity: String,
-    pub metadata_fingerprint: String,
-    pub content_fingerprint: String,
+pub(crate) struct DependencyAcceptedRead {
+    pub(crate) module: String,
+    pub(crate) requested_path: String,
+    pub(crate) canonical_path: String,
+    pub(crate) physical_identity: String,
+    pub(crate) metadata_fingerprint: String,
+    pub(crate) content_fingerprint: String,
 }
 
 impl DependencyEnvelope {
     /// Project the compiler-owned graph and ledgers without rediscovering an
     /// import edge or consulting semantic analysis.
     #[cfg(not(test))]
-    pub fn from_closed_revision(
-        revision: &crate::unstable::ImportDiscoveryRevision,
-    ) -> Option<Self> {
+    pub fn from_closed_revision(revision: &crate::ImportDiscoveryView) -> Option<Self> {
         Self::from_artifact(&revision.inner)
     }
 

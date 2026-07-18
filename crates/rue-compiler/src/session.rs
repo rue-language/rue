@@ -1607,6 +1607,11 @@ impl ImportDiscoveryRevisionArtifact {
     pub(crate) fn source_revision(&self) -> &SourceRevision {
         &self.source_revision
     }
+
+    #[cfg(test)]
+    pub(crate) fn parse_work(&self) -> ParsedModulesWork {
+        self.parse_work
+    }
     pub(crate) fn context(&self) -> &crate::ImportDiscoveryContext {
         &self.context
     }
@@ -1618,9 +1623,6 @@ impl ImportDiscoveryRevisionArtifact {
         self.program.as_ref()
     }
     /// Exact parse work performed by this bounded discovery lifecycle.
-    pub(crate) fn parse_work(&self) -> ParsedModulesWork {
-        self.parse_work
-    }
     #[cfg(test)]
     pub(crate) fn plan(&self) -> Option<&crate::ImportDiscoveryPlan> {
         self.plan.as_ref()
@@ -2873,15 +2875,6 @@ impl CompilerSession {
         })?;
         crate::ImportDiscoveryPlan::new(program, context)
     }
-    #[cfg(not(test))]
-    pub fn discovery_attempt(&self) -> Option<Arc<crate::unstable::ImportDiscoveryRevision>> {
-        self.discovery_attempt_artifact().map(|artifact| {
-            Arc::new(crate::unstable::ImportDiscoveryRevision::new(
-                artifact.clone(),
-            ))
-        })
-    }
-
     #[cfg(test)]
     pub(crate) fn discovery_attempt(&self) -> Option<&Arc<ImportDiscoveryRevisionArtifact>> {
         self.discovery_attempt_artifact()
@@ -2905,15 +2898,6 @@ impl CompilerSession {
                     .map(|record| &record.artifact)
             })
     }
-    #[cfg(not(test))]
-    pub fn last_good_discovery(&self) -> Option<Arc<crate::unstable::ImportDiscoveryRevision>> {
-        self.last_good_discovery_artifact().map(|artifact| {
-            Arc::new(crate::unstable::ImportDiscoveryRevision::new(
-                artifact.clone(),
-            ))
-        })
-    }
-
     #[cfg(test)]
     pub(crate) fn last_good_discovery(&self) -> Option<&Arc<ImportDiscoveryRevisionArtifact>> {
         self.last_good_discovery_artifact()
@@ -2926,22 +2910,6 @@ impl CompilerSession {
             .import_closures
             .last_good_record()
             .map(|record| &record.artifact)
-    }
-
-    /// The exact closed-valid discovery revision adopted by this session.
-    ///
-    /// Downstream compilation must consume this artifact (or queries that
-    /// delegate to it), rather than reconstructing import or standard-library
-    /// resolution from the source snapshot alone.
-    #[cfg(not(test))]
-    pub fn committed_import_discovery(
-        &self,
-    ) -> Option<Arc<crate::unstable::ImportDiscoveryRevision>> {
-        self.committed_import_discovery_artifact().map(|artifact| {
-            Arc::new(crate::unstable::ImportDiscoveryRevision::new(
-                artifact.clone(),
-            ))
-        })
     }
 
     pub(crate) fn committed_import_discovery_artifact(
@@ -3283,9 +3251,9 @@ impl CompilerSession {
     pub fn close_import_discovery(
         &mut self,
         ledger: crate::ImportObservationLedger,
-    ) -> Result<Arc<crate::unstable::ImportDiscoveryRevision>, CompileErrors> {
+    ) -> Result<Arc<crate::ImportDiscoveryView>, CompileErrors> {
         self.close_import_discovery_artifact(ledger)
-            .map(|artifact| Arc::new(crate::unstable::ImportDiscoveryRevision::new(artifact)))
+            .map(|artifact| Arc::new(crate::ImportDiscoveryView::new(artifact)))
     }
 
     #[cfg(test)]
@@ -5231,7 +5199,7 @@ impl CompilerSession {
     /// manifest. Retaining that mutable, RIR-borrowing value would duplicate
     /// substantial semantic state, so this query performs one explicit second
     /// declaration bind after reusing a successful ordinary body analysis.
-    pub fn stable_definitions(
+    pub(crate) fn stable_definitions(
         &mut self,
         options: &CompileOptions,
     ) -> Result<Arc<BoundDefinitionSet>, CompileErrors> {

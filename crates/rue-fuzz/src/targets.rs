@@ -31,19 +31,19 @@ fn assert_no_ice<T>(result: &rue_compiler::MultiErrorResult<T>) {
     }
 }
 
-fn is_ice(kind: &rue_compiler::ErrorKind) -> bool {
+fn is_ice(kind: &rue_error::ErrorKind) -> bool {
     matches!(
         kind,
-        rue_compiler::ErrorKind::CompilerProducerInvariant(_)
-            | rue_compiler::ErrorKind::InternalError(_)
-            | rue_compiler::ErrorKind::InternalCodegenError(_)
+        rue_error::ErrorKind::CompilerProducerInvariant(_)
+            | rue_error::ErrorKind::InternalError(_)
+            | rue_error::ErrorKind::InternalCodegenError(_)
     )
 }
 
 #[cfg(test)]
 mod ice_classification_tests {
     use super::is_ice;
-    use rue_compiler::ErrorKind;
+    use rue_error::ErrorKind;
 
     #[test]
     fn resource_failures_are_not_ices_but_producer_invariants_are() {

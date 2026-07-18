@@ -6,10 +6,11 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
+use rue_compiler::unstable::{DiscoverySourceAssembler, committed_import_discovery};
 use rue_compiler::{
     AcceptedImportSource, AcceptedReadManifestEntry, CompileOptions, CompilerSession,
-    DiscoverySourceAssembler, FileMetadataFingerprint, ImportDiscoveryContext, ImportObservation,
-    ImportObservationLedger, PhysicalFileIdentity, SemanticView, SourceSnapshot,
+    FileMetadataFingerprint, ImportDiscoveryContext, ImportObservation, ImportObservationLedger,
+    PhysicalFileIdentity, SemanticView, SourceSnapshot,
 };
 use serde_json::{Value, json};
 
@@ -121,8 +122,7 @@ fn snapshot(variant: Variant) -> SourceSnapshot {
 }
 
 fn close_discovery(session: &mut CompilerSession, source: &SourceSnapshot) {
-    if session
-        .committed_import_discovery()
+    if committed_import_discovery(session)
         .is_some_and(|artifact| artifact.source_revision() == source.source_revision())
     {
         return;

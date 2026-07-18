@@ -4,7 +4,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use rue_compiler::{CompileError, ErrorKind};
+use rue_error::{CompileError, ErrorKind};
 use rue_target::Target;
 
 use crate::platform_signing::{SigningError, SigningRequest, sign_executable};

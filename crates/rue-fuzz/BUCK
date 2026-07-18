@@ -9,6 +9,7 @@ rue_binary(
         "//crates/rue-cfg:rue-cfg",
         "//crates/rue-cfg:rue-cfg-fuzz-support",
         "//crates/rue-compiler:rue-compiler",
+        "//crates/rue-error:rue-error",
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-parser:rue-parser",
         "//crates/rue-rir:rue-rir",

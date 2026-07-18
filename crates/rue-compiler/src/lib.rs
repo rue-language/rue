@@ -29,6 +29,9 @@
 //!
 //! Callers that only need a final executable may use [`compile_snapshot`], the
 //! sole one-shot adapter. Filesystem discovery remains the caller's job.
+//! Stable additions are reviewed against the semantic facade inventory. Debug
+//! presentation, instrumentation, and in-tree driver adapters live under
+//! [`unstable`] and carry no compatibility promise.
 
 mod artifact_views;
 mod backend;
@@ -73,28 +76,25 @@ mod api_inventory;
 mod durable_compatibility_tests;
 #[cfg(test)]
 mod integration_tests;
+#[cfg(test)]
+mod supported_api_inventory;
 
 // Supported source, identity, option, session, and diagnostic surface.
 pub use artifact_views::{
-    CfgBlockView, CfgInstructionView, CfgSuccessorView, CfgView, FunctionView, RirInstructionView,
-    RirOperandView, RirView, SemanticView, SourceIdentityView, SourceLocationView,
-    SyntaxModuleView, SyntaxNodeView, SyntaxView, TokenView, TypeView,
+    CfgBlockView, CfgInstructionView, CfgSuccessorView, CfgView, FunctionView,
+    ImportDiscoveryStatus, ImportDiscoveryView, RirInstructionView, RirOperandView, RirView,
+    SemanticView, SourceIdentityView, SourceLocationView, SyntaxModuleView, SyntaxNodeView,
+    SyntaxView, TokenView, TypeView,
 };
 pub use dependency_envelope::{
-    DependencyAcceptedRead, DependencyContext, DependencyEnvelope, DependencyEnvelopeStatus,
-    DependencyObservation, DependencyObservationOutcome, DependencyRequest,
-    DependencyResolutionOutcome, DependencyTopology, DependencyTopologyRecord,
-};
-pub use diagnostic::{
-    ColorChoice, DiagnosticFormatter, JsonDiagnostic, JsonDiagnosticFormatter, JsonSpan,
-    JsonSuggestion, MultiFileFormatter, MultiFileJsonFormatter, SourceInfo,
+    DependencyEnvelope, DependencyEnvelopeStatus, DependencyResolutionOutcome, DependencyTopology,
+    DependencyTopologyRecord,
 };
 #[cfg(test)]
 pub(crate) use diagnostic_attempt_store::FrontendDiagnosticIdentity;
 pub use diagnostic_attempt_store::{DiagnosticStage, FrontendDiagnosticSnapshot};
 pub use import_discovery::{
-    AcceptedImportSource, AcceptedReadManifestEntry, DiscoverySourceAssembler,
-    FileMetadataFingerprint, IMPORT_DISCOVERY_POLICY_VERSION, ImportCandidateRole,
+    AcceptedImportSource, AcceptedReadManifestEntry, FileMetadataFingerprint, ImportCandidateRole,
     ImportDiscoveryContext, ImportDiscoveryPlan, ImportDiscoveryRequest, ImportObservation,
     ImportObservationLedger, ImportObservationStatus, ImportOccurrenceKey, PhysicalFileIdentity,
 };
@@ -130,6 +130,9 @@ pub(crate) use canonical_semantic::{
 pub(crate) use definition_snapshot::DefinitionShardWork;
 #[allow(unused_imports)]
 pub(crate) use durable_body::DurableBodyWork;
+#[cfg(test)]
+pub(crate) use import_discovery::DiscoverySourceAssembler;
+pub(crate) use import_discovery::IMPORT_DISCOVERY_POLICY_VERSION;
 #[allow(unused_imports)]
 pub(crate) use parsed_modules::{ParseInvalidationSummary, ParsedModulesWork};
 pub(crate) use queries::{PipelineWork, SourceStats};
@@ -161,16 +164,16 @@ pub(crate) use source_identity::{
 // Immutable query artifacts and stable identities returned by CompilerSession.
 #[cfg(test)]
 pub(crate) use backend::generate_mir;
-pub use bound_definitions::{
-    BoundDefinitionId, BoundDefinitionRecord, BoundDefinitionSet, SnapshotBoundDefinitionId,
-    StableDefinitionKey, StableDefinitionKind, StableDefinitionNamespace, StableNamedTypeKey,
+pub(crate) use bound_definitions::{
+    BoundDefinitionRecord, BoundDefinitionSet, StableDefinitionKey, StableDefinitionKind,
+    StableDefinitionNamespace,
 };
 pub(crate) use canonical_lower::CanonicalRirOutput;
 pub(crate) use canonical_merge::CanonicalMergedProgram;
 pub(crate) use canonical_semantic::CanonicalSemanticOutput;
-pub use definition_snapshot::{
-    DefinitionId, DefinitionKind, DefinitionNameKey, DefinitionNamespace, DefinitionOccurrenceId,
-    DefinitionRecord, DefinitionShard, DefinitionSnapshot, ModuleDefinition,
+pub(crate) use definition_snapshot::{
+    DefinitionKind, DefinitionNameKey, DefinitionNamespace, DefinitionOccurrenceId,
+    DefinitionRecord, DefinitionSnapshot,
 };
 #[cfg(test)]
 pub(crate) use durable_body::DurableBodyProjectionFailure;
@@ -193,13 +196,15 @@ pub(crate) use durable_semantics::{
 // Small foundational types callers need to configure or inspect the facade.
 pub(crate) use rue_air::FrozenTypeInternPool;
 pub use rue_cfg::OptLevel;
+pub(crate) use rue_error::{CompileError, CompileResult, Diagnostic, ErrorCode, ErrorKind};
 pub use rue_error::{
-    Applicability, CompileError, CompileErrors, CompileResult, CompileWarning, Diagnostic,
-    ErrorCode, ErrorKind, MultiErrorResult, PreviewFeature, PreviewFeatures, Suggestion, VERSION,
-    WarningKind,
+    CompileErrors, CompileWarning, MultiErrorResult, PreviewFeature, PreviewFeatures, VERSION,
 };
+#[cfg(test)]
+pub(crate) use rue_error::{Suggestion, WarningKind};
 pub(crate) use rue_lexer::Lexer;
-pub use rue_span::{FileId, Span};
+pub use rue_span::FileId;
+pub(crate) use rue_span::Span;
 pub use rue_target::{Arch, Target};
 
 // Internal phase vocabulary. These are intentionally not part of the facade.

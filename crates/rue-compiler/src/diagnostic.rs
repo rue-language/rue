@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use rue_compiler::{DiagnosticFormatter, SourceInfo};
+//! use rue_compiler::unstable::{DiagnosticFormatter, SourceInfo};
 //!
 //! let source_info = SourceInfo::new(&source, "example.rue");
 //! let formatter = DiagnosticFormatter::new(&source_info);
@@ -586,7 +586,8 @@ impl<'a> DiagnosticFormatter<'a> {
 /// # Example
 ///
 /// ```ignore
-/// use rue_compiler::{MultiFileFormatter, SourceInfo, FileId};
+/// use rue_compiler::FileId;
+/// use rue_compiler::unstable::{MultiFileFormatter, SourceInfo};
 ///
 /// // Create source infos for each file
 /// let sources = vec![
@@ -1259,7 +1260,8 @@ impl<'a> JsonDiagnosticFormatter<'a> {
 /// # Example
 ///
 /// ```ignore
-/// use rue_compiler::{MultiFileJsonFormatter, SourceInfo, FileId};
+/// use rue_compiler::FileId;
+/// use rue_compiler::unstable::{MultiFileJsonFormatter, SourceInfo};
 ///
 /// let sources = vec![
 ///     (FileId::new(1), SourceInfo::new(&source1, "main.rue")),

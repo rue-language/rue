@@ -12,14 +12,16 @@ use std::{collections::HashMap, fmt::Write as _, sync::Arc};
 
 use rue_cfg::OptLevel;
 use rue_compiler::unstable::{
-    DifferentialOracleFault, PresentationRequest, PresentationStage, inject_stale_query_for_oracle,
+    DifferentialOracleFault, DiscoverySourceAssembler, PresentationRequest, PresentationStage,
+    discovery_attempt, import_discovery_accepted_reads_debug, import_discovery_graph_input_debug,
+    import_discovery_observation_ledger_debug, inject_stale_query_for_oracle, oracle_executable,
     semantic_input_debug,
 };
 use rue_compiler::{
     AcceptedImportSource, AcceptedReadManifestEntry, CompileOptions, CompilerSession,
-    DiscoverySourceAssembler, FileMetadataFingerprint, FrontendDiagnosticSnapshot,
-    ImportDiscoveryContext, ImportObservation, ImportObservationLedger, PhysicalFileIdentity,
-    PreviewFeature, PreviewFeatures, SourceMetadata, SourceSnapshot,
+    FileMetadataFingerprint, FrontendDiagnosticSnapshot, ImportDiscoveryContext, ImportObservation,
+    ImportObservationLedger, PhysicalFileIdentity, PreviewFeature, PreviewFeatures, SourceMetadata,
+    SourceSnapshot,
 };
 use rue_span::FileId;
 use rue_target::Target;
@@ -171,27 +173,24 @@ fn close_discovery(session: &mut CompilerSession, step: &Step) -> String {
         ledger.record(observation).unwrap();
     }
     match session.close_import_discovery(ledger) {
-        Ok(artifact) => format!(
-            "status={:?};input={:?};reads={:?};ledger={:?}",
-            artifact.status(),
-            artifact.graph_input_debug(),
-            artifact.accepted_reads_debug(),
-            artifact.observation_ledger_debug()
-        ),
+        Ok(artifact) => render_import_discovery(&artifact),
         Err(errors) => format!("close-error:{errors:?}"),
     }
 }
 
 fn render_selected_import(session: &CompilerSession) -> String {
-    let artifact = session
-        .discovery_attempt()
+    let artifact = discovery_attempt(session)
         .expect("injected import fault retains a selected closure artifact");
+    render_import_discovery(&artifact)
+}
+
+fn render_import_discovery(artifact: &rue_compiler::ImportDiscoveryView) -> String {
     format!(
         "status={:?};input={:?};reads={:?};ledger={:?}",
         artifact.status(),
-        artifact.graph_input_debug(),
-        artifact.accepted_reads_debug(),
-        artifact.observation_ledger_debug()
+        import_discovery_graph_input_debug(artifact),
+        import_discovery_accepted_reads_debug(artifact),
+        import_discovery_observation_ledger_debug(artifact)
     )
 }
 
@@ -269,7 +268,7 @@ fn observe_with_fault(
                 })
                 .expect("oracle corpus must have platform-stable assembly emission");
             let hash = format!("{:x}", Sha256::digest(emitted.as_str().as_bytes()));
-            let executable_hash = match session.oracle_executable(&step.snapshot, &step.options) {
+            let executable_hash = match oracle_executable(session, &step.snapshot, &step.options) {
                 Ok(executable) => format!("{:x}", Sha256::digest(&executable.elf)),
                 Err(errors) => format!("error:{errors:?}"),
             };

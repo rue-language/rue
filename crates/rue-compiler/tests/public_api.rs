@@ -5,14 +5,24 @@ use rue_compiler::unstable::{
     into_oracle_semantic_state,
 };
 use rue_compiler::{
-    CompileOptions, CompileOutput, CompilerSession, CompilerSessionUpdate, DiagnosticStage,
-    ErrorKind, FileId, FrontendDiagnosticSnapshot, MultiErrorResult, RirView, SemanticView,
-    SourceLocationView, SourceMetadata, SourceSnapshot, SourceView, SyntaxNodeView,
-    compile_snapshot,
+    CompileErrors, CompileOptions, CompileOutput, CompilerSession, CompilerSessionUpdate,
+    DependencyEnvelope, DiagnosticStage, FileId, FrontendDiagnosticSnapshot, ImportDiscoveryStatus,
+    ImportDiscoveryView, MultiErrorResult, RirView, SemanticView, SourceLocationView,
+    SourceMetadata, SourceRevision, SourceSnapshot, SourceView, SyntaxNodeView, compile_snapshot,
 };
+use rue_error::ErrorKind;
 
 #[test]
 fn curated_facade_compiles_for_an_external_consumer() {
+    fn inspect_import_discovery(view: &ImportDiscoveryView) {
+        let _: ImportDiscoveryStatus = view.status();
+        let _: &SourceRevision = view.source_revision();
+        let _: &CompileErrors = view.diagnostics();
+        let _: Option<&Arc<FrontendDiagnosticSnapshot>> = view.diagnostic_snapshot();
+        let _: Option<DependencyEnvelope> = DependencyEnvelope::from_closed_revision(view);
+    }
+    let _ = inspect_import_discovery as fn(&ImportDiscoveryView);
+
     let snapshot = SourceSnapshot::single("main.rue", "fn main() -> i32 { 0 }").unwrap();
     let mut session = CompilerSession::new();
     let update: CompilerSessionUpdate = session.update(&snapshot);

@@ -1144,9 +1144,10 @@ fn option_returning_intrinsics_require_the_exact_payload_type() {
 
 #[test]
 fn read_line_requires_trusted_source_strbuf_payload_metadata() {
+    use rue_compiler::unstable::DiscoverySourceAssembler;
     use rue_compiler::{
-        AcceptedImportSource, CompilerSession, DiscoverySourceAssembler, FileMetadataFingerprint,
-        ImportDiscoveryContext, ImportObservation, ImportObservationLedger, PhysicalFileIdentity,
+        AcceptedImportSource, CompilerSession, FileMetadataFingerprint, ImportDiscoveryContext,
+        ImportObservation, ImportObservationLedger, PhysicalFileIdentity,
     };
     use std::sync::Arc;
 

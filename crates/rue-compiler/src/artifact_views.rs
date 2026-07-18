@@ -8,6 +8,50 @@ use std::{borrow::Cow, fmt, sync::Arc};
 
 use crate::{CanonicalRirOutput, CanonicalSemanticOutput, ParsedProgram};
 
+/// Opaque import-discovery product retained by the session.
+#[derive(Debug, Clone)]
+pub struct ImportDiscoveryView {
+    pub(crate) inner: Arc<crate::session::ImportDiscoveryRevisionArtifact>,
+}
+
+/// Read-only status of an import-discovery product.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportDiscoveryStatus {
+    Open,
+    ClosedAttempted,
+    ClosedValid,
+}
+
+impl ImportDiscoveryView {
+    pub(crate) fn new(inner: Arc<crate::session::ImportDiscoveryRevisionArtifact>) -> Self {
+        Self { inner }
+    }
+
+    pub fn status(&self) -> ImportDiscoveryStatus {
+        match self.inner.status() {
+            crate::session::ImportDiscoveryRevisionStatus::Open => ImportDiscoveryStatus::Open,
+            crate::session::ImportDiscoveryRevisionStatus::ClosedAttempted => {
+                ImportDiscoveryStatus::ClosedAttempted
+            }
+            crate::session::ImportDiscoveryRevisionStatus::ClosedValid => {
+                ImportDiscoveryStatus::ClosedValid
+            }
+        }
+    }
+
+    pub fn source_revision(&self) -> &crate::SourceRevision {
+        self.inner.source_revision()
+    }
+
+    pub fn diagnostics(&self) -> &crate::CompileErrors {
+        self.inner.diagnostics()
+    }
+
+    pub fn diagnostic_snapshot(&self) -> Option<&Arc<crate::FrontendDiagnosticSnapshot>> {
+        self.inner.diagnostic_snapshot()
+    }
+}
+
 #[derive(Clone)]
 #[allow(dead_code)] // Variant payloads deliberately pin the authorizing owner.
 enum SourceLocationOwner {

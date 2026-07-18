@@ -192,12 +192,14 @@ pub(crate) enum BoundDefinitionInputPartition {
 }
 
 impl BoundDefinitionRecord {
+    #[cfg(test)]
     pub fn id(&self) -> &BoundDefinitionId {
         &self.id
     }
     pub fn stable_key(&self) -> &StableDefinitionKey {
         self.id.stable_key()
     }
+    #[cfg(test)]
     pub fn occurrence(&self) -> Option<DefinitionOccurrenceId> {
         self.occurrence
     }
@@ -508,6 +510,7 @@ impl BoundDefinitionSet {
             .map(|index| &self.definitions[index])
     }
 
+    #[cfg(test)]
     pub fn definition<'a>(
         &'a self,
         id: &BoundDefinitionId,
