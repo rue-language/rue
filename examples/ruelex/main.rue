@@ -15,7 +15,7 @@
 // The `--ast` mode extends that lexer with a recursive-descent + Pratt parser
 // for the current Rue grammar. It stores a traversable tree in a POD arena and
 // prints a deterministic S-expression containing symbols and byte spans.
-// Native corpus validation covers all 136 valid `.rue` files in examples,
+// Native corpus validation covers all 189 valid `.rue` files in examples,
 // std, benchmarks, and reproducibility fixtures, including deep nesting.
 //
 // The modules: token.rue (POD tokens), lex.rue (tokenizer), interner.rue

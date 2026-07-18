@@ -1,0 +1,136 @@
+// Compact record counts split by ownership and publication state.
+const std = @import("std");
+const model = @import("model.rue");
+
+pub struct Inventory {
+    published_blocks: u64,
+    draft_blocks: u64,
+    published_inlines: u64,
+    draft_inlines: u64,
+    published_links: u64,
+    draft_links: u64,
+    published_anchors: u64,
+    draft_anchors: u64,
+    pages_with_code: u64,
+    pages_with_tables: u64,
+    pages_with_lists: u64,
+    pages_with_quotes: u64,
+    pages_with_external_links: u64,
+}
+
+fn page_has_block(borrow site: model.Site, borrow page: model.Page, tag: u64) -> bool {
+    let mut i = page.block_start;
+    while i < page.block_start + page.block_count {
+        let block = site.blocks.get_or(i, model.Block {
+            tag: 0,
+            text_id: 0,
+            level: 0,
+            first: 0,
+            count: 0,
+            line: 0,
+            aux: 0,
+        });
+        if block.tag == tag {
+            return true;
+        }
+        i = i + 1;
+    }
+    false
+}
+
+fn page_has_external(borrow site: model.Site, borrow page: model.Page) -> bool {
+    let mut i = page.link_start;
+    while i < page.link_start + page.link_count {
+        let link = site.links.get_or(i, model.Link {
+            source_page: 0,
+            target_id: 0,
+            label_id: 0,
+            line: 0,
+            resolved_page: model.NONE(),
+            resolved_anchor: model.NONE(),
+            external: false,
+        });
+        if link.external {
+            return true;
+        }
+        i = i + 1;
+    }
+    false
+}
+
+pub fn collect(borrow site: model.Site) -> Inventory {
+    let mut value = Inventory {
+        published_blocks: 0,
+        draft_blocks: 0,
+        published_inlines: 0,
+        draft_inlines: 0,
+        published_links: 0,
+        draft_links: 0,
+        published_anchors: 0,
+        draft_anchors: 0,
+        pages_with_code: 0,
+        pages_with_tables: 0,
+        pages_with_lists: 0,
+        pages_with_quotes: 0,
+        pages_with_external_links: 0,
+    };
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let page = site.pages.get_or(i, model.empty_page());
+        if page.draft {
+            value.draft_blocks = value.draft_blocks + page.block_count;
+            value.draft_inlines = value.draft_inlines + page.inline_count;
+            value.draft_links = value.draft_links + page.link_count;
+            value.draft_anchors = value.draft_anchors + page.anchor_count;
+        } else {
+            value.published_blocks = value.published_blocks + page.block_count;
+            value.published_inlines = value.published_inlines + page.inline_count;
+            value.published_links = value.published_links + page.link_count;
+            value.published_anchors = value.published_anchors + page.anchor_count;
+            if page_has_block(borrow site, borrow page, model.BLOCK_CODE()) {
+                value.pages_with_code = value.pages_with_code + 1;
+            }
+            if page_has_block(borrow site, borrow page, model.BLOCK_TABLE()) {
+                value.pages_with_tables = value.pages_with_tables + 1;
+            }
+            if page_has_block(borrow site, borrow page, model.BLOCK_LIST()) {
+                value.pages_with_lists = value.pages_with_lists + 1;
+            }
+            if page_has_block(borrow site, borrow page, model.BLOCK_QUOTE()) {
+                value.pages_with_quotes = value.pages_with_quotes + 1;
+            }
+            if page_has_external(borrow site, borrow page) {
+                value.pages_with_external_links = value.pages_with_external_links + 1;
+            }
+        }
+        i = i + 1;
+    }
+    value
+}
+
+pub fn append(borrow value: Inventory, inout out: std.strbuf.StrBuf) {
+    out.push_str("published_blocks=");
+    out.push_str(@to_string(value.published_blocks));
+    out.push(10);
+    out.push_str("published_inlines=");
+    out.push_str(@to_string(value.published_inlines));
+    out.push(10);
+    out.push_str("draft_blocks=");
+    out.push_str(@to_string(value.draft_blocks));
+    out.push(10);
+    out.push_str("pages_with_code=");
+    out.push_str(@to_string(value.pages_with_code));
+    out.push(10);
+    out.push_str("pages_with_tables=");
+    out.push_str(@to_string(value.pages_with_tables));
+    out.push(10);
+    out.push_str("pages_with_lists=");
+    out.push_str(@to_string(value.pages_with_lists));
+    out.push(10);
+    out.push_str("pages_with_quotes=");
+    out.push_str(@to_string(value.pages_with_quotes));
+    out.push(10);
+    out.push_str("pages_with_external_links=");
+    out.push_str(@to_string(value.pages_with_external_links));
+    out.push(10);
+}

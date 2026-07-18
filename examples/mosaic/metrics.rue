@@ -1,0 +1,115 @@
+// Derived arena and per-page metrics.
+const std = @import("std");
+const model = @import("model.rue");
+
+pub struct Metrics {
+    published: u64,
+    drafts: u64,
+    words: u64,
+    max_words: u64,
+    max_blocks: u64,
+    max_inlines: u64,
+    max_links: u64,
+    max_anchors: u64,
+    heading_depth: u64,
+    pooled_strings: u64,
+    pooled_bytes: u64,
+}
+
+pub fn collect(borrow site: model.Site) -> Metrics {
+    let mut value = Metrics {
+        published: 0,
+        drafts: 0,
+        words: 0,
+        max_words: 0,
+        max_blocks: 0,
+        max_inlines: 0,
+        max_links: 0,
+        max_anchors: 0,
+        heading_depth: 0,
+        pooled_strings: site.strings.len(),
+        pooled_bytes: 0,
+    };
+    let mut id: u64 = 0;
+    while id < site.strings.len() {
+        value.pooled_bytes = value.pooled_bytes + site.strings.string_len(id);
+        id = id + 1;
+    }
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let page = site.pages.get_or(i, model.empty_page());
+        if page.draft {
+            value.drafts = value.drafts + 1;
+        } else {
+            value.published = value.published + 1;
+        }
+        value.words = value.words + page.word_count;
+        if page.word_count > value.max_words {
+            value.max_words = page.word_count;
+        }
+        if page.block_count > value.max_blocks {
+            value.max_blocks = page.block_count;
+        }
+        if page.inline_count > value.max_inlines {
+            value.max_inlines = page.inline_count;
+        }
+        if page.link_count > value.max_links {
+            value.max_links = page.link_count;
+        }
+        if page.anchor_count > value.max_anchors {
+            value.max_anchors = page.anchor_count;
+        }
+        let mut b = page.block_start;
+        while b < page.block_start + page.block_count {
+            let block = site.blocks.get_or(b, model.Block {
+                tag: 0,
+                text_id: 0,
+                level: 0,
+                first: 0,
+                count: 0,
+                line: 0,
+                aux: 0,
+            });
+            if block.tag == model.BLOCK_HEADING() && block.level > value.heading_depth {
+                value.heading_depth = block.level;
+            }
+            b = b + 1;
+        }
+        i = i + 1;
+    }
+    value
+}
+
+pub fn append(borrow value: Metrics, inout out: std.strbuf.StrBuf) {
+    let average = if value.published == 0 { 0 } else { value.words / value.published };
+    out.push_str("drafts=");
+    out.push_str(@to_string(value.drafts));
+    out.push(10);
+    out.push_str("average_words=");
+    out.push_str(@to_string(average));
+    out.push(10);
+    out.push_str("max_words=");
+    out.push_str(@to_string(value.max_words));
+    out.push(10);
+    out.push_str("max_blocks=");
+    out.push_str(@to_string(value.max_blocks));
+    out.push(10);
+    out.push_str("max_inlines=");
+    out.push_str(@to_string(value.max_inlines));
+    out.push(10);
+    out.push_str("max_links=");
+    out.push_str(@to_string(value.max_links));
+    out.push(10);
+    out.push_str("max_anchors=");
+    out.push_str(@to_string(value.max_anchors));
+    out.push(10);
+    out.push_str("heading_depth=");
+    out.push_str(@to_string(value.heading_depth));
+    out.push(10);
+    out.push_str("pooled_strings=");
+    out.push_str(@to_string(value.pooled_strings));
+    out.push(10);
+    out.push_str("pooled_bytes=");
+    out.push_str(@to_string(value.pooled_bytes));
+    out.push(10);
+}

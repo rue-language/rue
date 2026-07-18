@@ -1,0 +1,29 @@
+// Built-in stylesheet. Keeping the minimal theme in source makes a Mosaic
+// build self-contained and gives deterministic output without asset copying.
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn stylesheet() -> StrBuf {
+    let mut out = StrBuf.new();
+    out.push_str(":root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.55; }\n");
+    out.push_str("body { margin: 0; color: CanvasText; background: Canvas; }\n");
+    out.push_str(".skip { position: absolute; left: -10000px; }\n");
+    out.push_str(".skip:focus { left: 1rem; top: 1rem; padding: .5rem; background: Canvas; }\n");
+    out.push_str(".site-header { display: flex; gap: 2rem; align-items: center; padding: 1rem 5vw; border-bottom: 1px solid GrayText; }\n");
+    out.push_str(".brand { font-weight: 700; text-decoration: none; }\n");
+    out.push_str(".site-nav ul { display: flex; flex-wrap: wrap; gap: 1rem; list-style: none; padding: 0; }\n");
+    out.push_str("[aria-current=page] a { font-weight: 700; text-decoration-thickness: .2em; }\n");
+    out.push_str("main { width: min(75rem, 90vw); margin: 2rem auto; }\n");
+    out.push_str("article { max-width: 48rem; }\n");
+    out.push_str(".reference-layout { display: grid; grid-template-columns: minmax(12rem, 18rem) minmax(0, 48rem); gap: 3rem; }\n");
+    out.push_str(".toc { font-size: .9rem; } .toc ul { padding-left: 1.25rem; }\n");
+    out.push_str("pre { overflow-x: auto; padding: 1rem; background: color-mix(in srgb, CanvasText 8%, Canvas); }\n");
+    out.push_str("code { font-family: ui-monospace, monospace; }\n");
+    out.push_str("table { border-collapse: collapse; width: 100%; }\n");
+    out.push_str("th, td { border: 1px solid GrayText; padding: .4rem .6rem; text-align: left; }\n");
+    out.push_str("blockquote { border-left: .25rem solid Highlight; margin-left: 0; padding-left: 1rem; }\n");
+    out.push_str(".pager { display: flex; justify-content: space-between; margin: 3rem auto; max-width: 48rem; }\n");
+    out.push_str("footer { width: min(75rem, 90vw); margin: 3rem auto; color: GrayText; }\n");
+    out.push_str("@media (max-width: 48rem) { .reference-layout { display: block; } .site-header { display: block; } }\n");
+    out
+}

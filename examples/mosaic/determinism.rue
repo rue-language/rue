@@ -1,0 +1,73 @@
+// Canonical model fingerprint independent of rendered bytes.
+const std = @import("std");
+const model = @import("model.rue");
+
+fn mix(hash: u64, value: u64) -> u64 {
+    @wrapping_mul(hash ^ value, 1099511628211)
+}
+
+pub fn model_fingerprint(borrow site: model.Site) -> u64 {
+    let mut hash: u64 = 14695981039346656037;
+    hash = mix(hash, site.strings.hash(site.title_id));
+    hash = mix(hash, site.strings.hash(site.base_url_id));
+    hash = mix(hash, site.pages.len());
+    hash = mix(hash, site.blocks.len());
+    hash = mix(hash, site.inlines.len());
+    hash = mix(hash, site.anchors.len());
+    hash = mix(hash, site.links.len());
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let page = site.pages.get_or(i, model.empty_page());
+        hash = mix(hash, site.strings.hash(page.source_id));
+        hash = mix(hash, site.strings.hash(page.output_id));
+        hash = mix(hash, site.strings.hash(page.title_id));
+        hash = mix(hash, page.block_start);
+        hash = mix(hash, page.block_count);
+        hash = mix(hash, page.word_count);
+        i = i + 1;
+    }
+    i = 0;
+    while i < site.blocks.len() {
+        let block = site.blocks.get_or(i, model.Block {
+            tag: 0,
+            text_id: 0,
+            level: 0,
+            first: 0,
+            count: 0,
+            line: 0,
+            aux: 0,
+        });
+        hash = mix(hash, block.tag);
+        hash = mix(hash, block.level);
+        hash = mix(hash, block.first);
+        hash = mix(hash, block.count);
+        if block.text_id != model.NONE() {
+            hash = mix(hash, site.strings.hash(block.text_id));
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < site.links.len() {
+        let link = site.links.get_or(i, model.Link {
+            source_page: 0,
+            target_id: 0,
+            label_id: 0,
+            line: 0,
+            resolved_page: model.NONE(),
+            resolved_anchor: model.NONE(),
+            external: false,
+        });
+        hash = mix(hash, link.source_page);
+        hash = mix(hash, site.strings.hash(link.target_id));
+        hash = mix(hash, link.resolved_page);
+        hash = mix(hash, link.resolved_anchor);
+        i = i + 1;
+    }
+    hash
+}
+
+pub fn append(borrow site: model.Site, inout out: std.strbuf.StrBuf) {
+    out.push_str("model_fingerprint=");
+    out.push_str(@to_string(model_fingerprint(borrow site)));
+    out.push(10);
+}

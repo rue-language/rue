@@ -1,0 +1,97 @@
+// Explicit output plan. Planning before writes proves output-path uniqueness and
+// keeps partial builds from starting when any page or shared artifact conflicts.
+const std = @import("std");
+const model = @import("model.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn KIND_PAGE() -> u64 { 1 }
+pub fn KIND_SEARCH() -> u64 { 2 }
+pub fn KIND_SITEMAP() -> u64 { 3 }
+pub fn KIND_STYLESHEET() -> u64 { 4 }
+pub fn KIND_ROBOTS() -> u64 { 5 }
+
+pub struct Entry {
+    kind: u64,
+    page: u64,
+    path_id: u64,
+}
+
+pub const Entries = std.arraybuf.ArrayBuf(Entry);
+
+pub struct Plan {
+    entries: Entries,
+    ok: bool,
+    error: StrBuf,
+}
+
+fn empty_plan() -> Plan {
+    Plan { entries: Entries.new(), ok: true, error: StrBuf.new() }
+}
+
+fn fail(inout plan: Plan, message: StrBuf) {
+    if plan.ok {
+        plan.ok = false;
+        plan.error = message;
+    }
+}
+
+fn add(inout plan: Plan, borrow site: model.Site, entry: Entry) {
+    let mut i: u64 = 0;
+    while i < plan.entries.len() {
+        let existing = plan.entries.get_or(i, Entry { kind: 0, page: 0, path_id: 0 });
+        if site.strings.ids_equal(existing.path_id, entry.path_id) {
+            fail(inout plan, "two build outputs have the same path");
+            return;
+        }
+        i = i + 1;
+    }
+    plan.entries.push(entry);
+}
+
+fn shared(inout site: model.Site, inout plan: Plan, name: StrBuf, kind: u64) {
+    let id = site.strings.intern(borrow name);
+    add(inout plan, borrow site, Entry { kind: kind, page: model.NONE(), path_id: id });
+}
+
+pub fn create(inout site: model.Site) -> Plan {
+    let mut plan = empty_plan();
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let page = site.pages.get_or(i, model.empty_page());
+        if !page.draft {
+            add(inout plan, borrow site, Entry { kind: KIND_PAGE(), page: i, path_id: page.output_id });
+        }
+        i = i + 1;
+    }
+    shared(inout site, inout plan, "search-index.json", KIND_SEARCH());
+    shared(inout site, inout plan, "sitemap.xml", KIND_SITEMAP());
+    shared(inout site, inout plan, "mosaic.css", KIND_STYLESHEET());
+    shared(inout site, inout plan, "robots.txt", KIND_ROBOTS());
+    plan
+}
+
+pub fn page_outputs(borrow plan: Plan) -> u64 {
+    let mut count: u64 = 0;
+    let mut i: u64 = 0;
+    while i < plan.entries.len() {
+        if plan.entries.get_or(i, Entry { kind: 0, page: 0, path_id: 0 }).kind == KIND_PAGE() {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    count
+}
+
+pub fn fingerprint(borrow plan: Plan, borrow site: model.Site) -> u64 {
+    let mut hash: u64 = 14695981039346656037;
+    let mut i: u64 = 0;
+    while i < plan.entries.len() {
+        let entry = plan.entries.get_or(i, Entry { kind: 0, page: 0, path_id: 0 });
+        hash = hash ^ entry.kind;
+        hash = @wrapping_mul(hash, 1099511628211);
+        hash = hash ^ site.strings.hash(entry.path_id);
+        hash = @wrapping_mul(hash, 1099511628211);
+        i = i + 1;
+    }
+    hash
+}

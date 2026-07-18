@@ -1,0 +1,50 @@
+// Table-of-contents renderer. Heading anchors are already validated, so this
+// pass only maps each heading block to its stable anchor and emits nested lists.
+const std = @import("std");
+const escape = @import("escape.rue");
+const model = @import("model.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn anchor_for_block(borrow site: model.Site, page_index: u64, block_index: u64) -> u64 {
+    let mut i: u64 = 0;
+    while i < site.anchors.len() {
+        let a = site.anchors.get_or(i, model.Anchor { page: 0, name_id: 0, line: 0, heading_block: 0 });
+        if a.page == page_index && a.heading_block == block_index { return a.name_id; }
+        i = i + 1;
+    }
+    model.NONE()
+}
+
+fn close_to(inout out: StrBuf, inout level: u64, target: u64) {
+    while level > target { out.push_str("</li></ul>"); level = level - 1; }
+}
+
+pub fn render(borrow site: model.Site, page_index: u64) -> StrBuf {
+    let page = site.pages.get_or(page_index, model.empty_page());
+    let mut out = StrBuf.new();
+    let mut level: u64 = 0;
+    let mut any = false;
+    let mut i = page.block_start;
+    while i < page.block_start + page.block_count {
+        let block = site.blocks.get_or(i, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
+        if block.tag == model.BLOCK_HEADING() && block.level >= 2 {
+            if !any { out.push_str("<nav class=\"toc\" aria-label=\"Table of contents\"><h2>Contents</h2>"); any = true; }
+            let wanted = block.level - 1;
+            while level < wanted { out.push_str("<ul><li>"); level = level + 1; }
+            if level > wanted { close_to(inout out, inout level, wanted); out.push_str("<li>"); }
+            else if level == wanted && level > 0 { out.push_str("</li><li>"); }
+            out.push_str("<a href=\"#");
+            let anchor_id = anchor_for_block(borrow site, page_index, i);
+            let anchor = site.strings.copy(anchor_id);
+            escape.html_attribute(borrow anchor, inout out);
+            out.push_str("\">");
+            let title = site.strings.copy(block.text_id);
+            escape.html_text(borrow title, inout out);
+            out.push_str("</a>");
+        }
+        i = i + 1;
+    }
+    close_to(inout out, inout level, 0);
+    if any { out.push_str("</nav>"); }
+    out
+}

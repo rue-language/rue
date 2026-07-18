@@ -1,0 +1,143 @@
+// Semantic content policy after parsing. These checks are separate from arena
+// integrity: they diagnose author-facing structure such as heading jumps,
+// repeated top-level titles, empty links, inconsistent table widths, and pages
+// whose content is too empty to be useful.
+const std = @import("std");
+const model = @import("model.rue");
+const text = @import("text.rue");
+const url = @import("url.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn page_error(inout site: model.Site, page_index: u64, line: u64, detail: StrBuf) {
+    let page = site.pages.get_or(page_index, model.empty_page());
+    model.add_error(inout site, 200, page.source_id, line, detail);
+}
+
+fn cell_count(borrow site: model.Site, borrow block: model.Block) -> u64 {
+    if block.text_id == model.NONE() { return 0; }
+    let raw = site.strings.copy(block.text_id);
+    let pipes = text.count_byte(borrow raw, 124);
+    if pipes == 0 { 1 } else { pipes + 1 }
+}
+
+fn check_headings(inout site: model.Site, page_index: u64) {
+    let page = site.pages.get_or(page_index, model.empty_page());
+    let mut previous: u64 = 0;
+    let mut h1_count: u64 = 0;
+    let mut i = page.block_start;
+    while i < page.block_start + page.block_count {
+        let block = site.blocks.get_or(i, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
+        if block.tag == model.BLOCK_HEADING() {
+            if block.level == 1 {
+                h1_count = h1_count + 1;
+            }
+            if previous > 0 && block.level > previous + 1 {
+                page_error(inout site, page_index, block.line, "heading level skips an intermediate level");
+            }
+            previous = block.level;
+        }
+        i = i + 1;
+    }
+    if h1_count == 0 {
+        page_error(inout site, page_index, 0, "published page needs a level-one heading");
+    }
+    if h1_count > 1 {
+        page_error(inout site, page_index, 0, "page has more than one level-one heading");
+    }
+}
+
+fn check_tables(inout site: model.Site, page_index: u64) {
+    let page = site.pages.get_or(page_index, model.empty_page());
+    let mut i = page.block_start;
+    while i < page.block_start + page.block_count {
+        let table = site.blocks.get_or(i, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
+        if table.tag == model.BLOCK_TABLE() && table.count > 0 {
+            let header = site.blocks.get_or(table.first, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
+            let columns = cell_count(borrow site, borrow header);
+            let mut row_index = table.first + 1;
+            while row_index < table.first + table.count {
+                let row = site.blocks.get_or(row_index, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
+                if cell_count(borrow site, borrow row) != columns {
+                    page_error(inout site, page_index, row.line, "table row has a different column count from its header");
+                }
+                row_index = row_index + 1;
+            }
+        }
+        i = i + 1;
+    }
+}
+
+fn check_links(inout site: model.Site, page_index: u64) {
+    let page = site.pages.get_or(page_index, model.empty_page());
+    let mut i = page.link_start;
+    while i < page.link_start + page.link_count {
+        let link = site.links.get_or(i, model.Link {
+            source_page: 0,
+            target_id: 0,
+            label_id: 0,
+            line: 0,
+            resolved_page: model.NONE(),
+            resolved_anchor: model.NONE(),
+            external: false,
+        });
+        let label = site.strings.copy(link.label_id);
+        let target = site.strings.copy(link.target_id);
+        if label.len() == 0 {
+            page_error(inout site, page_index, link.line, "link label cannot be empty");
+        }
+        if !url.safe_for_html(borrow target) {
+            page_error(inout site, page_index, link.line, "link uses an unsafe URL scheme or control byte");
+        }
+        if url.has_empty_fragment(borrow target) {
+            page_error(inout site, page_index, link.line, "link has an empty fragment");
+        }
+        if !link.external && url.has_query(borrow target) {
+            page_error(inout site, page_index, link.line, "local links cannot contain query strings");
+        }
+        i = i + 1;
+    }
+}
+
+fn check_code_languages(inout site: model.Site, page_index: u64) {
+    let page = site.pages.get_or(page_index, model.empty_page());
+    let mut i = page.block_start;
+    while i < page.block_start + page.block_count {
+        let block = site.blocks.get_or(i, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
+        if block.tag == model.BLOCK_CODE() && block.aux != model.NONE() {
+            let language = site.strings.copy(block.aux);
+            let mut j: u64 = 0;
+            while j < language.len() {
+                let b = text.byte_of(borrow language, j);
+                if !text.is_alnum(b) && b != 45 && b != 95 {
+                    page_error(inout site, page_index, block.line, "fenced code language contains unsafe punctuation");
+                    j = language.len();
+                } else {
+                    j = j + 1;
+                }
+            }
+        }
+        i = i + 1;
+    }
+}
+
+pub fn validate_page(inout site: model.Site, page_index: u64) {
+    let page = site.pages.get_or(page_index, model.empty_page());
+    if page.draft {
+        return;
+    }
+    check_headings(inout site, page_index);
+    check_tables(inout site, page_index);
+    check_links(inout site, page_index);
+    check_code_languages(inout site, page_index);
+    if page.word_count == 0 {
+        page_error(inout site, page_index, 0, "published page has no searchable words");
+    }
+}
+
+pub fn validate(inout site: model.Site) {
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        validate_page(inout site, i);
+        i = i + 1;
+    }
+}

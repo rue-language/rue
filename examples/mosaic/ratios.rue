@@ -1,0 +1,113 @@
+// Normalized ratios keep stats comparable as sites grow by orders of magnitude.
+const std = @import("std");
+const model = @import("model.rue");
+
+pub struct Ratios {
+    blocks_per_page_x100: u64,
+    inlines_per_block_x100: u64,
+    links_per_page_x100: u64,
+    anchors_per_page_x100: u64,
+    words_per_block_x100: u64,
+    strings_per_page_x100: u64,
+    bytes_per_string_x100: u64,
+    internal_link_percent: u64,
+    navigation_percent: u64,
+}
+
+fn ratio_x100(numerator: u64, denominator: u64) -> u64 {
+    if denominator == 0 {
+        0
+    } else if numerator > 184467440737095516 {
+        18446744073709551615
+    } else {
+        (numerator * 100) / denominator
+    }
+}
+
+pub fn collect(borrow site: model.Site) -> Ratios {
+    let mut published: u64 = 0;
+    let mut words: u64 = 0;
+    let mut internal_links: u64 = 0;
+    let mut pooled_bytes: u64 = 0;
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let page = site.pages.get_or(i, model.empty_page());
+        if !page.draft {
+            published = published + 1;
+        }
+        words = words + page.word_count;
+        i = i + 1;
+    }
+    i = 0;
+    while i < site.links.len() {
+        let link = site.links.get_or(i, model.Link {
+            source_page: 0,
+            target_id: 0,
+            label_id: 0,
+            line: 0,
+            resolved_page: model.NONE(),
+            resolved_anchor: model.NONE(),
+            external: false,
+        });
+        if !link.external && link.resolved_page != model.NONE() {
+            internal_links = internal_links + 1;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < site.strings.len() {
+        pooled_bytes = pooled_bytes + site.strings.string_len(i);
+        i = i + 1;
+    }
+    Ratios {
+        blocks_per_page_x100: ratio_x100(site.blocks.len(), published),
+        inlines_per_block_x100: ratio_x100(site.inlines.len(), site.blocks.len()),
+        links_per_page_x100: ratio_x100(site.links.len(), published),
+        anchors_per_page_x100: ratio_x100(site.anchors.len(), published),
+        words_per_block_x100: ratio_x100(words, site.blocks.len()),
+        strings_per_page_x100: ratio_x100(site.strings.len(), published),
+        bytes_per_string_x100: ratio_x100(pooled_bytes, site.strings.len()),
+        internal_link_percent: ratio_x100(internal_links, site.links.len()),
+        navigation_percent: ratio_x100(site.navigation.len(), published),
+    }
+}
+
+fn append_fixed(value: u64, inout out: std.strbuf.StrBuf) {
+    out.push_str(@to_string(value / 100));
+    out.push(46);
+    let fraction = value % 100;
+    if fraction < 10 {
+        out.push(48);
+    }
+    out.push_str(@to_string(fraction));
+}
+
+pub fn append(borrow value: Ratios, inout out: std.strbuf.StrBuf) {
+    out.push_str("blocks_per_page=");
+    append_fixed(value.blocks_per_page_x100, inout out);
+    out.push(10);
+    out.push_str("inlines_per_block=");
+    append_fixed(value.inlines_per_block_x100, inout out);
+    out.push(10);
+    out.push_str("links_per_page=");
+    append_fixed(value.links_per_page_x100, inout out);
+    out.push(10);
+    out.push_str("anchors_per_page=");
+    append_fixed(value.anchors_per_page_x100, inout out);
+    out.push(10);
+    out.push_str("words_per_block=");
+    append_fixed(value.words_per_block_x100, inout out);
+    out.push(10);
+    out.push_str("strings_per_page=");
+    append_fixed(value.strings_per_page_x100, inout out);
+    out.push(10);
+    out.push_str("bytes_per_string=");
+    append_fixed(value.bytes_per_string_x100, inout out);
+    out.push(10);
+    out.push_str("internal_link_percent=");
+    append_fixed(value.internal_link_percent, inout out);
+    out.push(10);
+    out.push_str("navigation_percent=");
+    append_fixed(value.navigation_percent, inout out);
+    out.push(10);
+}

@@ -1,0 +1,56 @@
+// POD representation for Mosaic's tiny output-template language.
+const std = @import("std");
+
+pub fn TOKEN_TEXT() -> u64 { 1 }
+pub fn TOKEN_OPEN() -> u64 { 2 }
+pub fn TOKEN_IDENT() -> u64 { 3 }
+pub fn TOKEN_PIPE() -> u64 { 4 }
+pub fn TOKEN_CLOSE() -> u64 { 5 }
+pub fn TOKEN_EOF() -> u64 { 6 }
+
+pub fn NODE_TEXT() -> u64 { 1 }
+pub fn NODE_VALUE() -> u64 { 2 }
+
+pub fn FILTER_NONE() -> u64 { 0 }
+pub fn FILTER_HTML() -> u64 { 1 }
+pub fn FILTER_ATTRIBUTE() -> u64 { 2 }
+pub fn FILTER_URL() -> u64 { 3 }
+pub fn FILTER_JSON() -> u64 { 4 }
+
+pub struct Token {
+    tag: u64,
+    start: u64,
+    end: u64,
+}
+
+pub struct Node {
+    tag: u64,
+    start: u64,
+    end: u64,
+    name_start: u64,
+    name_end: u64,
+    filter: u64,
+}
+
+pub const Tokens = std.arraybuf.ArrayBuf(Token);
+pub const Nodes = std.arraybuf.ArrayBuf(Node);
+
+pub struct Lexed {
+    tokens: Tokens,
+    ok: bool,
+    error_offset: u64,
+}
+
+pub struct Parsed {
+    nodes: Nodes,
+    ok: bool,
+    error_offset: u64,
+}
+
+pub fn empty_token() -> Token {
+    Token { tag: 0, start: 0, end: 0 }
+}
+
+pub fn empty_node() -> Node {
+    Node { tag: 0, start: 0, end: 0, name_start: 0, name_end: 0, filter: FILTER_NONE() }
+}

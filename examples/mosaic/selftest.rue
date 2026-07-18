@@ -1,0 +1,119 @@
+// Deterministic subsystem self-tests executed by stress mode. They exercise
+// boundaries that a generated site alone does not naturally reach.
+const std = @import("std");
+const artifactcheck = @import("artifactcheck.rue");
+const htmlcheck = @import("htmlcheck.rue");
+const template_eval = @import("template_eval.rue");
+const text = @import("text.rue");
+const url = @import("url.rue");
+const utf8 = @import("utf8.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct Result {
+    checks: u64,
+    failures: u64,
+}
+
+fn expect(condition: bool, inout result: Result) {
+    result.checks = result.checks + 1;
+    if !condition {
+        result.failures = result.failures + 1;
+    }
+}
+
+fn text_tests(inout result: Result) {
+    let hello: StrBuf = "  Hello, Rue!  ";
+    let trimmed = text.trim(borrow hello);
+    expect(text.equals_literal(borrow trimmed, "Hello, Rue!"), inout result);
+    let slug = text.slugify(borrow trimmed);
+    expect(text.equals_literal(borrow slug, "hello-rue"), inout result);
+    let path: StrBuf = "docs\\guide//intro.md";
+    let normalized = text.normalize_path(borrow path);
+    expect(text.equals_literal(borrow normalized, "docs/guide/intro.md"), inout result);
+    let base: StrBuf = "docs";
+    let leaf: StrBuf = "guide.md";
+    let joined = text.join_path(borrow base, borrow leaf);
+    expect(text.equals_literal(borrow joined, "docs/guide.md"), inout result);
+    expect(text.find_byte(borrow hello, 44, 0) == 7, inout result);
+    expect(text.count_byte(borrow hello, 108) == 2, inout result);
+}
+
+fn url_tests(inout result: Result) {
+    let local: StrBuf = "guide.html#start";
+    let local_parts = url.split(borrow local);
+    expect(local_parts.kind == url.KIND_LOCAL(), inout result);
+    expect(text.equals_literal(borrow local_parts.path, "guide.html"), inout result);
+    expect(text.equals_literal(borrow local_parts.fragment, "start"), inout result);
+    let fragment: StrBuf = "#local";
+    expect(url.classify(borrow fragment) == url.KIND_FRAGMENT(), inout result);
+    let https: StrBuf = "https://example.test/docs";
+    expect(url.classify(borrow https) == url.KIND_HTTP(), inout result);
+    expect(url.safe_for_html(borrow https), inout result);
+    let unsafe: StrBuf = "javascript:alert(1)";
+    expect(url.classify(borrow unsafe) == url.KIND_UNSAFE(), inout result);
+    expect(!url.safe_for_html(borrow unsafe), inout result);
+    let dotted: StrBuf = "docs/old/../guide.html";
+    let clean = url.normalize_local(borrow dotted);
+    expect(text.equals_literal(borrow clean, "docs/guide.html"), inout result);
+}
+
+fn utf8_tests(inout result: Result) {
+    let ascii: StrBuf = "plain ascii";
+    let ascii_result = utf8.validate(borrow ascii);
+    expect(ascii_result.ok, inout result);
+    expect(ascii_result.ascii == 11, inout result);
+    let unicode: StrBuf = "Rue → Mosaic";
+    let unicode_result = utf8.validate(borrow unicode);
+    expect(unicode_result.ok, inout result);
+    expect(unicode_result.multibyte == 1, inout result);
+    expect(utf8.codepoint_width(65) == 1, inout result);
+    expect(utf8.codepoint_width(226) == 3, inout result);
+    expect(utf8.codepoint_width(255) == 0, inout result);
+}
+
+fn template_tests(inout result: Result) {
+    let env = template_eval.Environment {
+        site_title: "A & B",
+        base_url: "https://example.test/a b",
+        language: "en",
+        author: "Rue",
+        page_count: "4",
+    };
+    let source: StrBuf = "{{ site.title | html }} {{ site.page_count }}";
+    let evaluated = template_eval.evaluate(source, env);
+    expect(evaluated.ok, inout result);
+    expect(text.equals_literal(borrow evaluated.output, "A &amp; B 4"), inout result);
+    let bad_env = template_eval.Environment {
+        site_title: "x",
+        base_url: "x",
+        language: "x",
+        author: "x",
+        page_count: "x",
+    };
+    let bad_source: StrBuf = "{{ absent }}";
+    let bad = template_eval.evaluate(bad_source, bad_env);
+    expect(!bad.ok, inout result);
+}
+
+fn artifact_tests(inout result: Result) {
+    let html: StrBuf = "<!doctype html><html lang=\"en\"><head><title>x</title></head><body><main id=\"content\"><article><h1>x</h1></article></main></body></html>";
+    expect(htmlcheck.verify(borrow html).ok, inout result);
+    let json: StrBuf = "{\"version\":1,\"terms\":[],\"pages\":[{\"url\":\"x\"}]}";
+    expect(artifactcheck.search_json(borrow json, 1).ok, inout result);
+    let xml: StrBuf = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"x\"><url><loc>x</loc></url></urlset>\n";
+    expect(artifactcheck.sitemap_xml(borrow xml, 1).ok, inout result);
+    let css: StrBuf = ":root{} .skip:focus{} @media(x){}";
+    expect(artifactcheck.stylesheet(borrow css).ok, inout result);
+    let robots: StrBuf = "User-agent: *\nAllow: /\nSitemap: x\n";
+    expect(artifactcheck.robots(borrow robots).ok, inout result);
+}
+
+pub fn run() -> Result {
+    let mut result = Result { checks: 0, failures: 0 };
+    text_tests(inout result);
+    url_tests(inout result);
+    utf8_tests(inout result);
+    template_tests(inout result);
+    artifact_tests(inout result);
+    result
+}

@@ -1,0 +1,10 @@
+# Checked-in Mosaic documentation workload.
+site.title = Mosaic Handbook
+site.base = https://example.test/mosaic
+site.language = en
+site.author = Rue Language Project
+site.template = reference
+page = index.md | index.html | Home | 0
+page = guide.md | guide.html | Guide | 10
+page = reference.md | reference.html | Reference | 20
+page = internals.md | internals.html | Internals | 30

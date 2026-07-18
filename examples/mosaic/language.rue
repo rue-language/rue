@@ -1,0 +1,37 @@
+// Command and project-format reference printed by `mosaic help`.
+const std = @import("std");
+const architecture = @import("architecture.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn help() -> StrBuf {
+    let mut out = StrBuf.new();
+    out.push_str("mosaic — deterministic static sites written in Rue\n\n");
+    out.push_str("usage:\n");
+    out.push_str("  mosaic build <site.mosaic>   validate and write HTML, CSS, sitemap, robots, and search index\n");
+    out.push_str("  mosaic check <site.mosaic>   parse and validate without writing files\n");
+    out.push_str("  mosaic dump <site.mosaic>    print the validated block/inline/link arenas\n");
+    out.push_str("  mosaic stats <site.mosaic>   print deterministic site inventory\n");
+    out.push_str("  mosaic stress                parse, link, and render a generated 200-page site\n");
+    out.push_str("  mosaic stress1|stress2|stress4  scale the generated workload across 100/200/400 pages\n");
+    out.push_str("  mosaic help                  print this reference\n\n");
+    out.push_str("manifest grammar:\n");
+    out.push_str("  site.title = Required title\n");
+    out.push_str("  site.base = https://example.test/docs\n");
+    out.push_str("  site.language = en\n");
+    out.push_str("  site.author = Project authors\n");
+    out.push_str("  site.template = article | reference\n");
+    out.push_str("  page = source.md | output.html | Optional title | Optional navigation order\n\n");
+    out.push_str("document front matter:\n");
+    out.push_str("  ---\n  title: Page title\n  description: Search summary\n  template: article\n  nav_order: 10\n  draft: false\n  ---\n\n");
+    out.push_str("markup:\n");
+    out.push_str("  # headings {#optional-id}, paragraphs, > quotes, horizontal rules\n");
+    out.push_str("  - unordered and 1. ordered lists, fenced code, pipe tables\n");
+    out.push_str("  *emphasis*, **strong**, `code`, [links](guide.html#anchor), escapes\n\n");
+    out.push_str("validation:\n");
+    out.push_str("  duplicate source/output paths and anchors, missing metadata, malformed markup,\n");
+    out.push_str("  broken page/anchor links, unreadable files, and unreachable published pages.\n");
+    out.push(10);
+    let details = architecture.reference();
+    out.push_str(details);
+    out
+}

@@ -1,0 +1,62 @@
+// Whole-file IO and deterministic output writing for Mosaic.
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+const OptBytes = std.option.Option(Bytes);
+const FileRes = std.result.Result(std.fs.File, std.fs.FileError);
+const ReadRes = std.result.Result(u64, std.fs.FileError);
+const WriteRes = std.result.Result((), std.fs.FileError);
+
+pub fn read_bytes(borrow path: StrBuf) -> OptBytes {
+    let O = OptBytes;
+    let mut data = Bytes.new();
+    let mut file = match std.fs.File.open(borrow path) {
+        FileRes.Ok(f) => f,
+        FileRes.Err(e) => { return O.None; },
+    };
+    loop {
+        data.reserve(65536);
+        let count = match file.read(inout data) {
+            ReadRes.Ok(n) => n,
+            ReadRes.Err(e) => { return O.None; },
+        };
+        if count == 0 { break; }
+    }
+    let _ = file.close();
+    O.Some(data)
+}
+
+pub fn read_text(borrow path: StrBuf) -> std.option.Option(StrBuf) {
+    let O = std.option.Option(StrBuf);
+    match read_bytes(borrow path) {
+        OptBytes.Some(bytes) => {
+            let mut out = StrBuf.new();
+            let mut i: u64 = 0;
+            while i < bytes.len() { out.push(bytes.get_or(i, 0)); i = i + 1; }
+            O.Some(out)
+        },
+        OptBytes.None => O.None,
+    }
+}
+
+pub fn write_text(borrow path: StrBuf, borrow value: StrBuf) -> bool {
+    let mut file = match std.fs.File.create(borrow path) {
+        FileRes.Ok(f) => f,
+        FileRes.Err(e) => { return false; },
+    };
+    let bytes = text.bytes_of(borrow value);
+    let ok = match file.write_all(borrow bytes) {
+        WriteRes.Ok(unit) => true,
+        WriteRes.Err(e) => false,
+    };
+    let _ = file.close();
+    ok
+}
+
+pub fn readable(borrow path: StrBuf) -> bool {
+    match std.fs.File.open(borrow path) {
+        FileRes.Ok(file) => { let _ = file.close(); true },
+        FileRes.Err(e) => false,
+    }
+}

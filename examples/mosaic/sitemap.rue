@@ -1,0 +1,27 @@
+// XML sitemap for published pages.
+const std = @import("std");
+const escape = @import("escape.rue");
+const model = @import("model.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn build(borrow site: model.Site) -> StrBuf {
+    let mut out = StrBuf.new();
+    out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    out.push_str("<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n");
+    let base = site.strings.copy(site.base_url_id);
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let page = site.pages.get_or(i, model.empty_page());
+        if !page.draft {
+            out.push_str("  <url><loc>");
+            escape.html_text(borrow base, inout out);
+            if base.len() > 0 && site.strings.byte_at(site.base_url_id, base.len() - 1) != 47 { out.push(47); }
+            let path = site.strings.copy(page.output_id);
+            escape.html_text(borrow path, inout out);
+            out.push_str("</loc></url>\n");
+        }
+        i = i + 1;
+    }
+    out.push_str("</urlset>\n");
+    out
+}

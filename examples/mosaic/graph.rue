@@ -1,0 +1,143 @@
+// Document graph construction and validation. Output/source paths resolve
+// through StrMap; anchors are checked within their page; reachability walks
+// internal edges with Queue and records visits in BitSet.
+const std = @import("std");
+const model = @import("model.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+const OptU64 = std.option.Option(u64);
+
+fn page_for_path(borrow site: model.Site, borrow paths: std.strmap.StrMap(u64), borrow path: StrBuf) -> u64 {
+    match paths.get(borrow path) { OptU64.Some(i) => i, OptU64.None => model.NONE() }
+}
+
+fn anchor_for(borrow site: model.Site, page: u64, borrow name: StrBuf) -> u64 {
+    let mut i: u64 = 0;
+    while i < site.anchors.len() {
+        let anchor = site.anchors.get_or(i, model.Anchor { page: 0, name_id: 0, line: 0, heading_block: 0 });
+        if anchor.page == page && site.strings.equals(anchor.name_id, borrow name) { return i; }
+        i = i + 1;
+    }
+    model.NONE()
+}
+
+fn resolve_one(
+    inout site: model.Site,
+    borrow paths: std.strmap.StrMap(u64),
+    index: u64,
+) {
+    let mut link = site.links.get_or(index, model.Link {
+        source_page: 0, target_id: 0, label_id: 0, line: 0,
+        resolved_page: model.NONE(), resolved_anchor: model.NONE(), external: false,
+    });
+    if link.external { return; }
+    let target = site.strings.copy(link.target_id);
+    let hash = text.find_byte(borrow target, 35, 0);
+    let raw_path = text.slice(borrow target, 0, hash);
+    let raw_anchor = if hash < target.len() { text.slice(borrow target, hash + 1, target.len()) } else { StrBuf.new() };
+    let page_index = if raw_path.len() == 0 {
+        link.source_page
+    } else {
+        page_for_path(borrow site, borrow paths, borrow raw_path)
+    };
+    if page_index == model.NONE() {
+        let source_page = site.pages.get_or(link.source_page, model.empty_page());
+        model.add_error(inout site, 300, source_page.source_id, link.line, "link target page does not exist");
+        return;
+    }
+    link.resolved_page = page_index;
+    if raw_anchor.len() > 0 {
+        let anchor_index = anchor_for(borrow site, page_index, borrow raw_anchor);
+        if anchor_index == model.NONE() {
+            let source_page = site.pages.get_or(link.source_page, model.empty_page());
+            model.add_error(inout site, 300, source_page.source_id, link.line, "link target anchor does not exist");
+            return;
+        }
+        link.resolved_anchor = anchor_index;
+    }
+    site.links.set(index, link);
+}
+
+fn build_navigation(inout site: model.Site) {
+    let mut keys = model.U64s.new();
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let page = site.pages.get_or(i, model.empty_page());
+        if !page.draft {
+            let order = if page.nav_order == model.NONE() { 1000000 + i } else { page.nav_order };
+            keys.push(order * 100000 + i);
+        }
+        i = i + 1;
+    }
+    std.sort.quicksort(u64, inout keys);
+    i = 0;
+    while i < keys.len() {
+        site.navigation.push(keys.get_or(i, 0) % 100000);
+        i = i + 1;
+    }
+}
+
+fn mark_reachable(inout site: model.Site) {
+    if site.pages.len() == 0 { return; }
+    let Q = std.queue.Queue(u64);
+    let B = std.bitset.BitSet();
+    let mut queue = Q.new();
+    let mut visited = B.new();
+    visited.set(0);
+    queue.enqueue(0);
+    while !queue.is_empty() {
+        let page = match queue.dequeue() { OptU64.Some(p) => p, OptU64.None => 0 };
+        let mut i: u64 = 0;
+        while i < site.links.len() {
+            let link = site.links.get_or(i, model.Link {
+                source_page: 0, target_id: 0, label_id: 0, line: 0,
+                resolved_page: model.NONE(), resolved_anchor: model.NONE(), external: false,
+            });
+            if link.source_page == page && link.resolved_page != model.NONE() && !visited.test(link.resolved_page) {
+                visited.set(link.resolved_page);
+                queue.enqueue(link.resolved_page);
+            }
+            i = i + 1;
+        }
+    }
+    let mut i: u64 = 1;
+    while i < site.pages.len() {
+        let page = site.pages.get_or(i, model.empty_page());
+        if !page.draft && !visited.test(i) {
+            model.add_error(inout site, 301, page.source_id, 0, "page is unreachable from the first manifest page");
+        }
+        i = i + 1;
+    }
+}
+
+pub fn validate(inout site: model.Site) {
+    let M = std.strmap.StrMap(u64);
+    let mut paths = M.new(model.NONE());
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let page = site.pages.get_or(i, model.empty_page());
+        let source = site.strings.copy(page.source_id);
+        let output = site.strings.copy(page.output_id);
+        paths.insert(borrow source, i);
+        paths.insert(borrow output, i);
+        i = i + 1;
+    }
+    i = 0;
+    while i < site.links.len() { resolve_one(inout site, borrow paths, i); i = i + 1; }
+    build_navigation(inout site);
+    mark_reachable(inout site);
+}
+
+pub fn resolved_internal_count(borrow site: model.Site) -> u64 {
+    let mut count: u64 = 0;
+    let mut i: u64 = 0;
+    while i < site.links.len() {
+        let link = site.links.get_or(i, model.Link {
+            source_page: 0, target_id: 0, label_id: 0, line: 0,
+            resolved_page: model.NONE(), resolved_anchor: model.NONE(), external: false,
+        });
+        if !link.external && link.resolved_page != model.NONE() { count = count + 1; }
+        i = i + 1;
+    }
+    count
+}

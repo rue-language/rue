@@ -1,0 +1,66 @@
+// Deterministic JSON search index. The index is intentionally page-granular:
+// title, description, URL, headings, and word counts give clients enough data
+// for ranking without shipping markup.
+const std = @import("std");
+const escape = @import("escape.rue");
+const model = @import("model.rue");
+const wordindex = @import("wordindex.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn append_pool_json(borrow site: model.Site, id: u64, inout out: StrBuf) {
+    let value = if id == model.NONE() { StrBuf.new() } else { site.strings.copy(id) };
+    escape.json_string(borrow value, inout out);
+}
+
+fn append_headings(borrow site: model.Site, page_index: u64, inout out: StrBuf) {
+    let page = site.pages.get_or(page_index, model.empty_page());
+    out.push(91);
+    let mut first = true;
+    let mut i = page.block_start;
+    while i < page.block_start + page.block_count {
+        let block = site.blocks.get_or(i, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
+        if block.tag == model.BLOCK_HEADING() {
+            if !first { out.push(44); }
+            append_pool_json(borrow site, block.text_id, inout out);
+            first = false;
+        }
+        i = i + 1;
+    }
+    out.push(93);
+}
+
+pub fn build(borrow site: model.Site) -> StrBuf {
+    let mut out = StrBuf.new();
+    let words = wordindex.build(borrow site);
+    out.push_str("{\"version\":1,\"terms\":");
+    wordindex.append_top_json(borrow words, 32, inout out);
+    out.push_str(",\"pages\":[");
+    let mut emitted: u64 = 0;
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let page = site.pages.get_or(i, model.empty_page());
+        if !page.draft {
+            if emitted > 0 { out.push(44); }
+            out.push_str("{\"url\":"); append_pool_json(borrow site, page.output_id, inout out);
+            out.push_str(",\"title\":"); append_pool_json(borrow site, page.title_id, inout out);
+            out.push_str(",\"description\":"); append_pool_json(borrow site, page.description_id, inout out);
+            out.push_str(",\"words\":"); out.push_str(@to_string(page.word_count));
+            out.push_str(",\"headings\":"); append_headings(borrow site, i, inout out);
+            out.push(125);
+            emitted = emitted + 1;
+        }
+        i = i + 1;
+    }
+    out.push_str("]}\n");
+    out
+}
+
+pub fn expected_page_count(borrow site: model.Site) -> u64 {
+    let mut n: u64 = 0;
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        if !site.pages.get_or(i, model.empty_page()).draft { n = n + 1; }
+        i = i + 1;
+    }
+    n
+}

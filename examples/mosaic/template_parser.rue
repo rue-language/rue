@@ -1,0 +1,86 @@
+// Predictive parser for the template token stream.
+const std = @import("std");
+const ast = @import("template_ast.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn token(borrow tokens: ast.Tokens, index: u64) -> ast.Token {
+    tokens.get_or(index, ast.empty_token())
+}
+
+fn token_text(borrow source: StrBuf, borrow value: ast.Token) -> StrBuf {
+    text.slice(borrow source, value.start, value.end)
+}
+
+fn filter_tag(borrow source: StrBuf, borrow value: ast.Token) -> u64 {
+    let spelling = token_text(borrow source, borrow value);
+    if text.equals_literal(borrow spelling, "html") {
+        ast.FILTER_HTML()
+    } else if text.equals_literal(borrow spelling, "attribute") {
+        ast.FILTER_ATTRIBUTE()
+    } else if text.equals_literal(borrow spelling, "url") {
+        ast.FILTER_URL()
+    } else if text.equals_literal(borrow spelling, "json") {
+        ast.FILTER_JSON()
+    } else {
+        999
+    }
+}
+
+pub fn parse(borrow source: StrBuf, lexed: ast.Lexed) -> ast.Parsed {
+    let mut nodes = ast.Nodes.new();
+    if !lexed.ok {
+        return ast.Parsed { nodes: nodes, ok: false, error_offset: lexed.error_offset };
+    }
+    let mut i: u64 = 0;
+    while i < lexed.tokens.len() {
+        let current = token(borrow lexed.tokens, i);
+        if current.tag == ast.TOKEN_TEXT() {
+            nodes.push(ast.Node {
+                tag: ast.NODE_TEXT(),
+                start: current.start,
+                end: current.end,
+                name_start: 0,
+                name_end: 0,
+                filter: ast.FILTER_NONE(),
+            });
+            i = i + 1;
+        } else if current.tag == ast.TOKEN_OPEN() {
+            let name = token(borrow lexed.tokens, i + 1);
+            if name.tag != ast.TOKEN_IDENT() {
+                return ast.Parsed { nodes: nodes, ok: false, error_offset: current.end };
+            }
+            let mut filter = ast.FILTER_NONE();
+            let mut close_index = i + 2;
+            if token(borrow lexed.tokens, close_index).tag == ast.TOKEN_PIPE() {
+                let filter_token = token(borrow lexed.tokens, close_index + 1);
+                if filter_token.tag != ast.TOKEN_IDENT() {
+                    return ast.Parsed { nodes: nodes, ok: false, error_offset: filter_token.start };
+                }
+                filter = filter_tag(borrow source, borrow filter_token);
+                if filter == 999 {
+                    return ast.Parsed { nodes: nodes, ok: false, error_offset: filter_token.start };
+                }
+                close_index = close_index + 2;
+            }
+            let close = token(borrow lexed.tokens, close_index);
+            if close.tag != ast.TOKEN_CLOSE() {
+                return ast.Parsed { nodes: nodes, ok: false, error_offset: name.end };
+            }
+            nodes.push(ast.Node {
+                tag: ast.NODE_VALUE(),
+                start: current.start,
+                end: close.end,
+                name_start: name.start,
+                name_end: name.end,
+                filter: filter,
+            });
+            i = close_index + 1;
+        } else if current.tag == ast.TOKEN_EOF() {
+            i = lexed.tokens.len();
+        } else {
+            return ast.Parsed { nodes: nodes, ok: false, error_offset: current.start };
+        }
+    }
+    ast.Parsed { nodes: nodes, ok: true, error_offset: 0 }
+}

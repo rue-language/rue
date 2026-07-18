@@ -1,0 +1,186 @@
+// Internal arena verifier. This pass treats parser output as untrusted and
+// proves every page range, child range, string id, graph endpoint, navigation
+// entry, and ownership relationship before rendering.
+const std = @import("std");
+const model = @import("model.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn valid_range(start: u64, count: u64, length: u64) -> bool {
+    start <= length && count <= length - start
+}
+
+fn valid_string(borrow site: model.Site, id: u64) -> bool {
+    id == model.NONE() || id < site.strings.len()
+}
+
+fn page_error(inout site: model.Site, page_index: u64, detail: StrBuf) {
+    let page = site.pages.get_or(page_index, model.empty_page());
+    model.add_error(inout site, 204, page.source_id, 0, detail);
+}
+
+fn check_page_ranges(inout site: model.Site) {
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let page = site.pages.get_or(i, model.empty_page());
+        if !valid_string(borrow site, page.source_id) ||
+            !valid_string(borrow site, page.output_id) ||
+            !valid_string(borrow site, page.title_id) ||
+            !valid_string(borrow site, page.description_id) ||
+            !valid_string(borrow site, page.template_id) {
+            page_error(inout site, i, "page contains an invalid string id");
+        }
+        if !valid_range(page.block_start, page.block_count, site.blocks.len()) {
+            page_error(inout site, i, "page block range is outside the block arena");
+        }
+        if !valid_range(page.inline_start, page.inline_count, site.inlines.len()) {
+            page_error(inout site, i, "page inline range is outside the inline arena");
+        }
+        if !valid_range(page.anchor_start, page.anchor_count, site.anchors.len()) {
+            page_error(inout site, i, "page anchor range is outside the anchor arena");
+        }
+        if !valid_range(page.link_start, page.link_count, site.links.len()) {
+            page_error(inout site, i, "page link range is outside the link arena");
+        }
+        i = i + 1;
+    }
+}
+
+fn owner_of_block(borrow site: model.Site, block_index: u64) -> u64 {
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let page = site.pages.get_or(i, model.empty_page());
+        if block_index >= page.block_start && block_index < page.block_start + page.block_count {
+            return i;
+        }
+        i = i + 1;
+    }
+    model.NONE()
+}
+
+fn check_blocks(inout site: model.Site) {
+    let mut i: u64 = 0;
+    while i < site.blocks.len() {
+        let block = site.blocks.get_or(i, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
+        let owner = owner_of_block(borrow site, i);
+        if owner == model.NONE() {
+            model.add_error(inout site, 204, site.manifest_path_id, 0, "orphan block is not owned by a page");
+        } else {
+            if !valid_string(borrow site, block.text_id) || !valid_string(borrow site, block.aux) {
+                page_error(inout site, owner, "block contains an invalid string id");
+            }
+            if block.tag == model.BLOCK_HEADING() && (block.level == 0 || block.level > 6) {
+                page_error(inout site, owner, "heading level is outside one through six");
+            }
+            if block.tag == model.BLOCK_PARAGRAPH() || block.tag == model.BLOCK_HEADING() || block.tag == model.BLOCK_ITEM() || block.tag == model.BLOCK_QUOTE() {
+                if !valid_range(block.first, block.count, site.inlines.len()) {
+                    page_error(inout site, owner, "text block inline range is outside the inline arena");
+                }
+            }
+            if block.tag == model.BLOCK_LIST() || block.tag == model.BLOCK_TABLE() {
+                if !valid_range(block.first, block.count, site.blocks.len()) {
+                    page_error(inout site, owner, "container child range is outside the block arena");
+                }
+                if block.first != i + 1 {
+                    page_error(inout site, owner, "container children are not contiguous after their parent");
+                }
+            }
+        }
+        i = i + 1;
+    }
+}
+
+fn check_inlines(inout site: model.Site) {
+    let mut i: u64 = 0;
+    while i < site.inlines.len() {
+        let node = site.inlines.get_or(i, model.Inline { tag: 0, text_id: 0, target_id: 0, line: 0 });
+        if !valid_string(borrow site, node.text_id) || !valid_string(borrow site, node.target_id) {
+            model.add_error(inout site, 204, site.manifest_path_id, node.line, "inline contains an invalid string id");
+        }
+        if node.tag < model.INLINE_TEXT() || node.tag > model.INLINE_ESCAPE() {
+            model.add_error(inout site, 204, site.manifest_path_id, node.line, "inline has an unknown tag");
+        }
+        if node.tag == model.INLINE_LINK() && node.target_id == model.NONE() {
+            model.add_error(inout site, 204, site.manifest_path_id, node.line, "link inline has no target");
+        }
+        i = i + 1;
+    }
+}
+
+fn check_anchors(inout site: model.Site) {
+    let mut i: u64 = 0;
+    while i < site.anchors.len() {
+        let anchor = site.anchors.get_or(i, model.Anchor { page: 0, name_id: 0, line: 0, heading_block: 0 });
+        if anchor.page >= site.pages.len() {
+            model.add_error(inout site, 204, site.manifest_path_id, anchor.line, "anchor refers to a missing page");
+        } else if anchor.heading_block >= site.blocks.len() {
+            page_error(inout site, anchor.page, "anchor refers to a missing heading block");
+        } else {
+            let heading = site.blocks.get_or(anchor.heading_block, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
+            if heading.tag != model.BLOCK_HEADING() {
+                page_error(inout site, anchor.page, "anchor refers to a non-heading block");
+            }
+            if !valid_string(borrow site, anchor.name_id) || site.strings.string_len(anchor.name_id) == 0 {
+                page_error(inout site, anchor.page, "anchor has an invalid or empty name");
+            }
+        }
+        i = i + 1;
+    }
+}
+
+fn check_links(inout site: model.Site) {
+    let mut i: u64 = 0;
+    while i < site.links.len() {
+        let link = site.links.get_or(i, model.Link {
+            source_page: 0,
+            target_id: 0,
+            label_id: 0,
+            line: 0,
+            resolved_page: model.NONE(),
+            resolved_anchor: model.NONE(),
+            external: false,
+        });
+        if link.source_page >= site.pages.len() {
+            model.add_error(inout site, 204, site.manifest_path_id, link.line, "link refers to a missing source page");
+        } else {
+            if !valid_string(borrow site, link.target_id) || !valid_string(borrow site, link.label_id) {
+                page_error(inout site, link.source_page, "link contains an invalid string id");
+            }
+            if link.resolved_page != model.NONE() && link.resolved_page >= site.pages.len() {
+                page_error(inout site, link.source_page, "link resolved page is outside the page arena");
+            }
+            if link.resolved_anchor != model.NONE() && link.resolved_anchor >= site.anchors.len() {
+                page_error(inout site, link.source_page, "link resolved anchor is outside the anchor arena");
+            }
+        }
+        i = i + 1;
+    }
+}
+
+fn check_navigation(inout site: model.Site) {
+    let B = std.bitset.BitSet();
+    let mut seen = B.new();
+    let mut i: u64 = 0;
+    while i < site.navigation.len() {
+        let page = site.navigation.get_or(i, model.NONE());
+        if page >= site.pages.len() {
+            model.add_error(inout site, 204, site.manifest_path_id, 0, "navigation contains an invalid page index");
+        } else if seen.test(page) {
+            page_error(inout site, page, "navigation contains the page more than once");
+        } else {
+            seen.set(page);
+            if site.pages.get_or(page, model.empty_page()).draft {
+                page_error(inout site, page, "draft page appears in navigation");
+            }
+        }
+        i = i + 1;
+    }
+}
+
+pub fn verify(inout site: model.Site) {
+    check_page_ranges(inout site);
+    check_blocks(inout site);
+    check_inlines(inout site);
+    check_anchors(inout site);
+    check_links(inout site);
+    check_navigation(inout site);
+}

@@ -1,0 +1,197 @@
+// Byte-oriented text helpers. Mosaic intentionally defines its input as UTF-8
+// bytes with ASCII markup punctuation; non-ASCII bytes pass through untouched.
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+const OptU8 = std.option.Option(u8);
+
+pub fn byte_of(borrow value: StrBuf, i: u64) -> u8 {
+    match value.byte_at(i) { OptU8.Some(b) => b, OptU8.None => 0 }
+}
+
+pub fn is_space(b: u8) -> bool { b == 32 || b == 9 || b == 13 }
+pub fn is_newline(b: u8) -> bool { b == 10 }
+pub fn is_digit(b: u8) -> bool { b >= 48 && b <= 57 }
+pub fn is_alpha(b: u8) -> bool { (b >= 65 && b <= 90) || (b >= 97 && b <= 122) }
+pub fn is_alnum(b: u8) -> bool { is_alpha(b) || is_digit(b) }
+
+pub fn lowercase(b: u8) -> u8 {
+    if b >= 65 && b <= 90 { b + 32 } else { b }
+}
+
+pub fn trim_start(borrow value: StrBuf) -> u64 {
+    let mut i: u64 = 0;
+    while i < value.len() && is_space(byte_of(borrow value, i)) { i = i + 1; }
+    i
+}
+
+pub fn trim_end(borrow value: StrBuf) -> u64 {
+    let mut i = value.len();
+    while i > 0 && is_space(byte_of(borrow value, i - 1)) { i = i - 1; }
+    i
+}
+
+pub fn slice(borrow value: StrBuf, start: u64, end: u64) -> StrBuf {
+    let mut out = StrBuf.new();
+    let stop = if end < value.len() { end } else { value.len() };
+    let mut i = if start < stop { start } else { stop };
+    while i < stop { out.push(byte_of(borrow value, i)); i = i + 1; }
+    out
+}
+
+pub fn trim(borrow value: StrBuf) -> StrBuf {
+    let start = trim_start(borrow value);
+    let end = trim_end(borrow value);
+    slice(borrow value, start, end)
+}
+
+pub fn equals(borrow a: StrBuf, borrow b: StrBuf) -> bool {
+    StrBuf.equals_borrowed(borrow a, borrow b)
+}
+
+pub fn equals_literal(borrow a: StrBuf, b: StrBuf) -> bool {
+    StrBuf.equals_borrowed(borrow a, borrow b)
+}
+
+pub fn starts_with(borrow value: StrBuf, borrow prefix: StrBuf) -> bool {
+    if prefix.len() > value.len() { return false; }
+    let mut i: u64 = 0;
+    while i < prefix.len() {
+        if byte_of(borrow value, i) != byte_of(borrow prefix, i) { return false; }
+        i = i + 1;
+    }
+    true
+}
+
+pub fn ends_with(borrow value: StrBuf, borrow suffix: StrBuf) -> bool {
+    if suffix.len() > value.len() { return false; }
+    let off = value.len() - suffix.len();
+    let mut i: u64 = 0;
+    while i < suffix.len() {
+        if byte_of(borrow value, off + i) != byte_of(borrow suffix, i) { return false; }
+        i = i + 1;
+    }
+    true
+}
+
+pub fn find_byte(borrow value: StrBuf, needle: u8, start: u64) -> u64 {
+    let mut i = start;
+    while i < value.len() {
+        if byte_of(borrow value, i) == needle { return i; }
+        i = i + 1;
+    }
+    value.len()
+}
+
+pub fn find_pair(borrow value: StrBuf, a: u8, b: u8, start: u64) -> u64 {
+    let mut i = start;
+    while i + 1 < value.len() {
+        if byte_of(borrow value, i) == a && byte_of(borrow value, i + 1) == b { return i; }
+        i = i + 1;
+    }
+    value.len()
+}
+
+pub fn count_byte(borrow value: StrBuf, needle: u8) -> u64 {
+    let mut total: u64 = 0;
+    let mut i: u64 = 0;
+    while i < value.len() {
+        if byte_of(borrow value, i) == needle { total = total + 1; }
+        i = i + 1;
+    }
+    total
+}
+
+pub fn line_at(borrow source: StrBuf, start: u64) -> StrBuf {
+    let end = find_byte(borrow source, 10, start);
+    let raw = slice(borrow source, start, end);
+    trim(borrow raw)
+}
+
+pub fn next_line(borrow source: StrBuf, start: u64) -> u64 {
+    let end = find_byte(borrow source, 10, start);
+    if end < source.len() { end + 1 } else { source.len() }
+}
+
+pub fn split_once(borrow value: StrBuf, delimiter: u8) -> u64 {
+    find_byte(borrow value, delimiter, 0)
+}
+
+pub fn slugify(borrow value: StrBuf) -> StrBuf {
+    let mut out = StrBuf.new();
+    let mut pending_dash = false;
+    let mut i: u64 = 0;
+    while i < value.len() {
+        let b = byte_of(borrow value, i);
+        if is_alnum(b) {
+            if pending_dash && out.len() > 0 { out.push(45); }
+            out.push(lowercase(b));
+            pending_dash = false;
+        } else if out.len() > 0 {
+            pending_dash = true;
+        }
+        i = i + 1;
+    }
+    out
+}
+
+pub fn normalize_path(borrow value: StrBuf) -> StrBuf {
+    let mut out = StrBuf.new();
+    let mut last_slash = false;
+    let mut i: u64 = 0;
+    while i < value.len() {
+        let b = byte_of(borrow value, i);
+        if b == 92 || b == 47 {
+            if !last_slash && out.len() > 0 { out.push(47); }
+            last_slash = true;
+        } else {
+            out.push(b);
+            last_slash = false;
+        }
+        i = i + 1;
+    }
+    out
+}
+
+pub fn dirname(borrow value: StrBuf) -> StrBuf {
+    let mut last = value.len();
+    let mut i: u64 = 0;
+    while i < value.len() {
+        if byte_of(borrow value, i) == 47 { last = i; }
+        i = i + 1;
+    }
+    if last == value.len() { StrBuf.new() } else { slice(borrow value, 0, last + 1) }
+}
+
+pub fn join_path(borrow base: StrBuf, borrow leaf: StrBuf) -> StrBuf {
+    if leaf.len() > 0 && byte_of(borrow leaf, 0) == 47 { return slice(borrow leaf, 0, leaf.len()); }
+    let mut out = slice(borrow base, 0, base.len());
+    if out.len() > 0 && byte_of(borrow out, out.len() - 1) != 47 { out.push(47); }
+    let mut i: u64 = 0;
+    while i < leaf.len() { out.push(byte_of(borrow leaf, i)); i = i + 1; }
+    normalize_path(borrow out)
+}
+
+pub fn bytes_of(borrow value: StrBuf) -> Bytes {
+    let mut out = Bytes.new();
+    out.reserve(value.len());
+    let mut i: u64 = 0;
+    while i < value.len() { out.push(byte_of(borrow value, i)); i = i + 1; }
+    out
+}
+
+pub fn decimal(value: u64) -> StrBuf { @to_string(value) }
+
+pub fn append_escaped_json(borrow value: StrBuf, inout out: StrBuf) {
+    let mut i: u64 = 0;
+    while i < value.len() {
+        let b = byte_of(borrow value, i);
+        if b == 34 { out.push_str("\\\""); }
+        else if b == 92 { out.push_str("\\\\"); }
+        else if b == 10 { out.push_str("\\n"); }
+        else if b == 13 { out.push_str("\\r"); }
+        else if b == 9 { out.push_str("\\t"); }
+        else { out.push(b); }
+        i = i + 1;
+    }
+}

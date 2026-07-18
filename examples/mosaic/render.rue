@@ -1,0 +1,162 @@
+// Semantic HTML renderer for validated block and inline arenas.
+const std = @import("std");
+const escape = @import("escape.rue");
+const model = @import("model.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn append_borrowed(borrow value: StrBuf, inout out: StrBuf) {
+    let mut i: u64 = 0;
+    while i < value.len() { out.push(text.byte_of(borrow value, i)); i = i + 1; }
+}
+
+fn render_inline(borrow site: model.Site, inline_index: u64, inout out: StrBuf) {
+    let node = site.inlines.get_or(inline_index, model.Inline { tag: 0, text_id: 0, target_id: 0, line: 0 });
+    let value = site.strings.copy(node.text_id);
+    if node.tag == model.INLINE_TEXT() || node.tag == model.INLINE_ESCAPE() {
+        escape.html_text(borrow value, inout out);
+    } else if node.tag == model.INLINE_EMPHASIS() {
+        out.push_str("<em>"); escape.html_text(borrow value, inout out); out.push_str("</em>");
+    } else if node.tag == model.INLINE_STRONG() {
+        out.push_str("<strong>"); escape.html_text(borrow value, inout out); out.push_str("</strong>");
+    } else if node.tag == model.INLINE_CODE() {
+        out.push_str("<code>"); escape.html_text(borrow value, inout out); out.push_str("</code>");
+    } else if node.tag == model.INLINE_LINK() {
+        out.push_str("<a href=\"");
+        let target = site.strings.copy(node.target_id);
+        escape.url_attribute(borrow target, inout out);
+        out.push_str("\">"); escape.html_text(borrow value, inout out); out.push_str("</a>");
+    }
+}
+
+fn render_inline_range(borrow site: model.Site, first: u64, count: u64, inout out: StrBuf) {
+    let mut i = first;
+    while i < first + count { render_inline(borrow site, i, inout out); i = i + 1; }
+}
+
+fn anchor_for_heading(borrow site: model.Site, page_index: u64, block_index: u64) -> u64 {
+    let mut i: u64 = 0;
+    while i < site.anchors.len() {
+        let anchor = site.anchors.get_or(i, model.Anchor { page: 0, name_id: 0, line: 0, heading_block: 0 });
+        if anchor.page == page_index && anchor.heading_block == block_index { return anchor.name_id; }
+        i = i + 1;
+    }
+    model.NONE()
+}
+
+fn render_text_block(
+    borrow site: model.Site,
+    page_index: u64,
+    block_index: u64,
+    borrow open: StrBuf,
+    borrow close: StrBuf,
+    inout out: StrBuf,
+) {
+    let block = site.blocks.get_or(block_index, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
+    append_borrowed(borrow open, inout out);
+    render_inline_range(borrow site, block.first, block.count, inout out);
+    append_borrowed(borrow close, inout out);
+}
+
+fn render_heading(borrow site: model.Site, page_index: u64, block_index: u64, inout out: StrBuf) {
+    let block = site.blocks.get_or(block_index, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
+    out.push_str("<h"); out.push_str(@to_string(block.level)); out.push_str(" id=\"");
+    let anchor_id = anchor_for_heading(borrow site, page_index, block_index);
+    let anchor = site.strings.copy(anchor_id);
+    escape.html_attribute(borrow anchor, inout out);
+    out.push_str("\">");
+    render_inline_range(borrow site, block.first, block.count, inout out);
+    out.push_str("</h"); out.push_str(@to_string(block.level)); out.push_str(">\n");
+}
+
+fn render_code(borrow site: model.Site, block_index: u64, inout out: StrBuf) {
+    let block = site.blocks.get_or(block_index, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
+    out.push_str("<pre><code");
+    if block.aux != model.NONE() && site.strings.string_len(block.aux) > 0 {
+        out.push_str(" class=\"language-");
+        let language = site.strings.copy(block.aux);
+        escape.html_attribute(borrow language, inout out);
+        out.push(34);
+    }
+    out.push(62);
+    let code = site.strings.copy(block.text_id);
+    escape.html_text(borrow code, inout out);
+    out.push_str("</code></pre>\n");
+}
+
+fn render_list(borrow site: model.Site, page_index: u64, block_index: u64, inout out: StrBuf) -> u64 {
+    let block = site.blocks.get_or(block_index, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
+    if block.level == 1 { out.push_str("<ol>\n"); } else { out.push_str("<ul>\n"); }
+    let mut i = block.first;
+    let item_open: StrBuf = "<li>";
+    let item_close: StrBuf = "</li>\n";
+    while i < block.first + block.count {
+        render_text_block(borrow site, page_index, i, borrow item_open, borrow item_close, inout out);
+        i = i + 1;
+    }
+    if block.level == 1 { out.push_str("</ol>\n"); } else { out.push_str("</ul>\n"); }
+    block.count + 1
+}
+
+fn render_table_row(borrow site: model.Site, block_index: u64, header: bool, inout out: StrBuf) {
+    let block = site.blocks.get_or(block_index, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
+    let raw = site.strings.copy(block.text_id);
+    out.push_str("<tr>");
+    let mut start: u64 = 0;
+    while start < raw.len() {
+        let pipe: u8 = 124;
+        let bar = text.find_byte(borrow raw, pipe, start);
+        let piece = text.slice(borrow raw, start, bar);
+        let cell = text.trim(borrow piece);
+        if cell.len() > 0 {
+            if header { out.push_str("<th>"); } else { out.push_str("<td>"); }
+            escape.html_text(borrow cell, inout out);
+            if header { out.push_str("</th>"); } else { out.push_str("</td>"); }
+        }
+        if bar >= raw.len() { break; }
+        start = bar + 1;
+    }
+    out.push_str("</tr>\n");
+}
+
+fn render_table(borrow site: model.Site, block_index: u64, inout out: StrBuf) -> u64 {
+    let block = site.blocks.get_or(block_index, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
+    out.push_str("<table>\n<thead>\n");
+    if block.count > 0 { render_table_row(borrow site, block.first, true, inout out); }
+    out.push_str("</thead>\n<tbody>\n");
+    let mut i = block.first + 1;
+    while i < block.first + block.count { render_table_row(borrow site, i, false, inout out); i = i + 1; }
+    out.push_str("</tbody>\n</table>\n");
+    block.count + 1
+}
+
+pub fn body(borrow site: model.Site, page_index: u64) -> StrBuf {
+    let page = site.pages.get_or(page_index, model.empty_page());
+    let mut out = StrBuf.new();
+    let paragraph_open: StrBuf = "<p>";
+    let paragraph_close: StrBuf = "</p>\n";
+    let quote_open: StrBuf = "<blockquote><p>";
+    let quote_close: StrBuf = "</p></blockquote>\n";
+    let mut i = page.block_start;
+    while i < page.block_start + page.block_count {
+        let block = site.blocks.get_or(i, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
+        if block.tag == model.BLOCK_PARAGRAPH() {
+            render_text_block(borrow site, page_index, i, borrow paragraph_open, borrow paragraph_close, inout out); i = i + 1;
+        } else if block.tag == model.BLOCK_HEADING() {
+            render_heading(borrow site, page_index, i, inout out); i = i + 1;
+        } else if block.tag == model.BLOCK_CODE() {
+            render_code(borrow site, i, inout out); i = i + 1;
+        } else if block.tag == model.BLOCK_LIST() {
+            i = i + render_list(borrow site, page_index, i, inout out);
+        } else if block.tag == model.BLOCK_QUOTE() {
+            render_text_block(borrow site, page_index, i, borrow quote_open, borrow quote_close, inout out); i = i + 1;
+        } else if block.tag == model.BLOCK_RULE() {
+            out.push_str("<hr>\n"); i = i + 1;
+        } else if block.tag == model.BLOCK_TABLE() {
+            i = i + render_table(borrow site, i, inout out);
+        } else {
+            i = i + 1;
+        }
+    }
+    out
+}

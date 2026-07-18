@@ -1,0 +1,141 @@
+// Canonical Mosaic pipeline. Every CLI mode uses `load`, so check/build/dump
+// and stats agree on parsing and validation. Only build performs writes.
+const std = @import("std");
+const assets = @import("assets.rue");
+const arena_check = @import("arena_check.rue");
+const artifactcheck = @import("artifactcheck.rue");
+const contentcheck = @import("contentcheck.rue");
+const buildplan = @import("buildplan.rue");
+const diagnostics = @import("diagnostics.rue");
+const graph = @import("graph.rue");
+const htmlcheck = @import("htmlcheck.rue");
+const io = @import("io.rue");
+const manifest = @import("manifest.rue");
+const markup = @import("markup.rue");
+const model = @import("model.rue");
+const oracle = @import("oracle.rue");
+const outputaudit = @import("outputaudit.rue");
+const robots = @import("robots.rue");
+const search = @import("search.rue");
+const schema = @import("schema.rue");
+const sitemap = @import("sitemap.rue");
+const sourcecheck = @import("sourcecheck.rue");
+const template = @import("template.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+const OptStr = std.option.Option(StrBuf);
+
+pub struct LoadResult {
+    site: model.Site,
+    base_dir: StrBuf,
+}
+
+fn read_pages(inout site: model.Site, borrow base_dir: StrBuf) {
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let page = site.pages.get_or(i, model.empty_page());
+        let relative = site.strings.copy(page.source_id);
+        let path = text.join_path(borrow base_dir, borrow relative);
+        match io.read_text(borrow path) {
+            OptStr.Some(source) => {
+                let oracle_source = text.slice(borrow source, 0, source.len());
+                sourcecheck.validate(inout site, i, borrow source);
+                markup.parse_page(inout site, i, source);
+                oracle.compare(inout site, i, borrow oracle_source);
+            },
+            OptStr.None => { model.add_error(inout site, 400, page.source_id, 0, "cannot read page source"); },
+        }
+        i = i + 1;
+    }
+}
+
+pub fn load(manifest_path: StrBuf) -> LoadResult {
+    let base_dir = text.dirname(borrow manifest_path);
+    match io.read_text(borrow manifest_path) {
+        OptStr.Some(source) => {
+            let mut site = manifest.parse(source, manifest_path);
+            read_pages(inout site, borrow base_dir);
+            schema.validate(inout site);
+            graph.validate(inout site);
+            contentcheck.validate(inout site);
+            arena_check.verify(inout site);
+            let plan = buildplan.create(inout site);
+            if !plan.ok {
+                model.add_error(inout site, 500, site.manifest_path_id, 0, plan.error);
+            }
+            LoadResult { site: site, base_dir: base_dir }
+        },
+        OptStr.None => {
+            let mut site = model.new_site();
+            site.manifest_path_id = site.strings.intern(borrow manifest_path);
+            model.add_error(inout site, 400, site.manifest_path_id, 0, "cannot read project manifest");
+            LoadResult { site: site, base_dir: base_dir }
+        },
+    }
+}
+
+pub fn report_errors(borrow site: model.Site) {
+    if site.diagnostics.len() > 0 { print(diagnostics.format(borrow site)); }
+}
+
+fn write_page(borrow site: model.Site, page_index: u64, borrow base_dir: StrBuf) -> bool {
+    let page = site.pages.get_or(page_index, model.empty_page());
+    if page.draft { return true; }
+    let relative = site.strings.copy(page.output_id);
+    let path = text.join_path(borrow base_dir, borrow relative);
+    let first = template.page(borrow site, page_index);
+    let second = template.page(borrow site, page_index);
+    if !StrBuf.equals_borrowed(borrow first, borrow second) { return false; }
+    if !htmlcheck.verify(borrow first).ok { return false; }
+    if !outputaudit.verify(borrow site, page_index, borrow first).ok { return false; }
+    io.write_text(borrow path, borrow first)
+}
+
+pub fn build(borrow loaded: LoadResult) -> bool {
+    if loaded.site.diagnostics.len() > 0 { return false; }
+    let mut i: u64 = 0;
+    while i < loaded.site.pages.len() {
+        if !write_page(borrow loaded.site, i, borrow loaded.base_dir) { return false; }
+        i = i + 1;
+    }
+    let index_name: StrBuf = "search-index.json";
+    let index_path = text.join_path(borrow loaded.base_dir, borrow index_name);
+    let index = search.build(borrow loaded.site);
+    if !artifactcheck.search_json(borrow index, search.expected_page_count(borrow loaded.site)).ok { return false; }
+    if !io.write_text(borrow index_path, borrow index) { return false; }
+    let sitemap_name: StrBuf = "sitemap.xml";
+    let sitemap_path = text.join_path(borrow loaded.base_dir, borrow sitemap_name);
+    let sitemap_text = sitemap.build(borrow loaded.site);
+    if !artifactcheck.sitemap_xml(borrow sitemap_text, search.expected_page_count(borrow loaded.site)).ok { return false; }
+    if !io.write_text(borrow sitemap_path, borrow sitemap_text) { return false; }
+    let css_name: StrBuf = "mosaic.css";
+    let css_path = text.join_path(borrow loaded.base_dir, borrow css_name);
+    let css = assets.stylesheet();
+    if !artifactcheck.stylesheet(borrow css).ok { return false; }
+    if !io.write_text(borrow css_path, borrow css) { return false; }
+    let robots_name: StrBuf = "robots.txt";
+    let robots_path = text.join_path(borrow loaded.base_dir, borrow robots_name);
+    let robots_text = robots.build(borrow loaded.site);
+    if !robots_text.ok { return false; }
+    if !artifactcheck.robots(borrow robots_text.output).ok { return false; }
+    io.write_text(borrow robots_path, borrow robots_text.output)
+}
+
+pub fn output_fingerprint(borrow site: model.Site) -> u64 {
+    let mut hash: u64 = 14695981039346656037;
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let page = site.pages.get_or(i, model.empty_page());
+        if !page.draft {
+            let html = template.page(borrow site, i);
+            let mut j: u64 = 0;
+            while j < html.len() {
+                hash = hash ^ @intCast(text.byte_of(borrow html, j));
+                hash = @wrapping_mul(hash, 1099511628211);
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+    hash
+}
