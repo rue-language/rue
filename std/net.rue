@@ -1,0 +1,124 @@
+// std.net — Network IO v1 address model and kernel marshalling (RUE-982,
+// ADR-0060).
+//
+// This module holds the public address types and the one place that knows the
+// kernel's socket-address byte layout. Rue struct layout is not a C ABI, so a
+// `SockAddr` is never cast to a raw pointer; it is explicitly encoded into a
+// byte array that checked code hands to `@syscall` (ADR-0060 §3).
+//
+// The public shape follows Rust's extensible address model (ADR-0060 §2): an
+// `IpAddr` enum with one IPv4 variant today, so the top-level surface is not
+// four-octets-shaped forever. IPv6 adds a variant later (RUE-985); it is not a
+// speculative representation here.
+//
+//     const std = @import("std");
+//     let addr = std.net.SockAddr.v4(std.net.Ipv4Addr.localhost(), 8080);
+//     let bytes = addr.to_sockaddr_in();     // Linux sockaddr_in, 16 bytes
+//
+// PLATFORM SCOPE (ADR-0060 §7): the marshalled layout is Linux `sockaddr_in`,
+// identical on the two v1 targets (x86-64 Linux and aarch64 Linux). macOS
+// IPv4 differs (`sin_len` first byte, different ABI details) and is an
+// explicit unsupported case until RUE-986; socket constructors on macOS
+// return `Unsupported` rather than guessing Darwin layouts (RUE-983).
+
+const binary = @import("binary.rue");
+const option = @import("option.rue");
+
+// The AF_INET address-family value shared by both v1 Linux targets.
+fn _af_inet() -> u16 {
+    2
+}
+
+// Byte size of the marshalled Linux `sockaddr_in`. Callers pass this as the
+// address length at the syscall boundary and validate kernel-returned lengths
+// against it before decoding.
+pub fn sockaddr_in_len() -> u64 {
+    16
+}
+
+// An IPv4 address as its four dotted-quad octets: `a.b.c.d`.
+pub struct Ipv4Addr {
+    a: u8,
+    b: u8,
+    c: u8,
+    d: u8,
+
+    fn new(a: u8, b: u8, c: u8, d: u8) -> Ipv4Addr {
+        Ipv4Addr { a: a, b: b, c: c, d: d }
+    }
+
+    // The loopback address 127.0.0.1.
+    fn localhost() -> Ipv4Addr {
+        Ipv4Addr.new(127, 0, 0, 1)
+    }
+
+    // The unspecified "any" address 0.0.0.0 (INADDR_ANY), used to bind a
+    // listener on every local interface.
+    fn unspecified() -> Ipv4Addr {
+        Ipv4Addr.new(0, 0, 0, 0)
+    }
+
+    // The four octets in network (dotted-quad) order.
+    fn octets(borrow self) -> [u8; 4] {
+        [self.a, self.b, self.c, self.d]
+    }
+}
+
+// An IP address. v1 carries IPv4 only; IPv6 becomes a second variant later
+// (RUE-985) without reshaping every network operation.
+pub enum IpAddr {
+    V4(Ipv4Addr),
+}
+
+// A socket address: an IP address plus a TCP/UDP port.
+//
+// This type owns the kernel marshalling boundary. Matching in Rue consumes
+// the matched value, so `to_sockaddr_in` takes `self` by value; an address is
+// cheap to rebuild from its scalars when a caller needs it again.
+pub struct SockAddr {
+    ip: IpAddr,
+    port: u16,
+
+    fn v4(ip: Ipv4Addr, port: u16) -> SockAddr {
+        SockAddr { ip: IpAddr.V4(ip), port: port }
+    }
+
+    // Encode this address as the Linux `sockaddr_in` byte layout (ADR-0060
+    // §3), 16 bytes:
+    //
+    //   | bytes  | encoding                                            |
+    //   | 0..2   | AF_INET family, native/little-endian on v1 targets  |
+    //   | 2..4   | port, big-endian (network order)                    |
+    //   | 4..8   | the four IPv4 octets in network order               |
+    //   | 8..16  | zero padding                                        |
+    //
+    // Every multi-byte field states its order through std.binary; nothing
+    // here depends on Rue struct layout matching C.
+    fn to_sockaddr_in(self) -> [u8; 16] {
+        let fam = binary.u16_to_le_bytes(_af_inet());
+        let pb = binary.u16_to_be_bytes(self.port);
+        match self.ip {
+            IpAddr.V4(v4) => [
+                fam[0], fam[1],
+                pb[0], pb[1],
+                v4.a, v4.b, v4.c, v4.d,
+                0, 0, 0, 0, 0, 0, 0, 0,
+            ],
+        }
+    }
+
+    // Decode a kernel-filled Linux `sockaddr_in`. Returns `None` unless the
+    // family field is AF_INET; the caller has already validated the returned
+    // address length against `sockaddr_in_len()` at the syscall boundary
+    // (ADR-0060 §3). The trailing padding bytes are ignored.
+    fn from_sockaddr_in(b: [u8; 16]) -> option.Option(SockAddr) {
+        let O = option.Option(SockAddr);
+        let fam = binary.u16_from_le_bytes([b[0], b[1]]);
+        if fam != _af_inet() {
+            return O.None;
+        }
+        let port = binary.u16_from_be_bytes([b[2], b[3]]);
+        let ip = Ipv4Addr.new(b[4], b[5], b[6], b[7]);
+        O.Some(SockAddr.v4(ip, port))
+    }
+}

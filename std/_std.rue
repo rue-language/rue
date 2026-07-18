@@ -18,6 +18,7 @@
 //   copy from str with `from_str` / `extend_str`
 // - std.fs.File: File IO v0 (open/create/append/read/write/close over @syscall)
 // - std.binary: endianness-explicit integer<->byte conversions
+// - std.net: network IO v1 address model + Linux sockaddr marshalling
 
 // Re-export library modules.
 pub const math = @import("math.rue");
@@ -35,6 +36,9 @@ pub const fs = @import("fs.rue");
 
 // Endianness-explicit integer<->byte conversions (RUE-970, ADR-0059/0060).
 pub const binary = @import("binary.rue");
+
+// Network IO v1: address model + Linux sockaddr marshalling (RUE-982, ADR-0060).
+pub const net = @import("net.rue");
 
 // Collections (Standard library v1, M2).
 pub const stack = @import("stack.rue");
