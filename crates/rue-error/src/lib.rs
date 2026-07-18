@@ -520,10 +520,6 @@ pub enum PreviewFeature {
     /// collection/string trio. Gated until the fat-pointer ABI lands on both
     /// backends.
     Slices,
-    /// Raw physical-byte heap and memory access intrinsics (RUE-879). These
-    /// operations intentionally bypass Rue's slot-sized typed-pointer model so
-    /// source-defined packed representations can use the runtime byte ABI.
-    RawBytes,
     /// Compact native physical type layout (ADR-0052). Replaces the flattened
     /// eight-byte ABI-slot physical layout with natural scalar widths and
     /// alignments, declaration-order struct fields with padding, ascending
@@ -554,7 +550,6 @@ impl PreviewFeature {
         match *self {
             PreviewFeature::TestInfra => "test_infra",
             PreviewFeature::Slices => "slices",
-            PreviewFeature::RawBytes => "raw_bytes",
             PreviewFeature::AggregateLayout => "aggregate_layout",
         }
     }
@@ -565,7 +560,6 @@ impl PreviewFeature {
         match *self {
             PreviewFeature::TestInfra => "ADR-0005",
             PreviewFeature::Slices => "ADR-0043",
-            PreviewFeature::RawBytes => "RUE-879",
             PreviewFeature::AggregateLayout => "ADR-0052",
         }
     }
@@ -575,7 +569,6 @@ impl PreviewFeature {
         &[
             PreviewFeature::TestInfra,
             PreviewFeature::Slices,
-            PreviewFeature::RawBytes,
             PreviewFeature::AggregateLayout,
         ]
     }
@@ -601,7 +594,6 @@ impl std::str::FromStr for PreviewFeature {
         match s {
             "test_infra" => Ok(PreviewFeature::TestInfra),
             "slices" => Ok(PreviewFeature::Slices),
-            "raw_bytes" => Ok(PreviewFeature::RawBytes),
             "aggregate_layout" => Ok(PreviewFeature::AggregateLayout),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
@@ -2618,7 +2610,7 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra, slices, raw_bytes, aggregate_layout");
+        assert_eq!(names, "test_infra, slices, aggregate_layout");
     }
 
     #[test]
@@ -2696,8 +2688,8 @@ mod tests {
     #[test]
     fn test_preview_feature_stabilized_are_unknown() {
         // for_loops, method_receivers, enum_payloads, array_repeat,
-        // field_init_shorthand, and inline_type_ctor_paths were stabilized (no
-        // longer gated) — their names must now be rejected.
+        // field_init_shorthand, inline_type_ctor_paths, and raw_bytes were
+        // stabilized (no longer gated) — their names must now be rejected.
         for name in [
             "for_loops",
             "method_receivers",
@@ -2705,6 +2697,7 @@ mod tests {
             "array_repeat",
             "field_init_shorthand",
             "inline_type_ctor_paths",
+            "raw_bytes",
         ] {
             assert!(
                 name.parse::<PreviewFeature>().is_err(),

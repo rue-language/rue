@@ -1048,14 +1048,14 @@ exit_code = 0
 [[case]]
 name = "preview_may_fail"
 spec = ["1.1:3"]
-preview = "raw_bytes"
+preview = "slices"
 source = "fn main() -> i32 { 0 }"
 exit_code = 0
 
 [[case]]
 name = "preview_must_pass"
 spec = ["1.1:4"]
-preview = "raw_bytes"
+preview = "slices"
 preview_should_pass = true
 source = "fn main() -> i32 { 0 }"
 exit_code = 0

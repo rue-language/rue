@@ -485,7 +485,7 @@ exit_code = 0
 name = "compact_enum_padding_is_deterministically_zeroed"
 description = "An enum heap image zeros its tag-to-payload and inter-field padding on @ptr_write, with no residue across an overwrite (RUE-1007)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "--preview", "raw_bytes", "-o", "prog"]
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Wide { A(u8, i32), B }
 fn main() -> i32 {
@@ -1101,7 +1101,7 @@ exit_code = 0
 name = "compact_enum_variant_overwrite_leaves_no_residue"
 description = "Overwriting a heap enum with a shorter variant leaves no residue from the wider variant's payload (RUE-1014 / RUE-1007 ruling 5)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "--preview", "raw_bytes", "-o", "prog"]
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum E { Big(i64, i64), Small(u8) }
 fn main() -> i32 {
