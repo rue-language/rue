@@ -1480,18 +1480,41 @@ impl Parser {
             _ => unreachable!(),
         };
         self.expect(TokenKind::LParen)?;
+        // Type-position intrinsics (`@size_of`, `@align_of`, `@offset_of`'s
+        // first argument, ...) take the canonical type grammar, exactly as
+        // annotations do (RUE-788). Every other intrinsic takes the expression
+        // grammar, with a narrow carve-out for argument tokens that can only
+        // spell a type; AstGen preserves those as placeholders so semantic
+        // analysis reports the type-vs-value mismatch at the right arity.
+        let type_positions = {
+            let name_str = self.interner.resolve(&name.name);
+            crate::intrinsics::type_argument_count(name_str)
+        };
         let mut args = Vec::new();
         if !self.at(TokenKind::RParen) {
             loop {
-                let is_unambiguous_ty = self.primitive_spur(self.kind()).is_some()
-                    || (self.at(TokenKind::LBracket) && self.bracket_is_array_type())
-                    || (self.at(TokenKind::LParen) && self.nth(1) == TokenKind::RParen)
-                    || (self.at(TokenKind::Bang)
-                        && matches!(self.nth(1), TokenKind::Comma | TokenKind::RParen));
-                if is_unambiguous_ty {
-                    args.push(IntrinsicArg::Type(self.ty()?));
+                if args.len() < type_positions {
+                    match self.type_position_intrinsic_arg(name) {
+                        Ok(ty) => args.push(IntrinsicArg::Type(ty)),
+                        // The targeted diagnostic is already recorded (and any
+                        // recorded error fails the parse), so resynchronize at
+                        // the argument boundary. Keeping the enclosing call
+                        // structurally intact stops item-level recovery from
+                        // re-parsing the `@name(...)` as a directive and
+                        // cascading a second, misleading diagnostic.
+                        Err(()) => self.skip_type_position_argument(),
+                    }
                 } else {
-                    args.push(IntrinsicArg::Expr(self.expr()?));
+                    let is_unambiguous_ty = self.primitive_spur(self.kind()).is_some()
+                        || (self.at(TokenKind::LBracket) && self.bracket_is_array_type())
+                        || (self.at(TokenKind::LParen) && self.nth(1) == TokenKind::RParen)
+                        || (self.at(TokenKind::Bang)
+                            && matches!(self.nth(1), TokenKind::Comma | TokenKind::RParen));
+                    if is_unambiguous_ty {
+                        args.push(IntrinsicArg::Type(self.ty()?));
+                    } else {
+                        args.push(IntrinsicArg::Expr(self.expr()?));
+                    }
                 }
                 if !self.eat(TokenKind::Comma) {
                     break;
@@ -1511,6 +1534,56 @@ impl Parser {
             args,
             span: self.span_from(start),
         }))
+    }
+
+    /// Parse one type-position intrinsic argument with the canonical type
+    /// grammar (`ty()`), so type intrinsics accept every `TypeExpr` form an
+    /// annotation accepts: pointer, qualified, type-call, array, slice,
+    /// anonymous aggregate, unit, never, and primitive types (RUE-788).
+    ///
+    /// Expression-shaped mistakes get one targeted diagnostic here instead of
+    /// drifting through expression parsing: a `!` with an operand is a
+    /// prefix-not expression (only a bare `!` spells the never type), and a
+    /// trailing token after a complete type (`i32 + 1`, `Point { .. }`) means
+    /// the argument was a value expression.
+    fn type_position_intrinsic_arg(&mut self, intrinsic: Ident) -> PResult<TypeExpr> {
+        let intrinsic_name = self.interner.resolve(&intrinsic.name).to_string();
+        if self.at(TokenKind::Bang) && !matches!(self.nth(1), TokenKind::Comma | TokenKind::RParen)
+        {
+            self.error(format!(
+                "`@{intrinsic_name}` takes a type in this argument position, but `!` followed by \
+                 an operand is a prefix-not expression; write a bare `!` for the never type"
+            ));
+            return Err(());
+        }
+        let ty = self.ty()?;
+        if !self.at(TokenKind::Comma) && !self.at(TokenKind::RParen) {
+            self.error(format!(
+                "`@{intrinsic_name}` takes a type in this argument position, not a value \
+                 expression"
+            ));
+            return Err(());
+        }
+        Ok(ty)
+    }
+
+    /// Skip past a malformed type-position argument to its boundary: the
+    /// argument-separating `,` or the closing `)` at the intrinsic call's own
+    /// nesting level (or end of input while unterminated).
+    fn skip_type_position_argument(&mut self) {
+        let mut depth = 0usize;
+        loop {
+            match self.kind() {
+                TokenKind::Eof => return,
+                TokenKind::Comma | TokenKind::RParen if depth == 0 => return,
+                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
+                    depth = depth.saturating_sub(1);
+                }
+                _ => {}
+            }
+            self.bump();
+        }
     }
 
     fn if_expr(&mut self) -> PResult<Expr> {
@@ -2386,6 +2459,126 @@ mod tests {
         }
         samples.sort_unstable();
         samples[samples.len() / 2]
+    }
+
+    /// Parse a function whose body is a single tail intrinsic call and return
+    /// that call's arguments.
+    fn intrinsic_args(source: &str) -> Vec<IntrinsicArg> {
+        let (ast, _) = parse_source(source).unwrap_or_else(|errors| panic!("{errors:?}\n{source}"));
+        let Item::Function(function) = &ast.items[0] else {
+            panic!("expected function in {source}");
+        };
+        let Expr::Block(body) = &function.body else {
+            panic!("expected block body in {source}");
+        };
+        let Expr::IntrinsicCall(call) = &*body.expr else {
+            panic!("expected tail intrinsic call in {source}");
+        };
+        call.args.clone()
+    }
+
+    #[test]
+    fn type_position_intrinsics_accept_the_full_type_grammar() {
+        // Parity table (RUE-788): every `TypeExpr` form an annotation accepts
+        // must parse identically in a type-position intrinsic argument.
+        // `TypeExpr::StrFixed` has no dedicated surface spelling here —
+        // `Str(8)` parses as a `TypeCall` whose canonicalization AstGen owns —
+        // and `TypeExpr::IntArg` only occurs inside a call argument list
+        // (covered by the `Buffer(2)` row).
+        let rows: &[(&str, fn(&TypeExpr) -> bool)] = &[
+            ("i32", |t| matches!(t, TypeExpr::Named(_))),
+            ("Point", |t| matches!(t, TypeExpr::Named(_))),
+            ("Self", |t| matches!(t, TypeExpr::Named(_))),
+            ("lib.geo.Point", |t| matches!(t, TypeExpr::Qualified { .. })),
+            ("()", |t| matches!(t, TypeExpr::Unit(_))),
+            ("!", |t| matches!(t, TypeExpr::Never(_))),
+            ("[i32; 4]", |t| matches!(t, TypeExpr::Array { .. })),
+            ("[i32; N]", |t| matches!(t, TypeExpr::Array { .. })),
+            ("[i32]", |t| matches!(t, TypeExpr::Slice { .. })),
+            ("[[u8; 2]; 3]", |t| matches!(t, TypeExpr::Array { .. })),
+            ("ptr const i32", |t| {
+                matches!(t, TypeExpr::PointerConst { .. })
+            }),
+            ("ptr mut ptr const u8", |t| {
+                matches!(t, TypeExpr::PointerMut { .. })
+            }),
+            ("Pair(i32, [i32; 2])", |t| {
+                matches!(t, TypeExpr::TypeCall { .. })
+            }),
+            ("Buffer(2)", |t| {
+                matches!(t, TypeExpr::TypeCall { args, .. }
+                    if matches!(args[0], TypeExpr::IntArg { value: 2, .. }))
+            }),
+            ("lib.pair.Pair(i32)", |t| {
+                matches!(t, TypeExpr::QualifiedTypeCall { .. })
+            }),
+            ("struct { x: i32, y: Pair(i32) }", |t| {
+                matches!(t, TypeExpr::AnonymousStruct { .. })
+            }),
+            ("enum { A, B(i32) }", |t| {
+                matches!(t, TypeExpr::AnonymousEnum { .. })
+            }),
+        ];
+        for (spelling, is_expected_variant) in rows {
+            for intrinsic in [
+                "size_of",
+                "align_of",
+                "require_droppable",
+                "require_trivially_droppable",
+            ] {
+                let source = format!("fn f() -> i32 {{ @{intrinsic}({spelling}) }}");
+                let args = intrinsic_args(&source);
+                assert!(
+                    matches!(&args[0], IntrinsicArg::Type(ty) if is_expected_variant(ty)),
+                    "@{intrinsic}({spelling}) parsed as {args:?}"
+                );
+            }
+            // `@offset_of` parses its first argument as a type and its second
+            // as an ordinary expression.
+            let source = format!("fn f() -> i32 {{ @offset_of({spelling}, x) }}");
+            let args = intrinsic_args(&source);
+            assert!(
+                matches!(&args[0], IntrinsicArg::Type(ty) if is_expected_variant(ty)),
+                "@offset_of({spelling}, x) parsed as {args:?}"
+            );
+            assert!(matches!(&args[1], IntrinsicArg::Expr(Expr::Ident(_))));
+        }
+    }
+
+    #[test]
+    fn type_position_intrinsics_reject_value_expressions_with_one_diagnostic() {
+        for source in [
+            "fn f() -> i32 { @size_of(1) }",
+            "fn f() -> i32 { @size_of(1 + 2) }",
+            "fn f() -> i32 { @size_of(-x) }",
+            "fn f() -> i32 { @size_of(\"s\") }",
+            "fn f() -> i32 { @size_of(x + 1) }",
+            "fn f() -> i32 { @size_of(Point { x: 1 }) }",
+            "fn f() -> i32 { @align_of(!x) }",
+            "fn f() -> i32 { @require_droppable(!true) }",
+            "fn f() -> i32 { @offset_of(1 + 2, x) }",
+        ] {
+            let errors = parse_source(source).unwrap_err();
+            assert_eq!(
+                errors.len(),
+                1,
+                "expected one targeted diagnostic for {source}, got {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn value_position_intrinsics_keep_the_expression_grammar() {
+        // A value-position intrinsic still takes full expressions, with the
+        // unambiguous-type-token carve-out unchanged: a bare `!` is the never
+        // type while `!x` stays a prefix-not expression.
+        let args = intrinsic_args("fn f() -> i32 { @probe(!, !x, a + 1, (), [1, 2], Point) }");
+        assert!(matches!(&args[0], IntrinsicArg::Type(TypeExpr::Never(_))));
+        assert!(matches!(&args[1], IntrinsicArg::Expr(Expr::Unary(_))));
+        assert!(matches!(&args[2], IntrinsicArg::Expr(Expr::Binary(_))));
+        assert!(matches!(&args[3], IntrinsicArg::Type(TypeExpr::Unit(_))));
+        assert!(matches!(&args[4], IntrinsicArg::Expr(Expr::ArrayLit(_))));
+        assert!(matches!(&args[5], IntrinsicArg::Expr(Expr::Ident(_))));
     }
 
     #[test]

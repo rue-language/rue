@@ -7,22 +7,8 @@
 
 use lasso::{Spur, ThreadedRodeo};
 
-/// Known type intrinsics that take a type argument rather than an expression.
-/// These intrinsics operate on types at compile time (e.g., @size_of(i32)).
-///
-/// `require_droppable` is the compile-time well-formedness gate an owning
-/// growable container (`std/arraybuf.rue`'s `ArrayBuf(T)`) uses to reject an
-/// element type it cannot yet correctly own — one with a destructor or a
-/// `linear` element (RUE-388). It takes the element type as its sole argument
-/// and evaluates to unit during comptime type-constructor reduction, so it must
-/// be lowered as a `TypeIntrinsic` (like `@size_of`), not an expression call.
-const TYPE_INTRINSICS: &[&str] = &[
-    "size_of",
-    "align_of",
-    "require_droppable",
-    "require_trivially_droppable",
-];
 use rue_parser::ast::{ConstDecl, DropFn};
+use rue_parser::intrinsics::{OFFSET_OF_INTRINSIC, TYPE_INTRINSICS};
 use rue_parser::{
     ArgMode, ArrayLength, AssignTarget, BinaryOp, CallArg, Directive, DirectiveArg, EnumDecl, Expr,
     Function, IntrinsicArg, Item, LetPattern, Method, ParamMode, Pattern, Statement, StructDecl,
@@ -814,22 +800,18 @@ impl<'a> AstGen<'a> {
                 let intrinsic_name_str = self.interner.resolve(&name);
 
                 // `@offset_of(T, field)` (RUE-301) is compiler-mediated field
-                // addressing: the first argument names a struct type and the
-                // second names one of its fields. Both spell as bare
-                // identifiers (`Point`, `x`) — the parser hands them over as
-                // `Expr::Ident` (or the first as a `Type` when it is an
-                // unambiguous type form). Lower the pair into a dedicated
-                // `OffsetOf` node so Sema can compute the offset from the
-                // layout it assigns, rather than the user hardcoding a literal.
-                if intrinsic_name_str == "offset_of" && intrinsic.args.len() == 2 {
-                    let type_arg = match &intrinsic.args[0] {
-                        IntrinsicArg::Type(ty) => Some(self.intern_type(ty)),
-                        IntrinsicArg::Expr(Expr::Ident(ident)) => Some(self.symbol(ident.name)),
-                        _ => None,
-                    };
-                    if let (Some(type_arg), IntrinsicArg::Expr(Expr::Ident(field))) =
-                        (type_arg, &intrinsic.args[1])
+                // addressing: the first argument is a type and the second
+                // names one of its fields. The parser parses the type position
+                // with the canonical type grammar (RUE-788), so the first
+                // argument always arrives as `IntrinsicArg::Type`. Lower the
+                // pair into a dedicated `OffsetOf` node so Sema can compute
+                // the offset from the layout it assigns, rather than the user
+                // hardcoding a literal.
+                if intrinsic_name_str == OFFSET_OF_INTRINSIC && intrinsic.args.len() == 2 {
+                    if let (IntrinsicArg::Type(ty), IntrinsicArg::Expr(Expr::Ident(field))) =
+                        (&intrinsic.args[0], &intrinsic.args[1])
                     {
+                        let type_arg = self.intern_type(ty);
                         return self.rir.add_inst(Inst {
                             data: InstData::OffsetOf {
                                 type_arg,
@@ -843,29 +825,19 @@ impl<'a> AstGen<'a> {
                     // during semantic analysis.
                 }
 
+                // Type intrinsics at the documented arity lower to a dedicated
+                // node; any other arity falls through so semantic analysis
+                // reports the arity error with every argument accounted for.
                 let is_type_intrinsic = TYPE_INTRINSICS.contains(&intrinsic_name_str);
-
-                if is_type_intrinsic && intrinsic.args.len() == 1 {
-                    // Handle explicit type argument
-                    if let IntrinsicArg::Type(ty) = &intrinsic.args[0] {
-                        let type_arg = self.intern_type(ty);
-                        return self.rir.add_inst(Inst {
-                            data: InstData::TypeIntrinsic { name, type_arg },
-                            span: intrinsic.span,
-                        });
-                    }
-
-                    // Handle identifier expression that should be interpreted as a type
-                    // (e.g., @size_of(Point) where Point is parsed as Ident expression)
-                    if let IntrinsicArg::Expr(Expr::Ident(ident)) = &intrinsic.args[0] {
-                        return self.rir.add_inst(Inst {
-                            data: InstData::TypeIntrinsic {
-                                name,
-                                type_arg: self.symbol(ident.name),
-                            },
-                            span: intrinsic.span,
-                        });
-                    }
+                if is_type_intrinsic
+                    && intrinsic.args.len() == 1
+                    && let IntrinsicArg::Type(ty) = &intrinsic.args[0]
+                {
+                    let type_arg = self.intern_type(ty);
+                    return self.rir.add_inst(Inst {
+                        data: InstData::TypeIntrinsic { name, type_arg },
+                        span: intrinsic.span,
+                    });
                 }
 
                 // Otherwise, treat as an expression intrinsic
@@ -1576,6 +1548,52 @@ mod tests {
             }
             _ => panic!("expected Add"),
         }
+    }
+
+    #[test]
+    fn type_intrinsics_lower_every_type_form_to_canonical_names() {
+        // Parity table (RUE-788): the parser hands every type-position
+        // intrinsic argument over as `IntrinsicArg::Type`, and lowering
+        // interns exactly the canonical spelling annotations produce — the
+        // one sema's `resolve_type` consumes.
+        for (spelling, canonical) in [
+            ("i32", "i32"),
+            ("Point", "Point"),
+            ("lib.geo.Point", "lib.geo.Point"),
+            ("()", "()"),
+            ("!", "!"),
+            ("[i32; 4]", "[i32; 4]"),
+            ("[i32]", "[i32]"),
+            ("ptr const i32", "ptr const i32"),
+            ("ptr mut ptr const u8", "ptr mut ptr const u8"),
+            ("Pair(i32, [i32; 2])", "Pair(i32, [i32; 2])"),
+            ("lib.pair.Pair(i32)", "lib.pair.Pair(i32)"),
+            ("struct { x: i32 }", "struct { x: i32 }"),
+            ("enum { A, B(i32) }", "enum { A, B(i32) }"),
+        ] {
+            let source = format!("fn f() -> i32 {{ @size_of({spelling}) }}");
+            let (rir, interner) = gen_rir(&source);
+            let type_arg = rir
+                .iter()
+                .find_map(|(_, inst)| match &inst.data {
+                    InstData::TypeIntrinsic { type_arg, .. } => Some(*type_arg),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no TypeIntrinsic lowered for {spelling}"));
+            assert_eq!(interner.resolve(&type_arg), canonical);
+        }
+
+        // `@offset_of` routes its type position through the same interning.
+        let (rir, interner) = gen_rir("fn f() -> i32 { @offset_of(lib.pair.Pair(i32), second) }");
+        let (type_arg, field) = rir
+            .iter()
+            .find_map(|(_, inst)| match &inst.data {
+                InstData::OffsetOf { type_arg, field } => Some((*type_arg, *field)),
+                _ => None,
+            })
+            .expect("no OffsetOf lowered");
+        assert_eq!(interner.resolve(&type_arg), "lib.pair.Pair(i32)");
+        assert_eq!(interner.resolve(&field), "second");
     }
 
     #[test]

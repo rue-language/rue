@@ -107,3 +107,49 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["expected identifier or 'drop'"]
+
+# Type-position intrinsic arguments (RUE-788): `@size_of`, `@align_of`, and
+# `@offset_of`'s first argument parse with the canonical type grammar, and an
+# expression-shaped argument gets exactly one targeted diagnostic instead of
+# drifting through expression parsing or item-level recovery.
+
+[[case]]
+name = "type_intrinsic_value_argument_names_type"
+description = "A non-type token in a type-intrinsic argument reports the type expectation once, with no cascading directive re-parse error."
+source = """
+fn main() -> i32 {
+    @size_of(1 + 2)
+}
+"""
+compile_fail = true
+expected_error = """
+error: [E0100]: expected type, found integer
+ --> test.rue:2:14
+  |
+2 |     @size_of(1 + 2)
+  |              ^
+  |
+"""
+
+[[case]]
+name = "type_intrinsic_prefix_not_is_distinguished_from_never"
+description = "`!x` in a type-intrinsic argument is called out as a prefix-not expression; a bare `!` remains the never type."
+source = """
+fn main() -> i32 {
+    @size_of(!x)
+}
+"""
+compile_fail = true
+error_contains = ["prefix-not expression", "never type"]
+
+[[case]]
+name = "type_intrinsic_trailing_expression_is_targeted"
+description = "A value expression that starts like a type (struct literal) is rejected with the type-position wording."
+source = """
+struct Point { x: i32 }
+fn main() -> i32 {
+    @align_of(Point { x: 1 })
+}
+"""
+compile_fail = true
+error_contains = ["`@align_of` takes a type in this argument position"]

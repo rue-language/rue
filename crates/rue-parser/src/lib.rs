@@ -1,6 +1,7 @@
 //! Parser and AST for the Rue programming language.
 
 pub mod ast;
+pub mod intrinsics;
 mod parser;
 mod parser_policy;
 mod validate;

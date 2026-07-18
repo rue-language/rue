@@ -2140,3 +2140,127 @@ true
 true
 """
 exit_code = 0
+
+# =============================================================================
+# Type-position intrinsic grammar parity (RUE-788)
+#
+# `@size_of`, `@align_of`, and the type position of `@offset_of` accept the
+# same type grammar annotations do — pointer, qualified, type-call, and
+# nested forms included — not just primitives, arrays, unit, and never.
+# =============================================================================
+
+[[case]]
+name = "size_of_pointer_type"
+spec = ["4.13:12", "4.13:13"]
+description = "A pointer type is a valid @size_of argument; pointers are one 8-byte slot."
+source = """
+fn main() -> i32 {
+    @size_of(ptr const i32)
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "size_of_pointer_to_array_type"
+spec = ["4.13:12", "4.13:13"]
+description = "Nested type forms compose in intrinsic type position: a mutable pointer to an array is still one slot."
+source = """
+fn main() -> i32 {
+    @size_of(ptr mut [u8; 8])
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "size_of_array_of_pointers"
+spec = ["4.13:12", "4.13:13"]
+description = "An array whose element is itself a compound type is a valid @size_of argument."
+source = """
+fn main() -> i32 {
+    @size_of([ptr const i32; 2])
+}
+"""
+exit_code = 16
+
+[[case]]
+name = "size_of_type_call"
+spec = ["4.13:12", "4.13:13"]
+description = "A comptime type-constructor application is a valid @size_of argument and reduces to the monomorphized struct."
+source = """
+fn Pair(comptime T: type) -> type {
+    struct { first: T, second: T }
+}
+fn main() -> i32 {
+    let witness: Pair(i32) = Pair(i32) { first: 1, second: 2 };
+    @size_of(Pair(i32)) + witness.first - 1
+}
+"""
+exit_code = 16
+
+[[case]]
+name = "align_of_pointer_type"
+spec = ["4.13:18", "4.13:19", "4.13:22"]
+description = "A pointer type is a valid @align_of argument."
+source = """
+fn main() -> i32 {
+    @align_of(ptr const i32)
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "align_of_type_call"
+spec = ["4.13:18", "4.13:19", "4.13:22"]
+description = "A comptime type-constructor application is a valid @align_of argument."
+source = """
+fn Pair(comptime T: type) -> type {
+    struct { first: T, second: T }
+}
+fn main() -> i32 {
+    let witness: Pair(i32) = Pair(i32) { first: 1, second: 2 };
+    @align_of(Pair(i32)) + witness.first - 1
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "offset_of_type_call"
+spec = ["4.13:91", "4.13:92", "4.13:94"]
+description = "The type position of @offset_of accepts a type-constructor application; the offset comes from the monomorphized layout."
+source = """
+fn Pair(comptime T: type) -> type {
+    struct { first: T, second: T }
+}
+fn main() -> i32 {
+    let witness: Pair(i64) = Pair(i64) { first: 1, second: 2 };
+    let off: u64 = @offset_of(Pair(i64), second);
+    @intCast(off) + @intCast(witness.first) - 1
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "size_of_rejects_value_expression"
+spec = ["4.13:13"]
+description = "A value expression in @size_of's type position is a compile-time error, not a fallback parse."
+source = """
+fn main() -> i32 {
+    @size_of(1 + 2)
+}
+"""
+compile_fail = true
+error_contains = "expected type"
+
+[[case]]
+name = "offset_of_rejects_value_expression_type_position"
+spec = ["4.13:92"]
+description = "A value expression in @offset_of's type position is a compile-time error."
+source = """
+struct Point { x: i32 }
+fn main() -> i32 {
+    let off: u64 = @offset_of(Point { x: 1 }, x);
+    @intCast(off)
+}
+"""
+compile_fail = true
+error_contains = "takes a type in this argument position"
