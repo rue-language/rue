@@ -943,7 +943,7 @@ impl<'a> BodySema<'a> {
         // later use with E0205.
         let operand = args[0].value;
         let operand_root = self.extract_root_variable(operand);
-        let operand_move_state_before = operand_root.and_then(|v| ctx.moved_vars.get(&v).cloned());
+        let operand_move_state_before = self.snapshot_move_state(operand_root, ctx);
         // Analyze the operand as a borrow (`byref_arg_root`), exactly as `@dbg`
         // and by-ref call arguments do. Without this, addressing a by-ref
         // parameter (`@raw_mut(a)` where `a: inout T` is non-Copy) reads the
@@ -952,10 +952,7 @@ impl<'a> BodySema<'a> {
         // move.
         // Address-of is a borrow, so the read must not count as a move; this
         // makes `std.mem.swap` and other by-ref-param addressing work (RUE-943).
-        let prev_byref_root = std::mem::replace(&mut ctx.byref_arg_root, operand_root);
-        let arg_result = self.analyze_inst(air, operand, ctx);
-        ctx.byref_arg_root = prev_byref_root;
-        let arg_result = arg_result?;
+        let arg_result = self.analyze_with_borrow_root(air, operand, operand_root, ctx)?;
 
         // @raw/@raw_mut take the ADDRESS of an addressable PLACE (spec 9.1:12,
         // ADR-0028), so the operand MUST be a place. A non-place operand
@@ -971,30 +968,13 @@ impl<'a> BodySema<'a> {
         // that wrapper before inspecting the underlying read. Every non-place
         // lowers to some other AIR inst (`Const`, an arithmetic op, `Call`, a
         // non-place `FieldGet`/`IndexGet` off a temporary, ...) and is rejected.
-        let mut place_ref = arg_result.air_ref;
-        if let AirInstData::MarkMoved { value, .. } = air.get(place_ref).data {
-            place_ref = value;
-        }
-        let operand_is_place = matches!(
-            air.get(place_ref).data,
-            AirInstData::Load { .. } | AirInstData::Param { .. } | AirInstData::PlaceRead { .. }
-        );
+        let operand_is_place = self.is_addressable_read(air, arg_result.air_ref);
         if !operand_is_place && !arg_result.ty.is_error() {
             return Err(CompileError::new(ErrorKind::RawRequiresPlace, span));
         }
 
         let pointee_type = arg_result.ty;
-        if let Some(var) = operand_root {
-            match operand_move_state_before {
-                Some(state) => {
-                    ctx.moved_vars.insert(var, state);
-                }
-                None => {
-                    ctx.moved_vars.remove(&var);
-                }
-            }
-        }
-        air.cancel_move_marker(arg_result.air_ref);
+        self.restore_move_state_and_cancel(air, arg_result.air_ref, operand_move_state_before, ctx);
 
         // Create the pointer type
         let result_type = if is_mut {

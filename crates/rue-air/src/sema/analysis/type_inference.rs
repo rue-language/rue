@@ -353,7 +353,7 @@ impl<'a> BodySema<'a> {
 
                     // Check if this parameter has been fully moved
                     // (Partial moves are checked at the FieldGet level)
-                    if let Some(move_state) = ctx.moved_vars.get(name) {
+                    if let Some(move_state) = self.moved_state(ctx, name) {
                         if let Some(moved_span) = move_state.full_move {
                             let name_str = self.interner.resolve(&*name);
                             return Err(CompileError::new(
@@ -396,7 +396,7 @@ impl<'a> BodySema<'a> {
 
             // Check if this variable has been fully moved
             // (Partial moves are checked at the FieldGet level)
-            if let Some(move_state) = ctx.moved_vars.get(name) {
+            if let Some(move_state) = self.moved_state(ctx, name) {
                 if let Some(moved_span) = move_state.full_move {
                     return Err(CompileError::new(
                         ErrorKind::UseAfterMove(name_str.to_string()),
@@ -451,15 +451,8 @@ impl<'a> BodySema<'a> {
             // Projection-mode reads borrow their source rather than moving it.
             // Keep addressable local/parameter chains as one canonical place;
             // only computed rvalues need the temporary spill below.
-            if let Some(trace) = self.try_trace_place(inst_ref, air, ctx)? {
-                let field_type = trace.result_type();
-                let place = Self::build_place_ref(air, &trace)?;
-                let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::PlaceRead { place },
-                    ty: field_type,
-                    span: field_span,
-                });
-                return Ok(AnalysisResult::new(air_ref, field_type));
+            if let Some(result) = self.try_read_traced_place(air, inst_ref, field_span, ctx)? {
+                return Ok(result);
             }
 
             let base_result = self.analyze_inst_for_projection(air, base, ctx)?;
@@ -525,7 +518,7 @@ impl<'a> BodySema<'a> {
             // Snapshot the base root's move state before analysis, in case this
             // is a String/str/slice byte index in projection mode (RUE-700).
             let base_root = self.extract_root_variable(*base);
-            let base_move_state_before = base_root.and_then(|v| ctx.moved_vars.get(&v).cloned());
+            let base_move_state_before = self.snapshot_move_state_value(base_root, ctx);
 
             // Recursively analyze the base in projection mode
             let base_result = self.analyze_inst_for_projection(air, *base, ctx)?;

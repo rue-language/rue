@@ -108,7 +108,25 @@ mod tests {
     );
 
     const ANALYZE_OPS_SOURCE: &str = include_str!("analyze_ops.rs");
+    const ANALYSIS_ROOT_SOURCE: &str = include_str!("analysis.rs");
+    const INSTRUCTIONS_SOURCE: &str = include_str!("analysis/instructions.rs");
+    const OWNERSHIP_SOURCE: &str = include_str!("analysis/ownership.rs");
     const CONTROL_FLOW_SOURCE: &str = include_str!("control_flow.rs");
+    const OWNERSHIP_PEER_SOURCES: &[(&str, &str)] = &[
+        ("analysis.rs", ANALYSIS_ROOT_SOURCE),
+        ("analyze_ops.rs", ANALYZE_OPS_SOURCE),
+        ("anon_methods.rs", include_str!("analysis/anon_methods.rs")),
+        ("builtin_ops.rs", include_str!("analysis/builtin_ops.rs")),
+        ("calls.rs", include_str!("analysis/calls.rs")),
+        ("functions.rs", include_str!("analysis/functions.rs")),
+        ("instructions.rs", include_str!("analysis/instructions.rs")),
+        ("intrinsics.rs", include_str!("analysis/intrinsics.rs")),
+        ("pointers.rs", include_str!("analysis/pointers.rs")),
+        (
+            "type_inference.rs",
+            include_str!("analysis/type_inference.rs"),
+        ),
+    ];
 
     /// Extract InstData variant names from source code.
     ///
@@ -295,5 +313,106 @@ mod tests {
 
         assert!(CONTROL_FLOW_SOURCE.contains("impl<'a> BodySema<'a>"));
         assert!(!CONTROL_FLOW_SOURCE.contains("struct BodySema"));
+    }
+
+    #[test]
+    fn place_and_ownership_analysis_has_one_cohesive_owner() {
+        for method in [
+            "snapshot_move_state",
+            "restore_move_state",
+            "restore_move_state_and_cancel",
+            "analyze_with_borrow_root",
+            "is_addressable_read",
+            "require_addressable_read",
+            "allocate_local_storage",
+            "try_read_traced_place",
+            "materialize_borrow_argument",
+            "project_strbuf_text_fields",
+            "peel_projected_rvalue_scope",
+            "emit_projected_rvalue_read",
+            "try_trace_place",
+            "build_place_ref",
+            "build_move_marker_place_ref",
+            "analyze_variable_ops",
+            "analyze_alloc",
+            "analyze_var_ref",
+            "analyze_assign",
+            "reject_move_out_of_byref_param",
+            "analyze_field_get",
+            "analyze_field_set",
+            "analyze_index_get",
+            "analyze_index_set",
+        ] {
+            let definition = format!("fn {method}(");
+            assert!(
+                OWNERSHIP_SOURCE.contains(&definition),
+                "analysis/ownership.rs must own {method}"
+            );
+            assert!(
+                !ANALYZE_OPS_SOURCE.contains(&definition),
+                "analyze_ops.rs must not retain {method}"
+            );
+            assert!(
+                !INSTRUCTIONS_SOURCE.contains(&definition),
+                "analysis/instructions.rs must not retain {method}"
+            );
+        }
+
+        assert!(OWNERSHIP_SOURCE.contains("struct PlaceTrace"));
+        assert!(OWNERSHIP_SOURCE.contains("struct ProjectionInfo"));
+        assert!(OWNERSHIP_SOURCE.contains("fn moved_state<'ctx>("));
+        assert!(OWNERSHIP_SOURCE.contains("impl<'a> BodySema<'a>"));
+        assert!(!OWNERSHIP_SOURCE.contains("struct BodySema"));
+        assert!(!OWNERSHIP_SOURCE.contains("analyze_field_set_impl"));
+        assert!(!OWNERSHIP_SOURCE.contains("analyze_index_set_impl"));
+        assert_eq!(
+            OWNERSHIP_SOURCE
+                .matches("consider making parameter")
+                .count(),
+            1,
+            "immutable parameter diagnostics must share the receiver-aware ownership helper"
+        );
+
+        // Phase-specific consumers must use ownership.rs APIs instead of
+        // growing peer authorities for place construction, move-state
+        // mutation, scoped borrow state, or move-marker cancellation.
+        for (name, source) in OWNERSHIP_PEER_SOURCES {
+            for forbidden in [
+                "ctx.moved_vars",
+                "AirInstData::PlaceRead",
+                ".make_place(",
+                ".cancel_move_marker(",
+                "std::mem::replace(&mut ctx.byref_arg_root",
+                "ctx.byref_arg_root.replace(",
+            ] {
+                assert!(
+                    !source.contains(forbidden),
+                    "analysis/{name} must route `{forbidden}` through ownership.rs"
+                );
+            }
+        }
+
+        // Control-flow joins deliberately snapshot and merge the complete move
+        // lattice. They are the sole non-ownership exception because their
+        // authority is path convergence, not individual place semantics.
+        assert!(CONTROL_FLOW_SOURCE.contains("ctx.moved_vars"));
+
+        for (name, source) in OWNERSHIP_PEER_SOURCES
+            .iter()
+            .copied()
+            .chain(std::iter::once(("control_flow.rs", CONTROL_FLOW_SOURCE)))
+        {
+            for forbidden in ["data: AirInstData::StorageLive", "data: AirInstData::Alloc"] {
+                assert!(
+                    !source.contains(forbidden),
+                    "sema/{name} must route `{forbidden}` through ownership.rs"
+                );
+            }
+        }
+
+        // Semantic export only decodes existing AIR, while tests inspect AIR
+        // shapes; neither site emits ownership or storage-lifetime operations.
+        assert!(include_str!("semantic_body_export.rs").contains("AirInstData::Alloc"));
+        assert!(include_str!("tests.rs").contains("AirInstData::StorageLive"));
     }
 }
