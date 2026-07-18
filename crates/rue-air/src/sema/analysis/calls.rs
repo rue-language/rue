@@ -1,13 +1,681 @@
-//! Method, module-member, and associated-function call analysis.
+//! Free, method, module-member, and associated-function call analysis.
 //!
-//! This category owns call resolution and emission within the canonical
-//! semantic-analysis implementation.
+//! This category owns source call dispatch, callee and receiver resolution,
+//! generic specialization, argument/result coordination, and AIR call emission
+//! within the canonical semantic-analysis implementation. Argument place,
+//! loan, move, and representation coercion decisions delegate to
+//! `analysis::ownership`.
 
 use super::*;
+use crate::sema::{FunctionInfo, NamedConstDependencyTargetEvent};
+
+/// Validate membership and visibility for a module-member function call.
+///
+/// Membership (spec 4.13:90, RUE-140): a module contains only declarations
+/// from the imported file. The callee is resolved by the receiver module's
+/// canonical `FileId`, and `member_file_id` is checked as a defensive invariant.
+/// Comparing by canonical FileId rather than raw path strings makes equivalent
+/// import spellings — `helper.rue` vs
+/// `./helper.rue` — resolve members identically (spec 10.2:4, RUE-240).
+fn check_module_member_access(
+    module_name: &str,
+    module_file_id: Option<FileId>,
+    member_file_id: FileId,
+    fn_name_str: &str,
+    accessible: bool,
+    via_reexport: bool,
+    span: Span,
+) -> CompileResult<()> {
+    // Check membership: the function must be defined in the module's file
+    // (canonical FileId equality) — UNLESS the call resolved through a
+    // re-export const in the facade, whose presence is the membership grant
+    // (`pub const f = @import("x").f;`, ADR-0026, RUE-592).
+    if !via_reexport && module_file_id != Some(member_file_id) {
+        return Err(CompileError::new(
+            ErrorKind::UnknownModuleMember {
+                module_name: module_name.to_string(),
+                member_name: fn_name_str.to_string(),
+            },
+            span,
+        ));
+    }
+
+    // Check visibility: private functions are only accessible from the same directory
+    if !accessible {
+        return Err(CompileError::new(
+            ErrorKind::PrivateMemberAccess {
+                item_kind: "function".to_string(),
+                name: fn_name_str.to_string(),
+            },
+            span,
+        ));
+    }
+
+    Ok(())
+}
 
 impl<'a> BodySema<'a> {
+    /// Validate the source-level contract shared by every ordinary call form.
+    /// Receiver exclusivity is checked separately for methods because their
+    /// implicit `self` access participates in the same loan set as the explicit
+    /// arguments.
+    fn validate_call_contract(
+        &self,
+        args_range: &rue_rir::RirCallArgsRange,
+        param_types: &[Type],
+        param_modes: &[RirParamMode],
+        span: Span,
+        check_exclusive: bool,
+    ) -> CompileResult<()> {
+        let args = self.rir.call_args(args_range);
+        if args.len() != param_types.len() {
+            return Err(CompileError::new(
+                ErrorKind::WrongArgumentCount {
+                    expected: param_types.len(),
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+        debug_assert_eq!(param_types.len(), param_modes.len());
+        self.validate_explicit_call_modes(&args, param_modes.iter().copied())?;
+        if check_exclusive {
+            self.check_exclusive_access(&args, span)?;
+        }
+        Ok(())
+    }
+
+    /// Lower explicit call operands through the canonical ownership/coercion
+    /// authority. Module-local import bindings opt into a final semantic type
+    /// check because inference cannot recover their defining file; ordinary
+    /// and specialized calls preserve their inferred/comptime and physical
+    /// view types here.
+    fn analyze_call_operands(
+        &mut self,
+        air: &mut Air,
+        args_range: &rue_rir::RirCallArgsRange,
+        param_types: &[Type],
+        param_modes: &[RirParamMode],
+        validate_semantic_types: bool,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<Vec<AirCallArg>> {
+        let args = self.rir.call_args(args_range);
+        let air_args =
+            self.analyze_call_args_coerced(air, args.values(), param_types, param_modes, ctx)?;
+        if validate_semantic_types {
+            for ((arg, air_arg), expected) in args.iter().zip(&air_args).zip(param_types) {
+                let found = air.get(air_arg.value).ty;
+                if !found.can_coerce_to(expected) {
+                    return Err(self.type_mismatch_error(
+                        *expected,
+                        found,
+                        self.rir.get(arg.value).span,
+                    ));
+                }
+            }
+        }
+        Ok(air_args)
+    }
+
+    /// Emit an ordinary resolved call and package its declared result.
+    fn emit_call_result(
+        &self,
+        air: &mut Air,
+        name: Spur,
+        args: &[AirCallArg],
+        return_type: Type,
+        span: Span,
+    ) -> CompileResult<AnalysisResult> {
+        let air_ref = air.add_call(None, name, args, return_type, span)?;
+        Ok(AnalysisResult::new(air_ref, return_type))
+    }
+
+    /// Analyze an associated function call.
+    ///
+    /// Resolves and analyzes an associated-function call through the
+    /// call-analysis category.
+    fn analyze_assoc_fn_call(
+        &mut self,
+        air: &mut Air,
+        type_name: Spur,
+        function: Spur,
+        args_range: &rue_rir::RirCallArgsRange,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        // Enum tuple-variant construction: `Shape::Circle(5)` (RUE-221), and
+        // its generic form `O::Some(5)` where `O` is a comptime type-variable
+        // bound to `Option(i32)` (RUE-6 phase 2). If `type_name` resolves to an
+        // enum whose variant is `function`, build an `EnumVariant` value
+        // carrying the analyzed payload operands rather than dispatching to
+        // associated-function resolution.
+        if let Some((enum_id, via_comptime)) = self.resolve_enum_type_name(type_name, ctx) {
+            let variant_name = self.interner.resolve(&function).to_string();
+            let def = self.type_pool.enum_def(enum_id);
+            if let Some(variant_index) = def.find_variant(&variant_name) {
+                return self.analyze_enum_variant_construction(
+                    air,
+                    enum_id,
+                    variant_index as u32,
+                    type_name,
+                    via_comptime,
+                    args_range,
+                    span,
+                    ctx,
+                );
+            }
+        }
+
+        self.analyze_assoc_fn_call_impl(air, type_name, function, args_range, span, ctx, None)
+    }
+
+    // ========================================================================
+    // Call operations: Call, MethodCall
+    // ========================================================================
+
+    /// Analyze a call operation instruction.
+    ///
+    /// Handles: Call and MethodCall.
+    pub(crate) fn analyze_call_ops(
+        &mut self,
+        air: &mut Air,
+        inst_ref: InstRef,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        let inst = self.rir.get(inst_ref);
+
+        // A call has a declared result type; an expectation on that result
+        // must not become the context of its receiver or arguments. The
+        // callee's parameter analyzer establishes a fresh context for each
+        // operand instead. Keep the isolation at this shared dispatch so it
+        // covers direct, module, method, associated, builtin, and enum calls.
+        ctx.with_expected_type(None, |ctx| match &inst.data {
+            InstData::Call { name, args } => self.analyze_call(air, *name, args, inst.span, ctx),
+
+            InstData::MethodCall {
+                receiver,
+                method,
+                args,
+            } => self.analyze_method_call(air, *receiver, *method, args, inst.span, ctx),
+
+            _ => Err(CompileError::new(
+                ErrorKind::InternalError(format!(
+                    "analyze_call_ops called with non-call instruction: {:?}",
+                    inst.data
+                )),
+                inst.span,
+            )),
+        })
+    }
+
+    /// Analyze a function call.
+    ///
+    /// Also used by the module-member-call path for callees with comptime
+    /// parameters, which must go through generic specialization (RUE-166).
+    fn analyze_call(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        args_range: &rue_rir::RirCallArgsRange,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        let source_name = name;
+        let mut name = name;
+        let mut resolved_alias = false;
+        if let Some(const_info) = self.resolve_const_info_in_file(name, span.file_id).cloned()
+            && let Some(callee) = const_info.value.as_function()
+        {
+            let alias_name = self.interner.resolve(&name).to_string();
+            self.check_unqualified_visibility(
+                "constant",
+                &alias_name,
+                const_info.span.file_id,
+                const_info.is_pub,
+                span,
+            )?;
+            self.record_body_named_dependency(NamedConstDependencyTargetEvent::ValueConst {
+                file: const_info.span.file_id.index(),
+                name: alias_name,
+            });
+            name = callee;
+            resolved_alias = true;
+        }
+
+        let local_name = (!resolved_alias)
+            .then(|| self.resolve_function_name_local(name, span.file_id))
+            .flatten();
+        if let Some(local_name) = local_name {
+            name = local_name;
+        }
+
+        // `print(s)` / `println(s)` are builtin free functions (RUE-1), not
+        // user-defined ones: intercept them here before the function lookup,
+        // but only when the program hasn't shadowed the name with its own
+        // `fn print`/`fn println` (a user definition wins, keeping these names
+        // unreserved).
+        if !resolved_alias
+            && local_name.is_none()
+            && (source_name == self.known.print || source_name == self.known.println)
+        {
+            return self.analyze_print_builtin(air, source_name, args_range, span, ctx);
+        }
+
+        if !resolved_alias && local_name.is_none() {
+            let fn_name_str = self.interner.resolve(&source_name).to_string();
+            return Err(CompileError::new(
+                ErrorKind::UndefinedFunction(fn_name_str),
+                span,
+            ));
+        }
+
+        // Look up the function
+        let source_name = self.source_function_name(name);
+        let fn_name_str = self.interner.resolve(&source_name).to_string();
+        let fn_info = self
+            .functions
+            .get(&name)
+            .ok_or_compile_error(ErrorKind::UndefinedFunction(fn_name_str.clone()), span)?;
+        let fn_info = fn_info.clone();
+
+        self.analyze_resolved_function_call(air, name, fn_info, args_range, span, ctx, true)
+    }
+
+    /// Analyze a call after the source-level callee has already been resolved
+    /// to an internal function key.
+    ///
+    /// Unqualified source calls enter through [`Self::analyze_call`], which
+    /// performs local alias resolution, module-local name canonicalization, and
+    /// builtin interception before reaching this helper. Module-member calls
+    /// such as `std.option.Option(i64)` resolve and validate their member in
+    /// `analyze_module_member_call_impl`; generic members use this helper
+    /// directly so module-qualified type constructors do not re-enter
+    /// unqualified source-name lookup.
+    #[allow(clippy::too_many_arguments)]
+    fn analyze_resolved_function_call(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        fn_info: FunctionInfo,
+        args_range: &rue_rir::RirCallArgsRange,
+        span: Span,
+        ctx: &mut AnalysisContext,
+        check_unqualified_visibility: bool,
+    ) -> CompileResult<AnalysisResult> {
+        let source_name = self.source_function_name(name);
+        let fn_name_str = self.interner.resolve(&source_name).to_string();
+
+        // Visibility (E0460, RUE-37/RUE-180): an unqualified call must not
+        // reach a private function defined in another directory — privacy is
+        // uniform in every multi-file compilation (spec 10.3:7). The lookup
+        // has already selected a declaration using the reference file.
+        if check_unqualified_visibility {
+            self.check_unqualified_visibility(
+                "function",
+                &fn_name_str,
+                fn_info.file_id,
+                fn_info.is_pub,
+                span,
+            )?;
+        }
+
+        // An `unchecked fn` may only be called inside a `checked` block
+        // (spec 9.1:1). The callee's body is analyzed like any other function;
+        // it is the *call site* that must be in an unchecked context.
+        if fn_info.is_unchecked && ctx.checked_depth == 0 {
+            return Err(CompileError::new(
+                ErrorKind::UncheckedOpRequiresChecked {
+                    what: format!("calling unchecked function `{fn_name_str}`"),
+                },
+                span,
+            )
+            .with_help("wrap the call in a `checked { ... }` block"));
+        }
+
+        // Track this function as referenced (for lazy analysis)
+        ctx.referenced_functions.insert(name);
+
+        // Get parameter data from the arena
+        let param_types = self.param_arena.types(fn_info.params);
+        let param_modes = self.param_arena.modes(fn_info.params);
+        let param_comptime = self.param_arena.comptime(fn_info.params);
+        let param_names = self.param_arena.names(fn_info.params);
+
+        self.validate_call_contract(args_range, param_types, param_modes, span, true)?;
+        let args = self.rir.call_args(args_range);
+
+        // Extract info before any mutable borrow
+        let is_generic = fn_info.is_generic;
+        let param_types = param_types.to_vec();
+        let param_comptime = param_comptime.to_vec();
+        let param_comptime_type = self.comptime_type_param_flags(&fn_info);
+        let param_names = param_names.to_vec();
+        let param_modes = param_modes.to_vec();
+        let base_return_type = fn_info.return_type;
+        let fn_body = fn_info.body;
+
+        // `-> type` functions with no runtime parameters reduce immediately,
+        // but their arguments still obey the ordinary comptime contract. Build
+        // the maps through the propagating evaluator before reducing the body;
+        // otherwise a constructor that ignores a wrong-kind/private argument
+        // can accidentally accept it.
+        let all_params_comptime = param_comptime.iter().all(|&flag| flag);
+        if self.function_returns_type(&fn_info) && (args.is_empty() || all_params_comptime) {
+            let mut type_subst = std::collections::HashMap::new();
+            let mut value_subst = std::collections::HashMap::new();
+            for (i, is_comptime) in param_comptime.iter().enumerate() {
+                if !*is_comptime {
+                    continue;
+                }
+                let value = self.evaluate_const_in_fn(args.get(i).unwrap().value, ctx)?;
+                if param_comptime_type[i] {
+                    match value {
+                        Some(ConstValue::Type(ty)) => {
+                            type_subst.insert(param_names[i], ty);
+                        }
+                        Some(ConstValue::Unit) => {
+                            type_subst.insert(param_names[i], Type::UNIT);
+                        }
+                        Some(_) => {
+                            return Err(CompileError::new(
+                                ErrorKind::ComptimeEvaluationFailed {
+                                    reason: "comptime type parameter must be a type literal"
+                                        .to_string(),
+                                },
+                                self.rir.get(args.get(i).unwrap().value).span,
+                            ));
+                        }
+                        None => {
+                            return Err(CompileError::new(
+                                ErrorKind::ComptimeArgNotConst {
+                                    param_name: self.interner.resolve(&param_names[i]).to_string(),
+                                },
+                                self.rir.get(args.get(i).unwrap().value).span,
+                            ));
+                        }
+                    }
+                } else if let Some(value) = value {
+                    value_subst.insert(param_names[i], value);
+                } else {
+                    return Err(CompileError::new(
+                        ErrorKind::ComptimeArgNotConst {
+                            param_name: self.interner.resolve(&param_names[i]).to_string(),
+                        },
+                        self.rir.get(args.get(i).unwrap().value).span,
+                    ));
+                }
+            }
+            // Try to evaluate the function body at compile time. A hard error
+            // raised while reducing the constructor (e.g. an unbounded
+            // self-recursive `-> type` function exceeding the comptime depth
+            // limit, RUE-261) must surface as its real diagnostic (E1200)
+            // rather than being swallowed into a downstream link error, so use
+            // the propagating reduction entry point.
+            if let Some(ConstValue::Type(ty)) = self
+                .reduce_type_ctor_body(name, &type_subst, &value_subst)
+                .map_err(|e| Self::label_ctor_instantiation_site(e, span))?
+            {
+                // Success! Return a TypeConst instruction instead of a runtime call
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::TypeConst(ty),
+                    ty: Type::COMPTIME_TYPE,
+                    span,
+                });
+                return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
+            }
+            // If we can't evaluate at compile time, fall through to runtime call
+            // (which will fail at link time, but gives a better error experience)
+        }
+
+        // Check that comptime parameters receive compile-time constant values
+        let has_comptime_params = param_comptime.iter().any(|&c| c);
+        if has_comptime_params {
+            // Validate each comptime parameter receives a compile-time constant
+            for (i, (&is_comptime, arg)) in param_comptime.iter().zip(args.iter()).enumerate() {
+                if is_comptime {
+                    // Try to evaluate the argument at compile time. A direct
+                    // reference to a comptime parameter of the *current*
+                    // function also counts: its value is compile-time known
+                    // at every call site, so it may be forwarded (spec 4.14:5).
+                    let is_comptime_known = self.evaluate_const_in_fn(arg.value, ctx)?.is_some()
+                        || self.is_comptime_type_var(arg.value, ctx)
+                        || self.is_comptime_param_forward(arg.value, ctx);
+                    if !is_comptime_known {
+                        let param_name = self.interner.resolve(&param_names[i]).to_string();
+                        // A module-qualified member-access value path is
+                        // compile-time known but not yet folded in argument
+                        // position (RUE-948): name that limitation and the
+                        // file-level `const` workaround instead of the generic
+                        // "requires a compile-time known value" wording.
+                        let help = self
+                            .comptime_arg_member_access_help(arg.value, ctx)
+                            .unwrap_or_else(|| {
+                                format!(
+                                    "parameter '{}' is declared as 'comptime' and requires a compile-time known value",
+                                    param_name
+                                )
+                            });
+                        return Err(CompileError::new(
+                            ErrorKind::ComptimeArgNotConst {
+                                param_name: param_name.clone(),
+                            },
+                            self.rir.get(arg.value).span,
+                        )
+                        .with_help(help));
+                    }
+                }
+            }
+        }
+
+        // Analyze all arguments. Slice parameters (ADR-0043, RUE-322) coerce a
+        // `borrow arr` argument into a by-value fat pointer here.
+        let air_args =
+            self.analyze_call_operands(air, args_range, &param_types, &param_modes, false, ctx)?;
+
+        // Handle generic function calls differently
+        if is_generic {
+            // Separate type arguments and comptime value arguments from
+            // runtime arguments
+            let mut type_args: Vec<Type> = Vec::new();
+            let mut value_args: Vec<ConstValue> = Vec::new();
+            let mut runtime_args: Vec<AirCallArg> = Vec::new();
+            let mut type_subst: std::collections::HashMap<Spur, Type> =
+                std::collections::HashMap::new();
+            // Comptime VALUE parameters (`comptime N: i32`) map to their
+            // captured constant so a runtime param type mentioning one — an
+            // array length `arr: [i32; N]` — resolves at this call (RUE-16).
+            let mut value_subst: std::collections::HashMap<Spur, ConstValue> =
+                std::collections::HashMap::new();
+
+            for (i, (air_arg, is_comptime)) in
+                air_args.iter().zip(param_comptime.iter()).enumerate()
+            {
+                if *is_comptime {
+                    // The source declaration distinguishes a type parameter
+                    // from a value parameter whose semantic type is deferred.
+                    if param_comptime_type[i] {
+                        // This is a TYPE parameter - expect a TypeConst instruction
+                        let inst = air.get(air_arg.value);
+                        if let AirInstData::TypeConst(ty) = &inst.data {
+                            type_args.push(*ty);
+                            // Record the substitution: param_name -> concrete_type
+                            type_subst.insert(param_names[i], *ty);
+                        } else if matches!(inst.data, AirInstData::UnitConst) {
+                            // `()` in a `comptime T: type` position is the unit
+                            // TYPE (RUE-565); the declared parameter kind
+                            // disambiguates it from the unit value. Mirrors the
+                            // ConstValue::Unit arm in the reduction path above.
+                            type_args.push(Type::UNIT);
+                            type_subst.insert(param_names[i], Type::UNIT);
+                        } else {
+                            // Not a type - this is an error for type parameters
+                            return Err(CompileError::new(
+                                ErrorKind::ComptimeEvaluationFailed {
+                                    reason: "comptime type parameter must be a type literal"
+                                        .to_string(),
+                                },
+                                span,
+                            ));
+                        }
+                    } else {
+                        // This is a VALUE parameter (e.g., comptime n: i32).
+                        // Capture its concrete value: the callee is
+                        // specialized per value so its body sees the value as
+                        // a compile-time constant (RUE-166). The argument is
+                        // still also passed at runtime (value parameters are
+                        // not erased from the signature).
+                        match self.try_evaluate_const_in_fn(args.get(i).unwrap().value, ctx) {
+                            Some(const_val) => {
+                                value_args.push(const_val);
+                                value_subst.insert(param_names[i], const_val);
+                            }
+                            None => {
+                                let param_name = self.interner.resolve(&param_names[i]).to_string();
+                                let arg_value = args.get(i).unwrap().value;
+                                // RUE-948: a module-member value path is
+                                // compile-time known but unfolded here; point
+                                // at the file-level `const` workaround.
+                                let help = self
+                                    .comptime_arg_member_access_help(arg_value, ctx)
+                                    .unwrap_or_else(|| {
+                                        format!(
+                                            "parameter '{}' is declared as 'comptime' and requires \
+                                             a compile-time known value",
+                                            param_name
+                                        )
+                                    });
+                                return Err(CompileError::new(
+                                    ErrorKind::ComptimeArgNotConst {
+                                        param_name: param_name.clone(),
+                                    },
+                                    self.rir.get(arg_value).span,
+                                )
+                                .with_help(help));
+                            }
+                        }
+                        runtime_args.push(air_arg.clone());
+                    }
+                } else {
+                    runtime_args.push(air_arg.clone());
+                }
+            }
+
+            // Type-check the runtime arguments against their (substituted)
+            // parameter types. Generic calls bypass the inference-based argument
+            // checking when the type parameter isn't resolvable during constraint
+            // generation, so this is the check that rejects e.g. passing a `B`
+            // where `T == A` - without it the callee would read B-shaped fields
+            // out of an A-sized allocation (RUE-99, RUE-73).
+            for (i, (air_arg, &is_comptime)) in
+                air_args.iter().zip(param_comptime.iter()).enumerate()
+            {
+                let declared = param_types[i];
+                if is_comptime && param_comptime_type[i] {
+                    // The comptime type argument itself - already validated above.
+                    continue;
+                }
+                let expected = self.resolve_substituted_param_type(
+                    &fn_info,
+                    i,
+                    declared,
+                    &type_subst,
+                    &value_subst,
+                )?;
+                let found = air.get(air_arg.value).ty;
+                if found != expected
+                    && !found.is_error()
+                    && !found.is_never()
+                    && !expected.is_error()
+                {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: expected.safe_name_with_pool(Some(&self.type_pool)),
+                            found: found.safe_name_with_pool(Some(&self.type_pool)),
+                        },
+                        self.rir.get(args.get(i).unwrap().value).span,
+                    ));
+                }
+            }
+
+            // Determine the actual return type by substituting type parameters.
+            // Handles bare type parameters (`-> T`), composites mentioning one
+            // (`-> [T; 3]`, RUE-172), and the literal `type` return (which
+            // resolves back to COMPTIME_TYPE and is comptime-evaluated below).
+            let return_type =
+                self.resolve_substituted_return_type(&fn_info, &type_subst, &value_subst)?;
+
+            // Special case: functions that return `type` (not a type parameter) with only comptime args
+            // can be fully evaluated at compile time to produce a concrete anonymous struct type.
+            // This handles cases like:
+            //   - `fn Pair(comptime T: type) -> type { struct { first: T, second: T } }`
+            //   - `fn FixedBuffer(comptime N: i32) -> type { struct { fn capacity(self) -> i32 { N } } }`
+            let all_params_comptime = param_comptime.iter().all(|&c| c);
+            if return_type == Type::COMPTIME_TYPE && all_params_comptime {
+                // The return type is literally `type`, not a type parameter that was substituted.
+                // Try to evaluate the function body at compile time with type substitutions.
+                // Also build value_subst from comptime VALUE parameters (e.g., comptime N: i32)
+                let mut value_subst: std::collections::HashMap<Spur, ConstValue> =
+                    std::collections::HashMap::new();
+                for (i, is_comptime) in param_comptime.iter().enumerate() {
+                    if *is_comptime && !param_comptime_type[i] {
+                        // This is a comptime VALUE parameter - extract its const value
+                        // (evaluated in the calling function's context)
+                        if let Some(const_val) =
+                            self.try_evaluate_const_in_fn(args.get(i).unwrap().value, ctx)
+                        {
+                            value_subst.insert(param_names[i], const_val);
+                        }
+                    }
+                }
+                if let Some(ConstValue::Type(ty)) =
+                    self.try_evaluate_const_with_subst(fn_body, &type_subst, &value_subst)
+                {
+                    // Success! Return a TypeConst instruction instead of a runtime call
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::TypeConst(ty),
+                        ty: Type::COMPTIME_TYPE,
+                        span,
+                    });
+                    return Ok(AnalysisResult::new(air_ref, Type::COMPTIME_TYPE));
+                }
+                // If we can't evaluate at compile time, fall through to the error below
+                // (we can't have a runtime call that returns `type`)
+            }
+
+            let air_ref = air.add_call_generic(
+                name,
+                &type_args,
+                &value_args,
+                &runtime_args,
+                return_type,
+                span,
+            )?;
+            Ok(AnalysisResult::new(air_ref, return_type))
+        } else {
+            // Regular non-generic call
+            let return_type = base_return_type;
+            self.emit_call_result(air, name, &air_args, return_type, span)
+        }
+    }
+
+    /// Analyze a method call.
+    ///
+    /// Handles user-defined and builtin methods through the call-analysis
+    /// category.
+    fn analyze_method_call(
+        &mut self,
+        air: &mut Air,
+        receiver: InstRef,
+        method: Spur,
+        args: &rue_rir::RirCallArgsRange,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        self.analyze_method_call_impl(air, receiver, method, args, span, ctx)
+    }
+
     /// Implementation for MethodCall.
-    pub(crate) fn analyze_method_call_impl(
+    fn analyze_method_call_impl(
         &mut self,
         air: &mut Air,
         receiver: InstRef,
@@ -239,22 +907,17 @@ impl<'a> BodySema<'a> {
             ));
         }
 
-        // Check argument count (method_info.params excludes self)
         let method_param_types = self.param_arena.types(method_info.params).to_vec();
         let method_param_modes = self.param_arena.modes(method_info.params).to_vec();
-        if args.len() != method_param_types.len() {
-            return Err(CompileError::new(
-                ErrorKind::WrongArgumentCount {
-                    expected: method_param_types.len(),
-                    found: args.len(),
-                },
-                span,
-            ));
-        }
-
-        // The receiver's autoref is implicit and deliberately excluded; only
-        // explicit arguments must spell the method declaration's exact modes.
-        self.validate_explicit_call_modes(&args, method_param_modes.iter().copied())?;
+        // The receiver's autoref is implicit and deliberately excluded from
+        // the explicit contract. Receiver-aware exclusivity runs below.
+        self.validate_call_contract(
+            args_range,
+            &method_param_types,
+            &method_param_modes,
+            span,
+            false,
+        )?;
 
         // Clone data needed before mutable borrow
         let return_type = method_info.return_type;
@@ -391,11 +1054,12 @@ impl<'a> BodySema<'a> {
         if let Some(frame) = receiver_frame {
             ctx.call_loaned_roots.push(frame);
         }
-        let args_result = self.analyze_call_args_coerced(
+        let args_result = self.analyze_call_operands(
             air,
-            args.values(),
+            args_range,
             &method_param_types,
             &method_param_modes,
+            false,
             ctx,
         );
         if receiver_frame_pushed {
@@ -409,9 +1073,14 @@ impl<'a> BodySema<'a> {
         let call_name = self.method_symbol(struct_id, &method_name_str, true);
         let call_name_sym = self.interner.get_or_intern(&call_name);
 
-        let call_ref = air.add_call(None, call_name_sym, &air_args, return_type, span)?;
-        let air_ref =
-            self.wrap_value_with_temp_scope(air, call_ref, return_type, span, receiver_temp_scope)?;
+        let call = self.emit_call_result(air, call_name_sym, &air_args, return_type, span)?;
+        let air_ref = self.wrap_value_with_temp_scope(
+            air,
+            call.air_ref,
+            return_type,
+            span,
+            receiver_temp_scope,
+        )?;
         Ok(AnalysisResult::new(air_ref, return_type))
     }
 
@@ -495,17 +1164,14 @@ impl<'a> BodySema<'a> {
 
         let param_types = self.param_arena.types(fn_info.params).to_vec();
         let param_modes = self.param_arena.modes(fn_info.params).to_vec();
-        let args = self.rir.call_args(args_range);
         // A re-export was already visibility-checked against its facade const.
         let accessible =
             via_reexport || self.is_accessible(span.file_id, fn_info.file_id, fn_info.is_pub);
-        check_module_member_call(
+        check_module_member_access(
             &module_def.import_path,
             module_file_id,
             fn_info.file_id,
             &fn_name_str,
-            &param_types,
-            args.len(),
             accessible,
             via_reexport,
             span,
@@ -529,14 +1195,7 @@ impl<'a> BodySema<'a> {
             );
         }
 
-        // Generic members delegate to the resolved-call path above, which
-        // performs the same exact source-mode validation. Non-generic members
-        // validate here before treating any explicit marker as a loan/place.
-        self.validate_explicit_call_modes(&args, param_modes.iter().copied())?;
-
-        // Module-qualified calls enforce the same exclusive-access rule as
-        // every other call path.
-        self.check_exclusive_access(&args, span)?;
+        self.validate_call_contract(args_range, &param_types, &param_modes, span, true)?;
 
         // Analyze arguments (the per-pipeline recursion seam). Module-qualified
         // calls use the coercing path so slice and `borrow str` parameters
@@ -544,26 +1203,9 @@ impl<'a> BodySema<'a> {
         // calls do (RUE-559) — std functions taking `borrow s: str` are called
         // this way.
         let air_args =
-            self.analyze_call_args_coerced(air, args.values(), &param_types, &param_modes, ctx)?;
+            self.analyze_call_operands(air, args_range, &param_types, &param_modes, true, ctx)?;
 
-        // Inference cannot recover the defining file for a function-local
-        // `let m = @import(...)`: the intrinsic deliberately carries an
-        // unresolved module sentinel until semantic analysis resolves the
-        // path. We have the exact member and its parameter types here, so make
-        // this path authoritative too instead of silently accepting a bad
-        // argument when inference could not add the constraint.
-        for ((arg, air_arg), expected) in args.iter().zip(&air_args).zip(&param_types) {
-            let found = air.get(air_arg.value).ty;
-            if !found.can_coerce_to(expected) {
-                return Err(self.type_mismatch_error(
-                    *expected,
-                    found,
-                    self.rir.get(arg.value).span,
-                ));
-            }
-        }
-
-        emit_module_member_call(air, function_key, &air_args, fn_info.return_type, span)
+        self.emit_call_result(air, function_key, &air_args, fn_info.return_type, span)
     }
 
     /// Analyze a type-qualified associated-function call.
@@ -578,12 +1220,11 @@ impl<'a> BodySema<'a> {
         air: &mut Air,
         type_name: Spur,
         function: Spur,
-        args: &rue_rir::RirCallArgsRange,
+        args_range: &rue_rir::RirCallArgsRange,
         span: Span,
         ctx: &mut AnalysisContext,
         resolved: Option<StructId>,
     ) -> CompileResult<AnalysisResult> {
-        let args = self.rir.call_args(args);
         let type_name_str = self.interner.resolve(&type_name).to_string();
         let function_name_str = self.interner.resolve(&function).to_string();
 
@@ -691,23 +1332,15 @@ impl<'a> BodySema<'a> {
             ));
         }
 
-        // Check argument count
         let method_param_types = self.param_arena.types(method_info.params).to_vec();
         let method_param_modes = self.param_arena.modes(method_info.params).to_vec();
-        if args.len() != method_param_types.len() {
-            return Err(CompileError::new(
-                ErrorKind::WrongArgumentCount {
-                    expected: method_param_types.len(),
-                    found: args.len(),
-                },
-                span,
-            ));
-        }
-
-        self.validate_explicit_call_modes(&args, method_param_modes.iter().copied())?;
-
-        // Check for exclusive access violation
-        self.check_exclusive_access(&args, span)?;
+        self.validate_call_contract(
+            args_range,
+            &method_param_types,
+            &method_param_modes,
+            span,
+            true,
+        )?;
 
         // Clone data needed before mutable borrow
         let return_type = method_info.return_type;
@@ -716,11 +1349,12 @@ impl<'a> BodySema<'a> {
         // path as free and module-member calls. In particular, `borrow str`
         // and `[T]` parameters are physical by-value views even though their
         // source modes remain Borrow (RUE-634).
-        let air_args = self.analyze_call_args_coerced(
+        let air_args = self.analyze_call_operands(
             air,
-            args.values(),
+            args_range,
             &method_param_types,
             &method_param_modes,
+            false,
             ctx,
         )?;
 
@@ -732,7 +1366,6 @@ impl<'a> BodySema<'a> {
         let call_name = self.method_symbol(struct_id, &function_name_str, false);
         let call_name_sym = self.interner.get_or_intern(&call_name);
 
-        let air_ref = air.add_call(None, call_name_sym, &air_args, return_type, span)?;
-        Ok(AnalysisResult::new(air_ref, return_type))
+        self.emit_call_result(air, call_name_sym, &air_args, return_type, span)
     }
 }

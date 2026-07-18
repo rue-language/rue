@@ -1,13 +1,225 @@
-//! Compiler intrinsic analysis (dbg/drop/cast/panic/assert/parse/import/... non-pointer intrinsics).
+//! Compiler intrinsic dispatch and analysis.
 //!
-//! This category owns non-pointer intrinsic analysis within the canonical
-//! semantic-analysis implementation.
+//! This category owns source, internal, type, and layout intrinsic dispatch and
+//! non-pointer implementations within canonical semantic analysis. Pointer and
+//! raw-memory operations delegate their place and pointer semantics to the
+//! sibling `pointers` and `ownership` modules.
 
 use super::*;
 
 impl<'a> BodySema<'a> {
+    // ========================================================================
+    // Intrinsic operations: Intrinsic, TypeIntrinsic
+    // ========================================================================
+
+    /// Analyze an intrinsic operation instruction.
+    ///
+    /// Handles: Intrinsic, TypeIntrinsic
+    pub(crate) fn analyze_intrinsic_ops(
+        &mut self,
+        air: &mut Air,
+        inst_ref: InstRef,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        let inst = self.rir.get(inst_ref);
+        let result_expected = ctx.expected_type;
+
+        match &inst.data {
+            InstData::Intrinsic { name, args } => ctx.with_expected_type(None, |ctx| {
+                self.analyze_intrinsic(air, inst_ref, *name, args, inst.span, result_expected, ctx)
+            }),
+
+            InstData::InternalIntrinsic { intrinsic, args } => ctx
+                .with_expected_type(None, |ctx| {
+                    self.analyze_internal_intrinsic_impl(air, *intrinsic, args, inst.span, ctx)
+                }),
+
+            InstData::TypeIntrinsic { name, type_arg } => {
+                self.analyze_type_intrinsic(air, *name, *type_arg, inst.span, ctx)
+            }
+
+            InstData::OffsetOf { type_arg, field } => {
+                self.analyze_offset_of(air, *type_arg, *field, inst.span)
+            }
+
+            _ => Err(CompileError::new(
+                ErrorKind::InternalError(format!(
+                    "analyze_intrinsic_ops called with non-intrinsic instruction: {:?}",
+                    inst.data
+                )),
+                inst.span,
+            )),
+        }
+    }
+
+    /// Analyze a type intrinsic (@size_of, @align_of, @require_droppable,
+    /// @require_trivially_droppable). Resolves the type argument through the
+    /// current analysis context so a type parameter (`T` in a monomorphized
+    /// generic method body, e.g. `ArrayBuf(T)::get`) binds to its concrete
+    /// element type via `ctx.comptime_type_vars` (RUE-651).
+    fn analyze_type_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        type_arg: Spur,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        let intrinsic_name = self.interner.resolve(&name).to_string();
+        let ty = self.resolve_type_with_ctx(type_arg, span, ctx)?;
+
+        // `@require_droppable(T)` is the owning-container well-formedness gate
+        // (RUE-388): it has no runtime value and evaluates to unit. It is
+        // normally consumed at comptime while reducing a `-> type` constructor
+        // body (see `Sema::check_require_droppable`), but handle it here too so
+        // that if it ever reaches runtime analysis it performs the same
+        // linear/destructor rejection instead of falling to E0700.
+        if intrinsic_name == "require_droppable" {
+            self.check_require_droppable(ty, span)?;
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::Const(0),
+                ty: Type::UNIT,
+                span,
+            });
+            return Ok(AnalysisResult::new(air_ref, Type::UNIT));
+        }
+
+        // `@require_trivially_droppable(T)` is the by-copy-read gate (RUE-651).
+        // Unlike `@require_droppable`, this one normally *does* reach runtime
+        // analysis: it lives in `ArrayBuf(T)`'s `get`/`get_or` method bodies, and
+        // demand-driven analysis (ADR-0045) monomorphizes those bodies with the
+        // concrete element type only when a program actually calls a by-copy read.
+        // If that `T` has drop glue, reading it by copy would alias its owned
+        // resources (double-free), so reject it (E0711) and point the caller at
+        // `pop`. It has no runtime value and evaluates to unit.
+        if intrinsic_name == "require_trivially_droppable" {
+            self.check_trivially_droppable(ty, span)?;
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::Const(0),
+                ty: Type::UNIT,
+                span,
+            });
+            return Ok(AnalysisResult::new(air_ref, Type::UNIT));
+        }
+
+        // Calculate the value through the checked layout query. Oversized
+        // types produce E0906 rather than overflowing or truncating the slot
+        // count (RUE-561).
+        let value: u64 = match intrinsic_name.as_str() {
+            "size_of" => {
+                // Reject oversized layouts (E0906) before observing the
+                // canonical layout authority, which owns the bytes-per-slot
+                // conversion.
+                self.require_layout_slots(ty, span)?;
+                self.type_pool.provisional_layout(ty).size
+            }
+            "align_of" => {
+                self.require_layout_slots(ty, span)?;
+                self.type_pool.provisional_layout(ty).alignment
+            }
+            _ => {
+                return Err(CompileError::new(
+                    ErrorKind::UnknownIntrinsic(intrinsic_name.to_string()),
+                    span,
+                ));
+            }
+        };
+
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Const(value),
+            ty: Type::I32,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::I32))
+    }
+
+    /// Analyze `@offset_of(T, field)` (RUE-301): the compile-time byte offset of
+    /// `field` within struct type `T`.
+    ///
+    /// The offset comes from the canonical layout authority
+    /// (`struct_field_offset`, spec 3.6), the same query code generation
+    /// addresses fields through, so `@offset_of(T, f)`, `@field_ptr(s.f)`, and
+    /// direct `s.f` access agree by construction. The result is a comptime-known
+    /// `u64`, mirroring Rust's `core::mem::offset_of!` (return type) and
+    /// `@size_of`/`@align_of` (which likewise fold to a `Const` at analysis
+    /// time).
+    fn analyze_offset_of(
+        &mut self,
+        air: &mut Air,
+        type_arg: Spur,
+        field: Spur,
+        span: Span,
+    ) -> CompileResult<AnalysisResult> {
+        let ty = self.resolve_type(type_arg, span)?;
+
+        // `@offset_of` is only meaningful for a struct type: only structs have
+        // named fields. A non-struct operand is the same error class as `.f`
+        // on a non-struct (E0428).
+        let struct_id = match ty.as_struct() {
+            Some(id) => id,
+            None => {
+                if ty.is_error() {
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::Const(0),
+                        ty: Type::U64,
+                        span,
+                    });
+                    return Ok(AnalysisResult::new(air_ref, Type::U64));
+                }
+                return Err(CompileError::new(
+                    ErrorKind::FieldAccessOnNonStruct {
+                        found: self.format_type_name(ty),
+                    },
+                    span,
+                ));
+            }
+        };
+
+        let struct_def = self.type_pool.struct_def(struct_id);
+        let field_name_str = self.interner.resolve(&field);
+        let field_index = match struct_def.find_field(field_name_str) {
+            Some((index, _)) => index,
+            None => {
+                return Err(CompileError::new(
+                    ErrorKind::UnknownField {
+                        struct_name: struct_def.name.clone(),
+                        field_name: field_name_str.to_string(),
+                    },
+                    span,
+                ));
+            }
+        };
+
+        let byte_offset = self
+            .type_pool
+            .provisional_struct_field_offset(struct_id, field_index as u32);
+
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Const(byte_offset),
+            ty: Type::U64,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::U64))
+    }
+
+    /// Analyze an intrinsic call.
+    ///
+    /// Dispatches the intrinsic to the corresponding analysis category.
+    fn analyze_intrinsic(
+        &mut self,
+        air: &mut Air,
+        inst_ref: InstRef,
+        name: Spur,
+        args: &rue_rir::RirIntrinsicArgsRange,
+        span: Span,
+        result_expected: Option<Type>,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        self.analyze_intrinsic_impl(air, inst_ref, name, args, span, result_expected, ctx)
+    }
+
     /// Implementation for Intrinsic calls.
-    pub(crate) fn analyze_intrinsic_impl(
+    fn analyze_intrinsic_impl(
         &mut self,
         air: &mut Air,
         inst_ref: InstRef,
@@ -231,7 +443,7 @@ impl<'a> BodySema<'a> {
         }
     }
 
-    pub(crate) fn analyze_internal_intrinsic_impl(
+    fn analyze_internal_intrinsic_impl(
         &mut self,
         air: &mut Air,
         intrinsic: rue_rir::InternalIntrinsic,

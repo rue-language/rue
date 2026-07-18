@@ -7,7 +7,7 @@
 
 use lasso::Spur;
 use rue_error::{CompileError, CompileResult, ErrorKind, MissingFieldsError, OptionExt};
-use rue_rir::{InstData, InstRef};
+use rue_rir::{InstData, InstRef, RirParamMode};
 use rue_span::Span;
 
 use super::BodySema;
@@ -17,6 +17,151 @@ use crate::inst::{Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirRef};
 use crate::types::{Type, TypeKind};
 
 impl<'a> BodySema<'a> {
+    /// Resolve a path/pattern enum type name that may be a comptime
+    /// type-variable binding (`let O = Option(i32); O::Some(..)`), falling
+    /// back to the named-enum table. Returns `(enum_id, via_comptime_binding)`,
+    /// or `None` if the name is not an enum. When `via_comptime_binding` is
+    /// true the enum arrived through a `let` binding (an anonymous enum from a
+    /// comptime type function), so privacy does not apply — mirroring how the
+    /// struct-literal / annotation paths treat comptime type variables as
+    /// privacy-exempt (RUE-6 phase 2).
+    pub(crate) fn resolve_enum_type_name(
+        &self,
+        type_name: Spur,
+        ctx: &AnalysisContext,
+    ) -> Option<(crate::types::EnumId, bool)> {
+        if let Some(&ty) = ctx.comptime_type_vars.get(&type_name) {
+            return ty.as_enum().map(|id| (id, true));
+        }
+        if let Some(info) = self
+            .constants_by_file_name
+            .get(&(ctx.current_file_id, type_name))
+            && let ConstValue::Type(ty) = info.value
+        {
+            return ty.as_enum().map(|id| (id, true));
+        }
+        self.enums_by_file_name
+            .get(&(ctx.current_file_id, type_name))
+            .copied()
+            .or_else(|| self.resolve_builtin_enum_name(type_name))
+            .map(|id| (id, false))
+    }
+
+    /// Resolve a `Type.assoc()` / `Type { .. }` struct type name that may be a
+    /// comptime type-variable binding (`let P = Point(i32)`) or a module-level
+    /// `const` binding (`const P = Point(i32)`), falling back to the named-struct
+    /// table and builtins. Returns `(struct_id, via_binding)`, or `None` if the
+    /// name is not a struct. `via_binding` is true when the struct arrived
+    /// through a `let`/`const` binding (an anonymous struct from a comptime type
+    /// function), so privacy does not apply — the exact mirror of
+    /// `resolve_enum_type_name` for the struct side (RUE-595). Without the
+    /// `constants_by_file_name` arm a module-`const`-bound struct type resolved
+    /// as a type namespace nowhere, so `const C = Counter(i32); C.zero()` failed
+    /// (E0413) and `const P = Point(i32); P { .. }` failed (E0204) while the
+    /// enum-bound and local-`let`-bound forms worked.
+    pub(crate) fn resolve_struct_type_name(
+        &self,
+        type_name: Spur,
+        ctx: &AnalysisContext,
+    ) -> Option<(crate::types::StructId, bool)> {
+        if let Some(&ty) = ctx.comptime_type_vars.get(&type_name) {
+            return ty.as_struct().map(|id| (id, true));
+        }
+        if let Some(info) = self
+            .constants_by_file_name
+            .get(&(ctx.current_file_id, type_name))
+            && let ConstValue::Type(ty) = info.value
+        {
+            return ty.as_struct().map(|id| (id, true));
+        }
+        self.structs_by_file_name
+            .get(&(ctx.current_file_id, type_name))
+            .copied()
+            .or_else(|| self.resolve_builtin_struct_name(type_name))
+            .map(|id| (id, false))
+    }
+
+    /// Analyze construction of an enum tuple variant with a payload
+    /// (`Shape.Circle(5)`), producing an `EnumVariant` AIR value (RUE-221).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn analyze_enum_variant_construction(
+        &mut self,
+        air: &mut Air,
+        enum_id: crate::types::EnumId,
+        variant_index: u32,
+        type_name: Spur,
+        privacy_exempt: bool,
+        args: &rue_rir::RirCallArgsRange,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        let def = self.type_pool.enum_def(enum_id);
+        let payload_types = def.variant_payload(variant_index as usize).to_vec();
+        let variant_name = def.variants[variant_index as usize].clone();
+        let enum_name = def.name.clone();
+
+        // Visibility check, mirroring the bare-path `EnumVariant` handler
+        // (E0460, privacy is uniform across item kinds). A comptime-bound enum
+        // (`let O = Option(i32); O::Some(..)`) is exempt: the type value
+        // arrived through a binding, not by naming the enum (privacy_exempt).
+        if !privacy_exempt {
+            self.check_unqualified_visibility(
+                "enum",
+                self.interner.resolve(&type_name),
+                def.file_id,
+                def.is_pub,
+                span,
+            )?;
+        }
+
+        let args = self.rir.call_args(args);
+
+        // Arity check.
+        if args.len() != payload_types.len() {
+            return Err(CompileError::new(
+                ErrorKind::WrongArgumentCount {
+                    expected: payload_types.len(),
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        // Enum payload fields are ordinary unmarked values. Reject explicit
+        // `borrow`/`inout` before analyzing them or erasing their source modes.
+        self.validate_explicit_call_modes(
+            &args,
+            std::iter::repeat_n(RirParamMode::Normal, args.len()),
+        )?;
+
+        // Analyze each payload argument and type-check against the declared
+        // payload type (inference already constrained them; this is the final
+        // legality check).
+        let mut payload_refs: Vec<AirRef> = Vec::with_capacity(args.len());
+        for (i, arg) in args.iter().enumerate() {
+            let expected = payload_types[i];
+            let arg_result = ctx
+                .with_expected_type(Some(expected), |ctx| self.analyze_inst(air, arg.value, ctx))?;
+            let actual = arg_result.ty;
+            if actual != expected && !actual.can_coerce_to(&expected) && actual != Type::ERROR {
+                return Err(self.type_mismatch_error(
+                    expected,
+                    actual,
+                    self.rir.get(arg.value).span,
+                ));
+            }
+            payload_refs.push(arg_result.air_ref);
+        }
+
+        let ty = Type::new_enum(enum_id);
+
+        // Suppress unused-variable warnings for names only used in messages.
+        let _ = (&variant_name, &enum_name);
+
+        let air_ref = air.add_enum_variant(enum_id, variant_index, &payload_refs, ty, span)?;
+        Ok(AnalysisResult::new(air_ref, ty))
+    }
+
     /// Validate the source operand type accepted by structural equality.
     ///
     /// Aggregate equality bottoms out in the scalar cases listed here; keeping
