@@ -133,7 +133,6 @@ fn canonical_type_surface_has_one_checked_handle_and_private_storage_ids() {
     assert!(types.contains("pub fn try_kind(&self) -> Option<TypeKind>"));
     assert!(public_surface.contains("pub struct TypeInternPool"));
     assert!(pool.contains("pub fn all_types(&self) -> impl ExactSizeIterator<Item = Type> + '_"));
-    assert!(pool.contains("pub(crate) fn mark_struct_linear("));
     assert!(pool.contains("pub(crate) fn set_struct_destructor("));
     assert!(pool.contains("pub(crate) fn requalify_struct_destructor("));
 }

@@ -120,3 +120,19 @@ fn main() -> i32 { 0 }
 """
 compile_fail = false
 exit_code = 0
+
+[[case]]
+name = "zero_drop_array_is_trivially_droppable"
+description = "A zero-length array has no elements to drop, so the trivially-droppable gate accepts it."
+source = """
+struct D { v: i32 }
+drop fn D(self) {}
+fn Gated(comptime T: type) -> type {
+    @require_trivially_droppable(T);
+    struct { y: T }
+}
+const G = Gated([D; 0]);
+fn main() -> i32 { 0 }
+"""
+compile_fail = false
+exit_code = 0

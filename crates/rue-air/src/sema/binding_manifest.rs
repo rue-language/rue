@@ -721,7 +721,6 @@ impl<'a> DeclarationShells<'a> {
         self.sema
             .check_recursive_value_types()
             .map_err(|_| DeclarationInstallFailure::NominalShapeMismatch)?;
-        self.sema.propagate_field_linearity();
         self.sema
             .validate_deferred_ownership_gates()
             .map_err(|_| DeclarationInstallFailure::NominalShapeMismatch)?;

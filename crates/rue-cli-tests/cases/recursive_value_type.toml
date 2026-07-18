@@ -55,6 +55,16 @@ fn main() -> i32 { 0 }
 """ }]
 
 [[case]]
+name = "zero_array_recursion_preserves_e0483"
+description = "A zero-length array carries no ownership facts, but preserves the existing structural recursive-type diagnostic."
+compile_fail = true
+error_contains = ["E0483", "infinite size", "A -> A"]
+files = [{ path = "main.rue", source = """
+struct A { a: [A; 0] }
+fn main() -> i32 { 0 }
+""" }]
+
+[[case]]
 name = "pointer_indirection_breaks_cycle_control"
 description = "Control: recursion through a pointer is a valid recursive type and compiles."
 compile_only = true

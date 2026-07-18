@@ -246,6 +246,10 @@ pub struct CfgBuilder<'a> {
     /// and never a leak.
     moved: MoveState,
     implicit_named_destructors: std::collections::HashSet<StructId>,
+    /// Aggregate types whose destructor dependencies have already been
+    /// discovered for this CFG body. Keeps repeated drops linear in the size
+    /// of the reachable type graph rather than rewalking the same subgraphs.
+    implicit_destructor_types: std::collections::HashSet<Type>,
     anonymous_destructor_dependency_incomplete: bool,
 }
 
@@ -486,6 +490,7 @@ impl<'a> CfgBuilder<'a> {
             ever_field_moved: std::collections::HashSet::new(),
             moved: MoveState::default(),
             implicit_named_destructors: std::collections::HashSet::new(),
+            implicit_destructor_types: std::collections::HashSet::new(),
             anonymous_destructor_dependency_incomplete: false,
         };
 
@@ -2306,33 +2311,35 @@ impl<'a> CfgBuilder<'a> {
     }
 
     fn record_implicit_destructors(&mut self, ty: Type) {
-        match ty.kind() {
-            TypeKind::Struct(struct_id) => {
-                let def = self.type_pool.struct_def(struct_id);
-                if def.destructor.is_some() && !def.is_builtin {
-                    if def.name.starts_with("__anon_struct_") {
-                        self.anonymous_destructor_dependency_incomplete = true;
-                    } else {
-                        self.implicit_named_destructors.insert(struct_id);
+        let mut pending = vec![ty];
+        while let Some(ty) = pending.pop() {
+            if !self.implicit_destructor_types.insert(ty) {
+                continue;
+            }
+            match ty.kind() {
+                TypeKind::Struct(struct_id) => {
+                    let def = self.type_pool.struct_def(struct_id);
+                    if def.destructor.is_some() && !def.is_builtin {
+                        if def.name.starts_with("__anon_struct_") {
+                            self.anonymous_destructor_dependency_incomplete = true;
+                        } else {
+                            self.implicit_named_destructors.insert(struct_id);
+                        }
+                    }
+                    pending.extend(def.fields.iter().map(|field| field.ty));
+                }
+                TypeKind::Enum(enum_id) => {
+                    let def = self.type_pool.enum_def(enum_id);
+                    pending.extend(def.variant_payloads.iter().flatten().copied());
+                }
+                TypeKind::Array(array_id) => {
+                    let (element, len) = self.type_pool.array_def(array_id);
+                    if len != 0 {
+                        pending.push(element);
                     }
                 }
-                for field in &def.fields {
-                    self.record_implicit_destructors(field.ty);
-                }
+                _ => {}
             }
-            TypeKind::Enum(enum_id) => {
-                let def = self.type_pool.enum_def(enum_id);
-                for payload in &def.variant_payloads {
-                    for field in payload {
-                        self.record_implicit_destructors(*field);
-                    }
-                }
-            }
-            TypeKind::Array(array_id) => {
-                let (element, _) = self.type_pool.array_def(array_id);
-                self.record_implicit_destructors(element);
-            }
-            _ => {}
         }
     }
 
@@ -2498,59 +2505,7 @@ impl<'a> CfgBuilder<'a> {
     /// - Struct: needs drop when it declares a destructor or any field needs drop
     /// - Array: needs drop if element type needs drop
     fn type_needs_drop(&self, ty: Type) -> bool {
-        match ty.kind() {
-            // Primitive types are trivially droppable
-            // ComptimeType is a comptime-only type and has no runtime representation
-            TypeKind::I8
-            | TypeKind::I16
-            | TypeKind::I32
-            | TypeKind::I64
-            | TypeKind::U8
-            | TypeKind::U16
-            | TypeKind::U32
-            | TypeKind::U64
-            | TypeKind::Bool
-            | TypeKind::Unit
-            | TypeKind::Never
-            | TypeKind::Error
-            | TypeKind::ComptimeType => false,
-
-            // An enum needs drop if any variant payload needs drop (RUE-221):
-            // at scope exit the discriminant selects the active variant and
-            // its payload's drop glue runs. A discriminant-only (C-like) enum
-            // has no payloads and is trivially droppable.
-            TypeKind::Enum(enum_id) => {
-                let enum_def = self.type_pool.enum_def(enum_id);
-                enum_def
-                    .variant_payloads
-                    .iter()
-                    .flatten()
-                    .any(|&ty| self.type_needs_drop(ty))
-            }
-
-            // Struct types need drop if they declare a destructor or contain a
-            // field that needs drop.
-            TypeKind::Struct(struct_id) => {
-                let struct_def = self.type_pool.struct_def(struct_id);
-                if struct_def.destructor.is_some() {
-                    return true;
-                }
-                // Otherwise, check if any field needs drop
-                struct_def.fields.iter().any(|f| self.type_needs_drop(f.ty))
-            }
-
-            // Array types need drop if element type needs drop
-            TypeKind::Array(array_id) => {
-                let (element_type, _length) = self.type_pool.array_def(array_id);
-                self.type_needs_drop(element_type)
-            }
-
-            // Pointer types don't need drop (they're just addresses)
-            TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => false,
-
-            // Module types don't need drop (compile-time only)
-            TypeKind::Module(_) => false,
-        }
+        self.type_pool.type_needs_drop(ty)
     }
 
     /// Convert AIR argument mode to CFG argument mode.
