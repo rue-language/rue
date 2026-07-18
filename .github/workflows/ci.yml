@@ -90,6 +90,40 @@ jobs:
         # update and verification procedure.
         run: docker run --rm -v "$PWD:/repo:ro" -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color -shellcheck=/usr/local/bin/shellcheck
 
+  # RUE-320: merge-group-only proof that the compiler can be built on the
+  # BuildBuddy worker. Fork PRs cannot access the key. Disabling action-cache
+  # reads forces real remote execution; the strict platform forbids a failed
+  # remote action from being retried locally, so a missing worker linker cannot
+  # hide behind hybrid fallback.
+  remote-execution:
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    name: remote execution (linux-x64)
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dotslash
+        uses: facebook/install-dotslash@v2
+
+      - name: Require and provision remote execution
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          if [ -z "${BUILDBUDDY_API_KEY:-}" ]; then
+            echo "::error::BUILDBUDDY_API_KEY is required for the merge-group remote-execution canary."
+            exit 1
+          fi
+          scripts/provision-build-cache install
+          scripts/provision-build-cache apply
+
+      - name: Build compiler remotely
+        env:
+          RUE_CI_REQUIRE_REMOTE_ACTIONS: 1
+        run: >-
+          scripts/ci-timed "remote compiler build" --
+          ./buck2 build //crates/rue:rue --prefer-remote --no-remote-cache
+          -c build.execution_platforms=root//platforms:remote_execution
+
   rust-project:
     runs-on: ubuntu-latest
     steps:

@@ -12,14 +12,24 @@
 # - Linux x86_64/ARM64: Fully hermetic (uses internal ELF linker)
 # - macOS ARM64/x86_64: Requires Xcode Command Line Tools (uses system clang)
 
-load("@prelude//toolchains:cxx.bzl", "system_cxx_toolchain")
+load("@prelude//toolchains:cxx.bzl", "cxx_tools_info_toolchain")
 load("@prelude//toolchains:genrule.bzl", "system_genrule_toolchain")
 load("@prelude//toolchains:python.bzl", "system_python_bootstrap_toolchain")
 load("@prelude//tests:test_toolchain.bzl", "noop_test_toolchain")
+load(":cxx_tools.bzl", "cxx_tools_with_linker")
 load(":remote_test_execution.bzl", "noop_remote_test_execution_toolchain")
 
-system_cxx_toolchain(
+cxx_tools_with_linker(
+    name = "cxx-tools",
+    linker = select({
+        "DEFAULT": None,
+        "root//constraints:remote-execution": "cc",
+    }),
+)
+
+cxx_tools_info_toolchain(
     name = "cxx",
+    cxx_tools_info = ":cxx-tools",
     visibility = ["PUBLIC"],
 )
 

@@ -31,3 +31,17 @@ constraint_value(
     constraint_setting = ":opt-level",
     visibility = ["PUBLIC"],
 )
+
+# Execution-environment marker used only by the opt-in BuildBuddy platform.
+# Toolchains configured for that execution platform may select remote-worker
+# compatible tools without changing the native/default toolchain.
+constraint_setting(
+    name = "execution-environment",
+    visibility = ["PUBLIC"],
+)
+
+constraint_value(
+    name = "remote-execution",
+    constraint_setting = ":execution-environment",
+    visibility = ["PUBLIC"],
+)

@@ -38,6 +38,11 @@ while IFS= read -r line; do
     fi
 done <"$log"
 
+if [[ "$status" -eq 0 && "${RUE_CI_REQUIRE_REMOTE_ACTIONS:-0}" == "1" && "$remote" -eq 0 ]]; then
+    echo "::error::remote-execution canary completed without any remotely executed Buck actions" >&2
+    status=1
+fi
+
 result="passed"
 if [[ "$status" -ne 0 ]]; then
     result="failed ($status)"

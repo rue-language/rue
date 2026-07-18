@@ -14,10 +14,8 @@
 # With this config, the repository's `./buck2` wrapper adds `--prefer-local` to
 # normal execution commands: the remote action cache is queried first, then
 # misses execute locally. Adding an explicit execution-mode flag overrides the
-# wrapper, but full remote execution is not supported until RUE-320. It was
-# previously demonstrated for compilation, but complete builds still need the
-# platform-scoped linker fix. Remote execution is
-# possible because the rust toolchain ships its own tree (rustc finds its libs via
+# wrapper. Remote execution is possible because the Rust toolchain ships its own
+# tree (rustc finds its libs via
 # $ORIGIN under RE) and links via `cc`+lld; the remote_cache platform pins the
 # rbe-ubuntu22-04 container image (Python 3.10 for the prelude's rustc wrapper).
 #
@@ -42,6 +40,6 @@ default_allow_cache_upload = true
 
 [build]
 # Route commands through the remote-cache platform. The repository ./buck2
-# wrapper adds --prefer-local for ordinary execution commands; RUE-320 must land
-# before full remote execution is supported.
+# wrapper adds --prefer-local for ordinary execution commands. Pass
+# --prefer-remote explicitly to exercise full remote execution.
 execution_platforms = root//platforms:remote_cache

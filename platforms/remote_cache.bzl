@@ -2,30 +2,53 @@
 # connection (required even for cache-only use in OSS buck2). Limited hybrid
 # prefers remote execution; the repository's ./buck2 wrapper therefore adds
 # --prefer-local for ordinary execution commands. Explicit execution-mode flags
-# still override it. Full remote execution remains blocked on RUE-320.
+# still override it. RUE-320's full-remote platform adds an execution constraint
+# that selects the worker's linker driver; the cache-only platform deliberately
+# omits it because cache misses still execute with the native toolchain.
 def _remote_cache_platform_impl(ctx):
     base = ctx.attrs.base[ExecutionPlatformRegistrationInfo]
-    platforms = [
-        ExecutionPlatformInfo(
+    remote_execution = ctx.attrs.remote_execution[ConstraintValueInfo]
+    platforms = []
+    for p in base.platforms:
+        configuration = p.configuration.copy()
+        if ctx.attrs.mark_remote_execution:
+            configuration.insert(remote_execution)
+        platforms.append(ExecutionPlatformInfo(
             label = ctx.label.raw_target(),
-            configuration = p.configuration,
+            configuration = configuration,
             executor_config = CommandExecutorConfig(
                 local_enabled = True,
                 remote_enabled = True,
                 remote_cache_enabled = True,
                 allow_cache_uploads = True,
                 use_limited_hybrid = True,
-                allow_hybrid_fallbacks_on_failure = True,
-                remote_execution_properties = {"OSFamily": "Linux", "container-image": "docker://gcr.io/flame-public/rbe-ubuntu22-04:latest"},
+                allow_hybrid_fallbacks_on_failure = ctx.attrs.allow_hybrid_fallbacks_on_failure,
+                # A cold Rust graph can exceed BuildBuddy's default per-action
+                # memory estimate. Request enough headroom to keep rustc actions
+                # out of the executor OOM killer (RUE-320).
+                remote_execution_properties = {
+                    "EstimatedMemory": "4GB",
+                    "OSFamily": "Linux",
+                    "container-image": "docker://gcr.io/flame-public/rbe-ubuntu22-04:latest",
+                },
                 remote_execution_use_case = "buck2-default",
                 remote_output_paths = "output_paths",
             ),
-        )
-        for p in base.platforms
+        ))
+    return [
+        DefaultInfo(),
+        ExecutionPlatformRegistrationInfo(
+            platforms = platforms,
+            exec_marker_constraint = base.exec_marker_constraint,
+        ),
     ]
-    return [DefaultInfo(), ExecutionPlatformRegistrationInfo(platforms = platforms)]
 
 remote_cache_platform = rule(
     impl = _remote_cache_platform_impl,
-    attrs = {"base": attrs.dep(providers = [ExecutionPlatformRegistrationInfo], default = "prelude//platforms:default")},
+    attrs = {
+        "base": attrs.dep(providers = [ExecutionPlatformRegistrationInfo], default = "prelude//platforms:default"),
+        "allow_hybrid_fallbacks_on_failure": attrs.bool(default = True),
+        "mark_remote_execution": attrs.bool(default = False),
+        "remote_execution": attrs.dep(providers = [ConstraintValueInfo], default = "root//constraints:remote-execution"),
+    },
 )

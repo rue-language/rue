@@ -676,6 +676,23 @@ EOF
   check "ci-timed: all Buck summaries are aggregated" \
     "$(grep -Fq '| passed |' "$sb/summary" && grep -Fq '| 2 | 15 | 10 | 2 | 3 |' "$sb/summary" && echo 0 || echo 1)"
 
+  rc=0
+  RUE_CI_REQUIRE_REMOTE_ACTIONS=1 "$sb/ci-timed" "remote wrapper" -- "$sb/fake-command" >/dev/null 2>&1 || rc=$?
+  check "ci-timed: remote canary accepts remotely executed actions" \
+    "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
+
+  cat >"$sb/local-command" <<'EOF'
+#!/usr/bin/env bash
+echo 'Commands: 4 (cached: 0, remote: 0, local: 4)'
+EOF
+  chmod +x "$sb/local-command"
+  rc=0
+  out="$(RUE_CI_REQUIRE_REMOTE_ACTIONS=1 "$sb/ci-timed" "local wrapper" -- "$sb/local-command" 2>&1)" || rc=$?
+  check "ci-timed: remote canary rejects a local-only success" \
+    "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
+  check "ci-timed: remote canary explains a local-only success" \
+    "$(grep -Fq 'without any remotely executed Buck actions' <<<"$out" && echo 0 || echo 1)"
+
   : >"$sb/summary"; rc=0
   GITHUB_STEP_SUMMARY="$sb/summary" FAKE_EXIT=23 \
     "$sb/ci-timed" "failing wrapper" -- "$sb/fake-command" >/dev/null 2>&1 || rc=$?
