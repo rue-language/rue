@@ -84,6 +84,12 @@ name = "mosaic_scales_generated_workload_fourfold"
 description = "the 4x tier parses and renders 400 linked pages with proportional model counts"
 source_path = "examples/mosaic/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
+# The 400-page tier renders quadratic output volume (~2.2 s median on an idle
+# host) and blows the default 10 s budget on loaded macOS CI runners, ejecting
+# unrelated PRs from the merge queue (RUE-999). The 200-page tier above stays
+# on the default budget as the timing canary; this tier only needs to catch
+# hangs and wrong counts.
+timeout_ms = 60000
 program_args = ["stress4"]
 exit_code = 0
 stdout = "stress pages=400 blocks=4400 links=400 anchors=800\nexpected_links=400\ndeterministic=true\nvalid=true\nselftests=30 failures=0\n"
