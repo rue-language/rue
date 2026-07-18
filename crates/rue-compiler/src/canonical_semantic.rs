@@ -406,6 +406,7 @@ pub struct CanonicalSemanticOutput {
     type_pool: FrozenTypeInternPool,
     strings: Vec<String>,
     warnings: Vec<CompileWarning>,
+    #[cfg_attr(not(test), allow(dead_code))]
     bound_definitions: Option<BoundDefinitionSet>,
     body_owner_issuer: BoundDefinitionSet,
     durable_ordinary_body_payloads: Arc<[crate::DurableOrdinaryBodyPayload]>,
@@ -438,7 +439,129 @@ pub struct CanonicalSemanticOutput {
 }
 
 impl CanonicalSemanticOutput {
-    pub fn into_parts(
+    pub(crate) fn unstable_parity_snapshot(&self) -> crate::unstable::SemanticParitySnapshot {
+        use std::fmt::Write as _;
+
+        let type_pool = self
+            .type_pool
+            .all_types()
+            .map(|ty| match ty.kind() {
+                rue_air::TypeKind::Struct(id) => {
+                    format!("struct:{:?}", self.type_pool.struct_def(id))
+                }
+                rue_air::TypeKind::Enum(id) => {
+                    format!("enum:{:?}", self.type_pool.enum_def(id))
+                }
+                rue_air::TypeKind::Array(id) => {
+                    let (element, len) = self.type_pool.array_def(id);
+                    format!("array:{element:?}:{len}")
+                }
+                rue_air::TypeKind::PtrConst(id) => {
+                    format!("ptr_const:{:?}", self.type_pool.ptr_const_def(id))
+                }
+                rue_air::TypeKind::PtrMut(id) => {
+                    format!("ptr_mut:{:?}", self.type_pool.ptr_mut_def(id))
+                }
+                _ => unreachable!("type pool stores only composite types"),
+            })
+            .collect::<Vec<_>>();
+        let mut details = String::new();
+        macro_rules! record {
+            ($name:literal, $value:expr) => {
+                writeln!(&mut details, concat!($name, "={:?}"), $value)
+                    .expect("write parity snapshot to String")
+            };
+        }
+        record!("input", &self.input);
+        record!("functions", &self.functions);
+        record!("type_pool", type_pool);
+        record!("bound_definitions", &self.bound_definitions);
+        record!("strings", &self.strings);
+        record!("warnings", &self.warnings);
+        record!("analyzed_body_owners", &self.analyzed_body_owners);
+        record!("body_named_dependencies", &self.body_named_dependencies);
+        record!(
+            "ordinary_free_function_dependencies",
+            &self.ordinary_free_function_dependencies
+        );
+        record!(
+            "specialized_free_function_origins",
+            &self.specialized_free_function_origins
+        );
+        record!(
+            "specialized_free_function_dependencies",
+            &self.specialized_free_function_dependencies
+        );
+        record!(
+            "ordinary_free_function_dependencies_complete",
+            self.ordinary_free_function_dependencies_complete
+        );
+        record!(
+            "specialized_free_function_dependencies_complete",
+            self.specialized_free_function_dependencies_complete
+        );
+        record!("named_method_dependencies", &self.named_method_dependencies);
+        record!(
+            "non_generic_named_method_dependencies_complete",
+            self.non_generic_named_method_dependencies_complete
+        );
+        record!(
+            "generic_named_method_dependencies_complete",
+            self.generic_named_method_dependencies_complete
+        );
+        record!(
+            "named_destructor_dependencies",
+            &self.named_destructor_dependencies
+        );
+        record!(
+            "named_destructor_dependencies_complete",
+            self.named_destructor_dependencies_complete
+        );
+        record!(
+            "declaration_type_dependencies",
+            &self.declaration_type_dependencies
+        );
+        record!(
+            "declaration_type_dependencies_complete",
+            self.declaration_type_dependencies_complete
+        );
+        record!(
+            "declaration_type_call_head_dependencies",
+            &self.declaration_type_call_head_dependencies
+        );
+        record!(
+            "declaration_type_call_head_dependencies_complete",
+            self.declaration_type_call_head_dependencies_complete
+        );
+        record!(
+            "declaration_builtin_type_call_head_dependencies",
+            &self.declaration_builtin_type_call_head_dependencies
+        );
+        record!(
+            "supported_type_call_heads_complete",
+            self.supported_type_call_heads_complete
+        );
+        record!("named_const_dependencies", &self.named_const_dependencies);
+        record!(
+            "named_value_const_dependencies_complete",
+            self.named_value_const_dependencies_complete
+        );
+        record!(
+            "implicit_named_destructor_dependencies",
+            &self.implicit_named_destructor_dependencies
+        );
+        record!(
+            "implicit_named_destructor_dependencies_complete",
+            self.implicit_named_destructor_dependencies_complete
+        );
+        record!(
+            "durable_artifact_status",
+            self.unstable_durable_artifact_status()
+        );
+        crate::unstable::SemanticParitySnapshot::new(details)
+    }
+
+    pub(crate) fn into_parts(
         self,
     ) -> (
         Vec<FunctionWithCfg>,
@@ -454,7 +577,7 @@ impl CanonicalSemanticOutput {
         &self.input
     }
     /// Debug-only identity projection for differential and benchmark tooling.
-    pub fn unstable_input_debug(&self) -> String {
+    pub(crate) fn unstable_input_debug(&self) -> String {
         format!("{:?}", self.input)
     }
     /// Analyzed functions paired with optimized CFGs in machine-symbol order.
@@ -551,7 +674,8 @@ impl CanonicalSemanticOutput {
         &self.durable_cfgs
     }
     /// Stable definition identities when requested for this run.
-    pub fn bound_definitions(&self) -> Option<&BoundDefinitionSet> {
+    #[cfg(test)]
+    pub(crate) fn bound_definitions(&self) -> Option<&BoundDefinitionSet> {
         self.bound_definitions.as_ref()
     }
     pub(crate) fn body_owner_issuer(&self) -> &BoundDefinitionSet {
@@ -567,7 +691,9 @@ impl CanonicalSemanticOutput {
         &self.durable_specialized_body_payloads
     }
     /// Explicitly unstable equality status for durable-cache instrumentation.
-    pub fn unstable_durable_artifact_status(&self) -> crate::unstable::DurableArtifactStatus {
+    pub(crate) fn unstable_durable_artifact_status(
+        &self,
+    ) -> crate::unstable::DurableArtifactStatus {
         crate::unstable::DurableArtifactStatus::from_debug(&self.durable_specialized_body_payloads)
     }
     /// Structural work performed by this request.

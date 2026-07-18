@@ -779,16 +779,16 @@ fn relocation_file_ids_and_input_order_preserve_same_version_body_values() {
     let options = CompileOptions::default();
     let mut warm = CompilerSession::new();
     warm.update(&original).into_result().unwrap();
-    warm.semantic(&options).unwrap();
+    warm.canonical_semantic(&options).unwrap();
     warm.update(&relocated).into_result().unwrap();
-    let reused = warm.semantic(&options).unwrap();
+    let reused = warm.canonical_semantic(&options).unwrap();
     assert_eq!(reused.work().durable_bodies.reused_bodies, 3);
     assert_eq!(reused.work().durable_bodies.candidate_fallbacks, 0);
     assert_eq!(reused.work().body_analysis.bodies_attempted, 0);
 
     let mut cold = CompilerSession::new();
     cold.update(&relocated).into_result().unwrap();
-    let fresh = cold.semantic(&options).unwrap();
+    let fresh = cold.canonical_semantic(&options).unwrap();
     assert_eq!(
         format!("{:?}", reused.functions()),
         format!("{:?}", fresh.functions())
@@ -829,9 +829,9 @@ fn representative_body_families_project_and_import_through_production_reuse() {
         let relocated = snapshot(&[(3, "/new/main.rue", "main.rue", source)], 3);
         let mut warm = CompilerSession::new();
         warm.update(&original).into_result().unwrap();
-        warm.semantic(&options).unwrap();
+        warm.canonical_semantic(&options).unwrap();
         warm.update(&relocated).into_result().unwrap();
-        let reused = warm.semantic(&options).unwrap();
+        let reused = warm.canonical_semantic(&options).unwrap();
         assert!(
             reused.work().durable_bodies.projection_completions > 0,
             "{name} never traversed durable body projection"
@@ -845,7 +845,7 @@ fn representative_body_families_project_and_import_through_production_reuse() {
 
         let mut cold = CompilerSession::new();
         cold.update(&relocated).into_result().unwrap();
-        let fresh = cold.semantic(&options).unwrap();
+        let fresh = cold.canonical_semantic(&options).unwrap();
         assert_eq!(
             format!("{:?}", reused.functions()),
             format!("{:?}", fresh.functions()),
@@ -882,11 +882,11 @@ fn one_corrupt_body_falls_back_without_poisoning_other_semantic_or_cfg_reuse() {
     };
     let mut warm = CompilerSession::new();
     warm.update(&original).into_result().unwrap();
-    warm.semantic(&options).unwrap();
+    warm.canonical_semantic(&options).unwrap();
     warm.corrupt_durable_body_schema_for_test("first", u32::MAX);
     warm.corrupt_durable_cfg_schema_for_test("first", u32::MAX);
     warm.update(&edited).into_result().unwrap();
-    let reused = warm.semantic(&options).unwrap();
+    let reused = warm.canonical_semantic(&options).unwrap();
 
     assert_eq!(reused.work().durable_bodies.projection_failures, 1);
     assert_eq!(reused.work().durable_bodies.candidate_fallbacks, 1);
@@ -898,7 +898,7 @@ fn one_corrupt_body_falls_back_without_poisoning_other_semantic_or_cfg_reuse() {
 
     let mut cold = CompilerSession::new();
     cold.update(&edited).into_result().unwrap();
-    let fresh = cold.semantic(&options).unwrap();
+    let fresh = cold.canonical_semantic(&options).unwrap();
     assert_eq!(fresh.work().cfg.cfg_reuses, 0);
     assert_eq!(fresh.work().cfg.cfg_builds_attempted, 3);
     assert_eq!(
@@ -950,14 +950,14 @@ fn specialized_body_previous_current_and_future_schemas_isolate_one_candidate() 
     for version in versions {
         let mut warm = CompilerSession::new();
         warm.update(&original).into_result().unwrap();
-        let baseline = warm.semantic(&options).unwrap();
+        let baseline = warm.canonical_semantic(&options).unwrap();
         assert_eq!(
             baseline.work().body_analysis.specialized_bodies_attempted,
             2
         );
         warm.corrupt_durable_specialized_body_schema_for_test("choose", 0, version);
         warm.update(&relocated).into_result().unwrap();
-        let reused = warm.semantic(&options).unwrap();
+        let reused = warm.canonical_semantic(&options).unwrap();
         let compatible = version == DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION;
 
         assert_eq!(
@@ -987,7 +987,7 @@ fn specialized_body_previous_current_and_future_schemas_isolate_one_candidate() 
 
         let mut cold = CompilerSession::new();
         cold.update(&relocated).into_result().unwrap();
-        let fresh = cold.semantic(&options).unwrap();
+        let fresh = cold.canonical_semantic(&options).unwrap();
         assert_eq!(
             format!("{:?}", reused.functions()),
             format!("{:?}", fresh.functions())

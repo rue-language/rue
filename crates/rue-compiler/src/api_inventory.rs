@@ -1,6 +1,7 @@
 //! RUE-736 review gate for the curated compiler facade.
 
 const PRODUCTION_MODULES: &[(&str, &str)] = &[
+    ("artifact_views", include_str!("artifact_views.rs")),
     ("backend", include_str!("backend.rs")),
     ("bound_definitions", include_str!("bound_definitions.rs")),
     ("canonical_lower", include_str!("canonical_lower.rs")),
@@ -37,6 +38,34 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("syntax", include_str!("syntax.rs")),
     ("typed_query_store", include_str!("typed_query_store.rs")),
     ("unstable", include_str!("unstable.rs")),
+];
+
+const RUE_868_RAW_FACADE_VOCABULARY: &[&str] = &[
+    "Lexer",
+    "Token",
+    "TokenKind",
+    "Ast",
+    "Rir",
+    "ThreadedRodeo",
+    "FrozenTypeInternPool",
+    "TypeInternPool",
+    "SemanticSymbol",
+    "SemanticSymbolUniverse",
+    "CanonicalRirOutput",
+    "CanonicalSemanticOutput",
+    "CanonicalMergedProgram",
+    "ParsedProgram",
+    "FunctionWithCfg",
+    "Mir",
+    "generate_emitted_asm",
+    "generate_liveness_info",
+    "generate_lowering_info",
+    "generate_mir",
+    "generate_regalloc_info",
+    "generate_stack_frame_info",
+    "LoweringDebugInfo",
+    "RegAllocDebugInfo",
+    "StackFrameInfo",
 ];
 
 fn code_identifiers(source: &str) -> Vec<&str> {
@@ -126,7 +155,6 @@ const RUE_866_INTERNAL_VOCABULARY: &[&str] = &[
     "StableOptLevel",
     "StablePreviewFeatures",
     "ParseInvalidationSummary",
-    "ParsedAstPresentationWork",
     "ParsedModulesWork",
     "CanonicalMergeWork",
     "CanonicalRirWork",
@@ -461,6 +489,91 @@ fn facade_stays_small_and_session_centered() {
         [("queries", "compile_snapshot".to_owned())],
         "production modules may define exactly one public compile function"
     );
+}
+
+#[test]
+fn raw_phase_owners_and_backend_drivers_cannot_return_to_the_stable_facade() {
+    let facade = include_str!("lib.rs");
+    let root_exports = public_use_declarations(facade).concat();
+    let session = public_signatures(inherent_impl(include_str!("session.rs"), "CompilerSession"));
+    let update = public_signatures(inherent_impl(
+        include_str!("session.rs"),
+        "CompilerSessionUpdate",
+    ));
+    let views = public_declarations(include_str!("artifact_views.rs")).concat();
+    let stable_surface = [root_exports, session.clone(), update, views].concat();
+    let identifiers = code_identifiers(&stable_surface);
+
+    for forbidden in RUE_868_RAW_FACADE_VOCABULARY {
+        assert!(
+            !identifiers.contains(forbidden),
+            "raw phase owner or backend presentation symbol returned to the stable facade: {forbidden}"
+        );
+    }
+
+    let session_methods = code_identifiers(&session);
+    for internal in [
+        "merge",
+        "update_for_presentation",
+        "inject_stale_query_for_oracle",
+    ] {
+        assert!(
+            !session_methods.contains(&internal),
+            "internal orchestration method returned to CompilerSession's supported surface: {internal}"
+        );
+    }
+
+    let root_identifiers = code_identifiers(facade);
+    for required in [
+        "TokenView",
+        "SyntaxNodeView",
+        "SyntaxView",
+        "RirInstructionView",
+        "RirOperandView",
+        "RirView",
+        "SemanticView",
+        "FunctionView",
+        "CfgBlockView",
+        "CfgInstructionView",
+        "CfgSuccessorView",
+        "CfgView",
+        "SourceIdentityView",
+        "SourceLocationView",
+        "TypeView",
+    ] {
+        assert!(
+            root_identifiers.contains(&required),
+            "stable owner-bound artifact view is missing from the root: {required}"
+        );
+    }
+
+    let artifact_views = include_str!("artifact_views.rs");
+    for raw_presentation in [
+        "impl std::fmt::Display for TokenView",
+        "impl fmt::Display for TokenView",
+        "pub fn text(",
+        "pub fn air_text(",
+    ] {
+        assert!(
+            !artifact_views.contains(raw_presentation),
+            "raw phase presentation returned through stable views: {raw_presentation}"
+        );
+    }
+
+    for view in [
+        "SourceLocationView",
+        "SyntaxNodeView",
+        "RirInstructionView",
+        "RirOperandView",
+        "CfgInstructionView",
+        "CfgSuccessorView",
+    ] {
+        let signatures = public_signatures(inherent_impl(artifact_views, view));
+        assert!(
+            !code_identifiers(&signatures).contains(&"Span"),
+            "stable owner-bound view exposes a raw Span: {view}"
+        );
+    }
 }
 
 #[test]

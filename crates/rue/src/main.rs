@@ -19,9 +19,9 @@ mod timing;
 use emit::EmitStage;
 #[cfg(test)]
 use emit::{EmitFrontendRoute, build_emit_frontend, emit_frontend_route};
-#[cfg(test)]
-use rue_compiler::parse_source_snapshot_for_ast_presentation;
 use rue_compiler::unstable::ImportDiscoveryStatus;
+#[cfg(test)]
+use rue_compiler::unstable::update_for_presentation;
 use source_loader::{SourceLoadError, SourceLoadRequest};
 #[cfg(test)]
 use source_loader::{
@@ -35,7 +35,7 @@ use rue_compiler::{
     SourceInfo, configure_thread_pool,
 };
 #[cfg(test)]
-use rue_compiler::{SourceMetadata, SourceSnapshot};
+use rue_compiler::{CompilerSession, SourceMetadata, SourceSnapshot};
 use rue_target::Target;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum LogLevel {
@@ -1687,21 +1687,32 @@ mod tests {
         assert_eq!(session_work.rir().executions, 1);
         assert_eq!(session_work.semantic().executions, 1);
 
-        let presentation = parse_source_snapshot_for_ast_presentation(&snapshot).unwrap();
+        let mut presentation_session = CompilerSession::new();
+        let presentation = update_for_presentation(&mut presentation_session, &snapshot);
+        let ast_work = presentation.unstable_metrics();
+        presentation.into_result().unwrap();
+        let syntax = presentation_session.published().unwrap();
         assert_eq!(
-            presentation
+            snapshot
                 .files()
-                .iter()
-                .map(|(path, ast)| (path.as_str(), ast.items.len()))
+                .map(|source| {
+                    let module = syntax
+                        .modules()
+                        .find(|module| module.file_id() == source.file_id)
+                        .unwrap();
+                    (module.path().to_owned(), module.item_count())
+                })
                 .collect::<Vec<_>>(),
-            [("/checkout/main.rue", 1), ("/checkout/helper.rue", 1)]
+            [
+                ("/checkout/main.rue".to_owned(), 1),
+                ("/checkout/helper.rue".to_owned(), 1)
+            ]
         );
-        let ast_work = presentation.work();
-        assert_eq!(ast_work.parsed.syntax.parser_invocations, 2);
-        assert_eq!(ast_work.merge_invocations, 0);
-        assert_eq!(ast_work.astgen_invocations, 0);
-        assert_eq!(ast_work.bind_invocations, 0);
-        assert_eq!(ast_work.manifest_invocations, 0);
+        assert_eq!(ast_work.parser_invocations, 2);
+        let presentation_work = presentation_session.unstable_metrics();
+        assert_eq!(presentation_work.merge().executions, 0);
+        assert_eq!(presentation_work.rir().executions, 0);
+        assert_eq!(presentation_work.semantic().executions, 0);
     }
 
     #[test]
@@ -1742,10 +1753,21 @@ mod tests {
     fn ast_presentation_prints_duplicates_without_merging() {
         let snapshot =
             SourceSnapshot::single("main.rue", "fn duplicate() {} fn duplicate() {}").unwrap();
-        let presentation = parse_source_snapshot_for_ast_presentation(&snapshot).unwrap();
-
-        assert_eq!(presentation.files()[0].1.items.len(), 2);
-        assert_eq!(presentation.work().merge_invocations, 0);
+        let mut session = CompilerSession::new();
+        update_for_presentation(&mut session, &snapshot)
+            .into_result()
+            .unwrap();
+        assert_eq!(
+            session
+                .published()
+                .unwrap()
+                .modules()
+                .next()
+                .unwrap()
+                .item_count(),
+            2
+        );
+        assert_eq!(session.unstable_metrics().merge().executions, 0);
     }
 
     #[test]

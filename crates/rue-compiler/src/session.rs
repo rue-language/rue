@@ -658,12 +658,14 @@ mod durable_body_integration_tests {
 
     fn durable_candidates(source: &SourceSnapshot) -> Arc<[crate::DurableOrdinaryBody]> {
         let mut session = CompilerSession::new();
-        let program = session.update(source).into_result().unwrap();
+        let program = session.update(source).into_owner_result().unwrap();
         if !program.import_directives().is_empty() {
             let graph = crate::test_support::test_fixture_import_graph(&program).unwrap();
             session.adopt_test_import_graph(graph);
         }
-        let semantic = session.semantic(&CompileOptions::default()).unwrap();
+        let semantic = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert!(
             semantic.work().durable_bodies.conversion_completions > 0,
             "semantic work={:#?}",
@@ -807,7 +809,9 @@ mod durable_body_integration_tests {
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let semantic = session.semantic(&CompileOptions::default()).unwrap();
+        let semantic = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert!(
             semantic.work().durable_bodies.conversion_completions > 0,
             "semantic work={:#?}",
@@ -1006,7 +1010,9 @@ mod durable_body_integration_tests {
                 .unwrap();
             assert!(manifest.durable_ordinary_bodies().is_empty());
             assert!(!manifest.body_dependencies().is_empty());
-            let semantic = session.semantic(&CompileOptions::default()).unwrap();
+            let semantic = session
+                .canonical_semantic(&CompileOptions::default())
+                .unwrap();
             assert!(!semantic.functions().is_empty());
             assert_eq!(
                 semantic.work().durable_bodies.last_export_failure,
@@ -1551,7 +1557,6 @@ pub struct DefinitionQueryRecord {
     pub failed: bool,
 }
 
-#[derive(Debug)]
 pub struct CompilerSessionUpdate {
     result: Result<Arc<ParsedProgram>, CompileErrors>,
     work: ParsedModulesWork,
@@ -1559,6 +1564,17 @@ pub struct CompilerSessionUpdate {
     invalidation: ParseInvalidationSummary,
     downstream_invalidated: bool,
     diagnostics: Arc<FrontendDiagnosticSnapshot>,
+}
+
+impl std::fmt::Debug for CompilerSessionUpdate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CompilerSessionUpdate")
+            .field("successful", &self.result.is_ok())
+            .field("downstream_invalidated", &self.downstream_invalidated)
+            .field("diagnostics", &self.diagnostics)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1630,10 +1646,20 @@ impl ImportDiscoveryRevisionArtifact {
 }
 
 impl CompilerSessionUpdate {
-    pub fn result(&self) -> Result<&Arc<ParsedProgram>, &CompileErrors> {
+    pub fn result(&self) -> Result<crate::SyntaxView, &CompileErrors> {
+        self.result
+            .as_ref()
+            .map(|owner| crate::SyntaxView::new(owner.clone()))
+    }
+    pub fn into_result(self) -> Result<crate::SyntaxView, CompileErrors> {
+        self.result.map(crate::SyntaxView::new)
+    }
+    #[cfg(test)]
+    pub(crate) fn result_owner(&self) -> Result<&Arc<ParsedProgram>, &CompileErrors> {
         self.result.as_ref()
     }
-    pub fn into_result(self) -> Result<Arc<ParsedProgram>, CompileErrors> {
+    #[cfg(test)]
+    pub(crate) fn into_owner_result(self) -> Result<Arc<ParsedProgram>, CompileErrors> {
         self.result
     }
     #[cfg(test)]
@@ -2247,6 +2273,7 @@ struct SemanticBindingLookupKey {
 struct SemanticCacheEntry {
     key: SemanticQueryKey,
     result: Result<Arc<CanonicalSemanticOutput>, CompileErrors>,
+    rir: Option<Arc<CanonicalRirOutput>>,
     diagnostics: Arc<FrontendDiagnosticSnapshot>,
     successful_body_cache: Option<DurableOrdinaryBodyCache>,
     durable_declaration_cache: Option<DurableDeclarationCache>,
@@ -2565,7 +2592,7 @@ impl CompilerSession {
     /// oracle. This is deliberately typed and narrow; production callers have
     /// no reason to use it.
     #[doc(hidden)]
-    pub fn inject_stale_query_for_oracle(
+    pub(crate) fn inject_stale_query_for_oracle(
         &mut self,
         fault: crate::unstable::DifferentialOracleFault,
     ) -> bool {
@@ -2585,6 +2612,7 @@ impl CompilerSession {
                 };
                 let mut injected = current;
                 injected.result = stale.result.clone();
+                injected.rir = stale.rir.clone();
                 injected.successful_body_cache = stale.successful_body_cache.clone();
                 injected.durable_declaration_cache = stale.durable_declaration_cache.clone();
                 injected.successful_cfg_cache = stale.successful_cfg_cache.clone();
@@ -2817,7 +2845,11 @@ impl CompilerSession {
         };
         Ok(graph)
     }
-    pub fn published(&self) -> Option<&Arc<ParsedProgram>> {
+    pub fn published(&self) -> Option<crate::SyntaxView> {
+        self.published.as_ref().cloned().map(crate::SyntaxView::new)
+    }
+
+    pub(crate) fn published_owner(&self) -> Option<&Arc<ParsedProgram>> {
         self.published.as_ref()
     }
 
@@ -3738,7 +3770,10 @@ impl CompilerSession {
     /// Query artifacts still use stable module identity. Only syntax and merge
     /// diagnostic ordering follows [`SourceSnapshot::files`], which is useful
     /// for command-line and other presentation-oriented consumers.
-    pub fn update_for_presentation(&mut self, snapshot: &SourceSnapshot) -> CompilerSessionUpdate {
+    pub(crate) fn update_for_presentation(
+        &mut self,
+        snapshot: &SourceSnapshot,
+    ) -> CompilerSessionUpdate {
         #[cfg(test)]
         {
             self.supplied_test_import_graph = None;
@@ -4273,7 +4308,7 @@ impl CompilerSession {
         }))
     }
 
-    pub fn merge(&mut self) -> Result<Arc<CanonicalMergedProgram>, CompileErrors> {
+    pub(crate) fn merge(&mut self) -> Result<Arc<CanonicalMergedProgram>, CompileErrors> {
         let mut guard = self.metrics.begin::<MergeQuery>();
         let attempt_id = guard.id;
         let mut execution = QueryAttemptExecution::Rejected;
@@ -4479,7 +4514,12 @@ impl CompilerSession {
         merged
     }
 
-    pub fn rir(&mut self) -> Result<Arc<CanonicalRirOutput>, CompileErrors> {
+    /// Query the canonical RIR through an immutable, owner-retaining view.
+    pub fn rir(&mut self) -> Result<Arc<crate::RirView>, CompileErrors> {
+        self.canonical_rir().map(crate::RirView::new).map(Arc::new)
+    }
+
+    pub(crate) fn canonical_rir(&mut self) -> Result<Arc<CanonicalRirOutput>, CompileErrors> {
         let mut guard = self.metrics.begin::<RirQuery>();
         let attempt_id = guard.id;
         let mut execution = QueryAttemptExecution::Rejected;
@@ -4504,6 +4544,13 @@ impl CompilerSession {
         guard.finish(execution, origin, &result, structural);
         self.metrics.synchronize();
         result
+    }
+
+    pub(crate) fn selected_semantic_rir_owner(&self) -> Option<Arc<CanonicalRirOutput>> {
+        self.queries
+            .semantic
+            .selected_record(&self.queries.graph)
+            .and_then(|record| record.rir.clone())
     }
 
     fn rir_attempt(
@@ -4612,7 +4659,19 @@ impl CompilerSession {
     }
 
     /// Analyze the current published revision without issuing stable definition IDs.
+    /// Query semantic analysis and optimized CFGs through immutable views.
     pub fn semantic(
+        &mut self,
+        options: &CompileOptions,
+    ) -> Result<Arc<crate::SemanticView>, CompileErrors> {
+        let owner = self.canonical_semantic(options)?;
+        let rir = self
+            .selected_semantic_rir_owner()
+            .expect("successful semantic query retains its exact RIR terminal");
+        Ok(Arc::new(crate::SemanticView::new(owner, rir)))
+    }
+
+    pub(crate) fn canonical_semantic(
         &mut self,
         options: &CompileOptions,
     ) -> Result<Arc<CanonicalSemanticOutput>, CompileErrors> {
@@ -4745,7 +4804,7 @@ impl CompilerSession {
             .clone()
             .unwrap_or(previous_cfg_cache);
 
-        let rir = match self.rir() {
+        let rir = match self.canonical_rir() {
             Ok(rir) => rir,
             Err(errors) => {
                 let record = SemanticQueryRecord {
@@ -4781,6 +4840,7 @@ impl CompilerSession {
                         SemanticCacheEntry {
                             key,
                             result: Err(errors.clone()),
+                            rir: None,
                             diagnostics,
                             successful_body_cache: None,
                             durable_declaration_cache: None,
@@ -5144,6 +5204,7 @@ impl CompilerSession {
                 SemanticCacheEntry {
                     key,
                     result: result.clone(),
+                    rir: result.is_ok().then(|| rir.clone()),
                     diagnostics,
                     successful_body_cache: result.is_ok().then_some(published_body_cache).flatten(),
                     durable_declaration_cache: result
@@ -5239,7 +5300,7 @@ impl CompilerSession {
             guard.bind(handle.as_view());
             return entry.output.result;
         }
-        let rir = match self.rir() {
+        let rir = match self.canonical_rir() {
             Ok(rir) => rir,
             Err(errors) => {
                 let record = DefinitionQueryRecord {
@@ -5331,7 +5392,7 @@ impl CompilerSession {
                 self.refresh_retention_metrics();
                 return Err(errors);
             }
-        } else if let Err(errors) = self.semantic(options) {
+        } else if let Err(errors) = self.canonical_semantic(options) {
             let dependency = self
                 .queries
                 .semantic
@@ -5550,7 +5611,7 @@ impl CompilerSession {
         }
         *execution = QueryAttemptExecution::Computed;
         guard.started();
-        let semantic = self.semantic(options);
+        let semantic = self.canonical_semantic(options);
         let definitions = self.stable_definitions(options);
         let definition_universe_state = match &definitions {
             Ok(_) => SemanticDefinitionUniverseState::Complete,
@@ -8401,7 +8462,7 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&base()).into_result().unwrap();
         let default = CompileOptions::default();
-        session.semantic(&default).unwrap();
+        session.canonical_semantic(&default).unwrap();
         let diagnostics = session.latest_diagnostics().unwrap().clone();
         let last_good = session.last_good_semantic_diagnostics().unwrap().clone();
         let body_manifest = session
@@ -8430,7 +8491,7 @@ mod tests {
         let mut variant = default.clone();
         variant.opt_level = OptLevel::O1;
         session.cancel_semantic_after_first_mutation = true;
-        assert!(session.semantic(&variant).is_err());
+        assert!(session.canonical_semantic(&variant).is_err());
         assert_eq!(session.queries.semantic.len(), 1);
         assert!(!Arc::ptr_eq(
             session.latest_diagnostics().unwrap(),
@@ -8488,10 +8549,10 @@ mod tests {
             QueryStructuralWork::Semantic(_)
         ));
 
-        let recomputed = session.semantic(&variant).unwrap();
+        let recomputed = session.canonical_semantic(&variant).unwrap();
         assert_eq!(session.queries.semantic.len(), 2);
         assert!(Arc::ptr_eq(
-            &session.semantic(&variant).unwrap(),
+            &session.canonical_semantic(&variant).unwrap(),
             &recomputed
         ));
         assert_eq!(session.work().semantic.executions, 3);
@@ -8526,7 +8587,7 @@ mod tests {
     ) -> ParsedModulesWork {
         let update = session.update(source);
         let work = update.work();
-        let program = update.into_result().unwrap();
+        let program = update.into_owner_result().unwrap();
         if !program.import_directives().is_empty() {
             let graph = crate::test_support::test_fixture_import_graph(&program).unwrap();
             session.adopt_test_import_graph(graph);
@@ -8580,7 +8641,7 @@ mod tests {
         let second = function_modules(128, Some(0));
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        let cold = session.semantic(&options).unwrap();
+        let cold = session.canonical_semantic(&options).unwrap();
         assert_eq!(cold.work().binding.bind_invocations, 1);
         assert_eq!(cold.work().binding.declaration_resolution_invocations, 1);
         assert_eq!(
@@ -8591,7 +8652,7 @@ mod tests {
         );
         assert_eq!(cold.work().manifest.rir_instructions_visited, 256);
         session.update(&second).into_result().unwrap();
-        let reused = session.semantic(&options).unwrap();
+        let reused = session.canonical_semantic(&options).unwrap();
 
         assert_eq!(reused.work().binding.declaration_resolution_invocations, 0);
         assert_eq!(reused.work().binding.bind_invocations, 1);
@@ -8613,7 +8674,7 @@ mod tests {
         );
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
-        let ordinary = fresh.semantic(&options).unwrap();
+        let ordinary = fresh.canonical_semantic(&options).unwrap();
         assert_eq!(
             ordinary.work().binding.declaration_resolution_invocations,
             1
@@ -8664,7 +8725,7 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         publish_with_test_imports(&mut session, &original);
-        let cold = session.semantic(&options).unwrap();
+        let cold = session.canonical_semantic(&options).unwrap();
         assert_eq!(cold.work().binding.declaration_resolution_invocations, 1);
         assert_eq!(
             cold.work()
@@ -8687,7 +8748,7 @@ mod tests {
         ));
 
         publish_with_test_imports(&mut session, &relocated_edit);
-        let reused = session.semantic(&options).unwrap();
+        let reused = session.canonical_semantic(&options).unwrap();
         assert_eq!(reused.work().binding.declaration_resolution_invocations, 0);
         assert_eq!(reused.work().binding.durable_payloads_installed, 3);
         assert_eq!(reused.work().declaration_reuse.durable_records_reused, 3);
@@ -8702,7 +8763,7 @@ mod tests {
 
         let mut fresh = CompilerSession::new();
         publish_with_test_imports(&mut fresh, &relocated_edit);
-        let ordinary = fresh.semantic(&options).unwrap();
+        let ordinary = fresh.canonical_semantic(&options).unwrap();
         assert_semantic_artifact_parity(&session, &reused, &ordinary);
         assert_diagnostic_parity(&session, &fresh);
     }
@@ -8730,7 +8791,7 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         publish_with_test_imports(&mut session, &first);
-        session.semantic(&options).unwrap();
+        session.canonical_semantic(&options).unwrap();
         let cache = session.durable_declaration_cache.as_mut().unwrap();
         let mut records = cache.semantics.to_vec();
         let module = records
@@ -8743,7 +8804,7 @@ mod tests {
         cache.semantics = records.into();
 
         publish_with_test_imports(&mut session, &edited);
-        let fallback = session.semantic(&options).unwrap();
+        let fallback = session.canonical_semantic(&options).unwrap();
         assert_eq!(
             fallback.work().binding.declaration_resolution_invocations,
             1
@@ -8755,7 +8816,7 @@ mod tests {
 
         let mut fresh = CompilerSession::new();
         publish_with_test_imports(&mut fresh, &edited);
-        let ordinary = fresh.semantic(&options).unwrap();
+        let ordinary = fresh.canonical_semantic(&options).unwrap();
         assert_semantic_artifact_parity(&session, &fallback, &ordinary);
         assert_diagnostic_parity(&session, &fresh);
     }
@@ -8786,11 +8847,11 @@ mod tests {
         };
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        let cold = session.semantic(&options).unwrap();
+        let cold = session.canonical_semantic(&options).unwrap();
         assert_eq!(cold.work().cfg.cfg_builds_attempted, 3);
         assert_eq!(cold.work().cfg.optimization_attempts, 3);
         session.update(&second).into_result().unwrap();
-        let warm = session.semantic(&options).unwrap();
+        let warm = session.canonical_semantic(&options).unwrap();
         assert_eq!(warm.work().cfg.cfg_reuses, 2);
         assert_eq!(warm.work().cfg.cfg_import_successes, 2);
         assert_eq!(warm.work().cfg.cfg_builds_attempted, 1);
@@ -8799,7 +8860,7 @@ mod tests {
 
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
-        let fresh = fresh.semantic(&options).unwrap();
+        let fresh = fresh.canonical_semantic(&options).unwrap();
         assert_eq!(
             format!("{:?}", warm.functions()),
             format!("{:?}", fresh.functions())
@@ -8845,7 +8906,7 @@ mod tests {
         };
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.semantic(&options).unwrap();
+        session.canonical_semantic(&options).unwrap();
         let cache = Arc::make_mut(session.last_successful_cfg_cache.as_mut().unwrap());
         let specialization = cache
             .iter_mut()
@@ -8853,7 +8914,7 @@ mod tests {
             .unwrap();
         specialization.semantic_schema_version.implementation_epoch += 1;
         session.update(&second).into_result().unwrap();
-        let warm = session.semantic(&options).unwrap();
+        let warm = session.canonical_semantic(&options).unwrap();
         assert_eq!(warm.work().cfg.cfg_import_failures, 2);
         assert_eq!(warm.work().cfg.cfg_schema_version_rejections, 1);
         assert_eq!(warm.work().cfg.cfg_fallbacks, 2);
@@ -8862,7 +8923,7 @@ mod tests {
         assert_eq!(warm.work().cfg.optimization_attempts, 3);
         assert_eq!(warm.work().cfg.optimized_level_attempts, 0);
         session.update(&third).into_result().unwrap();
-        let repaired = session.semantic(&options).unwrap();
+        let repaired = session.canonical_semantic(&options).unwrap();
         assert_eq!(repaired.work().cfg.cfg_reuses, 1);
         assert_eq!(repaired.work().cfg.cfg_builds_attempted, 2);
     }
@@ -8905,19 +8966,19 @@ mod tests {
         };
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.semantic(&first_options).unwrap();
-        let cross_target = session.semantic(&other_options).unwrap();
+        session.canonical_semantic(&first_options).unwrap();
+        let cross_target = session.canonical_semantic(&other_options).unwrap();
         assert_eq!(cross_target.work().cfg.cfg_reuses, 0);
         assert_eq!(cross_target.work().cfg.cfg_builds_attempted, 3);
         assert!(cross_target.work().cfg.cfg_import_failures >= 2);
         session.update(&renamed).into_result().unwrap();
-        let changed = session.semantic(&other_options).unwrap();
+        let changed = session.canonical_semantic(&other_options).unwrap();
         assert_eq!(changed.work().cfg.cfg_reuses, 1);
         assert_eq!(changed.work().cfg.cfg_builds_attempted, 2);
         assert_eq!(changed.work().cfg.cfg_import_failures, 1);
         let mut fresh = CompilerSession::new();
         fresh.update(&renamed).into_result().unwrap();
-        let fresh = fresh.semantic(&other_options).unwrap();
+        let fresh = fresh.canonical_semantic(&other_options).unwrap();
         assert_eq!(
             format!("{:?}", changed.functions()),
             format!("{:?}", fresh.functions())
@@ -8950,14 +9011,14 @@ mod tests {
         };
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.semantic(&options).unwrap();
+        session.canonical_semantic(&options).unwrap();
         session.update(&second).into_result().unwrap();
-        let warm = session.semantic(&options).unwrap();
+        let warm = session.canonical_semantic(&options).unwrap();
         assert_eq!(warm.work().cfg.cfg_reuses, 1);
         assert!(warm.work().cfg.cfg_import_failures >= 1);
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
-        let fresh = fresh.semantic(&options).unwrap();
+        let fresh = fresh.canonical_semantic(&options).unwrap();
         assert_eq!(
             format!("{:?}", warm.functions()),
             format!("{:?}", fresh.functions())
@@ -8990,14 +9051,14 @@ mod tests {
         };
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.semantic(&options).unwrap();
+        session.canonical_semantic(&options).unwrap();
         session.update(&second).into_result().unwrap();
-        let warm = session.semantic(&options).unwrap();
+        let warm = session.canonical_semantic(&options).unwrap();
         assert_eq!(warm.work().cfg.cfg_reuses, 1);
         assert!(warm.work().cfg.cfg_import_failures >= 1);
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
-        let fresh = fresh.semantic(&options).unwrap();
+        let fresh = fresh.canonical_semantic(&options).unwrap();
         assert_eq!(
             format!("{:?}", warm.functions()),
             format!("{:?}", fresh.functions())
@@ -9018,7 +9079,7 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let output = session
-            .semantic(&CompileOptions {
+            .canonical_semantic(&CompileOptions {
                 opt_level: OptLevel::O0,
                 ..CompileOptions::default()
             })
@@ -9054,13 +9115,13 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        let first_output = session.semantic(&options).unwrap();
+        let first_output = session.canonical_semantic(&options).unwrap();
         let first_issuer = first_output.analyzed_body_owners()[0]
             .token()
             .unwrap()
             .issuer();
         session.update(&second).into_result().unwrap();
-        let output = session.semantic(&options).unwrap();
+        let output = session.canonical_semantic(&options).unwrap();
         let second_issuer = output.analyzed_body_owners()[0].token().unwrap().issuer();
         assert_ne!(first_issuer, second_issuer);
         assert_eq!(output.work().binding.declaration_resolution_invocations, 1);
@@ -9153,10 +9214,10 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.semantic(&options).unwrap();
+        session.canonical_semantic(&options).unwrap();
 
         session.update(&edited).into_result().unwrap();
-        let reused = session.semantic(&options).unwrap();
+        let reused = session.canonical_semantic(&options).unwrap();
         assert_eq!(reused.work().binding.declaration_resolution_invocations, 0);
         assert_eq!(reused.work().binding.durable_payloads_installed, 2);
         assert_eq!(reused.work().declaration_reuse.durable_records_reused, 2);
@@ -9164,7 +9225,7 @@ mod tests {
 
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
-        let ordinary = fresh.semantic(&options).unwrap();
+        let ordinary = fresh.canonical_semantic(&options).unwrap();
         assert_semantic_artifact_parity(&session, &reused, &ordinary);
         assert_diagnostic_parity(&session, &fresh);
     }
@@ -9189,10 +9250,10 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.semantic(&options).unwrap();
+        session.canonical_semantic(&options).unwrap();
 
         session.update(&relocated_edit).into_result().unwrap();
-        let reused = session.semantic(&options).unwrap();
+        let reused = session.canonical_semantic(&options).unwrap();
         assert_eq!(reused.work().binding.declaration_resolution_invocations, 0);
         assert_eq!(reused.work().binding.durable_payloads_installed, 2);
         assert_eq!(reused.work().declaration_reuse.durable_records_reused, 2);
@@ -9200,7 +9261,7 @@ mod tests {
 
         let mut fresh = CompilerSession::new();
         fresh.update(&relocated_edit).into_result().unwrap();
-        let ordinary = fresh.semantic(&options).unwrap();
+        let ordinary = fresh.canonical_semantic(&options).unwrap();
         assert_semantic_artifact_parity(&session, &reused, &ordinary);
         assert_diagnostic_parity(&session, &fresh);
     }
@@ -9225,7 +9286,7 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.semantic(&options).unwrap();
+        session.canonical_semantic(&options).unwrap();
 
         let cache = session.durable_declaration_cache.as_mut().unwrap();
         let mut declarations = cache.semantics.to_vec();
@@ -9249,7 +9310,7 @@ mod tests {
         cache.semantics = declarations.into();
 
         session.update(&edited).into_result().unwrap();
-        let fallback = session.semantic(&options).unwrap();
+        let fallback = session.canonical_semantic(&options).unwrap();
         assert_eq!(
             fallback.work().binding.declaration_resolution_invocations,
             1
@@ -9266,7 +9327,7 @@ mod tests {
 
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
-        let ordinary = fresh.semantic(&options).unwrap();
+        let ordinary = fresh.canonical_semantic(&options).unwrap();
         assert_semantic_artifact_parity(&session, &fallback, &ordinary);
         assert_eq!(fallback.type_pool().stats(), ordinary.type_pool().stats());
         assert_diagnostic_parity(&session, &fresh);
@@ -9290,13 +9351,13 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.semantic(&options).unwrap();
+        session.canonical_semantic(&options).unwrap();
 
         let cache = session.durable_declaration_cache.as_mut().unwrap();
         cache.schema_version.implementation_epoch += 1;
 
         session.update(&edited).into_result().unwrap();
-        let fallback = session.semantic(&options).unwrap();
+        let fallback = session.canonical_semantic(&options).unwrap();
         assert_eq!(
             fallback.work().declaration_reuse.schema_version_rejections,
             1
@@ -9313,7 +9374,7 @@ mod tests {
 
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
-        let ordinary = fresh.semantic(&options).unwrap();
+        let ordinary = fresh.canonical_semantic(&options).unwrap();
         assert_semantic_artifact_parity(&session, &fallback, &ordinary);
         assert_diagnostic_parity(&session, &fresh);
     }
@@ -9332,12 +9393,12 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        let cold = session.semantic(&options).unwrap();
+        let cold = session.canonical_semantic(&options).unwrap();
         assert_eq!(cold.work().binding.declaration_resolution_invocations, 1);
         assert_eq!(cold.work().binding.durable_install_invocations, 0);
 
         session.update(&edited).into_result().unwrap();
-        let ordinary = session.semantic(&options).unwrap();
+        let ordinary = session.canonical_semantic(&options).unwrap();
         assert_eq!(
             ordinary.work().binding.declaration_resolution_invocations,
             0
@@ -9348,17 +9409,17 @@ mod tests {
         assert_eq!(ordinary.work().declaration_reuse.fallback_epochs_started, 0);
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
-        let expected = fresh.semantic(&options).unwrap();
+        let expected = fresh.canonical_semantic(&options).unwrap();
         assert_semantic_artifact_parity(&session, &ordinary, &expected);
 
         // Moving to a different declaration universe seeds a new baseline, and
         // its next body edit can reuse normally.
         session.update(&supported).into_result().unwrap();
-        let seeded = session.semantic(&options).unwrap();
+        let seeded = session.canonical_semantic(&options).unwrap();
         assert_eq!(seeded.work().binding.declaration_resolution_invocations, 1);
         assert_eq!(seeded.work().binding.durable_install_invocations, 0);
         session.update(&supported_edit).into_result().unwrap();
-        let recovered = session.semantic(&options).unwrap();
+        let recovered = session.canonical_semantic(&options).unwrap();
         assert_eq!(
             recovered.work().binding.declaration_resolution_invocations,
             0
@@ -9389,12 +9450,12 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        let cold = session.semantic(&options).unwrap();
+        let cold = session.canonical_semantic(&options).unwrap();
         assert_eq!(cold.work().binding.declaration_resolution_invocations, 1);
         assert_eq!(cold.work().binding.durable_install_invocations, 0);
 
         session.update(&edited).into_result().unwrap();
-        let ordinary = session.semantic(&options).unwrap();
+        let ordinary = session.canonical_semantic(&options).unwrap();
         assert_eq!(
             ordinary.work().binding.declaration_resolution_invocations,
             0
@@ -9405,7 +9466,7 @@ mod tests {
         assert_eq!(ordinary.work().declaration_reuse.fallback_epochs_started, 0);
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
-        let expected = fresh.semantic(&options).unwrap();
+        let expected = fresh.canonical_semantic(&options).unwrap();
         assert_semantic_artifact_parity(&session, &ordinary, &expected);
 
         let supported = snapshot(
@@ -9417,11 +9478,11 @@ mod tests {
             1,
         );
         session.update(&supported).into_result().unwrap();
-        let seeded = session.semantic(&options).unwrap();
+        let seeded = session.canonical_semantic(&options).unwrap();
         assert_eq!(seeded.work().binding.declaration_resolution_invocations, 1);
         assert_eq!(seeded.work().binding.durable_install_invocations, 0);
         session.update(&supported_edit).into_result().unwrap();
-        let recovered = session.semantic(&options).unwrap();
+        let recovered = session.canonical_semantic(&options).unwrap();
         assert_eq!(
             recovered.work().binding.declaration_resolution_invocations,
             0
@@ -9470,16 +9531,16 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&base).into_result().unwrap();
-        session.semantic(&options).unwrap();
+        session.canonical_semantic(&options).unwrap();
 
         session.update(&signature).into_result().unwrap();
-        let changed = session.semantic(&options).unwrap();
+        let changed = session.canonical_semantic(&options).unwrap();
         assert_eq!(changed.work().binding.declaration_resolution_invocations, 1);
 
         session.update(&broken_body).into_result().unwrap();
-        assert!(session.semantic(&options).is_err());
+        assert!(session.canonical_semantic(&options).is_err());
         session.update(&recovered).into_result().unwrap();
-        let recovered = session.semantic(&options).unwrap();
+        let recovered = session.canonical_semantic(&options).unwrap();
         assert_eq!(
             recovered.work().binding.declaration_resolution_invocations,
             0
@@ -9491,7 +9552,7 @@ mod tests {
             .iter()
             .find(|target| **target != options.target)
             .unwrap();
-        let target_changed = session.semantic(&other_target).unwrap();
+        let target_changed = session.canonical_semantic(&other_target).unwrap();
         assert_eq!(
             target_changed
                 .work()
@@ -9510,25 +9571,25 @@ mod tests {
 
         let source = base();
         let mut session = CompilerSession::new();
-        let first_program = session.update(&source).into_result().unwrap();
+        let first_program = session.update(&source).into_owner_result().unwrap();
         let first_merge = session.merge().unwrap();
         let second_merge = session.merge().unwrap();
-        let first_rir = session.rir().unwrap();
-        let second_rir = session.rir().unwrap();
+        let first_rir = session.canonical_rir().unwrap();
+        let second_rir = session.canonical_rir().unwrap();
         assert!(Arc::ptr_eq(&first_merge, &second_merge));
         assert!(Arc::ptr_eq(&first_rir, &second_rir));
 
         let noop = session.update(&source);
         assert!(!noop.downstream_invalidated());
-        let second_program = noop.into_result().unwrap();
+        let second_program = noop.into_owner_result().unwrap();
         assert!(Arc::ptr_eq(&first_program, &second_program));
         assert!(Arc::ptr_eq(&first_merge, &session.merge().unwrap()));
-        assert!(Arc::ptr_eq(&first_rir, &session.rir().unwrap()));
+        assert!(Arc::ptr_eq(&first_rir, &session.canonical_rir().unwrap()));
         assert_eq!(session.work().merge.executions, 1);
         assert_eq!(session.work().rir.executions, 1);
         assert_eq!(session.work().downstream_invalidations, 0);
 
-        let published = session.published().unwrap().clone();
+        let published = session.published_owner().unwrap().clone();
         let merged = first_merge.clone();
         let rir = first_rir.clone();
         std::thread::spawn(move || {
@@ -9566,7 +9627,7 @@ mod tests {
         };
         let mut session = CompilerSession::new();
         session.update(&make(false)).into_result().unwrap();
-        session.rir().unwrap();
+        session.canonical_rir().unwrap();
         let first_shards = session
             .definition_shard_baseline
             .as_ref()
@@ -9577,7 +9638,7 @@ mod tests {
         assert!(update.downstream_invalidated());
         assert_eq!(update.work().modules_reused, 127);
         assert_eq!(update.work().modules_reparsed, 1);
-        session.rir().unwrap();
+        session.canonical_rir().unwrap();
         let second_shards = session.definition_shard_baseline.as_ref().unwrap().shards();
         assert!(
             first_shards
@@ -9588,7 +9649,7 @@ mod tests {
         assert_eq!(session.work().last_merge.definition_shards_indexed, 128);
         assert_eq!(session.work().last_merge.definition_shards_reused, 128);
         assert_eq!(session.work().last_merge.definition_shards_rebuilt, 0);
-        session.rir().unwrap();
+        session.canonical_rir().unwrap();
         assert_eq!(session.work().merge.executions, 2);
         assert_eq!(session.work().rir.executions, 2);
         assert_eq!(session.work().downstream_invalidations, 1);
@@ -9667,15 +9728,15 @@ mod tests {
             7,
         );
         let mut session = CompilerSession::new();
-        let program = session.update(&source).into_result().unwrap();
+        let program = session.update(&source).into_owner_result().unwrap();
         let merged = session.merge().unwrap();
-        let rir = session.rir().unwrap();
+        let rir = session.canonical_rir().unwrap();
         let failed = session.update(&broken);
         assert!(failed.result().is_err());
         assert!(!failed.downstream_invalidated());
-        assert!(Arc::ptr_eq(session.published().unwrap(), &program));
+        assert!(Arc::ptr_eq(session.published_owner().unwrap(), &program));
         assert!(Arc::ptr_eq(&session.merge().unwrap(), &merged));
-        assert!(Arc::ptr_eq(&session.rir().unwrap(), &rir));
+        assert!(Arc::ptr_eq(&session.canonical_rir().unwrap(), &rir));
     }
 
     #[test]
@@ -9698,8 +9759,12 @@ mod tests {
         let first = session.merge().unwrap_err();
         let second = session.merge().unwrap_err();
         assert_eq!(format!("{first:?}"), format!("{second:?}"));
-        assert!(session.rir().is_err());
-        assert!(session.semantic(&CompileOptions::default()).is_err());
+        assert!(session.canonical_rir().is_err());
+        assert!(
+            session
+                .canonical_semantic(&CompileOptions::default())
+                .is_err()
+        );
         assert_eq!(session.work().merge.executions, 1);
         assert_eq!(session.work().rir.executions, 0);
         assert_eq!(session.work().semantic.executions, 0);
@@ -9746,7 +9811,7 @@ mod tests {
         let update = session.update(&fixed);
         assert!(update.downstream_invalidated());
         update.into_result().unwrap();
-        assert!(session.rir().is_ok());
+        assert!(session.canonical_rir().is_ok());
         assert_eq!(session.work().merge.executions, 2);
         assert_eq!(session.work().rir.executions, 1);
     }
@@ -9904,23 +9969,23 @@ mod tests {
         );
         let mut session = CompilerSession::new();
         session.update(&base).into_result().unwrap();
-        session.rir().unwrap();
+        session.canonical_rir().unwrap();
 
         let root = session.update(&root_only);
         assert!(root.downstream_invalidated());
         assert_eq!(root.work().modules_reused, 2);
         root.into_result().unwrap();
-        session.rir().unwrap();
+        session.canonical_rir().unwrap();
         let moved = session.update(&relocated);
         assert!(moved.downstream_invalidated());
         assert_eq!(moved.work().modules_rebound, 2);
         moved.into_result().unwrap();
-        session.rir().unwrap();
+        session.canonical_rir().unwrap();
         let ids = session.update(&reassigned);
         assert!(ids.downstream_invalidated());
         assert_eq!(ids.work().modules_reparsed, 2);
         ids.into_result().unwrap();
-        session.rir().unwrap();
+        session.canonical_rir().unwrap();
         let rename = session.update(&renamed);
         assert!(rename.downstream_invalidated());
         assert_eq!(rename.invalidation().added.len(), 1);
@@ -9937,8 +10002,8 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let options = CompileOptions::default();
-        let first = session.semantic(&options).unwrap();
-        let second = session.semantic(&options).unwrap();
+        let first = session.canonical_semantic(&options).unwrap();
+        let second = session.canonical_semantic(&options).unwrap();
         assert!(Arc::ptr_eq(&first, &second));
 
         let linker_only = CompileOptions {
@@ -9947,7 +10012,7 @@ mod tests {
         };
         assert!(Arc::ptr_eq(
             &first,
-            &session.semantic(&linker_only).unwrap()
+            &session.canonical_semantic(&linker_only).unwrap()
         ));
         assert_eq!(session.work().semantic.executions, 1);
         assert_eq!(session.work().semantic.reuses, 2);
@@ -9969,9 +10034,9 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let default = CompileOptions::default();
-        session.semantic(&default).unwrap();
+        session.canonical_semantic(&default).unwrap();
         session
-            .semantic(&CompileOptions {
+            .canonical_semantic(&CompileOptions {
                 opt_level: OptLevel::O1,
                 ..default.clone()
             })
@@ -9981,13 +10046,13 @@ mod tests {
             .find(|&&target| target != default.target)
             .expect("multiple compiler targets");
         session
-            .semantic(&CompileOptions {
+            .canonical_semantic(&CompileOptions {
                 target: other_target,
                 ..default.clone()
             })
             .unwrap();
         session
-            .semantic(&CompileOptions {
+            .canonical_semantic(&CompileOptions {
                 preview_features: PreviewFeatures::from([PreviewFeature::TestInfra]),
                 ..default
             })
@@ -10021,9 +10086,9 @@ mod tests {
             opt_level: OptLevel::O1,
             ..a.clone()
         };
-        session.semantic(&a).unwrap();
-        session.semantic(&b).unwrap();
-        session.semantic(&a).unwrap();
+        session.canonical_semantic(&a).unwrap();
+        session.canonical_semantic(&b).unwrap();
+        session.canonical_semantic(&a).unwrap();
         let attempts = session
             .metrics
             .attempts()
@@ -10053,7 +10118,7 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let options = CompileOptions::default();
-        session.semantic(&options).unwrap();
+        session.canonical_semantic(&options).unwrap();
         let origin = session
             .metrics
             .attempts()
@@ -10065,7 +10130,7 @@ mod tests {
         for _ in 0..(QUERY_ATTEMPT_RETENTION_LIMIT + 44) {
             session.import_graph(None).unwrap();
         }
-        session.semantic(&options).unwrap();
+        session.canonical_semantic(&options).unwrap();
         let attempts = session.metrics.attempts();
         assert!(
             attempts
@@ -10120,7 +10185,7 @@ mod tests {
         let variants = retention_variants();
 
         for options in &variants {
-            session.semantic(options).unwrap();
+            session.canonical_semantic(options).unwrap();
         }
         assert_eq!(session.work().semantic.calls, variants.len());
         assert_eq!(session.work().semantic.executions, variants.len());
@@ -10131,13 +10196,13 @@ mod tests {
         );
         assert_eq!(session.work().retention.semantic_query_evictions, 1);
 
-        session.semantic(&variants[0]).unwrap();
+        session.canonical_semantic(&variants[0]).unwrap();
         assert_eq!(session.work().semantic.calls, variants.len() + 1);
         assert_eq!(session.work().semantic.executions, variants.len() + 1);
         assert_eq!(session.work().semantic.reuses, 0);
         assert_eq!(session.work().retention.semantic_query_evictions, 2);
 
-        session.semantic(&variants[0]).unwrap();
+        session.canonical_semantic(&variants[0]).unwrap();
         assert_eq!(session.work().semantic.calls, variants.len() + 2);
         assert_eq!(session.work().semantic.executions, variants.len() + 1);
         assert_eq!(session.work().semantic.reuses, 1);
@@ -10165,13 +10230,16 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let first = session.semantic(&options).unwrap();
+        let first = session.canonical_semantic(&options).unwrap();
         assert!(session.update(&broken).result().is_err());
-        assert!(Arc::ptr_eq(&first, &session.semantic(&options).unwrap()));
+        assert!(Arc::ptr_eq(
+            &first,
+            &session.canonical_semantic(&options).unwrap()
+        ));
         let update = session.update(&edited);
         assert!(update.downstream_invalidated());
         update.into_result().unwrap();
-        let second = session.semantic(&options).unwrap();
+        let second = session.canonical_semantic(&options).unwrap();
         assert!(!Arc::ptr_eq(&first, &second));
         assert_eq!(session.work().semantic.executions, 2);
         assert_eq!(session.work().semantic_entries_invalidated, 1);
@@ -10190,7 +10258,7 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let first = session.semantic(&options).unwrap();
+        let first = session.canonical_semantic(&options).unwrap();
         let original_key = session
             .queries
             .semantic
@@ -10203,7 +10271,10 @@ mod tests {
 
         let noop = session.update(&source);
         assert!(!noop.downstream_invalidated());
-        assert!(Arc::ptr_eq(&first, &session.semantic(&options).unwrap()));
+        assert!(Arc::ptr_eq(
+            &first,
+            &session.canonical_semantic(&options).unwrap()
+        ));
         assert_eq!(session.work().semantic.executions, 1);
         assert_eq!(session.work().semantic.reuses, 1);
 
@@ -10213,7 +10284,7 @@ mod tests {
         assert!(!original_handle.is_valid(&mut session.queries.graph));
         assert!(original_handle.invalidation_cause_count(&session.queries.graph) > 0);
         assert_eq!(session.work().semantic_entries_invalidated, 1);
-        let second = session.semantic(&options).unwrap();
+        let second = session.canonical_semantic(&options).unwrap();
         assert!(!Arc::ptr_eq(&first, &second));
 
         session.update(&source).into_result().unwrap();
@@ -10222,7 +10293,10 @@ mod tests {
             original_handle.invalidation_cause_count(&session.queries.graph),
             0
         );
-        assert!(Arc::ptr_eq(&first, &session.semantic(&options).unwrap()));
+        assert!(Arc::ptr_eq(
+            &first,
+            &session.canonical_semantic(&options).unwrap()
+        ));
         assert_eq!(session.work().semantic.executions, 2);
         assert_eq!(session.work().semantic.reuses, 2);
         assert_eq!(session.work().merge.executions, 2);
@@ -10247,8 +10321,8 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&invalid).into_result().unwrap();
-        let first = session.semantic(&options).unwrap_err();
-        let second = session.semantic(&options).unwrap_err();
+        let first = session.canonical_semantic(&options).unwrap_err();
+        let second = session.canonical_semantic(&options).unwrap_err();
         assert_eq!(format!("{first:?}"), format!("{second:?}"));
         assert_eq!(session.work().semantic.calls, 2);
         assert_eq!(session.work().semantic.executions, 1);
@@ -10272,7 +10346,7 @@ mod tests {
         let retained_failed_work = session.work().semantic_records[0].work;
 
         session.update(&valid).into_result().unwrap();
-        assert!(session.semantic(&options).is_ok());
+        assert!(session.canonical_semantic(&options).is_ok());
         assert_eq!(session.work().semantic.calls, 3);
         assert_eq!(session.work().semantic.executions, 2);
         assert_eq!(session.work().semantic.reuses, 1);
@@ -10299,11 +10373,11 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&valid).into_result().unwrap();
-        let baseline = session.semantic(&options).unwrap();
+        let baseline = session.canonical_semantic(&options).unwrap();
 
         session.update(&invalid).into_result().unwrap();
-        let first = session.semantic(&options).unwrap_err();
-        let second = session.semantic(&options).unwrap_err();
+        let first = session.canonical_semantic(&options).unwrap_err();
+        let second = session.canonical_semantic(&options).unwrap_err();
         assert_eq!(format!("{first:?}"), format!("{second:?}"));
         let record = session.work().semantic_records.last().unwrap();
         assert_eq!(
@@ -10316,7 +10390,7 @@ mod tests {
         assert_eq!(record.work.cfg.cfg_builds_attempted, 0);
 
         session.update(&valid).into_result().unwrap();
-        let recovered = session.semantic(&options).unwrap();
+        let recovered = session.canonical_semantic(&options).unwrap();
         assert!(
             Arc::ptr_eq(&recovered, &baseline),
             "restoring the exact source leaf must reinstate its retained terminal"
@@ -10336,7 +10410,9 @@ mod tests {
         );
         let mut session = CompilerSession::new();
         session.update(&invalid).into_result().unwrap();
-        session.semantic(&CompileOptions::default()).unwrap_err();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap_err();
         let record = session.work().semantic_records.last().unwrap();
         assert_eq!(
             record.failure.unwrap().phase,
@@ -10364,12 +10440,16 @@ mod tests {
         let overflowing = source(64);
         let mut session = CompilerSession::new();
         session.update(&baseline).into_result().unwrap();
-        let cold = session.semantic(&CompileOptions::default()).unwrap();
+        let cold = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(cold.durable_specialized_body_payloads().len(), 64);
         assert_eq!(cold.work().body_analysis.specialization_rounds, 64);
 
         session.update(&overflowing).into_result().unwrap();
-        session.semantic(&CompileOptions::default()).unwrap_err();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap_err();
         let failure = session.work().semantic_records.last().unwrap();
         assert_eq!(
             failure.failure.unwrap().phase,
@@ -10384,7 +10464,7 @@ mod tests {
 
         session.update(&baseline).into_result().unwrap();
         let recovered = session
-            .semantic(&CompileOptions {
+            .canonical_semantic(&CompileOptions {
                 opt_level: OptLevel::O2,
                 ..CompileOptions::default()
             })
@@ -10397,7 +10477,7 @@ mod tests {
         );
 
         let third_warm = session
-            .semantic(&CompileOptions {
+            .canonical_semantic(&CompileOptions {
                 opt_level: OptLevel::O3,
                 ..CompileOptions::default()
             })
@@ -10425,10 +10505,14 @@ mod tests {
         );
         let mut session = CompilerSession::new();
         session.update(&valid).into_result().unwrap();
-        session.semantic(&CompileOptions::default()).unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         session.update(&changed_source).into_result().unwrap();
         crate::canonical_semantic::with_test_declaration_failure_injection(|| {
-            session.semantic(&CompileOptions::default()).unwrap_err();
+            session
+                .canonical_semantic(&CompileOptions::default())
+                .unwrap_err();
         });
 
         let record = session.work().semantic_records.last().unwrap();
@@ -10459,7 +10543,9 @@ mod tests {
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.semantic(&CompileOptions::default()).unwrap_err();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap_err();
 
         let record = session.work().semantic_records.last().unwrap();
         assert_eq!(
@@ -10493,7 +10579,9 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         crate::canonical_semantic::with_test_authoritative_key_mismatch(|| {
-            session.semantic(&CompileOptions::default()).unwrap_err();
+            session
+                .canonical_semantic(&CompileOptions::default())
+                .unwrap_err();
         });
 
         let record = session.work().semantic_records.last().unwrap();
@@ -10521,11 +10609,11 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&valid).into_result().unwrap();
-        let baseline = session.semantic(&options).unwrap();
+        let baseline = session.canonical_semantic(&options).unwrap();
 
         session.update(&changed).into_result().unwrap();
         crate::canonical_semantic::with_test_cfg_failure_injection(|| {
-            session.semantic(&options).unwrap_err();
+            session.canonical_semantic(&options).unwrap_err();
         });
         let failed = session.work().semantic_records.last().unwrap();
         assert_eq!(
@@ -10539,7 +10627,7 @@ mod tests {
         assert_eq!(failed.work.cfg.optimization_attempts, 0);
 
         session.update(&valid).into_result().unwrap();
-        let recovered = session.semantic(&options).unwrap();
+        let recovered = session.canonical_semantic(&options).unwrap();
         assert!(
             Arc::ptr_eq(&recovered, &baseline),
             "restoring the exact source leaf must reinstate its retained terminal"
@@ -10559,7 +10647,9 @@ mod tests {
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let errors = session.semantic(&CompileOptions::default()).unwrap_err();
+        let errors = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap_err();
         assert!(
             errors
                 .iter()
@@ -10582,7 +10672,7 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let ordinary_options = CompileOptions::default();
-        let ordinary = session.semantic(&ordinary_options).unwrap();
+        let ordinary = session.canonical_semantic(&ordinary_options).unwrap();
         assert_eq!(session.work().definitions.executions, 0);
         assert_eq!(session.work().definition_entries, 0);
 
@@ -10626,7 +10716,7 @@ mod tests {
         session.update(&source).into_result().unwrap();
         session.stable_definitions(&options).unwrap();
         let semantic_executions = session.work().semantic.executions;
-        let ordinary = session.semantic(&options).unwrap();
+        let ordinary = session.canonical_semantic(&options).unwrap();
 
         assert!(!ordinary.functions().is_empty());
         assert_eq!(semantic_executions, 1);
@@ -10646,7 +10736,7 @@ mod tests {
         let source = base();
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
-        let published = session.update(&source).into_result().unwrap();
+        let published = session.update(&source).into_owner_result().unwrap();
 
         let module_id = ModuleId::from_logical_path("a.rue").unwrap();
         let module = published.module(&module_id).expect("module by stable ID");
@@ -10707,7 +10797,7 @@ mod tests {
             1,
         );
         let mut session = CompilerSession::new();
-        let program = session.update(&source).into_result().unwrap();
+        let program = session.update(&source).into_owner_result().unwrap();
         let graph = crate::test_support::test_fixture_import_graph(&program).unwrap();
         session.adopt_test_import_graph(graph);
         assert!(session.import_graph(None).is_ok());
@@ -10733,7 +10823,7 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.semantic(&options).unwrap();
+        session.canonical_semantic(&options).unwrap();
 
         let imports = session.accepted_semantic_import_graph().unwrap();
         let successful_key = SemanticQueryKey {
@@ -10778,6 +10868,7 @@ mod tests {
             SemanticCacheEntry {
                 key: failed_key,
                 result: Err(failed_errors),
+                rir: None,
                 diagnostics: failed_diagnostics,
                 successful_body_cache: None,
                 durable_declaration_cache: None,
@@ -12168,7 +12259,7 @@ mod tests {
                 .is_some_and(|cache| cache.bodies.is_empty())
         );
         let warm = session
-            .semantic(&CompileOptions {
+            .canonical_semantic(&CompileOptions {
                 opt_level: OptLevel::O1,
                 ..CompileOptions::default()
             })
@@ -12457,7 +12548,9 @@ mod tests {
         let mut session = CompilerSession::new();
         publish_with_test_imports(&mut session, &source);
         assert!(
-            session.semantic(&CompileOptions::default()).is_err(),
+            session
+                .canonical_semantic(&CompileOptions::default())
+                .is_err(),
             "dotted type-call heads are module-qualified free functions, not associated functions"
         );
     }
@@ -12555,7 +12648,11 @@ mod tests {
         );
         let mut session = CompilerSession::new();
         publish_with_test_imports(&mut session, &source);
-        assert!(session.semantic(&CompileOptions::default()).is_err());
+        assert!(
+            session
+                .canonical_semantic(&CompileOptions::default())
+                .is_err()
+        );
         let manifest = session
             .semantic_dependency_inputs(&CompileOptions::default(), None)
             .unwrap();
@@ -12899,7 +12996,7 @@ mod tests {
         );
         let mut session = CompilerSession::new();
         session.update(&valid).into_result().unwrap();
-        let published = session.published().unwrap().clone();
+        let published = session.published_owner().unwrap().clone();
 
         let failed = session.update(&syntax_bad);
         let syntax_diagnostics = failed.diagnostics().clone();
@@ -12912,7 +13009,7 @@ mod tests {
             syntax_bad.source_revision()
         );
         assert!(!syntax_diagnostics.errors().is_empty());
-        assert!(Arc::ptr_eq(session.published().unwrap(), &published));
+        assert!(Arc::ptr_eq(session.published_owner().unwrap(), &published));
         assert!(Arc::ptr_eq(
             session
                 .diagnostics_for(&syntax_bad, &FrontendDiagnosticIdentity::Syntax)
@@ -12922,14 +13019,14 @@ mod tests {
 
         session.update(&semantic_bad).into_result().unwrap();
         let options = CompileOptions::default();
-        session.semantic(&options).unwrap_err();
+        session.canonical_semantic(&options).unwrap_err();
         let first = session.latest_diagnostics().unwrap().clone();
         let first_fingerprint = first
             .errors()
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
-        session.semantic(&options).unwrap_err();
+        session.canonical_semantic(&options).unwrap_err();
         let reused = session.latest_diagnostics().unwrap().clone();
         assert!(Arc::ptr_eq(&first, &reused));
         assert_eq!(
@@ -12946,19 +13043,19 @@ mod tests {
         assert_eq!(input.opt_level(), crate::StableOptLevel::O0);
 
         session.update(&warning_source).into_result().unwrap();
-        session.semantic(&options).unwrap();
+        session.canonical_semantic(&options).unwrap();
         let warning = session.latest_diagnostics().unwrap().clone();
         assert!(warning.is_success());
         assert!(!warning.warnings().is_empty());
         session
-            .semantic(&CompileOptions {
+            .canonical_semantic(&CompileOptions {
                 linker: LinkerMode::Internal,
                 ..options.clone()
             })
             .unwrap();
         assert!(Arc::ptr_eq(&warning, session.latest_diagnostics().unwrap()));
         session
-            .semantic(&CompileOptions {
+            .canonical_semantic(&CompileOptions {
                 opt_level: OptLevel::O1,
                 ..options.clone()
             })
@@ -12966,7 +13063,7 @@ mod tests {
         let optimized = session.latest_diagnostics().unwrap().clone();
         assert!(!Arc::ptr_eq(&warning, &optimized));
         session
-            .semantic(&CompileOptions {
+            .canonical_semantic(&CompileOptions {
                 preview_features: PreviewFeatures::from([PreviewFeature::TestInfra]),
                 ..options.clone()
             })
@@ -12978,7 +13075,7 @@ mod tests {
             .find(|&&target| target != options.target)
             .unwrap();
         session
-            .semantic(&CompileOptions {
+            .canonical_semantic(&CompileOptions {
                 target: other_target,
                 ..options
             })
@@ -13194,7 +13291,7 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let first_errors = session.semantic(&options).unwrap_err();
+        let first_errors = session.canonical_semantic(&options).unwrap_err();
         let origin = session.latest_diagnostics().unwrap().clone();
         let stage = origin.identity().clone();
 
@@ -13207,7 +13304,7 @@ mod tests {
         let publications = session.work().diagnostic_publications;
         let reuses = session.work().diagnostic_reuses;
 
-        let reused_errors = session.semantic(&options).unwrap_err();
+        let reused_errors = session.canonical_semantic(&options).unwrap_err();
 
         assert_eq!(
             first_errors
@@ -13285,10 +13382,10 @@ fn main() -> i32 { selected.value() }"#,
         session.update(&source).into_result().unwrap();
 
         session.adopt_test_import_graph(graph_a.clone());
-        session.semantic(&options).unwrap();
+        session.canonical_semantic(&options).unwrap();
         let diagnostics_a = session.latest_diagnostics().unwrap().clone();
         session.adopt_test_import_graph(graph_b.clone());
-        session.semantic(&options).unwrap();
+        session.canonical_semantic(&options).unwrap();
         let diagnostics_b = session.latest_diagnostics().unwrap().clone();
 
         assert!(!Arc::ptr_eq(&diagnostics_a, &diagnostics_b));
@@ -13310,7 +13407,7 @@ fn main() -> i32 { selected.value() }"#,
         let initial = source("fn main() -> i32 { 0 }");
         let mut session = CompilerSession::new();
         session.update(&initial).into_result().unwrap();
-        session.semantic(&options).unwrap();
+        session.canonical_semantic(&options).unwrap();
         assert_eq!(session.work().retention.diagnostic_entries, 5);
         assert_eq!(session.work().retention.diagnostic_source_attempts, 1);
         assert_eq!(
@@ -13341,7 +13438,7 @@ fn main() -> i32 { selected.value() }"#,
             maximum_attempt_bytes = maximum_attempt_bytes.max(semantic_text.len());
             let semantic_bad = source(&semantic_text);
             session.update(&semantic_bad).into_result().unwrap();
-            session.semantic(&options).unwrap_err();
+            session.canonical_semantic(&options).unwrap_err();
             assert!(Arc::ptr_eq(
                 session.last_good_semantic_diagnostics().unwrap(),
                 &before_semantic_failure
@@ -13352,7 +13449,7 @@ fn main() -> i32 { selected.value() }"#,
             maximum_attempt_bytes = maximum_attempt_bytes.max(valid_text.len());
             let valid = source(&valid_text);
             session.update(&valid).into_result().unwrap();
-            let recovered = session.semantic(&options).unwrap();
+            let recovered = session.canonical_semantic(&options).unwrap();
             let recovered_diagnostics = session.latest_diagnostics().unwrap();
             assert!(recovered_diagnostics.is_success());
             assert!(Arc::ptr_eq(
@@ -13396,8 +13493,8 @@ fn main() -> i32 { selected.value() }"#,
         let final_source = source("fn main() -> i32 { 32 }");
         let mut fresh = CompilerSession::new();
         fresh.update(&final_source).into_result().unwrap();
-        let fresh_output = fresh.semantic(&options).unwrap();
-        let retained_output = session.semantic(&options).unwrap();
+        let fresh_output = fresh.canonical_semantic(&options).unwrap();
+        let retained_output = session.canonical_semantic(&options).unwrap();
         assert_eq!(
             format!("{:?}", retained_output.functions()),
             format!("{:?}", fresh_output.functions())
@@ -13482,7 +13579,7 @@ fn main() -> i32 { selected.value() }"#,
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
-        let reused = session.semantic(&optimized_options).unwrap();
+        let reused = session.canonical_semantic(&optimized_options).unwrap();
         let reused_work = reused.work();
         assert_eq!(reused_work.body_analysis.bodies_attempted, 0);
         assert_eq!(reused_work.body_analysis.bodies_succeeded, 0);
@@ -13494,7 +13591,7 @@ fn main() -> i32 { selected.value() }"#,
 
         let mut fresh = CompilerSession::new();
         fresh.update(&source).into_result().unwrap();
-        let fresh = fresh.semantic(&optimized_options).unwrap();
+        let fresh = fresh.canonical_semantic(&optimized_options).unwrap();
         assert_eq!(
             format!("{:?}", reused.functions()),
             format!("{:?}", fresh.functions())
@@ -13528,7 +13625,9 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let cold = session.semantic(&CompileOptions::default()).unwrap();
+        let cold = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(cold.durable_specialized_body_payloads().len(), 1);
         let specialized = &cold.durable_specialized_body_payloads()[0];
         assert_eq!(
@@ -13562,7 +13661,7 @@ fn main() -> i32 { selected.value() }"#,
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
-        let reused = session.semantic(&optimized).unwrap();
+        let reused = session.canonical_semantic(&optimized).unwrap();
         let work = reused.work().body_analysis;
         assert_eq!(work.specialized_body_import_attempts, 1);
         assert_eq!(work.specialized_body_import_successes, 1);
@@ -13598,7 +13697,7 @@ fn main() -> i32 { selected.value() }"#,
 
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&source).into_result().unwrap();
-        let fresh = fresh_session.semantic(&optimized).unwrap();
+        let fresh = fresh_session.canonical_semantic(&optimized).unwrap();
         assert_eq!(
             format!("{:?}", reused.functions()),
             format!("{:?}", fresh.functions())
@@ -13658,13 +13757,15 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         publish_with_test_imports(&mut session, &original);
-        session.semantic(&CompileOptions::default()).unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         publish_with_test_imports(&mut session, &relocated);
         let options = CompileOptions {
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
-        let reused = session.semantic(&options).unwrap();
+        let reused = session.canonical_semantic(&options).unwrap();
         assert_eq!(reused.work().durable_bodies.candidate_comparisons, 1);
         assert_eq!(reused.work().durable_bodies.candidate_fallbacks, 0);
         assert_eq!(reused.work().body_analysis.specialized_bodies_reused, 1);
@@ -13672,7 +13773,7 @@ fn main() -> i32 { selected.value() }"#,
 
         let mut fresh_session = CompilerSession::new();
         publish_with_test_imports(&mut fresh_session, &relocated);
-        let fresh = fresh_session.semantic(&options).unwrap();
+        let fresh = fresh_session.canonical_semantic(&options).unwrap();
         assert_body_artifact_parity(&reused, &fresh);
         assert_diagnostic_parity(&session, &fresh_session);
     }
@@ -13691,8 +13792,10 @@ fn main() -> i32 { selected.value() }"#,
         let run = |options: CompileOptions| {
             let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
-            session.semantic(&CompileOptions::default()).unwrap();
-            session.semantic(&options).unwrap()
+            session
+                .canonical_semantic(&CompileOptions::default())
+                .unwrap();
+            session.canonical_semantic(&options).unwrap()
         };
         let other_target = *Target::all()
             .iter()
@@ -13739,14 +13842,16 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let cold = session.semantic(&CompileOptions::default()).unwrap();
+        let cold = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(cold.durable_specialized_body_payloads().len(), 0);
         assert_eq!(cold.work().body_analysis.specialized_bodies_attempted, 1);
         assert!(cold.work().body_analysis.specialization_requests_duplicate >= 1);
         assert_eq!(cold.warnings().len(), 1);
 
         let warm = session
-            .semantic(&CompileOptions {
+            .canonical_semantic(&CompileOptions {
                 opt_level: OptLevel::O1,
                 ..CompileOptions::default()
             })
@@ -13775,7 +13880,9 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let cold = session.semantic(&CompileOptions::default()).unwrap();
+        let cold = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(cold.durable_specialized_body_payloads().len(), 1);
         assert!(
             !cold.durable_specialized_body_payloads()[0].dependency_boundary_complete,
@@ -13790,7 +13897,7 @@ fn main() -> i32 { selected.value() }"#,
                 .is_empty()
         );
         let warm = session
-            .semantic(&CompileOptions {
+            .canonical_semantic(&CompileOptions {
                 opt_level: OptLevel::O1,
                 ..CompileOptions::default()
             })
@@ -13813,7 +13920,9 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.semantic(&CompileOptions::default()).unwrap_err();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap_err();
         let failure = session.work().semantic_records.last().unwrap();
         assert!(failure.failure.is_some());
         assert_eq!(failure.work.durable_bodies.import_attempts, 0);
@@ -13833,7 +13942,9 @@ fn main() -> i32 { selected.value() }"#,
         let source = snapshot(&[(42, "/p/main.rue", "main.rue", source_text)], 42);
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let cold = session.semantic(&CompileOptions::default()).unwrap();
+        let cold = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(cold.durable_specialized_body_payloads().len(), 2);
         assert_eq!(cold.work().body_analysis.specialized_bodies_attempted, 2);
         assert!(cold.work().body_analysis.specialization_requests_duplicate >= 1);
@@ -13842,7 +13953,7 @@ fn main() -> i32 { selected.value() }"#,
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
-        let warm = session.semantic(&optimized).unwrap();
+        let warm = session.canonical_semantic(&optimized).unwrap();
         let work = warm.work().body_analysis;
         assert_eq!(work.specialized_body_import_attempts, 2);
         assert_eq!(work.specialized_body_import_successes, 2);
@@ -13857,7 +13968,9 @@ fn main() -> i32 { selected.value() }"#,
             42,
         );
         session.update(&unrelated).into_result().unwrap();
-        let unrelated = session.semantic(&CompileOptions::default()).unwrap();
+        let unrelated = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(unrelated.work().body_analysis.specialized_bodies_reused, 2);
         assert_eq!(
             unrelated.work().body_analysis.specialized_bodies_attempted,
@@ -13870,7 +13983,9 @@ fn main() -> i32 { selected.value() }"#,
              fn unrelated() -> i32 { 7 }";
         let changed = snapshot(&[(42, "/p/main.rue", "main.rue", changed_text)], 42);
         session.update(&changed).into_result().unwrap();
-        let changed = session.semantic(&CompileOptions::default()).unwrap();
+        let changed = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(changed.work().body_analysis.specialized_bodies_reused, 0);
         assert_eq!(changed.work().body_analysis.specialized_bodies_attempted, 2);
     }
@@ -13883,7 +13998,9 @@ fn main() -> i32 { selected.value() }"#,
         let source = snapshot(&[(42, "/p/main.rue", "main.rue", source_text)], 42);
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.semantic(&CompileOptions::default()).unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
 
         let cache = session.last_successful_body_cache.as_mut().unwrap();
         let outer = Arc::make_mut(&mut cache.specialized_bodies)
@@ -13909,7 +14026,7 @@ fn main() -> i32 { selected.value() }"#,
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
-        let recovered = session.semantic(&optimized).unwrap();
+        let recovered = session.canonical_semantic(&optimized).unwrap();
         assert_eq!(recovered.work().durable_bodies.candidate_fallbacks, 1);
         assert_eq!(
             recovered.work().durable_bodies.specialized_mapping_attempts,
@@ -13955,7 +14072,7 @@ fn main() -> i32 { selected.value() }"#,
 
         let mut fresh = CompilerSession::new();
         fresh.update(&source).into_result().unwrap();
-        let fresh = fresh.semantic(&optimized).unwrap();
+        let fresh = fresh.canonical_semantic(&optimized).unwrap();
         assert_eq!(
             format!("{:?}", recovered.functions()),
             format!("{:?}", fresh.functions())
@@ -13971,7 +14088,9 @@ fn main() -> i32 { selected.value() }"#,
         let source = snapshot(&[(42, "/p/main.rue", "main.rue", source_text)], 42);
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.semantic(&CompileOptions::default()).unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
 
         let cache = session.last_successful_body_cache.as_mut().unwrap();
         let outer = Arc::make_mut(&mut cache.specialized_bodies)
@@ -13994,7 +14113,7 @@ fn main() -> i32 { selected.value() }"#,
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
-        let recovered = session.semantic(&optimized).unwrap();
+        let recovered = session.canonical_semantic(&optimized).unwrap();
         let work = recovered.work().body_analysis;
         assert_eq!(recovered.work().durable_bodies.candidate_fallbacks, 0);
         assert_eq!(work.specialized_body_import_attempts, 2);
@@ -14006,7 +14125,7 @@ fn main() -> i32 { selected.value() }"#,
 
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&source).into_result().unwrap();
-        let fresh = fresh_session.semantic(&optimized).unwrap();
+        let fresh = fresh_session.canonical_semantic(&optimized).unwrap();
         assert_body_artifact_parity(&recovered, &fresh);
         assert_diagnostic_parity(&session, &fresh_session);
     }
@@ -14027,14 +14146,16 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let cold = session.semantic(&CompileOptions::default()).unwrap();
+        let cold = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(cold.durable_specialized_body_payloads().len(), 6);
 
         let optimized = CompileOptions {
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
-        let warm = session.semantic(&optimized).unwrap();
+        let warm = session.canonical_semantic(&optimized).unwrap();
         let work = warm.work().body_analysis;
         assert_eq!(work.specialized_body_import_attempts, 6);
         assert_eq!(work.specialized_body_import_successes, 6);
@@ -14055,7 +14176,9 @@ fn main() -> i32 { selected.value() }"#,
         let first = snapshot(&[(42, "/p/main.rue", "main.rue", first_text)], 42);
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        let cold = session.semantic(&CompileOptions::default()).unwrap();
+        let cold = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(cold.durable_specialized_body_payloads().len(), 2);
         let bool_identities = cold
             .durable_specialized_body_payloads()
@@ -14075,13 +14198,17 @@ fn main() -> i32 { selected.value() }"#,
             42,
         );
         session.update(&changed_source).into_result().unwrap();
-        let changed = session.semantic(&CompileOptions::default()).unwrap();
+        let changed = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(changed.work().body_analysis.specialized_bodies_reused, 1);
         assert_eq!(changed.work().body_analysis.specialized_bodies_attempted, 1);
 
         let mut fresh = CompilerSession::new();
         fresh.update(&changed_source).into_result().unwrap();
-        let fresh = fresh.semantic(&CompileOptions::default()).unwrap();
+        let fresh = fresh
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(
             format!("{:?}", changed.functions()),
             format!("{:?}", fresh.functions())
@@ -14107,7 +14234,9 @@ fn main() -> i32 { selected.value() }"#,
         let first = snapshot(&[(43, "/p/main.rue", "main.rue", first_text)], 43);
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        let cold = session.semantic(&CompileOptions::default()).unwrap();
+        let cold = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(cold.durable_specialized_body_payloads().len(), 2);
 
         let changed_text = first_text.replace("cleanup();", "cleanup(); let marker = 0;");
@@ -14116,13 +14245,17 @@ fn main() -> i32 { selected.value() }"#,
             43,
         );
         session.update(&changed_source).into_result().unwrap();
-        let changed = session.semantic(&CompileOptions::default()).unwrap();
+        let changed = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(changed.work().body_analysis.specialized_bodies_reused, 1);
         assert_eq!(changed.work().body_analysis.specialized_bodies_attempted, 1);
 
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&changed_source).into_result().unwrap();
-        let fresh = fresh_session.semantic(&CompileOptions::default()).unwrap();
+        let fresh = fresh_session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_body_artifact_parity(&changed, &fresh);
         assert_diagnostic_parity(&session, &fresh_session);
     }
@@ -14144,7 +14277,9 @@ fn main() -> i32 { selected.value() }"#,
         let source = snapshot(&[(90, "/p/main.rue", "main.rue", &program)], 90);
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let semantic = session.semantic(&CompileOptions::default()).unwrap();
+        let semantic = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         let definitions = semantic.body_owner_issuer();
         let (bodies, work) = build_supported_ordinary_body_cache(
             &semantic,
@@ -14212,7 +14347,9 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let cold = session.semantic(&CompileOptions::default()).unwrap();
+        let cold = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(cold.work().body_analysis.bodies_attempted, 6);
         assert_eq!(
             session
@@ -14238,7 +14375,7 @@ fn main() -> i32 { selected.value() }"#,
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
-        let reused = session.semantic(&options).unwrap();
+        let reused = session.canonical_semantic(&options).unwrap();
         assert_eq!(reused.work().durable_bodies.candidate_comparisons, 6);
         assert_eq!(reused.work().durable_bodies.import_attempts, 6);
         assert_eq!(reused.work().durable_bodies.import_successes, 6);
@@ -14247,7 +14384,7 @@ fn main() -> i32 { selected.value() }"#,
 
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&relocated).into_result().unwrap();
-        let fresh = fresh_session.semantic(&options).unwrap();
+        let fresh = fresh_session.canonical_semantic(&options).unwrap();
         assert_body_artifact_parity(&reused, &fresh);
         assert_diagnostic_parity(&session, &fresh_session);
 
@@ -14261,14 +14398,16 @@ fn main() -> i32 { selected.value() }"#,
             145,
         );
         session.update(&edited).into_result().unwrap();
-        let edited_output = session.semantic(&CompileOptions::default()).unwrap();
+        let edited_output = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(edited_output.work().durable_bodies.candidate_comparisons, 6);
         assert_eq!(edited_output.work().durable_bodies.reused_bodies, 4);
         assert_eq!(edited_output.work().body_analysis.bodies_attempted, 2);
         let mut edited_fresh_session = CompilerSession::new();
         edited_fresh_session.update(&edited).into_result().unwrap();
         let edited_fresh = edited_fresh_session
-            .semantic(&CompileOptions::default())
+            .canonical_semantic(&CompileOptions::default())
             .unwrap();
         assert_body_artifact_parity(&edited_output, &edited_fresh);
         assert_diagnostic_parity(&session, &edited_fresh_session);
@@ -14283,7 +14422,9 @@ fn main() -> i32 { selected.value() }"#,
             145,
         );
         session.update(&destructor_edit).into_result().unwrap();
-        let destructor_output = session.semantic(&CompileOptions::default()).unwrap();
+        let destructor_output = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(destructor_output.work().durable_bodies.reused_bodies, 2);
         assert_eq!(destructor_output.work().body_analysis.bodies_attempted, 4);
 
@@ -14297,7 +14438,9 @@ fn main() -> i32 { selected.value() }"#,
             145,
         );
         session.update(&helper_edit).into_result().unwrap();
-        let helper_output = session.semantic(&CompileOptions::default()).unwrap();
+        let helper_output = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(helper_output.work().durable_bodies.reused_bodies, 3);
         assert_eq!(helper_output.work().body_analysis.bodies_attempted, 3);
         let mut helper_fresh_session = CompilerSession::new();
@@ -14306,7 +14449,7 @@ fn main() -> i32 { selected.value() }"#,
             .into_result()
             .unwrap();
         let helper_fresh = helper_fresh_session
-            .semantic(&CompileOptions::default())
+            .canonical_semantic(&CompileOptions::default())
             .unwrap();
         assert_body_artifact_parity(&helper_output, &helper_fresh);
         assert_diagnostic_parity(&session, &helper_fresh_session);
@@ -14326,7 +14469,9 @@ fn main() -> i32 { selected.value() }"#,
         let edited = source("i64");
         let mut session = CompilerSession::new();
         session.update(&original).into_result().unwrap();
-        let cold = session.semantic(&CompileOptions::default()).unwrap();
+        let cold = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(cold.work().body_analysis.bodies_attempted, 4);
         let retained = session.last_successful_body_cache.as_ref().unwrap();
         assert_eq!(retained.bodies.len(), 4);
@@ -14339,7 +14484,9 @@ fn main() -> i32 { selected.value() }"#,
         );
 
         session.update(&edited).into_result().unwrap();
-        let actual = session.semantic(&CompileOptions::default()).unwrap();
+        let actual = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(actual.work().durable_bodies.candidate_comparisons, 4);
         assert_eq!(actual.work().durable_bodies.reused_bodies, 1);
         assert_eq!(actual.work().durable_bodies.skipped_body_analyses, 1);
@@ -14348,7 +14495,9 @@ fn main() -> i32 { selected.value() }"#,
 
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&edited).into_result().unwrap();
-        let fresh = fresh_session.semantic(&CompileOptions::default()).unwrap();
+        let fresh = fresh_session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_body_artifact_parity(&actual, &fresh);
         assert_diagnostic_parity(&session, &fresh_session);
     }
@@ -14380,7 +14529,9 @@ fn main() -> i32 { selected.value() }"#,
             .unwrap();
 
         session.update(&edited).into_result().unwrap();
-        let edited_output = session.semantic(&CompileOptions::default()).unwrap();
+        let edited_output = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         let work = edited_output.work();
         assert_eq!(work.durable_bodies.candidate_comparisons, 3);
         assert_eq!(work.durable_bodies.reused_bodies, 1);
@@ -14401,14 +14552,18 @@ fn main() -> i32 { selected.value() }"#,
             51,
         );
         session.update(&invalid).into_result().unwrap();
-        assert!(session.semantic(&CompileOptions::default()).is_err());
+        assert!(
+            session
+                .canonical_semantic(&CompileOptions::default())
+                .is_err()
+        );
 
         session.update(&edited).into_result().unwrap();
         let recovered_options = CompileOptions {
             opt_level: OptLevel::O2,
             ..CompileOptions::default()
         };
-        let recovered = session.semantic(&recovered_options).unwrap();
+        let recovered = session.canonical_semantic(&recovered_options).unwrap();
         assert_eq!(recovered.work().durable_bodies.reused_bodies, 3);
         assert_eq!(recovered.work().body_analysis.bodies_attempted, 0);
     }
@@ -14426,7 +14581,9 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.semantic(&CompileOptions::default()).unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         let cache = session.last_successful_body_cache.as_mut().unwrap();
         let mut bodies = cache.bodies.to_vec();
         let mut instructions = bodies[0].payload.instructions.to_vec();
@@ -14438,7 +14595,7 @@ fn main() -> i32 { selected.value() }"#,
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
-        let output = session.semantic(&options).unwrap();
+        let output = session.canonical_semantic(&options).unwrap();
         let work = output.work();
         assert_eq!(work.durable_bodies.candidate_comparisons, 2);
         assert_eq!(work.durable_bodies.projection_completions, 2);
@@ -14452,7 +14609,7 @@ fn main() -> i32 { selected.value() }"#,
         assert_eq!(work.body_analysis.bodies_succeeded, 1);
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&source).into_result().unwrap();
-        let fresh = fresh_session.semantic(&options).unwrap();
+        let fresh = fresh_session.canonical_semantic(&options).unwrap();
         assert_body_artifact_parity(&output, &fresh);
         assert_diagnostic_parity(&session, &fresh_session);
     }
@@ -14470,7 +14627,9 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.semantic(&CompileOptions::default()).unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert!(
             session
                 .last_successful_body_cache
@@ -14551,7 +14710,7 @@ fn main() -> i32 { selected.value() }"#,
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
-        let actual = session.semantic(&options).unwrap();
+        let actual = session.canonical_semantic(&options).unwrap();
         assert_eq!(actual.work().durable_bodies.candidate_comparisons, 3);
         assert_eq!(actual.work().durable_bodies.import_attempts, 3);
         assert_eq!(actual.work().durable_bodies.import_successes, 2);
@@ -14577,7 +14736,7 @@ fn main() -> i32 { selected.value() }"#,
 
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&source).into_result().unwrap();
-        let fresh = fresh_session.semantic(&options).unwrap();
+        let fresh = fresh_session.canonical_semantic(&options).unwrap();
         assert_eq!(
             symbols_before,
             fresh_session
@@ -14611,7 +14770,9 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let cold = session.semantic(&CompileOptions::default()).unwrap();
+        let cold = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert!(!cold.warnings().is_empty());
         assert!(
             session
@@ -14624,7 +14785,7 @@ fn main() -> i32 { selected.value() }"#,
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
-        let warm = session.semantic(&options).unwrap();
+        let warm = session.canonical_semantic(&options).unwrap();
         assert_eq!(warm.work().durable_bodies.reused_bodies, 0);
         assert_eq!(warm.work().body_analysis.bodies_attempted, 1);
         assert_eq!(
@@ -14655,16 +14816,22 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         session.update(&original).into_result().unwrap();
-        session.semantic(&CompileOptions::default()).unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         session.update(&edited).into_result().unwrap();
-        let reused = session.semantic(&CompileOptions::default()).unwrap();
+        let reused = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(reused.work().durable_bodies.candidate_comparisons, 2);
         assert_eq!(reused.work().durable_bodies.import_attempts, 0);
         assert_eq!(reused.work().durable_bodies.reused_bodies, 0);
 
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
-        let fresh = fresh.semantic(&CompileOptions::default()).unwrap();
+        let fresh = fresh
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(
             format!("{:?}", reused.functions()),
             format!("{:?}", fresh.functions())
@@ -14680,7 +14847,9 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.semantic(&CompileOptions::default()).unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         let cache = session.last_successful_body_cache.as_mut().unwrap();
         let mut bodies = cache.bodies.to_vec();
         bodies[0].payload.return_type =
@@ -14696,14 +14865,14 @@ fn main() -> i32 { selected.value() }"#,
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
-        let reused = session.semantic(&options).unwrap();
+        let reused = session.canonical_semantic(&options).unwrap();
         assert_eq!(reused.work().durable_bodies.import_attempts, 1);
         assert_eq!(reused.work().durable_bodies.import_failures, 1);
         assert_eq!(reused.work().durable_bodies.atomic_discards, 1);
 
         let mut fresh = CompilerSession::new();
         fresh.update(&source).into_result().unwrap();
-        let fresh = fresh.semantic(&options).unwrap();
+        let fresh = fresh.canonical_semantic(&options).unwrap();
         assert_eq!(
             format!("{:?}", reused.functions()),
             format!("{:?}", fresh.functions())
@@ -14742,13 +14911,21 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         session.update(&a).into_result().unwrap();
-        session.semantic(&CompileOptions::default()).unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         session.update(&b).into_result().unwrap();
-        session.semantic(&CompileOptions::default()).unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         session.update(&a).into_result().unwrap();
-        session.semantic(&CompileOptions::default()).unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         session.update(&a_prime).into_result().unwrap();
-        let output = session.semantic(&CompileOptions::default()).unwrap();
+        let output = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(output.work().durable_bodies.reused_bodies, 1);
         assert_eq!(output.work().durable_bodies.import_successes, 1);
     }
@@ -14787,9 +14964,13 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         session.update(&original).into_result().unwrap();
-        session.semantic(&CompileOptions::default()).unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         session.update(&edited).into_result().unwrap();
-        let actual = session.semantic(&CompileOptions::default()).unwrap();
+        let actual = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         let work = actual.work();
         assert_eq!(work.durable_bodies.candidate_comparisons, 5);
         assert_eq!(work.durable_bodies.import_attempts, 1);
@@ -14801,7 +14982,9 @@ fn main() -> i32 { selected.value() }"#,
 
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&edited).into_result().unwrap();
-        let fresh = fresh_session.semantic(&CompileOptions::default()).unwrap();
+        let fresh = fresh_session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_body_artifact_parity(&actual, &fresh);
         assert_diagnostic_parity(&session, &fresh_session);
     }
@@ -14838,9 +15021,13 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         session.update(&original).into_result().unwrap();
-        session.semantic(&CompileOptions::default()).unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         session.update(&edited).into_result().unwrap();
-        let actual = session.semantic(&CompileOptions::default()).unwrap();
+        let actual = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(actual.work().durable_bodies.candidate_comparisons, 4);
         assert_eq!(actual.work().durable_bodies.reused_bodies, 1);
         assert_eq!(actual.work().durable_bodies.candidate_fallbacks, 3);
@@ -14848,7 +15035,9 @@ fn main() -> i32 { selected.value() }"#,
 
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&edited).into_result().unwrap();
-        let fresh = fresh_session.semantic(&CompileOptions::default()).unwrap();
+        let fresh = fresh_session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_body_artifact_parity(&actual, &fresh);
         assert_diagnostic_parity(&session, &fresh_session);
     }
@@ -14875,16 +15064,22 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         session.update(&original).into_result().unwrap();
-        session.semantic(&CompileOptions::default()).unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         session.update(&edited).into_result().unwrap();
-        let actual = session.semantic(&CompileOptions::default()).unwrap();
+        let actual = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(actual.work().durable_bodies.candidate_comparisons, 3);
         assert_eq!(actual.work().durable_bodies.reused_bodies, 1);
         assert_eq!(actual.work().durable_bodies.candidate_fallbacks, 2);
         assert_eq!(actual.work().body_analysis.bodies_attempted, 2);
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&edited).into_result().unwrap();
-        let fresh = fresh_session.semantic(&CompileOptions::default()).unwrap();
+        let fresh = fresh_session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_body_artifact_parity(&actual, &fresh);
         assert_diagnostic_parity(&session, &fresh_session);
     }
@@ -14917,13 +15112,15 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         session.update(&original).into_result().unwrap();
-        session.semantic(&CompileOptions::default()).unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         session.update(&relocated).into_result().unwrap();
         let options = CompileOptions {
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
-        let actual = session.semantic(&options).unwrap();
+        let actual = session.canonical_semantic(&options).unwrap();
         assert_eq!(actual.work().durable_bodies.candidate_comparisons, 2);
         assert_eq!(actual.work().durable_bodies.import_attempts, 2);
         assert_eq!(actual.work().durable_bodies.reused_bodies, 2);
@@ -14932,7 +15129,7 @@ fn main() -> i32 { selected.value() }"#,
 
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&relocated).into_result().unwrap();
-        let fresh = fresh_session.semantic(&options).unwrap();
+        let fresh = fresh_session.canonical_semantic(&options).unwrap();
         assert_body_artifact_parity(&actual, &fresh);
         assert_diagnostic_parity(&session, &fresh_session);
     }
@@ -14960,9 +15157,11 @@ fn main() -> i32 { selected.value() }"#,
         let run = |options: CompileOptions, next: &SourceSnapshot| {
             let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
-            session.semantic(&CompileOptions::default()).unwrap();
+            session
+                .canonical_semantic(&CompileOptions::default())
+                .unwrap();
             session.update(next).into_result().unwrap();
-            session.semantic(&options).unwrap()
+            session.canonical_semantic(&options).unwrap()
         };
         let other_target = *Target::all()
             .iter()
@@ -15013,9 +15212,13 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         session.update(&both_roots).into_result().unwrap();
-        session.semantic(&CompileOptions::default()).unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         session.update(&other_root).into_result().unwrap();
-        let root = session.semantic(&CompileOptions::default()).unwrap();
+        let root = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(root.work().durable_bodies.reused_bodies, 0);
         assert_eq!(root.work().durable_bodies.import_attempts, 0);
         assert_eq!(root.work().durable_bodies.candidate_fallbacks, 1);
@@ -15043,13 +15246,15 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         session.update(&valid).into_result().unwrap();
-        session.semantic(&CompileOptions::default()).unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         let cache = session.last_successful_body_cache.as_mut().unwrap();
         let mut bodies = cache.bodies.to_vec();
         bodies[0].payload.schema_version = u32::MAX;
         cache.bodies = bodies.into();
         let projected = session
-            .semantic(&CompileOptions {
+            .canonical_semantic(&CompileOptions {
                 opt_level: OptLevel::O1,
                 ..CompileOptions::default()
             })
@@ -15067,12 +15272,18 @@ fn main() -> i32 { selected.value() }"#,
         };
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&valid).into_result().unwrap();
-        let fresh = fresh_session.semantic(&projected_options).unwrap();
+        let fresh = fresh_session
+            .canonical_semantic(&projected_options)
+            .unwrap();
         assert_body_artifact_parity(&projected, &fresh);
         assert_diagnostic_parity(&session, &fresh_session);
 
         session.update(&broken).into_result().unwrap();
-        assert!(session.semantic(&CompileOptions::default()).is_err());
+        assert!(
+            session
+                .canonical_semantic(&CompileOptions::default())
+                .is_err()
+        );
         let failure = session.work().semantic_records.last().unwrap();
         assert_eq!(
             failure.failure.unwrap().phase,
@@ -15087,7 +15298,7 @@ fn main() -> i32 { selected.value() }"#,
 
         session.update(&valid).into_result().unwrap();
         let recovered = session
-            .semantic(&CompileOptions {
+            .canonical_semantic(&CompileOptions {
                 opt_level: OptLevel::O2,
                 ..CompileOptions::default()
             })
@@ -15105,7 +15316,9 @@ fn main() -> i32 { selected.value() }"#,
             let source = snapshot(&[(id, "/p/main.rue", "main.rue", program)], id);
             let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
-            session.semantic(&CompileOptions::default()).unwrap();
+            session
+                .canonical_semantic(&CompileOptions::default())
+                .unwrap();
             assert!(
                 session
                     .last_successful_body_cache
@@ -15118,13 +15331,13 @@ fn main() -> i32 { selected.value() }"#,
                 opt_level: OptLevel::O1,
                 ..CompileOptions::default()
             };
-            let actual = session.semantic(&options).unwrap();
+            let actual = session.canonical_semantic(&options).unwrap();
             assert_eq!(actual.work().durable_bodies.import_attempts, 0);
             assert_eq!(actual.work().durable_bodies.reused_bodies, 0);
             assert_eq!(actual.work().durable_bodies.candidate_comparisons, 0);
             let mut fresh_session = CompilerSession::new();
             fresh_session.update(&source).into_result().unwrap();
-            let fresh = fresh_session.semantic(&options).unwrap();
+            let fresh = fresh_session.canonical_semantic(&options).unwrap();
             assert_body_artifact_parity(&actual, &fresh);
             assert_diagnostic_parity(&session, &fresh_session);
         }
@@ -15170,7 +15383,9 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         publish_with_test_imports(&mut session, &original);
-        session.semantic(&CompileOptions::default()).unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(
             session
                 .last_successful_body_cache
@@ -15181,7 +15396,9 @@ fn main() -> i32 { selected.value() }"#,
             1
         );
         publish_with_test_imports(&mut session, &changed);
-        let actual = session.semantic(&CompileOptions::default()).unwrap();
+        let actual = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_eq!(actual.work().durable_bodies.import_attempts, 0);
         assert_eq!(actual.work().durable_bodies.reused_bodies, 0);
         assert_eq!(actual.work().durable_bodies.candidate_comparisons, 1);
@@ -15189,8 +15406,55 @@ fn main() -> i32 { selected.value() }"#,
 
         let mut fresh_session = CompilerSession::new();
         publish_with_test_imports(&mut fresh_session, &changed);
-        let fresh = fresh_session.semantic(&CompileOptions::default()).unwrap();
+        let fresh = fresh_session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
         assert_body_artifact_parity(&actual, &fresh);
         assert_diagnostic_parity(&session, &fresh_session);
+    }
+
+    #[test]
+    fn semantic_fault_injection_copies_the_stale_results_exact_rir_owner() {
+        let first = SourceSnapshot::single("main.rue", "fn main() -> i32 { 0 }").unwrap();
+        let second = SourceSnapshot::single("main.rue", "fn main() -> i32 { 1 }").unwrap();
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        session.semantic(&options).unwrap();
+        session.update(&second).into_result().unwrap();
+        session.semantic(&options).unwrap();
+
+        let records = session
+            .queries
+            .semantic
+            .records()
+            .cloned()
+            .collect::<Vec<_>>();
+        let current = records.last().unwrap();
+        let stale = records
+            .iter()
+            .rev()
+            .skip(1)
+            .find(|record| record.result.is_ok() && record.key != current.key)
+            .unwrap();
+        let stale_rir = stale.rir.as_ref().unwrap().clone();
+        let stale_semantic = stale.result.as_ref().unwrap().clone();
+
+        assert!(
+            session
+                .inject_stale_query_for_oracle(crate::unstable::DifferentialOracleFault::Semantic)
+        );
+        let injected = session.queries.semantic.records().last().unwrap();
+        assert!(Arc::ptr_eq(
+            injected.result.as_ref().unwrap(),
+            &stale_semantic
+        ));
+        assert!(Arc::ptr_eq(injected.rir.as_ref().unwrap(), &stale_rir));
+
+        let view = session.semantic(&options).unwrap();
+        let view = Arc::try_unwrap(view).unwrap();
+        let (semantic_owner, rir_owner) = view.into_owners();
+        assert!(Arc::ptr_eq(&semantic_owner, &stale_semantic));
+        assert!(Arc::ptr_eq(&rir_owner, &stale_rir));
     }
 }

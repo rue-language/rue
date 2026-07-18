@@ -66,8 +66,7 @@ use lasso::ThreadedRodeo;
 use rue_air::{FrozenTypeInternPool, RuntimeCallKind, Type, TypeKind, parse_array_type_syntax};
 use rue_cfg::{Cfg, CfgArgMode, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator};
 use rue_compiler::{
-    CompileErrors, CompileOptions, CompilerSession, FunctionWithCfg, PreviewFeatures,
-    SourceSnapshot,
+    CompileErrors, CompileOptions, CompilerSession, PreviewFeatures, SourceSnapshot,
 };
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -75,9 +74,13 @@ use std::fmt;
 
 struct CompileState {
     interner: ThreadedRodeo,
-    functions: Vec<FunctionWithCfg>,
+    functions: Vec<OracleFunction>,
     type_pool: FrozenTypeInternPool,
     strings: Vec<String>,
+}
+
+struct OracleFunction {
+    cfg: rue_cfg::ValidatedCfg,
 }
 
 fn query_cfg_state(source: &str) -> Result<CompileState, CompileErrors> {
@@ -118,20 +121,19 @@ fn query_cfg_state_from_session(
     mut session: CompilerSession,
     options: &CompileOptions,
 ) -> Result<CompileState, CompileErrors> {
-    let rir = session.rir()?;
     let semantic = session.semantic(options)?;
     drop(session);
-    let rir = std::sync::Arc::try_unwrap(rir)
-        .expect("one-shot oracle session uniquely owns its RIR artifact");
-    let semantic = std::sync::Arc::try_unwrap(semantic)
-        .expect("one-shot oracle session uniquely owns its semantic artifact");
-    let (_, symbols) = rir.into_parts();
-    let (functions, type_pool, strings, _) = semantic.into_parts();
+    let state = rue_compiler::unstable::into_oracle_semantic_state(semantic)
+        .expect("one-shot oracle session uniquely owns its frontend artifacts");
     Ok(CompileState {
-        interner: symbols.into_interner(),
-        functions,
-        type_pool,
-        strings,
+        interner: state.interner,
+        functions: state
+            .functions
+            .into_iter()
+            .map(|function| OracleFunction { cfg: function.cfg })
+            .collect(),
+        type_pool: state.type_pool,
+        strings: state.strings,
     })
 }
 

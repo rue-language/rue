@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileResult, ErrorKind};
 
-use crate::parsed_modules::{ParsedAstView, ParsedProgram, ParsedSymbol};
+#[cfg(test)]
+use crate::parsed_modules::ParsedProgram;
+use crate::parsed_modules::{ParsedAstView, ParsedSymbol};
 
 #[derive(Debug)]
 struct SemanticSymbolProvenance;
@@ -15,6 +17,7 @@ struct SemanticSymbolProvenance;
 #[derive(Debug, Clone)]
 pub struct SemanticSymbol {
     spur: Spur,
+    #[cfg_attr(not(test), allow(dead_code))]
     provenance: Arc<SemanticSymbolProvenance>,
 }
 
@@ -46,12 +49,13 @@ pub struct SemanticSymbolUniverse {
 }
 
 impl SemanticSymbolUniverse {
-    pub fn into_interner(self) -> ThreadedRodeo {
+    pub(crate) fn into_interner(self) -> ThreadedRodeo {
         self.interner
     }
 
     /// Start a destination universe for one canonical program traversal.
-    pub fn new(program: &ParsedProgram) -> Self {
+    #[cfg(test)]
+    pub(crate) fn new(program: &ParsedProgram) -> Self {
         let universe = Self::from_modules(program.modules());
         if let Some(symbols) = program.shared_symbol_strings() {
             for symbol in symbols {
@@ -85,7 +89,8 @@ impl SemanticSymbolUniverse {
     /// Translate a provenanced local symbol through its owning module view.
     ///
     /// This API deliberately accepts no naked local `Spur`.
-    pub fn translate(
+    #[cfg(test)]
+    pub(crate) fn translate(
         &mut self,
         owner: &ParsedAstView,
         symbol: &ParsedSymbol,
@@ -124,7 +129,8 @@ impl SemanticSymbolUniverse {
     }
 
     /// Resolve only symbols issued by this exact semantic universe.
-    pub fn resolve<'a>(&'a self, symbol: &SemanticSymbol) -> CompileResult<&'a str> {
+    #[cfg(test)]
+    pub(crate) fn resolve<'a>(&'a self, symbol: &SemanticSymbol) -> CompileResult<&'a str> {
         if !Arc::ptr_eq(&self.provenance, &symbol.provenance) {
             return Err(invalid_input(
                 "semantic symbol belongs to a foreign semantic universe",

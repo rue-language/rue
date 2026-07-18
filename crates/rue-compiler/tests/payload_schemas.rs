@@ -185,13 +185,11 @@ fn observe(source: &str) -> Vec<String> {
     let mut session = CompilerSession::new();
     session.update(&snapshot).into_result().unwrap();
     let semantic = session.semantic(&CompileOptions::default()).unwrap();
-    assert!(
-        session.rir().is_ok(),
-        "semantic publication retained no RIR"
-    );
-    semantic
-        .functions()
-        .iter()
+    drop(session);
+    rue_compiler::unstable::into_oracle_semantic_state(semantic)
+        .expect("one-shot payload verification uniquely owns its frontend artifacts")
+        .functions
+        .into_iter()
         .map(|function| {
             let before = function.cfg.to_string();
             let cloned = function.cfg.clone();

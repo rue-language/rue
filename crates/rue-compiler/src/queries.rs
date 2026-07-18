@@ -610,7 +610,7 @@ pub(crate) fn compile_with_session(
     options: &CompileOptions,
 ) -> MultiErrorResult<CompileOutput> {
     let source_tokens = session
-        .published()
+        .published_owner()
         .filter(|program| program.belongs_to_exact_snapshot(snapshot))
         .map(|program| program.token_count())
         .ok_or_else(|| {
@@ -623,9 +623,9 @@ pub(crate) fn compile_with_session(
 
     let rir = {
         let _span = info_span!("semantic_astgen").entered();
-        session.rir()?
+        session.canonical_rir()?
     };
-    let semantic = session.semantic(options)?;
+    let semantic = session.canonical_semantic(options)?;
     let session_work = session.work();
     let mut output = crate::backend::compile_backend(
         semantic.functions(),

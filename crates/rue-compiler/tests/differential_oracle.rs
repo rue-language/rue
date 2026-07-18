@@ -11,12 +11,15 @@
 use std::{collections::HashMap, fmt::Write as _, sync::Arc};
 
 use rue_cfg::OptLevel;
-use rue_compiler::unstable::DifferentialOracleFault;
+use rue_compiler::unstable::{
+    DifferentialOracleFault, PresentationRequest, PresentationStage, inject_stale_query_for_oracle,
+    semantic_input_debug,
+};
 use rue_compiler::{
     AcceptedImportSource, AcceptedReadManifestEntry, CompileOptions, CompilerSession,
     DiscoverySourceAssembler, FileMetadataFingerprint, FrontendDiagnosticSnapshot,
     ImportDiscoveryContext, ImportObservation, ImportObservationLedger, PhysicalFileIdentity,
-    PreviewFeature, PreviewFeatures, SourceMetadata, SourceSnapshot, generate_emitted_asm,
+    PreviewFeature, PreviewFeatures, SourceMetadata, SourceSnapshot,
 };
 use rue_span::FileId;
 use rue_target::Target;
@@ -203,40 +206,69 @@ fn observe_with_fault(
         let update = session.update(&step.snapshot);
         format!(
             "result={:?};diagnostics={:?}",
-            update.result().map(|program| program.source_revision()),
+            update
+                .result()
+                .map(|syntax| syntax.source_revision().clone()),
             update.diagnostics().errors()
         )
     };
     let mut imports = close_discovery(session, step);
     if fault == Some(DifferentialOracleFault::Semantic) {
         let _ = session.semantic(&step.options);
-        assert!(session.inject_stale_query_for_oracle(DifferentialOracleFault::Semantic));
+        assert!(inject_stale_query_for_oracle(
+            session,
+            DifferentialOracleFault::Semantic
+        ));
     }
     let semantic = session.semantic(&step.options);
     let (semantic, semantic_hash, executable_hash, identities) = match semantic {
         Ok(output) => {
+            let functions = output
+                .function_views()
+                .map(|function| {
+                    (
+                        function.name().to_owned(),
+                        function.instruction_count(),
+                        function.cfg().block_count(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let strings = output.string_literals().collect::<Vec<_>>();
+            let file_order = step
+                .snapshot
+                .files()
+                .map(|source| source.file_id)
+                .collect::<Vec<_>>();
+            let air = session
+                .unstable_present(PresentationRequest {
+                    stage: PresentationStage::Air,
+                    options: &step.options,
+                    file_order: &file_order,
+                })
+                .expect("oracle corpus must have stable AIR presentation");
+            let cfg = session
+                .unstable_present(PresentationRequest {
+                    stage: PresentationStage::Cfg,
+                    options: &step.options,
+                    file_order: &file_order,
+                })
+                .expect("oracle corpus must have stable CFG presentation");
             let artifact = format!(
-                "functions={:?};strings={:?};warnings={:?}",
-                output.functions(),
-                output.strings(),
+                "functions={:?};air={};cfg={};strings={:?};warnings={:?}",
+                functions,
+                air.as_str(),
+                cfg.as_str(),
+                strings,
                 output.warnings()
             );
-            let rir = session
-                .rir()
-                .expect("successful semantic query retains RIR");
-            let mut emitted = String::new();
-            for function in output.functions() {
-                let assembly = generate_emitted_asm(
-                    &function.cfg,
-                    output.type_pool(),
-                    output.strings(),
-                    rir.semantic_symbols().interner(),
-                    step.options.target,
-                )
+            let emitted = session
+                .unstable_present(PresentationRequest {
+                    stage: PresentationStage::Asm,
+                    options: &step.options,
+                    file_order: &file_order,
+                })
                 .expect("oracle corpus must have platform-stable assembly emission");
-                writeln!(&mut emitted, "{}:\n{}", function.analyzed.name, assembly).unwrap();
-            }
-            let hash = format!("{:x}", Sha256::digest(emitted.as_bytes()));
+            let hash = format!("{:x}", Sha256::digest(emitted.as_str().as_bytes()));
             let executable_hash = match session.oracle_executable(&step.snapshot, &step.options) {
                 Ok(executable) => format!("{:x}", Sha256::digest(&executable.elf)),
                 Err(errors) => format!("error:{errors:?}"),
@@ -248,7 +280,7 @@ fn observe_with_fault(
                 format!(
                     "source={:?};codegen={:?}",
                     step.snapshot.source_revision(),
-                    output.unstable_input_debug()
+                    semantic_input_debug(&output)
                 ),
             )
         }
@@ -260,7 +292,10 @@ fn observe_with_fault(
         ),
     };
     if fault == Some(DifferentialOracleFault::Diagnostic) {
-        assert!(session.inject_stale_query_for_oracle(DifferentialOracleFault::Diagnostic));
+        assert!(inject_stale_query_for_oracle(
+            session,
+            DifferentialOracleFault::Diagnostic
+        ));
     }
     // Capture the semantic request's selected batch before the manifest query
     // performs its own supporting diagnostic work.
@@ -288,7 +323,10 @@ fn observe_with_fault(
         Err(errors) => format!("error:{errors:?}"),
     };
     if fault == Some(DifferentialOracleFault::Import) {
-        assert!(session.inject_stale_query_for_oracle(DifferentialOracleFault::Import));
+        assert!(inject_stale_query_for_oracle(
+            session,
+            DifferentialOracleFault::Import
+        ));
         imports = render_selected_import(session);
     }
     Observation {
@@ -561,7 +599,7 @@ fn option_leaves_reuse_source_terminals_and_restore_exact_semantic_variants() {
     assert_eq!(session.unstable_metrics().merge().executions, 1);
     assert_eq!(session.unstable_metrics().rir().executions, 1);
     assert_eq!(session.unstable_metrics().semantic().executions, 4);
-    assert!(Arc::ptr_eq(&first, &session.semantic(&default).unwrap()));
+    assert!(first.shares_owner(&session.semantic(&default).unwrap()));
     assert_eq!(session.unstable_metrics().semantic().executions, 4);
     assert_eq!(session.unstable_metrics().semantic().reuses, 1);
 }

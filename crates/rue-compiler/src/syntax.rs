@@ -5,9 +5,7 @@
 
 use tracing::{info, info_span};
 
-use crate::{
-    CompileErrors, Lexer, MultiErrorResult, Parser, SourceSnapshot, SourceView, ThreadedRodeo,
-};
+use crate::{Lexer, MultiErrorResult, Parser, SourceView, ThreadedRodeo};
 
 /// Work performed while lexing and parsing source files.
 ///
@@ -34,11 +32,7 @@ pub struct SyntaxWork {
 pub(crate) struct FileParseOutcome {
     pub(crate) result: MultiErrorResult<std::sync::Arc<rue_parser::Ast>>,
     pub(crate) interner: ThreadedRodeo,
-    pub(crate) work: SyntaxWork,
-}
-
-pub(crate) struct SyntaxPresentationOutcome {
-    pub(crate) result: MultiErrorResult<Vec<std::sync::Arc<rue_parser::Ast>>>,
+    pub(crate) tokens: std::sync::Arc<[rue_lexer::Token]>,
     pub(crate) work: SyntaxWork,
 }
 
@@ -59,6 +53,7 @@ pub(crate) fn parse_file(source: SourceView<'_>, interner: ThreadedRodeo) -> Fil
                 return FileParseOutcome {
                     result: Err(errors),
                     interner,
+                    tokens: std::sync::Arc::from([]),
                     work,
                 };
             }
@@ -68,6 +63,7 @@ pub(crate) fn parse_file(source: SourceView<'_>, interner: ThreadedRodeo) -> Fil
     work.parser_invocations = 1;
     work.tokens = tokens.len();
     info!(token_count = tokens.len(), "lexing complete");
+    let retained_tokens: std::sync::Arc<[rue_lexer::Token]> = tokens.clone().into();
 
     let (ast, interner) = {
         let _span = info_span!("parser").entered();
@@ -78,6 +74,7 @@ pub(crate) fn parse_file(source: SourceView<'_>, interner: ThreadedRodeo) -> Fil
                 return FileParseOutcome {
                     result: Err(errors),
                     interner,
+                    tokens: retained_tokens,
                     work,
                 };
             }
@@ -87,45 +84,9 @@ pub(crate) fn parse_file(source: SourceView<'_>, interner: ThreadedRodeo) -> Fil
     FileParseOutcome {
         result: Ok(std::sync::Arc::new(ast)),
         interner,
+        tokens: retained_tokens,
         work,
     }
-}
-
-/// Parse a snapshot in caller-selected order for syntax presentation only.
-///
-/// This deliberately returns only AST handles, not a second parsed-program
-/// representation. Entry points own the outer span so presentation and
-/// canonical parse queries can expose distinct timing trees while sharing the
-/// per-file parser kernel.
-pub(crate) fn parse_snapshot_for_presentation(
-    snapshot: &SourceSnapshot,
-) -> SyntaxPresentationOutcome {
-    let mut asts = Vec::with_capacity(snapshot.len());
-    let mut interner = ThreadedRodeo::new();
-    let mut errors = CompileErrors::new();
-    let mut work = SyntaxWork::default();
-
-    for source in snapshot.files() {
-        let outcome = parse_file(source, interner);
-        interner = outcome.interner;
-        work.lexer_invocations += outcome.work.lexer_invocations;
-        work.parser_invocations += outcome.work.parser_invocations;
-        work.lexed_bytes += outcome.work.lexed_bytes;
-        work.tokens += outcome.work.tokens;
-
-        match outcome.result {
-            Ok(ast) => asts.push(ast),
-            Err(file_errors) => errors.extend(file_errors),
-        }
-    }
-
-    let result = if errors.is_empty() {
-        Ok(asts)
-    } else {
-        Err(errors)
-    };
-
-    SyntaxPresentationOutcome { result, work }
 }
 
 #[cfg(test)]
@@ -137,7 +98,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        ColorChoice, DiagnosticFormatter, Item, JsonDiagnosticFormatter, SourceInfo, SourceMetadata,
+        ColorChoice, CompilerSession, DiagnosticFormatter, Item, JsonDiagnosticFormatter,
+        SourceInfo, SourceMetadata, SourceSnapshot,
     };
 
     fn snapshot(entries: &[(u32, &str, &str)]) -> SourceSnapshot {
@@ -159,66 +121,6 @@ mod tests {
     }
 
     #[test]
-    fn valid_files_report_one_lexer_and_parser_invocation_each() {
-        let sources = [
-            (7, "first.rue", "fn first() {}"),
-            (3, "empty.rue", ""),
-            (9, "third.rue", "fn third() {}"),
-        ];
-        let snapshot = snapshot(&sources);
-
-        let SyntaxPresentationOutcome { result, work } = parse_snapshot_for_presentation(&snapshot);
-        let asts = result.unwrap();
-
-        assert_eq!(asts.len(), 3);
-        assert_eq!(
-            work,
-            SyntaxWork {
-                lexer_invocations: 3,
-                parser_invocations: 3,
-                lexed_bytes: sources.iter().map(|(_, _, source)| source.len()).sum(),
-                tokens: 15,
-            }
-        );
-    }
-
-    #[test]
-    fn snapshot_collects_lex_and_parse_errors_in_caller_order_and_continues() {
-        let sources = [
-            (30, "lex.rue", "fn lexed() { $ }"),
-            (10, "parse.rue", "fn parsed( { }"),
-            (20, "good.rue", "fn good() {}"),
-        ];
-        let snapshot = snapshot(&sources);
-
-        let SyntaxPresentationOutcome { result, work } = parse_snapshot_for_presentation(&snapshot);
-        let errors = result.unwrap_err();
-
-        assert_eq!(errors.len(), 2);
-        assert!(matches!(
-            errors.as_slice()[0].kind,
-            ErrorKind::UnexpectedCharacter('$')
-        ));
-        assert_eq!(
-            errors
-                .iter()
-                .map(|error| error.span().unwrap().file_id)
-                .collect::<Vec<_>>(),
-            vec![FileId::new(30), FileId::new(10)]
-        );
-        assert_eq!(work.lexer_invocations, 3);
-        assert_eq!(work.parser_invocations, 2);
-        assert_eq!(
-            work.lexed_bytes,
-            sources
-                .iter()
-                .map(|(_, _, source)| source.len())
-                .sum::<usize>()
-        );
-        assert_eq!(work.tokens, 13);
-    }
-
-    #[test]
     fn parser_budget_is_per_file_and_later_files_are_still_parsed() {
         fn malformed_items(prefix: &str) -> String {
             let mut source = String::new();
@@ -236,8 +138,10 @@ mod tests {
             (30, "second.rue", &second),
         ]);
 
-        let SyntaxPresentationOutcome { result, work } = parse_snapshot_for_presentation(&snapshot);
-        let errors = result.unwrap_err();
+        let mut session = CompilerSession::new();
+        let update = session.update(&snapshot);
+        let work = update.work();
+        let errors = update.into_result().unwrap_err();
         let summaries = errors
             .iter()
             .filter(|error| matches!(error.kind, ErrorKind::ParserDiagnosticsOmitted { .. }))
@@ -247,7 +151,7 @@ mod tests {
         assert_eq!(summaries.len(), 2);
         assert_eq!(summaries[0].span().unwrap().file_id, FileId::new(10));
         assert_eq!(summaries[1].span().unwrap().file_id, FileId::new(30));
-        assert_eq!(work.parser_invocations, 3);
+        assert_eq!(work.syntax.parser_invocations, 3);
 
         let source_info = SourceInfo::new(&first, "first.rue");
         let text = DiagnosticFormatter::with_color_choice(&source_info, ColorChoice::Never)
@@ -265,34 +169,6 @@ mod tests {
         assert!(json.contains(
             "\"message\":\"additional parser diagnostics omitted after the first 100 errors\""
         ));
-    }
-
-    #[test]
-    fn one_lex_invocation_preserves_all_lex_errors() {
-        let source = "fn broken() { $ # }";
-        let snapshot = snapshot(&[(1, "broken.rue", source)]);
-
-        let SyntaxPresentationOutcome { result, work } = parse_snapshot_for_presentation(&snapshot);
-        let errors = result.unwrap_err();
-
-        assert_eq!(errors.len(), 2);
-        assert!(matches!(
-            errors.as_slice()[0].kind,
-            ErrorKind::UnexpectedCharacter('$')
-        ));
-        assert!(matches!(
-            errors.as_slice()[1].kind,
-            ErrorKind::UnexpectedCharacter('#')
-        ));
-        assert_eq!(
-            work,
-            SyntaxWork {
-                lexer_invocations: 1,
-                parser_invocations: 0,
-                lexed_bytes: source.len(),
-                tokens: 0,
-            }
-        );
     }
 
     #[test]

@@ -1,19 +1,16 @@
-use std::fmt::Write as _;
-use std::sync::Arc;
-
 #[cfg(test)]
 use rue_compiler::unstable::MetricsSnapshot;
+#[cfg(test)]
+use rue_compiler::unstable::update_for_presentation;
 use rue_compiler::unstable::{
-    ImportDiscoveryRevision, ImportDiscoveryStatus, LowerMetrics, ParseMetrics, SemanticMetrics,
+    ImportDiscoveryRevision, ImportDiscoveryStatus, LowerMetrics, ParseMetrics,
+    PresentationRequest, PresentationStage, SemanticMetrics, semantic_metrics,
 };
 use rue_compiler::{
-    Ast, CanonicalRirOutput, CanonicalSemanticOutput, CompileError, CompileErrors, CompileOptions,
-    CompileWarning, CompilerSession, DependencyEnvelope, DependencyEnvelopeStatus, ErrorKind,
-    FrozenTypeInternPool, Lexer, SourceSnapshot, Token, generate_emitted_asm,
-    generate_liveness_info, generate_lowering_info, generate_mir, generate_regalloc_info,
-    generate_stack_frame_info, parse_source_snapshot_for_ast_presentation,
+    CompileError, CompileErrors, CompileOptions, CompileWarning, CompilerSession,
+    DependencyEnvelope, DependencyEnvelopeStatus, ErrorKind, RirView, SemanticView, SourceSnapshot,
+    SyntaxView,
 };
-use rue_rir::RirPrinter;
 use tracing::info_span;
 
 use crate::DiagnosticOutput;
@@ -48,9 +45,9 @@ pub(crate) enum EmitStage {
 }
 
 pub(crate) struct EmitFrontend {
-    parsed: Arc<rue_compiler::ParsedProgram>,
-    rir: Arc<CanonicalRirOutput>,
-    semantic: Arc<CanonicalSemanticOutput>,
+    parsed: SyntaxView,
+    _rir: std::sync::Arc<RirView>,
+    semantic: std::sync::Arc<SemanticView>,
     pub(crate) work: EmitWork,
     #[cfg(test)]
     pub(crate) session_work: MetricsSnapshot,
@@ -97,7 +94,7 @@ pub(crate) fn build_emit_frontend_in_session(
     session: &mut CompilerSession,
     options: CompileOptions,
 ) -> Result<EmitFrontend, CompileErrors> {
-    let parsed = session.published().cloned().ok_or_else(|| {
+    let parsed = session.published().ok_or_else(|| {
         CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
             "emit requires a published closed discovery revision".into(),
         )))
@@ -110,12 +107,12 @@ pub(crate) fn build_emit_frontend_in_session(
     let session_work = session.unstable_metrics();
     Ok(EmitFrontend {
         parsed,
-        rir,
+        _rir: rir,
         semantic: semantic.clone(),
         work: EmitWork {
             parsed: session_work.parse_metrics(),
             lowered: session_work.lower_metrics(),
-            semantic: semantic.unstable_metrics(),
+            semantic: semantic_metrics(&semantic),
         },
         #[cfg(test)]
         session_work,
@@ -128,33 +125,11 @@ pub(crate) fn build_emit_frontend(
     options: CompileOptions,
 ) -> Result<EmitFrontend, CompileErrors> {
     let mut session = CompilerSession::new();
-    session
-        .update_for_presentation(source_snapshot)
-        .into_result()?;
+    update_for_presentation(&mut session, source_snapshot).into_result()?;
     build_emit_frontend_in_session(&mut session, options)
 }
 
 impl EmitFrontend {
-    fn rir(&self) -> &rue_compiler::Rir {
-        self.rir.rir()
-    }
-
-    fn interner(&self) -> &rue_compiler::ThreadedRodeo {
-        self.rir.semantic_symbols().interner()
-    }
-
-    fn functions(&self) -> &[rue_compiler::FunctionWithCfg] {
-        self.semantic.functions()
-    }
-
-    fn type_pool(&self) -> &FrozenTypeInternPool {
-        self.semantic.type_pool()
-    }
-
-    fn strings(&self) -> &[String] {
-        self.semantic.strings()
-    }
-
     fn warnings(&self) -> &[CompileWarning] {
         self.semantic.warnings()
     }
@@ -253,55 +228,7 @@ pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
         diagnostics.print_errors(discovery_revision.diagnostics());
         return Err(());
     }
-    // Determine which stages we need
-    let needs_tokens = stages.contains(&EmitStage::Tokens);
-    let needs_ast = stages.contains(&EmitStage::Ast);
-
-    // For tokens, we need to lex each file separately (before parsing merges interners)
-    // We'll collect per-file tokens if needed
-    let per_file_tokens: Option<Vec<(String, Vec<Token>)>> = if needs_tokens {
-        let mut file_tokens = Vec::with_capacity(source_snapshot.len());
-        for source in source_snapshot.files() {
-            // Lex with the file's real FileId so a lex error in the Nth file
-            // is attributed to that file, not to the first one (RUE-38).
-            let lexer = Lexer::with_file_id(source.source, source.file_id);
-            match lexer.tokenize_preserving_interner() {
-                Ok((tokens, _interner)) => {
-                    file_tokens.push((source.path.to_string(), tokens));
-                }
-                Err((errors, _interner)) => {
-                    diagnostics.print_errors(&errors);
-                    return Err(());
-                }
-            }
-        }
-        Some(file_tokens)
-    } else {
-        None
-    };
-
     let frontend_route = emit_frontend_route(stages);
-    // AST-only preserves its syntax-only behavior (duplicates are printable).
-    // Combined AST+later canonical modes reuse the unit's once-only projection.
-    let mut per_file_asts: Option<Vec<(String, std::sync::Arc<Ast>)>> =
-        if frontend_route == EmitFrontendRoute::AstOnlySyntax {
-            match parse_source_snapshot_for_ast_presentation(source_snapshot) {
-                Ok(presentation) => {
-                    debug_assert_eq!(
-                        presentation.work().parsed.syntax.parser_invocations,
-                        source_snapshot.len()
-                    );
-                    Some(presentation.files().to_vec())
-                }
-                Err(errors) => {
-                    diagnostics.print_errors(&errors);
-                    return Err(());
-                }
-            }
-        } else {
-            None
-        };
-
     let frontend_state = if frontend_route == EmitFrontendRoute::SessionQuery {
         let frontend = match build_emit_frontend_in_session(session, compile_options.clone()) {
             Ok(frontend) => frontend,
@@ -310,22 +237,6 @@ pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
                 return Err(());
             }
         };
-        if needs_ast {
-            per_file_asts = Some(
-                source_snapshot
-                    .files()
-                    .map(|source| {
-                        let module = frontend
-                            .parsed
-                            .modules()
-                            .iter()
-                            .find(|module| module.file_id() == source.file_id)
-                            .expect("frontend parsed every snapshot source");
-                        (source.path.to_string(), module.shared_ast())
-                    })
-                    .collect(),
-            );
-        }
         Some(frontend)
     } else {
         None
@@ -341,224 +252,98 @@ pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
         debug_assert_eq!(work.semantic.manifest.build_invocations, 1);
     }
 
-    // Now emit in order
+    let file_order = source_snapshot
+        .files()
+        .map(|source| source.file_id)
+        .collect::<Vec<_>>();
+
     for stage in stages {
+        let unstable_stage = match stage {
+            EmitStage::Tokens => PresentationStage::Tokens,
+            EmitStage::Ast => PresentationStage::Ast,
+            EmitStage::Rir => PresentationStage::Rir,
+            EmitStage::Air => PresentationStage::Air,
+            EmitStage::Cfg => PresentationStage::Cfg,
+            EmitStage::Lowering => PresentationStage::Lowering,
+            EmitStage::Mir => PresentationStage::Mir,
+            EmitStage::Liveness => PresentationStage::Liveness,
+            EmitStage::RegAlloc => PresentationStage::RegAlloc,
+            EmitStage::Asm => PresentationStage::Asm,
+            EmitStage::StackFrame => PresentationStage::StackFrame,
+            EmitStage::Deps => continue,
+        };
+        if matches!(stage, EmitStage::Tokens | EmitStage::Ast) {
+            for source in source_snapshot.files() {
+                match stage {
+                    EmitStage::Tokens => println!("=== Tokens ({}) ===", source.path),
+                    EmitStage::Ast => println!("=== AST ({}) ===", source.path),
+                    _ => unreachable!(),
+                }
+                let output = match session.unstable_present(PresentationRequest {
+                    stage: unstable_stage,
+                    options: &compile_options,
+                    file_order: &[source.file_id],
+                }) {
+                    Ok(output) => output,
+                    Err(errors) => {
+                        diagnostics.print_errors(&errors);
+                        return Err(());
+                    }
+                };
+                print!("{}", output.as_str());
+                println!();
+            }
+            continue;
+        }
+        let output = match session.unstable_present(PresentationRequest {
+            stage: unstable_stage,
+            options: &compile_options,
+            file_order: &file_order,
+        }) {
+            Ok(output) => output,
+            Err(errors) => {
+                diagnostics.print_errors(&errors);
+                return Err(());
+            }
+        };
         match stage {
-            EmitStage::Tokens => {
-                if let Some(ref file_tokens) = per_file_tokens {
-                    for (path, tokens) in file_tokens {
-                        println!("=== Tokens ({}) ===", path);
-                        for token in tokens {
-                            println!("{}", token);
-                        }
-                        println!();
-                    }
-                }
-            }
-            EmitStage::Ast => {
-                if let Some(ref asts) = per_file_asts {
-                    for (path, ast) in asts {
-                        println!("=== AST ({}) ===", path);
-                        print!("{}", ast);
-                        println!();
-                    }
-                }
-            }
+            EmitStage::Tokens | EmitStage::Ast => unreachable!(),
             EmitStage::Rir => {
                 println!("=== RIR ===");
-                if let Some(ref state) = frontend_state {
-                    let order = state
-                        .rir
-                        .presentation_order(source_snapshot.files().map(|source| source.file_id));
-                    let printer = RirPrinter::with_presentation_order(
-                        state.rir(),
-                        state.interner(),
-                        order.instructions,
-                        order.extra,
-                    );
-                    println!("{}", printer);
-                }
+                println!("{}", output.as_str());
                 println!();
             }
             EmitStage::Air => {
                 println!("=== AIR ===");
-                if let Some(ref state) = frontend_state {
-                    for func in state.functions() {
-                        println!("function {}:", func.analyzed.name);
-                        println!(
-                            "{}",
-                            func.analyzed.air.display_with_interner(state.interner())
-                        );
-                    }
-                }
+                print!("{}", output.as_str());
                 println!();
             }
             EmitStage::Cfg => {
                 println!("=== CFG ===");
-                if let Some(ref state) = frontend_state {
-                    for func in state.functions() {
-                        println!("{}", func.cfg.display_with_interner(state.interner()));
-                    }
-                }
+                print!("{}", output.as_str());
                 println!();
             }
             EmitStage::Lowering => {
-                let mut output = String::new();
-                if let Some(ref state) = frontend_state {
-                    for func in state.functions() {
-                        let lowering_info = match generate_lowering_info(
-                            &func.cfg,
-                            state.type_pool(),
-                            state.interner(),
-                            compile_options.target,
-                        ) {
-                            Ok(info) => info,
-                            Err(e) => {
-                                diagnostics.print_error(&e);
-                                return Err(());
-                            }
-                        };
-                        write!(&mut output, "{}", lowering_info).expect("write to String");
-                    }
-                }
-                output.push('\n');
-                print!("{}", output);
+                println!("{}", output.as_str());
             }
             EmitStage::Mir => {
-                let mut output = String::new();
-                writeln!(&mut output, "=== MIR ({}) ===", compile_options.target)
-                    .expect("write to String");
-                if let Some(ref state) = frontend_state {
-                    for func in state.functions() {
-                        let mir = match generate_mir(
-                            &func.cfg,
-                            state.type_pool(),
-                            state.interner(),
-                            compile_options.target,
-                        ) {
-                            Ok(mir) => mir,
-                            Err(e) => {
-                                diagnostics.print_error(&e);
-                                return Err(());
-                            }
-                        };
-                        writeln!(&mut output, "function {}:", func.analyzed.name)
-                            .expect("write to String");
-                        writeln!(&mut output, "{}", mir).expect("write to String");
-                    }
-                }
-                output.push('\n');
-                print!("{}", output);
+                println!("=== MIR ({}) ===", compile_options.target);
+                println!("{}", output.as_str());
             }
             EmitStage::Liveness => {
-                let mut output = String::new();
-                writeln!(
-                    &mut output,
-                    "=== Liveness Analysis ({}) ===",
-                    compile_options.target
-                )
-                .expect("write to String");
-                if let Some(ref state) = frontend_state {
-                    for func in state.functions() {
-                        let liveness_info = match generate_liveness_info(
-                            &func.cfg,
-                            state.type_pool(),
-                            state.interner(),
-                            compile_options.target,
-                        ) {
-                            Ok(info) => info,
-                            Err(e) => {
-                                diagnostics.print_error(&e);
-                                return Err(());
-                            }
-                        };
-                        writeln!(&mut output, "function {}:", func.analyzed.name)
-                            .expect("write to String");
-                        writeln!(&mut output, "{}", liveness_info).expect("write to String");
-                    }
-                }
-                output.push('\n');
-                print!("{}", output);
+                println!("=== Liveness Analysis ({}) ===", compile_options.target);
+                println!("{}", output.as_str());
             }
             EmitStage::RegAlloc => {
-                let mut output = String::new();
-                writeln!(
-                    &mut output,
-                    "=== Register Allocation ({}) ===",
-                    compile_options.target
-                )
-                .expect("write to String");
-                if let Some(ref state) = frontend_state {
-                    for func in state.functions() {
-                        let regalloc_info = match generate_regalloc_info(
-                            &func.cfg,
-                            state.type_pool(),
-                            state.interner(),
-                            compile_options.target,
-                        ) {
-                            Ok(info) => info,
-                            Err(e) => {
-                                diagnostics.print_error(&e);
-                                return Err(());
-                            }
-                        };
-                        writeln!(&mut output, "function {}:", func.analyzed.name)
-                            .expect("write to String");
-                        write!(&mut output, "{}", regalloc_info).expect("write to String");
-                    }
-                }
-                output.push('\n');
-                print!("{}", output);
+                println!("=== Register Allocation ({}) ===", compile_options.target);
+                println!("{}", output.as_str());
             }
             EmitStage::Asm => {
-                let mut output = String::new();
-                writeln!(&mut output, "=== Assembly ({}) ===", compile_options.target)
-                    .expect("write to String");
-                if let Some(ref state) = frontend_state {
-                    for func in state.functions() {
-                        let asm = match generate_emitted_asm(
-                            &func.cfg,
-                            state.type_pool(),
-                            state.strings(),
-                            state.interner(),
-                            compile_options.target,
-                        ) {
-                            Ok(asm) => asm,
-                            Err(e) => {
-                                diagnostics.print_error(&e);
-                                return Err(());
-                            }
-                        };
-                        writeln!(&mut output, ".globl {}", func.analyzed.name)
-                            .expect("write to String");
-                        writeln!(&mut output, "{}:", func.analyzed.name).expect("write to String");
-                        write!(&mut output, "{}", asm).expect("write to String");
-                    }
-                }
-                output.push('\n');
-                print!("{}", output);
+                println!("=== Assembly ({}) ===", compile_options.target);
+                println!("{}", output.as_str());
             }
             EmitStage::StackFrame => {
-                let mut output = String::new();
-                if let Some(ref state) = frontend_state {
-                    for func in state.functions() {
-                        let frame_info = match generate_stack_frame_info(
-                            &func.cfg,
-                            &func.analyzed.name,
-                            state.type_pool(),
-                            state.interner(),
-                            compile_options.target,
-                        ) {
-                            Ok(info) => info,
-                            Err(e) => {
-                                diagnostics.print_error(&e);
-                                return Err(());
-                            }
-                        };
-                        writeln!(&mut output, "{}", frame_info).expect("write to String");
-                    }
-                }
-                print!("{}", output);
+                print!("{}", output.as_str());
             }
             // Dependency presentation returns before frontend planning above.
             EmitStage::Deps => {}
