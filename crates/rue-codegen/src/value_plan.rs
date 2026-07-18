@@ -324,6 +324,12 @@ pub struct IntrinsicPlan {
     /// inactive, so both backends fall back to their existing slot-shaped
     /// load/store and gate-off behavior is unchanged.
     pub narrow_access: Option<crate::types::NarrowScalar>,
+    /// For a typed `@ptr_read`/`@ptr_write` of a compact enum pointee under the
+    /// compact layout, the internal-slot → physical-byte map used to marshal the
+    /// whole enum value across the pointer (ADR-0052 phase 5.6, RUE-1000).
+    /// `None` for every other operation and gate-off, so the existing
+    /// slot-shaped path is unchanged.
+    pub physical_slots: Option<Vec<crate::types::PhysicalEnumSlot>>,
 }
 
 /// Place with every dynamic index already materialized. The plan contains no
@@ -1609,6 +1615,20 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     ),
                     _ => None,
                 };
+                // A compact enum pointee marshals its whole value through the
+                // pointer via the enum's internal-slot → physical-byte map
+                // (RUE-1000). The read's pointee is its result type; the write's
+                // pointee is the value operand's type.
+                let physical_slots = match operation {
+                    IntrinsicOperation::PtrRead => {
+                        crate::types::enum_physical_slot_map(ctx.type_pool, inst.ty)
+                    }
+                    IntrinsicOperation::PtrWrite => crate::types::enum_physical_slot_map(
+                        ctx.type_pool,
+                        ctx.cfg.get_inst(args[1]).ty,
+                    ),
+                    _ => None,
+                };
                 let result = adapter.emit_intrinsic(IntrinsicPlan {
                     operation,
                     runtime_call,
@@ -1617,6 +1637,7 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     result_slots,
                     scale,
                     narrow_access,
+                    physical_slots,
                 });
                 cache_result(adapter, value, result);
                 Some(ValueKind::Intrinsic)

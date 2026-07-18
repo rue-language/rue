@@ -574,6 +574,27 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::Allocate),
         &[],
     ),
+    // ADR-0052 phase 5.6 (RUE-1000): the compact-enum heap round-trips reach
+    // memory through `@alloc`, outside the oracle model (same gap as the narrow
+    // heap cases above).
+    Entry::new(
+        "cli.aggregate_layout",
+        "compact_enum_option_heap_roundtrip",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
+    Entry::new(
+        "cli.aggregate_layout",
+        "compact_enum_mixed_payload_widths",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
+    Entry::new(
+        "cli.aggregate_layout",
+        "compact_enum_uniform_multifield_heap",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
     Entry::new(
         "cli.partial_move_depth",
         "disjoint_sibling_after_subfield_move_ok",

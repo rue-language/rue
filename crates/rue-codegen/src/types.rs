@@ -312,6 +312,164 @@ pub(crate) fn narrow_scalar_access(
     Some(NarrowScalar { width, signed })
 }
 
+/// Physical width (1/2/4/8) and load extension of a scalar leaf, independent of
+/// the compact gate. Full eight-byte leaves (`i64`/`u64`/pointers) report width
+/// 8; a load of them needs no narrowing. Returns `None` for aggregate,
+/// zero-sized, or compile-time-only types, which have no scalar leaf.
+fn scalar_physical_access(ty: Type) -> Option<(u8, bool)> {
+    match ty.kind() {
+        TypeKind::I8 => Some((1, true)),
+        TypeKind::U8 | TypeKind::Bool => Some((1, false)),
+        TypeKind::I16 => Some((2, true)),
+        TypeKind::U16 => Some((2, false)),
+        TypeKind::I32 => Some((4, true)),
+        TypeKind::U32 => Some((4, false)),
+        TypeKind::I64 | TypeKind::U64 | TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => {
+            Some((8, false))
+        }
+        _ => None,
+    }
+}
+
+/// One internal value-decomposition slot of a compact enum mapped onto its
+/// physical byte position (ADR-0052 phase 5.6, RUE-1000).
+///
+/// The discriminant slot maps to the narrow tag at offset 0; every payload slot
+/// maps to a payload-union field position at its compact byte offset, accessed
+/// narrow ([`Some`]) or full-slot ([`None`], an eight-byte leaf). Both backends
+/// consume this to marshal a whole compact enum value across a typed pointer:
+/// stores truncate each slot to its physical width, loads extend back into the
+/// slot-shaped vreg.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhysicalEnumSlot {
+    /// Byte offset of this slot within the compact enum.
+    pub byte_offset: i32,
+    /// Narrow (1/2/4-byte) access, or `None` for a full eight-byte slot.
+    pub access: Option<NarrowScalar>,
+}
+
+/// The internal-slot → physical-byte map for whole-enum memory marshalling under
+/// the compact layout (ADR-0052 phase 5.6), or `None` when the enum's compact
+/// memory access is *not* variant-independent and must stay refused.
+///
+/// A whole-enum `@ptr_write`/`@ptr_read` sees an opaque enum value (the runtime
+/// variant is unknown at the access), so a single slot→byte map must be correct
+/// for *every* variant. That holds only when the payload is a union of scalar
+/// fields whose positions agree across variants: at each payload position every
+/// variant that carries a field there places it at the same byte offset with the
+/// same physical width (and the widest field's signedness), the positions do not
+/// overlap, and they fit within the enum. Enums that fail any of these
+/// conditions (non-scalar payloads, variant-dependent field offsets/widths, or
+/// overlapping union slots) have no variant-independent memory image and are
+/// kept loudly refused by [`compact_physical_access_unsupported`] rather than
+/// miscompiled.
+///
+/// The byte offsets come straight from the canonical layout authority
+/// (`layout()`'s [`rue_air::layout::LayoutKind::Enum`] tag/payload placement), so
+/// the marshalling and `@size_of`/`@offset_of` agree by construction.
+pub(crate) fn enum_physical_slot_map(
+    type_pool: &FrozenTypeInternPool,
+    ty: Type,
+) -> Option<Vec<PhysicalEnumSlot>> {
+    use rue_air::layout::LayoutKind;
+
+    if !type_pool.compact_layout() {
+        return None;
+    }
+    let enum_id = ty.as_enum()?;
+    let layout = type_pool.layout(ty);
+    let (tag_size, payload_offset, variant_offsets) = match &layout.kind {
+        LayoutKind::Enum {
+            tag,
+            payload_offset,
+            variants,
+        } => (tag.size, *payload_offset, variants),
+        _ => return None,
+    };
+
+    // Slot 0: the smallest-sufficient unsigned tag at offset 0 (u8/u16/u32),
+    // zero-extended on load.
+    let tag_width = u8::try_from(tag_size).ok()?;
+    if !matches!(tag_width, 1 | 2 | 4) {
+        return None;
+    }
+    let mut slots = vec![PhysicalEnumSlot {
+        byte_offset: 0,
+        access: Some(NarrowScalar {
+            width: tag_width,
+            signed: false,
+        }),
+    }];
+
+    // Payload union positions, one per scalar field position across all variants.
+    #[derive(Clone, Copy)]
+    struct Position {
+        offset: i32,
+        width: u8,
+        signed: bool,
+    }
+    let def = type_pool.enum_def(enum_id);
+    let mut positions: Vec<Position> = Vec::new();
+    for variant in 0..def.variant_count() {
+        let payload = def.variant_payload(variant);
+        for (field_index, &field_ty) in payload.iter().enumerate() {
+            // Only scalar payload fields have a single-slot memory image; a
+            // nested aggregate payload has no variant-independent slot map.
+            let (width, signed) = scalar_physical_access(field_ty)?;
+            let offset = i32::try_from(variant_offsets[variant][field_index]).ok()?;
+            if let Some(pos) = positions.get_mut(field_index) {
+                if pos.offset != offset {
+                    // Variant-dependent field offset: not a single memory image.
+                    return None;
+                }
+                match width.cmp(&pos.width) {
+                    std::cmp::Ordering::Greater => {
+                        pos.width = width;
+                        pos.signed = signed;
+                    }
+                    // Equal widest widths must agree on signedness, or the load
+                    // extension of the union slot would be ambiguous.
+                    std::cmp::Ordering::Equal if pos.signed != signed => return None,
+                    _ => {}
+                }
+            } else {
+                positions.push(Position {
+                    offset,
+                    width,
+                    signed,
+                });
+            }
+        }
+    }
+
+    // Reject overlapping union slots and anything spilling past the enum.
+    let size = i32::try_from(layout.size).ok()?;
+    let mut prev_end = i32::try_from(payload_offset).ok()?;
+    for pos in &positions {
+        if pos.offset < prev_end || pos.offset + i32::from(pos.width) > size {
+            return None;
+        }
+        prev_end = pos.offset + i32::from(pos.width);
+        slots.push(PhysicalEnumSlot {
+            byte_offset: pos.offset,
+            access: if pos.width == 8 {
+                None
+            } else {
+                Some(NarrowScalar {
+                    width: pos.width,
+                    signed: pos.signed,
+                })
+            },
+        });
+    }
+
+    // The map must cover exactly the enum's internal value-decomposition slots.
+    if slots.len() != type_pool.abi_slot_count(ty) as usize {
+        return None;
+    }
+    Some(slots)
+}
+
 /// The pointee of a pointer type, or the type itself when it is not a pointer.
 fn pointee_or_self(type_pool: &FrozenTypeInternPool, ty: Type) -> Type {
     match ty.kind() {
@@ -339,16 +497,21 @@ fn pointee_or_self(type_pool: &FrozenTypeInternPool, ty: Type) -> Type {
 /// canonical [`is_slot_identical_layout`] authority rather than a parallel local
 /// judgment:
 ///
-/// - a non-slot-identical **array** or **enum** value (dynamic array indexing
-///   strides by the compact element size while the slot-based frame stores
-///   elements at the slot stride, and compact enum memory is unimplemented);
-/// - a **pointer to a non-slot-identical aggregate** (whole-aggregate
-///   marshalling through a pointer is unimplemented, and frame-versus-heap
-///   pointer provenance is ambiguous, so `@raw`/`@field_ptr` of an aggregate and
-///   an aggregate-pointee `@alloc` are refused);
+/// - a non-slot-identical **array** value (dynamic array indexing strides by the
+///   compact element size while the slot-based frame stores elements at the slot
+///   stride). A non-slot-identical **struct** or **enum** value may exist in the
+///   frame — a struct uses static slot-offset field access and a payload enum
+///   keeps its slot-based value decomposition (RUE-975) — so only the boundary
+///   checks below constrain them;
+/// - a **pointer to a struct/array** that is non-slot-identical, or to an **enum
+///   without a variant-independent memory image** (whole-aggregate marshalling
+///   through a pointer is unimplemented for those, and frame-versus-heap
+///   provenance is ambiguous). A compact enum *with* such an image (RUE-1000) is
+///   allowed through pointers, including `@alloc`;
 /// - a **by-reference non-slot-identical aggregate** parameter;
 /// - a non-slot-identical aggregate that **crosses a call boundary** as an
-///   argument or as the **return value** (RUE-976's transitional indirect rule).
+///   argument or as the **return value** (RUE-976's transitional indirect rule;
+///   enums included — call marshalling is the next phase).
 ///
 /// Purely compile-time layout queries (`@size_of`/`@align_of`/`@offset_of`) fold
 /// to constants before code generation. Slot-identical aggregates (all
@@ -356,8 +519,9 @@ fn pointee_or_self(type_pool: &FrozenTypeInternPool, ty: Type) -> Type {
 /// byte-addressed raw-byte family (`@byte_read`/`@byte_write`/`@alloc_bytes`).
 ///
 /// Returning `None` never weakens correctness: every remaining physical access
-/// is either byte-for-byte identical to the slot model or a narrow scalar access
-/// RUE-989 lowers correctly.
+/// is either byte-for-byte identical to the slot model, a narrow scalar access
+/// (RUE-989), or a compact enum marshalled through its variant-independent memory
+/// image (RUE-1000).
 pub(crate) fn compact_physical_access_unsupported(
     cfg: &Cfg,
     type_pool: &FrozenTypeInternPool,
@@ -368,14 +532,28 @@ pub(crate) fn compact_physical_access_unsupported(
     }
 
     // A non-slot-identical aggregate (struct/array/enum) whose whole-value
-    // marshalling across a memory or call boundary RUE-989 does not implement.
-    // Narrow SCALAR access through typed pointers IS implemented, so scalars
-    // never trigger a refusal here.
+    // marshalling across a CALL boundary is still unimplemented (RUE-976's
+    // transitional indirect rule; call marshalling is the next phase). Narrow
+    // SCALAR access through typed pointers IS implemented, so scalars never
+    // trigger a refusal here.
     let unimplemented_aggregate = |ty: Type| -> bool {
         matches!(
             ty.kind(),
             TypeKind::Struct(_) | TypeKind::Array(_) | TypeKind::Enum(_)
         ) && !is_slot_identical_layout(type_pool, ty)
+    };
+
+    // A non-slot-identical aggregate whose whole-value marshalling THROUGH A
+    // TYPED POINTER (memory) is unimplemented. RUE-1000 implements compact enum
+    // memory for enums with a variant-independent slot→byte image (see
+    // [`enum_physical_slot_map`]), so those enums are no longer refused here;
+    // structs and arrays, and enums without such an image, still are.
+    let unimplemented_through_pointer = |ty: Type| -> bool {
+        match ty.kind() {
+            TypeKind::Enum(_) => enum_physical_slot_map(type_pool, ty).is_none(),
+            TypeKind::Struct(_) | TypeKind::Array(_) => !is_slot_identical_layout(type_pool, ty),
+            _ => false,
+        }
     };
 
     // Returned aggregates are written to the caller's sret buffer in physical
@@ -388,25 +566,28 @@ pub(crate) fn compact_physical_access_unsupported(
         let value = CfgValue::from_raw(raw as u32);
         let inst = cfg.get_inst(value);
 
-        // A non-slot-identical ARRAY or ENUM value is refused outright: dynamic
-        // array indexing strides by the compact element size while the frame is
-        // slot-based, and compact enum memory is unimplemented. A non-slot-
-        // identical STRUCT value, by contrast, is allowed to exist in the frame
-        // (static slot-offset field access, narrow scalar field pointers); the
-        // boundary checks below still refuse a struct that crosses a pointer,
-        // call, return, or by-ref boundary.
-        if matches!(inst.ty.kind(), TypeKind::Array(_) | TypeKind::Enum(_))
+        // A non-slot-identical ARRAY value is refused outright: dynamic array
+        // indexing strides by the compact element size while the frame is
+        // slot-based. A non-slot-identical STRUCT or ENUM value, by contrast, is
+        // allowed to exist in the frame — a struct uses static slot-offset field
+        // access and narrow scalar field pointers, and an enum keeps its
+        // slot-based value decomposition (discriminant slot + payload slots)
+        // untouched by the compact layout (RUE-975). The boundary checks below
+        // still refuse either aggregate crossing a pointer (unless the enum has
+        // a variant-independent memory image), call, return, or by-ref boundary.
+        if matches!(inst.ty.kind(), TypeKind::Array(_))
             && !is_slot_identical_layout(type_pool, inst.ty)
         {
             return Some(inst.ty);
         }
 
         // A pointer to a non-slot-identical aggregate: whole-aggregate
-        // marshalling through a pointer is unimplemented and the pointer's
-        // frame-versus-heap provenance is ambiguous.
+        // marshalling through a pointer is unimplemented (except a compact enum
+        // with a variant-independent memory image, RUE-1000) and the pointer's
+        // frame-versus-heap provenance is otherwise ambiguous.
         if matches!(inst.ty.kind(), TypeKind::PtrConst(_) | TypeKind::PtrMut(_)) {
             let pointee = pointee_or_self(type_pool, inst.ty);
-            if unimplemented_aggregate(pointee) {
+            if unimplemented_through_pointer(pointee) {
                 return Some(pointee);
             }
         }
@@ -432,8 +613,10 @@ pub(crate) fn compact_physical_access_unsupported(
                 }
             }
             // Typed pointer reads/writes and typed allocation address memory by
-            // the pointee's physical layout. A narrow scalar pointee is now
-            // lowered correctly; a non-slot-identical aggregate pointee is
+            // the pointee's physical layout. A narrow scalar pointee is lowered
+            // correctly (RUE-989); a compact enum pointee with a
+            // variant-independent memory image is marshalled slot by slot
+            // (RUE-1000); a struct/array (or intractable enum) pointee is
             // refused. The byte-addressed raw-byte family is not matched here —
             // it is correct under any layout.
             CfgInstData::Intrinsic { name, .. } => {
@@ -445,7 +628,7 @@ pub(crate) fn compact_physical_access_unsupported(
                     }
                     for ty in relevant {
                         let pointee = pointee_or_self(type_pool, ty);
-                        if unimplemented_aggregate(pointee) {
+                        if unimplemented_through_pointer(pointee) {
                             return Some(pointee);
                         }
                     }
@@ -473,10 +656,11 @@ pub(crate) fn ensure_compact_layout_codegen_supported(
         return Err(rue_error::CompileError::without_span(
             rue_error::ErrorKind::InternalCodegenError(format!(
                 "aggregate_layout: physical-layout code generation for type `{name}` (in function \
-                 `{}`) is not yet implemented. RUE-989 lowers narrow (one/two/four-byte) scalar \
-                 access through typed pointers, but whole-aggregate marshalling through pointers \
-                 and across call boundaries, and compact enum memory, are still staged for a \
-                 follow-up.",
+                 `{}`) is not yet implemented. Narrow scalar access through typed pointers \
+                 (RUE-989) and compact enum memory for enums with a variant-independent memory \
+                 image (RUE-1000) are lowered, but whole struct/array marshalling through \
+                 pointers, aggregates crossing call boundaries, and enums without a \
+                 variant-independent memory image are still staged for a follow-up.",
                 cfg.fn_name()
             )),
         ));
