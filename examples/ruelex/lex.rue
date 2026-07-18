@@ -86,6 +86,7 @@ pub struct Lexer {
     pretty: bool,
     last_kind: u64,
     last_value: u64,
+    last_aux: u64,
 
     fn new(src: Bytes, pretty: bool) -> Self {
         let mut lx = Self {
@@ -98,6 +99,7 @@ pub struct Lexer {
             pretty: pretty,
             last_kind: token.UNKNOWN,
             last_value: 0,
+            last_aux: 0,
         };
         lx.n = lx.src.len();
         lx
@@ -223,6 +225,12 @@ pub struct Lexer {
         if word_eq(borrow key, "bool") { return "TYPE(bool)"; }
         if word_eq(borrow key, "type") { return "TYPE(type)"; }
 
+        if word_eq(borrow key, "size_of") || word_eq(borrow key, "align_of") ||
+            word_eq(borrow key, "require_droppable") || word_eq(borrow key, "require_trivially_droppable") {
+            self.last_aux = 1;
+        } else if word_eq(borrow key, "offset_of") {
+            self.last_aux = 2;
+        }
         let sym = self.interner.intern(borrow key);
         self.last_kind = token.IDENT;
         self.last_value = sym;
@@ -428,6 +436,7 @@ pub struct Lexer {
             let c = self.peek(0);
             self.last_kind = token.UNKNOWN;
             self.last_value = 0;
+            self.last_aux = 0;
             let kind = if is_ident_start(c) {
                 self.lex_ident(start)
             } else if is_digit(c) {
@@ -448,6 +457,7 @@ pub struct Lexer {
                 start: start,
                 end: end,
                 value: self.last_value,
+                aux: self.last_aux,
             });
             self.emit(inout out, start, end, sl, sc, kind);
         }
@@ -456,6 +466,7 @@ pub struct Lexer {
             start: self.n,
             end: self.n,
             value: 0,
+            aux: 0,
         });
         self.emit(inout out, self.n, self.n, self.line, self.col, "EOF");
     }

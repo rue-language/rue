@@ -98,6 +98,9 @@ pub struct Token {
     start: u64,
     end: u64,
     value: u64,
+    // Parser-only lexical policy (0 ordinary, 1 all intrinsic args are types,
+    // 2 only the first intrinsic arg is a type). Never affects token dumps.
+    aux: u64,
 }
 
 pub const Tokens = std.arraybuf.ArrayBuf(Token);
