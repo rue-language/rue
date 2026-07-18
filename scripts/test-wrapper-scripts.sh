@@ -69,7 +69,7 @@ EOF
   out="$( "$sb/scripts/rue-bin" 2>&1 )"; rc=$?
   check "rue-bin: buck failure exits non-zero" "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
   check "rue-bin: buck stderr is surfaced" \
-    "$(printf '%s' "$out" | grep -q 'BUCK-DIAGNOSTIC' && echo 0 || echo 1)"
+    "$(grep -q 'BUCK-DIAGNOSTIC' <<< "$out" && echo 0 || echo 1)"
   rm -rf "$sb"
 }
 
@@ -132,7 +132,7 @@ EOF
   out="$( bash "$sb/fmt.sh" 2>&1 )"; rc=$?
   check "fmt.sh: buck failure exits non-zero" "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
   check "fmt.sh: buck stderr is surfaced" \
-    "$(printf '%s' "$out" | grep -q 'BUCK-DIAGNOSTIC' && echo 0 || echo 1)"
+    "$(grep -q 'BUCK-DIAGNOSTIC' <<< "$out" && echo 0 || echo 1)"
   rm -rf "$sb"
 }
 
@@ -296,7 +296,7 @@ test_testsh_cli_examples_survive_case_chdir() {
   check "test.sh: CLI filter is forwarded" \
     "$(grep -Fq 'cli.examples::hello' "$sb/cli.log" 2>/dev/null && echo 0 || echo 1)"
   check "test.sh: successful filtered run prints the passed sentinel" \
-    "$(printf '%s\n' "$out" | grep -Fxq '=== TEST SUITE: PASSED ===' && echo 0 || echo 1)"
+    "$(grep -Fxq '=== TEST SUITE: PASSED ===' <<< "$out" && echo 0 || echo 1)"
 
   rc=0
   out="$(cd "$sb/work" && FAKE_COMPILER="$sb/compiler" CLI_LOG="$sb/cli.log" \
@@ -305,7 +305,7 @@ test_testsh_cli_examples_survive_case_chdir() {
   check "test.sh: CLI harness failure is propagated" \
     "$([ "$rc" -eq 17 ] && echo 0 || echo 1)"
   check "test.sh: CLI harness failure prints the failed sentinel" \
-    "$(printf '%s\n' "$out" | grep -Fxq '=== TEST SUITE: FAILED (exit 17) ===' && echo 0 || echo 1)"
+    "$(grep -Fxq '=== TEST SUITE: FAILED (exit 17) ===' <<< "$out" && echo 0 || echo 1)"
   rm -rf "$sb"
 }
 
@@ -512,39 +512,39 @@ test_sanitizer_status_contracts() {
   sb="$(make_sanitizer_sandbox)"; rc=0
   out="$(FAKE_CURATED_EXIT=7 run_sanitizer_sandbox "$sb" 2>&1)" || rc=$?
   check "run-sanitizer: clean Memcheck plus nonzero curated self-check fails" \
-    "$([ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q 'FAIL(program)' && echo 0 || echo 1)"
+    "$([ "$rc" -ne 0 ] && grep -q 'FAIL(program)' <<< "$out" && echo 0 || echo 1)"
   rm -rf "$sb"
 
   sb="$(make_sanitizer_sandbox)"; rc=0
   out="$(FAKE_TIMEOUT=1 run_sanitizer_sandbox "$sb" 2>&1)" || rc=$?
   check "run-sanitizer: timeout status fails" \
-    "$([ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q 'FAIL(timeout)' && echo 0 || echo 1)"
+    "$([ "$rc" -ne 0 ] && grep -q 'FAIL(timeout)' <<< "$out" && echo 0 || echo 1)"
   rm -rf "$sb"
 
   sb="$(make_sanitizer_sandbox)"; rc=0
   out="$(FAKE_VG_MODE=signal run_sanitizer_sandbox "$sb" 2>&1)" || rc=$?
   check "run-sanitizer: fatal signal with a clean Memcheck summary fails" \
-    "$([ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q 'FAIL(signal)' && echo 0 || echo 1)"
+    "$([ "$rc" -ne 0 ] && grep -q 'FAIL(signal)' <<< "$out" && echo 0 || echo 1)"
   rm -rf "$sb"
 
   sb="$(make_sanitizer_sandbox)"; rc=0
   out="$(FAKE_VG_MODE=error run_sanitizer_sandbox "$sb" 2>&1)" || rc=$?
   check "run-sanitizer: real Memcheck error fails" \
-    "$([ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q 'FAIL(memcheck).*Valgrind status 125' && echo 0 || echo 1)"
+    "$([ "$rc" -ne 0 ] && grep -q 'FAIL(memcheck).*Valgrind status 125' <<< "$out" && echo 0 || echo 1)"
   rm -rf "$sb"
 
   sb="$(make_sanitizer_sandbox)"
   rm -f "$sb/examples/calculator/main.rue"
   rc=0; out="$(run_sanitizer_sandbox "$sb" 2>&1)" || rc=$?
   check "run-sanitizer: missing nested root sentinel fails" \
-    "$([ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q 'calculator/main.rue' && echo 0 || echo 1)"
+    "$([ "$rc" -ne 0 ] && grep -q 'calculator/main.rue' <<< "$out" && echo 0 || echo 1)"
   rm -rf "$sb"
 
   sb="$(make_sanitizer_sandbox)"
   rm -rf "$sb/examples"; mkdir "$sb/examples"
   rc=0; out="$(run_sanitizer_sandbox "$sb" 2>&1)" || rc=$?
   check "run-sanitizer: empty example corpus fails loudly" \
-    "$([ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q 'no .rue examples discovered' && echo 0 || echo 1)"
+    "$([ "$rc" -ne 0 ] && grep -q 'no .rue examples discovered' <<< "$out" && echo 0 || echo 1)"
   rm -rf "$sb"
 }
 
@@ -617,7 +617,7 @@ test_rue_unit_zero_match_fails_loud() {
   check "scripts/rue unit: empty selection exits non-zero" \
     "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
   check "scripts/rue unit: empty selection prints a clear message" \
-    "$(printf '%s\n' "$out" | grep -q 'no tests matched' && echo 0 || echo 1)"
+    "$(grep -q 'no tests matched' <<< "$out" && echo 0 || echo 1)"
   # Only the --list preflight should have run; no line lacking --list (the real
   # run) may appear in the log.
   check "scripts/rue unit: empty selection never runs the tests for real" \
@@ -646,7 +646,7 @@ test_rue_unit_unknown_crate_errors_cleanly() {
   check "scripts/rue unit: unknown crate exits non-zero" \
     "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
   check "scripts/rue unit: unknown crate names the missing crate" \
-    "$(printf '%s\n' "$out" | grep -q "unknown crate 'nosuchcrate'" && echo 0 || echo 1)"
+    "$(grep -q "unknown crate 'nosuchcrate'" <<< "$out" && echo 0 || echo 1)"
   check "scripts/rue unit: unknown crate never invokes buck2" \
     "$([ ! -s "$sb/buck.log" ] && echo 0 || echo 1)"
   rm -rf "$sb"
@@ -698,7 +698,7 @@ EOF
   local rc=0 out
   out="$(cd "$sb" && RUE_FULL_SUITE_LOCK_HELD=1 FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$all" ./test.sh 2>&1)" || rc=$?
   check "test.sh: unfiltered run with the full corpus reports success" \
-    "$([ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -Fxq '=== TEST SUITE: PASSED ===' && echo 0 || echo 1)"
+    "$([ "$rc" -eq 0 ] && grep -Fxq '=== TEST SUITE: PASSED ===' <<< "$out" && echo 0 || echo 1)"
 
   # (2) A corpus harness OMITTED while every buck2 invocation still exits 0 is
   #     the RUE-924 false-green: it must become a hard failure naming the suite.
@@ -708,9 +708,9 @@ EOF
   check "test.sh: a silently omitted corpus harness fails the run" \
     "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
   check "test.sh: the omission message names the missing harness" \
-    "$(printf '%s\n' "$out" | grep -Fq 'CORPUS OMITTED' && printf '%s\n' "$out" | grep -Fq '//:cli-tests' && echo 0 || echo 1)"
+    "$(grep -Fq 'CORPUS OMITTED' <<< "$out" && grep -Fq '//:cli-tests' <<< "$out" && echo 0 || echo 1)"
   check "test.sh: an omitted-corpus run prints the failed sentinel" \
-    "$(printf '%s\n' "$out" | grep -Fq '=== TEST SUITE: FAILED' && echo 0 || echo 1)"
+    "$(grep -Fq '=== TEST SUITE: FAILED' <<< "$out" && echo 0 || echo 1)"
 
   # (3) A genuine buck2 failure with the full corpus present is still
   #     propagated verbatim (the audit must not mask real failures).
