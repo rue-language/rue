@@ -784,6 +784,13 @@ impl<'a> Sema<'a> {
         } = metadata;
         let type_pool = TypeInternPool::new();
         type_pool.set_symbol_paths(logical_paths.clone());
+        // Select the physical layout model for the whole compilation (ADR-0052).
+        // The choice is a pure function of the enabled preview features, which
+        // already key every compilation cache identity, so the layout authority
+        // reports one consistent model without a separate cache dimension.
+        type_pool.set_compact_layout(
+            preview_features.contains(&rue_error::PreviewFeature::AggregateLayout),
+        );
         Self {
             declarations: MutableDeclarations(DeclarationNamespace::new()),
             rir,

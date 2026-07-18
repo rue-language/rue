@@ -6,9 +6,9 @@
 //! Struct, enum, array, and pointer definitions are resolved through the
 //! canonical `FrozenTypeInternPool` (ADR-0024).
 
-use rue_air::layout::SLOT_BYTES;
+use lasso::ThreadedRodeo;
 use rue_air::{ArrayTypeId, EnumId, FrozenTypeInternPool, StructId, TypeKind};
-use rue_cfg::{CfgInstData, CfgValue, Type, ValidatedCfg};
+use rue_cfg::{Cfg, CfgInstData, CfgValue, Type, ValidatedCfg};
 use std::collections::HashMap;
 
 use crate::vreg::VReg;
@@ -181,16 +181,19 @@ fn push_leaf_types(type_pool: &FrozenTypeInternPool, ty: Type, out: &mut Vec<Typ
 /// Slot offset of payload field `field_index` within an enum's payload area.
 ///
 /// The discriminant occupies slot 0, so payload fields begin at slot 1
-/// (RUE-221). Derived from the canonical layout authority's payload byte offset
-/// divided by the slot width, so payload addressing agrees with the enum layout
-/// by construction.
+/// (RUE-221). This is the *internal value-decomposition* offset (ADR-0052
+/// representation 2), which the layout authority reports directly and keeps
+/// independent of the compact physical layout so the slot-based stack/register
+/// model is unchanged when compact byte offsets diverge from slot offsets
+/// (RUE-975). Under the slot model it equals the physical payload byte offset
+/// divided by the slot width.
 pub fn enum_payload_slot_offset(
     type_pool: &FrozenTypeInternPool,
     enum_id: EnumId,
     variant_index: u32,
     field_index: u32,
 ) -> u32 {
-    (type_pool.enum_payload_field_offset(enum_id, variant_index, field_index) / SLOT_BYTES) as u32
+    type_pool.enum_payload_slot_offset(enum_id, variant_index, field_index)
 }
 
 /// Calculate the slot count for a single element of an array type.
@@ -225,15 +228,196 @@ pub fn struct_slot_count(type_pool: &FrozenTypeInternPool, struct_id: StructId) 
 
 /// Calculate the slot offset for a field within a struct.
 ///
-/// Derived from the canonical layout authority's field byte offset (shared with
-/// `@offset_of`) divided by the slot width, so field addressing agrees with the
-/// layout intrinsic by construction.
+/// This is the *internal value-decomposition* offset (ADR-0052 representation
+/// 2), reported directly by the layout authority and kept independent of the
+/// compact physical layout so code generation's slot-based stack/register model
+/// is unchanged when compact byte offsets diverge from slot offsets (RUE-975).
+/// Under the slot model it equals the physical field byte offset (shared with
+/// `@offset_of`) divided by the slot width.
 pub fn struct_field_slot_offset(
     type_pool: &FrozenTypeInternPool,
     struct_id: StructId,
     field_index: u32,
 ) -> u32 {
-    (type_pool.struct_field_offset(struct_id, field_index) / SLOT_BYTES) as u32
+    type_pool.struct_field_slot_offset(struct_id, field_index)
+}
+
+/// Whether `ty`'s compact physical layout (ADR-0052 `aggregate_layout`) is
+/// byte-for-byte identical to the flattened eight-byte slot layout.
+///
+/// True exactly when every leaf scalar occupies a full eight bytes, so the type
+/// has no narrow fields, no interior or tail padding, and no narrowed enum tag.
+/// For such a type the compact size, alignment, stride, and field/element byte
+/// offsets all equal the slot-model values, so the slot-based memory
+/// marshalling code generation already emits is physically correct under the
+/// compact layout. When false, correct compact access requires narrow
+/// (one/two/four-byte) loads and stores at compact byte offsets, which is staged
+/// for a follow-up (see [`compact_physical_access_unsupported`]).
+pub(crate) fn is_slot_identical_layout(type_pool: &FrozenTypeInternPool, ty: Type) -> bool {
+    match ty.kind() {
+        // Eight-byte leaves and the recovery scalar: identical in both models.
+        TypeKind::I64
+        | TypeKind::U64
+        | TypeKind::PtrConst(_)
+        | TypeKind::PtrMut(_)
+        | TypeKind::Error => true,
+        // Zero-sized and compile-time-only types have identical (zero) extent.
+        TypeKind::Unit | TypeKind::Never | TypeKind::ComptimeType | TypeKind::Module(_) => true,
+        // Narrow scalars: one/two/four bytes under the compact layout.
+        TypeKind::I8
+        | TypeKind::U8
+        | TypeKind::Bool
+        | TypeKind::I16
+        | TypeKind::U16
+        | TypeKind::I32
+        | TypeKind::U32 => false,
+        TypeKind::Struct(id) => type_pool
+            .struct_def(id)
+            .fields
+            .iter()
+            .all(|field| is_slot_identical_layout(type_pool, field.ty)),
+        TypeKind::Array(id) => {
+            let (element, _length) = type_pool.array_def(id);
+            is_slot_identical_layout(type_pool, element)
+        }
+        // Enums narrow their tag (u8/u16/u32 vs an eight-byte slot).
+        TypeKind::Enum(_) => false,
+    }
+}
+
+/// The pointee of a pointer type, or the type itself when it is not a pointer.
+fn pointee_or_self(type_pool: &FrozenTypeInternPool, ty: Type) -> Type {
+    match ty.kind() {
+        TypeKind::PtrConst(id) => type_pool.ptr_const_def(id),
+        TypeKind::PtrMut(id) => type_pool.ptr_mut_def(id),
+        _ => ty,
+    }
+}
+
+/// If the compact physical layout is active and this CFG would require narrow
+/// physical memory access that code generation does not yet implement, return
+/// the first offending type so the backend can fail loudly rather than emit
+/// slot-shaped access against a compact layout (ADR-0052 phase 3, RUE-974).
+///
+/// The scan is conservative — it refuses whenever a non-slot-identical aggregate
+/// or enum is materialized as a value, a pointer to a non-slot-identical
+/// aggregate appears, a by-reference parameter is non-slot-identical, the
+/// function returns a non-slot-identical aggregate, or a typed pointer
+/// read/write or typed allocation targets a non-slot-identical pointee. Purely
+/// compile-time layout queries (`@size_of`/`@align_of`/`@offset_of`) fold to
+/// constants before code generation and introduce none of these, so they still
+/// compile and run. Slot-identical aggregates (all eight-byte leaves, e.g.
+/// `StrBuf`) marshal correctly and are allowed, as is the byte-addressed
+/// raw-byte family (`@byte_read`/`@byte_write`/`@alloc_bytes`), which is correct
+/// under any layout.
+///
+/// Returning `None` never weakens correctness: when it returns `None` every
+/// physical access the function performs is byte-for-byte identical to the slot
+/// model. The follow-up that adds narrow load/store codegen (RUE-975/RUE-976)
+/// removes the refusals this reports.
+pub(crate) fn compact_physical_access_unsupported(
+    cfg: &Cfg,
+    type_pool: &FrozenTypeInternPool,
+    interner: &ThreadedRodeo,
+) -> Option<Type> {
+    if !type_pool.compact_layout() {
+        return None;
+    }
+
+    // A value or pointer position that would place a non-slot-identical type in
+    // physical memory (aggregate value, pointer to a non-slot-identical
+    // aggregate). Narrow scalar pointers are deliberately excluded here: they
+    // are the element type of the byte-addressed raw-byte family (`ptr mut u8`
+    // in `StrBuf`) and are correct under any layout; typed reads/writes through
+    // them are caught by the operation-aware check below instead.
+    let flag_value = |ty: Type| -> bool {
+        match ty.kind() {
+            TypeKind::Struct(_) | TypeKind::Array(_) | TypeKind::Enum(_) => {
+                !is_slot_identical_layout(type_pool, ty)
+            }
+            TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => {
+                let pointee = pointee_or_self(type_pool, ty);
+                matches!(
+                    pointee.kind(),
+                    TypeKind::Struct(_) | TypeKind::Array(_) | TypeKind::Enum(_)
+                ) && !is_slot_identical_layout(type_pool, pointee)
+            }
+            _ => false,
+        }
+    };
+
+    // Returned aggregates are written to the caller's sret buffer in physical
+    // memory.
+    if flag_value(cfg.return_type()) {
+        return Some(cfg.return_type());
+    }
+
+    for raw in 0..cfg.value_count() {
+        let value = CfgValue::from_raw(raw as u32);
+        let inst = cfg.get_inst(value);
+
+        if flag_value(inst.ty) {
+            return Some(inst.ty);
+        }
+
+        match &inst.data {
+            // A by-reference scalar parameter is a physical pointer dereference
+            // whose bare narrow type the value scan above does not catch.
+            CfgInstData::Param { index } => {
+                if cfg.is_param_by_ref(*index) && !is_slot_identical_layout(type_pool, inst.ty) {
+                    return Some(inst.ty);
+                }
+            }
+            // Typed pointer reads/writes and typed allocation address memory by
+            // the pointee's physical layout. The byte-addressed raw-byte family
+            // (`byte_read`/`byte_write`/`alloc_bytes`/...) is intentionally not
+            // matched here — it is correct under any layout.
+            CfgInstData::Intrinsic { name, .. } => {
+                let op = interner.resolve(name);
+                if matches!(op, "ptr_read" | "ptr_write" | "alloc" | "free" | "realloc") {
+                    let mut relevant = vec![inst.ty];
+                    for &arg in cfg.get_intrinsic_args(&inst.data) {
+                        relevant.push(cfg.get_inst(arg).ty);
+                    }
+                    for ty in relevant {
+                        let pointee = pointee_or_self(type_pool, ty);
+                        if !is_slot_identical_layout(type_pool, pointee) {
+                            return Some(pointee);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+/// Refuse code generation with a clear diagnostic when the compact physical
+/// layout is active but the function needs narrow physical memory access that is
+/// not yet implemented (see [`compact_physical_access_unsupported`]). Both
+/// backends call this at the top of lowering so the feature fails loudly rather
+/// than silently emitting slot-shaped access against a compact layout.
+pub(crate) fn ensure_compact_layout_codegen_supported(
+    cfg: &Cfg,
+    type_pool: &FrozenTypeInternPool,
+    interner: &ThreadedRodeo,
+) -> rue_error::CompileResult<()> {
+    if let Some(ty) = compact_physical_access_unsupported(cfg, type_pool, interner) {
+        let name = type_name(ty, type_pool);
+        return Err(rue_error::CompileError::without_span(
+            rue_error::ErrorKind::InternalCodegenError(format!(
+                "aggregate_layout: physical-layout code generation for type `{name}` (in function \
+                 `{}`) is not yet implemented. RUE-974 provides the compact layout authority and \
+                 the compile-time @size_of / @align_of / @offset_of queries; narrow \
+                 (one/two/four-byte) memory load and store code generation is staged for \
+                 RUE-975/RUE-976.",
+                cfg.fn_name()
+            )),
+        ));
+    }
+    Ok(())
 }
 
 /// Recursively collect all scalar vregs from an array value.

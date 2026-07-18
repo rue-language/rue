@@ -1,0 +1,173 @@
+# Compact native physical layout through the real driver (ADR-0052 phase 3,
+# RUE-974). With `--preview aggregate_layout` the canonical layout authority
+# reports the ratified compact representation: natural scalar widths and
+# alignments, declaration-order struct fields with interior/tail padding,
+# ascending array stride, a smallest-sufficient enum tag, and the uniform
+# zero-sized-type rule. The compile-time layout queries (@size_of / @align_of /
+# @offset_of) observe those values; slot-identical aggregates (all eight-byte
+# leaves) still marshal correctly through memory; and a program that would need
+# narrow (one/two/four-byte) physical memory access fails loudly rather than
+# emitting slot-shaped access against a compact layout (the narrow load/store
+# code generation is staged for RUE-975/RUE-976). Without the flag every case
+# below observes today's eight-byte slot model unchanged.
+
+[section]
+id = "cli.aggregate_layout"
+name = "Compact native layout (ADR-0052 phase 3)"
+description = "The aggregate_layout preview reports the compact physical layout in @size_of / @align_of / @offset_of; slot-identical aggregates still execute, and narrow physical access fails loudly."
+
+# Scalars take their natural LP64 width and alignment under the compact layout.
+[[case]]
+name = "compact_scalar_sizes_and_alignments"
+description = "Natural scalar widths/alignments (u8=1, i16=2, i32=4, i64=8, bool=1) under --preview aggregate_layout."
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    @dbg(@size_of(u8) == 1);
+    @dbg(@size_of(i16) == 2);
+    @dbg(@size_of(i32) == 4);
+    @dbg(@size_of(i64) == 8);
+    @dbg(@size_of(bool) == 1);
+    @dbg(@align_of(i32) == 4);
+    @dbg(@align_of(u64) == 8);
+    0
+}
+""" }]
+stdout = "true\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\n"
+exit_code = 0
+
+# A struct is laid out in declaration order at naturally aligned offsets with
+# interior and tail padding; size rounds up to the struct alignment.
+[[case]]
+name = "compact_struct_padding_and_offsets"
+description = "Padded { a: u8, b: i32, c: u8 } -> a@0, b@4, c@8, size 12, align 4."
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Padded { a: u8, b: i32, c: u8 }
+fn main() -> i32 {
+    @dbg(@offset_of(Padded, a) == 0);
+    @dbg(@offset_of(Padded, b) == 4);
+    @dbg(@offset_of(Padded, c) == 8);
+    @dbg(@size_of(Padded) == 12);
+    @dbg(@align_of(Padded) == 4);
+    0
+}
+""" }]
+stdout = "true\ntrue\ntrue\ntrue\ntrue\n"
+exit_code = 0
+
+# Arrays are ascending with stride equal to the compact element size.
+[[case]]
+name = "compact_array_stride"
+description = "[i32; 3] has size 12; [u8; 4] has size 4 under the compact layout."
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    @dbg(@size_of([i32; 3]) == 12);
+    @dbg(@size_of([u8; 4]) == 4);
+    @dbg(@size_of([i64; 2]) == 16);
+    0
+}
+""" }]
+stdout = "true\ntrue\ntrue\n"
+exit_code = 0
+
+# Zero-sized types have size 0, alignment 1, stride 0 under the compact layout
+# (the uniform rule, which includes zero-length arrays).
+[[case]]
+name = "compact_zero_sized_rules"
+description = "unit and [i32; 0] are size 0 with alignment 1."
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    @dbg(@size_of(()) == 0);
+    @dbg(@align_of(()) == 1);
+    @dbg(@size_of([i32; 0]) == 0);
+    @dbg(@align_of([i32; 0]) == 1);
+    0
+}
+""" }]
+stdout = "true\ntrue\ntrue\ntrue\n"
+exit_code = 0
+
+# A slot-identical aggregate (all eight-byte leaves) has an identical compact
+# and slot layout, so field-pointer read/write through memory still executes
+# correctly under the compact layout.
+[[case]]
+name = "compact_slot_identical_field_ptr_roundtrip"
+description = "An all-i64 struct writes and reads a field through a pointer under --preview aggregate_layout."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Cell { first: i64, second: i64 }
+fn main() -> i32 {
+    let mut c = Cell { first: 40, second: 2 };
+    checked {
+        let fp: ptr mut i64 = @field_ptr(c.second);
+        @ptr_write(fp, 100);
+    };
+    @dbg(c.first);
+    @dbg(c.second);
+    @intCast(c.second)
+}
+""" }]
+stdout = "40\n100\n"
+exit_code = 100
+
+# The compact layout queries are observed identically whether or not the field
+# order forces padding; here an already-aligned all-i64 struct has no padding
+# and its size/offsets match the slot model exactly.
+[[case]]
+name = "compact_slot_identical_offsets_match_slot_model"
+description = "An all-i64 struct has offsets 0/8 and size 16 under the compact layout."
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Cell { first: i64, second: i64 }
+fn main() -> i32 {
+    @dbg(@offset_of(Cell, first) == 0);
+    @dbg(@offset_of(Cell, second) == 8);
+    @dbg(@size_of(Cell) == 16);
+    0
+}
+""" }]
+stdout = "true\ntrue\ntrue\n"
+exit_code = 0
+
+# A program that would require narrow physical memory access under the compact
+# layout is refused loudly rather than miscompiled with slot-shaped access. The
+# narrow load/store code generation is staged for RUE-975/RUE-976.
+[[case]]
+name = "compact_narrow_physical_access_fails_loudly"
+description = "Writing through a pointer into a struct with narrow i32 fields is refused, not silently miscompiled."
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Pair { a: i32, b: i32 }
+fn main() -> i32 {
+    let mut p = Pair { a: 7, b: 9 };
+    checked {
+        let fp: ptr mut i32 = @field_ptr(p.b);
+        @ptr_write(fp, 100);
+    };
+    p.b
+}
+""" }]
+compile_fail = true
+error_contains = ["aggregate_layout", "not yet implemented"]
+
+# Without the preview flag, the exact same narrow program compiles and runs
+# unchanged under today's eight-byte slot model.
+[[case]]
+name = "narrow_program_unchanged_without_the_preview"
+description = "The narrow-field program compiles and runs under the default slot model when the preview is off."
+files = [{ path = "main.rue", source = """
+struct Pair { a: i32, b: i32 }
+fn main() -> i32 {
+    let mut p = Pair { a: 7, b: 9 };
+    checked {
+        let fp: ptr mut i32 = @field_ptr(p.b);
+        @ptr_write(fp, 100);
+    };
+    p.b
+}
+""" }]
+exit_code = 100
