@@ -2066,22 +2066,41 @@ impl Parser {
         if self.recover_reserved_let_keywords() || self.recover_missing_item_name() {
             return start;
         }
+        // Track brace depth across the skipped tokens so synchronization only
+        // happens at top level: an item prefix inside the failed item's own
+        // braces (a struct's later methods, say) is part of the failed item,
+        // and re-parsing it as a fresh top-level item emits phantom errors at
+        // valid lines (RUE-726). A stray close brace clamps to zero so text
+        // after an over-closed item still synchronizes.
+        let mut brace_depth: usize = 0;
         if !self.at(TokenKind::Eof) {
             debug_assert_eq!(
                 recovery::item_recovery_action(
                     recovery::ItemRecoveryPosition::Initial,
-                    &self.kind()
+                    &self.kind(),
+                    brace_depth,
                 ),
                 recovery::ItemRecoveryAction::Consume
             );
+            match self.kind() {
+                TokenKind::LBrace => brace_depth += 1,
+                TokenKind::RBrace => {}
+                _ => {}
+            }
             self.bump();
         }
         while !self.at(TokenKind::Eof)
             && recovery::item_recovery_action(
                 recovery::ItemRecoveryPosition::AfterProgress,
                 &self.kind(),
+                brace_depth,
             ) == recovery::ItemRecoveryAction::Consume
         {
+            match self.kind() {
+                TokenKind::LBrace => brace_depth += 1,
+                TokenKind::RBrace => brace_depth = brace_depth.saturating_sub(1),
+                _ => {}
+            }
             self.bump();
         }
         start
@@ -2355,6 +2374,19 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![8, 29, 50]
         );
+    }
+
+    #[test]
+    fn struct_body_error_does_not_reparse_sibling_methods() {
+        // RUE-726: one real error inside a method body must not resynchronize
+        // at the struct's remaining methods and re-report them as malformed
+        // free functions at earlier, valid lines.
+        let source = "struct S {\n    n: i64,\n    fn a(borrow self) -> i64 { self.n }\n    \
+                      fn b(borrow self) -> i64 {\n        match self.n {\n            \
+                      Some(x) => x,\n            _ => 0,\n        }\n    }\n}\n\
+                      fn main() -> i32 { 0 }";
+        let errors = parse_source(source).unwrap_err();
+        assert_eq!(errors.len(), 1, "expected only the real error: {errors:?}");
     }
 
     #[test]

@@ -1,0 +1,63 @@
+# Top-level parse recovery (RUE-726).
+#
+# A parse error inside a method body used to rewind to the struct's start and
+# resynchronize at the next `fn` — which is the struct's own next method — so
+# every remaining sibling method was re-parsed as a free function, emitting
+# phantom E0100 errors ("methods take `self` as the first parameter") at
+# perfectly valid earlier lines, positioned BEFORE the real error. Recovery is
+# now brace-depth aware: item prefixes inside the failed item's braces are
+# consumed, not synchronized on.
+
+[section]
+id = "diagnostics.parser_recovery"
+name = "Top-level recovery does not re-parse a failed item's members"
+description = "One method-body error reports once; sibling methods emit no phantom errors (RUE-726)."
+
+# The exact-golden assertion pins the whole (summary-stripped) error output
+# to the single real error at the real site, so a reappearing phantom — any
+# extra error, at any position — fails the case.
+[[case]]
+name = "method_body_error_no_phantom_siblings"
+source = """
+struct S {
+    n: i64,
+    fn a(borrow self) -> i64 { self.n }
+    fn b(borrow self) -> i64 {
+        match self.n {
+            Some(x) => x,
+            _ => 0,
+        }
+    }
+}
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+expected_error = """
+error: [E0100]: expected '.', found '=>'
+ --> test.rue:6:21
+  |
+6 |             Some(x) => x,
+  |                     ^^
+  |
+"""
+
+# Recovery still finds the next real top-level item after skipping the whole
+# failed struct: the later free-standing parse error is reported too, at its
+# own site, with nothing in between.
+[[case]]
+name = "recovery_still_synchronizes_after_failed_struct"
+source = """
+struct S {
+    n: i64,
+    fn a(borrow self) -> i64 {
+        match self.n {
+            Some(x) => x,
+            _ => 0,
+        }
+    }
+}
+fn broken( -> i32 { 0 }
+fn ok() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["expected '.', found '=>'", "found '->'"]
