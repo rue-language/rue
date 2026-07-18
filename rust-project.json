@@ -55,14 +55,6 @@
           "name": "rue_error"
         },
         {
-          "crate": 10,
-          "name": "rue_lexer"
-        },
-        {
-          "crate": 15,
-          "name": "rue_parser"
-        },
-        {
           "crate": 16,
           "name": "rue_rir"
         },
@@ -81,10 +73,6 @@
         {
           "crate": 61,
           "name": "lasso"
-        },
-        {
-          "crate": 91,
-          "name": "rayon"
         }
       ],
       "is_workspace_member": true,

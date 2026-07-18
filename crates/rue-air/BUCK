@@ -23,14 +23,15 @@ rue_crate(
     deps = [
         "//crates/rue-builtins:rue-builtins",
         "//crates/rue-error:rue-error",
-        "//crates/rue-lexer:rue-lexer",
-        "//crates/rue-parser:rue-parser",
         "//crates/rue-rir:rue-rir",
         "//crates/rue-runtime-abi:rue-runtime-abi",
         "//crates/rue-span:rue-span",
         "//crates/rue-target:rue-target",
         "//third-party:lasso",
-        "//third-party:rayon",
+    ],
+    test_deps = [
+        "//crates/rue-lexer:rue-lexer",
+        "//crates/rue-parser:rue-parser",
     ],
 )
 
