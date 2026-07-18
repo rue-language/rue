@@ -92,17 +92,19 @@ initially *out* of the core and added as a distinguished, clearly-marked
 extension; their whole point is to step outside the guarantees the core proves,
 so they are modeled separately rather than threaded through every rule.
 
-**Heap-backed and view types are referenced but not defined here.** A few rules
-mention `StrBuf`, `str`, `Str(N)`, slices `[T]`, or the mode-position
-compatibility relation `⊳` (for example the external-call note in §6.9, string
-content equality in §6.4, and the `⊳` examples in §5.7). None of these appears
-in the grammar above: they are **library/extension types outside the current
-core**, and every rule that names one is a *forward reference* pinned only so
-the oracle correspondence stays exact. Whether the core machine grows a heap
-region that brings them inside the proved perimeter is the open RUE-390
-modeling decision (`H_heap`, Option A recommended); until it is ratified, the
-§7 theorems quantify over core values only, and these mentions carry no proof
-weight.
+**Buffer-backed container types are inside the machine; slice statics are not
+yet.** The RUE-390 modeling decision is ratified (2026-07-14): the machine's
+store is an **allocation store** (§6.1) — abstract allocations, not a
+language-level heap — and the buffer-backed library types `ArrayBuf(T)` /
+`StrBuf` are brought inside the proved perimeter by defining equations over it
+(§6.13), so the §7 theorems now quantify over buffer cells as well
+(conditional on the library obligations of §6.13.5). What remains outside the
+*grammar* above: the surface slice forms (`[T]`, `str`, `Str(N)`) and the
+mode-position compatibility relation `⊳` that creates views at call sites (the
+external-call note in §6.9, string content equality in §6.4, the `⊳` examples
+in §5.7). Those mentions remain *forward references* — but they now have
+something to refer to: giving slices their §5 statics is the separate slices
+work, designed against the view values §6.13.2 already defines.
 
 ---
 
@@ -887,15 +889,20 @@ them is a bug (RUE-305) — that is the point of pinning both.
 ### 6.1 The machine configuration
 
 ```
-  Locations      ℓ ∈ Loc                    -- one storage cell per live let-binding or by-value parameter
+  Allocation ids A ∈ AllocId                 -- abstract allocation identities (the RUE-390 ruling: allocations, not addresses)
+  Locations      ℓ ∈ Loc ⊂ AllocId           -- binding allocations: one single-cell allocation per live let-binding or by-value parameter
   Cell contents  c ::= v | ⊘                 -- ⊘ = uninitialised / moved-out (the dynamic image of Σ's absence/MovedOut, §5)
-  Store          H : Loc ⇀ c
+  Allocations    a ::= [ c1, …, cn ]         -- live: n ≥ 0 cells (a binding allocation always has exactly one)
+                     | †                      -- dead: the identity is spent, its storage gone, and it is never reused (§6.13)
+  Store          H : AllocId ⇀ a             -- the allocation store
   Values         v ::= n_T                    -- a scalar integer n of type T = int(w,s), with min_T ≤ n ≤ max_T
                      | b                       -- b ∈ { true, false }
                      | ⟨⟩                      -- unit
                      | { v1, …, vk }_S         -- a struct-S value (fields in declaration order)
                      | [ v1, …, vn ]           -- an array value (elements in ascending index)
                      | Kj⟨ v1, …, va ⟩         -- an enum value: variant tag Kj (0-based index j) + payload v1..va (a = 0 ⇒ just the tag)
+                     | buf⟨A⟩                  -- an owned buffer handle: the opaque identity of a buffer allocation (§6.13)
+                     | view⟨A | o, k⟩          -- a second-class view of k cells of allocation A starting at cell o (§6.13)
   Environment    ρ : Var ⇀ Loc               -- per frame: each in-scope binding → its cell
   Scope record   s = [ℓ1, …, ℓq]             -- cells owed a drop at this scope's exit, in creation order (dropped newest-first)
   Frame          φ = ⟨ ρ ; σ ⟩ ,  σ = [s1, …, sr]   -- a stack of r ≥ 1 open scopes; σ's top is the innermost scope
@@ -914,6 +921,20 @@ oracle's `Interp`/`Frame` types: a `Frame` is `φ`, its
 `locals`/`params` vectors are the cells reachable through `ρ`, and its evaluation
 proceeds block-by-block exactly as `E`-decomposition proceeds redex-by-redex.
 
+The store's allocations come in two kinds, distinguished only by how they are
+minted (the RUE-390 ruling: stack storage and dynamically allocated buffers
+are both abstract allocations, separated only where the semantics requires
+it). **Binding allocations** `ℓ ∈ Loc` are minted by `(D-Let)`, `(D-Match)`,
+and `(D-Call)`, always hold exactly one cell, and are retired by the scope
+exit that drops them; `H(ℓ) = c` and `H[ℓ ↦ c]` throughout §6.3–§6.11
+abbreviate the one-cell forms `H(ℓ) = [c]` and `H[ℓ ↦ [c]]`, so every rule in
+those sections reads unchanged. **Buffer allocations** are minted, read,
+written, resized, and retired only by the machine operations and container
+defining equations of §6.13; no §2 expression form touches one directly. A
+fresh identity is one not in `dom(H)`; dead allocations stay in the domain as
+`†`, so an identity is never reused — which is what makes a stale `buf⟨A⟩` or
+`view⟨A | o, k⟩` permanently dead rather than accidentally valid again.
+
 `n_T` records the value's integer type because overflow, comparison signedness,
 and bitwise width all depend on it; the oracle carries the same information out of
 band on each CFG instruction's `ty` field. A discriminant-only enum value
@@ -925,15 +946,21 @@ the drop relation `drop(H, ℓ)` of §6.11 (which is itself a no-op on a `⊘` o
 `Copy` cell, so these fold harmlessly over non-droppable bindings):
 
 ```
+  drop-retire(H, ℓ)              = drop(H, ℓ) [ℓ ↦ †]              -- scope-exit teardown of one binding: run its drop, then retire it
   push-scope(⟨ρ;σ⟩)              = ⟨ρ; [] :: σ⟩                    -- open a fresh, empty innermost scope
-  run-scope-drops(H, ⟨ρ; s::σ⟩) = drop the cells of s newest-first, yielding H'; result frame ⟨ρ; σ⟩   -- close ONE (innermost) scope
+  run-scope-drops(H, ⟨ρ; s::σ⟩) = drop-retire the cells of s newest-first, yielding H'; result frame ⟨ρ; σ⟩   -- close ONE (innermost) scope
   run-all-scope-drops(H, φ)      = iterate run-scope-drops until φ has no open scopes (whole-frame teardown, on return)
   unwind-drops(H, φ', φ)         = run-scope-drops repeatedly on φ' until its open-scope stack equals φ's (break: down to a boundary)
 ```
 
 A scope gains a cell to drop when a `let` (§6.7) or a `match` arm (§6.6) binds one;
 `inout`/`borrow` parameters are deliberately never recorded (§6.9), which is how
-they escape the drop obligation (§5.6).
+they escape the drop obligation (§5.6). Retiring the binding allocation after
+its drop is the RUE-390 change: a scope-exited cell's identity is dead, so any
+residual access to it — which a well-typed program never performs (§7,
+no-use-after-drop) — is *stuck* rather than silently readable. Overwrite-drop
+(§6.8) and `@drop` (§6.11) do **not** retire: the binding stays live and
+reinitializable there.
 
 ### 6.2 Evaluation order: contexts, search, and panic propagation
 
@@ -1188,8 +1215,8 @@ which runs the drops of cells `ℓ̄` when `e` has become a value:
   ─────────────────────────────────────────────────────────────────── (D-Let)
   ⟨ H ; ⟨ρ;σ⟩ ; K ; let x = v ; e2 ⟩ → ⟨ H[ℓ↦v] ; ⟨ρ[x↦ℓ];σ⟩ ; K ; endscope([ℓ]) in e2 ⟩
 
-  ─────────────────────────────────────────────────────────────────── (D-EndScope)     -- ℓ̄ dropped newest-first
-  ⟨ H ; φ ; K ; endscope([ℓ1,…,ℓq]) in v ⟩ → ⟨ drop(H, ℓq) ; …; drop(H, ℓ1) ; φ ; K ; v ⟩
+  ─────────────────────────────────────────────────────────────────── (D-EndScope)     -- ℓ̄ dropped-and-retired newest-first (§6.1)
+  ⟨ H ; φ ; K ; endscope([ℓ1,…,ℓq]) in v ⟩ → ⟨ drop-retire(H, ℓq) ; …; drop-retire(H, ℓ1) ; φ ; K ; v ⟩
 ```
 
 where `drop(H, ℓ)` is the drop relation of §6.11 (a no-op on a `⊘` or `Copy`
@@ -1340,7 +1367,13 @@ drop in `3.9` order (`run_drop`):
 
 where `drop*(H, [c1,…,cm])` folds `drop` over the list left-to-right, and
 `dtor_S` runs `S`'s destructor as an ordinary call (§6.9) if `S` declares one
-(a destructor may have no observable effect in this model). The **enum** case reads the runtime tag `Kj` to
+(a destructor may have no observable effect in this model). For a **library
+container** `S` — `StrBuf`, an `ArrayBuf(T)` instance — the destructor is a
+source-defined `drop fn` whose body contains unchecked code, so in the model
+it steps by the type's defining drop equation instead (§6.13.3: drop the live
+buffer cells in ascending index order, skipping `⊘`, then retire the
+allocation — never "no observable effect", which was the `@free`-as-no-op
+vacuity RUE-390 closed). The **enum** case reads the runtime tag `Kj` to
 recurse into the *active* variant's payload only: an inactive variant's payload
 has no storage, and a discriminant-only active variant (`a = 0`) drops nothing
 (`run_drop`'s enum arm). A payload already moved out by a `match` binding (§6.6) left the
@@ -1369,9 +1402,9 @@ observable**: an alternate compiler must reproduce the same trap on the same
 input (`3.1:6/13`, `8.1`–`8.3`).
 
 The `user` category is `@panic`'s defining equation (RUE-526 — previously the
-paper machine had no rule for it). `@panic` is a builtin (§6.9's builtin-call
-note): it evaluates its message operand, appends `panic: <message>` to the
-observable output, and abandons the configuration:
+paper machine had no rule for it). `@panic` is an intrinsic (§6.9's
+external-call note): it evaluates its message operand, appends
+`panic: <message>` to the observable output, and abandons the configuration:
 
 ```
   ────────────────────────────────────────── (D-Panic)
@@ -1412,6 +1445,355 @@ above names the function that realizes it, so a change to either must be mirrore
 in the other or the differential tests will diverge — which is the mechanism that
 keeps the paper semantics and the running semantics one artifact.
 
+### 6.13 The allocation store: buffers, views, and container defining equations
+
+This section is the ratified RUE-390 modeling decision (maintainer ruling,
+2026-07-14): the machine models **abstract allocations**, not a language-level
+heap. §6.1's store already gives every binding a single-cell allocation; this
+section adds the multi-cell **buffer allocations** that back `ArrayBuf(T)` and
+`StrBuf`, the machine operations on them, the two value forms that name them,
+and the defining equations of the library container types over those
+operations. What it deliberately does **not** add: a malloc-style heap, a
+global allocator, an allocation algorithm, arenas or pages, address
+arithmetic, or a reclamation policy. Those are runtime/library concerns (the
+allocator design is RUE-878); an allocation here is an identity plus cells
+plus liveness, nothing more. The payoff is stated in §7: use-after-free
+becomes a *progress violation* — the safety theorems become falsifiable, and
+provable, for exactly the types real programs use (the vacuity RUE-390
+reported).
+
+#### 6.13.1 Machine operations on buffer allocations
+
+```
+  mint(H, n)        = (A, H[A ↦ [⊘, …, ⊘]])      where A ∉ dom(H); n ≥ 0 cells, all ⊘
+  H(A).i            = ci                           iff H(A) = [c0, …, c_{m-1}] and 0 ≤ i < m      -- cell read
+  H[A.i ↦ c]                                       defined under the same conditions               -- cell write
+  retire(H, A)      = H[A ↦ †]                    iff H(A) is live
+  realloc(H, A, n') = (A', H2[A ↦ †])             where H(A) = [c0, …, c_{m-1}] is live,
+                                                   (A', H1) = mint(H, n'),
+                                                   H2 = H1[A'.i ↦ ci  for 0 ≤ i < min(m, n')]
+```
+
+Three commitments, each load-bearing:
+
+- **Partiality is stuckness, not a trap.** An operation on a `†` allocation, or
+  outside a live allocation's cells, has no rule — the configuration is
+  **stuck**, deliberately distinct from the defined `↯` traps of §6.12. A trap
+  is defined behavior an alternate compiler must reproduce; a stuck
+  configuration is a state a well-typed program must never reach, which is
+  precisely what gives §7's progress theorem content over buffers. The checked
+  containers below establish every operation's precondition themselves (each
+  equation bounds-checks against its own `len` before touching a cell, and
+  traps `↯bounds` at *its* boundary), so their uses of these operations never
+  stick — that unreachability is now theorem content, not vacuity.
+- **Identities are never reused.** `mint` freshness is `A ∉ dom(H)`, and dead
+  allocations remain in the domain as `†`, so no fresh identity ever collides
+  with a retired one. A dangling handle or view is permanently dead — it cannot
+  come back to life aliasing an unrelated later allocation. (This is the
+  abstract form of provenance; concrete address reuse is the runtime's
+  business, invisible here.)
+- **`realloc` moves identity.** Growth mints a *fresh* allocation, copies the
+  preserved cells, and retires the old identity (the ruling's stated initial
+  model). Every stale copy of the old handle, and every view into it, is dead
+  the moment the container grows — the dangling-after-realloc class that §5.4's
+  deferred-view-equality warning describes is stuck here, not silently
+  readable.
+
+#### 6.13.2 Buffer handles and views
+
+Two §6.1 value forms name allocations:
+
+- `buf⟨A⟩` — an **owned buffer handle**. It is opaque: no §2 expression form
+  and no §6.3–§6.11 rule operates on it; it exists only as the abstracted
+  pointer field inside a library container's header struct (the `ptr mut T` of
+  `std/arraybuf.rue`, the `ptr mut u8` of `std/strbuf.rue`'s header),
+  and only the defining equations below touch the allocation it names. Every
+  library container type declares a destructor, so its class is `Affine` (§3,
+  never `@copy`) and core code cannot duplicate a header — and with it a
+  handle — by (Use-Copy); handle uniqueness inside the *library* is obligation
+  (O1) of §6.13.5.
+- `view⟨A | o, k⟩` — a **second-class view**: cells `o … o+k-1` of allocation
+  `A`. Views are the model's slices (`borrow [T]` / `inout [T]` / `str` —
+  ADR-0043's second-class fat pointer, `ptr` + runtime `len`, abstracted to
+  identity + offset + length). A view is created at a by-ref argument position
+  by the mode-position compatibility relation `⊳` (§5.7's examples) and lives
+  exactly as long as the call's loan (§5.4): it cannot be returned, stored, or
+  otherwise escape, so its loan root — the container place it was created
+  from — outlives it by construction. Reading through a view is `H(A).(o+i)`
+  for `i < k`, with the range check performed by the view's own accessors (the
+  `__rue_str_byte_at` equation of §6.13.4 traps `↯bounds` first); under the
+  str ruling (RUE-386) a `Str(N)`/`StrBuf` borrow in `str` position *is* such
+  a view, so that ruling and this model line up one-to-one.
+
+A **static string literal** is an immortal live allocation: the initial store
+`H0` (§6.12) contains one live allocation per distinct literal, minted before
+`main` and never retired. `"hello" : str` is `view⟨A_lit | 0, 5⟩`, and its
+`Copy`, storable, cannot-dangle status (ADR-0043's static-backed exemption
+from the second-class rule) is literal: no reduction exists that could kill
+`A_lit`.
+
+One scope cut, stated so it is not silent: the equations below mint views only
+over **buffer** allocations. A view of a *fixed stack array* (`borrow a[i..j]`
+with `a : [T; N]`) still rides §6.9's by-ref place mechanism (a `(ℓ, π)`
+binding), because a binding allocation holds its array as one structured cell,
+not as `N` cells. Unifying the two — either by giving array-holding bindings
+cell-vector allocations or by adding a path component to views — is the
+slice-statics work this machinery was sequenced to unblock, deliberately not
+decided here.
+
+#### 6.13.3 `ArrayBuf(T)`: representation, invariant, and defining equations
+
+`ArrayBuf(T)` is an ordinary source-defined library type (`std/arraybuf.rue`,
+per ADR-0043 — not a compiler builtin), but its method bodies contain
+`checked {}` blocks over the raw intrinsics, which are **outside the core**
+(§2). The model therefore gives each public method a **defining equation**:
+the same device §6.9 uses for intrinsics with no core body, applied at the
+container's public boundary. The real body must refine its equation —
+obligation (O4) of §6.13.5. An `ArrayBuf(T)` instantiation's values are
+
+```
+  { h ; len ; cap }_ArrayBuf(T)        h ::= buf⟨A⟩ | null        len, cap : u64
+```
+
+(`null` abstracts the no-allocation empty state — `@int_to_ptr(0)` in the
+source.) The **representation invariant** `Inv` holds at every method
+boundary — entry and exit of every defining equation, and at the destructor:
+
+```
+  Inv({ h ; len ; cap }):
+    h = null      ⇒  len = cap = 0
+    h = buf⟨A⟩    ⇒  H(A) is live with exactly cap cells;
+                     cells 0 … len-1 are values of T (not ⊘);
+                     cells len … cap-1 are ⊘
+    class(T) ≠ Linear            -- the RUE-388 instantiation gate (@require_droppable, E0499)
+```
+
+Mid-equation the invariant may be broken (a grow is mid-flight between `mint`
+and the header update); it must be re-established on exit — obligation (O2).
+The `⊘` in cells `len … cap-1` is the RUE-390 "⊘-skip extension": per-cell
+initializedness now exists for dynamically allocated elements, and the
+destructor's skip below has a `⊘` to write for a buffer element exactly as
+§6.11's has for a stack cell.
+
+The defining equations: `self` is an `inout` place for the mutators, so
+header updates write the caller's cell per §6.9's sharing rule. Each equation
+is the model of the corresponding `std/arraybuf.rue` body (its `checked {}`
+blocks over `@alloc`/`@realloc`/`@ptr_read`/`@ptr_write`/`@ptr_offset` and
+friends):
+
+```
+  new()                     →  { null ; 0 ; 0 }                                  -- no allocation until first push
+  with_capacity(0)          →  { null ; 0 ; 0 }
+  with_capacity(n), n > 0   →  { buf⟨A⟩ ; 0 ; n }         where (A, H') = mint(H, n)
+
+  len(borrow self)          →  self.len        capacity → self.cap        is_empty → self.len == 0
+
+  reserve(inout self, additional):
+    required = len + additional
+    required ≤ cap  →  ⟨⟩                                   -- enough spare: no effect
+    required > cap:    cap' = grow(cap, required);          -- amortized doubling: double from max(cap, 4) until ≥ required
+                       (A', H') = ( mint(H, cap')           if h = null
+                                  | realloc(H, A, cap')     if h = buf⟨A⟩ );     -- the old identity dies (§6.13.1)
+                       h ↦ buf⟨A'⟩;  cap ↦ cap'   →  ⟨⟩
+
+  push(inout self, x):
+    reserve(self, 1);  let buf⟨A⟩ = h;                      -- h ≠ null after reserve: cap ≥ 1
+    H[A.len ↦ x];  len ↦ len + 1                           →  ⟨⟩
+
+  pop(inout self):
+    len = 0   →  None
+    len > 0:     v = H(A).(len-1);  H[A.(len-1) ↦ ⊘];  len ↦ len - 1   →  Some(v)
+                                                            -- the element MOVES out: exactly one owner (RUE-651)
+  get(borrow self, i):          -- well-formed only for trivially-droppable T (E0711, RUE-651)
+    i < len   →  Some(H(A).i)                               -- a COPY; the cell is untouched
+    i ≥ len   →  None
+
+  set(inout self, i, x):
+    i ≥ len   →  ⟨⟩                                         -- out of bounds: ignored (the source's contract)
+    i < len:     drop(H, H(A).i);  H[A.i ↦ x]   →  ⟨⟩       -- old element dropped first (RUE-646): no leak
+
+  clear(inout self):
+    for i = 0 … len-1 ascending:  drop(H, H(A).i);  H[A.i ↦ ⊘]
+    len ↦ 0                                       →  ⟨⟩     -- capacity kept
+
+  free(inout self):
+    clear's element drops;  retire(H, A) if h = buf⟨A⟩;
+    h ↦ null;  len ↦ 0;  cap ↦ 0                  →  ⟨⟩     -- early release; the later destructor is then a no-op
+
+  drop (the §6.11 library-container destructor):
+    for i = 0 … len-1 ascending:  drop(H, H(A).i), skipping any ⊘
+    retire(H, A) if h = buf⟨A⟩
+```
+
+In `pop`/`get`/`set`/`clear`, `A` names the handle's allocation implicitly:
+the guard (`len > 0`, resp. `i < len`) plus `Inv`'s `h = null ⇒ len = 0`
+forces `h = buf⟨A⟩` on every arm that touches a cell. The remaining methods
+(`get_or`/`pop_or`, `first`/`last`, `index_of`/`contains`, `swap`/`reverse`,
+`with_capacity`'s non-zero arm via `reserve`, the `from_str`/`extend_from`
+bridges) are compositions of the equations above plus ordinary core
+evaluation; they add no new machine operation. Notes, each carrying a
+citation:
+
+- **`pop` writes `⊘`** where the source merely decrements `len` past the slot:
+  observably identical (the cell is beyond the new `len` either way, and `Inv`
+  reclassifies it), but the `⊘` states *why* the destructor will not drop it —
+  the returned value is now the element's sole owner. This is `3.9`'s
+  exactly-once discipline, mechanized for heap elements.
+- **`get` copies**, which is why it is gated to trivially-droppable `T` at the
+  surface (E0711, RUE-651): a by-copy read of a drop-glue element would create
+  a second owner of that element's own buffer — in the model, two values
+  holding the same inner `buf⟨A⟩`, violating (O1) and double-freeing at drop.
+  The equation makes the aliasing visible. The borrow-returning read that
+  would lift the gate (`get_ref`, RUE-662) must produce a §5.4-governed loan,
+  not a value.
+- **Growth is identity death** (§6.13.1's `realloc`): a view into the old
+  buffer held by an enclosing call would now be stuck — but §5.4's exclusivity
+  already rejects that shape (`v[0..2] == g(inout v)`): the `inout` loan
+  needed to reach `push` conflicts with any live view of `v`. The model and
+  the loan rules close the same hole from opposite sides.
+- **The destructor's `⊘`-skip** covers mid-equation states and future move-out
+  APIs (a `swap_remove`, a `take_at`) as well as `pop`'s retired slot; under
+  `Inv` at boundaries the skip fires only past `len`, so drop glue runs
+  exactly once per live element, ascending (`3.9` order, RUE-646).
+- **Capacity policy** (`grow`: double from `max(cap, 4)` until ≥ required)
+  mirrors the source's current contract and is observable only through
+  `capacity()`; a policy change is a library change that amends the equation,
+  not a soundness matter. `StrBuf`'s floor is 16 (§6.13.4).
+- **Resource exhaustion is outside the model.** `mint`/`realloc` are total
+  here; the real bodies fail fast — a byte-size arithmetic overflow or a null
+  allocation is `@panic("out of memory")` — per ADR-0043's explicit
+  fallible-allocation non-decision. This is a stated (O4) refinement escape:
+  the implementation may abort where the model allocates, and nothing else.
+
+#### 6.13.4 `StrBuf`, `Str(N)`, and `str`
+
+`StrBuf` is the `u8` refinement of the trio's growable rung plus the
+byte-string convention (ADR-0043; the RUE-386 two-types ruling), and like
+`ArrayBuf` it is **source-defined** (`std/strbuf.rue`) over the byte-oriented
+unchecked intrinsics (`@alloc_bytes`/`@realloc_bytes`/`@free_bytes`/
+`@byte_read`/`@byte_write`/`@byte_copy`, ADR-0058), so the same
+defining-equation device applies at its public boundary. Its value is
+`{ h ; len ; cap }_StrBuf` over `u8` cells, with one representation twist the
+source pins in its header comment: **`cap = 0` is the non-owning state.**
+
+```
+  Inv({ h ; len ; cap }_StrBuf):
+    cap > 0   ⇒  h = buf⟨A⟩, H(A) live with exactly cap cells, cells 0 … len-1 bytes, cells len … cap-1 ⊘
+                 (the value OWNS A: it retires A at free/drop)
+    cap = 0   ⇒  h = null and len = 0                          -- new()
+              ∨  h names an immortal static-literal allocation with ≥ len live byte cells (§6.13.2)
+                 (NON-owning: free/drop must not retire it — a literal-backed value)
+```
+
+The `cap = 0` literal-backed state is why a `StrBuf` built from a literal is
+safe to store indefinitely: the allocation it does not own is one of `H0`'s
+immortal literals, which no reduction can retire. Mutation of such a value
+first performs **literal promotion** (`grow`'s `cap = 0` arm): mint a fresh
+allocation, copy the live cells, and only then write — the non-owned
+allocation is never written through and never retired. Equations, as `u8`
+instances of §6.13.3 with these deltas:
+
+- `grow(self, additional)` is `reserve` with the promotion arm: `cap = 0`
+  mints and copies (never `realloc`s an allocation it does not own); `cap > 0`
+  is §6.13.3's `realloc` arm. The doubling floor is 16.
+- `push`/`append_byte` appends one raw byte; a byte ≥ `0x80` may make the
+  content invalid UTF-8, which the byte-string model permits (ADR-0035) —
+  strictness lives at the decode boundary only.
+- `push_str(self, other)` **consumes** `other` (a by-value `Self` — its
+  header's move obligation discharges into the call, §4.2) and appends its
+  live cells; `append_borrowed`/`append_str`/`append_bytes` are the
+  non-consuming forms over a `borrow` loan. `concat` mints a third allocation
+  and copies both operands' cells.
+- `clone`/`copy` **mint** a fresh allocation and copy the live cells — always,
+  even for an empty or literal-backed value — a deep copy with a new
+  identity, never a second handle to the same allocation. Likewise every
+  cross-container bridge (`from_str`, `from_bytes`, `to_bytes`,
+  `from_byte_range`): the source's own contract line — "no bridge aliases or
+  transfers either container's private allocation" — is obligation (O1)
+  stated in the library's voice.
+- The trapping index form `s[i]` (`StrBuf` or a `str` view) checks `i < len`
+  (resp. `i < k` for `view⟨A | o, k⟩`) and traps out of range exactly like
+  array indexing (§6.5; ADR-0035's byte indexing); the machine cell read it
+  then performs is in range by construction, so it never sticks. (The source
+  spells the trap `@panic("index out of bounds")` pending a source-accessible
+  bounds-trap primitive — its comment tracks that; observably it is the
+  canonical bounds diagnostic. The Option-returning `byte_at` is the
+  non-trapping companion.)
+- `clear` drops nothing (`u8` is `Copy`) and resets `len` to 0, keeping the
+  capacity. `free` retires only an owned allocation (`cap > 0`) and resets to
+  `new()`'s state; the `drop fn` likewise retires only when `cap > 0` — the
+  non-owning arm of `Inv` is what makes that conditional correct.
+- Equality (§6.4's `≈`) on each canonical text rung compares **content** — the
+  live cells in order (`equals_borrowed`) — never allocation identity: two
+  distinct allocations with equal bytes are `≈`-equal (`4.3:2`).
+- The UTF-8 **decode family** (`char_scalar`, `char_next`, and their `_lossy`
+  variants, still runtime calls dispatched by the oracle) is deliberately
+  **not pinned here**: its strict forms introduce a trap category (invalid
+  UTF-8) that §6.12's taxonomy does not yet carry, so its equations belong to
+  a string-decode amendment of their own. A cut, stated rather than silent.
+
+`Str(N)` is `[u8; N]` plus the convention — a fixed array, already fully
+inside §6.3–§6.11; a `Str(N)` borrow in `str` position becomes a view per
+§6.13.2 (RUE-386).
+
+#### 6.13.5 The library refinement obligation (RustBelt-style)
+
+The §7 theorems quantify over core programs whose container-method calls step
+by the equations above. The real implementations — the `checked {}` blocks of
+`std/arraybuf.rue` and `std/strbuf.rue` over the raw and byte intrinsics —
+are **unchecked code, outside the core by design** (§2): the core type system
+does not verify them, and no amount of core soundness can. They carry instead
+a stated proof obligation, discharged per method at the library boundary (by
+review today; by mechanized verification when `03-metatheory.md` exists), in
+exactly the position RustBelt gives `Vec`'s unsafe internals:
+
+- **(O1) Unique handle.** No operation fabricates or duplicates a live buffer
+  identity: at every method boundary, distinct live container values hold
+  distinct allocations, and no other value holds any. This is the invariant
+  that extends exclusivity (§7) to buffer roots: a buffer's cells are
+  reachable only through its one owning header, so §5.4's root-granular loans
+  on the header place cover the cells, and the root-separation lemma extends
+  to allocations.
+- **(O2) Boundary invariant.** Every method entered on a representation
+  satisfying `Inv` re-establishes `Inv` at exit — and at every call it makes
+  back into user code (element drop glue must observe the container
+  mid-teardown only through values it owns).
+- **(O3) Footprint.** A method touches only its own allocation(s) and its
+  arguments — never another allocation, live or dead.
+- **(O4) Refinement.** The method's observable behavior — result value, header
+  effect, traps, `@dbg` output, and the cells' contents — equals its defining
+  equation's.
+
+A violation inside a checked block is a **library bug**, not a refutation of
+the core theorems; conversely, the theorems say nothing about a program that
+adds new unchecked code without discharging the same four obligations. This
+conditionality is the ruling's Rust/RustBelt-style separation, stated rather
+than hidden: the abstract machine names every addressable allocation and
+proves safety over them, while allocators and container internals remain
+replaceable abstractions with proof obligations.
+
+#### 6.13.6 Oracle correspondence and the differential obligation
+
+Today the oracle dispatches only the residual true builtins — `@to_string`
+(both signednesses), the trapping `str` byte index, and the UTF-8 decode
+family (`string_builtin`, with `preflight_string_builtin` enforcing the
+modeled signatures) — over immutable byte-content values, a copy-in/copy-out
+realization that, as with `inout` (§6.9), is observably identical to the
+shared-allocation form *given* exclusivity and (O1). The container methods
+themselves are ordinary CFG bodies to the oracle, and every intrinsic they
+rest on is a registered **model gap** (`Intrinsic::Allocate` / `Reallocate` /
+`Free` / `PointerRead` / `PointerWrite` / `ByteRead` / `ByteWrite` /
+`ByteCopy` in the oracle's gap registry) — so `ArrayBuf` and `StrBuf`
+programs currently fall outside differential coverage entirely. The
+differential-test obligation this section creates: interpret the container
+methods *at their public boundary, by these equations* — the same dispatch
+strategy `string_builtin` uses for the residual builtins — rather than by
+their raw bodies; the gap registry names the exact dispatch points to
+replace. Until that lands, the §6.13.3/§6.13.4 equations are validated
+against the compiler by the spec/CLI suites only, and the
+equations-vs-source correspondence rests on review — a gap recorded here so
+it is not mistaken for coverage.
+
 ---
 
 ## 7. Soundness — what we get to state, and then prove
@@ -1440,11 +1822,39 @@ rather than hopes. Stated now; proved in `03-metatheory.md`.
   out by a `match` binding leaves the enum place `MovedOut`, so the arm's binding
   becomes the sole owner and the scope-exit drop of the scrutinee is skipped
   (`6.3:20`). Neither the tag switch nor the match can free a payload twice.
+  For **buffer cells** the same shape holds one level down (§6.13.3): `pop`
+  and the teardown loops write `⊘` as they move or drop cells, the
+  destructor's walk skips `⊘`, and `retire` is defined only on a live
+  allocation — a second `free`, or a destructor after `free`, meets the
+  `h = null` reset or sticks, and never frees twice. §6.13.1's never-reused
+  identities close the aliasing half: a dead identity cannot come back as
+  somebody else's allocation.
 
 - **No use-after-drop / no leak of drops.** Every `Owned`, droppable,
   non-moved place is dropped exactly once, at the end of its scope, and never read
   afterward. *Because:* §5.6 schedules the drop and §6 executes it at frame pop,
-  and Σ shows no path live past that point.
+  and Σ shows no path live past that point. Scope exit now also *retires* the
+  binding's allocation (§6.1, `drop-retire`), so a read past the drop is
+  **stuck** rather than silently possible — this bullet, too, is now
+  falsifiable rather than structural. For buffers: every minted allocation is
+  retired exactly once, by its unique owner's `free`, grow, or destructor
+  (§6.13.3 under (O1)), so buffer storage neither leaks nor outlives its
+  owner.
+
+- **No use-after-free** *(new with RUE-390)*. In a well-typed program, under
+  the §6.13.5 obligations, no reduction applies a §6.13.1 machine operation to
+  a dead allocation: every `H(A)` an equation touches is live. *Because:*
+  views are second-class — a view exists only inside a call whose loan covers
+  the container place it was created from (§5.4), and while that loan is live
+  the owner can be neither moved (Use-Move's loan premise) nor reached by a
+  `free`/grow/destructor (exclusivity) — so no reduction that retires an
+  allocation can fire under a live view; and handles are unique (O1), so no
+  *other* place can reach the allocation to kill it. Previously this theorem
+  was unstatable: `@free` was modeled as a no-op and buffer cells were not in
+  `H` at all (the RUE-390 vacuity). Now a use-after-free is a **stuck
+  configuration**, which progress forbids — the claim is falsifiable, and the
+  oracle obligation of §6.13.6 is what will falsify it mechanically if the
+  library or the equations are wrong.
 
 - **Linear values are consumed exactly once.** No value whose type carries a
   linear value reaches end of scope `Owned` (§5.6 rejects it) or is discarded
@@ -1466,6 +1876,10 @@ rather than hopes. Stated now; proved in `03-metatheory.md`.
   access. *Because:* §5.4's `Λ` consistency admits either one exclusive or many
   shared loans of a root, never both, and loans are second-class (do not escape
   the call). This is the data-race-freedom precondition and the MVS invariant.
+  Buffer cells inherit the guarantee through (O1): they are reachable only
+  through their unique owning header, so a loan of that root is a loan of the
+  cells — no new rule is needed, which is precisely why the RUE-390 ruling
+  wanted allocations abstract.
 
 The eventual metatheory proof also owes these explicit lemmas:
 
@@ -1481,12 +1895,24 @@ The eventual metatheory proof also owes these explicit lemmas:
   cannot alias the same mutable location.
 - **View-intact.** For the lifetime of a loaned root, there is no `⊘` beneath the
   loaned place. This follows from `fully-owned` at loan creation plus the
-  no-move-while-loaned premise, and it is the invariant future slice/view rules
-  need when runtime indices prevent per-element ownership tracking.
+  no-move-while-loaned premise, and it is the invariant the §6.13.2 view rules
+  rely on when runtime indices prevent per-element ownership tracking.
+- **Handle-uniqueness preservation.** Reduction preserves (O1): every live
+  buffer allocation is named by exactly one live handle (plus, transiently,
+  the views its loans justify). The §6.13 equations must be audited to
+  preserve it (`clone` mints, `realloc` retires, `free` nulls the header) —
+  and this lemma is the formal hook the RUE-388 lift (linear elements via
+  container/element multiplicity propagation) will be designed against, per
+  the ruling.
 
-These six are the memory-safety-without-GC claim, decomposed. Note which of them
-was *unprovable* against the prose spec until now: all of them, because each rests
-on "use", "moved", "consumed", "dropped" being defined — which §3–§6 finally do.
+These seven are the memory-safety-without-GC claim, decomposed. Note which of
+them was *unprovable* against the prose spec until now: all of them, because
+each rests on "use", "moved", "consumed", "dropped" being defined — which
+§3–§6 finally do. And note which were **vacuous for the flagship collection
+types** until the allocation store: the double-free, use-after-drop, and
+use-after-free bullets (RUE-390) — now stated over buffer cells, with their
+conditionality on the library obligations made explicit in §6.13.5 rather
+than hidden.
 
 ---
 
@@ -1522,6 +1948,7 @@ witness of the dynamic semantics (RUE-50), cited inline in each §6 rule group.
 | §6.10 loop / break dynamics | 4.8:18/21/22, 3.4:2 |
 | §6.11 drop relation (active enum payload; skip moved; explicit `@drop`) | 3.9, 6.3:20 |
 | §6.12 overflow/bounds/div-zero/`@panic` traps + exit code | 3.1:6/13, 4.13:5b, 8.1, 8.2, 8.3, Appendix B |
+| §6.13 allocation store: handles, views, container equations | 3.7, 3.9 (drop order), 4.3:2 (string content equality); design citations: the RUE-390 ruling, ADR-0035/0041/0043, the RUE-386 str ruling, the RUE-388 linear-element gate |
 | §7 soundness | the informal safety intent throughout ch. 3 and 8 |
 
 ---
@@ -1535,7 +1962,11 @@ locked:
    first and comptime/monomorphization is a separate later layer. (Recommended.)
 2. **Raw pointers / `unchecked` out of the core initially (§2).** Model chapter 9
    as a marked extension that explicitly steps outside the §7 guarantees, rather
-   than threading it through every rule. (Recommended.)
+   than threading it through every rule. (Recommended.) The RUE-390 ruling
+   keeps this: §6.13 models buffers as abstract allocations reached only
+   through container defining equations — raw pointers themselves stay outside
+   the core, and the containers' unchecked internals carry the §6.13.5
+   obligations instead.
 3. **Loans strictly second-class (§5.4).** Confirm loans never escape a call in
    the core; first-class references remain a deferred design question.
 4. **Array index paths (§5).** Ownership tracks only *constant* index paths
