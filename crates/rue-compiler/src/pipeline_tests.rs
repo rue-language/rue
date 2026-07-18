@@ -261,7 +261,7 @@ mod tests {
         ));
         assert!(Arc::ptr_eq(
             session
-                .most_recent_diagnostics_for(&reverse, &FrontendDiagnosticStage::Syntax)
+                .most_recent_diagnostics_for(&reverse, &FrontendDiagnosticIdentity::Syntax)
                 .unwrap(),
             &reverse_diagnostics
         ));

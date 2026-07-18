@@ -18,18 +18,20 @@ mod allocation;
 mod timing;
 
 #[cfg(test)]
-use rue_compiler::CompilerSessionWork;
+use rue_compiler::unstable::MetricsSnapshot;
+use rue_compiler::unstable::{
+    ImportDiscoveryRevision, ImportDiscoveryStatus, LowerMetrics, ParseMetrics, SemanticMetrics,
+};
 use rue_compiler::{
     AcceptedImportSource, Ast, CanonicalRirOutput, CanonicalSemanticOutput, CompileError,
     CompileErrors, CompileOptions, CompileWarning, CompilerSession, DependencyEnvelope,
     DependencyEnvelopeStatus, DiscoverySourceAssembler, ErrorKind, FileId, FileMetadataFingerprint,
-    FrozenTypeInternPool, ImportDiscoveryContext, ImportDiscoveryRevisionArtifact,
-    ImportDiscoveryRevisionStatus, ImportObservation, ImportObservationLedger,
+    FrozenTypeInternPool, ImportDiscoveryContext, ImportObservation, ImportObservationLedger,
     ImportObservationStatus, Lexer, LinkerMode, MultiFileFormatter, MultiFileJsonFormatter,
-    OptLevel, PhysicalFileIdentity, PipelineWork, PreviewFeature, PreviewFeatures, SourceInfo,
-    SourceMetadata, SourceSnapshot, Token, configure_thread_pool, generate_emitted_asm,
-    generate_liveness_info, generate_lowering_info, generate_mir, generate_regalloc_info,
-    generate_stack_frame_info, parse_source_snapshot_for_ast_presentation,
+    OptLevel, PhysicalFileIdentity, PreviewFeature, PreviewFeatures, SourceInfo, SourceMetadata,
+    SourceSnapshot, Token, configure_thread_pool, generate_emitted_asm, generate_liveness_info,
+    generate_lowering_info, generate_mir, generate_regalloc_info, generate_stack_frame_info,
+    parse_source_snapshot_for_ast_presentation,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -67,9 +69,16 @@ struct EmitFrontend {
     parsed: Arc<rue_compiler::ParsedProgram>,
     rir: Arc<CanonicalRirOutput>,
     semantic: Arc<CanonicalSemanticOutput>,
-    work: PipelineWork,
+    work: EmitWork,
     #[cfg(test)]
-    session_work: CompilerSessionWork,
+    session_work: MetricsSnapshot,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EmitWork {
+    parsed: ParseMetrics,
+    lowered: LowerMetrics,
+    semantic: SemanticMetrics,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,16 +125,15 @@ fn build_emit_frontend_in_session(
         session.rir()?
     };
     let semantic = session.semantic(&options)?;
-    let session_work = session.work().clone();
+    let session_work = session.unstable_metrics();
     Ok(EmitFrontend {
         parsed,
         rir,
         semantic: semantic.clone(),
-        work: PipelineWork {
-            parsed: session_work.last_parse,
-            merged: session_work.last_merge,
-            lowered: session_work.last_rir,
-            semantic: semantic.work(),
+        work: EmitWork {
+            parsed: session_work.parse_metrics(),
+            lowered: session_work.lower_metrics(),
+            semantic: semantic.unstable_metrics(),
         },
         #[cfg(test)]
         session_work,
@@ -169,7 +177,7 @@ impl EmitFrontend {
         self.semantic.warnings()
     }
 
-    fn query_work(&self) -> PipelineWork {
+    fn query_work(&self) -> EmitWork {
         self.work
     }
 }
@@ -1560,7 +1568,7 @@ fn validate_manifest_allows_source(
 #[derive(Debug)]
 struct ImportDiscoveryResult {
     source_snapshot: SourceSnapshot,
-    revision: Arc<ImportDiscoveryRevisionArtifact>,
+    revision: Arc<ImportDiscoveryRevision>,
     session: CompilerSession,
 }
 
@@ -1941,7 +1949,7 @@ fn main() {
         return;
     }
 
-    if import_discovery.revision.status() != ImportDiscoveryRevisionStatus::ClosedValid {
+    if import_discovery.revision.status() != ImportDiscoveryStatus::ClosedValid {
         diagnostics.print_errors(import_discovery.revision.diagnostics());
         std::process::exit(1);
     }
@@ -2106,7 +2114,7 @@ fn main() {
                 options.benchmark_json,
                 &options.target,
                 options.benchmark_json.then(|| {
-                    let source_stats = output.source_stats;
+                    let source_stats = output.unstable_metrics();
                     timing::SourceMetrics {
                         files: source_stats.files,
                         bytes: source_stats.bytes,
@@ -2222,7 +2230,7 @@ fn handle_emit_multi_file(
         diagnostics.print_warnings(state.warnings());
         let work = state.query_work();
         debug_assert_eq!(state.parsed.modules().len(), source_snapshot.len());
-        debug_assert!(work.parsed.syntax.parser_invocations <= source_snapshot.len());
+        debug_assert!(work.parsed.parser_invocations <= source_snapshot.len());
         debug_assert_eq!(work.lowered.parser_invocations, 0);
         debug_assert_eq!(work.semantic.binding.bind_invocations, 1);
         debug_assert_eq!(work.semantic.manifest.build_invocations, 1);
@@ -2927,8 +2935,8 @@ mod tests {
         let frontend = build_emit_frontend(&snapshot, CompileOptions::default()).unwrap();
         let work = frontend.work;
 
-        assert_eq!(work.parsed.syntax.lexer_invocations, 2);
-        assert_eq!(work.parsed.syntax.parser_invocations, 2);
+        assert_eq!(work.parsed.lexer_invocations, 2);
+        assert_eq!(work.parsed.parser_invocations, 2);
         assert_eq!(work.lowered.parser_invocations, 0);
         assert_eq!(work.lowered.ast_payload_clones, 0);
         assert_eq!(work.semantic.binding.bind_invocations, 1);
@@ -2937,10 +2945,10 @@ mod tests {
         assert_eq!(work.semantic.cfg.cfg_builds_succeeded, 1);
         assert_eq!(work.semantic.cfg.cfg_builds_failed, 0);
         let session_work = &frontend.session_work;
-        assert_eq!(session_work.updates, 1);
-        assert_eq!(session_work.merge.executions, 1);
-        assert_eq!(session_work.rir.executions, 1);
-        assert_eq!(session_work.semantic.executions, 1);
+        assert_eq!(session_work.updates(), 1);
+        assert_eq!(session_work.merge().executions, 1);
+        assert_eq!(session_work.rir().executions, 1);
+        assert_eq!(session_work.semantic().executions, 1);
 
         let presentation = parse_source_snapshot_for_ast_presentation(&snapshot).unwrap();
         assert_eq!(

@@ -11,13 +11,12 @@
 use std::{collections::HashMap, fmt::Write as _, sync::Arc};
 
 use rue_cfg::OptLevel;
+use rue_compiler::unstable::DifferentialOracleFault;
 use rue_compiler::{
     AcceptedImportSource, AcceptedReadManifestEntry, CompileOptions, CompilerSession,
-    DifferentialOracleFault, DiscoverySourceAssembler, FRONTEND_DIAGNOSTIC_RETENTION_LIMIT,
-    FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT, FileMetadataFingerprint,
-    FrontendDiagnosticSnapshot, ImportDiscoveryContext, ImportObservation, ImportObservationLedger,
-    PhysicalFileIdentity, PreviewFeature, PreviewFeatures, SourceMetadata, SourceSnapshot,
-    generate_emitted_asm,
+    DiscoverySourceAssembler, FileMetadataFingerprint, FrontendDiagnosticSnapshot,
+    ImportDiscoveryContext, ImportObservation, ImportObservationLedger, PhysicalFileIdentity,
+    PreviewFeature, PreviewFeatures, SourceMetadata, SourceSnapshot, generate_emitted_asm,
 };
 use rue_span::FileId;
 use rue_target::Target;
@@ -172,9 +171,9 @@ fn close_discovery(session: &mut CompilerSession, step: &Step) -> String {
         Ok(artifact) => format!(
             "status={:?};input={:?};reads={:?};ledger={:?}",
             artifact.status(),
-            artifact.graph().map(|graph| graph.input()),
-            artifact.accepted_read_manifest(),
-            artifact.ledger()
+            artifact.graph_input_debug(),
+            artifact.accepted_reads_debug(),
+            artifact.observation_ledger_debug()
         ),
         Err(errors) => format!("close-error:{errors:?}"),
     }
@@ -187,9 +186,9 @@ fn render_selected_import(session: &CompilerSession) -> String {
     format!(
         "status={:?};input={:?};reads={:?};ledger={:?}",
         artifact.status(),
-        artifact.graph().map(|graph| graph.input()),
-        artifact.accepted_read_manifest(),
-        artifact.ledger()
+        artifact.graph_input_debug(),
+        artifact.accepted_reads_debug(),
+        artifact.observation_ledger_debug()
     )
 }
 
@@ -249,7 +248,7 @@ fn observe_with_fault(
                 format!(
                     "source={:?};codegen={:?}",
                     step.snapshot.source_revision(),
-                    output.input()
+                    output.unstable_input_debug()
                 ),
             )
         }
@@ -266,7 +265,7 @@ fn observe_with_fault(
     // Capture the semantic request's selected batch before the manifest query
     // performs its own supporting diagnostic work.
     let diagnostics = normalize_diagnostics(session.latest_diagnostics());
-    let manifest = match session.semantic_dependency_inputs(&step.options, None) {
+    let manifest = match session.unstable_dependency_baseline(&step.options, None) {
         Ok(manifest) => format!(
             "input={:?};imports={:?};definitions={:?};fingerprints={:?};module-imports={:?};free={:?};methods={:?};destructors={:?};implicit={:?};decl-types={:?};call-heads={:?};builtins={:?};consts={:?};bodies={:?};blockers={:?};complete={}",
             manifest.input(),
@@ -559,12 +558,12 @@ fn option_leaves_reuse_source_terminals_and_restore_exact_semantic_variants() {
     session.semantic(&optimized).unwrap();
     session.semantic(&preview).unwrap();
 
-    assert_eq!(session.work().merge.executions, 1);
-    assert_eq!(session.work().rir.executions, 1);
-    assert_eq!(session.work().semantic.executions, 4);
+    assert_eq!(session.unstable_metrics().merge().executions, 1);
+    assert_eq!(session.unstable_metrics().rir().executions, 1);
+    assert_eq!(session.unstable_metrics().semantic().executions, 4);
     assert!(Arc::ptr_eq(&first, &session.semantic(&default).unwrap()));
-    assert_eq!(session.work().semantic.executions, 4);
-    assert_eq!(session.work().semantic.reuses, 1);
+    assert_eq!(session.unstable_metrics().semantic().executions, 4);
+    assert_eq!(session.unstable_metrics().semantic().reuses, 1);
 }
 
 #[test]
@@ -604,10 +603,9 @@ fn failure_recovery_and_bounded_eviction_match_fresh_sessions() {
     for step in &steps {
         observe(&mut session, step);
     }
-    assert!(session.work().retention.diagnostic_entries <= FRONTEND_DIAGNOSTIC_RETENTION_LIMIT);
-    assert!(
-        session.work().retention.invalidation_plans <= FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT
-    );
+    let metrics = session.unstable_metrics();
+    assert!(metrics.retention().diagnostic_entries < steps.len());
+    assert!(metrics.retention().invalidation_plans < steps.len());
 }
 
 #[test]

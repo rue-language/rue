@@ -12,7 +12,11 @@ use rue_error::{CompileError, CompileResult, ErrorKind, PreviewFeatures};
 use rue_target::Target;
 use sha2::{Digest, Sha256};
 
-use crate::{CompileOptions, LinkerMode, SourceMetadata, SourceSnapshot};
+#[cfg(test)]
+use crate::CompileOptions;
+#[cfg(test)]
+use crate::LinkerMode;
+use crate::{SourceMetadata, SourceSnapshot};
 
 const SOURCE_DOMAIN_V1: &[u8] = b"rue.source\0v1\0sha256\0";
 
@@ -470,10 +474,12 @@ impl From<OptLevel> for StableOptLevel {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg(test)]
 pub enum StableLinkerInput {
     Internal,
     System(Arc<str>),
 }
+#[cfg(test)]
 impl From<&LinkerMode> for StableLinkerInput {
     fn from(value: &LinkerMode) -> Self {
         match value {
@@ -505,10 +511,12 @@ pub struct CodegenInputDescriptor {
     pub opt_level: StableOptLevel,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg(test)]
 pub struct LinkInputDescriptor {
     pub codegen: CodegenInputDescriptor,
     pub linker: StableLinkerInput,
 }
+#[cfg(test)]
 impl LinkInputDescriptor {
     pub fn from_compile_options(snapshot: &SourceSnapshot, options: &CompileOptions) -> Self {
         Self {

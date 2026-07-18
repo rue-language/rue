@@ -450,8 +450,12 @@ impl CanonicalSemanticOutput {
     }
 
     /// Exact semantic and optimization identity of this output.
-    pub fn input(&self) -> &CodegenInputDescriptor {
+    pub(crate) fn input(&self) -> &CodegenInputDescriptor {
         &self.input
+    }
+    /// Debug-only identity projection for differential and benchmark tooling.
+    pub fn unstable_input_debug(&self) -> String {
+        format!("{:?}", self.input)
     }
     /// Analyzed functions paired with optimized CFGs in machine-symbol order.
     pub fn functions(&self) -> &[FunctionWithCfg] {
@@ -560,9 +564,17 @@ impl CanonicalSemanticOutput {
     pub fn durable_specialized_body_payloads(&self) -> &[crate::DurableSpecializedBodyPayload] {
         &self.durable_specialized_body_payloads
     }
+    /// Explicitly unstable equality status for durable-cache instrumentation.
+    pub fn unstable_durable_artifact_status(&self) -> crate::unstable::DurableArtifactStatus {
+        crate::unstable::DurableArtifactStatus::from_debug(&self.durable_specialized_body_payloads)
+    }
     /// Structural work performed by this request.
-    pub fn work(&self) -> CanonicalSemanticWork {
+    pub(crate) fn work(&self) -> CanonicalSemanticWork {
         self.work
+    }
+    /// Return an owned snapshot of explicitly unstable semantic work metrics.
+    pub fn unstable_metrics(&self) -> crate::unstable::SemanticMetrics {
+        crate::unstable::SemanticMetrics::from_work(self.work)
     }
 }
 

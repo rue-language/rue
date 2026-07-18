@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Rue's embeddable compiler facade.
 //!
 //! Compilation starts with an owned [`SourceSnapshot`]. A [`CompilerSession`]
@@ -54,6 +56,7 @@ mod source_metadata;
 mod source_snapshot;
 mod syntax;
 mod typed_query_store;
+pub mod unstable;
 
 #[cfg(test)]
 mod test_support;
@@ -80,6 +83,9 @@ pub use diagnostic::{
     ColorChoice, DiagnosticFormatter, JsonDiagnostic, JsonDiagnosticFormatter, JsonSpan,
     JsonSuggestion, MultiFileFormatter, MultiFileJsonFormatter, SourceInfo,
 };
+#[cfg(test)]
+pub(crate) use diagnostic_attempt_store::FrontendDiagnosticIdentity;
+pub use diagnostic_attempt_store::{DiagnosticStage, FrontendDiagnosticSnapshot};
 pub use import_discovery::{
     AcceptedImportSource, AcceptedReadManifestEntry, DiscoverySourceAssembler,
     FileMetadataFingerprint, IMPORT_DISCOVERY_POLICY_VERSION, ImportCandidateRole,
@@ -89,26 +95,52 @@ pub use import_discovery::{
 pub use import_graph::{
     CanonicalImportCycle, CanonicalImportGraph, CanonicalImportGraphProblem,
     CanonicalImportGraphValidation, CanonicalImportRecord, CanonicalImportResolution,
-    ImportDirective, ImportDirectives, ResolvedCodegenRevision, ResolvedLinkRevision,
-    ResolvedProgramRevision,
+    ImportDirective, ImportDirectives,
 };
+pub(crate) use import_graph::{ResolvedCodegenRevision, ResolvedProgramRevision};
 pub use parsed_modules::{
-    InvalidImportShape, ParseInvalidationSummary, ParsedAstPresentation, ParsedAstPresentationWork,
-    ParsedInvalidImport, ParsedModulesWork, ParsedProgram,
+    InvalidImportShape, ParsedAstPresentation, ParsedInvalidImport, ParsedProgram,
     parse_source_snapshot_for_ast_presentation,
 };
 pub use queries::{
-    CompileOptions, CompileOutput, FunctionWithCfg, LinkerMode, PipelineWork, SourceStats,
-    SourceView, compile_snapshot,
+    CompileOptions, CompileOutput, FunctionWithCfg, LinkerMode, SourceView, compile_snapshot,
 };
-pub use session::{
-    CanonicalImportGraphOutput, CompilerSession, CompilerSessionUpdate, CompilerSessionWork,
-    DefinitionQueryRecord, DifferentialOracleFault, FRONTEND_DIAGNOSTIC_RETENTION_LIMIT,
-    FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT, FrontendDiagnosticSnapshot,
-    FrontendDiagnosticStage, FrontendQueryWork, FrontendRetentionMetrics,
-    ImportDiagnosticInputDescriptor, ImportDiscoveryRevisionArtifact,
-    ImportDiscoveryRevisionStatus, ImportGraphInputDescriptor, SemanticDependencyBlocker,
-    SemanticDependencyIncompleteReason, SemanticDependencyInputManifest,
+pub use session::{CanonicalImportGraphOutput, CompilerSession, CompilerSessionUpdate};
+pub use source_identity::{ModuleId, ModuleRevision, SourceId, SourceIdVersion, SourceRevision};
+pub use source_metadata::SourceMetadata;
+pub use source_snapshot::{MAX_SOURCE_BYTES, SourceSnapshot};
+
+// Query keys, invalidation records, dependency manifests, fingerprints, and
+// work records are compiler implementation. Keep crate-local paths available
+// while the session remains their sole owner, without publishing them through
+// the supported facade.
+#[allow(unused_imports)]
+pub(crate) use bound_definitions::BoundDefinitionWork;
+#[allow(unused_imports)]
+pub(crate) use canonical_lower::CanonicalRirWork;
+#[allow(unused_imports)]
+pub(crate) use canonical_merge::CanonicalMergeWork;
+#[allow(unused_imports)]
+pub(crate) use canonical_semantic::{
+    CanonicalSemanticFailurePhase, CanonicalSemanticFailureWork, CanonicalSemanticWork,
+};
+#[allow(unused_imports)]
+pub(crate) use definition_snapshot::DefinitionShardWork;
+#[allow(unused_imports)]
+pub(crate) use durable_body::DurableBodyWork;
+#[allow(unused_imports)]
+pub(crate) use parsed_modules::{
+    ParseInvalidationSummary, ParsedAstPresentationWork, ParsedModulesWork,
+};
+pub(crate) use queries::{PipelineWork, SourceStats};
+#[allow(unused_imports)]
+pub(crate) use semantic_symbols::SemanticTranslationWork;
+#[allow(unused_imports)]
+pub(crate) use session::{
+    CompilerSessionWork, DefinitionQueryRecord, FRONTEND_DIAGNOSTIC_RETENTION_LIMIT,
+    FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT, FrontendQueryWork, FrontendRetentionMetrics,
+    ImportDiscoveryRevisionArtifact, ImportDiscoveryRevisionStatus, ImportGraphInputDescriptor,
+    SemanticDependencyBlocker, SemanticDependencyIncompleteReason, SemanticDependencyInputManifest,
     SemanticDependencyManifestWork, SemanticDependencySurface, SemanticFullInvalidationReason,
     SemanticInvalidationPlan, SemanticInvalidationScope, SemanticInvalidationWork,
     SemanticQueryRecord, StableBodyDependencyInputRecord, StableBuiltinTypeCallHeadInput,
@@ -118,36 +150,32 @@ pub use session::{
     StableNamedConstDependency, StableNamedConstDependencyTarget, StableNamedDestructorDependency,
     StableNamedMethodDependency, StableNamedMethodDependencyTarget,
 };
-pub use source_identity::{
-    CodegenInputDescriptor, LinkInputDescriptor, ModuleId, ModuleResolutionInput,
-    ModuleResolutionInputs, ModuleRevision, SemanticInputDescriptor, SourceId, SourceIdVersion,
-    SourceRevision, SourceStore, StableLinkerInput, StableOptLevel, StablePreviewFeatures,
+#[cfg(test)]
+pub(crate) use source_identity::LinkInputDescriptor;
+#[allow(unused_imports)]
+pub(crate) use source_identity::{
+    CodegenInputDescriptor, ModuleResolutionInput, ModuleResolutionInputs, SemanticInputDescriptor,
+    SourceStore, StableOptLevel, StablePreviewFeatures,
 };
-pub use source_metadata::SourceMetadata;
-pub use source_snapshot::{MAX_SOURCE_BYTES, SourceSnapshot};
 
 // Immutable query artifacts and stable identities returned by CompilerSession.
 pub use bound_definitions::{
-    BoundDefinitionId, BoundDefinitionRecord, BoundDefinitionSet, BoundDefinitionWork,
-    SnapshotBoundDefinitionId, StableDefinitionKey, StableDefinitionKind,
-    StableDefinitionNamespace, StableNamedTypeKey,
+    BoundDefinitionId, BoundDefinitionRecord, BoundDefinitionSet, SnapshotBoundDefinitionId,
+    StableDefinitionKey, StableDefinitionKind, StableDefinitionNamespace, StableNamedTypeKey,
 };
-pub use canonical_lower::{CanonicalRirOutput, CanonicalRirWork};
-pub use canonical_merge::{CanonicalMergeWork, CanonicalMergedAst, CanonicalMergedProgram};
-pub use canonical_semantic::{
-    CanonicalSemanticFailurePhase, CanonicalSemanticFailureWork, CanonicalSemanticOutput,
-    CanonicalSemanticWork,
-};
+pub use canonical_lower::CanonicalRirOutput;
+pub use canonical_merge::{CanonicalMergedAst, CanonicalMergedProgram};
+pub use canonical_semantic::CanonicalSemanticOutput;
 pub use definition_snapshot::{
     DefinitionId, DefinitionKind, DefinitionNameKey, DefinitionNamespace, DefinitionOccurrenceId,
-    DefinitionRecord, DefinitionShard, DefinitionShardWork, DefinitionSnapshot, ModuleDefinition,
+    DefinitionRecord, DefinitionShard, DefinitionSnapshot, ModuleDefinition,
 };
 pub use durable_body::{
     DURABLE_ORDINARY_BODY_SCHEMA_VERSION, DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION, DurableAirInst,
     DurableAirInstData, DurableAirRef, DurableBodyAnchor, DurableBodyConversionFailure,
-    DurableBodyProjectionFailure, DurableBodyWork, DurableCallArg, DurableMatchArm,
-    DurableOrdinaryBody, DurableOrdinaryBodyPayload, DurablePattern, DurablePlace, DurablePlaceRef,
-    DurableProjection, DurableSpecializedBody, DurableSpecializedBodyPayload,
+    DurableBodyProjectionFailure, DurableCallArg, DurableMatchArm, DurableOrdinaryBody,
+    DurableOrdinaryBodyPayload, DurablePattern, DurablePlace, DurablePlaceRef, DurableProjection,
+    DurableSpecializedBody, DurableSpecializedBodyPayload,
     convert_semantic_specialized_body_exports,
 };
 pub use durable_semantics::{
@@ -195,7 +223,7 @@ pub(crate) use parsed_modules::CanonicalParseUpdate;
 pub(crate) use queries::build_functions_and_cfgs;
 #[cfg(test)]
 pub(crate) use rue_parser::Item;
-pub use semantic_symbols::{SemanticSymbol, SemanticSymbolUniverse, SemanticTranslationWork};
+pub use semantic_symbols::{SemanticSymbol, SemanticSymbolUniverse};
 pub(crate) use syntax::SyntaxWork;
 
 pub use lasso::ThreadedRodeo;

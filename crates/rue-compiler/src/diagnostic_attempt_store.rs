@@ -22,7 +22,7 @@ use crate::{
 pub const FRONTEND_DIAGNOSTIC_RETENTION_LIMIT: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum FrontendDiagnosticStage {
+pub(crate) enum FrontendDiagnosticIdentity {
     Syntax,
     Import(ImportDiagnosticInputDescriptor),
     Merge,
@@ -30,12 +30,34 @@ pub enum FrontendDiagnosticStage {
     Semantic(ResolvedCodegenRevision),
 }
 
+/// Stable diagnostic phase projection with query identity removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DiagnosticStage {
+    Syntax,
+    Import,
+    Merge,
+    Rir,
+    Semantic,
+}
+
+impl FrontendDiagnosticIdentity {
+    fn phase(&self) -> DiagnosticStage {
+        match self {
+            Self::Syntax => DiagnosticStage::Syntax,
+            Self::Import(_) => DiagnosticStage::Import,
+            Self::Merge => DiagnosticStage::Merge,
+            Self::Rir(_) => DiagnosticStage::Rir,
+            Self::Semantic(_) => DiagnosticStage::Semantic,
+        }
+    }
+}
+
 /// Exact immutable inputs to one canonical import-diagnostic projection.
 ///
 /// Keeping the plan and observation ledger in the descriptor makes reuse an
 /// exact attempted-revision property rather than merely a source-text match.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ImportDiagnosticInputDescriptor {
+pub(crate) struct ImportDiagnosticInputDescriptor {
     pub(crate) source: SourceRevision,
     pub(crate) context: Option<ImportDiscoveryContext>,
     pub(crate) plan: Option<ImportDiscoveryPlan>,
@@ -44,19 +66,23 @@ pub struct ImportDiagnosticInputDescriptor {
 }
 
 impl ImportDiagnosticInputDescriptor {
-    pub fn source_revision(&self) -> &SourceRevision {
+    pub(crate) fn source_revision(&self) -> &SourceRevision {
         &self.source
     }
-    pub fn context(&self) -> Option<&ImportDiscoveryContext> {
+    #[cfg(test)]
+    pub(crate) fn context(&self) -> Option<&ImportDiscoveryContext> {
         self.context.as_ref()
     }
-    pub fn plan(&self) -> Option<&ImportDiscoveryPlan> {
+    #[cfg(test)]
+    pub(crate) fn plan(&self) -> Option<&ImportDiscoveryPlan> {
         self.plan.as_ref()
     }
-    pub fn ledger(&self) -> &ImportObservationLedger {
+    #[cfg(test)]
+    pub(crate) fn ledger(&self) -> &ImportObservationLedger {
         &self.ledger
     }
-    pub fn accepted_read_manifest(&self) -> &[crate::AcceptedReadManifestEntry] {
+    #[cfg(test)]
+    pub(crate) fn accepted_read_manifest(&self) -> &[crate::AcceptedReadManifestEntry] {
         &self.accepted_reads
     }
 }
@@ -65,7 +91,7 @@ impl ImportDiagnosticInputDescriptor {
 #[derive(Debug, Clone)]
 pub struct FrontendDiagnosticSnapshot {
     pub(crate) source: SourceSnapshot,
-    pub(crate) stage: FrontendDiagnosticStage,
+    pub(crate) stage: FrontendDiagnosticIdentity,
     pub(crate) provenance: DiagnosticAttemptProvenance,
     pub(crate) errors: Arc<[CompileError]>,
     pub(crate) warnings: Arc<[CompileWarning]>,
@@ -86,7 +112,10 @@ impl FrontendDiagnosticSnapshot {
     pub fn source_revision(&self) -> &SourceRevision {
         self.source.source_revision()
     }
-    pub fn stage(&self) -> &FrontendDiagnosticStage {
+    pub fn stage(&self) -> DiagnosticStage {
+        self.stage.phase()
+    }
+    pub(crate) fn identity(&self) -> &FrontendDiagnosticIdentity {
         &self.stage
     }
     pub fn errors(&self) -> &[CompileError] {
@@ -136,21 +165,22 @@ pub(crate) struct DiagnosticAttemptStore {
 }
 
 impl DiagnosticAttemptStore {
-    pub fn find(
+    #[cfg(test)]
+    pub(crate) fn find(
         &self,
         source: &SourceSnapshot,
-        stage: &FrontendDiagnosticStage,
+        stage: &FrontendDiagnosticIdentity,
     ) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
         self.latest
             .and_then(|latest| self.entries.iter().find(|entry| entry.id == latest))
             .filter(|entry| {
                 snapshot_matches_source_attempt(entry.snapshot(), source)
-                    && entry.snapshot().stage() == stage
+                    && entry.snapshot().identity() == stage
             })
             .or_else(|| {
                 self.entries.iter().rev().find(|entry| {
                     snapshot_matches_source_attempt(entry.snapshot(), source)
-                        && entry.snapshot().stage() == stage
+                        && entry.snapshot().identity() == stage
                 })
             })
             .map(IndexedDiagnosticAttempt::snapshot)
@@ -159,7 +189,7 @@ impl DiagnosticAttemptStore {
     pub fn find_exact(
         &self,
         source: &SourceSnapshot,
-        stage: &FrontendDiagnosticStage,
+        stage: &FrontendDiagnosticIdentity,
         provenance: &DiagnosticAttemptProvenance,
     ) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
         self.entries
@@ -167,7 +197,7 @@ impl DiagnosticAttemptStore {
             .rev()
             .find(|entry| {
                 snapshot_matches_source_attempt(entry.snapshot(), source)
-                    && entry.snapshot().stage() == stage
+                    && entry.snapshot().identity() == stage
                     && &entry.snapshot().provenance == provenance
             })
             .map(IndexedDiagnosticAttempt::snapshot)
@@ -222,7 +252,7 @@ impl DiagnosticAttemptStore {
             .diagnostics()
             .expect("indexed diagnostic attempt owns a batch");
         debug_assert!(
-            self.find_exact(snapshot.source(), snapshot.stage(), &snapshot.provenance)
+            self.find_exact(snapshot.source(), snapshot.identity(), &snapshot.provenance)
                 .is_none(),
             "diagnostic attempt keys are published once"
         );
@@ -269,7 +299,7 @@ impl DiagnosticAttemptStore {
         self.latest = Some(id);
         if snapshot.is_success() {
             self.latest_successful = Some(id);
-            if matches!(snapshot.stage(), FrontendDiagnosticStage::Semantic(_)) {
+            if matches!(snapshot.identity(), FrontendDiagnosticIdentity::Semantic(_)) {
                 self.last_good_semantic = Some(id);
             }
         }
@@ -440,7 +470,7 @@ mod tests {
 
     fn snapshot(
         source: &SourceSnapshot,
-        stage: FrontendDiagnosticStage,
+        stage: FrontendDiagnosticIdentity,
         success: bool,
     ) -> Arc<FrontendDiagnosticSnapshot> {
         Arc::new(FrontendDiagnosticSnapshot {
@@ -461,10 +491,10 @@ mod tests {
     #[test]
     fn exact_attempt_keys_and_selectors_are_independent() {
         let valid_source = source("fn main() {}");
-        let syntax = snapshot(&valid_source, FrontendDiagnosticStage::Syntax, true);
+        let syntax = snapshot(&valid_source, FrontendDiagnosticIdentity::Syntax, true);
         let semantic = snapshot(
             &valid_source,
-            FrontendDiagnosticStage::Semantic(crate::ResolvedCodegenRevision::new(
+            FrontendDiagnosticIdentity::Semantic(crate::ResolvedCodegenRevision::new(
                 crate::ResolvedProgramRevision::new(
                     crate::SemanticInputDescriptor::new(
                         &valid_source,
@@ -490,7 +520,7 @@ mod tests {
             true,
         );
         let failure_source = source("fn main( {");
-        let failure = snapshot(&failure_source, FrontendDiagnosticStage::Syntax, false);
+        let failure = snapshot(&failure_source, FrontendDiagnosticIdentity::Syntax, false);
         let mut store = DiagnosticAttemptStore::default();
         store.insert(indexed(syntax.clone()));
         store.insert(indexed(semantic.clone()));
@@ -501,7 +531,7 @@ mod tests {
         assert!(Arc::ptr_eq(store.last_good_semantic().unwrap(), &semantic));
         assert!(Arc::ptr_eq(
             store
-                .find(&valid_source, &FrontendDiagnosticStage::Syntax)
+                .find(&valid_source, &FrontendDiagnosticIdentity::Syntax)
                 .unwrap(),
             &syntax
         ));
@@ -511,20 +541,20 @@ mod tests {
     fn eviction_is_bounded_and_reselection_reindexes_without_copying_batch() {
         let mut store = DiagnosticAttemptStore::default();
         let pinned_source = source("fn main() -> i32 { 0 }");
-        let pinned = snapshot(&pinned_source, FrontendDiagnosticStage::Syntax, true);
+        let pinned = snapshot(&pinned_source, FrontendDiagnosticIdentity::Syntax, true);
         store.insert(indexed(pinned.clone()));
         for revision in 0..=FRONTEND_DIAGNOSTIC_RETENTION_LIMIT {
             let current = source(&format!("fn main() -> i32 {{ {revision} }}"));
             store.insert(indexed(snapshot(
                 &current,
-                FrontendDiagnosticStage::Merge,
+                FrontendDiagnosticIdentity::Merge,
                 true,
             )));
         }
         assert!(store.retention_metrics().entries <= FRONTEND_DIAGNOSTIC_RETENTION_LIMIT);
         assert!(
             store
-                .find(&pinned_source, &FrontendDiagnosticStage::Syntax)
+                .find(&pinned_source, &FrontendDiagnosticIdentity::Syntax)
                 .is_none()
         );
 
@@ -532,7 +562,7 @@ mod tests {
         assert!(Arc::ptr_eq(store.latest().unwrap(), &pinned));
         assert!(Arc::ptr_eq(
             store
-                .find(&pinned_source, &FrontendDiagnosticStage::Syntax)
+                .find(&pinned_source, &FrontendDiagnosticIdentity::Syntax)
                 .unwrap(),
             &pinned
         ));
@@ -575,7 +605,7 @@ mod tests {
         let attempt = |source: &SourceSnapshot, provenance| {
             Arc::new(FrontendDiagnosticSnapshot {
                 source: source.clone(),
-                stage: FrontendDiagnosticStage::Syntax,
+                stage: FrontendDiagnosticIdentity::Syntax,
                 provenance,
                 errors: Arc::from([]),
                 warnings: Arc::from([]),
@@ -599,7 +629,7 @@ mod tests {
 
         assert!(Arc::ptr_eq(
             store
-                .find(&reverse, &FrontendDiagnosticStage::Syntax)
+                .find(&reverse, &FrontendDiagnosticIdentity::Syntax)
                 .unwrap(),
             &reverse_attempt
         ));

@@ -187,7 +187,7 @@ fn measured_project_semantic(
     let mut output = None;
     let value = measure(session, |session| {
         let update = session.update(source);
-        let parse = update.work();
+        let parse = update.unstable_metrics();
         update.into_result().unwrap();
         close_discovery(session, source);
         output = Some(session.semantic(options).unwrap());
@@ -223,7 +223,7 @@ fn successful_edit(name: &str, target: &SourceSnapshot) -> Value {
     let mut session = CompilerSession::new();
     measured_project_semantic(&mut session, &base, &options);
     session
-        .semantic_dependency_inputs(&options, Some("/bench/std"))
+        .unstable_dependency_baseline(&options, Some("/bench/std"))
         .unwrap();
     let (mut value, output) = measured_project_semantic(&mut session, target, &options);
     let parity = assert_cold_reused_parity_with_discovery(
@@ -248,12 +248,12 @@ fn diagnostic_and_recovery() -> (Value, Value) {
     let mut session = CompilerSession::new();
     measured_project_semantic(&mut session, &base, &options);
     session
-        .semantic_dependency_inputs(&options, Some("/bench/std"))
+        .unstable_dependency_baseline(&options, Some("/bench/std"))
         .unwrap();
     let last_good = session.last_good_semantic_diagnostics().unwrap().clone();
     let mut failed = measure(&mut session, |session| {
         let update = session.update(&failed_source);
-        let parse = update.work();
+        let parse = update.unstable_metrics();
         update.into_result().unwrap();
         close_discovery(session, &failed_source);
         session.semantic(&options).unwrap_err();

@@ -128,7 +128,19 @@ pub struct DependencyAcceptedRead {
 impl DependencyEnvelope {
     /// Project the compiler-owned graph and ledgers without rediscovering an
     /// import edge or consulting semantic analysis.
-    pub fn from_closed_revision(artifact: &ImportDiscoveryRevisionArtifact) -> Option<Self> {
+    #[cfg(not(test))]
+    pub fn from_closed_revision(
+        revision: &crate::unstable::ImportDiscoveryRevision,
+    ) -> Option<Self> {
+        Self::from_artifact(&revision.inner)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_closed_revision(artifact: &ImportDiscoveryRevisionArtifact) -> Option<Self> {
+        Self::from_artifact(artifact)
+    }
+
+    fn from_artifact(artifact: &ImportDiscoveryRevisionArtifact) -> Option<Self> {
         let graph = artifact.graph()?;
         let status = match artifact.status() {
             ImportDiscoveryRevisionStatus::ClosedValid if graph.validation().is_valid() => {
