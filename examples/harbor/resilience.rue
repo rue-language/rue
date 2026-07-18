@@ -1,0 +1,166 @@
+// Network resilience across capacity requirements and disruption time windows.
+const std = @import("std");
+const model = @import("model.rue");
+const route_matrix = @import("route_matrix.rue");
+const routing = @import("routing.rue");
+
+pub struct Snapshot {
+    time: u64,
+    minimum_capacity: u64,
+    reachable_pairs: u64,
+    unreachable_pairs: u64,
+    average_weight: u64,
+    diameter: u64,
+    central_location: u64,
+    degradation_pairs: u64,
+    added_weight: u64,
+}
+
+pub const Snapshots = std.arraybuf.ArrayBuf(Snapshot);
+
+pub struct RouteExposure {
+    route: u64,
+    disruption_hours: u64,
+    minimum_capacity: u64,
+    maximum_cost: u64,
+    windows: u64,
+}
+
+pub const RouteExposures = std.arraybuf.ArrayBuf(RouteExposure);
+
+pub struct Summary {
+    snapshots: Snapshots,
+    routes: RouteExposures,
+    baseline_pairs: u64,
+    worst_time: u64,
+    worst_unreachable_pairs: u64,
+    worst_added_weight: u64,
+    fragile_capacity: u64,
+    fully_connected_levels: u64,
+}
+
+fn add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+fn compare(borrow baseline: route_matrix.Matrix, borrow current: route_matrix.Matrix) -> Snapshot {
+    let mut degradation_pairs: u64 = 0;
+    let mut added_weight: u64 = 0;
+    let mut from: u64 = 0;
+    while from < baseline.size {
+        let mut to: u64 = 0;
+        while to < baseline.size {
+            if from != to {
+                let before = route_matrix.weight(borrow baseline, from, to);
+                let after = route_matrix.weight(borrow current, from, to);
+                if before != after {
+                    degradation_pairs = degradation_pairs + 1;
+                    if before != routing.INF() && after != routing.INF() && after > before {
+                        added_weight = add(added_weight, after - before);
+                    }
+                }
+            }
+            to = to + 1;
+        }
+        from = from + 1;
+    }
+    Snapshot {
+        time: current.at, minimum_capacity: 1,
+        reachable_pairs: current.reachable_pairs,
+        unreachable_pairs: current.unreachable_pairs,
+        average_weight: route_matrix.average_weight(borrow current),
+        diameter: current.diameter,
+        central_location: route_matrix.central_location(borrow current),
+        degradation_pairs: degradation_pairs, added_weight: added_weight,
+    }
+}
+
+fn event_times(borrow scenario: model.Scenario) -> std.arraybuf.ArrayBuf(u64) {
+    let U64s = std.arraybuf.ArrayBuf(u64);
+    let mut times = U64s.new();
+    times.push(0);
+    let mut i: u64 = 0;
+    while i < scenario.disruptions.len() {
+        let item = scenario.disruptions.get_or(i, model.empty_disruption());
+        times.push(item.start);
+        if item.end <= scenario.duration { times.push(item.end); }
+        i = i + 1;
+    }
+    times.push(scenario.duration);
+    std.sort.insertion_sort(u64, inout times);
+    let mut unique = U64s.new();
+    i = 0;
+    while i < times.len() {
+        let value = times.get_or(i, 0);
+        if unique.len() == 0 || unique.get_or(unique.len() - 1, 0) != value { unique.push(value); }
+        i = i + 1;
+    }
+    unique
+}
+
+fn route_exposure(borrow scenario: model.Scenario, route: u64) -> RouteExposure {
+    let base = scenario.routes.get_or(route, model.empty_route());
+    let mut disruption_hours: u64 = 0;
+    let mut minimum_capacity = base.capacity;
+    let mut maximum_cost = base.cost;
+    let mut windows: u64 = 0;
+    let mut i: u64 = 0;
+    while i < scenario.disruptions.len() {
+        let item = scenario.disruptions.get_or(i, model.empty_disruption());
+        if item.route == route {
+            windows = windows + 1;
+            disruption_hours = add(disruption_hours, item.end - item.start);
+            let capacity = routing.effective_capacity(borrow scenario, route, item.start);
+            let cost = routing.effective_cost(borrow scenario, route, item.start);
+            if capacity < minimum_capacity { minimum_capacity = capacity; }
+            if cost > maximum_cost { maximum_cost = cost; }
+        }
+        i = i + 1;
+    }
+    RouteExposure {
+        route: route, disruption_hours: disruption_hours,
+        minimum_capacity: minimum_capacity, maximum_cost: maximum_cost,
+        windows: windows,
+    }
+}
+
+pub fn summarize(borrow scenario: model.Scenario) -> Summary {
+    let baseline = route_matrix.compute(borrow scenario, 0, 1, routing.MODE_COST());
+    let times = event_times(borrow scenario);
+    let mut snapshots = Snapshots.new();
+    let mut worst_time: u64 = 0;
+    let mut worst_unreachable_pairs: u64 = 0;
+    let mut worst_added_weight: u64 = 0;
+    let mut i: u64 = 0;
+    while i < times.len() {
+        let time = times.get_or(i, 0);
+        let current = route_matrix.compute(borrow scenario, time, 1, routing.MODE_COST());
+        let snapshot = compare(borrow baseline, borrow current);
+        if snapshot.unreachable_pairs > worst_unreachable_pairs || snapshot.added_weight > worst_added_weight {
+            worst_time = time;
+            if snapshot.unreachable_pairs > worst_unreachable_pairs { worst_unreachable_pairs = snapshot.unreachable_pairs; }
+            if snapshot.added_weight > worst_added_weight { worst_added_weight = snapshot.added_weight; }
+        }
+        snapshots.push(snapshot);
+        i = i + 1;
+    }
+    let mut routes = RouteExposures.new();
+    i = 0;
+    while i < scenario.routes.len() { routes.push(route_exposure(borrow scenario, i)); i = i + 1; }
+    let mut fragile_capacity: u64 = 0;
+    let mut fully_connected_levels: u64 = 0;
+    let mut level: u64 = 1;
+    while level <= 100 {
+        let matrix = route_matrix.compute(borrow scenario, 0, level, routing.MODE_COST());
+        if matrix.unreachable_pairs == 0 { fully_connected_levels = fully_connected_levels + 1; }
+        else if fragile_capacity == 0 { fragile_capacity = level; }
+        level = level + 10;
+    }
+    Summary {
+        snapshots: snapshots, routes: routes,
+        baseline_pairs: baseline.reachable_pairs,
+        worst_time: worst_time, worst_unreachable_pairs: worst_unreachable_pairs,
+        worst_added_weight: worst_added_weight, fragile_capacity: fragile_capacity,
+        fully_connected_levels: fully_connected_levels,
+    }
+}

@@ -1,0 +1,62 @@
+// CLI language kept separate so help text is testable and normal commands can
+// share consistent names without embedding one giant literal in main.
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn help() -> StrBuf {
+    let mut out = StrBuf.new();
+    out.push_str("harbor — deterministic logistics simulator and route planner\n\n");
+    out.push_str("usage:\n");
+    out.push_str("  harbor simulate <scenario.json>\n");
+    out.push_str("  harbor validate <scenario.json>\n");
+    out.push_str("  harbor report <scenario.json>\n");
+    out.push_str("  harbor json <scenario.json>\n");
+    out.push_str("  harbor routes <scenario.json>\n");
+    out.push_str("  harbor forecast <scenario.json>\n");
+    out.push_str("  harbor events <scenario.json>\n");
+    out.push_str("  harbor csv <scenario.json>\n");
+    out.push_str("  harbor timeline <scenario.json>\n");
+    out.push_str("  harbor scenario <scenario.json>\n");
+    out.push_str("  harbor dot <scenario.json>\n");
+    out.push_str("  harbor audit-routes <scenario.json>\n");
+    out.push_str("  harbor contingency <scenario.json>\n");
+    out.push_str("  harbor compare <scenario.json>\n");
+    out.push_str("  harbor risks <scenario.json>\n");
+    out.push_str("  harbor assurance-csv <scenario.json>\n");
+    out.push_str("  harbor sensitivity <scenario.json>\n");
+    out.push_str("  harbor manifest <scenario.json>\n");
+    out.push_str("  harbor inventory-policy <scenario.json>\n");
+    out.push_str("  harbor readiness <scenario.json>\n");
+    out.push_str("  harbor checklist <scenario.json>\n");
+    out.push_str("  harbor stats <scenario.json>\n");
+    out.push_str("  harbor selftest\n");
+    out.push_str("  harbor stress1|stress2|stress4\n\n");
+    out.push_str("  harbor benchmark\n\n");
+    out.push_str("commands:\n");
+    out.push_str("  simulate  run, audit, and print a compact outcome\n");
+    out.push_str("  validate  decode and validate without simulation\n");
+    out.push_str("  report    comprehensive human-readable report\n");
+    out.push_str("  json      deterministic machine-readable report\n");
+    out.push_str("  routes    all-pairs weighted route matrix\n");
+    out.push_str("  forecast  supply/demand availability projection\n");
+    out.push_str("  events    stable replayable line event log\n");
+    out.push_str("  csv       demand, fleet, and event analysis tables\n");
+    out.push_str("  timeline  hourly event and cargo forecast series\n");
+    out.push_str("  scenario  canonical scenario JSON and decode round-trip\n");
+    out.push_str("  dot       Graphviz network with disruptions and critical nodes\n");
+    out.push_str("  audit-routes structural audit of all route plans and objectives\n");
+    out.push_str("  contingency sample disruption windows and capacity thresholds\n");
+    out.push_str("  compare   compare baseline and disrupted network variants\n");
+    out.push_str("  risks     ranked operational risk register\n");
+    out.push_str("  assurance-csv raw route, contingency, comparison, and risk evidence\n");
+    out.push_str("  sensitivity capacity and departure-time parameter sweep\n");
+    out.push_str("  manifest  reconstructed shipment ledger and transit audit\n");
+    out.push_str("  inventory-policy safety stock and reorder recommendations\n");
+    out.push_str("  readiness weighted operational score with hard gates\n");
+    out.push_str("  checklist evidence-backed operator action list\n");
+    out.push_str("  stats     scenario and simulation fingerprints\n");
+    out.push_str("  selftest  generated-scenario invariant suite\n");
+    out.push_str("  stressN   in-memory 1x, 2x, or 4x scaling workload\n");
+    out.push_str("  benchmark repeated deterministic multi-tier workload suite\n");
+    out
+}

@@ -1,0 +1,213 @@
+// Canonical Harbor input model. All records are POD: strings are pool ids and
+// references are resolved to arena indices during validation.
+const std = @import("std");
+const pool = @import("pool.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn NONE() -> u64 { 18446744073709551615 }
+
+pub fn LOCATION_PORT() -> u64 { 1 }
+pub fn LOCATION_HUB() -> u64 { 2 }
+pub fn LOCATION_FACTORY() -> u64 { 3 }
+pub fn LOCATION_MARKET() -> u64 { 4 }
+
+pub struct Location {
+    id: u64,
+    kind: u64,
+    capacity: u64,
+    handling: u64,
+    x: i64,
+    y: i64,
+}
+
+pub struct Route {
+    from_id: u64,
+    to_id: u64,
+    from: u64,
+    to: u64,
+    distance: u64,
+    capacity: u64,
+    cost: u64,
+    travel: u64,
+    bidirectional: bool,
+}
+
+pub struct Cargo {
+    id: u64,
+    unit_value: u64,
+    shelf_life: u64,
+    weight: u64,
+}
+
+pub struct Vehicle {
+    id: u64,
+    at_id: u64,
+    at: u64,
+    capacity: u64,
+    speed: u64,
+    cost: u64,
+    available: u64,
+}
+
+pub struct Supply {
+    location_id: u64,
+    cargo_id: u64,
+    location: u64,
+    cargo: u64,
+    quantity: u64,
+    available: u64,
+}
+
+pub struct Demand {
+    location_id: u64,
+    cargo_id: u64,
+    location: u64,
+    cargo: u64,
+    quantity: u64,
+    deadline: u64,
+    priority: u64,
+}
+
+pub struct Production {
+    location_id: u64,
+    cargo_id: u64,
+    location: u64,
+    cargo: u64,
+    quantity: u64,
+    every: u64,
+    start: u64,
+    end: u64,
+}
+
+pub struct Disruption {
+    route: u64,
+    start: u64,
+    end: u64,
+    capacity_percent: u64,
+    cost_percent: u64,
+}
+
+pub struct Diagnostic {
+    code: u64,
+    subject: u64,
+    detail: u64,
+}
+
+pub const Locations = std.arraybuf.ArrayBuf(Location);
+pub const Routes = std.arraybuf.ArrayBuf(Route);
+pub const Cargoes = std.arraybuf.ArrayBuf(Cargo);
+pub const Vehicles = std.arraybuf.ArrayBuf(Vehicle);
+pub const Supplies = std.arraybuf.ArrayBuf(Supply);
+pub const Demands = std.arraybuf.ArrayBuf(Demand);
+pub const Productions = std.arraybuf.ArrayBuf(Production);
+pub const Disruptions = std.arraybuf.ArrayBuf(Disruption);
+pub const Diagnostics = std.arraybuf.ArrayBuf(Diagnostic);
+pub const U64s = std.arraybuf.ArrayBuf(u64);
+
+pub struct Scenario {
+    strings: pool.Pool,
+    name: u64,
+    duration: u64,
+    seed: u64,
+    locations: Locations,
+    routes: Routes,
+    cargoes: Cargoes,
+    vehicles: Vehicles,
+    supplies: Supplies,
+    demands: Demands,
+    productions: Productions,
+    disruptions: Disruptions,
+    diagnostics: Diagnostics,
+}
+
+pub fn new_scenario() -> Scenario {
+    let mut strings = pool.Pool.new();
+    let empty = strings.intern_literal("");
+    Scenario {
+        strings: strings,
+        name: empty,
+        duration: 0,
+        seed: 1,
+        locations: Locations.new(),
+        routes: Routes.new(),
+        cargoes: Cargoes.new(),
+        vehicles: Vehicles.new(),
+        supplies: Supplies.new(),
+        demands: Demands.new(),
+        productions: Productions.new(),
+        disruptions: Disruptions.new(),
+        diagnostics: Diagnostics.new(),
+    }
+}
+
+pub fn add_error(inout scenario: Scenario, code: u64, subject: StrBuf, detail: StrBuf) {
+    let subject_id = scenario.strings.intern(borrow subject);
+    let detail_id = scenario.strings.intern(borrow detail);
+    scenario.diagnostics.push(Diagnostic { code: code, subject: subject_id, detail: detail_id });
+}
+
+pub fn add_error_ids(inout scenario: Scenario, code: u64, subject: u64, detail: StrBuf) {
+    let detail_id = scenario.strings.intern(borrow detail);
+    scenario.diagnostics.push(Diagnostic { code: code, subject: subject, detail: detail_id });
+}
+
+pub fn empty_location() -> Location {
+    Location { id: NONE(), kind: NONE(), capacity: 0, handling: 0, x: 0, y: 0 }
+}
+
+pub fn empty_route() -> Route {
+    Route { from_id: NONE(), to_id: NONE(), from: NONE(), to: NONE(), distance: 0, capacity: 0, cost: 0, travel: 0, bidirectional: false }
+}
+
+pub fn empty_cargo() -> Cargo {
+    Cargo { id: NONE(), unit_value: 0, shelf_life: 0, weight: 0 }
+}
+
+pub fn empty_vehicle() -> Vehicle {
+    Vehicle { id: NONE(), at_id: NONE(), at: NONE(), capacity: 0, speed: 0, cost: 0, available: 0 }
+}
+
+pub fn empty_supply() -> Supply {
+    Supply { location_id: NONE(), cargo_id: NONE(), location: NONE(), cargo: NONE(), quantity: 0, available: 0 }
+}
+
+pub fn empty_demand() -> Demand {
+    Demand { location_id: NONE(), cargo_id: NONE(), location: NONE(), cargo: NONE(), quantity: 0, deadline: 0, priority: 0 }
+}
+
+pub fn empty_production() -> Production {
+    Production { location_id: NONE(), cargo_id: NONE(), location: NONE(), cargo: NONE(), quantity: 0, every: 0, start: 0, end: 0 }
+}
+
+pub fn empty_disruption() -> Disruption {
+    Disruption { route: NONE(), start: 0, end: 0, capacity_percent: 0, cost_percent: 0 }
+}
+
+pub fn code_name(code: u64) -> StrBuf {
+    if code == 100 { "json" }
+    else if code == 101 { "schema" }
+    else if code == 102 { "field" }
+    else if code == 200 { "duplicate-id" }
+    else if code == 201 { "reference" }
+    else if code == 202 { "range" }
+    else if code == 203 { "graph" }
+    else if code == 204 { "capacity" }
+    else if code == 300 { "route" }
+    else if code == 400 { "simulation" }
+    else if code == 401 { "conservation" }
+    else if code == 402 { "replay" }
+    else if code == 500 { "filesystem" }
+    else { "unknown" }
+}
+
+pub fn location_kind(borrow scenario: Scenario, id: u64) -> u64 {
+    let port: StrBuf = "port";
+    let hub: StrBuf = "hub";
+    let factory: StrBuf = "factory";
+    let market: StrBuf = "market";
+    if scenario.strings.equals(id, borrow port) { LOCATION_PORT() }
+    else if scenario.strings.equals(id, borrow hub) { LOCATION_HUB() }
+    else if scenario.strings.equals(id, borrow factory) { LOCATION_FACTORY() }
+    else if scenario.strings.equals(id, borrow market) { LOCATION_MARKET() }
+    else { 0 }
+}

@@ -1,0 +1,252 @@
+// Time-aware deterministic shortest paths. A route can be traversed forward,
+// or backward when declared bidirectional. Active disruptions alter its usable
+// capacity and monetary weight without mutating the scenario.
+const std = @import("std");
+const model = @import("model.rue");
+const U64s = std.arraybuf.ArrayBuf(u64);
+const Priority = std.binary_heap.PriorityQueue(u64, u64);
+const Pair = std.tuple.Pair(u64, u64);
+const OptPair = std.option.Option(Pair);
+const Deque = std.deque.Deque(u64);
+
+pub fn MODE_COST() -> u64 { 1 }
+pub fn MODE_TIME() -> u64 { 2 }
+pub fn MODE_DISTANCE() -> u64 { 3 }
+pub fn INF() -> u64 { 18446744073709551615 }
+
+pub struct Path {
+    reachable: bool,
+    cost: u64,
+    distance: u64,
+    travel: u64,
+    bottleneck: u64,
+    nodes: U64s,
+    routes: U64s,
+}
+
+pub fn empty_path() -> Path {
+    Path {
+        reachable: false,
+        cost: INF(),
+        distance: 0,
+        travel: 0,
+        bottleneck: 0,
+        nodes: U64s.new(),
+        routes: U64s.new(),
+    }
+}
+
+fn add_saturating(a: u64, b: u64) -> u64 {
+    if a == INF() || b > INF() - a { INF() } else { a + b }
+}
+
+fn mul_percent(value: u64, percent: u64) -> u64 {
+    if value == 0 || percent == 0 { return 0; }
+    if value > INF() / percent { return INF(); }
+    (value * percent) / 100
+}
+
+pub fn disruption_active(borrow item: model.Disruption, at: u64) -> bool {
+    at >= item.start && at < item.end
+}
+
+pub fn effective_capacity(borrow scenario: model.Scenario, route_index: u64, at: u64) -> u64 {
+    let route = scenario.routes.get_or(route_index, model.empty_route());
+    let mut capacity = route.capacity;
+    let mut i: u64 = 0;
+    while i < scenario.disruptions.len() {
+        let item = scenario.disruptions.get_or(i, model.empty_disruption());
+        if item.route == route_index && disruption_active(borrow item, at) {
+            capacity = mul_percent(capacity, item.capacity_percent);
+        }
+        i = i + 1;
+    }
+    capacity
+}
+
+pub fn effective_cost(borrow scenario: model.Scenario, route_index: u64, at: u64) -> u64 {
+    let route = scenario.routes.get_or(route_index, model.empty_route());
+    let mut cost = route.cost;
+    let mut i: u64 = 0;
+    while i < scenario.disruptions.len() {
+        let item = scenario.disruptions.get_or(i, model.empty_disruption());
+        if item.route == route_index && disruption_active(borrow item, at) {
+            cost = mul_percent(cost, item.cost_percent);
+        }
+        i = i + 1;
+    }
+    cost
+}
+
+pub fn edge_weight(borrow scenario: model.Scenario, route_index: u64, at: u64, mode: u64) -> u64 {
+    let route = scenario.routes.get_or(route_index, model.empty_route());
+    if mode == MODE_TIME() { route.travel }
+    else if mode == MODE_DISTANCE() { route.distance }
+    else { add_saturating(effective_cost(borrow scenario, route_index, at), route.distance) }
+}
+
+fn neighbor(route: model.Route, at: u64) -> u64 {
+    if route.from == at { route.to }
+    else if route.bidirectional && route.to == at { route.from }
+    else { model.NONE() }
+}
+
+fn fill(inout values: U64s, count: u64, value: u64) {
+    let mut i: u64 = 0;
+    while i < count { values.push(value); i = i + 1; }
+}
+
+fn prefer(candidate_route: u64, old_route: u64) -> bool {
+    old_route == model.NONE() || candidate_route < old_route
+}
+
+fn relax_from(
+    borrow scenario: model.Scenario,
+    at: u64,
+    now: u64,
+    minimum_capacity: u64,
+    mode: u64,
+    borrow distances: U64s,
+    inout next_distances: U64s,
+    inout previous_node: U64s,
+    inout previous_route: U64s,
+    inout queue: Priority,
+) {
+    let base = distances.get_or(at, INF());
+    if base == INF() { return; }
+    let mut route_index: u64 = 0;
+    while route_index < scenario.routes.len() {
+        let route = scenario.routes.get_or(route_index, model.empty_route());
+        let next = neighbor(route, at);
+        if next < scenario.locations.len() && effective_capacity(borrow scenario, route_index, now) >= minimum_capacity {
+            let weight = edge_weight(borrow scenario, route_index, now, mode);
+            let candidate = add_saturating(base, weight);
+            let old = next_distances.get_or(next, INF());
+            let old_route = previous_route.get_or(next, model.NONE());
+            if candidate < old || (candidate == old && prefer(route_index, old_route)) {
+                next_distances.set(next, candidate);
+                previous_node.set(next, at);
+                previous_route.set(next, route_index);
+                queue.push(candidate, next);
+            }
+        }
+        route_index = route_index + 1;
+    }
+}
+
+fn summarize(borrow scenario: model.Scenario, inout path: Path) {
+    path.cost = 0;
+    path.distance = 0;
+    path.travel = 0;
+    path.bottleneck = INF();
+    let mut i: u64 = 0;
+    while i < path.routes.len() {
+        let route_index = path.routes.get_or(i, model.NONE());
+        let route = scenario.routes.get_or(route_index, model.empty_route());
+        path.cost = add_saturating(path.cost, route.cost);
+        path.distance = add_saturating(path.distance, route.distance);
+        path.travel = add_saturating(path.travel, route.travel);
+        if route.capacity < path.bottleneck { path.bottleneck = route.capacity; }
+        i = i + 1;
+    }
+    if path.routes.len() == 0 { path.bottleneck = 0; }
+}
+
+fn reconstruct(
+    borrow scenario: model.Scenario,
+    from: u64,
+    to: u64,
+    borrow previous_node: U64s,
+    borrow previous_route: U64s,
+) -> Path {
+    let mut path = empty_path();
+    let mut nodes = Deque.new(model.NONE());
+    let mut routes = Deque.new(model.NONE());
+    let mut cursor = to;
+    nodes.push_front(cursor);
+    let mut guard: u64 = 0;
+    while cursor != from && guard <= scenario.locations.len() {
+        let parent = previous_node.get_or(cursor, model.NONE());
+        let route = previous_route.get_or(cursor, model.NONE());
+        if parent == model.NONE() || route == model.NONE() { return path; }
+        routes.push_front(route);
+        cursor = parent;
+        nodes.push_front(cursor);
+        guard = guard + 1;
+    }
+    if cursor != from { return path; }
+    while !nodes.is_empty() {
+        match nodes.pop_front() {
+            std.option.Option(u64).Some(v) => path.nodes.push(v),
+            std.option.Option(u64).None => {},
+        }
+    }
+    while !routes.is_empty() {
+        match routes.pop_front() {
+            std.option.Option(u64).Some(v) => path.routes.push(v),
+            std.option.Option(u64).None => {},
+        }
+    }
+    path.reachable = true;
+    summarize(borrow scenario, inout path);
+    path
+}
+
+pub fn shortest(
+    borrow scenario: model.Scenario,
+    from: u64,
+    to: u64,
+    now: u64,
+    minimum_capacity: u64,
+    mode: u64,
+) -> Path {
+    if from >= scenario.locations.len() || to >= scenario.locations.len() { return empty_path(); }
+    if from == to {
+        let mut path = empty_path();
+        path.reachable = true;
+        path.cost = 0;
+        path.nodes.push(from);
+        return path;
+    }
+    let mut distances = U64s.new();
+    let mut previous_node = U64s.new();
+    let mut previous_route = U64s.new();
+    fill(inout distances, scenario.locations.len(), INF());
+    fill(inout previous_node, scenario.locations.len(), model.NONE());
+    fill(inout previous_route, scenario.locations.len(), model.NONE());
+    distances.set(from, 0);
+    let mut queue = Priority.new();
+    queue.push(0, from);
+    while !queue.is_empty() {
+        let item = match queue.pop() { OptPair.Some(v) => v, OptPair.None => Pair.new(INF(), model.NONE()) };
+        let distance = item.first;
+        let at = item.second;
+        if at < scenario.locations.len() && distance == distances.get_or(at, INF()) {
+            if at == to { break; }
+            // The read-only and writable distance arguments intentionally refer
+            // to the same logical vector across calls, but not within one call.
+            let mut next_distances = U64s.new();
+            let mut i: u64 = 0;
+            while i < distances.len() { next_distances.push(distances.get_or(i, INF())); i = i + 1; }
+            relax_from(
+                borrow scenario, at, now, minimum_capacity, mode,
+                borrow distances, inout next_distances,
+                inout previous_node, inout previous_route, inout queue,
+            );
+            distances = next_distances;
+        }
+    }
+    if distances.get_or(to, INF()) == INF() { return empty_path(); }
+    reconstruct(borrow scenario, from, to, borrow previous_node, borrow previous_route)
+}
+
+pub fn path_weight(borrow scenario: model.Scenario, borrow path: Path, now: u64, mode: u64) -> u64 {
+    if !path.reachable { return INF(); }
+    let mut total: u64 = 0;
+    let mut i: u64 = 0;
+    while i < path.routes.len() {
+        total = add_saturating(total, edge_weight(borrow scenario, path.routes.get_or(i, model.NONE()), now, mode));
+        i = i + 1;
+    }
+    total
+}

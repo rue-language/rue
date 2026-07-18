@@ -71,6 +71,37 @@ fn main() -> i32 {
 stdout = "-1\n9\n"
 exit_code = 0
 
+# RUE-998: enum drop glue must use the same reversed complete-aggregate ABI as
+# an ordinary Rue by-value call. Passing logical slots directly made a returned
+# Json.Array payload reconstruct its ArrayBuf as (cap,len,ptr), then crash while
+# freeing cap at scope exit.
+[[case]]
+name = "returned_nested_json_drops_safely"
+description = "A returned std.json.Json with an ArrayBuf payload drops safely at scope exit (RUE-998)."
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn make() -> std.json.Json {
+    let Items = std.arraybuf.ArrayBuf(std.json.Json);
+    let mut items = Items.new();
+    let base: StrBuf = "hello world";
+    items.push(std.json.Json.Number(base.substring(0, 5)));
+    items.push(std.json.Json.Number(base.substring(6, 5)));
+    std.json.Json.Array(items)
+}
+
+fn main() -> i32 {
+    let value = make();
+    println("built");
+    0
+}
+""" }]
+stdout = "built\n"
+exit_code = 0
+
 # A payload enum nested inside a struct field must still run active-variant drop
 # glue when the containing struct is dropped. This used to leak because struct
 # drop glue skipped TypeKind::Enum fields.

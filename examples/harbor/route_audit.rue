@@ -1,0 +1,210 @@
+// Structural audit of every route plan. Unlike route_oracle, which compares
+// optimal weights, this module verifies that returned paths are internally
+// coherent and obey direction, capacity, and endpoint constraints.
+const std = @import("std");
+const model = @import("model.rue");
+const routing = @import("routing.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct ModeAudit {
+    mode: u64,
+    pairs: u64,
+    reachable: u64,
+    unreachable: u64,
+    endpoint_errors: u64,
+    continuity_errors: u64,
+    direction_errors: u64,
+    capacity_errors: u64,
+    weight_errors: u64,
+    cycle_errors: u64,
+    total_hops: u64,
+    maximum_hops: u64,
+    total_weight: u64,
+}
+
+pub const ModeAudits = std.arraybuf.ArrayBuf(ModeAudit);
+
+pub struct Audit {
+    at: u64,
+    minimum_capacity: u64,
+    modes: ModeAudits,
+    pairs: u64,
+    reachable: u64,
+    errors: u64,
+    path_digest: u64,
+}
+
+fn add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+fn mix(value: u64, next: u64) -> u64 {
+    @wrapping_mul(value ^ next, 1099511628211)
+}
+
+fn empty_mode(mode: u64) -> ModeAudit {
+    ModeAudit {
+        mode: mode, pairs: 0, reachable: 0, unreachable: 0,
+        endpoint_errors: 0, continuity_errors: 0, direction_errors: 0,
+        capacity_errors: 0, weight_errors: 0, cycle_errors: 0,
+        total_hops: 0, maximum_hops: 0, total_weight: 0,
+    }
+}
+
+fn route_connects(route: model.Route, from: u64, to: u64) -> bool {
+    (route.from == from && route.to == to) ||
+    (route.bidirectional && route.to == from && route.from == to)
+}
+
+fn node_repeated(borrow path: routing.Path, position: u64) -> bool {
+    let node = path.nodes.get_or(position, model.NONE());
+    let mut i: u64 = 0;
+    while i < position {
+        if path.nodes.get_or(i, model.NONE()) == node { return true; }
+        i = i + 1;
+    }
+    false
+}
+
+fn audit_path(
+    borrow scenario: model.Scenario,
+    borrow path: routing.Path,
+    from: u64,
+    to: u64,
+    at: u64,
+    minimum_capacity: u64,
+    mode: u64,
+    inout result: ModeAudit,
+) -> u64 {
+    let mut digest: u64 = 14695981039346656037;
+    result.pairs = result.pairs + 1;
+    digest = mix(digest, from); digest = mix(digest, to);
+    if !path.reachable {
+        result.unreachable = result.unreachable + 1;
+        if path.nodes.len() != 0 || path.routes.len() != 0 {
+            result.continuity_errors = result.continuity_errors + 1;
+        }
+        return digest;
+    }
+    result.reachable = result.reachable + 1;
+    result.total_hops = add(result.total_hops, path.routes.len());
+    if path.routes.len() > result.maximum_hops { result.maximum_hops = path.routes.len(); }
+    let expected_weight = routing.path_weight(borrow scenario, borrow path, at, mode);
+    result.total_weight = add(result.total_weight, expected_weight);
+    if path.nodes.len() == 0 || path.nodes.get_or(0, model.NONE()) != from ||
+       path.nodes.get_or(path.nodes.len() - 1, model.NONE()) != to {
+        result.endpoint_errors = result.endpoint_errors + 1;
+    }
+    if path.nodes.len() != path.routes.len() + 1 {
+        result.continuity_errors = result.continuity_errors + 1;
+    }
+    let mut i: u64 = 0;
+    while i < path.nodes.len() {
+        digest = mix(digest, path.nodes.get_or(i, model.NONE()));
+        if node_repeated(borrow path, i) { result.cycle_errors = result.cycle_errors + 1; }
+        i = i + 1;
+    }
+    i = 0;
+    let mut direct_weight: u64 = 0;
+    while i < path.routes.len() {
+        let route_index = path.routes.get_or(i, model.NONE());
+        let route = scenario.routes.get_or(route_index, model.empty_route());
+        let a = path.nodes.get_or(i, model.NONE());
+        let b = path.nodes.get_or(i + 1, model.NONE());
+        digest = mix(digest, route_index);
+        if !route_connects(route, a, b) { result.direction_errors = result.direction_errors + 1; }
+        if routing.effective_capacity(borrow scenario, route_index, at) < minimum_capacity {
+            result.capacity_errors = result.capacity_errors + 1;
+        }
+        let edge = routing.edge_weight(borrow scenario, route_index, at, mode);
+        direct_weight = add(direct_weight, edge);
+        i = i + 1;
+    }
+    if direct_weight != expected_weight { result.weight_errors = result.weight_errors + 1; }
+    digest
+}
+
+fn errors(borrow value: ModeAudit) -> u64 {
+    value.endpoint_errors + value.continuity_errors + value.direction_errors +
+    value.capacity_errors + value.weight_errors + value.cycle_errors
+}
+
+fn audit_mode(
+    borrow scenario: model.Scenario,
+    at: u64,
+    minimum_capacity: u64,
+    mode: u64,
+    inout digest: u64,
+) -> ModeAudit {
+    let mut result = empty_mode(mode);
+    let mut from: u64 = 0;
+    while from < scenario.locations.len() {
+        let mut to: u64 = 0;
+        while to < scenario.locations.len() {
+            if from != to {
+                let path = routing.shortest(borrow scenario, from, to, at, minimum_capacity, mode);
+                let path_hash = audit_path(
+                    borrow scenario, borrow path, from, to, at,
+                    minimum_capacity, mode, inout result,
+                );
+                digest = mix(digest, path_hash);
+            }
+            to = to + 1;
+        }
+        from = from + 1;
+    }
+    result
+}
+
+pub fn run(borrow scenario: model.Scenario, at: u64, minimum_capacity: u64) -> Audit {
+    let mut modes = ModeAudits.new();
+    let mut digest: u64 = 14695981039346656037;
+    let cost = audit_mode(borrow scenario, at, minimum_capacity, routing.MODE_COST(), inout digest);
+    let time = audit_mode(borrow scenario, at, minimum_capacity, routing.MODE_TIME(), inout digest);
+    let distance = audit_mode(borrow scenario, at, minimum_capacity, routing.MODE_DISTANCE(), inout digest);
+    let pairs = cost.pairs + time.pairs + distance.pairs;
+    let reachable = cost.reachable + time.reachable + distance.reachable;
+    let all_errors = errors(borrow cost) + errors(borrow time) + errors(borrow distance);
+    modes.push(cost); modes.push(time); modes.push(distance);
+    Audit {
+        at: at, minimum_capacity: minimum_capacity, modes: modes,
+        pairs: pairs, reachable: reachable, errors: all_errors,
+        path_digest: digest,
+    }
+}
+
+fn append_mode(inout out: StrBuf, mode: u64) {
+    if mode == routing.MODE_COST() { text.append_literal(inout out, "cost"); }
+    else if mode == routing.MODE_TIME() { text.append_literal(inout out, "time"); }
+    else { text.append_literal(inout out, "distance"); }
+}
+
+pub fn render(borrow value: Audit) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "Route-plan structural audit\n");
+    text.append_literal(inout out, "at="); text.append_u64(inout out, value.at);
+    text.append_literal(inout out, " minimum_capacity="); text.append_u64(inout out, value.minimum_capacity);
+    text.append_literal(inout out, " pairs="); text.append_u64(inout out, value.pairs);
+    text.append_literal(inout out, " reachable="); text.append_u64(inout out, value.reachable); out.push(10);
+    let mut i: u64 = 0;
+    while i < value.modes.len() {
+        let item = value.modes.get_or(i, empty_mode(0));
+        text.append_literal(inout out, "mode="); append_mode(inout out, item.mode);
+        text.append_literal(inout out, " reachable="); text.append_u64(inout out, item.reachable);
+        text.append_literal(inout out, " unreachable="); text.append_u64(inout out, item.unreachable);
+        text.append_literal(inout out, " hops="); text.append_u64(inout out, item.total_hops);
+        text.append_literal(inout out, " max_hops="); text.append_u64(inout out, item.maximum_hops);
+        text.append_literal(inout out, " errors="); text.append_u64(inout out, errors(borrow item)); out.push(10);
+        text.append_literal(inout out, "  endpoint="); text.append_u64(inout out, item.endpoint_errors);
+        text.append_literal(inout out, " continuity="); text.append_u64(inout out, item.continuity_errors);
+        text.append_literal(inout out, " direction="); text.append_u64(inout out, item.direction_errors);
+        text.append_literal(inout out, " capacity="); text.append_u64(inout out, item.capacity_errors);
+        text.append_literal(inout out, " weight="); text.append_u64(inout out, item.weight_errors);
+        text.append_literal(inout out, " cycles="); text.append_u64(inout out, item.cycle_errors); out.push(10);
+        i = i + 1;
+    }
+    text.append_literal(inout out, "digest="); text.append_u64(inout out, value.path_digest);
+    text.append_literal(inout out, " valid="); text.append_bool(inout out, value.errors == 0); out.push(10);
+    out
+}

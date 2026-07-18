@@ -1,0 +1,210 @@
+// Deterministic hourly event loop. Source events enter inventory, arrivals are
+// replayed from a min-priority queue, and ranked demands dispatch idle vehicles.
+const std = @import("std");
+const model = @import("model.rue");
+const planner = @import("planner.rue");
+const state = @import("state.rue");
+const EventQueue = std.binary_heap.PriorityQueue(u64, u64);
+const EventPair = std.tuple.Pair(u64, u64);
+const OptEventPair = std.option.Option(EventPair);
+const DemandQueue = std.binary_heap.PriorityQueue(u64, u64);
+const DemandPair = std.tuple.Pair(u64, u64);
+const OptDemandPair = std.option.Option(DemandPair);
+
+fn saturating_add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+fn demand_rank(value: model.Demand) -> u64 {
+    let priority_part = if value.priority < 1000 { 1000 - value.priority } else { 0 };
+    saturating_add(value.deadline * 1000, priority_part)
+}
+
+fn record_source(
+    borrow scenario: model.Scenario,
+    inout sim: state.State,
+    tag: u64,
+    location: u64,
+    cargo: u64,
+    quantity: u64,
+    time: u64,
+    production: bool,
+) {
+    let accepted = state.inventory_add(borrow scenario, inout sim, location, cargo, quantity);
+    state.mark_source(inout sim, cargo, quantity, production);
+    state.log(inout sim, state.Event {
+        tag: tag, time: time, vehicle: model.NONE(), cargo: cargo, quantity: accepted,
+        from: location, to: location, demand: model.NONE(), cost: 0, distance: 0, travel: 0,
+    });
+    if accepted < quantity {
+        let rejected = quantity - accepted;
+        if cargo < sim.expired.len() { sim.expired.set(cargo, saturating_add(sim.expired.get_or(cargo, 0), rejected)); }
+        state.log(inout sim, state.Event {
+            tag: state.EVENT_EXPIRED(), time: time, vehicle: model.NONE(), cargo: cargo,
+            quantity: rejected, from: location, to: location, demand: model.NONE(),
+            cost: 0, distance: 0, travel: 0,
+        });
+    }
+}
+
+fn apply_sources(borrow scenario: model.Scenario, inout sim: state.State, now: u64) {
+    let mut i: u64 = 0;
+    while i < scenario.supplies.len() {
+        let source = scenario.supplies.get_or(i, model.empty_supply());
+        if source.available == now {
+            record_source(borrow scenario, inout sim, state.EVENT_SUPPLY(), source.location, source.cargo, source.quantity, now, false);
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < scenario.productions.len() {
+        let source = scenario.productions.get_or(i, model.empty_production());
+        if source.every > 0 && now >= source.start && now <= source.end && (now - source.start) % source.every == 0 {
+            record_source(borrow scenario, inout sim, state.EVENT_PRODUCTION(), source.location, source.cargo, source.quantity, now, true);
+        }
+        i = i + 1;
+    }
+}
+
+fn apply_arrival(inout sim: state.State, event: state.Event) {
+    state.unmark_transit(inout sim, event.cargo, event.quantity);
+    let delivered = state.apply_delivery(inout sim, event.demand, event.cargo, event.quantity);
+    let mut actual = event;
+    actual.quantity = delivered;
+    state.log(inout sim, actual);
+    sim.arrivals = sim.arrivals + 1;
+}
+
+fn process_arrivals(inout sim: state.State, inout queue: EventQueue, now: u64) {
+    loop {
+        let item = match queue.pop() {
+            OptEventPair.Some(v) => v,
+            OptEventPair.None => return,
+        };
+        if item.first > now {
+            queue.push(item.first, item.second);
+            return;
+        }
+        let event = sim.pending.get_or(item.second, state.empty_event());
+        apply_arrival(inout sim, event);
+    }
+}
+
+fn schedule_arrival(inout sim: state.State, inout queue: EventQueue, event: state.Event) {
+    let index = sim.pending.len();
+    let at = event.time;
+    sim.pending.push(event);
+    queue.push(at, index);
+}
+
+fn dispatch(
+    borrow scenario: model.Scenario,
+    inout sim: state.State,
+    inout queue: EventQueue,
+    decision: planner.Decision,
+) -> bool {
+    if !decision.valid { return false; }
+    let taken = state.inventory_take(borrow scenario, inout sim, decision.source, decision.cargo, decision.quantity);
+    let reserved = state.reserve_delivery(inout sim, decision.demand, taken);
+    if reserved == 0 { return false; }
+    if decision.reposition_distance > 0 {
+        state.log(inout sim, state.Event {
+            tag: state.EVENT_REPOSITION(), time: decision.depart, vehicle: decision.vehicle,
+            cargo: model.NONE(), quantity: 0,
+            from: sim.vehicle_at.get_or(decision.vehicle, model.NONE()), to: decision.source,
+            demand: model.NONE(), cost: decision.reposition_cost,
+            distance: decision.reposition_distance, travel: decision.reposition_travel,
+        });
+        sim.repositions = sim.repositions + 1;
+    }
+    state.log(inout sim, state.Event {
+        tag: state.EVENT_DEPARTURE(), time: decision.depart,
+        vehicle: decision.vehicle, cargo: decision.cargo, quantity: reserved,
+        from: decision.source, to: decision.destination, demand: decision.demand,
+        cost: decision.delivery_cost, distance: decision.delivery_distance,
+        travel: decision.delivery_travel,
+    });
+    schedule_arrival(inout sim, inout queue, state.Event {
+        tag: state.EVENT_ARRIVAL(), time: decision.arrival, vehicle: decision.vehicle,
+        cargo: decision.cargo, quantity: reserved, from: decision.source,
+        to: decision.destination, demand: decision.demand, cost: 0,
+        distance: 0, travel: 0,
+    });
+    sim.vehicle_at.set(decision.vehicle, decision.destination);
+    sim.vehicle_available.set(decision.vehicle, decision.arrival);
+    state.mark_transit(inout sim, decision.cargo, reserved);
+    state.add_vehicle_work(inout sim, decision.vehicle, planner.decision_distance(borrow decision), planner.decision_cost(borrow decision));
+    sim.dispatches = sim.dispatches + 1;
+    true
+}
+
+fn rank_demands(borrow scenario: model.Scenario, borrow sim: state.State, now: u64) -> DemandQueue {
+    let mut queue = DemandQueue.new();
+    let mut i: u64 = 0;
+    while i < scenario.demands.len() {
+        let demand = scenario.demands.get_or(i, model.empty_demand());
+        if state.demand_open(borrow sim, i) > 0 && now <= demand.deadline {
+            queue.push(demand_rank(demand), i);
+        }
+        i = i + 1;
+    }
+    queue
+}
+
+fn plan_hour(
+    borrow scenario: model.Scenario,
+    inout sim: state.State,
+    inout events: EventQueue,
+    now: u64,
+) {
+    let mut demands = rank_demands(borrow scenario, borrow sim, now);
+    let mut attempts: u64 = 0;
+    let limit = scenario.demands.len() * (scenario.vehicles.len() + 1) + 1;
+    while !demands.is_empty() && attempts < limit {
+        let item = match demands.pop() {
+            OptDemandPair.Some(v) => v,
+            OptDemandPair.None => DemandPair.new(0, model.NONE()),
+        };
+        if item.second < scenario.demands.len() {
+            let decision = planner.choose(borrow scenario, borrow sim, item.second, now);
+            if dispatch(borrow scenario, inout sim, inout events, decision) {
+                if state.demand_open(borrow sim, item.second) > 0 {
+                    let demand = scenario.demands.get_or(item.second, model.empty_demand());
+                    demands.push(demand_rank(demand), item.second);
+                }
+            }
+        }
+        attempts = attempts + 1;
+    }
+}
+
+fn mark_unmet(borrow scenario: model.Scenario, inout sim: state.State) {
+    let mut i: u64 = 0;
+    while i < scenario.demands.len() {
+        let demand = scenario.demands.get_or(i, model.empty_demand());
+        let remaining = state.demand_remaining(borrow sim, i);
+        if remaining > 0 {
+            state.log(inout sim, state.Event {
+                tag: state.EVENT_UNMET(), time: scenario.duration, vehicle: model.NONE(),
+                cargo: demand.cargo, quantity: remaining, from: demand.location,
+                to: demand.location, demand: i, cost: 0, distance: 0, travel: 0,
+            });
+        }
+        i = i + 1;
+    }
+}
+
+pub fn run(borrow scenario: model.Scenario) -> state.State {
+    let mut sim = state.new(borrow scenario);
+    let mut events = EventQueue.new();
+    let mut now: u64 = 0;
+    while now <= scenario.duration {
+        sim.now = now;
+        process_arrivals(inout sim, inout events, now);
+        apply_sources(borrow scenario, inout sim, now);
+        if now < scenario.duration { plan_hour(borrow scenario, inout sim, inout events, now); }
+        now = now + 1;
+    }
+    mark_unmet(borrow scenario, inout sim);
+    sim
+}

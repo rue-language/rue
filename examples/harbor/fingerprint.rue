@@ -1,0 +1,109 @@
+// Canonical non-cryptographic fingerprints for determinism checks.
+const model = @import("model.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const U64s = std.arraybuf.ArrayBuf(u64);
+
+fn mix(hash: u64, value: u64) -> u64 {
+    @wrapping_mul(hash ^ value, 1099511628211)
+}
+
+fn signed(value: i64) -> u64 {
+    if value >= 0 { @intCast(value) }
+    else if value == -9223372036854775807 - 1 { 9223372036854775808 }
+    else { 9223372036854775808 + @intCast(-value) }
+}
+
+pub fn scenario(borrow value: model.Scenario) -> u64 {
+    let mut hash: u64 = 14695981039346656037;
+    hash = mix(hash, value.strings.hash(value.name));
+    hash = mix(hash, value.duration);
+    hash = mix(hash, value.seed);
+    let mut i: u64 = 0;
+    while i < value.locations.len() {
+        let v = value.locations.get_or(i, model.empty_location());
+        hash = mix(hash, value.strings.hash(v.id)); hash = mix(hash, value.strings.hash(v.kind)); hash = mix(hash, v.capacity);
+        hash = mix(hash, v.handling); hash = mix(hash, signed(v.x)); hash = mix(hash, signed(v.y));
+        i = i + 1;
+    }
+    i = 0;
+    while i < value.routes.len() {
+        let v = value.routes.get_or(i, model.empty_route());
+        hash = mix(hash, value.strings.hash(v.from_id)); hash = mix(hash, value.strings.hash(v.to_id)); hash = mix(hash, v.distance);
+        hash = mix(hash, v.capacity); hash = mix(hash, v.cost); hash = mix(hash, v.travel);
+        hash = mix(hash, if v.bidirectional { 1 } else { 0 });
+        i = i + 1;
+    }
+    i = 0;
+    while i < value.cargoes.len() {
+        let v = value.cargoes.get_or(i, model.empty_cargo());
+        hash = mix(hash, value.strings.hash(v.id)); hash = mix(hash, v.unit_value); hash = mix(hash, v.shelf_life); hash = mix(hash, v.weight);
+        i = i + 1;
+    }
+    i = 0;
+    while i < value.vehicles.len() {
+        let v = value.vehicles.get_or(i, model.empty_vehicle());
+        hash = mix(hash, value.strings.hash(v.id)); hash = mix(hash, value.strings.hash(v.at_id));
+        hash = mix(hash, v.capacity); hash = mix(hash, v.speed); hash = mix(hash, v.cost); hash = mix(hash, v.available);
+        i = i + 1;
+    }
+    i = 0;
+    while i < value.supplies.len() {
+        let v = value.supplies.get_or(i, model.empty_supply());
+        hash = mix(hash, value.strings.hash(v.location_id)); hash = mix(hash, value.strings.hash(v.cargo_id));
+        hash = mix(hash, v.quantity); hash = mix(hash, v.available); i = i + 1;
+    }
+    i = 0;
+    while i < value.demands.len() {
+        let v = value.demands.get_or(i, model.empty_demand());
+        hash = mix(hash, value.strings.hash(v.location_id)); hash = mix(hash, value.strings.hash(v.cargo_id));
+        hash = mix(hash, v.quantity); hash = mix(hash, v.deadline); hash = mix(hash, v.priority); i = i + 1;
+    }
+    i = 0;
+    while i < value.productions.len() {
+        let v = value.productions.get_or(i, model.empty_production());
+        hash = mix(hash, value.strings.hash(v.location_id)); hash = mix(hash, value.strings.hash(v.cargo_id));
+        hash = mix(hash, v.quantity); hash = mix(hash, v.every); hash = mix(hash, v.start); hash = mix(hash, v.end); i = i + 1;
+    }
+    i = 0;
+    while i < value.disruptions.len() {
+        let v = value.disruptions.get_or(i, model.empty_disruption());
+        hash = mix(hash, v.route); hash = mix(hash, v.start); hash = mix(hash, v.end);
+        hash = mix(hash, v.capacity_percent); hash = mix(hash, v.cost_percent); i = i + 1;
+    }
+    hash
+}
+
+fn mix_array(hash: u64, borrow values: U64s) -> u64 {
+    let mut result = mix(hash, values.len());
+    let mut i: u64 = 0;
+    while i < values.len() { result = mix(result, values.get_or(i, 0)); i = i + 1; }
+    result
+}
+
+pub fn simulation(borrow value: state.State) -> u64 {
+    let mut hash: u64 = 14695981039346656037;
+    hash = mix_array(hash, borrow value.inventory);
+    hash = mix_array(hash, borrow value.demand_remaining);
+    hash = mix_array(hash, borrow value.demand_delivered);
+    hash = mix_array(hash, borrow value.vehicle_at);
+    hash = mix_array(hash, borrow value.vehicle_available);
+    hash = mix_array(hash, borrow value.in_transit);
+    hash = mix_array(hash, borrow value.supplied);
+    hash = mix_array(hash, borrow value.produced);
+    hash = mix_array(hash, borrow value.delivered);
+    hash = mix_array(hash, borrow value.expired);
+    let mut i: u64 = 0;
+    while i < value.log.len() {
+        let event = value.log.get_or(i, state.empty_event());
+        hash = mix(hash, event.tag); hash = mix(hash, event.time); hash = mix(hash, event.vehicle);
+        hash = mix(hash, event.cargo); hash = mix(hash, event.quantity); hash = mix(hash, event.from);
+        hash = mix(hash, event.to); hash = mix(hash, event.demand); hash = mix(hash, event.cost);
+        hash = mix(hash, event.distance); hash = mix(hash, event.travel);
+        i = i + 1;
+    }
+    hash = mix(hash, value.total_cost);
+    hash = mix(hash, value.total_distance);
+    hash = mix(hash, value.dispatches);
+    hash
+}

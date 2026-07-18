@@ -1,0 +1,173 @@
+// Event-stream statistics derived only from the append-only simulation log.
+const std = @import("std");
+const model = @import("model.rue");
+const state = @import("state.rue");
+const U64s = std.arraybuf.ArrayBuf(u64);
+
+pub struct Hour {
+    time: u64,
+    events: u64,
+    supplies: u64,
+    productions: u64,
+    departures: u64,
+    arrivals: u64,
+    repositions: u64,
+    expired: u64,
+    unmet: u64,
+    outbound_units: u64,
+    inbound_units: u64,
+    cost: u64,
+    distance: u64,
+}
+
+pub const Hours = std.arraybuf.ArrayBuf(Hour);
+
+pub struct Transition {
+    from_tag: u64,
+    to_tag: u64,
+    count: u64,
+}
+
+pub const Transitions = std.arraybuf.ArrayBuf(Transition);
+
+pub struct Summary {
+    hours: Hours,
+    transitions: Transitions,
+    counts_by_tag: U64s,
+    events: u64,
+    active_hours: u64,
+    quiet_hours: u64,
+    peak_events: u64,
+    peak_event_hour: u64,
+    peak_throughput: u64,
+    peak_throughput_hour: u64,
+    first_event_time: u64,
+    last_event_time: u64,
+    ordering_errors: u64,
+}
+
+fn add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+fn blank_hour(time: u64) -> Hour {
+    Hour {
+        time: time, events: 0, supplies: 0, productions: 0,
+        departures: 0, arrivals: 0, repositions: 0, expired: 0, unmet: 0,
+        outbound_units: 0, inbound_units: 0, cost: 0, distance: 0,
+    }
+}
+
+fn fill_hours(duration: u64) -> Hours {
+    let mut result = Hours.new();
+    let mut time: u64 = 0;
+    while time <= duration { result.push(blank_hour(time)); time = time + 1; }
+    result
+}
+
+fn fill_tags() -> U64s {
+    let mut values = U64s.new();
+    let mut i: u64 = 0;
+    while i <= state.EVENT_UNMET() { values.push(0); i = i + 1; }
+    values
+}
+
+fn apply_event(inout hour: Hour, borrow event: state.Event) {
+    hour.events = hour.events + 1;
+    hour.cost = add(hour.cost, event.cost);
+    hour.distance = add(hour.distance, event.distance);
+    if event.tag == state.EVENT_SUPPLY() {
+        hour.supplies = hour.supplies + 1;
+        hour.inbound_units = add(hour.inbound_units, event.quantity);
+    } else if event.tag == state.EVENT_PRODUCTION() {
+        hour.productions = hour.productions + 1;
+        hour.inbound_units = add(hour.inbound_units, event.quantity);
+    } else if event.tag == state.EVENT_DEPARTURE() {
+        hour.departures = hour.departures + 1;
+        hour.outbound_units = add(hour.outbound_units, event.quantity);
+    } else if event.tag == state.EVENT_ARRIVAL() {
+        hour.arrivals = hour.arrivals + 1;
+        hour.inbound_units = add(hour.inbound_units, event.quantity);
+    } else if event.tag == state.EVENT_REPOSITION() {
+        hour.repositions = hour.repositions + 1;
+    } else if event.tag == state.EVENT_EXPIRED() {
+        hour.expired = hour.expired + 1;
+        hour.outbound_units = add(hour.outbound_units, event.quantity);
+    } else if event.tag == state.EVENT_UNMET() {
+        hour.unmet = hour.unmet + 1;
+    }
+}
+
+fn transition_index(borrow transitions: Transitions, from_tag: u64, to_tag: u64) -> u64 {
+    let mut i: u64 = 0;
+    while i < transitions.len() {
+        let item = transitions.get_or(i, Transition { from_tag: 0, to_tag: 0, count: 0 });
+        if item.from_tag == from_tag && item.to_tag == to_tag { return i; }
+        i = i + 1;
+    }
+    transitions.len()
+}
+
+fn record_transition(inout transitions: Transitions, from_tag: u64, to_tag: u64) {
+    let index = transition_index(borrow transitions, from_tag, to_tag);
+    if index < transitions.len() {
+        let mut item = transitions.get_or(index, Transition { from_tag: from_tag, to_tag: to_tag, count: 0 });
+        item.count = item.count + 1;
+        transitions.set(index, item);
+    } else {
+        transitions.push(Transition { from_tag: from_tag, to_tag: to_tag, count: 1 });
+    }
+}
+
+pub fn summarize(borrow scenario: model.Scenario, borrow sim: state.State) -> Summary {
+    let mut hours = fill_hours(scenario.duration);
+    let mut counts_by_tag = fill_tags();
+    let mut transitions = Transitions.new();
+    let mut ordering_errors: u64 = 0;
+    let mut previous_time: u64 = 0;
+    let mut previous_tag: u64 = 0;
+    let mut i: u64 = 0;
+    while i < sim.log.len() {
+        let event = sim.log.get_or(i, state.empty_event());
+        if i > 0 {
+            if event.time < previous_time { ordering_errors = ordering_errors + 1; }
+            record_transition(inout transitions, previous_tag, event.tag);
+        }
+        if event.time < hours.len() {
+            let mut hour = hours.get_or(event.time, blank_hour(event.time));
+            apply_event(inout hour, borrow event);
+            hours.set(event.time, hour);
+        }
+        if event.tag < counts_by_tag.len() {
+            counts_by_tag.set(event.tag, counts_by_tag.get_or(event.tag, 0) + 1);
+        }
+        previous_time = event.time;
+        previous_tag = event.tag;
+        i = i + 1;
+    }
+    let mut active_hours: u64 = 0;
+    let mut quiet_hours: u64 = 0;
+    let mut peak_events: u64 = 0;
+    let mut peak_event_hour: u64 = 0;
+    let mut peak_throughput: u64 = 0;
+    let mut peak_throughput_hour: u64 = 0;
+    i = 0;
+    while i < hours.len() {
+        let hour = hours.get_or(i, blank_hour(i));
+        if hour.events == 0 { quiet_hours = quiet_hours + 1; }
+        else { active_hours = active_hours + 1; }
+        if hour.events > peak_events { peak_events = hour.events; peak_event_hour = i; }
+        let throughput = add(hour.outbound_units, hour.inbound_units);
+        if throughput > peak_throughput { peak_throughput = throughput; peak_throughput_hour = i; }
+        i = i + 1;
+    }
+    Summary {
+        hours: hours, transitions: transitions, counts_by_tag: counts_by_tag,
+        events: sim.log.len(), active_hours: active_hours, quiet_hours: quiet_hours,
+        peak_events: peak_events, peak_event_hour: peak_event_hour,
+        peak_throughput: peak_throughput, peak_throughput_hour: peak_throughput_hour,
+        first_event_time: if sim.log.len() == 0 { 0 } else { sim.log.get_or(0, state.empty_event()).time },
+        last_event_time: if sim.log.len() == 0 { 0 } else { sim.log.get_or(sim.log.len() - 1, state.empty_event()).time },
+        ordering_errors: ordering_errors,
+    }
+}

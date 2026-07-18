@@ -1,0 +1,305 @@
+// Comprehensive deterministic human-readable simulation report.
+const std = @import("std");
+const accounting = @import("accounting.rue");
+const capacity_profile = @import("capacity_profile.rue");
+const conservation = @import("conservation.rue");
+const cost_analysis = @import("cost_analysis.rue");
+const disruption_analysis = @import("disruption_analysis.rue");
+const demand_analysis = @import("demand_analysis.rue");
+const event_analysis = @import("event_analysis.rue");
+const forecast = @import("forecast.rue");
+const geography = @import("geography.rue");
+const inventory_analysis = @import("inventory_analysis.rue");
+const model = @import("model.rue");
+const network = @import("network.rue");
+const replay = @import("replay.rue");
+const route_matrix = @import("route_matrix.rue");
+const routing = @import("routing.rue");
+const resilience = @import("resilience.rue");
+const scorecard = @import("scorecard.rue");
+const service = @import("service.rue");
+const state = @import("state.rue");
+const text = @import("text.rue");
+const utilization = @import("utilization.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn key_value(inout out: StrBuf, key: str, value: u64) {
+    text.append_literal(inout out, key);
+    text.append_literal(inout out, ": ");
+    text.append_u64(inout out, value);
+    out.push(10);
+}
+
+fn signed_key_value(inout out: StrBuf, key: str, value: i64) {
+    text.append_literal(inout out, key);
+    text.append_literal(inout out, ": ");
+    text.append_i64(inout out, value);
+    out.push(10);
+}
+
+fn scenario_section(inout out: StrBuf, borrow scenario: model.Scenario) {
+    text.heading(inout out, "Scenario");
+    text.append_literal(inout out, "name: ");
+    text.append_id(inout out, borrow scenario, scenario.name);
+    out.push(10);
+    key_value(inout out, "duration", scenario.duration);
+    key_value(inout out, "seed", scenario.seed);
+    key_value(inout out, "locations", scenario.locations.len());
+    key_value(inout out, "routes", scenario.routes.len());
+    key_value(inout out, "cargo_types", scenario.cargoes.len());
+    key_value(inout out, "vehicles", scenario.vehicles.len());
+    key_value(inout out, "supplies", scenario.supplies.len());
+    key_value(inout out, "demands", scenario.demands.len());
+    key_value(inout out, "production_rules", scenario.productions.len());
+    key_value(inout out, "disruptions", scenario.disruptions.len());
+    out.push(10);
+}
+
+fn outcome_section(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: state.State) {
+    let summary = service.summarize(borrow scenario, borrow sim);
+    text.heading(inout out, "Outcome");
+    key_value(inout out, "events", sim.log.len());
+    key_value(inout out, "dispatches", sim.dispatches);
+    key_value(inout out, "arrivals", sim.arrivals);
+    key_value(inout out, "repositions", sim.repositions);
+    key_value(inout out, "requested_units", summary.requested);
+    key_value(inout out, "delivered_units", summary.delivered);
+    key_value(inout out, "on_time_units", summary.on_time);
+    key_value(inout out, "late_units", summary.late);
+    key_value(inout out, "unmet_units", summary.unmet);
+    text.append_literal(inout out, "fulfillment: ");
+    text.append_percent(inout out, summary.delivered, summary.requested);
+    out.push(10);
+    text.append_literal(inout out, "on_time_rate: ");
+    text.append_percent(inout out, summary.on_time, summary.requested);
+    out.push(10);
+    text.append_literal(inout out, "weighted_fulfillment: ");
+    text.append_percent(inout out, summary.weighted_delivered, summary.weighted_requested);
+    out.push(10);
+    out.push(10);
+}
+
+fn demand_section(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: state.State) {
+    let summary = service.summarize(borrow scenario, borrow sim);
+    let distribution = demand_analysis.summarize(borrow scenario, borrow sim, 6);
+    text.heading(inout out, "Demand service");
+    key_value(inout out, "complete_demands", distribution.complete_demands);
+    key_value(inout out, "partial_demands", distribution.partial_demands);
+    key_value(inout out, "empty_demands", distribution.empty_demands);
+    key_value(inout out, "median_deadline", distribution.median_deadline);
+    let mut i: u64 = 0;
+    while i < summary.demands.len() {
+        let item = summary.demands.get_or(i, service.DemandService {
+            demand: model.NONE(), requested: 0, delivered: 0, on_time: 0, late: 0,
+            unmet: 0, first_arrival: 0, last_arrival: 0,
+            weighted_requested: 0, weighted_delivered: 0,
+        });
+        let demand = scenario.demands.get_or(item.demand, model.empty_demand());
+        text.append_literal(inout out, "demand ");
+        text.append_u64(inout out, item.demand);
+        text.append_literal(inout out, " ");
+        text.append_id(inout out, borrow scenario, demand.cargo_id);
+        text.append_literal(inout out, " -> ");
+        text.append_id(inout out, borrow scenario, demand.location_id);
+        text.append_literal(inout out, " requested=");
+        text.append_u64(inout out, item.requested);
+        text.append_literal(inout out, " delivered=");
+        text.append_u64(inout out, item.delivered);
+        text.append_literal(inout out, " on_time=");
+        text.append_u64(inout out, item.on_time);
+        text.append_literal(inout out, " unmet=");
+        text.append_u64(inout out, item.unmet);
+        out.push(10);
+        i = i + 1;
+    }
+    out.push(10);
+}
+
+fn event_section(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: state.State) {
+    let summary = event_analysis.summarize(borrow scenario, borrow sim);
+    text.heading(inout out, "Event stream");
+    key_value(inout out, "active_hours", summary.active_hours);
+    key_value(inout out, "quiet_hours", summary.quiet_hours);
+    key_value(inout out, "peak_events", summary.peak_events);
+    key_value(inout out, "peak_event_hour", summary.peak_event_hour);
+    key_value(inout out, "peak_throughput", summary.peak_throughput);
+    key_value(inout out, "peak_throughput_hour", summary.peak_throughput_hour);
+    key_value(inout out, "event_ordering_errors", summary.ordering_errors);
+    out.push(10);
+}
+
+fn inventory_section(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: state.State) {
+    let summary = inventory_analysis.summarize(borrow scenario, borrow sim);
+    text.heading(inout out, "Inventory replay");
+    key_value(inout out, "flow_inbound", summary.total_inbound);
+    key_value(inout out, "flow_outbound", summary.total_outbound);
+    key_value(inout out, "global_peak", summary.global_peak);
+    key_value(inout out, "global_peak_time", summary.global_peak_time);
+    key_value(inout out, "final_inventory", summary.final_inventory);
+    key_value(inout out, "inventory_underflows", summary.underflows);
+    out.push(10);
+}
+
+fn score_section(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: state.State) {
+    let score = scorecard.calculate(borrow scenario, borrow sim);
+    let resilient = resilience.summarize(borrow scenario);
+    text.heading(inout out, "Operational scorecard");
+    key_value(inout out, "service_score", score.service);
+    key_value(inout out, "punctuality_score", score.punctuality);
+    key_value(inout out, "efficiency_score", score.efficiency);
+    key_value(inout out, "resilience_score", score.resilience);
+    key_value(inout out, "integrity_score", score.integrity);
+    key_value(inout out, "financial_score", score.financial);
+    key_value(inout out, "total_score", score.total);
+    text.append_literal(inout out, "grade: "); text.append_literal(inout out, scorecard.grade_name(score.grade)); out.push(10);
+    key_value(inout out, "warnings", score.warnings);
+    key_value(inout out, "worst_disruption_time", resilient.worst_time);
+    key_value(inout out, "worst_unreachable_pairs", resilient.worst_unreachable_pairs);
+    out.push(10);
+}
+
+fn fleet_section(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: state.State) {
+    let fleet = utilization.summarize(borrow scenario, borrow sim);
+    text.heading(inout out, "Fleet");
+    key_value(inout out, "active_vehicles", fleet.active_vehicles);
+    key_value(inout out, "idle_vehicles", fleet.idle_vehicles);
+    key_value(inout out, "loaded_distance", fleet.loaded_distance);
+    key_value(inout out, "empty_distance", fleet.empty_distance);
+    text.append_literal(inout out, "average_fill: ");
+    text.append_percent(inout out, fleet.fill_numerator, fleet.fill_denominator);
+    out.push(10);
+    let mut i: u64 = 0;
+    while i < fleet.vehicles.len() {
+        let item = fleet.vehicles.get_or(i, utilization.VehicleUse {
+            vehicle: model.NONE(), dispatches: 0, repositions: 0, cargo_units: 0,
+            loaded_distance: 0, empty_distance: 0, travel_time: 0, busy_until: 0,
+            operating_cost: 0, capacity_units: 0, fill_numerator: 0, fill_denominator: 0,
+        });
+        let vehicle = scenario.vehicles.get_or(item.vehicle, model.empty_vehicle());
+        text.append_literal(inout out, "vehicle ");
+        text.append_id(inout out, borrow scenario, vehicle.id);
+        text.append_literal(inout out, " dispatches=");
+        text.append_u64(inout out, item.dispatches);
+        text.append_literal(inout out, " cargo=");
+        text.append_u64(inout out, item.cargo_units);
+        text.append_literal(inout out, " distance=");
+        text.append_u64(inout out, item.loaded_distance + item.empty_distance);
+        text.append_literal(inout out, " fill=");
+        text.append_percent(inout out, item.fill_numerator, item.fill_denominator);
+        out.push(10);
+        i = i + 1;
+    }
+    out.push(10);
+}
+
+fn network_section(inout out: StrBuf, borrow scenario: model.Scenario) {
+    let summary = network.summarize(borrow scenario);
+    let impacts = disruption_analysis.summarize(borrow scenario);
+    let geometry = geography.summarize(borrow scenario);
+    text.heading(inout out, "Network");
+    key_value(inout out, "directed_edges", summary.directed_edges);
+    key_value(inout out, "total_capacity", summary.total_capacity);
+    key_value(inout out, "total_distance", summary.total_distance);
+    key_value(inout out, "critical_locations", summary.critical_locations);
+    key_value(inout out, "isolated_locations", summary.isolated_locations);
+    key_value(inout out, "disruption_affected_pairs", impacts.affected_pairs);
+    key_value(inout out, "disruption_disconnected_pairs", impacts.disconnected_pairs);
+    key_value(inout out, "disruption_added_cost", impacts.added_cost);
+    key_value(inout out, "coordinate_width", geometry.coordinate_width);
+    key_value(inout out, "coordinate_height", geometry.coordinate_height);
+    key_value(inout out, "configured_route_distance", geometry.route_distance);
+    key_value(inout out, "geometric_route_distance", geometry.geometric_distance);
+    key_value(inout out, "maximum_pair_detour", geometry.maximum_pair_detour);
+    out.push(10);
+}
+
+fn forecast_section(inout out: StrBuf, borrow scenario: model.Scenario) {
+    let summary = forecast.summarize(borrow scenario);
+    let matrix = route_matrix.compute(borrow scenario, 0, 1, routing.MODE_COST());
+    text.heading(inout out, "Forecast and accessibility");
+    key_value(inout out, "projected_supply", summary.total_supply);
+    key_value(inout out, "projected_production", summary.total_production);
+    key_value(inout out, "projected_demand", summary.total_requested);
+    key_value(inout out, "structural_shortage", summary.total_shortage);
+    key_value(inout out, "scarce_cargoes", summary.scarce_cargoes);
+    key_value(inout out, "reachable_pairs", matrix.reachable_pairs);
+    key_value(inout out, "unreachable_pairs", matrix.unreachable_pairs);
+    key_value(inout out, "average_route_weight", route_matrix.average_weight(borrow matrix));
+    key_value(inout out, "network_diameter", matrix.diameter);
+    out.push(10);
+}
+
+fn capacity_section(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: state.State) {
+    let summary = capacity_profile.summarize(borrow scenario, borrow sim);
+    text.heading(inout out, "Capacity");
+    key_value(inout out, "peak_inventory", summary.peak_inventory);
+    key_value(inout out, "rejected_units", summary.rejected_units);
+    key_value(inout out, "storage_overflows", summary.storage_overflows);
+    key_value(inout out, "handling_overflows", summary.handling_overflows);
+    let mut i: u64 = 0;
+    while i < summary.locations.len() {
+        let item = summary.locations.get_or(i, capacity_profile.LocationCapacity {
+            location: model.NONE(), configured: 0, peak_inventory: 0, peak_time: 0,
+            inbound_units: 0, outbound_units: 0, rejected_units: 0,
+            handling_peak: 0, handling_peak_time: 0,
+            storage_overflow: false, handling_overflow: false,
+        });
+        let location = scenario.locations.get_or(item.location, model.empty_location());
+        text.append_literal(inout out, "location ");
+        text.append_id(inout out, borrow scenario, location.id);
+        text.append_literal(inout out, " peak=");
+        text.append_u64(inout out, item.peak_inventory);
+        text.append_literal(inout out, "/");
+        text.append_u64(inout out, item.configured);
+        text.append_literal(inout out, " handling_peak=");
+        text.append_u64(inout out, item.handling_peak);
+        out.push(10);
+        i = i + 1;
+    }
+    out.push(10);
+}
+
+fn accounting_section(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: state.State) {
+    let ledger = accounting.calculate(borrow scenario, borrow sim);
+    let costs = cost_analysis.summarize(borrow scenario, borrow sim);
+    text.heading(inout out, "Accounting");
+    signed_key_value(inout out, "revenue", ledger.revenue);
+    signed_key_value(inout out, "operating_cost", ledger.operating_cost);
+    signed_key_value(inout out, "lateness_penalty", ledger.lateness_penalty);
+    signed_key_value(inout out, "unmet_penalty", ledger.unmet_penalty);
+    signed_key_value(inout out, "spoilage_loss", ledger.spoilage_loss);
+    signed_key_value(inout out, "profit", ledger.profit);
+    key_value(inout out, "arithmetic_overflows", ledger.overflows);
+    key_value(inout out, "direct_event_cost", costs.total_direct_cost);
+    key_value(inout out, "allocated_operating_cost", costs.total_allocated_cost);
+    out.push(10);
+}
+
+fn audit_section(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: state.State) {
+    let balance = conservation.audit(borrow scenario, borrow sim);
+    let replayed = replay.audit(borrow scenario, borrow sim);
+    text.heading(inout out, "Audits");
+    key_value(inout out, "conservation_mismatches", balance.mismatches);
+    key_value(inout out, "replay_mismatches", replayed.mismatches);
+    key_value(inout out, "replay_ordering_errors", replayed.ordering_errors);
+    key_value(inout out, "replay_underflows", replayed.underflows);
+    out.push(10);
+}
+
+pub fn render(borrow scenario: model.Scenario, borrow sim: state.State) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "Harbor simulation report\n========================\n\n");
+    scenario_section(inout out, borrow scenario);
+    outcome_section(inout out, borrow scenario, borrow sim);
+    demand_section(inout out, borrow scenario, borrow sim);
+    event_section(inout out, borrow scenario, borrow sim);
+    inventory_section(inout out, borrow scenario, borrow sim);
+    fleet_section(inout out, borrow scenario, borrow sim);
+    network_section(inout out, borrow scenario);
+    forecast_section(inout out, borrow scenario);
+    capacity_section(inout out, borrow scenario, borrow sim);
+    accounting_section(inout out, borrow scenario, borrow sim);
+    score_section(inout out, borrow scenario, borrow sim);
+    audit_section(inout out, borrow scenario, borrow sim);
+    out
+}

@@ -1,0 +1,267 @@
+// Mutable simulation state and append-only event records. The scenario remains
+// immutable after validation; every changing quantity lives here.
+const std = @import("std");
+const model = @import("model.rue");
+const U64s = std.arraybuf.ArrayBuf(u64);
+
+pub fn EVENT_SUPPLY() -> u64 { 1 }
+pub fn EVENT_PRODUCTION() -> u64 { 2 }
+pub fn EVENT_DEPARTURE() -> u64 { 3 }
+pub fn EVENT_ARRIVAL() -> u64 { 4 }
+pub fn EVENT_REPOSITION() -> u64 { 5 }
+pub fn EVENT_EXPIRED() -> u64 { 6 }
+pub fn EVENT_UNMET() -> u64 { 7 }
+
+pub struct Event {
+    tag: u64,
+    time: u64,
+    vehicle: u64,
+    cargo: u64,
+    quantity: u64,
+    from: u64,
+    to: u64,
+    demand: u64,
+    cost: u64,
+    distance: u64,
+    travel: u64,
+}
+
+pub const Events = std.arraybuf.ArrayBuf(Event);
+
+pub struct State {
+    now: u64,
+    inventory: U64s,
+    demand_remaining: U64s,
+    demand_reserved: U64s,
+    demand_delivered: U64s,
+    vehicle_at: U64s,
+    vehicle_available: U64s,
+    vehicle_distance: U64s,
+    vehicle_cost: U64s,
+    in_transit: U64s,
+    supplied: U64s,
+    produced: U64s,
+    delivered: U64s,
+    expired: U64s,
+    pending: Events,
+    log: Events,
+    total_cost: u64,
+    total_distance: u64,
+    dispatches: u64,
+    arrivals: u64,
+    repositions: u64,
+}
+
+pub fn empty_event() -> Event {
+    Event {
+        tag: 0, time: 0, vehicle: model.NONE(), cargo: model.NONE(), quantity: 0,
+        from: model.NONE(), to: model.NONE(), demand: model.NONE(), cost: 0,
+        distance: 0, travel: 0,
+    }
+}
+
+fn fill(inout values: U64s, count: u64, value: u64) {
+    let mut i: u64 = 0;
+    while i < count { values.push(value); i = i + 1; }
+}
+
+fn saturating_add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+pub fn new(borrow scenario: model.Scenario) -> State {
+    let mut inventory = U64s.new();
+    let mut demand_remaining = U64s.new();
+    let mut demand_reserved = U64s.new();
+    let mut demand_delivered = U64s.new();
+    let mut vehicle_at = U64s.new();
+    let mut vehicle_available = U64s.new();
+    let mut vehicle_distance = U64s.new();
+    let mut vehicle_cost = U64s.new();
+    let mut in_transit = U64s.new();
+    let mut supplied = U64s.new();
+    let mut produced = U64s.new();
+    let mut delivered = U64s.new();
+    let mut expired = U64s.new();
+    fill(inout inventory, scenario.locations.len() * scenario.cargoes.len(), 0);
+    fill(inout demand_remaining, scenario.demands.len(), 0);
+    fill(inout demand_reserved, scenario.demands.len(), 0);
+    fill(inout demand_delivered, scenario.demands.len(), 0);
+    fill(inout in_transit, scenario.cargoes.len(), 0);
+    fill(inout supplied, scenario.cargoes.len(), 0);
+    fill(inout produced, scenario.cargoes.len(), 0);
+    fill(inout delivered, scenario.cargoes.len(), 0);
+    fill(inout expired, scenario.cargoes.len(), 0);
+    let mut i: u64 = 0;
+    while i < scenario.demands.len() {
+        let demand = scenario.demands.get_or(i, model.empty_demand());
+        demand_remaining.set(i, demand.quantity);
+        i = i + 1;
+    }
+    i = 0;
+    while i < scenario.vehicles.len() {
+        let vehicle = scenario.vehicles.get_or(i, model.empty_vehicle());
+        vehicle_at.push(vehicle.at);
+        vehicle_available.push(vehicle.available);
+        vehicle_distance.push(0);
+        vehicle_cost.push(0);
+        i = i + 1;
+    }
+    State {
+        now: 0,
+        inventory: inventory,
+        demand_remaining: demand_remaining,
+        demand_reserved: demand_reserved,
+        demand_delivered: demand_delivered,
+        vehicle_at: vehicle_at,
+        vehicle_available: vehicle_available,
+        vehicle_distance: vehicle_distance,
+        vehicle_cost: vehicle_cost,
+        in_transit: in_transit,
+        supplied: supplied,
+        produced: produced,
+        delivered: delivered,
+        expired: expired,
+        pending: Events.new(),
+        log: Events.new(),
+        total_cost: 0,
+        total_distance: 0,
+        dispatches: 0,
+        arrivals: 0,
+        repositions: 0,
+    }
+}
+
+pub fn inventory_index(borrow scenario: model.Scenario, location: u64, cargo: u64) -> u64 {
+    location * scenario.cargoes.len() + cargo
+}
+
+pub fn inventory_get(borrow scenario: model.Scenario, borrow value: State, location: u64, cargo: u64) -> u64 {
+    if location >= scenario.locations.len() || cargo >= scenario.cargoes.len() { return 0; }
+    value.inventory.get_or(inventory_index(borrow scenario, location, cargo), 0)
+}
+
+pub fn inventory_add(
+    borrow scenario: model.Scenario,
+    inout value: State,
+    location: u64,
+    cargo: u64,
+    quantity: u64,
+) -> u64 {
+    if location >= scenario.locations.len() || cargo >= scenario.cargoes.len() { return 0; }
+    let index = inventory_index(borrow scenario, location, cargo);
+    let location_record = scenario.locations.get_or(location, model.empty_location());
+    let mut total_at_location: u64 = 0;
+    let mut c: u64 = 0;
+    while c < scenario.cargoes.len() {
+        total_at_location = saturating_add(total_at_location, inventory_get(borrow scenario, borrow value, location, c));
+        c = c + 1;
+    }
+    let room = if total_at_location >= location_record.capacity { 0 } else { location_record.capacity - total_at_location };
+    let accepted = if quantity < room { quantity } else { room };
+    value.inventory.set(index, saturating_add(value.inventory.get_or(index, 0), accepted));
+    accepted
+}
+
+pub fn inventory_take(
+    borrow scenario: model.Scenario,
+    inout value: State,
+    location: u64,
+    cargo: u64,
+    quantity: u64,
+) -> u64 {
+    if location >= scenario.locations.len() || cargo >= scenario.cargoes.len() { return 0; }
+    let index = inventory_index(borrow scenario, location, cargo);
+    let available = value.inventory.get_or(index, 0);
+    let taken = if available < quantity { available } else { quantity };
+    value.inventory.set(index, available - taken);
+    taken
+}
+
+pub fn cargo_total_inventory(borrow scenario: model.Scenario, borrow value: State, cargo: u64) -> u64 {
+    let mut total: u64 = 0;
+    let mut location: u64 = 0;
+    while location < scenario.locations.len() {
+        total = saturating_add(total, inventory_get(borrow scenario, borrow value, location, cargo));
+        location = location + 1;
+    }
+    total
+}
+
+pub fn demand_remaining(borrow value: State, demand: u64) -> u64 {
+    value.demand_remaining.get_or(demand, 0)
+}
+
+pub fn demand_open(borrow value: State, demand: u64) -> u64 {
+    let remaining = value.demand_remaining.get_or(demand, 0);
+    let reserved = value.demand_reserved.get_or(demand, 0);
+    if reserved < remaining { remaining - reserved } else { 0 }
+}
+
+pub fn reserve_delivery(inout value: State, demand: u64, quantity: u64) -> u64 {
+    if demand >= value.demand_reserved.len() { return 0; }
+    let open = demand_open(borrow value, demand);
+    let accepted = if quantity < open { quantity } else { open };
+    value.demand_reserved.set(demand, saturating_add(value.demand_reserved.get_or(demand, 0), accepted));
+    accepted
+}
+
+pub fn apply_delivery(inout value: State, demand: u64, cargo: u64, quantity: u64) -> u64 {
+    if demand >= value.demand_remaining.len() { return 0; }
+    let remaining = value.demand_remaining.get_or(demand, 0);
+    let accepted = if quantity < remaining { quantity } else { remaining };
+    let reserved = value.demand_reserved.get_or(demand, 0);
+    value.demand_reserved.set(demand, if accepted < reserved { reserved - accepted } else { 0 });
+    value.demand_remaining.set(demand, remaining - accepted);
+    value.demand_delivered.set(demand, saturating_add(value.demand_delivered.get_or(demand, 0), accepted));
+    if cargo < value.delivered.len() {
+        value.delivered.set(cargo, saturating_add(value.delivered.get_or(cargo, 0), accepted));
+    }
+    accepted
+}
+
+pub fn mark_source(inout value: State, cargo: u64, quantity: u64, production: bool) {
+    if cargo >= value.supplied.len() { return; }
+    if production {
+        value.produced.set(cargo, saturating_add(value.produced.get_or(cargo, 0), quantity));
+    } else {
+        value.supplied.set(cargo, saturating_add(value.supplied.get_or(cargo, 0), quantity));
+    }
+}
+
+pub fn mark_transit(inout value: State, cargo: u64, quantity: u64) {
+    if cargo < value.in_transit.len() {
+        value.in_transit.set(cargo, saturating_add(value.in_transit.get_or(cargo, 0), quantity));
+    }
+}
+
+pub fn unmark_transit(inout value: State, cargo: u64, quantity: u64) {
+    if cargo < value.in_transit.len() {
+        let current = value.in_transit.get_or(cargo, 0);
+        value.in_transit.set(cargo, if quantity < current { current - quantity } else { 0 });
+    }
+}
+
+pub fn log(inout value: State, event: Event) {
+    value.log.push(event);
+}
+
+pub fn add_vehicle_work(inout value: State, vehicle: u64, distance: u64, cost: u64) {
+    if vehicle < value.vehicle_distance.len() {
+        value.vehicle_distance.set(vehicle, saturating_add(value.vehicle_distance.get_or(vehicle, 0), distance));
+        value.vehicle_cost.set(vehicle, saturating_add(value.vehicle_cost.get_or(vehicle, 0), cost));
+    }
+    value.total_distance = saturating_add(value.total_distance, distance);
+    value.total_cost = saturating_add(value.total_cost, cost);
+}
+
+pub fn event_name(tag: u64) -> str {
+    if tag == EVENT_SUPPLY() { "supply" }
+    else if tag == EVENT_PRODUCTION() { "production" }
+    else if tag == EVENT_DEPARTURE() { "departure" }
+    else if tag == EVENT_ARRIVAL() { "arrival" }
+    else if tag == EVENT_REPOSITION() { "reposition" }
+    else if tag == EVENT_EXPIRED() { "expired" }
+    else if tag == EVENT_UNMET() { "unmet" }
+    else { "unknown" }
+}

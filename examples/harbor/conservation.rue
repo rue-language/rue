@@ -1,0 +1,103 @@
+// End-state mass-balance audit. Every unit introduced by supplies or production
+// must be delivered, stored, in transit, or rejected/expired.
+const model = @import("model.rue");
+const state = @import("state.rue");
+
+pub struct CargoBalance {
+    cargo: u64,
+    supplied: u64,
+    produced: u64,
+    inventory: u64,
+    transit: u64,
+    delivered: u64,
+    expired: u64,
+    source_total: u64,
+    sink_total: u64,
+    balanced: bool,
+}
+
+pub fn empty_balance() -> CargoBalance {
+    CargoBalance {
+        cargo: model.NONE(), supplied: 0, produced: 0, inventory: 0,
+        transit: 0, delivered: 0, expired: 0, source_total: 0,
+        sink_total: 0, balanced: false,
+    }
+}
+
+pub const Balances = @import("std").arraybuf.ArrayBuf(CargoBalance);
+
+pub struct Audit {
+    balances: Balances,
+    mismatches: u64,
+    source_total: u64,
+    sink_total: u64,
+    demand_total: u64,
+    delivered_total: u64,
+    unmet_total: u64,
+}
+
+fn add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+pub fn cargo(borrow scenario: model.Scenario, borrow sim: state.State, cargo_index: u64) -> CargoBalance {
+    let supplied = sim.supplied.get_or(cargo_index, 0);
+    let produced = sim.produced.get_or(cargo_index, 0);
+    let inventory = state.cargo_total_inventory(borrow scenario, borrow sim, cargo_index);
+    let transit = sim.in_transit.get_or(cargo_index, 0);
+    let delivered = sim.delivered.get_or(cargo_index, 0);
+    let expired = sim.expired.get_or(cargo_index, 0);
+    let source_total = add(supplied, produced);
+    let sink_total = add(add(inventory, transit), add(delivered, expired));
+    CargoBalance {
+        cargo: cargo_index,
+        supplied: supplied,
+        produced: produced,
+        inventory: inventory,
+        transit: transit,
+        delivered: delivered,
+        expired: expired,
+        source_total: source_total,
+        sink_total: sink_total,
+        balanced: source_total == sink_total,
+    }
+}
+
+pub fn audit(borrow scenario: model.Scenario, borrow sim: state.State) -> Audit {
+    let mut balances = Balances.new();
+    let mut mismatches: u64 = 0;
+    let mut source_total: u64 = 0;
+    let mut sink_total: u64 = 0;
+    let mut i: u64 = 0;
+    while i < scenario.cargoes.len() {
+        let balance = cargo(borrow scenario, borrow sim, i);
+        if !balance.balanced { mismatches = mismatches + 1; }
+        source_total = add(source_total, balance.source_total);
+        sink_total = add(sink_total, balance.sink_total);
+        balances.push(balance);
+        i = i + 1;
+    }
+    let mut demand_total: u64 = 0;
+    let mut delivered_total: u64 = 0;
+    let mut unmet_total: u64 = 0;
+    i = 0;
+    while i < scenario.demands.len() {
+        let demand = scenario.demands.get_or(i, model.empty_demand());
+        demand_total = add(demand_total, demand.quantity);
+        delivered_total = add(delivered_total, sim.demand_delivered.get_or(i, 0));
+        unmet_total = add(unmet_total, sim.demand_remaining.get_or(i, 0));
+        if demand.quantity != add(sim.demand_delivered.get_or(i, 0), sim.demand_remaining.get_or(i, 0)) {
+            mismatches = mismatches + 1;
+        }
+        i = i + 1;
+    }
+    Audit {
+        balances: balances,
+        mismatches: mismatches,
+        source_total: source_total,
+        sink_total: sink_total,
+        demand_total: demand_total,
+        delivered_total: delivered_total,
+        unmet_total: unmet_total,
+    }
+}

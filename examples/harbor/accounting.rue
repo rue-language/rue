@@ -1,0 +1,95 @@
+// Signed financial accounting using std.math checked arithmetic. Saturation is
+// explicit and reported, so large stress scenarios cannot silently wrap.
+const std = @import("std");
+const model = @import("model.rue");
+const state = @import("state.rue");
+const OptI64 = std.option.Option(i64);
+
+pub struct Ledger {
+    revenue: i64,
+    operating_cost: i64,
+    lateness_penalty: i64,
+    unmet_penalty: i64,
+    spoilage_loss: i64,
+    profit: i64,
+    overflows: u64,
+}
+
+fn cast(value: u64, inout overflows: u64) -> i64 {
+    if value > 9223372036854775807 {
+        overflows = overflows + 1;
+        9223372036854775807
+    } else { @intCast(value) }
+}
+
+fn add(a: i64, b: i64, inout overflows: u64) -> i64 {
+    match std.math.checked_add(a, b) {
+        OptI64.Some(v) => v,
+        OptI64.None => { overflows = overflows + 1; if b >= 0 { 9223372036854775807 } else { -9223372036854775807 - 1 } },
+    }
+}
+
+fn sub(a: i64, b: i64, inout overflows: u64) -> i64 {
+    match std.math.checked_sub(a, b) {
+        OptI64.Some(v) => v,
+        OptI64.None => { overflows = overflows + 1; if b < 0 { 9223372036854775807 } else { -9223372036854775807 - 1 } },
+    }
+}
+
+fn mul(a: i64, b: i64, inout overflows: u64) -> i64 {
+    match std.math.checked_mul(a, b) {
+        OptI64.Some(v) => v,
+        OptI64.None => {
+            overflows = overflows + 1;
+            if (a < 0 && b > 0) || (a > 0 && b < 0) { -9223372036854775807 - 1 }
+            else { 9223372036854775807 }
+        },
+    }
+}
+
+pub fn calculate(borrow scenario: model.Scenario, borrow sim: state.State) -> Ledger {
+    let mut overflows: u64 = 0;
+    let mut revenue: i64 = 0;
+    let mut lateness_penalty: i64 = 0;
+    let mut unmet_penalty: i64 = 0;
+    let mut spoilage_loss: i64 = 0;
+    let mut i: u64 = 0;
+    while i < scenario.demands.len() {
+        let demand = scenario.demands.get_or(i, model.empty_demand());
+        let cargo = scenario.cargoes.get_or(demand.cargo, model.empty_cargo());
+        let delivered = sim.demand_delivered.get_or(i, 0);
+        let remaining = sim.demand_remaining.get_or(i, 0);
+        revenue = add(revenue, mul(cast(delivered, inout overflows), cast(cargo.unit_value, inout overflows), inout overflows), inout overflows);
+        unmet_penalty = add(unmet_penalty, mul(cast(remaining, inout overflows), cast(demand.priority, inout overflows), inout overflows), inout overflows);
+        i = i + 1;
+    }
+    i = 0;
+    while i < sim.log.len() {
+        let event = sim.log.get_or(i, state.empty_event());
+        if event.tag == state.EVENT_ARRIVAL() && event.demand < scenario.demands.len() {
+            let demand = scenario.demands.get_or(event.demand, model.empty_demand());
+            if event.time > demand.deadline {
+                let hours = event.time - demand.deadline;
+                let units = mul(cast(event.quantity, inout overflows), cast(hours, inout overflows), inout overflows);
+                lateness_penalty = add(lateness_penalty, mul(units, cast(demand.priority, inout overflows), inout overflows), inout overflows);
+            }
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < scenario.cargoes.len() {
+        let cargo = scenario.cargoes.get_or(i, model.empty_cargo());
+        spoilage_loss = add(spoilage_loss, mul(cast(sim.expired.get_or(i, 0), inout overflows), cast(cargo.unit_value, inout overflows), inout overflows), inout overflows);
+        i = i + 1;
+    }
+    let operating_cost = cast(sim.total_cost, inout overflows);
+    let mut profit = sub(revenue, operating_cost, inout overflows);
+    profit = sub(profit, lateness_penalty, inout overflows);
+    profit = sub(profit, unmet_penalty, inout overflows);
+    profit = sub(profit, spoilage_loss, inout overflows);
+    Ledger {
+        revenue: revenue, operating_cost: operating_cost,
+        lateness_penalty: lateness_penalty, unmet_penalty: unmet_penalty,
+        spoilage_loss: spoilage_loss, profit: profit, overflows: overflows,
+    }
+}

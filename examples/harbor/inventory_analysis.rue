@@ -1,0 +1,189 @@
+// Independent inventory replay at location/cargo granularity.
+const std = @import("std");
+const model = @import("model.rue");
+const state = @import("state.rue");
+const U64s = std.arraybuf.ArrayBuf(u64);
+
+pub struct Cell {
+    location: u64,
+    cargo: u64,
+    inbound: u64,
+    outbound: u64,
+    peak: u64,
+    peak_time: u64,
+    final_quantity: u64,
+    underflows: u64,
+    turns_numerator: u64,
+    turns_denominator: u64,
+}
+
+pub const Cells = std.arraybuf.ArrayBuf(Cell);
+
+pub struct Snapshot {
+    time: u64,
+    total_inventory: u64,
+    occupied_locations: u64,
+    occupied_cells: u64,
+    max_location_inventory: u64,
+    max_location: u64,
+}
+
+pub const Snapshots = std.arraybuf.ArrayBuf(Snapshot);
+
+pub struct Summary {
+    cells: Cells,
+    snapshots: Snapshots,
+    total_inbound: u64,
+    total_outbound: u64,
+    global_peak: u64,
+    global_peak_time: u64,
+    underflows: u64,
+    final_inventory: u64,
+}
+
+fn add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+fn index(borrow scenario: model.Scenario, location: u64, cargo: u64) -> u64 {
+    location * scenario.cargoes.len() + cargo
+}
+
+fn blank_cells(borrow scenario: model.Scenario) -> Cells {
+    let mut cells = Cells.new();
+    let mut location: u64 = 0;
+    while location < scenario.locations.len() {
+        let mut cargo: u64 = 0;
+        while cargo < scenario.cargoes.len() {
+            cells.push(Cell {
+                location: location, cargo: cargo, inbound: 0, outbound: 0,
+                peak: 0, peak_time: 0, final_quantity: 0, underflows: 0,
+                turns_numerator: 0, turns_denominator: 0,
+            });
+            cargo = cargo + 1;
+        }
+        location = location + 1;
+    }
+    cells
+}
+
+fn quantity_add(inout quantities: U64s, at: u64, value: u64) {
+    quantities.set(at, add(quantities.get_or(at, 0), value));
+}
+
+fn quantity_take(inout quantities: U64s, at: u64, value: u64) -> u64 {
+    let current = quantities.get_or(at, 0);
+    if value <= current { quantities.set(at, current - value); 0 }
+    else { quantities.set(at, 0); value - current }
+}
+
+fn capture(borrow scenario: model.Scenario, borrow quantities: U64s, time: u64) -> Snapshot {
+    let mut total_inventory: u64 = 0;
+    let mut occupied_locations: u64 = 0;
+    let mut occupied_cells: u64 = 0;
+    let mut max_location_inventory: u64 = 0;
+    let mut max_location = model.NONE();
+    let mut location: u64 = 0;
+    while location < scenario.locations.len() {
+        let mut at_location: u64 = 0;
+        let mut cargo: u64 = 0;
+        while cargo < scenario.cargoes.len() {
+            let value = quantities.get_or(index(borrow scenario, location, cargo), 0);
+            at_location = add(at_location, value);
+            if value > 0 { occupied_cells = occupied_cells + 1; }
+            cargo = cargo + 1;
+        }
+        total_inventory = add(total_inventory, at_location);
+        if at_location > 0 { occupied_locations = occupied_locations + 1; }
+        if at_location > max_location_inventory {
+            max_location_inventory = at_location; max_location = location;
+        }
+        location = location + 1;
+    }
+    Snapshot {
+        time: time, total_inventory: total_inventory,
+        occupied_locations: occupied_locations, occupied_cells: occupied_cells,
+        max_location_inventory: max_location_inventory, max_location: max_location,
+    }
+}
+
+fn apply_event(borrow scenario: model.Scenario, inout quantities: U64s, inout cells: Cells, borrow event: state.Event) -> u64 {
+    if event.cargo >= scenario.cargoes.len() { return 0; }
+    if event.tag == state.EVENT_SUPPLY() || event.tag == state.EVENT_PRODUCTION() {
+        if event.to >= scenario.locations.len() { return 0; }
+        let at = index(borrow scenario, event.to, event.cargo);
+        quantity_add(inout quantities, at, event.quantity);
+        let mut cell = cells.get_or(at, Cell {
+            location: event.to, cargo: event.cargo, inbound: 0, outbound: 0,
+            peak: 0, peak_time: 0, final_quantity: 0, underflows: 0,
+            turns_numerator: 0, turns_denominator: 0,
+        });
+        cell.inbound = add(cell.inbound, event.quantity);
+        let current = quantities.get_or(at, 0);
+        if current > cell.peak { cell.peak = current; cell.peak_time = event.time; }
+        cells.set(at, cell);
+    } else if event.tag == state.EVENT_DEPARTURE() {
+        if event.from >= scenario.locations.len() { return 0; }
+        let at = index(borrow scenario, event.from, event.cargo);
+        let missing = quantity_take(inout quantities, at, event.quantity);
+        let mut cell = cells.get_or(at, Cell {
+            location: event.from, cargo: event.cargo, inbound: 0, outbound: 0,
+            peak: 0, peak_time: 0, final_quantity: 0, underflows: 0,
+            turns_numerator: 0, turns_denominator: 0,
+        });
+        cell.outbound = add(cell.outbound, event.quantity - missing);
+        if missing > 0 { cell.underflows = cell.underflows + 1; }
+        cells.set(at, cell);
+        return missing;
+    }
+    0
+}
+
+pub fn summarize(borrow scenario: model.Scenario, borrow sim: state.State) -> Summary {
+    let mut quantities = U64s.new();
+    let mut i: u64 = 0;
+    while i < scenario.locations.len() * scenario.cargoes.len() { quantities.push(0); i = i + 1; }
+    let mut cells = blank_cells(borrow scenario);
+    let mut snapshots = Snapshots.new();
+    let mut total_inbound: u64 = 0;
+    let mut total_outbound: u64 = 0;
+    let mut underflows: u64 = 0;
+    let mut global_peak: u64 = 0;
+    let mut global_peak_time: u64 = 0;
+    let mut cursor: u64 = 0;
+    let mut time: u64 = 0;
+    while time <= scenario.duration {
+        while cursor < sim.log.len() {
+            let event = sim.log.get_or(cursor, state.empty_event());
+            if event.time > time { break; }
+            underflows = add(underflows, apply_event(borrow scenario, inout quantities, inout cells, borrow event));
+            if event.tag == state.EVENT_SUPPLY() || event.tag == state.EVENT_PRODUCTION() { total_inbound = add(total_inbound, event.quantity); }
+            if event.tag == state.EVENT_DEPARTURE() { total_outbound = add(total_outbound, event.quantity); }
+            cursor = cursor + 1;
+        }
+        let snapshot = capture(borrow scenario, borrow quantities, time);
+        if snapshot.total_inventory > global_peak { global_peak = snapshot.total_inventory; global_peak_time = time; }
+        snapshots.push(snapshot);
+        time = time + 1;
+    }
+    let mut final_inventory: u64 = 0;
+    i = 0;
+    while i < cells.len() {
+        let mut cell = cells.get_or(i, Cell {
+            location: 0, cargo: 0, inbound: 0, outbound: 0, peak: 0,
+            peak_time: 0, final_quantity: 0, underflows: 0,
+            turns_numerator: 0, turns_denominator: 0,
+        });
+        cell.final_quantity = quantities.get_or(i, 0);
+        cell.turns_numerator = cell.outbound;
+        cell.turns_denominator = if cell.peak == 0 { 1 } else { cell.peak };
+        final_inventory = add(final_inventory, cell.final_quantity);
+        cells.set(i, cell); i = i + 1;
+    }
+    Summary {
+        cells: cells, snapshots: snapshots, total_inbound: total_inbound,
+        total_outbound: total_outbound, global_peak: global_peak,
+        global_peak_time: global_peak_time, underflows: underflows,
+        final_inventory: final_inventory,
+    }
+}

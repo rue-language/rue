@@ -1,0 +1,189 @@
+// Benchmark workload orchestration. A suite repeats deterministic generated
+// scenarios at increasing sizes, records logical work rather than wall-clock
+// time, and validates that repetitions produce identical digests.
+const std = @import("std");
+const stress = @import("stress.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct Sample {
+    tier: u64,
+    repetition: u64,
+    locations: u64,
+    routes: u64,
+    cargoes: u64,
+    vehicles: u64,
+    demands: u64,
+    route_pairs: u64,
+    events: u64,
+    dispatches: u64,
+    scenario_fingerprint: u64,
+    simulation_fingerprint: u64,
+    work_units: u64,
+    ok: bool,
+}
+
+pub const Samples = std.arraybuf.ArrayBuf(Sample);
+
+pub struct Suite {
+    samples: Samples,
+    repetitions: u64,
+    tiers: u64,
+    scenarios: u64,
+    route_pairs: u64,
+    events: u64,
+    dispatches: u64,
+    work_units: u64,
+    failures: u64,
+    nondeterministic: u64,
+    digest: u64,
+}
+
+fn add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+fn mul(a: u64, b: u64) -> u64 {
+    if a == 0 || b == 0 { 0 }
+    else if a > 18446744073709551615 / b { 18446744073709551615 }
+    else { a * b }
+}
+
+fn mix(value: u64, next: u64) -> u64 { @wrapping_mul(value ^ next, 1099511628211) }
+
+fn empty_sample() -> Sample {
+    Sample {
+        tier: 0, repetition: 0, locations: 0, routes: 0, cargoes: 0,
+        vehicles: 0, demands: 0, route_pairs: 0, events: 0, dispatches: 0,
+        scenario_fingerprint: 0, simulation_fingerprint: 0,
+        work_units: 0, ok: false,
+    }
+}
+
+fn logical_work(borrow result: stress.Result) -> u64 {
+    let route_work = mul(result.route_pairs, result.routes + result.locations);
+    let planning_work = mul(result.demands, result.vehicles + result.cargoes);
+    let event_work = mul(result.events, result.locations + result.cargoes);
+    add(add(route_work, planning_work), event_work)
+}
+
+fn sample(tier_value: u64, repetition: u64) -> Sample {
+    let config = stress.tier(tier_value);
+    let result = stress.run(config);
+    Sample {
+        tier: tier_value, repetition: repetition,
+        locations: result.locations, routes: result.routes,
+        cargoes: result.cargoes, vehicles: result.vehicles,
+        demands: result.demands, route_pairs: result.route_pairs,
+        events: result.events, dispatches: result.dispatches,
+        scenario_fingerprint: result.scenario_fingerprint,
+        simulation_fingerprint: result.first_fingerprint,
+        work_units: logical_work(borrow result), ok: result.ok,
+    }
+}
+
+fn same_result(borrow a: Sample, borrow b: Sample) -> bool {
+    a.tier == b.tier &&
+    a.locations == b.locations && a.routes == b.routes &&
+    a.cargoes == b.cargoes && a.vehicles == b.vehicles &&
+    a.demands == b.demands && a.route_pairs == b.route_pairs &&
+    a.events == b.events && a.dispatches == b.dispatches &&
+    a.scenario_fingerprint == b.scenario_fingerprint &&
+    a.simulation_fingerprint == b.simulation_fingerprint &&
+    a.work_units == b.work_units
+}
+
+pub fn run(max_tier: u64, repetitions: u64) -> Suite {
+    let tier_count = if max_tier == 0 { 1 } else { max_tier };
+    let repeat_count = if repetitions == 0 { 1 } else { repetitions };
+    let mut samples = Samples.new();
+    let mut route_pairs: u64 = 0;
+    let mut events: u64 = 0;
+    let mut dispatches: u64 = 0;
+    let mut work_units: u64 = 0;
+    let mut failures: u64 = 0;
+    let mut nondeterministic: u64 = 0;
+    let mut digest: u64 = 14695981039346656037;
+    let mut tier_value: u64 = 1;
+    while tier_value <= tier_count {
+        let baseline = sample(tier_value, 0);
+        route_pairs = add(route_pairs, baseline.route_pairs);
+        events = add(events, baseline.events);
+        dispatches = add(dispatches, baseline.dispatches);
+        work_units = add(work_units, baseline.work_units);
+        if !baseline.ok { failures = failures + 1; }
+        digest = mix(digest, baseline.scenario_fingerprint);
+        digest = mix(digest, baseline.simulation_fingerprint);
+        let mut repetition: u64 = 1;
+        while repetition < repeat_count {
+            let next = sample(tier_value, repetition);
+            route_pairs = add(route_pairs, next.route_pairs);
+            events = add(events, next.events);
+            dispatches = add(dispatches, next.dispatches);
+            work_units = add(work_units, next.work_units);
+            if !next.ok { failures = failures + 1; }
+            if !same_result(borrow baseline, borrow next) { nondeterministic = nondeterministic + 1; }
+            digest = mix(digest, next.scenario_fingerprint);
+            digest = mix(digest, next.simulation_fingerprint);
+            samples.push(next);
+            repetition = repetition + 1;
+        }
+        samples.push(baseline);
+        tier_value = tier_value + 1;
+    }
+    Suite {
+        samples: samples, repetitions: repeat_count, tiers: tier_count,
+        scenarios: tier_count * repeat_count, route_pairs: route_pairs,
+        events: events, dispatches: dispatches, work_units: work_units,
+        failures: failures, nondeterministic: nondeterministic, digest: digest,
+    }
+}
+
+fn ratio(numerator: u64, denominator: u64) -> u64 {
+    if denominator == 0 { 0 }
+    else if numerator > 18446744073709551615 / 100 { 18446744073709551615 }
+    else { (numerator * 100) / denominator }
+}
+
+fn tier_baseline(borrow suite: Suite, tier_value: u64) -> Sample {
+    let mut i: u64 = 0;
+    while i < suite.samples.len() {
+        let item = suite.samples.get_or(i, empty_sample());
+        if item.tier == tier_value && item.repetition == 0 { return item; }
+        i = i + 1;
+    }
+    empty_sample()
+}
+
+pub fn render(borrow suite: Suite) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "Harbor benchmark workload\n");
+    text.append_literal(inout out, "tiers="); text.append_u64(inout out, suite.tiers);
+    text.append_literal(inout out, " repetitions="); text.append_u64(inout out, suite.repetitions);
+    text.append_literal(inout out, " scenarios="); text.append_u64(inout out, suite.scenarios); out.push(10);
+    text.append_literal(inout out, "tier locations routes cargo vehicles demands route_pairs events dispatches work_units growth_percent\n");
+    let first = tier_baseline(borrow suite, 1);
+    let mut tier_value: u64 = 1;
+    while tier_value <= suite.tiers {
+        let item = tier_baseline(borrow suite, tier_value);
+        text.append_u64(inout out, tier_value); out.push(32);
+        text.append_u64(inout out, item.locations); out.push(32);
+        text.append_u64(inout out, item.routes); out.push(32);
+        text.append_u64(inout out, item.cargoes); out.push(32);
+        text.append_u64(inout out, item.vehicles); out.push(32);
+        text.append_u64(inout out, item.demands); out.push(32);
+        text.append_u64(inout out, item.route_pairs); out.push(32);
+        text.append_u64(inout out, item.events); out.push(32);
+        text.append_u64(inout out, item.dispatches); out.push(32);
+        text.append_u64(inout out, item.work_units); out.push(32);
+        text.append_u64(inout out, ratio(item.work_units, first.work_units)); out.push(10);
+        tier_value = tier_value + 1;
+    }
+    text.append_literal(inout out, "total_route_pairs="); text.append_u64(inout out, suite.route_pairs);
+    text.append_literal(inout out, " total_events="); text.append_u64(inout out, suite.events);
+    text.append_literal(inout out, " total_work_units="); text.append_u64(inout out, suite.work_units); out.push(10);
+    text.append_literal(inout out, "failures="); text.append_u64(inout out, suite.failures);
+    text.append_literal(inout out, " nondeterministic="); text.append_u64(inout out, suite.nondeterministic);
+    text.append_literal(inout out, " digest="); text.append_u64(inout out, suite.digest); out.push(10);
+    out
+}

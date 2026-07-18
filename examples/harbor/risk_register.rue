@@ -1,0 +1,247 @@
+// Operational risk register combining route fragility, cargo exposure, demand
+// urgency, and fleet concentration into deterministic ranked findings.
+const std = @import("std");
+const model = @import("model.rue");
+const routing = @import("routing.rue");
+const state = @import("state.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn KIND_ROUTE() -> u64 { 1 }
+pub fn KIND_DEMAND() -> u64 { 2 }
+pub fn KIND_CARGO() -> u64 { 3 }
+pub fn KIND_FLEET() -> u64 { 4 }
+pub fn KIND_INVENTORY() -> u64 { 5 }
+
+pub struct Risk {
+    kind: u64,
+    subject: u64,
+    severity: u64,
+    likelihood: u64,
+    exposure: u64,
+    score: u64,
+    evidence: u64,
+    mitigation: u64,
+}
+
+pub const Risks = std.arraybuf.ArrayBuf(Risk);
+
+pub struct Register {
+    risks: Risks,
+    critical: u64,
+    high: u64,
+    medium: u64,
+    low: u64,
+    total_score: u64,
+    maximum_score: u64,
+    maximum_kind: u64,
+    maximum_subject: u64,
+    digest: u64,
+}
+
+fn add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+fn mul(a: u64, b: u64) -> u64 {
+    if a == 0 || b == 0 { 0 }
+    else if a > 18446744073709551615 / b { 18446744073709551615 }
+    else { a * b }
+}
+
+fn mix(value: u64, next: u64) -> u64 { @wrapping_mul(value ^ next, 1099511628211) }
+
+fn make(kind: u64, subject: u64, severity: u64, likelihood: u64, exposure: u64, evidence: u64, mitigation: u64) -> Risk {
+    Risk {
+        kind: kind, subject: subject, severity: severity, likelihood: likelihood,
+        exposure: exposure, score: mul(mul(severity, likelihood), exposure),
+        evidence: evidence, mitigation: mitigation,
+    }
+}
+
+fn empty_risk() -> Risk { make(0, model.NONE(), 0, 0, 0, 0, 0) }
+
+fn disruption_overlap(borrow scenario: model.Scenario, route: u64) -> u64 {
+    let mut hours: u64 = 0;
+    let mut i: u64 = 0;
+    while i < scenario.disruptions.len() {
+        let item = scenario.disruptions.get_or(i, model.empty_disruption());
+        if item.route == route && item.end > item.start { hours = add(hours, item.end - item.start); }
+        i = i + 1;
+    }
+    hours
+}
+
+fn alternate_count(borrow scenario: model.Scenario, route_index: u64) -> u64 {
+    let route = scenario.routes.get_or(route_index, model.empty_route());
+    let mut count: u64 = 0;
+    let mut i: u64 = 0;
+    while i < scenario.routes.len() {
+        if i != route_index {
+            let other = scenario.routes.get_or(i, model.empty_route());
+            if other.from == route.from || other.to == route.from ||
+               other.from == route.to || other.to == route.to { count = count + 1; }
+        }
+        i = i + 1;
+    }
+    count
+}
+
+fn add_route_risks(borrow scenario: model.Scenario, inout risks: Risks) {
+    let mut i: u64 = 0;
+    while i < scenario.routes.len() {
+        let route = scenario.routes.get_or(i, model.empty_route());
+        let disrupted_hours = disruption_overlap(borrow scenario, i);
+        let alternatives = alternate_count(borrow scenario, i);
+        let severity = if route.capacity < 25 { 5 } else if route.capacity < 50 { 4 } else { 2 };
+        let likelihood = if disrupted_hours > scenario.duration / 2 { 5 } else if disrupted_hours > 0 { 3 } else { 1 };
+        let exposure = if alternatives == 0 { 5 } else if alternatives < 3 { 4 } else { 2 };
+        if severity >= 4 || likelihood >= 3 || exposure >= 4 {
+            risks.push(make(KIND_ROUTE(), i, severity, likelihood, exposure, disrupted_hours, alternatives));
+        }
+        i = i + 1;
+    }
+}
+
+fn add_demand_risks(borrow scenario: model.Scenario, borrow sim: state.State, inout risks: Risks) {
+    let mut i: u64 = 0;
+    while i < scenario.demands.len() {
+        let demand = scenario.demands.get_or(i, model.empty_demand());
+        let remaining = sim.demand_remaining.get_or(i, demand.quantity);
+        let delivered = sim.demand_delivered.get_or(i, 0);
+        let severity = if demand.priority >= 8 { 5 } else if demand.priority >= 5 { 4 } else { 2 };
+        let likelihood = if remaining == demand.quantity { 5 } else if remaining > 0 { 4 } else { 1 };
+        let exposure = if demand.deadline <= scenario.duration / 4 { 5 } else if demand.deadline <= scenario.duration / 2 { 3 } else { 2 };
+        if remaining > 0 || severity >= 4 {
+            risks.push(make(KIND_DEMAND(), i, severity, likelihood, exposure, remaining, delivered));
+        }
+        i = i + 1;
+    }
+}
+
+fn cargo_requested(borrow scenario: model.Scenario, cargo: u64) -> u64 {
+    let mut total: u64 = 0;
+    let mut i: u64 = 0;
+    while i < scenario.demands.len() {
+        let demand = scenario.demands.get_or(i, model.empty_demand());
+        if demand.cargo == cargo { total = add(total, demand.quantity); }
+        i = i + 1;
+    }
+    total
+}
+
+fn cargo_sources(borrow scenario: model.Scenario, cargo: u64) -> u64 {
+    let mut count: u64 = 0;
+    let mut i: u64 = 0;
+    while i < scenario.supplies.len() {
+        if scenario.supplies.get_or(i, model.empty_supply()).cargo == cargo { count = count + 1; }
+        i = i + 1;
+    }
+    i = 0;
+    while i < scenario.productions.len() {
+        if scenario.productions.get_or(i, model.empty_production()).cargo == cargo { count = count + 1; }
+        i = i + 1;
+    }
+    count
+}
+
+fn add_cargo_risks(borrow scenario: model.Scenario, borrow sim: state.State, inout risks: Risks) {
+    let mut cargo_index: u64 = 0;
+    while cargo_index < scenario.cargoes.len() {
+        let cargo = scenario.cargoes.get_or(cargo_index, model.empty_cargo());
+        let requested = cargo_requested(borrow scenario, cargo_index);
+        let sources = cargo_sources(borrow scenario, cargo_index);
+        let expired = sim.expired.get_or(cargo_index, 0);
+        let severity = if cargo.unit_value >= 100 { 5 } else if cargo.unit_value >= 25 { 4 } else { 2 };
+        let likelihood = if cargo.shelf_life > 0 && cargo.shelf_life < scenario.duration / 2 { 5 } else { 2 };
+        let exposure = if sources <= 1 { 5 } else if sources == 2 { 3 } else { 1 };
+        if requested > 0 && (exposure >= 3 || likelihood >= 4 || expired > 0) {
+            risks.push(make(KIND_CARGO(), cargo_index, severity, likelihood, exposure, expired, sources));
+        }
+        cargo_index = cargo_index + 1;
+    }
+}
+
+fn vehicles_at(borrow scenario: model.Scenario, location: u64) -> u64 {
+    let mut count: u64 = 0;
+    let mut i: u64 = 0;
+    while i < scenario.vehicles.len() {
+        if scenario.vehicles.get_or(i, model.empty_vehicle()).at == location { count = count + 1; }
+        i = i + 1;
+    }
+    count
+}
+
+fn add_fleet_risks(borrow scenario: model.Scenario, inout risks: Risks) {
+    let mut location: u64 = 0;
+    while location < scenario.locations.len() {
+        let count = vehicles_at(borrow scenario, location);
+        if count > 0 {
+            let severity = if count == scenario.vehicles.len() { 5 } else if count * 2 >= scenario.vehicles.len() { 4 } else { 2 };
+            let path = routing.shortest(borrow scenario, location, (location + 1) % scenario.locations.len(), 0, 1, routing.MODE_COST());
+            let likelihood = if !path.reachable { 5 } else if path.routes.len() > 2 { 3 } else { 1 };
+            let exposure = if count == 1 { 2 } else { count };
+            if severity >= 4 || likelihood >= 3 { risks.push(make(KIND_FLEET(), location, severity, likelihood, exposure, count, path.routes.len())); }
+        }
+        location = location + 1;
+    }
+}
+
+pub fn build(borrow scenario: model.Scenario, borrow sim: state.State) -> Register {
+    let mut risks = Risks.new();
+    add_route_risks(borrow scenario, inout risks);
+    add_demand_risks(borrow scenario, borrow sim, inout risks);
+    add_cargo_risks(borrow scenario, borrow sim, inout risks);
+    add_fleet_risks(borrow scenario, inout risks);
+    let mut critical: u64 = 0; let mut high: u64 = 0; let mut medium: u64 = 0; let mut low: u64 = 0;
+    let mut total_score: u64 = 0; let mut maximum_score: u64 = 0;
+    let mut maximum_kind: u64 = 0; let mut maximum_subject = model.NONE();
+    let mut digest: u64 = 14695981039346656037;
+    let mut i: u64 = 0;
+    while i < risks.len() {
+        let item = risks.get_or(i, empty_risk());
+        if item.score >= 80 { critical = critical + 1; }
+        else if item.score >= 45 { high = high + 1; }
+        else if item.score >= 20 { medium = medium + 1; }
+        else { low = low + 1; }
+        total_score = add(total_score, item.score);
+        if item.score > maximum_score { maximum_score = item.score; maximum_kind = item.kind; maximum_subject = item.subject; }
+        digest = mix(digest, item.kind); digest = mix(digest, item.subject); digest = mix(digest, item.score);
+        i = i + 1;
+    }
+    Register { risks: risks, critical: critical, high: high, medium: medium, low: low,
+        total_score: total_score, maximum_score: maximum_score, maximum_kind: maximum_kind,
+        maximum_subject: maximum_subject, digest: digest }
+}
+
+fn append_kind(inout out: StrBuf, kind: u64) {
+    if kind == KIND_ROUTE() { text.append_literal(inout out, "route"); }
+    else if kind == KIND_DEMAND() { text.append_literal(inout out, "demand"); }
+    else if kind == KIND_CARGO() { text.append_literal(inout out, "cargo"); }
+    else if kind == KIND_FLEET() { text.append_literal(inout out, "fleet"); }
+    else { text.append_literal(inout out, "inventory"); }
+}
+
+pub fn render(borrow value: Register) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "Operational risk register\n");
+    text.append_literal(inout out, "risks="); text.append_u64(inout out, value.risks.len());
+    text.append_literal(inout out, " critical="); text.append_u64(inout out, value.critical);
+    text.append_literal(inout out, " high="); text.append_u64(inout out, value.high);
+    text.append_literal(inout out, " medium="); text.append_u64(inout out, value.medium);
+    text.append_literal(inout out, " low="); text.append_u64(inout out, value.low); out.push(10);
+    text.append_literal(inout out, "kind subject score severity likelihood exposure evidence mitigation\n");
+    let mut i: u64 = 0;
+    while i < value.risks.len() {
+        let item = value.risks.get_or(i, empty_risk());
+        append_kind(inout out, item.kind); out.push(32);
+        text.append_u64(inout out, item.subject); out.push(32); text.append_u64(inout out, item.score); out.push(32);
+        text.append_u64(inout out, item.severity); out.push(32); text.append_u64(inout out, item.likelihood); out.push(32);
+        text.append_u64(inout out, item.exposure); out.push(32); text.append_u64(inout out, item.evidence); out.push(32);
+        text.append_u64(inout out, item.mitigation); out.push(10); i = i + 1;
+    }
+    text.append_literal(inout out, "total_score="); text.append_u64(inout out, value.total_score);
+    text.append_literal(inout out, " maximum_score="); text.append_u64(inout out, value.maximum_score);
+    text.append_literal(inout out, " digest="); text.append_u64(inout out, value.digest); out.push(10);
+    out
+}

@@ -1,0 +1,83 @@
+// Multi-table CSV export for downstream analysis.
+const std = @import("std");
+const model = @import("model.rue");
+const service = @import("service.rue");
+const state = @import("state.rue");
+const text = @import("text.rue");
+const utilization = @import("utilization.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn cell_id(inout out: StrBuf, borrow scenario: model.Scenario, id: u64) {
+    out.push(34); text.append_id(inout out, borrow scenario, id); out.push(34);
+}
+
+fn number(inout out: StrBuf, value: u64) { text.append_u64(inout out, value); }
+fn comma(inout out: StrBuf) { out.push(44); }
+fn newline(inout out: StrBuf) { out.push(10); }
+
+fn demands(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: state.State) {
+    text.append_literal(inout out, "table,demand,index,location,cargo,deadline,priority,requested,delivered,on_time,late,unmet\n");
+    let served = service.summarize(borrow scenario, borrow sim);
+    let mut i: u64 = 0;
+    while i < served.demands.len() {
+        let item = served.demands.get_or(i, service.DemandService {
+            demand: i, requested: 0, delivered: 0, on_time: 0, late: 0,
+            unmet: 0, first_arrival: 0, last_arrival: 0,
+            weighted_requested: 0, weighted_delivered: 0,
+        });
+        let demand = scenario.demands.get_or(item.demand, model.empty_demand());
+        text.append_literal(inout out, "demand,"); number(inout out, item.demand); comma(inout out);
+        cell_id(inout out, borrow scenario, demand.location_id); comma(inout out);
+        cell_id(inout out, borrow scenario, demand.cargo_id); comma(inout out);
+        number(inout out, demand.deadline); comma(inout out); number(inout out, demand.priority); comma(inout out);
+        number(inout out, item.requested); comma(inout out); number(inout out, item.delivered); comma(inout out);
+        number(inout out, item.on_time); comma(inout out); number(inout out, item.late); comma(inout out);
+        number(inout out, item.unmet); newline(inout out);
+        i = i + 1;
+    }
+}
+
+fn fleet(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: state.State) {
+    text.append_literal(inout out, "table,vehicle,index,id,dispatches,repositions,cargo_units,loaded_distance,empty_distance,travel_time,cost\n");
+    let fleet_summary = utilization.summarize(borrow scenario, borrow sim);
+    let mut i: u64 = 0;
+    while i < fleet_summary.vehicles.len() {
+        let item = fleet_summary.vehicles.get_or(i, utilization.VehicleUse {
+            vehicle: i, dispatches: 0, repositions: 0, cargo_units: 0,
+            loaded_distance: 0, empty_distance: 0, travel_time: 0, busy_until: 0,
+            operating_cost: 0, capacity_units: 0, fill_numerator: 0, fill_denominator: 0,
+        });
+        let vehicle = scenario.vehicles.get_or(item.vehicle, model.empty_vehicle());
+        text.append_literal(inout out, "vehicle,"); number(inout out, item.vehicle); comma(inout out);
+        cell_id(inout out, borrow scenario, vehicle.id); comma(inout out);
+        number(inout out, item.dispatches); comma(inout out); number(inout out, item.repositions); comma(inout out);
+        number(inout out, item.cargo_units); comma(inout out); number(inout out, item.loaded_distance); comma(inout out);
+        number(inout out, item.empty_distance); comma(inout out); number(inout out, item.travel_time); comma(inout out);
+        number(inout out, item.operating_cost); newline(inout out);
+        i = i + 1;
+    }
+}
+
+fn events(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: state.State) {
+    text.append_literal(inout out, "table,event,index,time,type,vehicle,cargo,quantity,from,to,demand,cost,distance,travel\n");
+    let mut i: u64 = 0;
+    while i < sim.log.len() {
+        let event = sim.log.get_or(i, state.empty_event());
+        text.append_literal(inout out, "event,"); number(inout out, i); comma(inout out);
+        number(inout out, event.time); comma(inout out); text.append_literal(inout out, state.event_name(event.tag)); comma(inout out);
+        number(inout out, event.vehicle); comma(inout out); number(inout out, event.cargo); comma(inout out);
+        number(inout out, event.quantity); comma(inout out); number(inout out, event.from); comma(inout out);
+        number(inout out, event.to); comma(inout out); number(inout out, event.demand); comma(inout out);
+        number(inout out, event.cost); comma(inout out); number(inout out, event.distance); comma(inout out);
+        number(inout out, event.travel); newline(inout out);
+        i = i + 1;
+    }
+}
+
+pub fn render(borrow scenario: model.Scenario, borrow sim: state.State) -> StrBuf {
+    let mut out = StrBuf.new();
+    demands(inout out, borrow scenario, borrow sim); newline(inout out);
+    fleet(inout out, borrow scenario, borrow sim); newline(inout out);
+    events(inout out, borrow scenario, borrow sim);
+    out
+}

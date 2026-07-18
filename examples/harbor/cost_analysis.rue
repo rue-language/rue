@@ -1,0 +1,116 @@
+// Operational cost allocation by vehicle, cargo, demand, and event kind.
+const std = @import("std");
+const accounting = @import("accounting.rue");
+const model = @import("model.rue");
+const state = @import("state.rue");
+const U64s = std.arraybuf.ArrayBuf(u64);
+
+pub struct CostCenter {
+    index: u64,
+    events: u64,
+    units: u64,
+    distance: u64,
+    direct_cost: u64,
+    allocated_cost: u64,
+    cost_per_unit: u64,
+    cost_per_distance: u64,
+}
+
+pub const CostCenters = std.arraybuf.ArrayBuf(CostCenter);
+
+pub struct Summary {
+    vehicles: CostCenters,
+    cargoes: CostCenters,
+    demands: CostCenters,
+    cost_by_tag: U64s,
+    total_direct_cost: u64,
+    total_allocated_cost: u64,
+    revenue: i64,
+    profit: i64,
+    most_expensive_vehicle: u64,
+    most_expensive_cargo: u64,
+    most_expensive_demand: u64,
+}
+
+fn add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+fn blanks(count: u64) -> CostCenters {
+    let mut values = CostCenters.new();
+    let mut i: u64 = 0;
+    while i < count {
+        values.push(CostCenter {
+            index: i, events: 0, units: 0, distance: 0, direct_cost: 0,
+            allocated_cost: 0, cost_per_unit: 0, cost_per_distance: 0,
+        });
+        i = i + 1;
+    }
+    values
+}
+
+fn add_event(inout centers: CostCenters, index: u64, borrow event: state.Event) {
+    if index >= centers.len() { return; }
+    let mut item = centers.get_or(index, CostCenter {
+        index: index, events: 0, units: 0, distance: 0, direct_cost: 0,
+        allocated_cost: 0, cost_per_unit: 0, cost_per_distance: 0,
+    });
+    item.events = item.events + 1;
+    item.units = add(item.units, event.quantity);
+    item.distance = add(item.distance, event.distance);
+    item.direct_cost = add(item.direct_cost, event.cost);
+    centers.set(index, item);
+}
+
+fn finalize(inout centers: CostCenters, overhead: u64) -> u64 {
+    let mut direct_total: u64 = 0;
+    let mut i: u64 = 0;
+    while i < centers.len() { direct_total = add(direct_total, centers.get_or(i, CostCenter { index: i, events: 0, units: 0, distance: 0, direct_cost: 0, allocated_cost: 0, cost_per_unit: 0, cost_per_distance: 0 }).direct_cost); i = i + 1; }
+    let mut most = model.NONE(); let mut most_cost: u64 = 0;
+    i = 0;
+    while i < centers.len() {
+        let mut item = centers.get_or(i, CostCenter { index: i, events: 0, units: 0, distance: 0, direct_cost: 0, allocated_cost: 0, cost_per_unit: 0, cost_per_distance: 0 });
+        let share = if direct_total == 0 { if centers.len() == 0 { 0 } else { overhead / centers.len() } }
+            else { (overhead * item.direct_cost) / direct_total };
+        item.allocated_cost = add(item.direct_cost, share);
+        item.cost_per_unit = if item.units == 0 { 0 } else { item.allocated_cost / item.units };
+        item.cost_per_distance = if item.distance == 0 { 0 } else { item.allocated_cost / item.distance };
+        if item.allocated_cost > most_cost { most = i; most_cost = item.allocated_cost; }
+        centers.set(i, item); i = i + 1;
+    }
+    most
+}
+
+pub fn summarize(borrow scenario: model.Scenario, borrow sim: state.State) -> Summary {
+    let mut vehicles = blanks(scenario.vehicles.len());
+    let mut cargoes = blanks(scenario.cargoes.len());
+    let mut demands = blanks(scenario.demands.len());
+    let mut cost_by_tag = U64s.new();
+    let mut i: u64 = 0;
+    while i <= state.EVENT_UNMET() { cost_by_tag.push(0); i = i + 1; }
+    let mut total_direct_cost: u64 = 0;
+    i = 0;
+    while i < sim.log.len() {
+        let event = sim.log.get_or(i, state.empty_event());
+        add_event(inout vehicles, event.vehicle, borrow event);
+        add_event(inout cargoes, event.cargo, borrow event);
+        add_event(inout demands, event.demand, borrow event);
+        if event.tag < cost_by_tag.len() { cost_by_tag.set(event.tag, add(cost_by_tag.get_or(event.tag, 0), event.cost)); }
+        total_direct_cost = add(total_direct_cost, event.cost);
+        i = i + 1;
+    }
+    let overhead = if sim.total_cost > total_direct_cost { sim.total_cost - total_direct_cost } else { 0 };
+    let most_expensive_vehicle = finalize(inout vehicles, overhead);
+    let most_expensive_cargo = finalize(inout cargoes, overhead);
+    let most_expensive_demand = finalize(inout demands, overhead);
+    let ledger = accounting.calculate(borrow scenario, borrow sim);
+    Summary {
+        vehicles: vehicles, cargoes: cargoes, demands: demands,
+        cost_by_tag: cost_by_tag, total_direct_cost: total_direct_cost,
+        total_allocated_cost: add(total_direct_cost, overhead),
+        revenue: ledger.revenue, profit: ledger.profit,
+        most_expensive_vehicle: most_expensive_vehicle,
+        most_expensive_cargo: most_expensive_cargo,
+        most_expensive_demand: most_expensive_demand,
+    }
+}

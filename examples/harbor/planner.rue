@@ -1,0 +1,157 @@
+// Greedy capacity-aware dispatcher. Decisions are deterministic: candidates
+// are ranked by arrival time, weighted cost, source index, then vehicle index.
+const model = @import("model.rue");
+const routing = @import("routing.rue");
+const state = @import("state.rue");
+
+pub struct Decision {
+    valid: bool,
+    demand: u64,
+    source: u64,
+    destination: u64,
+    cargo: u64,
+    vehicle: u64,
+    quantity: u64,
+    depart: u64,
+    arrival: u64,
+    reposition_distance: u64,
+    reposition_travel: u64,
+    reposition_cost: u64,
+    delivery_distance: u64,
+    delivery_travel: u64,
+    delivery_cost: u64,
+    rank: u64,
+}
+
+pub fn none() -> Decision {
+    Decision {
+        valid: false, demand: model.NONE(), source: model.NONE(), destination: model.NONE(),
+        cargo: model.NONE(), vehicle: model.NONE(), quantity: 0, depart: 0, arrival: 0,
+        reposition_distance: 0, reposition_travel: 0, reposition_cost: 0,
+        delivery_distance: 0, delivery_travel: 0, delivery_cost: 0, rank: 18446744073709551615,
+    }
+}
+
+fn min(a: u64, b: u64) -> u64 { if a < b { a } else { b } }
+
+fn saturating_add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+fn saturating_mul(a: u64, b: u64) -> u64 {
+    if a == 0 || b == 0 { 0 }
+    else if a > 18446744073709551615 / b { 18446744073709551615 }
+    else { a * b }
+}
+
+fn path_capacity(borrow path: routing.Path) -> u64 {
+    if !path.reachable { 0 }
+    else if path.routes.len() == 0 { 18446744073709551615 }
+    else { path.bottleneck }
+}
+
+fn rank(arrival: u64, deadline: u64, cost: u64, source: u64, vehicle: u64) -> u64 {
+    let lateness = if arrival > deadline { arrival - deadline } else { 0 };
+    let mut value = saturating_mul(lateness, 1000000000);
+    value = saturating_add(value, saturating_mul(arrival, 1000000));
+    value = saturating_add(value, saturating_mul(cost, 100));
+    value = saturating_add(value, saturating_mul(source, 10));
+    saturating_add(value, vehicle)
+}
+
+fn better(borrow candidate: Decision, borrow best: Decision) -> bool {
+    if !candidate.valid { false }
+    else if !best.valid { true }
+    else if candidate.rank < best.rank { true }
+    else if candidate.rank > best.rank { false }
+    else if candidate.quantity > best.quantity { true }
+    else if candidate.quantity < best.quantity { false }
+    else if candidate.source < best.source { true }
+    else if candidate.source > best.source { false }
+    else { candidate.vehicle < best.vehicle }
+}
+
+fn evaluate_vehicle(
+    borrow scenario: model.Scenario,
+    borrow sim: state.State,
+    demand_index: u64,
+    source: u64,
+    vehicle_index: u64,
+    now: u64,
+) -> Decision {
+    let demand = scenario.demands.get_or(demand_index, model.empty_demand());
+    let vehicle = scenario.vehicles.get_or(vehicle_index, model.empty_vehicle());
+    if sim.vehicle_available.get_or(vehicle_index, 18446744073709551615) > now { return none(); }
+    let vehicle_at = sim.vehicle_at.get_or(vehicle_index, model.NONE());
+    let reposition = routing.shortest(borrow scenario, vehicle_at, source, now, 1, routing.MODE_COST());
+    if !reposition.reachable { return none(); }
+    let delivery_start = saturating_add(now, reposition.travel);
+    let delivery = routing.shortest(borrow scenario, source, demand.location, delivery_start, 1, routing.MODE_COST());
+    if !delivery.reachable { return none(); }
+    let available = state.inventory_get(borrow scenario, borrow sim, source, demand.cargo);
+    let remaining = state.demand_open(borrow sim, demand_index);
+    let mut quantity = min(available, remaining);
+    quantity = min(quantity, vehicle.capacity);
+    quantity = min(quantity, path_capacity(borrow reposition));
+    quantity = min(quantity, path_capacity(borrow delivery));
+    if quantity == 0 { return none(); }
+    let arrival = saturating_add(delivery_start, delivery.travel);
+    if arrival > scenario.duration { return none(); }
+    let path_cost = saturating_add(
+        routing.path_weight(borrow scenario, borrow reposition, now, routing.MODE_COST()),
+        routing.path_weight(borrow scenario, borrow delivery, delivery_start, routing.MODE_COST()),
+    );
+    let distance = saturating_add(reposition.distance, delivery.distance);
+    let operating_cost = saturating_mul(vehicle.cost, distance);
+    let total_cost = saturating_add(path_cost, operating_cost);
+    Decision {
+        valid: true,
+        demand: demand_index,
+        source: source,
+        destination: demand.location,
+        cargo: demand.cargo,
+        vehicle: vehicle_index,
+        quantity: quantity,
+        depart: now,
+        arrival: arrival,
+        reposition_distance: reposition.distance,
+        reposition_travel: reposition.travel,
+        reposition_cost: routing.path_weight(borrow scenario, borrow reposition, now, routing.MODE_COST()),
+        delivery_distance: delivery.distance,
+        delivery_travel: delivery.travel,
+        delivery_cost: saturating_add(routing.path_weight(borrow scenario, borrow delivery, delivery_start, routing.MODE_COST()), operating_cost),
+        rank: rank(arrival, demand.deadline, total_cost, source, vehicle_index),
+    }
+}
+
+pub fn choose(
+    borrow scenario: model.Scenario,
+    borrow sim: state.State,
+    demand_index: u64,
+    now: u64,
+) -> Decision {
+    if demand_index >= scenario.demands.len() || state.demand_open(borrow sim, demand_index) == 0 { return none(); }
+    let demand = scenario.demands.get_or(demand_index, model.empty_demand());
+    let mut best = none();
+    let mut source: u64 = 0;
+    while source < scenario.locations.len() {
+        if state.inventory_get(borrow scenario, borrow sim, source, demand.cargo) > 0 {
+            let mut vehicle: u64 = 0;
+            while vehicle < scenario.vehicles.len() {
+                let candidate = evaluate_vehicle(borrow scenario, borrow sim, demand_index, source, vehicle, now);
+                if better(borrow candidate, borrow best) { best = candidate; }
+                vehicle = vehicle + 1;
+            }
+        }
+        source = source + 1;
+    }
+    best
+}
+
+pub fn decision_cost(borrow value: Decision) -> u64 {
+    saturating_add(value.reposition_cost, value.delivery_cost)
+}
+
+pub fn decision_distance(borrow value: Decision) -> u64 {
+    saturating_add(value.reposition_distance, value.delivery_distance)
+}

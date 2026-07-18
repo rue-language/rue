@@ -1,0 +1,211 @@
+// Compact deterministic JSON report. A self-test reparses this with std.json,
+// making escaping and structural validity part of the executable oracle.
+const std = @import("std");
+const accounting = @import("accounting.rue");
+const conservation = @import("conservation.rue");
+const model = @import("model.rue");
+const replay = @import("replay.rue");
+const service = @import("service.rue");
+const state = @import("state.rue");
+const text = @import("text.rue");
+const utilization = @import("utilization.rue");
+const StrBuf = std.strbuf.StrBuf;
+const Json = std.json.Json;
+const ParseError = std.json.ParseError;
+
+fn key(inout out: StrBuf, name: str) {
+    let mut value = StrBuf.new();
+    text.append_literal(inout value, name);
+    text.append_json_string(inout out, borrow value);
+    out.push(58);
+}
+
+fn comma(inout out: StrBuf, inout first: bool) {
+    if first { first = false; } else { out.push(44); }
+}
+
+fn u64_field(inout out: StrBuf, inout first: bool, name: str, value: u64) {
+    comma(inout out, inout first);
+    key(inout out, name);
+    text.append_u64(inout out, value);
+}
+
+fn i64_field(inout out: StrBuf, inout first: bool, name: str, value: i64) {
+    comma(inout out, inout first);
+    key(inout out, name);
+    text.append_i64(inout out, value);
+}
+
+fn bool_field(inout out: StrBuf, inout first: bool, name: str, value: bool) {
+    comma(inout out, inout first);
+    key(inout out, name);
+    text.append_bool(inout out, value);
+}
+
+fn id_field(inout out: StrBuf, inout first: bool, borrow scenario: model.Scenario, name: str, id: u64) {
+    comma(inout out, inout first);
+    key(inout out, name);
+    text.append_json_id(inout out, borrow scenario, id);
+}
+
+fn scenario_object(inout out: StrBuf, borrow scenario: model.Scenario) {
+    out.push(123);
+    let mut first = true;
+    id_field(inout out, inout first, borrow scenario, "name", scenario.name);
+    u64_field(inout out, inout first, "duration", scenario.duration);
+    u64_field(inout out, inout first, "seed", scenario.seed);
+    u64_field(inout out, inout first, "locations", scenario.locations.len());
+    u64_field(inout out, inout first, "routes", scenario.routes.len());
+    u64_field(inout out, inout first, "cargo_types", scenario.cargoes.len());
+    u64_field(inout out, inout first, "vehicles", scenario.vehicles.len());
+    u64_field(inout out, inout first, "demands", scenario.demands.len());
+    u64_field(inout out, inout first, "disruptions", scenario.disruptions.len());
+    out.push(125);
+}
+
+fn outcome_object(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: state.State) {
+    let summary = service.summarize(borrow scenario, borrow sim);
+    out.push(123);
+    let mut first = true;
+    u64_field(inout out, inout first, "events", sim.log.len());
+    u64_field(inout out, inout first, "dispatches", sim.dispatches);
+    u64_field(inout out, inout first, "arrivals", sim.arrivals);
+    u64_field(inout out, inout first, "requested", summary.requested);
+    u64_field(inout out, inout first, "delivered", summary.delivered);
+    u64_field(inout out, inout first, "on_time", summary.on_time);
+    u64_field(inout out, inout first, "late", summary.late);
+    u64_field(inout out, inout first, "unmet", summary.unmet);
+    u64_field(inout out, inout first, "cost", sim.total_cost);
+    u64_field(inout out, inout first, "distance", sim.total_distance);
+    out.push(125);
+}
+
+fn cargo_array(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: state.State) {
+    out.push(91);
+    let mut i: u64 = 0;
+    while i < scenario.cargoes.len() {
+        if i > 0 { out.push(44); }
+        let cargo = scenario.cargoes.get_or(i, model.empty_cargo());
+        let totals = service.cargo_totals(borrow scenario, borrow sim, i);
+        out.push(123);
+        let mut first = true;
+        id_field(inout out, inout first, borrow scenario, "id", cargo.id);
+        u64_field(inout out, inout first, "requested", totals.get_or(0, 0));
+        u64_field(inout out, inout first, "delivered", totals.get_or(1, 0));
+        u64_field(inout out, inout first, "on_time", totals.get_or(2, 0));
+        u64_field(inout out, inout first, "unmet", totals.get_or(3, 0));
+        u64_field(inout out, inout first, "inventory", state.cargo_total_inventory(borrow scenario, borrow sim, i));
+        u64_field(inout out, inout first, "expired", sim.expired.get_or(i, 0));
+        out.push(125);
+        i = i + 1;
+    }
+    out.push(93);
+}
+
+fn demand_array(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: state.State) {
+    let summary = service.summarize(borrow scenario, borrow sim);
+    out.push(91);
+    let mut i: u64 = 0;
+    while i < summary.demands.len() {
+        if i > 0 { out.push(44); }
+        let item = summary.demands.get_or(i, service.DemandService {
+            demand: model.NONE(), requested: 0, delivered: 0, on_time: 0, late: 0,
+            unmet: 0, first_arrival: 0, last_arrival: 0,
+            weighted_requested: 0, weighted_delivered: 0,
+        });
+        let demand = scenario.demands.get_or(item.demand, model.empty_demand());
+        out.push(123);
+        let mut first = true;
+        u64_field(inout out, inout first, "index", item.demand);
+        id_field(inout out, inout first, borrow scenario, "location", demand.location_id);
+        id_field(inout out, inout first, borrow scenario, "cargo", demand.cargo_id);
+        u64_field(inout out, inout first, "deadline", demand.deadline);
+        u64_field(inout out, inout first, "priority", demand.priority);
+        u64_field(inout out, inout first, "requested", item.requested);
+        u64_field(inout out, inout first, "delivered", item.delivered);
+        u64_field(inout out, inout first, "on_time", item.on_time);
+        u64_field(inout out, inout first, "unmet", item.unmet);
+        out.push(125);
+        i = i + 1;
+    }
+    out.push(93);
+}
+
+fn vehicle_array(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: state.State) {
+    let summary = utilization.summarize(borrow scenario, borrow sim);
+    out.push(91);
+    let mut i: u64 = 0;
+    while i < summary.vehicles.len() {
+        if i > 0 { out.push(44); }
+        let item = summary.vehicles.get_or(i, utilization.VehicleUse {
+            vehicle: model.NONE(), dispatches: 0, repositions: 0, cargo_units: 0,
+            loaded_distance: 0, empty_distance: 0, travel_time: 0, busy_until: 0,
+            operating_cost: 0, capacity_units: 0, fill_numerator: 0, fill_denominator: 0,
+        });
+        let vehicle = scenario.vehicles.get_or(item.vehicle, model.empty_vehicle());
+        out.push(123);
+        let mut first = true;
+        id_field(inout out, inout first, borrow scenario, "id", vehicle.id);
+        u64_field(inout out, inout first, "dispatches", item.dispatches);
+        u64_field(inout out, inout first, "repositions", item.repositions);
+        u64_field(inout out, inout first, "cargo_units", item.cargo_units);
+        u64_field(inout out, inout first, "loaded_distance", item.loaded_distance);
+        u64_field(inout out, inout first, "empty_distance", item.empty_distance);
+        u64_field(inout out, inout first, "cost", item.operating_cost);
+        out.push(125);
+        i = i + 1;
+    }
+    out.push(93);
+}
+
+fn accounting_object(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: state.State) {
+    let ledger = accounting.calculate(borrow scenario, borrow sim);
+    out.push(123);
+    let mut first = true;
+    i64_field(inout out, inout first, "revenue", ledger.revenue);
+    i64_field(inout out, inout first, "operating_cost", ledger.operating_cost);
+    i64_field(inout out, inout first, "lateness_penalty", ledger.lateness_penalty);
+    i64_field(inout out, inout first, "unmet_penalty", ledger.unmet_penalty);
+    i64_field(inout out, inout first, "spoilage_loss", ledger.spoilage_loss);
+    i64_field(inout out, inout first, "profit", ledger.profit);
+    u64_field(inout out, inout first, "overflows", ledger.overflows);
+    out.push(125);
+}
+
+fn audit_object(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: state.State) {
+    let balance = conservation.audit(borrow scenario, borrow sim);
+    let replayed = replay.audit(borrow scenario, borrow sim);
+    out.push(123);
+    let mut first = true;
+    u64_field(inout out, inout first, "conservation_mismatches", balance.mismatches);
+    u64_field(inout out, inout first, "replay_mismatches", replayed.mismatches);
+    u64_field(inout out, inout first, "ordering_errors", replayed.ordering_errors);
+    u64_field(inout out, inout first, "underflows", replayed.underflows);
+    bool_field(inout out, inout first, "ok", balance.mismatches == 0 && replayed.mismatches == 0);
+    out.push(125);
+}
+
+pub fn render(borrow scenario: model.Scenario, borrow sim: state.State) -> StrBuf {
+    let mut out = StrBuf.new();
+    out.push(123);
+    let mut first = true;
+    comma(inout out, inout first); key(inout out, "scenario"); scenario_object(inout out, borrow scenario);
+    comma(inout out, inout first); key(inout out, "outcome"); outcome_object(inout out, borrow scenario, borrow sim);
+    comma(inout out, inout first); key(inout out, "cargo"); cargo_array(inout out, borrow scenario, borrow sim);
+    comma(inout out, inout first); key(inout out, "demands"); demand_array(inout out, borrow scenario, borrow sim);
+    comma(inout out, inout first); key(inout out, "vehicles"); vehicle_array(inout out, borrow scenario, borrow sim);
+    comma(inout out, inout first); key(inout out, "accounting"); accounting_object(inout out, borrow scenario, borrow sim);
+    comma(inout out, inout first); key(inout out, "audit"); audit_object(inout out, borrow scenario, borrow sim);
+    out.push(125);
+    out.push(10);
+    out
+}
+
+pub fn reparses(borrow report: StrBuf) -> bool {
+    let mut copy = StrBuf.new();
+    text.append_string(inout copy, borrow report);
+    match std.json.parse(copy) {
+        std.result.Result(Json, ParseError).Ok(value) => true,
+        std.result.Result(Json, ParseError).Err(error) => false,
+    }
+}

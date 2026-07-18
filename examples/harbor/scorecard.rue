@@ -1,0 +1,122 @@
+// Compact operational score derived from independent report components.
+const accounting = @import("accounting.rue");
+const conservation = @import("conservation.rue");
+const demand_analysis = @import("demand_analysis.rue");
+const event_analysis = @import("event_analysis.rue");
+const inventory_analysis = @import("inventory_analysis.rue");
+const model = @import("model.rue");
+const replay = @import("replay.rue");
+const resilience = @import("resilience.rue");
+const state = @import("state.rue");
+const utilization = @import("utilization.rue");
+
+pub struct Score {
+    service: u64,
+    punctuality: u64,
+    efficiency: u64,
+    resilience: u64,
+    integrity: u64,
+    financial: u64,
+    total: u64,
+    grade: u64,
+    warnings: u64,
+}
+
+fn percent(numerator: u64, denominator: u64) -> u64 {
+    if denominator == 0 { 100 }
+    else if numerator > 18446744073709551615 / 100 { 100 }
+    else { (numerator * 100) / denominator }
+}
+
+fn clamp(value: u64) -> u64 { if value > 100 { 100 } else { value } }
+
+fn service_score(borrow demands: demand_analysis.Summary) -> u64 {
+    clamp(percent(demands.delivered, demands.requested))
+}
+
+fn punctuality_score(borrow demands: demand_analysis.Summary) -> u64 {
+    clamp(percent(demands.on_time, demands.requested))
+}
+
+fn efficiency_score(borrow fleet: utilization.Summary) -> u64 {
+    let fill = percent(fleet.fill_numerator, fleet.fill_denominator);
+    let total_distance = fleet.loaded_distance + fleet.empty_distance;
+    let loaded_share = percent(fleet.loaded_distance, total_distance);
+    (fill + loaded_share) / 2
+}
+
+fn resilience_score(borrow value: resilience.Summary) -> u64 {
+    if value.baseline_pairs == 0 { return 0; }
+    let retained = if value.worst_unreachable_pairs >= value.baseline_pairs { 0 }
+        else { value.baseline_pairs - value.worst_unreachable_pairs };
+    percent(retained, value.baseline_pairs)
+}
+
+fn integrity_score(
+    borrow balance: conservation.Audit,
+    borrow replayed: replay.Audit,
+    borrow events: event_analysis.Summary,
+    borrow inventory: inventory_analysis.Summary,
+) -> u64 {
+    let failures = balance.mismatches + replayed.mismatches + replayed.ordering_errors +
+        replayed.underflows + events.ordering_errors + inventory.underflows;
+    if failures == 0 { 100 }
+    else if failures >= 10 { 0 }
+    else { 100 - failures * 10 }
+}
+
+fn financial_score(borrow ledger: accounting.Ledger) -> u64 {
+    if ledger.revenue <= 0 { return 0; }
+    if ledger.profit >= 0 { 100 }
+    else {
+        let loss: u64 = @intCast(0 - ledger.profit);
+        let revenue: u64 = @intCast(ledger.revenue);
+        let penalty = percent(loss, revenue);
+        if penalty >= 100 { 0 } else { 100 - penalty }
+    }
+}
+
+fn grade(total: u64) -> u64 {
+    if total >= 90 { 1 }
+    else if total >= 80 { 2 }
+    else if total >= 70 { 3 }
+    else if total >= 60 { 4 }
+    else { 5 }
+}
+
+pub fn grade_name(value: u64) -> str {
+    if value == 1 { "A" }
+    else if value == 2 { "B" }
+    else if value == 3 { "C" }
+    else if value == 4 { "D" }
+    else { "F" }
+}
+
+pub fn calculate(borrow scenario: model.Scenario, borrow sim: state.State) -> Score {
+    let demands = demand_analysis.summarize(borrow scenario, borrow sim, 6);
+    let fleet = utilization.summarize(borrow scenario, borrow sim);
+    let resilient = resilience.summarize(borrow scenario);
+    let balance = conservation.audit(borrow scenario, borrow sim);
+    let replayed = replay.audit(borrow scenario, borrow sim);
+    let events = event_analysis.summarize(borrow scenario, borrow sim);
+    let inventory = inventory_analysis.summarize(borrow scenario, borrow sim);
+    let ledger = accounting.calculate(borrow scenario, borrow sim);
+    let service = service_score(borrow demands);
+    let punctuality = punctuality_score(borrow demands);
+    let efficiency = efficiency_score(borrow fleet);
+    let resilience = resilience_score(borrow resilient);
+    let integrity = integrity_score(borrow balance, borrow replayed, borrow events, borrow inventory);
+    let financial = financial_score(borrow ledger);
+    let total = (service * 25 + punctuality * 20 + efficiency * 15 + resilience * 15 + integrity * 15 + financial * 10) / 100;
+    let mut warnings: u64 = 0;
+    if demands.unmet > 0 { warnings = warnings + 1; }
+    if resilient.worst_unreachable_pairs > 0 { warnings = warnings + 1; }
+    if inventory.underflows > 0 { warnings = warnings + 1; }
+    if ledger.profit < 0 { warnings = warnings + 1; }
+    if integrity < 100 { warnings = warnings + 1; }
+    Score {
+        service: service, punctuality: punctuality, efficiency: efficiency,
+        resilience: resilience, integrity: integrity, financial: financial,
+        total: total, grade: grade(total), warnings: warnings,
+    }
+}

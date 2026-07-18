@@ -1,0 +1,202 @@
+// All-pairs route matrices and network accessibility summaries. This module
+// deliberately runs the production router repeatedly: it is both a useful
+// report and one of Harbor's compiler/runtime scaling workloads.
+const std = @import("std");
+const model = @import("model.rue");
+const routing = @import("routing.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+const U64s = std.arraybuf.ArrayBuf(u64);
+
+pub struct Matrix {
+    at: u64,
+    mode: u64,
+    size: u64,
+    weights: U64s,
+    distances: U64s,
+    travels: U64s,
+    hops: U64s,
+    bottlenecks: U64s,
+    reachable_pairs: u64,
+    unreachable_pairs: u64,
+    total_weight: u64,
+    diameter: u64,
+    diameter_from: u64,
+    diameter_to: u64,
+}
+
+fn add(a: u64, b: u64) -> u64 {
+    if a == routing.INF() || b == routing.INF() { routing.INF() }
+    else if b > routing.INF() - a { routing.INF() }
+    else { a + b }
+}
+
+pub fn index(size: u64, from: u64, to: u64) -> u64 { from * size + to }
+
+pub fn empty() -> Matrix {
+    Matrix {
+        at: 0, mode: routing.MODE_COST(), size: 0,
+        weights: U64s.new(), distances: U64s.new(), travels: U64s.new(),
+        hops: U64s.new(), bottlenecks: U64s.new(), reachable_pairs: 0,
+        unreachable_pairs: 0, total_weight: 0, diameter: 0,
+        diameter_from: model.NONE(), diameter_to: model.NONE(),
+    }
+}
+
+fn push_path(inout matrix: Matrix, from: u64, to: u64, borrow path: routing.Path, weight: u64) {
+    matrix.weights.push(weight);
+    matrix.distances.push(if path.reachable { path.distance } else { routing.INF() });
+    matrix.travels.push(if path.reachable { path.travel } else { routing.INF() });
+    matrix.hops.push(if path.reachable { path.routes.len() } else { routing.INF() });
+    matrix.bottlenecks.push(if path.reachable { path.bottleneck } else { 0 });
+    if from != to {
+        if path.reachable {
+            matrix.reachable_pairs = matrix.reachable_pairs + 1;
+            matrix.total_weight = add(matrix.total_weight, weight);
+            if weight > matrix.diameter {
+                matrix.diameter = weight;
+                matrix.diameter_from = from;
+                matrix.diameter_to = to;
+            }
+        } else {
+            matrix.unreachable_pairs = matrix.unreachable_pairs + 1;
+        }
+    }
+}
+
+pub fn compute(borrow scenario: model.Scenario, at: u64, minimum_capacity: u64, mode: u64) -> Matrix {
+    let mut matrix = empty();
+    matrix.at = at;
+    matrix.mode = mode;
+    matrix.size = scenario.locations.len();
+    let mut from: u64 = 0;
+    while from < scenario.locations.len() {
+        let mut to: u64 = 0;
+        while to < scenario.locations.len() {
+            let path = routing.shortest(borrow scenario, from, to, at, minimum_capacity, mode);
+            let weight = routing.path_weight(borrow scenario, borrow path, at, mode);
+            push_path(inout matrix, from, to, borrow path, weight);
+            to = to + 1;
+        }
+        from = from + 1;
+    }
+    matrix
+}
+
+pub fn weight(borrow matrix: Matrix, from: u64, to: u64) -> u64 {
+    if from >= matrix.size || to >= matrix.size { routing.INF() }
+    else { matrix.weights.get_or(index(matrix.size, from, to), routing.INF()) }
+}
+
+pub fn distance(borrow matrix: Matrix, from: u64, to: u64) -> u64 {
+    if from >= matrix.size || to >= matrix.size { routing.INF() }
+    else { matrix.distances.get_or(index(matrix.size, from, to), routing.INF()) }
+}
+
+pub fn travel(borrow matrix: Matrix, from: u64, to: u64) -> u64 {
+    if from >= matrix.size || to >= matrix.size { routing.INF() }
+    else { matrix.travels.get_or(index(matrix.size, from, to), routing.INF()) }
+}
+
+pub fn hop_count(borrow matrix: Matrix, from: u64, to: u64) -> u64 {
+    if from >= matrix.size || to >= matrix.size { routing.INF() }
+    else { matrix.hops.get_or(index(matrix.size, from, to), routing.INF()) }
+}
+
+pub fn bottleneck(borrow matrix: Matrix, from: u64, to: u64) -> u64 {
+    if from >= matrix.size || to >= matrix.size { 0 }
+    else { matrix.bottlenecks.get_or(index(matrix.size, from, to), 0) }
+}
+
+pub fn average_weight(borrow matrix: Matrix) -> u64 {
+    if matrix.reachable_pairs == 0 { 0 } else { matrix.total_weight / matrix.reachable_pairs }
+}
+
+pub fn row_reachable(borrow matrix: Matrix, from: u64) -> u64 {
+    if from >= matrix.size { return 0; }
+    let mut count: u64 = 0;
+    let mut to: u64 = 0;
+    while to < matrix.size {
+        if from != to && weight(borrow matrix, from, to) != routing.INF() { count = count + 1; }
+        to = to + 1;
+    }
+    count
+}
+
+pub fn row_average(borrow matrix: Matrix, from: u64) -> u64 {
+    if from >= matrix.size { return 0; }
+    let mut total: u64 = 0;
+    let mut count: u64 = 0;
+    let mut to: u64 = 0;
+    while to < matrix.size {
+        let value = weight(borrow matrix, from, to);
+        if from != to && value != routing.INF() {
+            total = add(total, value);
+            count = count + 1;
+        }
+        to = to + 1;
+    }
+    if count == 0 { 0 } else { total / count }
+}
+
+pub fn central_location(borrow matrix: Matrix) -> u64 {
+    let mut best = model.NONE();
+    let mut best_reachable: u64 = 0;
+    let mut best_average = routing.INF();
+    let mut from: u64 = 0;
+    while from < matrix.size {
+        let reachable = row_reachable(borrow matrix, from);
+        let average = row_average(borrow matrix, from);
+        if best == model.NONE() || reachable > best_reachable || (reachable == best_reachable && average < best_average) {
+            best = from;
+            best_reachable = reachable;
+            best_average = average;
+        }
+        from = from + 1;
+    }
+    best
+}
+
+fn append_cell(inout out: StrBuf, value: u64) {
+    if value == routing.INF() { text.append_literal(inout out, "-"); }
+    else { text.append_u64(inout out, value); }
+}
+
+pub fn render(borrow scenario: model.Scenario, borrow matrix: Matrix) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "Route matrix at hour ");
+    text.append_u64(inout out, matrix.at);
+    out.push(10);
+    text.append_literal(inout out, "from/to");
+    let mut to: u64 = 0;
+    while to < matrix.size {
+        out.push(9);
+        let location = scenario.locations.get_or(to, model.empty_location());
+        text.append_id(inout out, borrow scenario, location.id);
+        to = to + 1;
+    }
+    out.push(10);
+    let mut from: u64 = 0;
+    while from < matrix.size {
+        let location = scenario.locations.get_or(from, model.empty_location());
+        text.append_id(inout out, borrow scenario, location.id);
+        to = 0;
+        while to < matrix.size {
+            out.push(9);
+            append_cell(inout out, weight(borrow matrix, from, to));
+            to = to + 1;
+        }
+        out.push(10);
+        from = from + 1;
+    }
+    text.append_literal(inout out, "reachable_pairs=");
+    text.append_u64(inout out, matrix.reachable_pairs);
+    text.append_literal(inout out, " unreachable_pairs=");
+    text.append_u64(inout out, matrix.unreachable_pairs);
+    text.append_literal(inout out, " average=");
+    text.append_u64(inout out, average_weight(borrow matrix));
+    text.append_literal(inout out, " diameter=");
+    text.append_u64(inout out, matrix.diameter);
+    out.push(10);
+    out
+}

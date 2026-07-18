@@ -866,10 +866,18 @@ fn drop_plan<A: ValueLowerAdapter>(
                 slots,
             });
         }
-        TypeKind::Enum(enum_id) => actions.push(DropAction {
-            symbol: format!("__rue_drop_{}", ctx.type_pool.enum_symbol_name(enum_id)),
-            slots,
-        }),
+        TypeKind::Enum(enum_id) => {
+            // Enum drop glue receives the complete flattened enum as one Rue
+            // by-value argument. Match ordinary call lowering's aggregate ABI:
+            // the callee's flat parameter slots contain the logical enum slots
+            // in reverse order. The synthesized glue maps the discriminant and
+            // active payload fields back out of that reversed area (RUE-998).
+            slots.reverse();
+            actions.push(DropAction {
+                symbol: format!("__rue_drop_{}", ctx.type_pool.enum_symbol_name(enum_id)),
+                slots,
+            });
+        }
         _ => unreachable!("Drop instruction reached codegen for unexpected type: {dropped_ty:?}"),
     }
 

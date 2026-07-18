@@ -1,0 +1,204 @@
+// Executive readiness dashboard. It combines independent audits into scored
+// dimensions, applies explicit gates, and preserves the underlying counts so a
+// high headline score cannot conceal a correctness failure.
+const std = @import("std");
+const conservation = @import("conservation.rue");
+const contingency = @import("contingency.rue");
+const inventory_policy = @import("inventory_policy.rue");
+const model = @import("model.rue");
+const replay = @import("replay.rue");
+const risk_register = @import("risk_register.rue");
+const route_audit = @import("route_audit.rue");
+const scenario_compare = @import("scenario_compare.rue");
+const service = @import("service.rue");
+const shipment_manifest = @import("shipment_manifest.rue");
+const state = @import("state.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct Dimension {
+    id: u64,
+    score: u64,
+    weight: u64,
+    observations: u64,
+    failures: u64,
+    warning: bool,
+    gate: bool,
+}
+
+pub const Dimensions = std.arraybuf.ArrayBuf(Dimension);
+
+pub struct Dashboard {
+    dimensions: Dimensions,
+    score: u64,
+    weighted_score: u64,
+    weight_total: u64,
+    gates_passed: u64,
+    gates_failed: u64,
+    warnings: u64,
+    observations: u64,
+    failures: u64,
+    ready: bool,
+    digest: u64,
+}
+
+pub fn internally_consistent(borrow value: Dashboard) -> bool {
+    value.weight_total > 0 &&
+    value.gates_passed + value.gates_failed == 3 &&
+    value.score == value.weighted_score / value.weight_total &&
+    value.ready == (value.gates_failed == 0 && value.score >= 75)
+}
+
+pub fn DIM_CORRECTNESS() -> u64 { 1 }
+pub fn DIM_NETWORK() -> u64 { 2 }
+pub fn DIM_SERVICE() -> u64 { 3 }
+pub fn DIM_RESILIENCE() -> u64 { 4 }
+pub fn DIM_INVENTORY() -> u64 { 5 }
+pub fn DIM_FLEET() -> u64 { 6 }
+
+fn add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+fn mix(value: u64, next: u64) -> u64 { @wrapping_mul(value ^ next, 1099511628211) }
+
+fn percent(good: u64, total: u64) -> u64 {
+    if total == 0 { 100 }
+    else if good > 18446744073709551615 / 100 { 100 }
+    else { (good * 100) / total }
+}
+
+fn bounded_sub(value: u64, penalty: u64) -> u64 {
+    if penalty >= value { 0 } else { value - penalty }
+}
+
+fn dimension(id: u64, score: u64, weight: u64, observations: u64, failures: u64, warning: bool, gate: bool) -> Dimension {
+    Dimension { id: id, score: if score > 100 { 100 } else { score }, weight: weight,
+        observations: observations, failures: failures, warning: warning, gate: gate }
+}
+
+fn empty_dimension() -> Dimension { dimension(0, 0, 0, 0, 0, false, false) }
+
+pub fn build(borrow scenario: model.Scenario, borrow sim: state.State) -> Dashboard {
+    let balance = conservation.audit(borrow scenario, borrow sim);
+    let replayed = replay.audit(borrow scenario, borrow sim);
+    let routes = route_audit.run(borrow scenario, 0, 1);
+    let served = service.summarize(borrow scenario, borrow sim);
+    let contingencies = contingency.build(borrow scenario);
+    let variants = scenario_compare.compare(borrow scenario);
+    let risks = risk_register.build(borrow scenario, borrow sim);
+    let policies = inventory_policy.build(borrow scenario, borrow sim);
+    let manifest = shipment_manifest.build(borrow scenario, borrow sim);
+    let mut dimensions = Dimensions.new();
+
+    let correctness_failures = balance.mismatches + replayed.mismatches + routes.errors + manifest.ordering_errors + manifest.unmatched;
+    let correctness_observations = balance.balances.len() + sim.log.len() + routes.pairs + manifest.departures;
+    dimensions.push(dimension(DIM_CORRECTNESS(), if correctness_failures == 0 { 100 } else { 0 }, 30,
+        correctness_observations, correctness_failures, false, true));
+
+    let network_total = routes.pairs + contingencies.samples;
+    let network_bad = (routes.pairs - routes.reachable) + contingencies.isolated;
+    let network_good = if network_bad < network_total { network_total - network_bad } else { 0 };
+    dimensions.push(dimension(DIM_NETWORK(), percent(network_good, network_total), 18,
+        network_total, network_bad, network_bad > 0, false));
+
+    let service_score = percent(served.delivered, served.requested);
+    dimensions.push(dimension(DIM_SERVICE(), service_score, 22, served.requested,
+        served.unmet, served.unmet > 0 || served.late > 0, true));
+
+    let resilience_penalty = risks.critical * 20 + risks.high * 8 + variants.newly_unreachable * 4;
+    dimensions.push(dimension(DIM_RESILIENCE(), bounded_sub(100, resilience_penalty), 12,
+        risks.risks.len() + variants.pair_comparisons, risks.critical + variants.newly_unreachable,
+        risks.high > 0 || variants.increased > 0, false));
+
+    let policy_total = policies.policies.len();
+    let urgent = policies.expedite + policies.redistribute;
+    let policy_good = if urgent < policy_total { policy_total - urgent } else { 0 };
+    dimensions.push(dimension(DIM_INVENTORY(), percent(policy_good, policy_total), 10,
+        policy_total, urgent, urgent > 0, false));
+
+    let fleet_score = percent(manifest.matched, manifest.departures);
+    dimensions.push(dimension(DIM_FLEET(), fleet_score, 8, manifest.departures,
+        manifest.unmatched, manifest.unmatched > 0, true));
+
+    let mut weighted_score: u64 = 0; let mut weight_total: u64 = 0;
+    let mut gates_passed: u64 = 0; let mut gates_failed: u64 = 0;
+    let mut warnings: u64 = 0; let mut observations: u64 = 0; let mut failures: u64 = 0;
+    let mut digest: u64 = 14695981039346656037;
+    let mut i: u64 = 0;
+    while i < dimensions.len() {
+        let item = dimensions.get_or(i, empty_dimension());
+        weighted_score = add(weighted_score, item.score * item.weight);
+        weight_total = add(weight_total, item.weight);
+        observations = add(observations, item.observations); failures = add(failures, item.failures);
+        if item.warning { warnings = warnings + 1; }
+        if item.gate { if item.failures == 0 { gates_passed = gates_passed + 1; } else { gates_failed = gates_failed + 1; } }
+        digest = mix(digest, item.id); digest = mix(digest, item.score); digest = mix(digest, item.failures);
+        i = i + 1;
+    }
+    let score = if weight_total == 0 { 0 } else { weighted_score / weight_total };
+    Dashboard { dimensions: dimensions, score: score, weighted_score: weighted_score,
+        weight_total: weight_total, gates_passed: gates_passed, gates_failed: gates_failed,
+        warnings: warnings, observations: observations, failures: failures,
+        ready: gates_failed == 0 && score >= 75, digest: digest }
+}
+
+fn append_name(inout out: StrBuf, id: u64) {
+    if id == DIM_CORRECTNESS() { text.append_literal(inout out, "correctness"); }
+    else if id == DIM_NETWORK() { text.append_literal(inout out, "network"); }
+    else if id == DIM_SERVICE() { text.append_literal(inout out, "service"); }
+    else if id == DIM_RESILIENCE() { text.append_literal(inout out, "resilience"); }
+    else if id == DIM_INVENTORY() { text.append_literal(inout out, "inventory"); }
+    else { text.append_literal(inout out, "fleet"); }
+}
+
+fn append_grade(inout out: StrBuf, score: u64) {
+    if score >= 95 { text.append_literal(inout out, "excellent"); }
+    else if score >= 85 { text.append_literal(inout out, "strong"); }
+    else if score >= 75 { text.append_literal(inout out, "conditional"); }
+    else if score >= 60 { text.append_literal(inout out, "weak"); }
+    else { text.append_literal(inout out, "not-ready"); }
+}
+
+fn minimum_dimension(borrow value: Dashboard) -> Dimension {
+    let mut worst = empty_dimension();
+    let mut found = false;
+    let mut i: u64 = 0;
+    while i < value.dimensions.len() {
+        let item = value.dimensions.get_or(i, empty_dimension());
+        if !found || item.score < worst.score || (item.score == worst.score && item.weight > worst.weight) {
+            worst = item;
+            found = true;
+        }
+        i = i + 1;
+    }
+    worst
+}
+
+pub fn render(borrow value: Dashboard) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "Operational readiness dashboard\n");
+    text.append_literal(inout out, "dimension score weight observations failures warning gate\n");
+    let mut i: u64 = 0;
+    while i < value.dimensions.len() {
+        let item = value.dimensions.get_or(i, empty_dimension());
+        append_name(inout out, item.id); out.push(32); text.append_u64(inout out, item.score); out.push(32);
+        text.append_u64(inout out, item.weight); out.push(32); text.append_u64(inout out, item.observations); out.push(32);
+        text.append_u64(inout out, item.failures); out.push(32); text.append_bool(inout out, item.warning); out.push(32);
+        text.append_bool(inout out, item.gate); out.push(10); i = i + 1;
+    }
+    text.append_literal(inout out, "score="); text.append_u64(inout out, value.score);
+    text.append_literal(inout out, " grade="); append_grade(inout out, value.score);
+    text.append_literal(inout out, " gates_passed="); text.append_u64(inout out, value.gates_passed);
+    text.append_literal(inout out, " gates_failed="); text.append_u64(inout out, value.gates_failed);
+    text.append_literal(inout out, " warnings="); text.append_u64(inout out, value.warnings); out.push(10);
+    text.append_literal(inout out, "observations="); text.append_u64(inout out, value.observations);
+    text.append_literal(inout out, " failures="); text.append_u64(inout out, value.failures);
+    text.append_literal(inout out, " digest="); text.append_u64(inout out, value.digest);
+    text.append_literal(inout out, " ready="); text.append_bool(inout out, value.ready); out.push(10);
+    let weakest = minimum_dimension(borrow value);
+    text.append_literal(inout out, "weakest_dimension="); append_name(inout out, weakest.id);
+    text.append_literal(inout out, " weakest_score="); text.append_u64(inout out, weakest.score);
+    text.append_literal(inout out, " weakest_failures="); text.append_u64(inout out, weakest.failures); out.push(10);
+    out
+}

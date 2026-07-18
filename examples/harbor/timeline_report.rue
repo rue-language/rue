@@ -1,0 +1,67 @@
+// Dense time-series report for plotting and manual replay inspection.
+const std = @import("std");
+const event_analysis = @import("event_analysis.rue");
+const forecast = @import("forecast.rue");
+const model = @import("model.rue");
+const state = @import("state.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn header(inout out: StrBuf) {
+    text.append_literal(inout out, "time,events,supply_events,production_events,departures,arrivals,repositions,expired_events,unmet_events,outbound_units,inbound_units,cost,distance\n");
+}
+
+fn hour(inout out: StrBuf, value: event_analysis.Hour) {
+    text.append_u64(inout out, value.time); out.push(44);
+    text.append_u64(inout out, value.events); out.push(44);
+    text.append_u64(inout out, value.supplies); out.push(44);
+    text.append_u64(inout out, value.productions); out.push(44);
+    text.append_u64(inout out, value.departures); out.push(44);
+    text.append_u64(inout out, value.arrivals); out.push(44);
+    text.append_u64(inout out, value.repositions); out.push(44);
+    text.append_u64(inout out, value.expired); out.push(44);
+    text.append_u64(inout out, value.unmet); out.push(44);
+    text.append_u64(inout out, value.outbound_units); out.push(44);
+    text.append_u64(inout out, value.inbound_units); out.push(44);
+    text.append_u64(inout out, value.cost); out.push(44);
+    text.append_u64(inout out, value.distance); out.push(10);
+}
+
+fn cargo_forecast(inout out: StrBuf, borrow scenario: model.Scenario, cargo: u64) {
+    let item = scenario.cargoes.get_or(cargo, model.empty_cargo());
+    text.append_literal(inout out, "\ncargo,"); text.append_id(inout out, borrow scenario, item.id); out.push(10);
+    text.append_literal(inout out, "time,supply,demand_due,cumulative_supply,cumulative_demand,net\n");
+    let values = forecast.timeline(borrow scenario, cargo, 1);
+    let mut i: u64 = 0;
+    while i < values.len() {
+        let value = values.get_or(i, forecast.Hour {
+            time: 0, supply: 0, demand_due: 0, cumulative_supply: 0,
+            cumulative_demand: 0, net: 0,
+        });
+        text.append_u64(inout out, value.time); out.push(44);
+        text.append_u64(inout out, value.supply); out.push(44);
+        text.append_u64(inout out, value.demand_due); out.push(44);
+        text.append_u64(inout out, value.cumulative_supply); out.push(44);
+        text.append_u64(inout out, value.cumulative_demand); out.push(44);
+        text.append_i64(inout out, value.net); out.push(10);
+        i = i + 1;
+    }
+}
+
+pub fn render(borrow scenario: model.Scenario, borrow sim: state.State) -> StrBuf {
+    let summary = event_analysis.summarize(borrow scenario, borrow sim);
+    let mut out = StrBuf.new();
+    header(inout out);
+    let mut i: u64 = 0;
+    while i < summary.hours.len() {
+        hour(inout out, summary.hours.get_or(i, event_analysis.Hour {
+            time: i, events: 0, supplies: 0, productions: 0, departures: 0,
+            arrivals: 0, repositions: 0, expired: 0, unmet: 0,
+            outbound_units: 0, inbound_units: 0, cost: 0, distance: 0,
+        }));
+        i = i + 1;
+    }
+    i = 0;
+    while i < scenario.cargoes.len() { cargo_forecast(inout out, borrow scenario, i); i = i + 1; }
+    out
+}

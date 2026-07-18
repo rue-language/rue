@@ -289,12 +289,14 @@ fn create_array_drop_glue_function(
 
 /// Create a drop glue function for a payload-carrying enum type (RUE-221).
 ///
-/// The function receives the enum's flattened slots as parameters: slot 0 is
-/// the discriminant, slots 1.. are the payload union sized to the largest
-/// variant. It switches on the discriminant and, for the active variant, drops
-/// each droppable payload field in declaration order. Variants whose payload
-/// needs no drop (and discriminant-only variants) fall through to a no-op
-/// wildcard default arm, so exactly the active variant's payload is dropped.
+/// The function receives the enum's flattened slots as one ordinary Rue
+/// by-value argument. The ABI reverses that complete slot vector: the final
+/// parameter slot is the discriminant and the preceding slots are the reversed
+/// payload union. It switches on the discriminant and, for the active variant,
+/// drops each droppable payload field in declaration order. Variants whose
+/// payload needs no drop (and discriminant-only variants) fall through to a
+/// no-op wildcard default arm, so exactly the active variant's payload is
+/// dropped.
 fn create_enum_drop_glue_function(
     enum_id: EnumId,
     type_pool: &FrozenTypeInternPool,
@@ -308,9 +310,10 @@ fn create_enum_drop_glue_function(
     // Total ABI slots: discriminant (slot 0) + payload area (largest variant).
     let num_param_slots = type_pool.abi_slot_count(Type::new_enum(enum_id));
 
-    // The discriminant lives in param slot 0; the match switches on it.
+    // A whole enum is one multi-slot by-value argument, so its ABI slot vector
+    // is reversed. The logical slot-0 discriminant is therefore last.
     let disc_ty = enum_def.discriminant_type();
-    let disc_param = air.add_param(0, disc_ty, span);
+    let disc_param = air.add_param(num_param_slots - 1, disc_ty, span);
 
     // A single shared unit value for every arm body and the outer block.
     let unit_const = air.add_unit(span);
@@ -331,7 +334,12 @@ fn create_enum_drop_glue_function(
         for &field_ty in payload {
             let field_slots = type_pool.abi_slot_count(field_ty);
             if type_needs_drop(field_ty, type_pool) {
-                let param_ref = air.add_param(field_slot, field_ty, span);
+                // The logical half-open range [field_slot, field_slot +
+                // field_slots) becomes the reversed ABI range beginning here.
+                // Reading an aggregate Param reverses that range once more,
+                // reconstructing the field in logical order (RUE-998).
+                let abi_field_slot = num_param_slots - (field_slot + field_slots);
+                let param_ref = air.add_param(abi_field_slot, field_ty, span);
                 let drop_ref = air.add_drop(param_ref, span);
                 drop_stmts.push(drop_ref);
             }
@@ -657,7 +665,7 @@ mod tests {
             enum_glue.num_param_slots,
             type_pool.abi_slot_count(drop_enum_ty)
         );
-        assert_eq!(param_indices(&enum_glue), [0, 1, 2, 2]);
+        assert_eq!(param_indices(&enum_glue), [2, 1, 0, 0]);
     }
 
     #[test]
