@@ -609,7 +609,11 @@ enum Value {
     /// `String`/`StrBuf` occupies three slots (`ptr`, `len`, `cap`), while
     /// `str`/`Str(N)` occupies two (`ptr`, `len`). Keeping the width on
     /// the value prevents a `str` parameter from shifting later parameters as if
-    /// it were a growable string.
+    /// it were a growable string. Every width here is the compiler's
+    /// `abi_slot_count` for the corresponding text type; `string_literal_value`
+    /// and `text_struct_slots` derive it from that authority, and the type-free
+    /// constructors below carry the same values (slot-model-default) for the
+    /// sites that have no type in hand.
     Str {
         bytes: Vec<u8>,
         slots: usize,
@@ -621,6 +625,10 @@ impl Value {
         Self::string_bytes(text.into().into_bytes())
     }
 
+    /// slot-model-default: the owned-`StrBuf` width `abi_slot_count(StrBuf) == 3`
+    /// ({ptr, len, cap}). Used by the type-free sites (the `@to_string` result,
+    /// which is always a `StrBuf`, and test fixtures); the type-aware paths
+    /// derive the same value from the compiler authority.
     fn string_bytes(bytes: impl Into<Vec<u8>>) -> Self {
         Self::Str {
             bytes: bytes.into(),
@@ -628,10 +636,16 @@ impl Value {
         }
     }
 
+    #[cfg(test)]
     fn str_view(text: impl Into<String>) -> Self {
         Self::str_view_bytes(text.into().into_bytes())
     }
 
+    /// slot-model-default: the `str`/`Str(N)` view width
+    /// `abi_slot_count(str) == 2` ({ptr, len}). The interpreter's live path
+    /// (`string_literal_value`) now derives the width from the compiler
+    /// authority, so this explicit two-slot constructor is a test fixture only.
+    #[cfg(test)]
     fn str_view_bytes(bytes: impl Into<Vec<u8>>) -> Self {
         Self::Str {
             bytes: bytes.into(),
@@ -839,11 +853,27 @@ enum WritebackPlace<'a> {
 
 impl<'a> Interp<'a> {
     fn string_literal_value(&self, text: String, ty: Type) -> Value {
-        if self.is_str_like_type(ty) {
-            Value::str_view(text)
-        } else {
-            Value::string(text)
+        // slot-model-default: derive the text value's ABI slot width from the
+        // compiler's `abi_slot_count` authority instead of hardcoding
+        // str/Str(N) = 2 and StrBuf = 3. A str/Str(N) view is two slots
+        // ({ptr, len}); an owned StrBuf is three ({ptr, len, cap}). The
+        // value-slot decomposition is preserved across the ADR-0052 migration
+        // (only the physical byte layout compacts), so these widths are stable.
+        Value::Str {
+            bytes: text.into_bytes(),
+            slots: self.text_value_slot_width(ty),
         }
+    }
+
+    /// ABI value-slot width the interpreter carries for a text value of type
+    /// `ty`, taken from the compiler's `abi_slot_count` authority. A non-struct
+    /// `ty` never reaches a string literal; it defaults to the owned-string
+    /// width so a malformed value is still shaped like a header rather than a
+    /// view.
+    fn text_value_slot_width(&self, ty: Type) -> usize {
+        ty.as_struct()
+            .map(|id| self.state.type_pool.abi_slot_count(Type::new_struct(id)) as usize)
+            .unwrap_or(3)
     }
 
     fn is_str_like_type(&self, ty: Type) -> bool {
@@ -865,10 +895,12 @@ impl<'a> Interp<'a> {
     }
 
     fn text_struct_slots(&self, struct_id: rue_air::StructId) -> Option<usize> {
-        if self.is_str_like_struct(struct_id) {
-            Some(2)
-        } else if self.is_owned_string_struct(struct_id) {
-            Some(3)
+        // slot-model-default: a str/Str(N) view certifies two ABI slots and an
+        // owned StrBuf three. Derive the width from `abi_slot_count` rather than
+        // carrying the 2/3 literals independently; the guard keeps this `None`
+        // for every non-text struct.
+        if self.is_str_like_struct(struct_id) || self.is_owned_string_struct(struct_id) {
+            Some(self.text_value_slot_width(Type::new_struct(struct_id)))
         } else {
             None
         }

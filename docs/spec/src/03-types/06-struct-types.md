@@ -71,6 +71,21 @@ Under the current implementation, every non-zero-sized value occupies one or mor
 
 It follows that, under the current implementation, the size of a struct is the sum of the sizes of all its fields, with no padding between fields or at the end (a zero-sized field contributes nothing). A future version that packed scalars or reordered fields would change this observation.
 
+{{ rule(id="3.6:10a", cat="informative") }}
+
+The ratified direction (ADR-0052) replaces the eight-byte slot model with a
+*compact* native layout, already selectable behind the `aggregate_layout`
+preview feature. Under it each scalar uses its natural byte width and alignment
+(for example `i32` is four bytes, four-aligned; `bool` is one byte), struct
+fields are placed in declaration order at offsets satisfying their alignment
+with explicit interior and tail padding, a type's size includes that tail
+padding and equals its array element stride (`stride == size`), enums use the
+smallest sufficient unsigned tag, and a zero-sized type has size `0`, alignment
+`1`, and stride `0`. This too is a documented observation, not a guarantee:
+whichever layout is in effect, only the properties of 3.6:8 are portable, and
+`@size_of`, `@align_of`, `@offset_of`, and `@field_ptr` continue to report the
+chosen layout so compiler-mediated code stays correct across the change.
+
 {{ rule(id="3.6:11") }}
 
 ```rue

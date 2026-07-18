@@ -48,6 +48,15 @@ slots. Scalars occupy one slot, each aggregate leaf occupies one slot, zero-size
 value parameters occupy none, and `borrow`/`inout` parameters occupy one pointer
 slot. This is a compiler representation, not the target C layout algorithm.
 
+This logical 8-byte slot flattening is the *call-ABI value decomposition*, which
+ADR-0052 deliberately separates from the *physical memory layout* of a type. The
+call convention is preserved unchanged while memory layout migrates to the
+compact representation (previewed by the `aggregate_layout` feature; the
+canonical native classifier is RUE-976), so the slot counts above stay valid
+even after `@size_of`, field offsets, and stack frames adopt natural byte
+widths. Physical layout alone never certifies that a value can be passed by
+value through this convention.
+
 For a multi-slot value, the call planner reverses that value's slots before
 assigning argument locations. The callee reconstructs logical field order. This
 means that even an aggregate small enough to remain in registers is not passed

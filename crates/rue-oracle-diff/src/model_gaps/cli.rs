@@ -66,6 +66,14 @@ impl Entry {
 /// Entries are generated from unknown-gap diagnostics emitted by the real
 /// production classifier, then reviewed into this typed list. Dynamic
 /// `Unsupported::detail` text is intentionally absent from the policy key.
+///
+/// Clusters marked `slot-model-default` cover corpus cases that pin the current
+/// default eight-byte slot layout (byte offsets, per-slot sizes, aggregate
+/// widths). The gap *reasons* here are layout-independent (they are unmodeled
+/// raw-pointer / `@field_ptr` intrinsics), but the cases' expected values move
+/// when the ratified compact layout (ADR-0052, `aggregate_layout`) becomes the
+/// default, so the stabilization sweep (RUE-987) greps `slot-model-default` to
+/// enumerate every ledger entry it must re-verify after the flip.
 const ENTRIES: &[Entry] = &[
     Entry::new(
         "array_literal_string",
@@ -97,6 +105,7 @@ const ENTRIES: &[Entry] = &[
         implementation_defined(ImplementationDefinedKind::StringCapacityValue),
         &[],
     ),
+    // slot-model-default: the aggregate ABI matrix pins per-slot byte layout.
     Entry::new(
         "cli.aggregate_abi_matrix",
         "aos_ptr_rw",
@@ -145,6 +154,7 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
         &[],
     ),
+    // slot-model-default: ascending-layout cases assert "slot k at base + k*8".
     Entry::new(
         "cli.aggregate_ascending_layout",
         "heap_multislot_roundtrip_no_clobber",
@@ -157,6 +167,7 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
         &[],
     ),
+    // slot-model-default: aggregate_slots pins per-slot 8-byte field layout.
     Entry::new(
         "cli.aggregate_slots",
         "dbg_string_from_field",
@@ -493,6 +504,8 @@ const ENTRIES: &[Entry] = &[
         semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
+    // slot-model-default: offset_of_field_ptr pins @offset_of byte values
+    // (0/8/16/24) and their @field_ptr agreement.
     Entry::new(
         "cli.offset_of_field_ptr",
         "field_ptr_on_param_struct",
@@ -520,6 +533,8 @@ const ENTRIES: &[Entry] = &[
     // ADR-0052 phase 3 (RUE-974): the compact-layout CLI cases reach a field
     // through `@field_ptr`, which the oracle model does not model (same gap as
     // the `offset_of_field_ptr` cases above).
+    // slot-model-default: aggregate_layout contrasts the default slot layout
+    // with the compact preview, so its expected values track the flip.
     Entry::new(
         "cli.aggregate_layout",
         "compact_slot_identical_field_ptr_roundtrip",
