@@ -22,6 +22,7 @@
 use std::collections::HashMap;
 
 use rue_air::Type;
+use rue_air::layout::SLOT_BYTES;
 use rue_cfg::CfgValue;
 
 use crate::allocation::BoundsCheckBackend;
@@ -191,7 +192,11 @@ pub(crate) fn store_slots_through_ptr<B: SlotBackend>(
     static_byte_offset: i32,
 ) {
     for (i, val) in vals.iter().enumerate() {
-        b.emit_store_through_ptr(*val, ptr, static_byte_offset + (i as i32) * 8);
+        b.emit_store_through_ptr(
+            *val,
+            ptr,
+            static_byte_offset + (i as i32) * SLOT_BYTES as i32,
+        );
     }
 }
 
@@ -207,7 +212,7 @@ pub(crate) fn store_slots_to_sret<B: SlotBackend>(b: &mut B, vals: &[VReg]) {
     let sret_slot = b.ctx().sret_ptr_slot();
     b.emit_load_slot(ptr, sret_slot);
     for (i, val) in vals.iter().enumerate() {
-        b.emit_store_through_ptr(*val, ptr, (i as i32) * 8);
+        b.emit_store_through_ptr(*val, ptr, (i as i32) * SLOT_BYTES as i32);
     }
 }
 
@@ -251,7 +256,7 @@ fn load_through_ptr<B: SlotBackend>(b: &mut B, addr_vreg: VReg, count: u32) -> V
     let mut vregs = Vec::with_capacity(count as usize);
     for k in 0..count {
         let vreg = b.alloc_vreg();
-        b.emit_load_through_ptr(vreg, addr_vreg, (k as i32) * 8);
+        b.emit_load_through_ptr(vreg, addr_vreg, (k as i32) * SLOT_BYTES as i32);
         vregs.push(vreg);
     }
     vregs

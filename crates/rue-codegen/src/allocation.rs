@@ -100,6 +100,21 @@ pub fn pointer_element_width(type_pool: &FrozenTypeInternPool, ptr_ty: Type) -> 
     type_width(type_pool, pointee)
 }
 
+/// Canonical byte alignment a pointer's pointee requires, from the layout
+/// authority. Companion to [`pointer_element_width`]; typed allocation passes
+/// this as the runtime allocator's `align` operand so the allocation carries the
+/// pointee's canonical `(size, alignment)` contract (ADR-0052). The defensive
+/// fallback mirrors [`pointer_element_width`]'s one-slot scalar width.
+#[inline]
+pub fn pointer_element_align(type_pool: &FrozenTypeInternPool, ptr_ty: Type) -> u64 {
+    let pointee = match ptr_ty.kind() {
+        TypeKind::PtrMut(id) => type_pool.ptr_mut_def(id),
+        TypeKind::PtrConst(id) => type_pool.ptr_const_def(id),
+        _ => return SLOT_BYTES,
+    };
+    type_pool.layout(pointee).alignment
+}
+
 /// Select the shared constant scaling operation for a byte width.
 #[inline]
 pub const fn scale_kind(bytes: u64) -> ScaleKind {
