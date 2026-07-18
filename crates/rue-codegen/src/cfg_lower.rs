@@ -413,8 +413,10 @@ impl<'a> CfgLowerContext<'a> {
     /// Calculate the stack offset for a local variable slot.
     ///
     /// Local variables are stored at negative offsets from the frame pointer.
+    /// The offset is a byte-based product of the frame-layout authority (before
+    /// the backend's saved-register adjustment), not a re-derived `* 8`.
     pub fn local_offset(&self, slot: u32) -> i32 {
-        -((slot as i32 + 1) * 8)
+        crate::frame_layout::slot_offset_pre_saved(slot)
     }
 
     /// Check if a slot corresponds to a parameter ABI slot.

@@ -845,7 +845,10 @@ impl SpillSlotAllocator {
         Self {
             slots: Vec::new(),
             min_slot_end: None,
-            base_offset: -((existing_locals as i32 + 1) * 8),
+            // Spill slots continue the frame's slot region after the existing
+            // locals/params, so the first spill homes at the same offset the
+            // frame-layout authority gives slot `existing_locals`.
+            base_offset: crate::frame_layout::slot_offset_pre_saved(existing_locals),
         }
     }
 
@@ -890,9 +893,10 @@ impl SpillSlotAllocator {
         self.offset_for_slot(slot_index)
     }
 
-    /// Get the stack offset for a given slot index.
+    /// Get the stack offset for a given spill slot index (each spill cell is
+    /// one frame cell below the previous, continuing the slot region).
     fn offset_for_slot(&self, slot_index: usize) -> i32 {
-        self.base_offset - (slot_index as i32 * 8)
+        self.base_offset - crate::frame_layout::slot_region_bytes(slot_index as u32)
     }
 
     /// Get the number of unique spill slots used.
