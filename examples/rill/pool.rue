@@ -1,18 +1,22 @@
 // A pooled string table used for source identifiers, literals, and runtime
 // concatenation. Entries are described by offsets and lengths; no owned
-// StrBuf ever needs to be read by copy from an ArrayBuf.
+// StrBuf ever needs to be read by copy from an ArrayBuf. A retained StrMap
+// index makes intern and find amortized O(length) in pool size (RUE-1008).
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
 const U64s = std.arraybuf.ArrayBuf(u64);
+const U64Map = std.strmap.StrMap(u64);
 const OptU8 = std.option.Option(u8);
+const OptU64 = std.option.Option(u64);
 
 pub struct Pool {
     bytes: StrBuf,
     offs: U64s,
     lens: U64s,
+    index: U64Map,
 
     fn new() -> Self {
-        Self { bytes: StrBuf.new(), offs: U64s.new(), lens: U64s.new() }
+        Self { bytes: StrBuf.new(), offs: U64s.new(), lens: U64s.new(), index: U64Map.new(0) }
     }
 
     fn byte_of(borrow value: StrBuf, i: u64) -> u8 {
@@ -55,16 +59,10 @@ pub struct Pool {
     }
 
     fn intern(inout self, borrow text: StrBuf) -> u64 {
-        // A StrMap index would make this lookup amortized O(1), but retaining
-        // StrMap(u64) as a field of this cross-module public struct currently
-        // fails comptime type reduction (RUE-993). Keep the canonical pool and
-        // a correct linear lookup until that generic-field restriction lifts.
+        let existing = self.find(borrow text);
+        if existing != 18446744073709551615 { return existing; }
         let n = self.len();
-        let mut i: u64 = 0;
-        while i < n {
-            if self.equals_buf(i, borrow text) { return i; }
-            i = i + 1;
-        }
+        self.index.insert(borrow text, n);
         let off = self.bytes.len();
         let len = text.len();
         let mut j: u64 = 0;
@@ -78,12 +76,10 @@ pub struct Pool {
     }
 
     fn find(borrow self, borrow text: StrBuf) -> u64 {
-        let mut i: u64 = 0;
-        while i < self.len() {
-            if self.equals_buf(i, borrow text) { return i; }
-            i = i + 1;
+        match self.index.get(borrow text) {
+            OptU64.Some(id) => id,
+            OptU64.None => 18446744073709551615,
         }
-        18446744073709551615
     }
 
     fn intern_range(inout self, borrow source: StrBuf, start: u64, len: u64) -> u64 {
