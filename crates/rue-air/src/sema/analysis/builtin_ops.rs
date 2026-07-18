@@ -364,26 +364,7 @@ impl<'a> BodySema<'a> {
 
         // Validate the type is appropriate for this comparison
         if allow_bool {
-            // Equality operators (==, !=) are structural over aggregates
-            // (RUE-285): they work on integers, booleans, strings, unit, and
-            // any struct, array, or enum (whose leaves bottom out at these).
-            // Note: String is now a struct, so is_struct() covers it.
-            if !lhs_type.is_integer()
-                && lhs_type != Type::BOOL
-                && lhs_type != Type::UNIT
-                && !lhs_type.is_struct()
-                && !lhs_type.is_array()
-                && !lhs_type.is_enum()
-                && !self.is_strbuf(lhs_type)
-            {
-                return Err(CompileError::new(
-                    ErrorKind::TypeMismatch {
-                        expected: "integer, bool, string, unit, struct, array, or enum".to_string(),
-                        found: lhs_type.safe_name_with_pool(Some(&self.type_pool)),
-                    },
-                    self.rir.get(lhs).span,
-                ));
-            }
+            self.validate_equality_operand_type(lhs_type, self.rir.get(lhs).span)?;
         } else if !lhs_type.is_integer() {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
@@ -395,64 +376,17 @@ impl<'a> BodySema<'a> {
         }
 
         let comparison = make_data(lhs_result.air_ref, rhs_result.air_ref);
-        let source_equality = matches!(comparison, AirInstData::Eq(..) | AirInstData::Ne(..))
-            && lhs_type.as_struct().is_some_and(|struct_id| {
-                self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
-            });
-        if source_equality {
-            let struct_id = lhs_type.as_struct().expect("source StrBuf is a struct");
-            let method = self.interner.get_or_intern("equals_borrowed");
-            if self.method_info((struct_id, method)).is_some() {
-                ctx.referenced_methods.insert((struct_id, method));
-                let (lhs_arg, mut temp_scope) = self.materialize_borrow_argument(
-                    air,
-                    lhs_result.air_ref,
-                    lhs_result.ty,
-                    span,
-                    ctx,
-                )?;
-                let (rhs_arg, rhs_scope) = self.materialize_borrow_argument(
-                    air,
-                    rhs_result.air_ref,
-                    rhs_result.ty,
-                    span,
-                    ctx,
-                )?;
-                temp_scope.extend(rhs_scope);
-                let call_name = self.interner.get_or_intern(&self.method_symbol(
-                    struct_id,
-                    "equals_borrowed",
-                    false,
-                ));
-                let equal = air.add_call(
-                    None,
-                    call_name,
-                    &[
-                        AirCallArg {
-                            value: lhs_arg,
-                            mode: AirArgMode::Borrow,
-                        },
-                        AirCallArg {
-                            value: rhs_arg,
-                            mode: AirArgMode::Borrow,
-                        },
-                    ],
-                    Type::BOOL,
-                    span,
-                )?;
-                let equal =
-                    self.wrap_value_with_temp_scope(air, equal, Type::BOOL, span, temp_scope)?;
-                let value = if matches!(comparison, AirInstData::Ne(..)) {
-                    air.add_inst(AirInst {
-                        data: AirInstData::Not(equal),
-                        ty: Type::BOOL,
-                        span,
-                    })
-                } else {
-                    equal
-                };
-                return Ok(AnalysisResult::new(value, Type::BOOL));
-            }
+        if matches!(comparison, AirInstData::Eq(..) | AirInstData::Ne(..))
+            && let Some(result) = self.try_prepare_aggregate_equality(
+                air,
+                &comparison,
+                lhs_result,
+                rhs_result,
+                span,
+                ctx,
+            )?
+        {
+            return Ok(result);
         }
 
         let air_ref = air.add_inst(AirInst {
