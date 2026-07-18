@@ -821,19 +821,41 @@ impl Linker {
     ///
     /// This avoids pulling in unnecessary objects (like compiler_builtins
     /// intrinsics) that might have their own unresolved dependencies.
+    ///
+    /// # Extraction order (RUE-848)
+    ///
+    /// When several members define the same symbol, extraction is
+    /// *first-eligible in archive member order*: the earliest member that
+    /// provides a needed symbol is pulled in, matching GNU `ld` / `ld64`
+    /// archive semantics. The outer fixed-point loop is the conventional
+    /// *rescan* boundary — pulling one member can expose new undefined symbols,
+    /// which are resolved on the next pass — while within a single symbol
+    /// lookup the choice of member is a *one-pass*, order-deterministic pick.
+    /// This path is object-format neutral, so it governs ELF and Mach-O archive
+    /// members identically. Post-extraction weak/strong resolution among the
+    /// members actually pulled in is still owned by [`Self::add_object`].
     pub fn add_archive(&mut self, archive: Archive) -> Result<(), LinkError> {
         // Convert to a Vec we can index into
         let archive_objects: Vec<ObjectFile> = archive.objects.into_iter().collect();
 
-        // Build an index of which archive objects define which symbols
-        let mut symbol_to_obj: HashMap<String, usize> = HashMap::new();
+        // Map each symbol to every member that defines it, in archive member
+        // order. A last-writer-wins `HashMap::insert` index would instead bind
+        // each symbol to its *last* provider, so selection could extract a later
+        // member over an earlier one and silently change weak/strong resolution
+        // when a user or foreign archive ships multiple providers (RUE-848).
+        // Retaining the ordered provider list keeps selection first-eligible and
+        // independent of hash iteration order.
+        let mut symbol_providers: HashMap<String, Vec<usize>> = HashMap::new();
         for (obj_idx, obj) in archive_objects.iter().enumerate() {
             for sym in &obj.symbols {
                 if sym.section_index.is_some()
                     && (sym.binding == SymbolBinding::Global || sym.binding == SymbolBinding::Weak)
                     && !sym.name.is_empty()
                 {
-                    symbol_to_obj.insert(sym.name.clone(), obj_idx);
+                    symbol_providers
+                        .entry(sym.name.clone())
+                        .or_default()
+                        .push(obj_idx);
                 }
             }
         }
@@ -897,21 +919,27 @@ impl Linker {
             // Try to resolve undefined symbols from the archive
             let mut added_any = false;
             for sym_name in undefined {
-                if let Some(&obj_idx) = symbol_to_obj.get(&sym_name) {
-                    if !selected[obj_idx] {
-                        selected[obj_idx] = true;
-                        added_any = true;
+                let Some(providers) = symbol_providers.get(&sym_name) else {
+                    continue;
+                };
+                // First-eligible extraction: pull the earliest member (in
+                // archive order) that provides the symbol and is not already
+                // selected. `providers` is ordered, so this pick is
+                // deterministic regardless of hash iteration order.
+                let Some(&obj_idx) = providers.iter().find(|&&idx| !selected[idx]) else {
+                    continue;
+                };
+                selected[obj_idx] = true;
+                added_any = true;
 
-                        // Add defined symbols from this object
-                        for sym in &archive_objects[obj_idx].symbols {
-                            if sym.section_index.is_some()
-                                && (sym.binding == SymbolBinding::Global
-                                    || sym.binding == SymbolBinding::Weak)
-                                && !sym.name.is_empty()
-                            {
-                                defined_symbols.insert(sym.name.clone());
-                            }
-                        }
+                // Add defined symbols from this object
+                for sym in &archive_objects[obj_idx].symbols {
+                    if sym.section_index.is_some()
+                        && (sym.binding == SymbolBinding::Global
+                            || sym.binding == SymbolBinding::Weak)
+                        && !sym.name.is_empty()
+                    {
+                        defined_symbols.insert(sym.name.clone());
                     }
                 }
             }
@@ -2305,6 +2333,235 @@ mod tests {
         assert_eq!(
             *obj_idx, 0,
             "strong definition must be kept over later weak"
+        );
+    }
+
+    /// Build an archive member that defines `defs` (each `(name, binding)` as a
+    /// section-anchored definition) and references `undefs` as undefined global
+    /// symbols. Each member gets a one-byte `.text` section so distinct members
+    /// stay individually linkable. Used by the RUE-848 archive-order tests.
+    fn archive_member(defs: &[(&str, SymbolBinding)], undefs: &[&str]) -> ObjectFile {
+        use crate::elf::SymbolType;
+        let mut symbols: Vec<Symbol> = defs
+            .iter()
+            .map(|(name, binding)| Symbol {
+                name: (*name).into(),
+                section_index: Some(0),
+                value: 0,
+                size: 1,
+                binding: *binding,
+                sym_type: SymbolType::Func,
+            })
+            .collect();
+        symbols.extend(undefs.iter().map(|name| Symbol {
+            name: (*name).into(),
+            section_index: None,
+            value: 0,
+            size: 0,
+            binding: SymbolBinding::Global,
+            sym_type: SymbolType::None,
+        }));
+        ObjectFile {
+            sections: vec![Section {
+                name: ".text".into(),
+                data: vec![0xC3],
+                size: 1,
+                flags: SectionFlags::ALLOC | SectionFlags::EXEC,
+                relocations: vec![],
+                align: 16,
+            }],
+            symbols,
+            section_map: HashMap::from([(".text".into(), 0)]),
+            machine: crate::elf::ElfMachine::X86_64,
+            format: crate::elf::ObjectFormat::Elf,
+        }
+    }
+
+    /// RUE-848: two members strong-define the same symbol. First-eligible archive
+    /// order must pull only the earliest member, so no duplicate-symbol collision
+    /// occurs and the later provider is left out. A last-writer-wins index would
+    /// instead select the later member.
+    #[test]
+    fn test_archive_duplicate_strong_selects_first_member() {
+        let archive = Archive {
+            objects: vec![
+                archive_member(
+                    &[
+                        ("dup", SymbolBinding::Global),
+                        ("marker_a", SymbolBinding::Global),
+                    ],
+                    &[],
+                ),
+                archive_member(
+                    &[
+                        ("dup", SymbolBinding::Global),
+                        ("marker_b", SymbolBinding::Global),
+                    ],
+                    &[],
+                ),
+            ],
+        };
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.require_symbol("dup");
+        linker
+            .add_archive(archive)
+            .expect("first-eligible extraction avoids the duplicate collision");
+
+        assert!(
+            linker.global_symbols.contains_key("marker_a"),
+            "first member must be pulled"
+        );
+        assert!(
+            !linker.global_symbols.contains_key("marker_b"),
+            "later duplicate provider must be left out"
+        );
+        let (_, sym) = linker.global_symbols.get("dup").expect("dup is defined");
+        assert_eq!(sym.binding, SymbolBinding::Global);
+    }
+
+    /// RUE-848: two members weakly define the same symbol. The first provider in
+    /// archive order wins, matching `add_object`'s "first weak wins" rule.
+    #[test]
+    fn test_archive_duplicate_weak_selects_first_member() {
+        let archive = Archive {
+            objects: vec![
+                archive_member(
+                    &[
+                        ("dup", SymbolBinding::Weak),
+                        ("marker_a", SymbolBinding::Global),
+                    ],
+                    &[],
+                ),
+                archive_member(
+                    &[
+                        ("dup", SymbolBinding::Weak),
+                        ("marker_b", SymbolBinding::Global),
+                    ],
+                    &[],
+                ),
+            ],
+        };
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.require_symbol("dup");
+        linker.add_archive(archive).unwrap();
+
+        assert!(
+            linker.global_symbols.contains_key("marker_a"),
+            "first weak provider must be pulled"
+        );
+        assert!(
+            !linker.global_symbols.contains_key("marker_b"),
+            "second weak provider must be left out"
+        );
+        let (_, sym) = linker.global_symbols.get("dup").unwrap();
+        assert_eq!(
+            sym.binding,
+            SymbolBinding::Weak,
+            "the first (weak) provider defines dup"
+        );
+    }
+
+    /// RUE-848: an earlier weak provider and a later strong provider. Archive
+    /// extraction is order-driven — the first member satisfying the reference is
+    /// pulled, regardless of binding — so the weak member wins and the strong
+    /// later member is not extracted. This matches GNU `ld`/`ld64` archive-order
+    /// semantics; the previous last-writer-wins index would have flipped this to
+    /// the strong member.
+    #[test]
+    fn test_archive_weak_then_strong_selects_first_eligible() {
+        let archive = Archive {
+            objects: vec![
+                archive_member(
+                    &[
+                        ("dup", SymbolBinding::Weak),
+                        ("marker_a", SymbolBinding::Global),
+                    ],
+                    &[],
+                ),
+                archive_member(
+                    &[
+                        ("dup", SymbolBinding::Global),
+                        ("marker_b", SymbolBinding::Global),
+                    ],
+                    &[],
+                ),
+            ],
+        };
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.require_symbol("dup");
+        linker.add_archive(archive).unwrap();
+
+        assert!(
+            linker.global_symbols.contains_key("marker_a"),
+            "earlier weak provider is first-eligible"
+        );
+        assert!(
+            !linker.global_symbols.contains_key("marker_b"),
+            "later strong provider is not extracted for an already-satisfied symbol"
+        );
+        let (_, sym) = linker.global_symbols.get("dup").unwrap();
+        assert_eq!(
+            sym.binding,
+            SymbolBinding::Weak,
+            "first-eligible archive order keeps the weak provider"
+        );
+    }
+
+    /// RUE-848: a symbol already satisfied by a previously linked object must not
+    /// pull any archive member that also provides it.
+    #[test]
+    fn test_archive_already_satisfied_pulls_no_member() {
+        let mut linker = Linker::new(ELF_TARGET);
+        linker
+            .add_object(archive_member(&[("dup", SymbolBinding::Global)], &[]))
+            .unwrap();
+        let objects_before = linker.objects.len();
+
+        let archive = Archive {
+            objects: vec![archive_member(
+                &[
+                    ("dup", SymbolBinding::Global),
+                    ("marker", SymbolBinding::Global),
+                ],
+                &[],
+            )],
+        };
+        linker.require_symbol("dup");
+        linker.add_archive(archive).unwrap();
+
+        assert_eq!(
+            linker.objects.len(),
+            objects_before,
+            "no archive member should be extracted"
+        );
+        assert!(
+            !linker.global_symbols.contains_key("marker"),
+            "the already-satisfied symbol pulls nothing"
+        );
+    }
+
+    /// RUE-848: pulling one member exposes a new undefined symbol that only a
+    /// later member provides. The fixed-point rescan must transitively select
+    /// that later member.
+    #[test]
+    fn test_archive_transitively_selects_later_member() {
+        let archive = Archive {
+            objects: vec![
+                archive_member(&[("entry", SymbolBinding::Global)], &["helper"]),
+                archive_member(&[("helper", SymbolBinding::Global)], &[]),
+            ],
+        };
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.require_symbol("entry");
+        linker.add_archive(archive).unwrap();
+
+        assert!(
+            linker.global_symbols.contains_key("entry"),
+            "the required member is pulled"
+        );
+        assert!(
+            linker.global_symbols.contains_key("helper"),
+            "the later member providing the transitively undefined symbol is pulled on rescan"
         );
     }
 
