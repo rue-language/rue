@@ -11,8 +11,7 @@ impl<'a> BodySema<'a> {
     ///
     /// `unaligned` selects `@ptr_read_unaligned` (ADR-0059 Phase 4, RUE-978):
     /// same pointee-typed shape, but the caller does not promise the address is
-    /// aligned. It is part of the interim byte surface and so requires the
-    /// `raw_bytes` preview. On x86-64 and AArch64 the emitted access is
+    /// aligned. On x86-64 and AArch64 the emitted access is
     /// identical to the aligned variant (both tolerate unaligned scalars); the
     /// distinction is the semantic contract of spec 9.2:14k.
     pub(super) fn analyze_ptr_read_intrinsic(
@@ -30,13 +29,6 @@ impl<'a> BodySema<'a> {
         } else {
             "ptr_read"
         };
-        if unaligned {
-            self.require_preview(
-                PreviewFeature::RawBytes,
-                "@ptr_read_unaligned intrinsic",
-                span,
-            )?;
-        }
         if args.len() != 1 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
@@ -108,13 +100,6 @@ impl<'a> BodySema<'a> {
         } else {
             "ptr_write"
         };
-        if unaligned {
-            self.require_preview(
-                PreviewFeature::RawBytes,
-                "@ptr_write_unaligned intrinsic",
-                span,
-            )?;
-        }
         if args.len() != 2 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
@@ -597,7 +582,6 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        self.require_preview(PreviewFeature::RawBytes, "@alloc_bytes intrinsic", span)?;
         if args.len() != 2 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
@@ -639,7 +623,6 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        self.require_preview(PreviewFeature::RawBytes, "@realloc_bytes intrinsic", span)?;
         if args.len() != 4 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
@@ -682,7 +665,6 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        self.require_preview(PreviewFeature::RawBytes, "@free_bytes intrinsic", span)?;
         if args.len() != 3 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
@@ -745,7 +727,6 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        self.require_preview(PreviewFeature::RawBytes, "@byte_read intrinsic", span)?;
         if args.len() != 2 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
@@ -773,7 +754,6 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        self.require_preview(PreviewFeature::RawBytes, "@byte_write intrinsic", span)?;
         if args.len() != 3 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
@@ -813,7 +793,6 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        self.require_preview(PreviewFeature::RawBytes, "@byte_copy intrinsic", span)?;
         if args.len() != 3 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
@@ -852,7 +831,6 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        self.require_preview(PreviewFeature::RawBytes, "@byte_set intrinsic", span)?;
         if args.len() != 3 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {

@@ -684,7 +684,7 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "cli.raw_bytes_degate_readiness",
-        "byte_family_roundtrip_raw_bytes",
+        "byte_family_roundtrip_plain",
         intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
         &[],
     ),
@@ -696,7 +696,7 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "cli.raw_bytes_degate_readiness",
-        "packed_subrange_copy_raw_bytes",
+        "packed_subrange_copy_plain",
         intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
         &[],
     ),
@@ -1057,12 +1057,6 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.std_exit",
         "std_exit_terminates_with_status",
-        external(ExternalDependencyKind::SystemCall),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_internal_raw_bytes",
-        "ordinary_std_import_needs_no_raw_bytes_preview",
         external(ExternalDependencyKind::SystemCall),
         &[],
     ),

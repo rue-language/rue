@@ -154,17 +154,14 @@ fn main() -> i32 {
 
 ## Raw Byte Intrinsics
 
-{{ preview_feature(feature="raw_bytes", adr="RUE-879") }}
-
 {{ rule(id="9.2:14a", cat="normative") }}
 
 The `@alloc_bytes`, `@realloc_bytes`, `@free_bytes`, `@byte_read`,
 `@byte_write`, `@byte_copy`, `@byte_set`, `@ptr_read_unaligned`, and
 `@ptr_write_unaligned` intrinsics provide raw access to packed physical bytes
-and to potentially unaligned typed scalars. They are enabled by the `raw_bytes`
-preview feature and may only appear inside a `checked` block. They do not change
-the element-scaled semantics of `@alloc`, `@realloc`, `@free`, `@ptr_offset`,
-`@ptr_read`, or `@ptr_write`.
+and to potentially unaligned typed scalars. They may only appear inside a
+`checked` block. They do not change the element-scaled semantics of `@alloc`,
+`@realloc`, `@free`, `@ptr_offset`, `@ptr_read`, or `@ptr_write`.
 
 {{ rule(id="9.2:14b", cat="dynamic-semantics") }}
 
@@ -200,7 +197,7 @@ Offsets are not multiplied by Rue's typed-pointer slot size.
 
 {{ rule(id="9.2:14e", cat="legality-rule") }}
 
-Every raw-byte intrinsic requires both `--preview raw_bytes` and an enclosing
+Every raw-byte intrinsic requires an enclosing
 `checked` block. Allocation and write pointers must be `ptr mut u8`; a byte
 read also accepts `ptr const u8`. Size, offset, and alignment operands are
 exactly `u64`, and a byte-write value is exactly `u8`. `@alloc_bytes` takes
@@ -237,7 +234,7 @@ writes no memory.
 
 {{ rule(id="9.2:14h", cat="legality-rule") }}
 
-`@byte_copy` and `@byte_set` each require both `--preview raw_bytes` and an
+`@byte_copy` and `@byte_set` each require an
 enclosing `checked` block. Their destination operand is exactly `ptr mut u8`;
 the `@byte_copy` source operand is `ptr const u8` or `ptr mut u8`. The
 `@byte_set` fill operand is exactly `u8`, and every `size` operand is exactly
@@ -285,8 +282,8 @@ parsed data (integers embedded in a byte buffer) without a per-byte assembly.
 
 {{ rule(id="9.2:14l", cat="legality-rule") }}
 
-`@ptr_read_unaligned` and `@ptr_write_unaligned` each require both
-`--preview raw_bytes` and an enclosing `checked` block. Aside from the alignment
+`@ptr_read_unaligned` and `@ptr_write_unaligned` each require an
+enclosing `checked` block. Aside from the alignment
 obligation they carry the same legality rules as `@ptr_read`/`@ptr_write`: the
 write pointer is `ptr mut T`, the read pointer is `ptr const T` or `ptr mut T`,
 and a written value has type `T`.

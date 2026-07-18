@@ -261,7 +261,7 @@ exit_code = 0
 name = "std_json_parse_variant_under_gate"
 description = "The real std.json parser compiles and runs under the gate: Json's variant-dependent aggregate payloads marshal through one variant-independent image (RUE-1014)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "--preview", "raw_bytes", "-o", "prog"]
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -302,7 +302,7 @@ exit_code = 0
 name = "std_priority_queue_option_pair_under_gate"
 description = "The real std PriorityQueue(i32,i32) runs under the gate: ArrayBuf(Pair) struct elements plus Option(Pair) variant-dependent enum returns (RUE-1014)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "--preview", "raw_bytes", "-o", "prog"]
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");

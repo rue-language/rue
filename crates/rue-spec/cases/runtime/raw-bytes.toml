@@ -1,16 +1,15 @@
-# Preview raw physical-byte allocation and access intrinsics (RUE-879).
+# Raw physical-byte allocation and access intrinsics (RUE-879; the raw_bytes
+# preview gate was removed at stabilization, ADR-0059 Phase 6, RUE-937).
 
 [section]
 id = "runtime.raw_bytes"
 spec_chapter = "9.2"
 name = "Raw Byte Intrinsics"
-description = "Packed physical-byte allocation, access, and preview gating"
+description = "Packed physical-byte allocation and access"
 
 [[case]]
 name = "packed_offsets_read_write_exactly_one_byte"
 spec = ["9.2:14a", "9.2:14b", "9.2:14d"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -31,8 +30,6 @@ exit_code = 66
 [[case]]
 name = "byte_write_preserves_adjacent_bytes"
 spec = ["9.2:14d"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -54,8 +51,6 @@ exit_code = 136
 [[case]]
 name = "byte_read_accepts_const_u8_pointer"
 spec = ["9.2:14d", "9.2:14e"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let value: u8 = 79;
@@ -70,8 +65,6 @@ exit_code = 79
 [[case]]
 name = "alloc_bytes_result_type_is_inferred"
 spec = ["9.2:14b", "9.2:14f"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -88,8 +81,6 @@ exit_code = 71
 [[case]]
 name = "realloc_bytes_preserves_packed_prefix"
 spec = ["9.2:14b", "9.2:14c", "9.2:14f"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -111,8 +102,6 @@ exit_code = 45
 [[case]]
 name = "raw_byte_allocation_failure_returns_null"
 spec = ["9.2:14b", "8.6:4"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -126,8 +115,6 @@ exit_code = 0
 [[case]]
 name = "failed_realloc_bytes_preserves_original"
 spec = ["9.2:14c", "8.6:4"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -154,8 +141,6 @@ exit_code = 66
 [[case]]
 name = "alloc_bytes_zero_returns_null"
 spec = ["9.2:14b"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -169,8 +154,6 @@ exit_code = 0
 [[case]]
 name = "free_bytes_null_zero_is_permitted"
 spec = ["9.2:14b"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -185,8 +168,6 @@ exit_code = 0
 [[case]]
 name = "realloc_bytes_zero_frees_and_returns_null"
 spec = ["9.2:14c"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -200,22 +181,8 @@ fn main() -> i32 {
 exit_code = 0
 
 [[case]]
-name = "raw_bytes_require_preview"
-spec = ["9.2:14a", "9.2:14e", "8.4:1"]
-source = """
-fn main() -> i32 {
-    checked { let p: ptr mut u8 = @alloc_bytes(1, 1); @free_bytes(p, 1, 1); };
-    0
-}
-"""
-compile_fail = true
-error_contains = "--preview raw_bytes"
-
-[[case]]
 name = "raw_bytes_require_checked"
 spec = ["9.2:14a", "9.2:14e"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     let p: ptr mut u8 = @alloc_bytes(1, 1);
@@ -228,8 +195,6 @@ error_contains = "[E1300]"
 [[case]]
 name = "byte_write_requires_u8_value"
 spec = ["9.2:14e"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -246,8 +211,6 @@ error_contains = "expected u8"
 [[case]]
 name = "byte_copy_round_trip"
 spec = ["9.2:14g", "9.2:14h"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -271,8 +234,6 @@ exit_code = 60
 [[case]]
 name = "byte_set_fills_every_byte"
 spec = ["9.2:14g", "9.2:14h"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -292,8 +253,6 @@ exit_code = 36
 [[case]]
 name = "byte_copy_size_zero_is_noop"
 spec = ["9.2:14g"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -315,8 +274,6 @@ exit_code = 66
 [[case]]
 name = "byte_copy_copies_subrange"
 spec = ["9.2:14g"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -339,26 +296,8 @@ fn main() -> i32 {
 exit_code = 5
 
 [[case]]
-name = "byte_copy_require_preview"
-spec = ["9.2:14h", "8.4:1"]
-source = """
-fn main() -> i32 {
-    checked {
-        let z: u64 = 0;
-        let p: ptr mut u8 = @int_to_ptr(z);
-        @byte_copy(p, p, 0);
-    };
-    0
-}
-"""
-compile_fail = true
-error_contains = "--preview raw_bytes"
-
-[[case]]
 name = "byte_copy_require_checked"
 spec = ["9.2:14h"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn use_it(p: ptr mut u8) -> i32 {
     @byte_copy(p, p, 0);
@@ -377,8 +316,6 @@ error_contains = "[E1300]"
 [[case]]
 name = "byte_set_requires_u8_value"
 spec = ["9.2:14h"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -395,8 +332,6 @@ error_contains = "expected u8"
 [[case]]
 name = "byte_copy_requires_mut_u8_pointer"
 spec = ["9.2:14h"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -413,8 +348,6 @@ error_contains = "ptr mut u8"
 [[case]]
 name = "alloc_bytes_result_is_ptr_mut_u8"
 spec = ["9.2:14b", "9.2:14e"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -430,8 +363,6 @@ error_contains = "ptr mut u8"
 [[case]]
 name = "alloc_bytes_align_one_round_trip"
 spec = ["9.2:14b", "9.2:14c", "9.2:14j"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -453,8 +384,6 @@ exit_code = 45
 [[case]]
 name = "alloc_bytes_align_eight_round_trip"
 spec = ["9.2:14b", "9.2:14c", "9.2:14j"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -476,8 +405,6 @@ exit_code = 48
 [[case]]
 name = "alloc_bytes_align_zero_rejected"
 spec = ["9.2:14j"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -493,8 +420,6 @@ error_contains = "[E0712]"
 [[case]]
 name = "realloc_bytes_align_not_power_of_two_rejected"
 spec = ["9.2:14j"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -511,8 +436,6 @@ error_contains = "power of two"
 [[case]]
 name = "free_bytes_requires_align_argument"
 spec = ["9.2:14e"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -530,8 +453,6 @@ error_contains = "[E0701]"
 [[case]]
 name = "ptr_unaligned_round_trip"
 spec = ["9.2:14k", "9.2:14m"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     checked {
@@ -546,26 +467,8 @@ fn main() -> i32 {
 exit_code = 34
 
 [[case]]
-name = "ptr_unaligned_requires_preview"
-spec = ["9.2:14a", "9.2:14l"]
-source = """
-fn main() -> i32 {
-    checked {
-        let p: ptr mut i32 = @alloc(1);
-        @ptr_write_unaligned(p, 7);
-        @free(p, 1);
-    };
-    0
-}
-"""
-compile_fail = true
-error_contains = "--preview raw_bytes"
-
-[[case]]
 name = "ptr_unaligned_requires_checked"
 spec = ["9.2:14l"]
-preview = "raw_bytes"
-preview_should_pass = true
 source = """
 fn read(p: ptr mut i32) -> i32 {
     @ptr_read_unaligned(p)

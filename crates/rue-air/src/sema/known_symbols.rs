@@ -113,8 +113,7 @@ pub struct KnownSymbols {
     pub ptr_write: Spur,
     /// The `ptr_read_unaligned` / `ptr_write_unaligned` intrinsics: the
     /// explicit unaligned scalar access pair for packed/parsed data
-    /// (ADR-0059 Phase 4, RUE-978/RUE-962). Gated behind `raw_bytes` with the
-    /// rest of the interim byte surface until RUE-971 stabilizes.
+    /// (ADR-0059 Phase 4, RUE-978/RUE-962).
     pub ptr_read_unaligned: Spur,
     pub ptr_write_unaligned: Spur,
     /// The `ptr_offset` intrinsic symbol - pointer arithmetic.

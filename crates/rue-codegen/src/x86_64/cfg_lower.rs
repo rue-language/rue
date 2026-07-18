@@ -3768,8 +3768,7 @@ mod tests {
 
     #[test]
     fn raw_bytes_runtime_helper_identity_and_slots_match_shared_plan() {
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::RawBytes);
+        let preview = PreviewFeatures::new();
         let mir = lower_to_mir_with_preview(
             "fn main() -> i32 { checked { let p = @alloc_bytes(3, 1); \
              @byte_write(p, 1, 255); let q = @realloc_bytes(p, 3, 1, 5); \
@@ -3814,7 +3813,6 @@ mod tests {
              @byte_write(p, 0, 65); let b = @byte_read(p, 1); \
              @free_bytes(p, 2, 1); @intCast(b) } }";
         let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::RawBytes);
         preview.insert(PreviewFeature::AggregateLayout);
         let mir = lower_to_mir_with_preview(source, preview);
         assert!(
