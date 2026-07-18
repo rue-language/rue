@@ -1,0 +1,131 @@
+// Demand service-level analysis derived from the immutable scenario and event
+// log, including deadline performance and weighted fulfillment.
+const std = @import("std");
+const model = @import("model.rue");
+const state = @import("state.rue");
+const U64s = std.arraybuf.ArrayBuf(u64);
+
+pub struct DemandService {
+    demand: u64,
+    requested: u64,
+    delivered: u64,
+    on_time: u64,
+    late: u64,
+    unmet: u64,
+    first_arrival: u64,
+    last_arrival: u64,
+    weighted_requested: u64,
+    weighted_delivered: u64,
+}
+
+pub const DemandServices = std.arraybuf.ArrayBuf(DemandService);
+
+pub struct Summary {
+    demands: DemandServices,
+    requested: u64,
+    delivered: u64,
+    on_time: u64,
+    late: u64,
+    unmet: u64,
+    weighted_requested: u64,
+    weighted_delivered: u64,
+    complete_demands: u64,
+    on_time_demands: u64,
+}
+
+fn add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+fn mul(a: u64, b: u64) -> u64 {
+    if a == 0 || b == 0 { 0 }
+    else if a > 18446744073709551615 / b { 18446744073709551615 }
+    else { a * b }
+}
+
+fn arrivals_for(borrow scenario: model.Scenario, borrow sim: state.State, demand_index: u64) -> DemandService {
+    let demand = scenario.demands.get_or(demand_index, model.empty_demand());
+    let mut delivered: u64 = 0;
+    let mut on_time: u64 = 0;
+    let mut late: u64 = 0;
+    let mut first = 18446744073709551615;
+    let mut last: u64 = 0;
+    let mut i: u64 = 0;
+    while i < sim.log.len() {
+        let event = sim.log.get_or(i, state.empty_event());
+        if event.tag == state.EVENT_ARRIVAL() && event.demand == demand_index {
+            delivered = add(delivered, event.quantity);
+            if event.time <= demand.deadline { on_time = add(on_time, event.quantity); }
+            else { late = add(late, event.quantity); }
+            if event.time < first { first = event.time; }
+            if event.time > last { last = event.time; }
+        }
+        i = i + 1;
+    }
+    let unmet = if delivered < demand.quantity { demand.quantity - delivered } else { 0 };
+    DemandService {
+        demand: demand_index, requested: demand.quantity, delivered: delivered,
+        on_time: on_time, late: late, unmet: unmet, first_arrival: first,
+        last_arrival: last, weighted_requested: mul(demand.quantity, demand.priority),
+        weighted_delivered: mul(delivered, demand.priority),
+    }
+}
+
+pub fn summarize(borrow scenario: model.Scenario, borrow sim: state.State) -> Summary {
+    let mut demands = DemandServices.new();
+    let mut requested: u64 = 0;
+    let mut delivered: u64 = 0;
+    let mut on_time: u64 = 0;
+    let mut late: u64 = 0;
+    let mut unmet: u64 = 0;
+    let mut weighted_requested: u64 = 0;
+    let mut weighted_delivered: u64 = 0;
+    let mut complete_demands: u64 = 0;
+    let mut on_time_demands: u64 = 0;
+    let mut i: u64 = 0;
+    while i < scenario.demands.len() {
+        let item = arrivals_for(borrow scenario, borrow sim, i);
+        requested = add(requested, item.requested);
+        delivered = add(delivered, item.delivered);
+        on_time = add(on_time, item.on_time);
+        late = add(late, item.late);
+        unmet = add(unmet, item.unmet);
+        weighted_requested = add(weighted_requested, item.weighted_requested);
+        weighted_delivered = add(weighted_delivered, item.weighted_delivered);
+        if item.unmet == 0 { complete_demands = complete_demands + 1; }
+        if item.unmet == 0 && item.late == 0 { on_time_demands = on_time_demands + 1; }
+        demands.push(item);
+        i = i + 1;
+    }
+    Summary {
+        demands: demands, requested: requested, delivered: delivered,
+        on_time: on_time, late: late, unmet: unmet,
+        weighted_requested: weighted_requested, weighted_delivered: weighted_delivered,
+        complete_demands: complete_demands, on_time_demands: on_time_demands,
+    }
+}
+
+pub fn cargo_totals(borrow scenario: model.Scenario, borrow sim: state.State, cargo: u64) -> U64s {
+    let mut totals = U64s.new();
+    let mut requested: u64 = 0;
+    let mut delivered: u64 = 0;
+    let mut on_time: u64 = 0;
+    let mut unmet: u64 = 0;
+    let mut i: u64 = 0;
+    while i < scenario.demands.len() {
+        let demand = scenario.demands.get_or(i, model.empty_demand());
+        if demand.cargo == cargo {
+            let item = arrivals_for(borrow scenario, borrow sim, i);
+            requested = add(requested, item.requested);
+            delivered = add(delivered, item.delivered);
+            on_time = add(on_time, item.on_time);
+            unmet = add(unmet, item.unmet);
+        }
+        i = i + 1;
+    }
+    totals.push(requested);
+    totals.push(delivered);
+    totals.push(on_time);
+    totals.push(unmet);
+    totals
+}

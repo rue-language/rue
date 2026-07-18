@@ -1,0 +1,212 @@
+// Canonical scenario serializer and decode round-trip oracle.
+const std = @import("std");
+const decode = @import("decode.rue");
+const fingerprint = @import("fingerprint.rue");
+const model = @import("model.rue");
+const text = @import("text.rue");
+const validate = @import("validate.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn key(inout out: StrBuf, name: str) {
+    let mut value = StrBuf.new();
+    text.append_literal(inout value, name);
+    text.append_json_string(inout out, borrow value);
+    out.push(58);
+}
+
+fn comma(inout out: StrBuf, inout first: bool) {
+    if first { first = false; } else { out.push(44); }
+}
+
+fn number(inout out: StrBuf, inout first: bool, name: str, value: u64) {
+    comma(inout out, inout first); key(inout out, name); text.append_u64(inout out, value);
+}
+
+fn signed(inout out: StrBuf, inout first: bool, name: str, value: i64) {
+    comma(inout out, inout first); key(inout out, name); text.append_i64(inout out, value);
+}
+
+fn boolean(inout out: StrBuf, inout first: bool, name: str, value: bool) {
+    comma(inout out, inout first); key(inout out, name); text.append_bool(inout out, value);
+}
+
+fn id(inout out: StrBuf, inout first: bool, borrow scenario: model.Scenario, name: str, value: u64) {
+    comma(inout out, inout first); key(inout out, name); text.append_json_id(inout out, borrow scenario, value);
+}
+
+fn kind_name(borrow scenario: model.Scenario, kind: u64) -> u64 { kind }
+
+fn locations(inout out: StrBuf, borrow scenario: model.Scenario) {
+    out.push(91);
+    let mut i: u64 = 0;
+    while i < scenario.locations.len() {
+        if i > 0 { out.push(44); }
+        let item = scenario.locations.get_or(i, model.empty_location());
+        out.push(123); let mut first = true;
+        id(inout out, inout first, borrow scenario, "id", item.id);
+        id(inout out, inout first, borrow scenario, "kind", kind_name(borrow scenario, item.kind));
+        number(inout out, inout first, "capacity", item.capacity);
+        number(inout out, inout first, "handling", item.handling);
+        signed(inout out, inout first, "x", item.x);
+        signed(inout out, inout first, "y", item.y);
+        out.push(125); i = i + 1;
+    }
+    out.push(93);
+}
+
+fn routes(inout out: StrBuf, borrow scenario: model.Scenario) {
+    out.push(91);
+    let mut i: u64 = 0;
+    while i < scenario.routes.len() {
+        if i > 0 { out.push(44); }
+        let item = scenario.routes.get_or(i, model.empty_route());
+        out.push(123); let mut first = true;
+        id(inout out, inout first, borrow scenario, "from", item.from_id);
+        id(inout out, inout first, borrow scenario, "to", item.to_id);
+        number(inout out, inout first, "distance", item.distance);
+        number(inout out, inout first, "capacity", item.capacity);
+        number(inout out, inout first, "cost", item.cost);
+        number(inout out, inout first, "travel", item.travel);
+        boolean(inout out, inout first, "bidirectional", item.bidirectional);
+        out.push(125); i = i + 1;
+    }
+    out.push(93);
+}
+
+fn cargoes(inout out: StrBuf, borrow scenario: model.Scenario) {
+    out.push(91);
+    let mut i: u64 = 0;
+    while i < scenario.cargoes.len() {
+        if i > 0 { out.push(44); }
+        let item = scenario.cargoes.get_or(i, model.empty_cargo());
+        out.push(123); let mut first = true;
+        id(inout out, inout first, borrow scenario, "id", item.id);
+        number(inout out, inout first, "unit_value", item.unit_value);
+        number(inout out, inout first, "shelf_life", item.shelf_life);
+        number(inout out, inout first, "weight", item.weight);
+        out.push(125); i = i + 1;
+    }
+    out.push(93);
+}
+
+fn vehicles(inout out: StrBuf, borrow scenario: model.Scenario) {
+    out.push(91);
+    let mut i: u64 = 0;
+    while i < scenario.vehicles.len() {
+        if i > 0 { out.push(44); }
+        let item = scenario.vehicles.get_or(i, model.empty_vehicle());
+        out.push(123); let mut first = true;
+        id(inout out, inout first, borrow scenario, "id", item.id);
+        id(inout out, inout first, borrow scenario, "at", item.at_id);
+        number(inout out, inout first, "capacity", item.capacity);
+        number(inout out, inout first, "speed", item.speed);
+        number(inout out, inout first, "cost", item.cost);
+        number(inout out, inout first, "available", item.available);
+        out.push(125); i = i + 1;
+    }
+    out.push(93);
+}
+
+fn supplies(inout out: StrBuf, borrow scenario: model.Scenario) {
+    out.push(91);
+    let mut i: u64 = 0;
+    while i < scenario.supplies.len() {
+        if i > 0 { out.push(44); }
+        let item = scenario.supplies.get_or(i, model.empty_supply());
+        out.push(123); let mut first = true;
+        id(inout out, inout first, borrow scenario, "at", item.location_id);
+        id(inout out, inout first, borrow scenario, "cargo", item.cargo_id);
+        number(inout out, inout first, "quantity", item.quantity);
+        number(inout out, inout first, "available", item.available);
+        out.push(125); i = i + 1;
+    }
+    out.push(93);
+}
+
+fn demands(inout out: StrBuf, borrow scenario: model.Scenario) {
+    out.push(91);
+    let mut i: u64 = 0;
+    while i < scenario.demands.len() {
+        if i > 0 { out.push(44); }
+        let item = scenario.demands.get_or(i, model.empty_demand());
+        out.push(123); let mut first = true;
+        id(inout out, inout first, borrow scenario, "at", item.location_id);
+        id(inout out, inout first, borrow scenario, "cargo", item.cargo_id);
+        number(inout out, inout first, "quantity", item.quantity);
+        number(inout out, inout first, "deadline", item.deadline);
+        number(inout out, inout first, "priority", item.priority);
+        out.push(125); i = i + 1;
+    }
+    out.push(93);
+}
+
+fn productions(inout out: StrBuf, borrow scenario: model.Scenario) {
+    out.push(91);
+    let mut i: u64 = 0;
+    while i < scenario.productions.len() {
+        if i > 0 { out.push(44); }
+        let item = scenario.productions.get_or(i, model.empty_production());
+        out.push(123); let mut first = true;
+        id(inout out, inout first, borrow scenario, "at", item.location_id);
+        id(inout out, inout first, borrow scenario, "cargo", item.cargo_id);
+        number(inout out, inout first, "quantity", item.quantity);
+        number(inout out, inout first, "every", item.every);
+        number(inout out, inout first, "start", item.start);
+        number(inout out, inout first, "end", item.end);
+        out.push(125); i = i + 1;
+    }
+    out.push(93);
+}
+
+fn disruptions(inout out: StrBuf, borrow scenario: model.Scenario) {
+    out.push(91);
+    let mut i: u64 = 0;
+    while i < scenario.disruptions.len() {
+        if i > 0 { out.push(44); }
+        let item = scenario.disruptions.get_or(i, model.empty_disruption());
+        out.push(123); let mut first = true;
+        number(inout out, inout first, "route", item.route);
+        number(inout out, inout first, "start", item.start);
+        number(inout out, inout first, "end", item.end);
+        number(inout out, inout first, "capacity_percent", item.capacity_percent);
+        number(inout out, inout first, "cost_percent", item.cost_percent);
+        out.push(125); i = i + 1;
+    }
+    out.push(93);
+}
+
+pub fn render(borrow scenario: model.Scenario) -> StrBuf {
+    let mut out = StrBuf.new();
+    out.push(123); let mut first = true;
+    id(inout out, inout first, borrow scenario, "name", scenario.name);
+    number(inout out, inout first, "duration", scenario.duration);
+    number(inout out, inout first, "seed", scenario.seed);
+    comma(inout out, inout first); key(inout out, "locations"); locations(inout out, borrow scenario);
+    comma(inout out, inout first); key(inout out, "routes"); routes(inout out, borrow scenario);
+    comma(inout out, inout first); key(inout out, "cargo"); cargoes(inout out, borrow scenario);
+    comma(inout out, inout first); key(inout out, "vehicles"); vehicles(inout out, borrow scenario);
+    comma(inout out, inout first); key(inout out, "supplies"); supplies(inout out, borrow scenario);
+    comma(inout out, inout first); key(inout out, "demands"); demands(inout out, borrow scenario);
+    comma(inout out, inout first); key(inout out, "production"); productions(inout out, borrow scenario);
+    comma(inout out, inout first); key(inout out, "disruptions"); disruptions(inout out, borrow scenario);
+    out.push(125); out.push(10);
+    out
+}
+
+pub fn roundtrip_fingerprint(borrow scenario: model.Scenario) -> u64 {
+    let encoded = render(borrow scenario);
+    let mut decoded = decode.source(encoded);
+    validate.scenario(inout decoded);
+    if decoded.diagnostics.len() > 0 { 0 } else { fingerprint.scenario(borrow decoded) }
+}
+
+pub fn decoded_diagnostics(borrow scenario: model.Scenario) -> u64 {
+    let encoded = render(borrow scenario);
+    let mut decoded = decode.source(encoded);
+    validate.scenario(inout decoded);
+    decoded.diagnostics.len()
+}
+
+pub fn roundtrips(borrow scenario: model.Scenario) -> bool {
+    roundtrip_fingerprint(borrow scenario) == fingerprint.scenario(borrow scenario)
+}

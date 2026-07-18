@@ -1,0 +1,273 @@
+// Actionable checklist derived from simulation evidence. Findings retain
+// numeric evidence and explicit completion criteria so the output is useful to
+// both operators and deterministic regression tests.
+const std = @import("std");
+const contingency = @import("contingency.rue");
+const inventory_policy = @import("inventory_policy.rue");
+const model = @import("model.rue");
+const risk_register = @import("risk_register.rue");
+const route_audit = @import("route_audit.rue");
+const service = @import("service.rue");
+const shipment_manifest = @import("shipment_manifest.rue");
+const state = @import("state.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn AREA_ROUTES() -> u64 { 1 }
+pub fn AREA_SERVICE() -> u64 { 2 }
+pub fn AREA_INVENTORY() -> u64 { 3 }
+pub fn AREA_RISK() -> u64 { 4 }
+pub fn AREA_FLEET() -> u64 { 5 }
+pub fn AREA_DATA() -> u64 { 6 }
+
+pub struct Item {
+    area: u64,
+    subject: u64,
+    priority: u64,
+    evidence: u64,
+    target: u64,
+    owner: u64,
+    due_hour: u64,
+    blocking: bool,
+    complete: bool,
+}
+
+pub const Items = std.arraybuf.ArrayBuf(Item);
+
+pub struct Checklist {
+    items: Items,
+    blocking: u64,
+    urgent: u64,
+    high: u64,
+    normal: u64,
+    complete: u64,
+    open: u64,
+    evidence_total: u64,
+    digest: u64,
+}
+
+fn add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+fn mix(value: u64, next: u64) -> u64 { @wrapping_mul(value ^ next, 1099511628211) }
+
+fn item(area: u64, subject: u64, priority: u64, evidence: u64, target: u64, owner: u64, due: u64, blocking: bool, complete: bool) -> Item {
+    Item { area: area, subject: subject, priority: priority, evidence: evidence,
+        target: target, owner: owner, due_hour: due, blocking: blocking, complete: complete }
+}
+
+fn empty_item() -> Item { item(0, model.NONE(), 0, 0, 0, 0, 0, false, false) }
+
+fn route_items(borrow audit: route_audit.Audit, borrow plan: contingency.Plan, inout items: Items) {
+    if audit.errors > 0 {
+        items.push(item(AREA_ROUTES(), 0, 1, audit.errors, 0, 1, 0, true, false));
+    } else {
+        items.push(item(AREA_ROUTES(), 0, 3, audit.pairs, audit.pairs, 1, 0, false, true));
+    }
+    if plan.isolated > 0 {
+        items.push(item(AREA_ROUTES(), plan.worst_disruption, if plan.worst_isolated > 10 { 1 } else { 2 },
+            plan.worst_isolated, 0, 1, plan.windows, plan.worst_isolated > 10, false));
+    }
+    if plan.degraded > 0 {
+        items.push(item(AREA_ROUTES(), plan.worst_disruption, 2, plan.degraded, 0, 1,
+            plan.windows, false, false));
+    }
+}
+
+fn service_items(borrow served: service.Summary, inout items: Items) {
+    if served.unmet > 0 {
+        items.push(item(AREA_SERVICE(), 0, 1, served.unmet, 0, 2, 0, true, false));
+    } else {
+        items.push(item(AREA_SERVICE(), 0, 3, served.delivered, served.requested, 2, 0, false, true));
+    }
+    if served.late > 0 {
+        items.push(item(AREA_SERVICE(), 1, if served.late * 4 > served.requested { 1 } else { 2 },
+            served.late, 0, 2, 1, false, false));
+    }
+}
+
+fn inventory_items(borrow policies: inventory_policy.Book, inout items: Items) {
+    if policies.expedite > 0 {
+        items.push(item(AREA_INVENTORY(), policies.maximum_cargo, 1, policies.expedite, 0,
+            3, 1, false, false));
+    }
+    if policies.redistribute > 0 {
+        items.push(item(AREA_INVENTORY(), policies.maximum_location, 2, policies.redistribute, 0,
+            3, 2, false, false));
+    }
+    if policies.reorder > 0 {
+        items.push(item(AREA_INVENTORY(), 0, 3, policies.total_order_quantity, 0,
+            3, 3, false, false));
+    }
+    if policies.expedite == 0 && policies.redistribute == 0 && policies.reorder == 0 {
+        items.push(item(AREA_INVENTORY(), 0, 3, policies.hold, policies.policies.len(),
+            3, 0, false, true));
+    }
+}
+
+fn risk_items(borrow risks: risk_register.Register, inout items: Items) {
+    if risks.critical > 0 {
+        items.push(item(AREA_RISK(), risks.maximum_subject, 1, risks.maximum_score, 0,
+            4, 0, true, false));
+    }
+    if risks.high > 0 {
+        items.push(item(AREA_RISK(), risks.maximum_subject, 2, risks.high, 0,
+            4, 2, false, false));
+    }
+    if risks.critical == 0 && risks.high == 0 {
+        items.push(item(AREA_RISK(), 0, 3, risks.risks.len(), risks.risks.len(),
+            4, 0, false, true));
+    }
+}
+
+fn fleet_items(borrow manifest: shipment_manifest.Manifest, inout items: Items) {
+    if manifest.unmatched > 0 || manifest.ordering_errors > 0 {
+        items.push(item(AREA_FLEET(), 0, 1, manifest.unmatched + manifest.ordering_errors, 0,
+            5, 0, true, false));
+    } else {
+        items.push(item(AREA_FLEET(), 0, 3, manifest.matched, manifest.departures,
+            5, 0, false, true));
+    }
+    if manifest.late > 0 {
+        items.push(item(AREA_FLEET(), 1, 2, manifest.late, 0, 5, 1, false, false));
+    }
+}
+
+pub fn build(borrow scenario: model.Scenario, borrow sim: state.State) -> Checklist {
+    let routes = route_audit.run(borrow scenario, 0, 1);
+    let contingencies = contingency.build(borrow scenario);
+    let served = service.summarize(borrow scenario, borrow sim);
+    let policies = inventory_policy.build(borrow scenario, borrow sim);
+    let risks = risk_register.build(borrow scenario, borrow sim);
+    let manifest = shipment_manifest.build(borrow scenario, borrow sim);
+    let mut items = Items.new();
+    route_items(borrow routes, borrow contingencies, inout items);
+    service_items(borrow served, inout items);
+    inventory_items(borrow policies, inout items);
+    risk_items(borrow risks, inout items);
+    fleet_items(borrow manifest, inout items);
+    let mut blocking: u64 = 0; let mut urgent: u64 = 0; let mut high: u64 = 0;
+    let mut normal: u64 = 0; let mut complete: u64 = 0; let mut open: u64 = 0;
+    let mut evidence_total: u64 = 0; let mut digest: u64 = 14695981039346656037;
+    let mut i: u64 = 0;
+    while i < items.len() {
+        let value = items.get_or(i, empty_item());
+        if value.blocking { blocking = blocking + 1; }
+        if value.priority == 1 { urgent = urgent + 1; }
+        else if value.priority == 2 { high = high + 1; }
+        else { normal = normal + 1; }
+        if value.complete { complete = complete + 1; } else { open = open + 1; }
+        evidence_total = add(evidence_total, value.evidence);
+        digest = mix(digest, value.area); digest = mix(digest, value.subject);
+        digest = mix(digest, value.evidence); digest = mix(digest, value.target);
+        i = i + 1;
+    }
+    Checklist { items: items, blocking: blocking, urgent: urgent, high: high,
+        normal: normal, complete: complete, open: open,
+        evidence_total: evidence_total, digest: digest }
+}
+
+fn append_area(inout out: StrBuf, area: u64) {
+    if area == AREA_ROUTES() { text.append_literal(inout out, "routes"); }
+    else if area == AREA_SERVICE() { text.append_literal(inout out, "service"); }
+    else if area == AREA_INVENTORY() { text.append_literal(inout out, "inventory"); }
+    else if area == AREA_RISK() { text.append_literal(inout out, "risk"); }
+    else if area == AREA_FLEET() { text.append_literal(inout out, "fleet"); }
+    else { text.append_literal(inout out, "data"); }
+}
+
+fn owner_open(borrow value: Checklist, owner: u64) -> u64 {
+    let mut count: u64 = 0;
+    let mut i: u64 = 0;
+    while i < value.items.len() {
+        let item_value = value.items.get_or(i, empty_item());
+        if item_value.owner == owner && !item_value.complete { count = count + 1; }
+        i = i + 1;
+    }
+    count
+}
+
+fn owner_blocking(borrow value: Checklist, owner: u64) -> u64 {
+    let mut count: u64 = 0;
+    let mut i: u64 = 0;
+    while i < value.items.len() {
+        let item_value = value.items.get_or(i, empty_item());
+        if item_value.owner == owner && item_value.blocking && !item_value.complete { count = count + 1; }
+        i = i + 1;
+    }
+    count
+}
+
+fn owner_evidence(borrow value: Checklist, owner: u64) -> u64 {
+    let mut total: u64 = 0;
+    let mut i: u64 = 0;
+    while i < value.items.len() {
+        let item_value = value.items.get_or(i, empty_item());
+        if item_value.owner == owner { total = add(total, item_value.evidence); }
+        i = i + 1;
+    }
+    total
+}
+
+fn due_open(borrow value: Checklist, due: u64) -> u64 {
+    let mut count: u64 = 0;
+    let mut i: u64 = 0;
+    while i < value.items.len() {
+        let item_value = value.items.get_or(i, empty_item());
+        if item_value.due_hour <= due && !item_value.complete { count = count + 1; }
+        i = i + 1;
+    }
+    count
+}
+
+fn render_owner_summary(inout out: StrBuf, borrow value: Checklist) {
+    text.append_literal(inout out, "owner open blocking evidence\n");
+    let mut owner: u64 = 1;
+    while owner <= 5 {
+        text.append_u64(inout out, owner); out.push(32);
+        text.append_u64(inout out, owner_open(borrow value, owner)); out.push(32);
+        text.append_u64(inout out, owner_blocking(borrow value, owner)); out.push(32);
+        text.append_u64(inout out, owner_evidence(borrow value, owner)); out.push(10);
+        owner = owner + 1;
+    }
+}
+
+fn render_due_summary(inout out: StrBuf, borrow value: Checklist) {
+    text.append_literal(inout out, "due_hour cumulative_open\n");
+    let mut due: u64 = 0;
+    while due <= 4 {
+        text.append_u64(inout out, due); out.push(32);
+        text.append_u64(inout out, due_open(borrow value, due)); out.push(10);
+        due = due + 1;
+    }
+}
+
+pub fn render(borrow value: Checklist) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "Operator checklist\narea subject priority evidence target owner due blocking complete\n");
+    let mut i: u64 = 0;
+    while i < value.items.len() {
+        let item_value = value.items.get_or(i, empty_item());
+        append_area(inout out, item_value.area); out.push(32);
+        text.append_u64(inout out, item_value.subject); out.push(32);
+        text.append_u64(inout out, item_value.priority); out.push(32);
+        text.append_u64(inout out, item_value.evidence); out.push(32);
+        text.append_u64(inout out, item_value.target); out.push(32);
+        text.append_u64(inout out, item_value.owner); out.push(32);
+        text.append_u64(inout out, item_value.due_hour); out.push(32);
+        text.append_bool(inout out, item_value.blocking); out.push(32);
+        text.append_bool(inout out, item_value.complete); out.push(10); i = i + 1;
+    }
+    text.append_literal(inout out, "blocking="); text.append_u64(inout out, value.blocking);
+    text.append_literal(inout out, " urgent="); text.append_u64(inout out, value.urgent);
+    text.append_literal(inout out, " high="); text.append_u64(inout out, value.high);
+    text.append_literal(inout out, " normal="); text.append_u64(inout out, value.normal); out.push(10);
+    text.append_literal(inout out, "complete="); text.append_u64(inout out, value.complete);
+    text.append_literal(inout out, " open="); text.append_u64(inout out, value.open);
+    text.append_literal(inout out, " evidence_total="); text.append_u64(inout out, value.evidence_total);
+    text.append_literal(inout out, " digest="); text.append_u64(inout out, value.digest); out.push(10);
+    render_owner_summary(inout out, borrow value);
+    render_due_summary(inout out, borrow value);
+    out
+}

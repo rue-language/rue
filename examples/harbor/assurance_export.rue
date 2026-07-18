@@ -1,0 +1,137 @@
+// Machine-readable assurance export. The CSV sections intentionally expose
+// raw route, contingency, variant, and risk evidence for external analysis.
+const std = @import("std");
+const contingency = @import("contingency.rue");
+const model = @import("model.rue");
+const risk_register = @import("risk_register.rue");
+const route_audit = @import("route_audit.rue");
+const routing = @import("routing.rue");
+const scenario_compare = @import("scenario_compare.rue");
+const state = @import("state.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn comma(inout out: StrBuf) { out.push(44); }
+fn newline(inout out: StrBuf) { out.push(10); }
+fn number(inout out: StrBuf, value: u64) { text.append_u64(inout out, value); }
+fn boolean(inout out: StrBuf, value: bool) { text.append_bool(inout out, value); }
+
+fn append_mode(inout out: StrBuf, value: u64) {
+    if value == routing.MODE_COST() { text.append_literal(inout out, "cost"); }
+    else if value == routing.MODE_TIME() { text.append_literal(inout out, "time"); }
+    else { text.append_literal(inout out, "distance"); }
+}
+
+fn append_risk(inout out: StrBuf, value: u64) {
+    if value == risk_register.KIND_ROUTE() { text.append_literal(inout out, "route"); }
+    else if value == risk_register.KIND_DEMAND() { text.append_literal(inout out, "demand"); }
+    else if value == risk_register.KIND_CARGO() { text.append_literal(inout out, "cargo"); }
+    else if value == risk_register.KIND_FLEET() { text.append_literal(inout out, "fleet"); }
+    else { text.append_literal(inout out, "inventory"); }
+}
+
+fn route_rows(inout out: StrBuf, borrow audit: route_audit.Audit) {
+    text.append_literal(inout out, "table,mode,at,minimum_capacity,pairs,reachable,unreachable,total_hops,max_hops,total_weight,endpoint_errors,continuity_errors,direction_errors,capacity_errors,weight_errors,cycle_errors\n");
+    let mut i: u64 = 0;
+    while i < audit.modes.len() {
+        let item = audit.modes.get_or(i, route_audit.ModeAudit {
+            mode: 0, pairs: 0, reachable: 0, unreachable: 0,
+            endpoint_errors: 0, continuity_errors: 0, direction_errors: 0,
+            capacity_errors: 0, weight_errors: 0, cycle_errors: 0,
+            total_hops: 0, maximum_hops: 0, total_weight: 0,
+        });
+        text.append_literal(inout out, "route_audit,"); append_mode(inout out, item.mode); comma(inout out);
+        number(inout out, audit.at); comma(inout out); number(inout out, audit.minimum_capacity); comma(inout out);
+        number(inout out, item.pairs); comma(inout out); number(inout out, item.reachable); comma(inout out);
+        number(inout out, item.unreachable); comma(inout out); number(inout out, item.total_hops); comma(inout out);
+        number(inout out, item.maximum_hops); comma(inout out); number(inout out, item.total_weight); comma(inout out);
+        number(inout out, item.endpoint_errors); comma(inout out); number(inout out, item.continuity_errors); comma(inout out);
+        number(inout out, item.direction_errors); comma(inout out); number(inout out, item.capacity_errors); comma(inout out);
+        number(inout out, item.weight_errors); comma(inout out); number(inout out, item.cycle_errors); newline(inout out);
+        i = i + 1;
+    }
+}
+
+fn contingency_rows(inout out: StrBuf, borrow plan: contingency.Plan) {
+    newline(inout out);
+    text.append_literal(inout out, "table,disruption,at,from,to,minimum_capacity,reachable,cost,travel,distance,hops,bottleneck\n");
+    let mut i: u64 = 0;
+    while i < plan.options.len() {
+        let item = plan.options.get_or(i, contingency.Option {
+            disruption: model.NONE(), at: 0, from: model.NONE(), to: model.NONE(),
+            minimum_capacity: 0, reachable: false, cost: routing.INF(), travel: 0,
+            distance: 0, hops: 0, bottleneck: 0,
+        });
+        text.append_literal(inout out, "contingency,"); number(inout out, item.disruption); comma(inout out);
+        number(inout out, item.at); comma(inout out); number(inout out, item.from); comma(inout out);
+        number(inout out, item.to); comma(inout out); number(inout out, item.minimum_capacity); comma(inout out);
+        boolean(inout out, item.reachable); comma(inout out);
+        if item.cost == routing.INF() { text.append_literal(inout out, "unreachable"); } else { number(inout out, item.cost); }
+        comma(inout out); number(inout out, item.travel); comma(inout out); number(inout out, item.distance); comma(inout out);
+        number(inout out, item.hops); comma(inout out); number(inout out, item.bottleneck); newline(inout out);
+        i = i + 1;
+    }
+}
+
+fn comparison_rows(inout out: StrBuf, borrow comparison: scenario_compare.Comparison) {
+    newline(inout out);
+    text.append_literal(inout out, "table,variant,mode,before_at,during_at,before_reachable,during_reachable,newly_unreachable,newly_reachable,increased,decreased,unchanged,before_total,during_total,added_weight,largest_increase,largest_from,largest_to\n");
+    let mut i: u64 = 0;
+    while i < comparison.deltas.len() {
+        let item = comparison.deltas.get_or(i, scenario_compare.Delta {
+            disruption: model.NONE(), mode: 0, before_at: 0, during_at: 0,
+            before_reachable: 0, during_reachable: 0, newly_unreachable: 0,
+            newly_reachable: 0, increased: 0, decreased: 0, unchanged: 0,
+            before_total: 0, during_total: 0, added_weight: 0,
+            largest_increase: 0, largest_from: model.NONE(), largest_to: model.NONE(),
+        });
+        text.append_literal(inout out, "comparison,"); number(inout out, item.disruption); comma(inout out);
+        append_mode(inout out, item.mode); comma(inout out);
+        number(inout out, item.before_at); comma(inout out); number(inout out, item.during_at); comma(inout out);
+        number(inout out, item.before_reachable); comma(inout out); number(inout out, item.during_reachable); comma(inout out);
+        number(inout out, item.newly_unreachable); comma(inout out); number(inout out, item.newly_reachable); comma(inout out);
+        number(inout out, item.increased); comma(inout out); number(inout out, item.decreased); comma(inout out);
+        number(inout out, item.unchanged); comma(inout out); number(inout out, item.before_total); comma(inout out);
+        number(inout out, item.during_total); comma(inout out); number(inout out, item.added_weight); comma(inout out);
+        number(inout out, item.largest_increase); comma(inout out); number(inout out, item.largest_from); comma(inout out);
+        number(inout out, item.largest_to); newline(inout out);
+        i = i + 1;
+    }
+}
+
+fn risk_rows(inout out: StrBuf, borrow risks: risk_register.Register) {
+    newline(inout out);
+    text.append_literal(inout out, "table,kind,subject,severity,likelihood,exposure,score,evidence,mitigation\n");
+    let mut i: u64 = 0;
+    while i < risks.risks.len() {
+        let item = risks.risks.get_or(i, risk_register.Risk {
+            kind: 0, subject: model.NONE(), severity: 0, likelihood: 0,
+            exposure: 0, score: 0, evidence: 0, mitigation: 0,
+        });
+        text.append_literal(inout out, "risk,"); append_risk(inout out, item.kind); comma(inout out);
+        number(inout out, item.subject); comma(inout out); number(inout out, item.severity); comma(inout out);
+        number(inout out, item.likelihood); comma(inout out); number(inout out, item.exposure); comma(inout out);
+        number(inout out, item.score); comma(inout out); number(inout out, item.evidence); comma(inout out);
+        number(inout out, item.mitigation); newline(inout out);
+        i = i + 1;
+    }
+}
+
+pub fn render(borrow scenario: model.Scenario, borrow sim: state.State) -> StrBuf {
+    let routes = route_audit.run(borrow scenario, 0, 1);
+    let contingencies = contingency.build(borrow scenario);
+    let comparisons = scenario_compare.compare(borrow scenario);
+    let risks = risk_register.build(borrow scenario, borrow sim);
+    let mut out = StrBuf.new();
+    route_rows(inout out, borrow routes);
+    contingency_rows(inout out, borrow contingencies);
+    comparison_rows(inout out, borrow comparisons);
+    risk_rows(inout out, borrow risks);
+    newline(inout out);
+    text.append_literal(inout out, "table,route_errors,contingency_isolated,comparison_disconnected,risk_critical,route_digest,contingency_digest,comparison_digest,risk_digest\nsummary,");
+    number(inout out, routes.errors); comma(inout out); number(inout out, contingencies.isolated); comma(inout out);
+    number(inout out, comparisons.newly_unreachable); comma(inout out); number(inout out, risks.critical); comma(inout out);
+    number(inout out, routes.path_digest); comma(inout out); number(inout out, contingencies.digest); comma(inout out);
+    number(inout out, comparisons.digest); comma(inout out); number(inout out, risks.digest); newline(inout out);
+    out
+}

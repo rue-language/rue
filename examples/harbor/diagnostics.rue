@@ -1,0 +1,46 @@
+// Stable presentation for validation errors.
+const std = @import("std");
+const model = @import("model.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render_one(borrow scenario: model.Scenario, diagnostic: model.Diagnostic) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "harbor[");
+    let code = model.code_name(diagnostic.code);
+    text.append_string(inout out, borrow code);
+    text.append_literal(inout out, "] ");
+    text.append_id(inout out, borrow scenario, diagnostic.subject);
+    text.append_literal(inout out, ": ");
+    text.append_id(inout out, borrow scenario, diagnostic.detail);
+    out.push(10);
+    out
+}
+
+pub fn render(borrow scenario: model.Scenario) -> StrBuf {
+    let mut out = StrBuf.new();
+    let mut i: u64 = 0;
+    while i < scenario.diagnostics.len() {
+        let diagnostic = scenario.diagnostics.get_or(i, model.Diagnostic { code: 0, subject: model.NONE(), detail: model.NONE() });
+        let line = render_one(borrow scenario, diagnostic);
+        text.append_string(inout out, borrow line);
+        i = i + 1;
+    }
+    out
+}
+
+pub fn count_code(borrow scenario: model.Scenario, code: u64) -> u64 {
+    let mut count: u64 = 0;
+    let mut i: u64 = 0;
+    while i < scenario.diagnostics.len() {
+        let diagnostic = scenario.diagnostics.get_or(i, model.Diagnostic { code: 0, subject: 0, detail: 0 });
+        if diagnostic.code == code { count = count + 1; }
+        i = i + 1;
+    }
+    count
+}
+
+pub fn fingerprint(borrow scenario: model.Scenario) -> u64 {
+    let rendered = render(borrow scenario);
+    text.fnv1a(borrow rendered)
+}

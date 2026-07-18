@@ -1,0 +1,233 @@
+// Deterministic supply/demand projection independent of dispatch decisions.
+// It answers whether each cargo is structurally scarce and when that scarcity
+// first appears, providing an oracle-like input check for simulation reports.
+const std = @import("std");
+const model = @import("model.rue");
+const state = @import("state.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+const U64s = std.arraybuf.ArrayBuf(u64);
+
+pub struct CargoForecast {
+    cargo: u64,
+    initial_supply: u64,
+    projected_production: u64,
+    requested: u64,
+    available: u64,
+    surplus: u64,
+    shortage: u64,
+    first_supply: u64,
+    last_supply: u64,
+    first_deadline: u64,
+    last_deadline: u64,
+}
+
+pub const CargoForecasts = std.arraybuf.ArrayBuf(CargoForecast);
+
+pub struct Hour {
+    time: u64,
+    supply: u64,
+    demand_due: u64,
+    cumulative_supply: u64,
+    cumulative_demand: u64,
+    net: i64,
+}
+
+pub const Hours = std.arraybuf.ArrayBuf(Hour);
+
+pub struct Summary {
+    cargoes: CargoForecasts,
+    total_supply: u64,
+    total_production: u64,
+    total_requested: u64,
+    total_shortage: u64,
+    scarce_cargoes: u64,
+}
+
+fn add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+fn occurrences(start: u64, end: u64, every: u64, duration: u64) -> u64 {
+    if every == 0 || start > end || start > duration { return 0; }
+    let capped_end = if end < duration { end } else { duration };
+    if capped_end < start { 0 } else { ((capped_end - start) / every) + 1 }
+}
+
+fn one(borrow scenario: model.Scenario, cargo: u64) -> CargoForecast {
+    let mut initial_supply: u64 = 0;
+    let mut projected_production: u64 = 0;
+    let mut requested: u64 = 0;
+    let mut first_supply = model.NONE();
+    let mut last_supply: u64 = 0;
+    let mut first_deadline = model.NONE();
+    let mut last_deadline: u64 = 0;
+    let mut i: u64 = 0;
+    while i < scenario.supplies.len() {
+        let item = scenario.supplies.get_or(i, model.empty_supply());
+        if item.cargo == cargo {
+            initial_supply = add(initial_supply, item.quantity);
+            if first_supply == model.NONE() || item.available < first_supply { first_supply = item.available; }
+            if item.available > last_supply { last_supply = item.available; }
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < scenario.productions.len() {
+        let item = scenario.productions.get_or(i, model.empty_production());
+        if item.cargo == cargo {
+            let count = occurrences(item.start, item.end, item.every, scenario.duration);
+            projected_production = add(projected_production, item.quantity * count);
+            if count > 0 {
+                let final_time = item.start + (count - 1) * item.every;
+                if first_supply == model.NONE() || item.start < first_supply { first_supply = item.start; }
+                if final_time > last_supply { last_supply = final_time; }
+            }
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < scenario.demands.len() {
+        let item = scenario.demands.get_or(i, model.empty_demand());
+        if item.cargo == cargo {
+            requested = add(requested, item.quantity);
+            if first_deadline == model.NONE() || item.deadline < first_deadline { first_deadline = item.deadline; }
+            if item.deadline > last_deadline { last_deadline = item.deadline; }
+        }
+        i = i + 1;
+    }
+    let available = add(initial_supply, projected_production);
+    CargoForecast {
+        cargo: cargo, initial_supply: initial_supply,
+        projected_production: projected_production, requested: requested,
+        available: available,
+        surplus: if available > requested { available - requested } else { 0 },
+        shortage: if requested > available { requested - available } else { 0 },
+        first_supply: first_supply, last_supply: last_supply,
+        first_deadline: first_deadline, last_deadline: last_deadline,
+    }
+}
+
+pub fn summarize(borrow scenario: model.Scenario) -> Summary {
+    let mut cargoes = CargoForecasts.new();
+    let mut total_supply: u64 = 0;
+    let mut total_production: u64 = 0;
+    let mut total_requested: u64 = 0;
+    let mut total_shortage: u64 = 0;
+    let mut scarce_cargoes: u64 = 0;
+    let mut cargo: u64 = 0;
+    while cargo < scenario.cargoes.len() {
+        let item = one(borrow scenario, cargo);
+        total_supply = add(total_supply, item.initial_supply);
+        total_production = add(total_production, item.projected_production);
+        total_requested = add(total_requested, item.requested);
+        total_shortage = add(total_shortage, item.shortage);
+        if item.shortage > 0 { scarce_cargoes = scarce_cargoes + 1; }
+        cargoes.push(item);
+        cargo = cargo + 1;
+    }
+    Summary {
+        cargoes: cargoes, total_supply: total_supply,
+        total_production: total_production, total_requested: total_requested,
+        total_shortage: total_shortage, scarce_cargoes: scarce_cargoes,
+    }
+}
+
+fn supply_at(borrow scenario: model.Scenario, cargo: u64, time: u64) -> u64 {
+    let mut total: u64 = 0;
+    let mut i: u64 = 0;
+    while i < scenario.supplies.len() {
+        let item = scenario.supplies.get_or(i, model.empty_supply());
+        if item.cargo == cargo && item.available == time { total = add(total, item.quantity); }
+        i = i + 1;
+    }
+    i = 0;
+    while i < scenario.productions.len() {
+        let item = scenario.productions.get_or(i, model.empty_production());
+        if item.cargo == cargo && item.every > 0 && time >= item.start && time <= item.end && (time - item.start) % item.every == 0 {
+            total = add(total, item.quantity);
+        }
+        i = i + 1;
+    }
+    total
+}
+
+fn demand_at(borrow scenario: model.Scenario, cargo: u64, time: u64) -> u64 {
+    let mut total: u64 = 0;
+    let mut i: u64 = 0;
+    while i < scenario.demands.len() {
+        let item = scenario.demands.get_or(i, model.empty_demand());
+        if item.cargo == cargo && item.deadline == time { total = add(total, item.quantity); }
+        i = i + 1;
+    }
+    total
+}
+
+pub fn timeline(borrow scenario: model.Scenario, cargo: u64, step: u64) -> Hours {
+    let mut hours = Hours.new();
+    if cargo >= scenario.cargoes.len() || step == 0 { return hours; }
+    let mut cumulative_supply: u64 = 0;
+    let mut cumulative_demand: u64 = 0;
+    let mut time: u64 = 0;
+    while time <= scenario.duration {
+        let mut bucket_supply: u64 = 0;
+        let mut bucket_demand: u64 = 0;
+        let end = if step > scenario.duration - time { scenario.duration } else { time + step - 1 };
+        let mut at = time;
+        while at <= end {
+            bucket_supply = add(bucket_supply, supply_at(borrow scenario, cargo, at));
+            bucket_demand = add(bucket_demand, demand_at(borrow scenario, cargo, at));
+            at = at + 1;
+        }
+        cumulative_supply = add(cumulative_supply, bucket_supply);
+        cumulative_demand = add(cumulative_demand, bucket_demand);
+        let net = if cumulative_supply >= cumulative_demand {
+            @intCast(cumulative_supply - cumulative_demand)
+        } else {
+            0 - @intCast(cumulative_demand - cumulative_supply)
+        };
+        hours.push(Hour {
+            time: time, supply: bucket_supply, demand_due: bucket_demand,
+            cumulative_supply: cumulative_supply, cumulative_demand: cumulative_demand,
+            net: net,
+        });
+        if end == scenario.duration { break; }
+        time = end + 1;
+    }
+    hours
+}
+
+pub fn simulation_gap(borrow scenario: model.Scenario, borrow sim: state.State, cargo: u64) -> i64 {
+    let projected = one(borrow scenario, cargo);
+    let actual_sources = add(sim.supplied.get_or(cargo, 0), sim.produced.get_or(cargo, 0));
+    if projected.available >= actual_sources { @intCast(projected.available - actual_sources) }
+    else { 0 - @intCast(actual_sources - projected.available) }
+}
+
+pub fn render(borrow scenario: model.Scenario) -> StrBuf {
+    let summary = summarize(borrow scenario);
+    let mut out = StrBuf.new();
+    text.heading(inout out, "Supply and demand forecast");
+    let mut i: u64 = 0;
+    while i < summary.cargoes.len() {
+        let item = summary.cargoes.get_or(i, CargoForecast {
+            cargo: model.NONE(), initial_supply: 0, projected_production: 0,
+            requested: 0, available: 0, surplus: 0, shortage: 0,
+            first_supply: model.NONE(), last_supply: 0,
+            first_deadline: model.NONE(), last_deadline: 0,
+        });
+        let cargo = scenario.cargoes.get_or(item.cargo, model.empty_cargo());
+        text.append_id(inout out, borrow scenario, cargo.id);
+        text.append_literal(inout out, " available=");
+        text.append_u64(inout out, item.available);
+        text.append_literal(inout out, " requested=");
+        text.append_u64(inout out, item.requested);
+        text.append_literal(inout out, " surplus=");
+        text.append_u64(inout out, item.surplus);
+        text.append_literal(inout out, " shortage=");
+        text.append_u64(inout out, item.shortage);
+        out.push(10);
+        i = i + 1;
+    }
+    out
+}

@@ -1,0 +1,83 @@
+// Independent bounded Bellman-Ford oracle for Dijkstra. It shares only the
+// edge policy helpers, not the queue, relaxation order, or path reconstruction.
+const std = @import("std");
+const model = @import("model.rue");
+const routing = @import("routing.rue");
+const U64s = std.arraybuf.ArrayBuf(u64);
+
+fn add_saturating(a: u64, b: u64) -> u64 {
+    if a == routing.INF() || b > routing.INF() - a { routing.INF() } else { a + b }
+}
+
+fn fill(inout values: U64s, count: u64, value: u64) {
+    let mut i: u64 = 0;
+    while i < count { values.push(value); i = i + 1; }
+}
+
+fn relax(
+    borrow scenario: model.Scenario,
+    route_index: u64,
+    from: u64,
+    to: u64,
+    now: u64,
+    minimum_capacity: u64,
+    mode: u64,
+    inout distances: U64s,
+) -> bool {
+    if from >= distances.len() || to >= distances.len() { return false; }
+    if routing.effective_capacity(borrow scenario, route_index, now) < minimum_capacity { return false; }
+    let base = distances.get_or(from, routing.INF());
+    let weight = routing.edge_weight(borrow scenario, route_index, now, mode);
+    let candidate = add_saturating(base, weight);
+    if candidate < distances.get_or(to, routing.INF()) {
+        distances.set(to, candidate);
+        true
+    } else { false }
+}
+
+pub fn distance(
+    borrow scenario: model.Scenario,
+    source: u64,
+    target: u64,
+    now: u64,
+    minimum_capacity: u64,
+    mode: u64,
+) -> u64 {
+    if source >= scenario.locations.len() || target >= scenario.locations.len() { return routing.INF(); }
+    let mut distances = U64s.new();
+    fill(inout distances, scenario.locations.len(), routing.INF());
+    distances.set(source, 0);
+    let mut pass: u64 = 1;
+    while pass < scenario.locations.len() {
+        let mut changed = false;
+        let mut i: u64 = 0;
+        while i < scenario.routes.len() {
+            let route = scenario.routes.get_or(i, model.empty_route());
+            if relax(borrow scenario, i, route.from, route.to, now, minimum_capacity, mode, inout distances) { changed = true; }
+            if route.bidirectional {
+                if relax(borrow scenario, i, route.to, route.from, now, minimum_capacity, mode, inout distances) { changed = true; }
+            }
+            i = i + 1;
+        }
+        if !changed { break; }
+        pass = pass + 1;
+    }
+    distances.get_or(target, routing.INF())
+}
+
+pub fn audit_all_pairs(borrow scenario: model.Scenario, now: u64, minimum_capacity: u64, mode: u64) -> u64 {
+    let mut mismatches: u64 = 0;
+    let mut from: u64 = 0;
+    while from < scenario.locations.len() {
+        let mut to: u64 = 0;
+        while to < scenario.locations.len() {
+            let path = routing.shortest(borrow scenario, from, to, now, minimum_capacity, mode);
+            let actual = routing.path_weight(borrow scenario, borrow path, now, mode);
+            let expected = distance(borrow scenario, from, to, now, minimum_capacity, mode);
+            if actual != expected { mismatches = mismatches + 1; }
+            to = to + 1;
+        }
+        from = from + 1;
+    }
+    mismatches
+}

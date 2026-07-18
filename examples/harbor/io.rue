@@ -1,0 +1,74 @@
+// Whole-file IO for Harbor's JSON scenarios and deterministic reports.
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+const OptBytes = std.option.Option(Bytes);
+const File = std.fs.File;
+const FileError = std.fs.FileError;
+const FileRes = std.result.Result(File, FileError);
+const ReadRes = std.result.Result(u64, FileError);
+const WriteRes = std.result.Result((), FileError);
+
+pub fn read_bytes(borrow path: StrBuf) -> OptBytes {
+    let O = OptBytes;
+    let mut data = Bytes.new();
+    let mut file = match std.fs.File.open(borrow path) {
+        FileRes.Ok(f) => f,
+        FileRes.Err(e) => return O.None,
+    };
+    loop {
+        data.reserve(65536);
+        let count = match file.read(inout data) {
+            ReadRes.Ok(n) => n,
+            ReadRes.Err(e) => return O.None,
+        };
+        if count == 0 { break; }
+    }
+    let _ = file.close();
+    O.Some(data)
+}
+
+pub fn bytes_to_text(borrow bytes: Bytes) -> StrBuf {
+    let mut out = StrBuf.with_capacity(bytes.len());
+    let mut i: u64 = 0;
+    while i < bytes.len() {
+        out.push(bytes.get_or(i, 0));
+        i = i + 1;
+    }
+    out
+}
+
+pub fn read_text(borrow path: StrBuf) -> std.option.Option(StrBuf) {
+    let O = std.option.Option(StrBuf);
+    match read_bytes(borrow path) {
+        OptBytes.Some(bytes) => O.Some(bytes_to_text(borrow bytes)),
+        OptBytes.None => O.None,
+    }
+}
+
+fn text_to_bytes(borrow text: StrBuf) -> Bytes {
+    let mut out = Bytes.with_capacity(text.len());
+    let mut i: u64 = 0;
+    while i < text.len() {
+        out.push(StrBuf.byte_at_borrowed(borrow text, i));
+        i = i + 1;
+    }
+    out
+}
+
+pub fn write_text(borrow path: StrBuf, borrow text: StrBuf) -> bool {
+    let mut file = match std.fs.File.create(borrow path) {
+        FileRes.Ok(f) => f,
+        FileRes.Err(e) => return false,
+    };
+    let bytes = text_to_bytes(borrow text);
+    let wrote = match file.write_all(borrow bytes) {
+        WriteRes.Ok(unit) => true,
+        WriteRes.Err(e) => false,
+    };
+    let closed = match file.close() {
+        WriteRes.Ok(unit) => true,
+        WriteRes.Err(e) => false,
+    };
+    wrote && closed
+}

@@ -1,0 +1,224 @@
+// Shipment manifest reconstructed from the append-only event log. It pairs
+// departures with arrivals, audits transit facts, and emits an operator-facing
+// ledger independent of the simulator's aggregate counters.
+const std = @import("std");
+const model = @import("model.rue");
+const state = @import("state.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct Shipment {
+    departure_event: u64,
+    arrival_event: u64,
+    vehicle: u64,
+    cargo: u64,
+    demand: u64,
+    from: u64,
+    to: u64,
+    quantity: u64,
+    depart: u64,
+    arrive: u64,
+    promised_travel: u64,
+    actual_travel: u64,
+    cost: u64,
+    distance: u64,
+    matched: bool,
+    on_time: bool,
+}
+
+pub const Shipments = std.arraybuf.ArrayBuf(Shipment);
+
+pub struct Manifest {
+    shipments: Shipments,
+    departures: u64,
+    arrivals: u64,
+    matched: u64,
+    unmatched: u64,
+    on_time: u64,
+    late: u64,
+    cargo_units: u64,
+    total_cost: u64,
+    total_distance: u64,
+    total_transit: u64,
+    maximum_transit: u64,
+    ordering_errors: u64,
+    digest: u64,
+}
+
+fn add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+fn mix(value: u64, next: u64) -> u64 { @wrapping_mul(value ^ next, 1099511628211) }
+
+fn empty_shipment() -> Shipment {
+    Shipment {
+        departure_event: model.NONE(), arrival_event: model.NONE(),
+        vehicle: model.NONE(), cargo: model.NONE(), demand: model.NONE(),
+        from: model.NONE(), to: model.NONE(), quantity: 0, depart: 0, arrive: 0,
+        promised_travel: 0, actual_travel: 0, cost: 0, distance: 0,
+        matched: false, on_time: false,
+    }
+}
+
+fn is_same_shipment(borrow departure: state.Event, borrow arrival: state.Event) -> bool {
+    arrival.tag == state.EVENT_ARRIVAL() &&
+    departure.vehicle == arrival.vehicle && departure.cargo == arrival.cargo &&
+    departure.demand == arrival.demand && departure.quantity == arrival.quantity &&
+    departure.from == arrival.from && departure.to == arrival.to
+}
+
+fn find_arrival(borrow sim: state.State, departure_index: u64, borrow departure: state.Event) -> u64 {
+    let mut i = departure_index + 1;
+    while i < sim.log.len() {
+        let candidate = sim.log.get_or(i, state.empty_event());
+        if is_same_shipment(borrow departure, borrow candidate) { return i; }
+        i = i + 1;
+    }
+    model.NONE()
+}
+
+fn demand_deadline(borrow scenario: model.Scenario, demand: u64) -> u64 {
+    if demand >= scenario.demands.len() { 0 }
+    else { scenario.demands.get_or(demand, model.empty_demand()).deadline }
+}
+
+fn from_departure(
+    borrow scenario: model.Scenario,
+    borrow sim: state.State,
+    departure_index: u64,
+    departure: state.Event,
+) -> Shipment {
+    let arrival_index = find_arrival(borrow sim, departure_index, borrow departure);
+    if arrival_index == model.NONE() {
+        return Shipment {
+            departure_event: departure_index, arrival_event: model.NONE(),
+            vehicle: departure.vehicle, cargo: departure.cargo, demand: departure.demand,
+            from: departure.from, to: departure.to, quantity: departure.quantity,
+            depart: departure.time, arrive: 0, promised_travel: departure.travel,
+            actual_travel: 0, cost: departure.cost, distance: departure.distance,
+            matched: false, on_time: false,
+        };
+    }
+    let arrival = sim.log.get_or(arrival_index, state.empty_event());
+    let actual = if arrival.time >= departure.time { arrival.time - departure.time } else { 0 };
+    let deadline = demand_deadline(borrow scenario, departure.demand);
+    Shipment {
+        departure_event: departure_index, arrival_event: arrival_index,
+        vehicle: departure.vehicle, cargo: departure.cargo, demand: departure.demand,
+        from: departure.from, to: departure.to, quantity: departure.quantity,
+        depart: departure.time, arrive: arrival.time,
+        promised_travel: departure.travel, actual_travel: actual,
+        cost: departure.cost, distance: departure.distance, matched: true,
+        on_time: deadline == 0 || arrival.time <= deadline,
+    }
+}
+
+pub fn build(borrow scenario: model.Scenario, borrow sim: state.State) -> Manifest {
+    let mut shipments = Shipments.new();
+    let mut departures: u64 = 0; let mut arrivals: u64 = 0;
+    let mut matched: u64 = 0; let mut unmatched: u64 = 0;
+    let mut on_time: u64 = 0; let mut late: u64 = 0;
+    let mut cargo_units: u64 = 0; let mut total_cost: u64 = 0;
+    let mut total_distance: u64 = 0; let mut total_transit: u64 = 0;
+    let mut maximum_transit: u64 = 0; let mut ordering_errors: u64 = 0;
+    let mut digest: u64 = 14695981039346656037;
+    let mut i: u64 = 0;
+    while i < sim.log.len() {
+        let event = sim.log.get_or(i, state.empty_event());
+        if event.tag == state.EVENT_ARRIVAL() { arrivals = arrivals + 1; }
+        if event.tag == state.EVENT_DEPARTURE() {
+            departures = departures + 1;
+            let item = from_departure(borrow scenario, borrow sim, i, event);
+            if item.matched {
+                matched = matched + 1;
+                if item.on_time { on_time = on_time + 1; } else { late = late + 1; }
+                if item.arrive < item.depart { ordering_errors = ordering_errors + 1; }
+            } else { unmatched = unmatched + 1; }
+            cargo_units = add(cargo_units, item.quantity);
+            total_cost = add(total_cost, item.cost);
+            total_distance = add(total_distance, item.distance);
+            total_transit = add(total_transit, item.actual_travel);
+            if item.actual_travel > maximum_transit { maximum_transit = item.actual_travel; }
+            digest = mix(digest, item.vehicle); digest = mix(digest, item.cargo);
+            digest = mix(digest, item.quantity); digest = mix(digest, item.arrive);
+            shipments.push(item);
+        }
+        i = i + 1;
+    }
+    Manifest {
+        shipments: shipments, departures: departures, arrivals: arrivals,
+        matched: matched, unmatched: unmatched, on_time: on_time, late: late,
+        cargo_units: cargo_units, total_cost: total_cost,
+        total_distance: total_distance, total_transit: total_transit,
+        maximum_transit: maximum_transit, ordering_errors: ordering_errors,
+        digest: digest,
+    }
+}
+
+pub fn valid(borrow value: Manifest) -> bool {
+    value.departures == value.shipments.len() &&
+    value.matched + value.unmatched == value.departures &&
+    value.on_time + value.late == value.matched &&
+    value.ordering_errors == 0
+}
+
+fn append_location(inout out: StrBuf, borrow scenario: model.Scenario, index: u64) {
+    if index >= scenario.locations.len() { text.append_literal(inout out, "-"); return; }
+    let value = scenario.locations.get_or(index, model.empty_location());
+    text.append_id(inout out, borrow scenario, value.id);
+}
+
+fn append_cargo(inout out: StrBuf, borrow scenario: model.Scenario, index: u64) {
+    if index >= scenario.cargoes.len() { text.append_literal(inout out, "-"); return; }
+    let value = scenario.cargoes.get_or(index, model.empty_cargo());
+    text.append_id(inout out, borrow scenario, value.id);
+}
+
+fn append_vehicle(inout out: StrBuf, borrow scenario: model.Scenario, index: u64) {
+    if index >= scenario.vehicles.len() { text.append_literal(inout out, "-"); return; }
+    let value = scenario.vehicles.get_or(index, model.empty_vehicle());
+    text.append_id(inout out, borrow scenario, value.id);
+}
+
+pub fn render(borrow scenario: model.Scenario, borrow value: Manifest) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "Shipment manifest\n");
+    text.append_literal(inout out, "departures="); text.append_u64(inout out, value.departures);
+    text.append_literal(inout out, " arrivals="); text.append_u64(inout out, value.arrivals);
+    text.append_literal(inout out, " matched="); text.append_u64(inout out, value.matched);
+    text.append_literal(inout out, " unmatched="); text.append_u64(inout out, value.unmatched); out.push(10);
+    text.append_literal(inout out, "index vehicle cargo quantity from to depart arrive promised actual cost distance demand status\n");
+    let mut i: u64 = 0;
+    while i < value.shipments.len() {
+        let item = value.shipments.get_or(i, empty_shipment());
+        text.append_u64(inout out, i); out.push(32);
+        append_vehicle(inout out, borrow scenario, item.vehicle); out.push(32);
+        append_cargo(inout out, borrow scenario, item.cargo); out.push(32);
+        text.append_u64(inout out, item.quantity); out.push(32);
+        append_location(inout out, borrow scenario, item.from); out.push(32);
+        append_location(inout out, borrow scenario, item.to); out.push(32);
+        text.append_u64(inout out, item.depart); out.push(32);
+        if item.matched { text.append_u64(inout out, item.arrive); } else { text.append_literal(inout out, "-"); }
+        out.push(32); text.append_u64(inout out, item.promised_travel); out.push(32);
+        text.append_u64(inout out, item.actual_travel); out.push(32);
+        text.append_u64(inout out, item.cost); out.push(32); text.append_u64(inout out, item.distance); out.push(32);
+        text.append_u64(inout out, item.demand); out.push(32);
+        if !item.matched { text.append_literal(inout out, "unmatched"); }
+        else if item.on_time { text.append_literal(inout out, "on-time"); }
+        else { text.append_literal(inout out, "late"); }
+        out.push(10); i = i + 1;
+    }
+    text.append_literal(inout out, "cargo_units="); text.append_u64(inout out, value.cargo_units);
+    text.append_literal(inout out, " total_cost="); text.append_u64(inout out, value.total_cost);
+    text.append_literal(inout out, " total_distance="); text.append_u64(inout out, value.total_distance);
+    text.append_literal(inout out, " average_transit=");
+    text.append_u64(inout out, if value.matched == 0 { 0 } else { value.total_transit / value.matched });
+    text.append_literal(inout out, " maximum_transit="); text.append_u64(inout out, value.maximum_transit); out.push(10);
+    text.append_literal(inout out, "on_time="); text.append_u64(inout out, value.on_time);
+    text.append_literal(inout out, " late="); text.append_u64(inout out, value.late);
+    text.append_literal(inout out, " ordering_errors="); text.append_u64(inout out, value.ordering_errors);
+    text.append_literal(inout out, " digest="); text.append_u64(inout out, value.digest);
+    text.append_literal(inout out, " valid="); text.append_bool(inout out, valid(borrow value)); out.push(10);
+    out
+}

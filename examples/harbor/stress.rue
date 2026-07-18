@@ -1,0 +1,303 @@
+// Deterministic in-memory scenario generator and scaling runner. Tier sizes
+// multiply locations, routes, vehicles, cargo, and demands together so planner
+// and all-pairs routing work grows much faster than the source JSON fixture.
+const std = @import("std");
+const conservation = @import("conservation.rue");
+const fingerprint = @import("fingerprint.rue");
+const forecast = @import("forecast.rue");
+const model = @import("model.rue");
+const replay = @import("replay.rue");
+const route_matrix = @import("route_matrix.rue");
+const route_oracle = @import("route_oracle.rue");
+const routing = @import("routing.rue");
+const scenario_json = @import("scenario_json.rue");
+const service = @import("service.rue");
+const simulate = @import("simulate.rue");
+const text = @import("text.rue");
+const validate = @import("validate.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct Config {
+    locations: u64,
+    cargoes: u64,
+    vehicles: u64,
+    demands: u64,
+    duration: u64,
+    seed: u64,
+}
+
+pub struct Result {
+    scenario_fingerprint: u64,
+    first_fingerprint: u64,
+    second_fingerprint: u64,
+    locations: u64,
+    routes: u64,
+    cargoes: u64,
+    vehicles: u64,
+    demands: u64,
+    events: u64,
+    dispatches: u64,
+    route_pairs: u64,
+    delivered: u64,
+    unmet: u64,
+    diagnostics: u64,
+    route_mismatches: u64,
+    conservation_mismatches: u64,
+    replay_mismatches: u64,
+    roundtrip_fingerprint: u64,
+    roundtrip_diagnostics: u64,
+    deterministic: bool,
+    ok: bool,
+}
+
+pub fn tier(scale: u64) -> Config {
+    let value = if scale == 0 { 1 } else { scale };
+    Config {
+        locations: 6 * value,
+        cargoes: 2 * value,
+        vehicles: 3 * value,
+        demands: 8 * value,
+        duration: 24 * value,
+        seed: 1729 + value,
+    }
+}
+
+fn name(prefix: str, index: u64) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, prefix);
+    text.append_u64(inout out, index);
+    out
+}
+
+fn location_kind(inout scenario: model.Scenario, index: u64) -> u64 {
+    let value = index % 4;
+    if value == 0 { scenario.strings.intern_literal("port") }
+    else if value == 1 { scenario.strings.intern_literal("hub") }
+    else if value == 2 { scenario.strings.intern_literal("factory") }
+    else { scenario.strings.intern_literal("market") }
+}
+
+fn add_locations(inout scenario: model.Scenario, count: u64) {
+    let mut i: u64 = 0;
+    while i < count {
+        let id_text = name("location-", i);
+        let id = scenario.strings.intern(borrow id_text);
+        let kind = location_kind(inout scenario, i);
+        scenario.locations.push(model.Location {
+            id: id, kind: kind, capacity: 2000 + (i % 7) * 250,
+            handling: 200 + (i % 5) * 40,
+            x: @intCast((i % 8) * 11), y: @intCast((i / 8) * 13),
+        });
+        i = i + 1;
+    }
+}
+
+fn push_route(inout scenario: model.Scenario, from: u64, to: u64, salt: u64, bidirectional: bool) {
+    let from_record = scenario.locations.get_or(from, model.empty_location());
+    let to_record = scenario.locations.get_or(to, model.empty_location());
+    scenario.routes.push(model.Route {
+        from_id: from_record.id, to_id: to_record.id, from: from, to: to,
+        distance: 4 + (salt % 17), capacity: 40 + (salt % 6) * 15,
+        cost: 2 + (salt % 9), travel: 1 + (salt % 5),
+        bidirectional: bidirectional,
+    });
+}
+
+fn add_routes(inout scenario: model.Scenario, count: u64) {
+    if count < 2 { return; }
+    let mut i: u64 = 0;
+    while i < count {
+        push_route(inout scenario, i, (i + 1) % count, i * 3 + 1, true);
+        i = i + 1;
+    }
+    i = 0;
+    while i < count {
+        let across = (i + (count / 2) + 1) % count;
+        if across != i && across != (i + 1) % count {
+            push_route(inout scenario, i, across, i * 7 + 2, i % 2 == 0);
+        }
+        i = i + 2;
+    }
+    i = 1;
+    while i + 3 < count {
+        push_route(inout scenario, i, i + 3, i * 11 + 3, true);
+        i = i + 3;
+    }
+}
+
+fn add_cargoes(inout scenario: model.Scenario, count: u64) {
+    let mut i: u64 = 0;
+    while i < count {
+        let id_text = name("cargo-", i);
+        let id = scenario.strings.intern(borrow id_text);
+        scenario.cargoes.push(model.Cargo {
+            id: id, unit_value: 4 + (i % 11), shelf_life: 12 + (i % 5) * 12,
+            weight: 1 + (i % 4),
+        });
+        i = i + 1;
+    }
+}
+
+fn add_vehicles(inout scenario: model.Scenario, count: u64) {
+    let mut i: u64 = 0;
+    while i < count {
+        let id_text = name("vehicle-", i);
+        let id = scenario.strings.intern(borrow id_text);
+        let at = i % scenario.locations.len();
+        let location = scenario.locations.get_or(at, model.empty_location());
+        scenario.vehicles.push(model.Vehicle {
+            id: id, at_id: location.id, at: at, capacity: 25 + (i % 5) * 10,
+            speed: 1 + (i % 3), cost: 1 + (i % 4), available: i % 3,
+        });
+        i = i + 1;
+    }
+}
+
+fn add_supplies(inout scenario: model.Scenario) {
+    let mut cargo: u64 = 0;
+    while cargo < scenario.cargoes.len() {
+        let location_index = (cargo * 3) % scenario.locations.len();
+        let location = scenario.locations.get_or(location_index, model.empty_location());
+        let cargo_record = scenario.cargoes.get_or(cargo, model.empty_cargo());
+        scenario.supplies.push(model.Supply {
+            location_id: location.id, cargo_id: cargo_record.id,
+            location: location_index, cargo: cargo,
+            quantity: 300 + cargo * 35, available: cargo % 4,
+        });
+        let second_location = (location_index + scenario.locations.len() / 2) % scenario.locations.len();
+        let second = scenario.locations.get_or(second_location, model.empty_location());
+        scenario.supplies.push(model.Supply {
+            location_id: second.id, cargo_id: cargo_record.id,
+            location: second_location, cargo: cargo,
+            quantity: 180 + cargo * 20, available: 6 + cargo % 5,
+        });
+        cargo = cargo + 1;
+    }
+}
+
+fn add_demands(inout scenario: model.Scenario, count: u64) {
+    let mut i: u64 = 0;
+    while i < count {
+        let location_index = (i * 5 + 2) % scenario.locations.len();
+        let cargo_index = i % scenario.cargoes.len();
+        let location = scenario.locations.get_or(location_index, model.empty_location());
+        let cargo = scenario.cargoes.get_or(cargo_index, model.empty_cargo());
+        scenario.demands.push(model.Demand {
+            location_id: location.id, cargo_id: cargo.id,
+            location: location_index, cargo: cargo_index,
+            quantity: 20 + (i % 7) * 7,
+            deadline: 4 + (i * 3) % (scenario.duration - 4),
+            priority: 1 + (i % 5),
+        });
+        i = i + 1;
+    }
+}
+
+fn add_production(inout scenario: model.Scenario) {
+    let mut cargo: u64 = 0;
+    while cargo < scenario.cargoes.len() {
+        let location_index = (cargo * 7 + 1) % scenario.locations.len();
+        let location = scenario.locations.get_or(location_index, model.empty_location());
+        let item = scenario.cargoes.get_or(cargo, model.empty_cargo());
+        scenario.productions.push(model.Production {
+            location_id: location.id, cargo_id: item.id,
+            location: location_index, cargo: cargo,
+            quantity: 10 + (cargo % 5) * 3, every: 6 + cargo % 4,
+            start: 3 + cargo % 3, end: scenario.duration - 1,
+        });
+        cargo = cargo + 2;
+    }
+}
+
+fn add_disruptions(inout scenario: model.Scenario) {
+    let mut route: u64 = 0;
+    while route < scenario.routes.len() {
+        if route % 5 == 0 {
+            let start = 4 + route % (scenario.duration / 2);
+            scenario.disruptions.push(model.Disruption {
+                route: route, start: start, end: start + 3 + route % 5,
+                capacity_percent: 40 + route % 50,
+                cost_percent: 110 + route % 90,
+            });
+        }
+        route = route + 1;
+    }
+}
+
+pub fn generate(config: Config) -> model.Scenario {
+    let mut scenario = model.new_scenario();
+    let title: StrBuf = "Harbor generated stress network";
+    scenario.name = scenario.strings.intern(borrow title);
+    scenario.duration = if config.duration < 12 { 12 } else { config.duration };
+    scenario.seed = config.seed;
+    add_locations(inout scenario, if config.locations < 4 { 4 } else { config.locations });
+    add_routes(inout scenario, scenario.locations.len());
+    add_cargoes(inout scenario, if config.cargoes == 0 { 1 } else { config.cargoes });
+    add_vehicles(inout scenario, if config.vehicles == 0 { 1 } else { config.vehicles });
+    add_supplies(inout scenario);
+    add_demands(inout scenario, if config.demands == 0 { 1 } else { config.demands });
+    add_production(inout scenario);
+    add_disruptions(inout scenario);
+    validate.scenario(inout scenario);
+    scenario
+}
+
+pub fn run(config: Config) -> Result {
+    let scenario = generate(config);
+    let scenario_fingerprint = fingerprint.scenario(borrow scenario);
+    let route_mismatches = route_oracle.audit_all_pairs(borrow scenario, 0, 1, routing.MODE_COST());
+    let matrix = route_matrix.compute(borrow scenario, 0, 1, routing.MODE_COST());
+    let projected = forecast.summarize(borrow scenario);
+    let first = simulate.run(borrow scenario);
+    let first_fingerprint = fingerprint.simulation(borrow first);
+    let balance = conservation.audit(borrow scenario, borrow first);
+    let replayed = replay.audit(borrow scenario, borrow first);
+    let service_summary = service.summarize(borrow scenario, borrow first);
+    let second = simulate.run(borrow scenario);
+    let second_fingerprint = fingerprint.simulation(borrow second);
+    let deterministic = first_fingerprint == second_fingerprint;
+    let ok = scenario.diagnostics.len() == 0 && route_mismatches == 0 &&
+        balance.mismatches == 0 && replayed.mismatches == 0 && deterministic &&
+        projected.total_requested == service_summary.requested;
+    Result {
+        scenario_fingerprint: scenario_fingerprint,
+        first_fingerprint: first_fingerprint, second_fingerprint: second_fingerprint,
+        locations: scenario.locations.len(), routes: scenario.routes.len(),
+        cargoes: scenario.cargoes.len(), vehicles: scenario.vehicles.len(),
+        demands: scenario.demands.len(), events: first.log.len(),
+        dispatches: first.dispatches,
+        route_pairs: matrix.reachable_pairs + matrix.unreachable_pairs,
+        delivered: service_summary.delivered, unmet: service_summary.unmet,
+        diagnostics: scenario.diagnostics.len(), route_mismatches: route_mismatches,
+        conservation_mismatches: balance.mismatches,
+        replay_mismatches: replayed.mismatches,
+        roundtrip_fingerprint: scenario_json.roundtrip_fingerprint(borrow scenario),
+        roundtrip_diagnostics: scenario_json.decoded_diagnostics(borrow scenario),
+        deterministic: deterministic, ok: ok,
+    }
+}
+
+pub fn render(borrow result: Result) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "stress locations="); text.append_u64(inout out, result.locations);
+    text.append_literal(inout out, " routes="); text.append_u64(inout out, result.routes);
+    text.append_literal(inout out, " cargoes="); text.append_u64(inout out, result.cargoes);
+    text.append_literal(inout out, " vehicles="); text.append_u64(inout out, result.vehicles);
+    text.append_literal(inout out, " demands="); text.append_u64(inout out, result.demands); out.push(10);
+    text.append_literal(inout out, "events="); text.append_u64(inout out, result.events);
+    text.append_literal(inout out, " dispatches="); text.append_u64(inout out, result.dispatches);
+    text.append_literal(inout out, " route_pairs="); text.append_u64(inout out, result.route_pairs); out.push(10);
+    text.append_literal(inout out, "delivered="); text.append_u64(inout out, result.delivered);
+    text.append_literal(inout out, " unmet="); text.append_u64(inout out, result.unmet); out.push(10);
+    text.append_literal(inout out, "diagnostics="); text.append_u64(inout out, result.diagnostics);
+    text.append_literal(inout out, " route_mismatches="); text.append_u64(inout out, result.route_mismatches);
+    text.append_literal(inout out, " conservation_mismatches="); text.append_u64(inout out, result.conservation_mismatches);
+    text.append_literal(inout out, " replay_mismatches="); text.append_u64(inout out, result.replay_mismatches); out.push(10);
+    text.append_literal(inout out, "roundtrip_fingerprint="); text.append_u64(inout out, result.roundtrip_fingerprint);
+    text.append_literal(inout out, " roundtrip_diagnostics="); text.append_u64(inout out, result.roundtrip_diagnostics); out.push(10);
+    text.append_literal(inout out, "scenario_fingerprint="); text.append_u64(inout out, result.scenario_fingerprint); out.push(10);
+    text.append_literal(inout out, "simulation_fingerprint="); text.append_u64(inout out, result.first_fingerprint); out.push(10);
+    text.append_literal(inout out, "deterministic="); text.append_bool(inout out, result.deterministic); out.push(10);
+    text.append_literal(inout out, "valid="); text.append_bool(inout out, result.ok); out.push(10);
+    out
+}

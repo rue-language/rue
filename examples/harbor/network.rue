@@ -1,0 +1,140 @@
+// Structural network analysis: degrees, capacities, reachability, and a bounded
+// articulation heuristic used to identify single-location failure risks.
+const std = @import("std");
+const model = @import("model.rue");
+const U64s = std.arraybuf.ArrayBuf(u64);
+const BitSet = std.bitset.BitSet();
+const Queue = std.queue.Queue(u64);
+const OptU64 = std.option.Option(u64);
+
+pub struct LocationStats {
+    location: u64,
+    outgoing: u64,
+    incoming: u64,
+    neighbors: u64,
+    outbound_capacity: u64,
+    inbound_capacity: u64,
+    distance_sum: u64,
+    critical: bool,
+}
+
+pub const LocationStatsList = std.arraybuf.ArrayBuf(LocationStats);
+
+pub struct Summary {
+    locations: LocationStatsList,
+    directed_edges: u64,
+    physical_routes: u64,
+    total_capacity: u64,
+    total_distance: u64,
+    critical_locations: u64,
+    isolated_locations: u64,
+}
+
+fn add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+fn can_cross(borrow route: model.Route, from: u64, to: u64) -> bool {
+    (route.from == from && route.to == to) || (route.bidirectional && route.to == from && route.from == to)
+}
+
+fn reachable_without(borrow scenario: model.Scenario, removed: u64) -> u64 {
+    if scenario.locations.len() <= 1 { return 0; }
+    let mut start: u64 = 0;
+    while start < scenario.locations.len() && start == removed { start = start + 1; }
+    if start >= scenario.locations.len() { return 0; }
+    let mut seen = BitSet.new();
+    let mut queue = Queue.new();
+    seen.set(start);
+    queue.enqueue(start);
+    while !queue.is_empty() {
+        let at = match queue.dequeue() { OptU64.Some(v) => v, OptU64.None => start };
+        let mut route_index: u64 = 0;
+        while route_index < scenario.routes.len() {
+            let route = scenario.routes.get_or(route_index, model.empty_route());
+            let mut candidate: u64 = 0;
+            while candidate < scenario.locations.len() {
+                if candidate != removed && !seen.test(candidate) && can_cross(borrow route, at, candidate) {
+                    seen.set(candidate);
+                    queue.enqueue(candidate);
+                }
+                candidate = candidate + 1;
+            }
+            route_index = route_index + 1;
+        }
+    }
+    seen.count()
+}
+
+fn location_stats(borrow scenario: model.Scenario, location: u64) -> LocationStats {
+    let mut outgoing: u64 = 0;
+    let mut incoming: u64 = 0;
+    let mut outbound_capacity: u64 = 0;
+    let mut inbound_capacity: u64 = 0;
+    let mut distance_sum: u64 = 0;
+    let mut neighbors = BitSet.new();
+    let mut i: u64 = 0;
+    while i < scenario.routes.len() {
+        let route = scenario.routes.get_or(i, model.empty_route());
+        if route.from == location {
+            outgoing = outgoing + 1;
+            outbound_capacity = add(outbound_capacity, route.capacity);
+            distance_sum = add(distance_sum, route.distance);
+            if route.to < scenario.locations.len() { neighbors.set(route.to); }
+        }
+        if route.to == location {
+            incoming = incoming + 1;
+            inbound_capacity = add(inbound_capacity, route.capacity);
+            if route.from < scenario.locations.len() { neighbors.set(route.from); }
+            if route.bidirectional {
+                outgoing = outgoing + 1;
+                outbound_capacity = add(outbound_capacity, route.capacity);
+                distance_sum = add(distance_sum, route.distance);
+            }
+        }
+        if route.bidirectional && route.from == location {
+            incoming = incoming + 1;
+            inbound_capacity = add(inbound_capacity, route.capacity);
+        }
+        i = i + 1;
+    }
+    let connected_without = reachable_without(borrow scenario, location);
+    let expected = if scenario.locations.len() > 0 { scenario.locations.len() - 1 } else { 0 };
+    LocationStats {
+        location: location, outgoing: outgoing, incoming: incoming,
+        neighbors: neighbors.count(), outbound_capacity: outbound_capacity,
+        inbound_capacity: inbound_capacity, distance_sum: distance_sum,
+        critical: connected_without < expected,
+    }
+}
+
+pub fn summarize(borrow scenario: model.Scenario) -> Summary {
+    let mut locations = LocationStatsList.new();
+    let mut directed_edges: u64 = 0;
+    let mut total_capacity: u64 = 0;
+    let mut total_distance: u64 = 0;
+    let mut critical_locations: u64 = 0;
+    let mut isolated_locations: u64 = 0;
+    let mut i: u64 = 0;
+    while i < scenario.locations.len() {
+        let stats = location_stats(borrow scenario, i);
+        directed_edges = add(directed_edges, stats.outgoing);
+        if stats.critical { critical_locations = critical_locations + 1; }
+        if stats.neighbors == 0 { isolated_locations = isolated_locations + 1; }
+        locations.push(stats);
+        i = i + 1;
+    }
+    i = 0;
+    while i < scenario.routes.len() {
+        let route = scenario.routes.get_or(i, model.empty_route());
+        total_capacity = add(total_capacity, route.capacity);
+        total_distance = add(total_distance, route.distance);
+        i = i + 1;
+    }
+    Summary {
+        locations: locations, directed_edges: directed_edges,
+        physical_routes: scenario.routes.len(), total_capacity: total_capacity,
+        total_distance: total_distance, critical_locations: critical_locations,
+        isolated_locations: isolated_locations,
+    }
+}

@@ -1,0 +1,100 @@
+// Counterfactual all-pairs routing comparison for every disruption window.
+const std = @import("std");
+const model = @import("model.rue");
+const routing = @import("routing.rue");
+
+pub struct Impact {
+    disruption: u64,
+    route: u64,
+    at: u64,
+    pairs: u64,
+    affected_pairs: u64,
+    disconnected_pairs: u64,
+    baseline_cost: u64,
+    disrupted_cost: u64,
+    added_cost: u64,
+}
+
+pub const Impacts = std.arraybuf.ArrayBuf(Impact);
+
+pub struct Summary {
+    impacts: Impacts,
+    affected_pairs: u64,
+    disconnected_pairs: u64,
+    added_cost: u64,
+    worst_disruption: u64,
+    worst_added_cost: u64,
+}
+
+fn add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+fn path_cost(borrow scenario: model.Scenario, from: u64, to: u64, at: u64) -> u64 {
+    let path = routing.shortest(borrow scenario, from, to, at, 1, routing.MODE_COST());
+    routing.path_weight(borrow scenario, borrow path, at, routing.MODE_COST())
+}
+
+fn one(borrow scenario: model.Scenario, index: u64) -> Impact {
+    let disruption = scenario.disruptions.get_or(index, model.empty_disruption());
+    let active_at = disruption.start;
+    let baseline_at = if disruption.start > 0 { disruption.start - 1 } else { disruption.end };
+    let mut pairs: u64 = 0;
+    let mut affected_pairs: u64 = 0;
+    let mut disconnected_pairs: u64 = 0;
+    let mut baseline_cost: u64 = 0;
+    let mut disrupted_cost: u64 = 0;
+    let mut from: u64 = 0;
+    while from < scenario.locations.len() {
+        let mut to: u64 = 0;
+        while to < scenario.locations.len() {
+            if from != to {
+                pairs = pairs + 1;
+                let before = path_cost(borrow scenario, from, to, baseline_at);
+                let during = path_cost(borrow scenario, from, to, active_at);
+                if before != routing.INF() { baseline_cost = add(baseline_cost, before); }
+                if during != routing.INF() { disrupted_cost = add(disrupted_cost, during); }
+                if during != before {
+                    affected_pairs = affected_pairs + 1;
+                    if during == routing.INF() { disconnected_pairs = disconnected_pairs + 1; }
+                }
+            }
+            to = to + 1;
+        }
+        from = from + 1;
+    }
+    let added_cost = if disrupted_cost > baseline_cost { disrupted_cost - baseline_cost } else { 0 };
+    Impact {
+        disruption: index, route: disruption.route, at: active_at, pairs: pairs,
+        affected_pairs: affected_pairs, disconnected_pairs: disconnected_pairs,
+        baseline_cost: baseline_cost, disrupted_cost: disrupted_cost,
+        added_cost: added_cost,
+    }
+}
+
+pub fn summarize(borrow scenario: model.Scenario) -> Summary {
+    let mut impacts = Impacts.new();
+    let mut affected_pairs: u64 = 0;
+    let mut disconnected_pairs: u64 = 0;
+    let mut added_cost: u64 = 0;
+    let mut worst_disruption = model.NONE();
+    let mut worst_added_cost: u64 = 0;
+    let mut i: u64 = 0;
+    while i < scenario.disruptions.len() {
+        let impact = one(borrow scenario, i);
+        affected_pairs = add(affected_pairs, impact.affected_pairs);
+        disconnected_pairs = add(disconnected_pairs, impact.disconnected_pairs);
+        added_cost = add(added_cost, impact.added_cost);
+        if impact.added_cost > worst_added_cost {
+            worst_added_cost = impact.added_cost;
+            worst_disruption = i;
+        }
+        impacts.push(impact);
+        i = i + 1;
+    }
+    Summary {
+        impacts: impacts, affected_pairs: affected_pairs,
+        disconnected_pairs: disconnected_pairs, added_cost: added_cost,
+        worst_disruption: worst_disruption, worst_added_cost: worst_added_cost,
+    }
+}

@@ -1,0 +1,226 @@
+// Inventory policy recommendations derived from demand, lead time, source
+// diversity, shelf life, and ending stock. The result is advisory and does not
+// alter simulation state, keeping it useful as an independent planning oracle.
+const std = @import("std");
+const model = @import("model.rue");
+const route_matrix = @import("route_matrix.rue");
+const routing = @import("routing.rue");
+const state = @import("state.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn ACTION_HOLD() -> u64 { 1 }
+pub fn ACTION_REORDER() -> u64 { 2 }
+pub fn ACTION_EXPEDITE() -> u64 { 3 }
+pub fn ACTION_REDISTRIBUTE() -> u64 { 4 }
+
+pub struct Policy {
+    location: u64,
+    cargo: u64,
+    requested: u64,
+    ending_inventory: u64,
+    inbound: u64,
+    source_count: u64,
+    average_lead_time: u64,
+    safety_stock: u64,
+    reorder_point: u64,
+    target_stock: u64,
+    order_quantity: u64,
+    action: u64,
+    urgency: u64,
+}
+
+pub const Policies = std.arraybuf.ArrayBuf(Policy);
+
+pub struct Book {
+    policies: Policies,
+    locations: u64,
+    cargoes: u64,
+    reorder: u64,
+    expedite: u64,
+    redistribute: u64,
+    hold: u64,
+    total_order_quantity: u64,
+    maximum_urgency: u64,
+    maximum_location: u64,
+    maximum_cargo: u64,
+    digest: u64,
+}
+
+fn add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+fn mul(a: u64, b: u64) -> u64 {
+    if a == 0 || b == 0 { 0 }
+    else if a > 18446744073709551615 / b { 18446744073709551615 }
+    else { a * b }
+}
+
+fn mix(value: u64, next: u64) -> u64 { @wrapping_mul(value ^ next, 1099511628211) }
+
+fn empty_policy() -> Policy {
+    Policy {
+        location: model.NONE(), cargo: model.NONE(), requested: 0,
+        ending_inventory: 0, inbound: 0, source_count: 0,
+        average_lead_time: 0, safety_stock: 0, reorder_point: 0,
+        target_stock: 0, order_quantity: 0, action: ACTION_HOLD(), urgency: 0,
+    }
+}
+
+fn demand_at(borrow scenario: model.Scenario, location: u64, cargo: u64) -> u64 {
+    let mut total: u64 = 0;
+    let mut i: u64 = 0;
+    while i < scenario.demands.len() {
+        let item = scenario.demands.get_or(i, model.empty_demand());
+        if item.location == location && item.cargo == cargo { total = add(total, item.quantity); }
+        i = i + 1;
+    }
+    total
+}
+
+fn inbound_at(borrow sim: state.State, location: u64, cargo: u64) -> u64 {
+    let mut total: u64 = 0;
+    let mut i: u64 = 0;
+    while i < sim.pending.len() {
+        let event = sim.pending.get_or(i, state.empty_event());
+        if event.tag == state.EVENT_ARRIVAL() && event.to == location && event.cargo == cargo {
+            total = add(total, event.quantity);
+        }
+        i = i + 1;
+    }
+    total
+}
+
+fn source_count(borrow scenario: model.Scenario, cargo: u64) -> u64 {
+    let mut count: u64 = 0;
+    let mut i: u64 = 0;
+    while i < scenario.supplies.len() {
+        if scenario.supplies.get_or(i, model.empty_supply()).cargo == cargo { count = count + 1; }
+        i = i + 1;
+    }
+    i = 0;
+    while i < scenario.productions.len() {
+        if scenario.productions.get_or(i, model.empty_production()).cargo == cargo { count = count + 1; }
+        i = i + 1;
+    }
+    count
+}
+
+fn lead_time(borrow scenario: model.Scenario, borrow matrix: route_matrix.Matrix, location: u64, cargo: u64) -> u64 {
+    let mut total: u64 = 0; let mut count: u64 = 0;
+    let mut i: u64 = 0;
+    while i < scenario.supplies.len() {
+        let supply = scenario.supplies.get_or(i, model.empty_supply());
+        if supply.cargo == cargo {
+            let value = route_matrix.travel(borrow matrix, supply.location, location);
+            if value != routing.INF() { total = add(total, value); count = count + 1; }
+        }
+        i = i + 1;
+    }
+    if count == 0 { scenario.duration } else { total / count }
+}
+
+fn choose_action(available: u64, reorder_point: u64, target: u64, sources: u64) -> u64 {
+    if available >= target { ACTION_HOLD() }
+    else if sources == 0 { ACTION_REDISTRIBUTE() }
+    else if available * 2 < reorder_point { ACTION_EXPEDITE() }
+    else { ACTION_REORDER() }
+}
+
+fn make_policy(
+    borrow scenario: model.Scenario,
+    borrow sim: state.State,
+    borrow times: route_matrix.Matrix,
+    location: u64,
+    cargo: u64,
+) -> Policy {
+    let requested = demand_at(borrow scenario, location, cargo);
+    let ending = state.inventory_get(borrow scenario, borrow sim, location, cargo);
+    let inbound = inbound_at(borrow sim, location, cargo);
+    let sources = source_count(borrow scenario, cargo);
+    let lead = lead_time(borrow scenario, borrow times, location, cargo);
+    let cargo_record = scenario.cargoes.get_or(cargo, model.empty_cargo());
+    let daily = if scenario.duration == 0 { requested } else { requested / scenario.duration + if requested % scenario.duration > 0 { 1 } else { 0 } };
+    let variability = if sources <= 1 { daily * 3 } else { daily };
+    let shelf_cap = if cargo_record.shelf_life == 0 { requested } else { mul(daily, cargo_record.shelf_life) };
+    let safety = add(mul(daily, lead), variability);
+    let reorder_point = if safety < shelf_cap { safety } else { shelf_cap };
+    let unconstrained_target = add(reorder_point, mul(daily, lead + 1));
+    let target = if unconstrained_target < shelf_cap { unconstrained_target } else { shelf_cap };
+    let available = add(ending, inbound);
+    let order_quantity = if target > available { target - available } else { 0 };
+    let action = choose_action(available, reorder_point, target, sources);
+    let urgency = if target == 0 { 0 } else if available >= target { 0 } else { ((target - available) * 100) / target };
+    Policy {
+        location: location, cargo: cargo, requested: requested,
+        ending_inventory: ending, inbound: inbound, source_count: sources,
+        average_lead_time: lead, safety_stock: safety,
+        reorder_point: reorder_point, target_stock: target,
+        order_quantity: order_quantity, action: action, urgency: urgency,
+    }
+}
+
+pub fn build(borrow scenario: model.Scenario, borrow sim: state.State) -> Book {
+    let times = route_matrix.compute(borrow scenario, 0, 1, routing.MODE_TIME());
+    let mut policies = Policies.new();
+    let mut reorder: u64 = 0; let mut expedite: u64 = 0;
+    let mut redistribute: u64 = 0; let mut hold: u64 = 0;
+    let mut total_order_quantity: u64 = 0; let mut maximum_urgency: u64 = 0;
+    let mut maximum_location = model.NONE(); let mut maximum_cargo = model.NONE();
+    let mut digest: u64 = 14695981039346656037;
+    let mut location: u64 = 0;
+    while location < scenario.locations.len() {
+        let mut cargo: u64 = 0;
+        while cargo < scenario.cargoes.len() {
+            let item = make_policy(borrow scenario, borrow sim, borrow times, location, cargo);
+            if item.action == ACTION_REORDER() { reorder = reorder + 1; }
+            else if item.action == ACTION_EXPEDITE() { expedite = expedite + 1; }
+            else if item.action == ACTION_REDISTRIBUTE() { redistribute = redistribute + 1; }
+            else { hold = hold + 1; }
+            total_order_quantity = add(total_order_quantity, item.order_quantity);
+            if item.urgency > maximum_urgency { maximum_urgency = item.urgency; maximum_location = location; maximum_cargo = cargo; }
+            digest = mix(digest, item.target_stock); digest = mix(digest, item.order_quantity); digest = mix(digest, item.action);
+            policies.push(item); cargo = cargo + 1;
+        }
+        location = location + 1;
+    }
+    Book { policies: policies, locations: scenario.locations.len(), cargoes: scenario.cargoes.len(),
+        reorder: reorder, expedite: expedite, redistribute: redistribute, hold: hold,
+        total_order_quantity: total_order_quantity, maximum_urgency: maximum_urgency,
+        maximum_location: maximum_location, maximum_cargo: maximum_cargo, digest: digest }
+}
+
+fn action_name(inout out: StrBuf, action: u64) {
+    if action == ACTION_REORDER() { text.append_literal(inout out, "reorder"); }
+    else if action == ACTION_EXPEDITE() { text.append_literal(inout out, "expedite"); }
+    else if action == ACTION_REDISTRIBUTE() { text.append_literal(inout out, "redistribute"); }
+    else { text.append_literal(inout out, "hold"); }
+}
+
+pub fn render(borrow scenario: model.Scenario, borrow value: Book) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "Inventory policy book\nlocation cargo requested ending inbound sources lead safety reorder target order action urgency\n");
+    let mut i: u64 = 0;
+    while i < value.policies.len() {
+        let item = value.policies.get_or(i, empty_policy());
+        let location = scenario.locations.get_or(item.location, model.empty_location());
+        let cargo = scenario.cargoes.get_or(item.cargo, model.empty_cargo());
+        text.append_id(inout out, borrow scenario, location.id); out.push(32);
+        text.append_id(inout out, borrow scenario, cargo.id); out.push(32);
+        text.append_u64(inout out, item.requested); out.push(32); text.append_u64(inout out, item.ending_inventory); out.push(32);
+        text.append_u64(inout out, item.inbound); out.push(32); text.append_u64(inout out, item.source_count); out.push(32);
+        text.append_u64(inout out, item.average_lead_time); out.push(32); text.append_u64(inout out, item.safety_stock); out.push(32);
+        text.append_u64(inout out, item.reorder_point); out.push(32); text.append_u64(inout out, item.target_stock); out.push(32);
+        text.append_u64(inout out, item.order_quantity); out.push(32); action_name(inout out, item.action); out.push(32);
+        text.append_u64(inout out, item.urgency); out.push(10); i = i + 1;
+    }
+    text.append_literal(inout out, "hold="); text.append_u64(inout out, value.hold);
+    text.append_literal(inout out, " reorder="); text.append_u64(inout out, value.reorder);
+    text.append_literal(inout out, " expedite="); text.append_u64(inout out, value.expedite);
+    text.append_literal(inout out, " redistribute="); text.append_u64(inout out, value.redistribute); out.push(10);
+    text.append_literal(inout out, "total_order_quantity="); text.append_u64(inout out, value.total_order_quantity);
+    text.append_literal(inout out, " maximum_urgency="); text.append_u64(inout out, value.maximum_urgency);
+    text.append_literal(inout out, " digest="); text.append_u64(inout out, value.digest); out.push(10);
+    out
+}

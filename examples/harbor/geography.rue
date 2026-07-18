@@ -1,0 +1,135 @@
+// Coordinate-based route geometry and detour analysis.
+const std = @import("std");
+const model = @import("model.rue");
+const route_matrix = @import("route_matrix.rue");
+const routing = @import("routing.rue");
+
+pub struct RouteGeometry {
+    route: u64,
+    direct_distance: u64,
+    configured_distance: u64,
+    detour: u64,
+    detour_percent: u64,
+    zero_geometry: bool,
+}
+
+pub const RouteGeometries = std.arraybuf.ArrayBuf(RouteGeometry);
+
+pub struct PairGeometry {
+    from: u64,
+    to: u64,
+    direct_distance: u64,
+    network_distance: u64,
+    detour: u64,
+    reachable: bool,
+}
+
+pub const PairGeometries = std.arraybuf.ArrayBuf(PairGeometry);
+
+pub struct Summary {
+    routes: RouteGeometries,
+    pairs: PairGeometries,
+    route_distance: u64,
+    geometric_distance: u64,
+    route_detour: u64,
+    average_pair_detour: u64,
+    maximum_pair_detour: u64,
+    maximum_pair_from: u64,
+    maximum_pair_to: u64,
+    coordinate_width: u64,
+    coordinate_height: u64,
+}
+
+fn absolute(value: i64) -> u64 {
+    if value >= 0 { @intCast(value) }
+    else if value == -9223372036854775807 - 1 { 9223372036854775808 }
+    else { @intCast(0 - value) }
+}
+
+fn add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+pub fn direct(a: model.Location, b: model.Location) -> u64 {
+    add(absolute(a.x - b.x), absolute(a.y - b.y))
+}
+
+fn route_geometry(borrow scenario: model.Scenario, route_index: u64) -> RouteGeometry {
+    let route = scenario.routes.get_or(route_index, model.empty_route());
+    let from = scenario.locations.get_or(route.from, model.empty_location());
+    let to = scenario.locations.get_or(route.to, model.empty_location());
+    let geometric = direct(from, to);
+    let detour = if route.distance > geometric { route.distance - geometric } else { 0 };
+    RouteGeometry {
+        route: route_index, direct_distance: geometric,
+        configured_distance: route.distance, detour: detour,
+        detour_percent: if geometric == 0 { 0 } else { (detour * 100) / geometric },
+        zero_geometry: geometric == 0,
+    }
+}
+
+pub fn summarize(borrow scenario: model.Scenario) -> Summary {
+    let matrix = route_matrix.compute(borrow scenario, 0, 1, routing.MODE_DISTANCE());
+    let mut routes = RouteGeometries.new();
+    let mut pairs = PairGeometries.new();
+    let mut route_distance: u64 = 0;
+    let mut geometric_distance: u64 = 0;
+    let mut route_detour: u64 = 0;
+    let mut i: u64 = 0;
+    while i < scenario.routes.len() {
+        let item = route_geometry(borrow scenario, i);
+        route_distance = add(route_distance, item.configured_distance);
+        geometric_distance = add(geometric_distance, item.direct_distance);
+        route_detour = add(route_detour, item.detour);
+        routes.push(item); i = i + 1;
+    }
+    let mut total_pair_detour: u64 = 0;
+    let mut pair_count: u64 = 0;
+    let mut maximum_pair_detour: u64 = 0;
+    let mut maximum_pair_from = model.NONE();
+    let mut maximum_pair_to = model.NONE();
+    let mut from: u64 = 0;
+    while from < scenario.locations.len() {
+        let mut to: u64 = 0;
+        while to < scenario.locations.len() {
+            if from != to {
+                let a = scenario.locations.get_or(from, model.empty_location());
+                let b = scenario.locations.get_or(to, model.empty_location());
+                let geometric = direct(a, b);
+                let network = route_matrix.distance(borrow matrix, from, to);
+                let reachable = network != routing.INF();
+                let detour = if reachable && network > geometric { network - geometric } else { 0 };
+                if reachable {
+                    total_pair_detour = add(total_pair_detour, detour); pair_count = pair_count + 1;
+                    if detour > maximum_pair_detour {
+                        maximum_pair_detour = detour; maximum_pair_from = from; maximum_pair_to = to;
+                    }
+                }
+                pairs.push(PairGeometry {
+                    from: from, to: to, direct_distance: geometric,
+                    network_distance: network, detour: detour, reachable: reachable,
+                });
+            }
+            to = to + 1;
+        }
+        from = from + 1;
+    }
+    let mut min_x: i64 = 0; let mut max_x: i64 = 0; let mut min_y: i64 = 0; let mut max_y: i64 = 0;
+    i = 0;
+    while i < scenario.locations.len() {
+        let item = scenario.locations.get_or(i, model.empty_location());
+        if i == 0 || item.x < min_x { min_x = item.x; }
+        if i == 0 || item.x > max_x { max_x = item.x; }
+        if i == 0 || item.y < min_y { min_y = item.y; }
+        if i == 0 || item.y > max_y { max_y = item.y; }
+        i = i + 1;
+    }
+    Summary {
+        routes: routes, pairs: pairs, route_distance: route_distance,
+        geometric_distance: geometric_distance, route_detour: route_detour,
+        average_pair_detour: if pair_count == 0 { 0 } else { total_pair_detour / pair_count },
+        maximum_pair_detour: maximum_pair_detour,
+        maximum_pair_from: maximum_pair_from, maximum_pair_to: maximum_pair_to,
+        coordinate_width: absolute(max_x - min_x), coordinate_height: absolute(max_y - min_y),
+    }
+}

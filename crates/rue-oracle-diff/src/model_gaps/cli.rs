@@ -337,6 +337,12 @@ const ENTRIES: &[Entry] = &[
         &[],
     ),
     Entry::new(
+        "cli.enum_payloads",
+        "returned_nested_json_drops_safely",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &[],
+    ),
+    Entry::new(
         "cli.field_type_inference",
         "string_field_method_receiver_anchors_literal",
         semantic(SemanticGapKind::TextProjectionRead),

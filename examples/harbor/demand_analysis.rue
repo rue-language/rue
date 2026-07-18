@@ -1,0 +1,190 @@
+// Demand portfolio and fulfillment distribution analysis.
+const std = @import("std");
+const model = @import("model.rue");
+const service = @import("service.rue");
+const state = @import("state.rue");
+const U64s = std.arraybuf.ArrayBuf(u64);
+
+pub struct PriorityBand {
+    priority: u64,
+    demands: u64,
+    requested: u64,
+    delivered: u64,
+    on_time: u64,
+    unmet: u64,
+    weighted_requested: u64,
+    weighted_delivered: u64,
+}
+
+pub const PriorityBands = std.arraybuf.ArrayBuf(PriorityBand);
+
+pub struct DeadlineBand {
+    start: u64,
+    end: u64,
+    demands: u64,
+    requested: u64,
+    delivered: u64,
+    on_time: u64,
+    late: u64,
+    unmet: u64,
+}
+
+pub const DeadlineBands = std.arraybuf.ArrayBuf(DeadlineBand);
+
+pub struct Summary {
+    priorities: PriorityBands,
+    deadlines: DeadlineBands,
+    requested: u64,
+    delivered: u64,
+    on_time: u64,
+    late: u64,
+    unmet: u64,
+    complete_demands: u64,
+    partial_demands: u64,
+    empty_demands: u64,
+    earliest_deadline: u64,
+    latest_deadline: u64,
+    average_deadline: u64,
+    median_deadline: u64,
+}
+
+fn add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+fn mul(a: u64, b: u64) -> u64 {
+    if a == 0 || b == 0 { 0 }
+    else if a > 18446744073709551615 / b { 18446744073709551615 }
+    else { a * b }
+}
+
+fn blank_priority(priority: u64) -> PriorityBand {
+    PriorityBand {
+        priority: priority, demands: 0, requested: 0, delivered: 0,
+        on_time: 0, unmet: 0, weighted_requested: 0, weighted_delivered: 0,
+    }
+}
+
+fn max_priority(borrow scenario: model.Scenario) -> u64 {
+    let mut result: u64 = 0;
+    let mut i: u64 = 0;
+    while i < scenario.demands.len() {
+        let demand = scenario.demands.get_or(i, model.empty_demand());
+        if demand.priority > result { result = demand.priority; }
+        i = i + 1;
+    }
+    result
+}
+
+fn priority_bands(borrow scenario: model.Scenario, borrow served: service.Summary) -> PriorityBands {
+    let mut result = PriorityBands.new();
+    let max = max_priority(borrow scenario);
+    let mut priority: u64 = 1;
+    while priority <= max {
+        let mut band = blank_priority(priority);
+        let mut i: u64 = 0;
+        while i < scenario.demands.len() {
+            let demand = scenario.demands.get_or(i, model.empty_demand());
+            if demand.priority == priority {
+                let item = served.demands.get_or(i, service.DemandService {
+                    demand: i, requested: demand.quantity, delivered: 0, on_time: 0,
+                    late: 0, unmet: demand.quantity, first_arrival: 0, last_arrival: 0,
+                    weighted_requested: 0, weighted_delivered: 0,
+                });
+                band.demands = band.demands + 1;
+                band.requested = add(band.requested, item.requested);
+                band.delivered = add(band.delivered, item.delivered);
+                band.on_time = add(band.on_time, item.on_time);
+                band.unmet = add(band.unmet, item.unmet);
+                band.weighted_requested = add(band.weighted_requested, mul(item.requested, priority));
+                band.weighted_delivered = add(band.weighted_delivered, mul(item.delivered, priority));
+            }
+            i = i + 1;
+        }
+        result.push(band);
+        priority = priority + 1;
+    }
+    result
+}
+
+fn deadline_bands(borrow scenario: model.Scenario, borrow served: service.Summary, width: u64) -> DeadlineBands {
+    let mut result = DeadlineBands.new();
+    if width == 0 { return result; }
+    let mut start: u64 = 0;
+    while start <= scenario.duration {
+        let end = if width > scenario.duration - start { scenario.duration } else { start + width - 1 };
+        let mut band = DeadlineBand {
+            start: start, end: end, demands: 0, requested: 0, delivered: 0,
+            on_time: 0, late: 0, unmet: 0,
+        };
+        let mut i: u64 = 0;
+        while i < scenario.demands.len() {
+            let demand = scenario.demands.get_or(i, model.empty_demand());
+            if demand.deadline >= start && demand.deadline <= end {
+                let item = served.demands.get_or(i, service.DemandService {
+                    demand: i, requested: demand.quantity, delivered: 0, on_time: 0,
+                    late: 0, unmet: demand.quantity, first_arrival: 0, last_arrival: 0,
+                    weighted_requested: 0, weighted_delivered: 0,
+                });
+                band.demands = band.demands + 1;
+                band.requested = add(band.requested, item.requested);
+                band.delivered = add(band.delivered, item.delivered);
+                band.on_time = add(band.on_time, item.on_time);
+                band.late = add(band.late, item.late);
+                band.unmet = add(band.unmet, item.unmet);
+            }
+            i = i + 1;
+        }
+        result.push(band);
+        if end == scenario.duration { break; }
+        start = end + 1;
+    }
+    result
+}
+
+fn sorted_deadlines(borrow scenario: model.Scenario) -> U64s {
+    let mut values = U64s.new();
+    let mut i: u64 = 0;
+    while i < scenario.demands.len() {
+        values.push(scenario.demands.get_or(i, model.empty_demand()).deadline);
+        i = i + 1;
+    }
+    std.sort.insertion_sort(u64, inout values);
+    values
+}
+
+pub fn summarize(borrow scenario: model.Scenario, borrow sim: state.State, band_width: u64) -> Summary {
+    let served = service.summarize(borrow scenario, borrow sim);
+    let deadlines = sorted_deadlines(borrow scenario);
+    let mut complete_demands: u64 = 0;
+    let mut partial_demands: u64 = 0;
+    let mut empty_demands: u64 = 0;
+    let mut deadline_total: u64 = 0;
+    let mut i: u64 = 0;
+    while i < served.demands.len() {
+        let item = served.demands.get_or(i, service.DemandService {
+            demand: i, requested: 0, delivered: 0, on_time: 0, late: 0,
+            unmet: 0, first_arrival: 0, last_arrival: 0,
+            weighted_requested: 0, weighted_delivered: 0,
+        });
+        if item.delivered == item.requested { complete_demands = complete_demands + 1; }
+        else if item.delivered == 0 { empty_demands = empty_demands + 1; }
+        else { partial_demands = partial_demands + 1; }
+        let demand = scenario.demands.get_or(i, model.empty_demand());
+        deadline_total = add(deadline_total, demand.deadline);
+        i = i + 1;
+    }
+    let count = deadlines.len();
+    Summary {
+        priorities: priority_bands(borrow scenario, borrow served),
+        deadlines: deadline_bands(borrow scenario, borrow served, band_width),
+        requested: served.requested, delivered: served.delivered,
+        on_time: served.on_time, late: served.late, unmet: served.unmet,
+        complete_demands: complete_demands, partial_demands: partial_demands,
+        empty_demands: empty_demands,
+        earliest_deadline: deadlines.get_or(0, 0),
+        latest_deadline: if count == 0 { 0 } else { deadlines.get_or(count - 1, 0) },
+        average_deadline: if count == 0 { 0 } else { deadline_total / count },
+        median_deadline: if count == 0 { 0 } else { deadlines.get_or(count / 2, 0) },
+    }
+}

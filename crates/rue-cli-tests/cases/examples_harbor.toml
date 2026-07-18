@@ -1,0 +1,59 @@
+# RUE-996: maintained logistics simulator and route planner written in Rue.
+[section]
+id = "cli.examples_harbor"
+name = "Harbor logistics simulator written in Rue"
+description = "exercise std.json, routing, simulation, replay, reporting, deterministic selftests, and generated scaling workloads"
+
+[[case]]
+name = "harbor_validates_and_simulates_scenario"
+description = "the real JSON path resolves references, routes cargo, and passes independent conservation/replay/JSON audits"
+source_path = "examples/harbor/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "scenario.json", source = """
+{
+  "name":"CLI Harbor","duration":24,"seed":17,
+  "locations":[
+    {"id":"port","kind":"port","capacity":500,"handling":80,"x":0,"y":0},
+    {"id":"market","kind":"market","capacity":300,"handling":50,"x":8,"y":3}
+  ],
+  "routes":[
+    {"from":"port","to":"market","distance":10,"capacity":60,"cost":3,"travel":2,"bidirectional":true}
+  ],
+  "cargo":[{"id":"food","unit_value":5,"shelf_life":24,"weight":1}],
+  "vehicles":[{"id":"truck","at":"port","capacity":25,"speed":3,"cost":2,"available":0}],
+  "supplies":[{"at":"port","cargo":"food","quantity":50,"available":0}],
+  "demands":[{"at":"market","cargo":"food","quantity":40,"deadline":12,"priority":2}],
+  "production":[],"disruptions":[]
+}
+""" }]
+program_args = ["simulate", "scenario.json"]
+exit_code = 0
+stdout_contains = ["locations=2", "routes=1", "delivered=40", "unmet=0", "route_mismatches=0", "balance_mismatches=0", "replay_mismatches=0", "json_valid=true"]
+
+[[case]]
+name = "harbor_runs_generated_invariant_suite"
+description = "selftest crosses route oracles, scenario round trips, simulation determinism, conservation, replay, and report reparsing"
+source_path = "examples/harbor/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_args = ["selftest"]
+timeout_ms = 30000
+exit_code = 0
+stdout_contains = ["selftest checks=", "failures=0", "scenarios=", "simulations=", "route_pairs=", "valid=true"]
+
+[[case]]
+name = "harbor_scales_generated_workload"
+description = "the 1x tier generates and simulates a connected logistics network twice with all audits enabled"
+source_path = "examples/harbor/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_args = ["stress1"]
+exit_code = 0
+stdout_contains = ["stress locations=6", "route_pairs=30", "diagnostics=0", "route_mismatches=0", "conservation_mismatches=0", "replay_mismatches=0", "deterministic=true", "valid=true"]
+
+[[case]]
+name = "harbor_prints_reference"
+description = "help documents normal, export, audit, selftest, and scaling modes"
+source_path = "examples/harbor/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_args = ["help"]
+exit_code = 0
+stdout_contains = ["usage:", "simulate", "routes", "scenario", "timeline", "selftest", "stressN"]

@@ -1,0 +1,220 @@
+// Canonical schema, reference, range, and graph validation for Harbor.
+const std = @import("std");
+const model = @import("model.rue");
+const StrBuf = std.strbuf.StrBuf;
+const IdMap = std.strmap.StrMap(u64);
+const OptU64 = std.option.Option(u64);
+const Queue = std.queue.Queue(u64);
+const BitSet = std.bitset.BitSet();
+
+fn detail(inout scenario: model.Scenario, text: StrBuf) -> u64 {
+    scenario.strings.intern(borrow text)
+}
+
+fn error(inout scenario: model.Scenario, code: u64, subject: u64, message: StrBuf) {
+    let message_id = detail(inout scenario, message);
+    scenario.diagnostics.push(model.Diagnostic { code: code, subject: subject, detail: message_id });
+}
+
+fn duplicate(inout scenario: model.Scenario, inout map: IdMap, id: u64, index: u64) {
+    if id >= scenario.strings.len() { return; }
+    let key = scenario.strings.copy(id);
+    if map.contains(borrow key) {
+        error(inout scenario, 200, id, "identifier occurs more than once");
+    } else {
+        map.insert(borrow key, index);
+    }
+}
+
+fn lookup(borrow scenario: model.Scenario, borrow map: IdMap, id: u64) -> u64 {
+    if id >= scenario.strings.len() { return model.NONE(); }
+    let key = scenario.strings.copy(id);
+    match map.get(borrow key) { OptU64.Some(v) => v, OptU64.None => model.NONE() }
+}
+
+fn header(inout scenario: model.Scenario) {
+    if scenario.name >= scenario.strings.len() || scenario.strings.string_len(scenario.name) == 0 {
+        model.add_error(inout scenario, 101, "scenario", "name is required");
+    }
+    if scenario.duration == 0 { model.add_error(inout scenario, 202, "scenario", "duration must be positive"); }
+    if scenario.locations.len() == 0 { model.add_error(inout scenario, 101, "locations", "at least one location is required"); }
+    if scenario.routes.len() == 0 { model.add_error(inout scenario, 101, "routes", "at least one route is required"); }
+    if scenario.cargoes.len() == 0 { model.add_error(inout scenario, 101, "cargo", "at least one cargo type is required"); }
+}
+
+fn location_index(inout scenario: model.Scenario) -> IdMap {
+    let mut map = IdMap.new(0);
+    let mut i: u64 = 0;
+    while i < scenario.locations.len() {
+        let v = scenario.locations.get_or(i, model.Location { id: model.NONE(), kind: model.NONE(), capacity: 0, handling: 0, x: 0, y: 0 });
+        duplicate(inout scenario, inout map, v.id, i);
+        if v.id >= scenario.strings.len() || scenario.strings.string_len(v.id) == 0 { error(inout scenario, 101, v.id, "location id is required"); }
+        if model.location_kind(borrow scenario, v.kind) == 0 { error(inout scenario, 202, v.id, "kind must be port, hub, factory, or market"); }
+        if v.capacity == 0 { error(inout scenario, 202, v.id, "location capacity must be positive"); }
+        if v.handling == 0 { error(inout scenario, 202, v.id, "handling capacity must be positive"); }
+        i = i + 1;
+    }
+    map
+}
+
+fn cargo_index(inout scenario: model.Scenario) -> IdMap {
+    let mut map = IdMap.new(0);
+    let mut i: u64 = 0;
+    while i < scenario.cargoes.len() {
+        let v = scenario.cargoes.get_or(i, model.Cargo { id: model.NONE(), unit_value: 0, shelf_life: 0, weight: 0 });
+        duplicate(inout scenario, inout map, v.id, i);
+        if v.id >= scenario.strings.len() || scenario.strings.string_len(v.id) == 0 { error(inout scenario, 101, v.id, "cargo id is required"); }
+        if v.weight == 0 { error(inout scenario, 202, v.id, "cargo weight must be positive"); }
+        i = i + 1;
+    }
+    map
+}
+
+fn check_vehicle_ids(inout scenario: model.Scenario) {
+    let mut map = IdMap.new(0);
+    let mut i: u64 = 0;
+    while i < scenario.vehicles.len() {
+        let v = scenario.vehicles.get_or(i, model.Vehicle { id: model.NONE(), at_id: model.NONE(), at: model.NONE(), capacity: 0, speed: 0, cost: 0, available: 0 });
+        duplicate(inout scenario, inout map, v.id, i);
+        if v.id >= scenario.strings.len() || scenario.strings.string_len(v.id) == 0 { error(inout scenario, 101, v.id, "vehicle id is required"); }
+        if v.capacity == 0 { error(inout scenario, 202, v.id, "vehicle capacity must be positive"); }
+        if v.speed == 0 { error(inout scenario, 202, v.id, "vehicle speed must be positive"); }
+        if v.available > scenario.duration { error(inout scenario, 202, v.id, "vehicle availability exceeds duration"); }
+        i = i + 1;
+    }
+}
+
+fn routes(inout scenario: model.Scenario, borrow locations: IdMap) {
+    let mut i: u64 = 0;
+    while i < scenario.routes.len() {
+        let mut v = scenario.routes.get_or(i, model.empty_route());
+        v.from = lookup(borrow scenario, borrow locations, v.from_id);
+        v.to = lookup(borrow scenario, borrow locations, v.to_id);
+        if v.from == model.NONE() { error(inout scenario, 201, v.from_id, "route origin does not exist"); }
+        if v.to == model.NONE() { error(inout scenario, 201, v.to_id, "route destination does not exist"); }
+        if v.from != model.NONE() && v.from == v.to { error(inout scenario, 202, v.from_id, "route cannot be a self-loop"); }
+        if v.distance == 0 { error(inout scenario, 202, v.from_id, "route distance must be positive"); }
+        if v.capacity == 0 { error(inout scenario, 202, v.from_id, "route capacity must be positive"); }
+        if v.travel == 0 { error(inout scenario, 202, v.from_id, "route travel time must be positive"); }
+        scenario.routes.set(i, v);
+        i = i + 1;
+    }
+    i = 0;
+    while i < scenario.routes.len() {
+        let a = scenario.routes.get_or(i, model.empty_route());
+        let mut j = i + 1;
+        while j < scenario.routes.len() {
+            let b = scenario.routes.get_or(j, model.empty_route());
+            if a.from < scenario.locations.len() && a.to < scenario.locations.len() && a.from == b.from && a.to == b.to {
+                error(inout scenario, 200, a.from_id, "duplicate directed route");
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
+fn vehicles(inout scenario: model.Scenario, borrow locations: IdMap) {
+    let mut i: u64 = 0;
+    while i < scenario.vehicles.len() {
+        let mut v = scenario.vehicles.get_or(i, model.empty_vehicle());
+        v.at = lookup(borrow scenario, borrow locations, v.at_id);
+        if v.at == model.NONE() { error(inout scenario, 201, v.id, "vehicle location does not exist"); }
+        scenario.vehicles.set(i, v);
+        i = i + 1;
+    }
+}
+
+fn supplies(inout scenario: model.Scenario, borrow locations: IdMap, borrow cargoes: IdMap) {
+    let mut i: u64 = 0;
+    while i < scenario.supplies.len() {
+        let mut v = scenario.supplies.get_or(i, model.empty_supply());
+        v.location = lookup(borrow scenario, borrow locations, v.location_id);
+        v.cargo = lookup(borrow scenario, borrow cargoes, v.cargo_id);
+        if v.location == model.NONE() { error(inout scenario, 201, v.location_id, "supply location does not exist"); }
+        if v.cargo == model.NONE() { error(inout scenario, 201, v.cargo_id, "supply cargo does not exist"); }
+        if v.quantity == 0 { error(inout scenario, 202, v.cargo_id, "supply quantity must be positive"); }
+        if v.available > scenario.duration { error(inout scenario, 202, v.cargo_id, "supply availability exceeds duration"); }
+        scenario.supplies.set(i, v);
+        i = i + 1;
+    }
+}
+
+fn demands(inout scenario: model.Scenario, borrow locations: IdMap, borrow cargoes: IdMap) {
+    let mut i: u64 = 0;
+    while i < scenario.demands.len() {
+        let mut v = scenario.demands.get_or(i, model.empty_demand());
+        v.location = lookup(borrow scenario, borrow locations, v.location_id);
+        v.cargo = lookup(borrow scenario, borrow cargoes, v.cargo_id);
+        if v.location == model.NONE() { error(inout scenario, 201, v.location_id, "demand location does not exist"); }
+        if v.cargo == model.NONE() { error(inout scenario, 201, v.cargo_id, "demand cargo does not exist"); }
+        if v.quantity == 0 { error(inout scenario, 202, v.cargo_id, "demand quantity must be positive"); }
+        if v.deadline == 0 || v.deadline > scenario.duration { error(inout scenario, 202, v.cargo_id, "demand deadline must be within duration"); }
+        if v.priority == 0 { error(inout scenario, 202, v.cargo_id, "demand priority must be positive"); }
+        scenario.demands.set(i, v);
+        i = i + 1;
+    }
+}
+
+fn production(inout scenario: model.Scenario, borrow locations: IdMap, borrow cargoes: IdMap) {
+    let mut i: u64 = 0;
+    while i < scenario.productions.len() {
+        let mut v = scenario.productions.get_or(i, model.empty_production());
+        v.location = lookup(borrow scenario, borrow locations, v.location_id);
+        v.cargo = lookup(borrow scenario, borrow cargoes, v.cargo_id);
+        if v.location == model.NONE() { error(inout scenario, 201, v.location_id, "production location does not exist"); }
+        if v.cargo == model.NONE() { error(inout scenario, 201, v.cargo_id, "production cargo does not exist"); }
+        if v.quantity == 0 { error(inout scenario, 202, v.cargo_id, "production quantity must be positive"); }
+        if v.every == 0 { error(inout scenario, 202, v.cargo_id, "production interval must be positive"); }
+        if v.start > v.end || v.end > scenario.duration { error(inout scenario, 202, v.cargo_id, "production window is invalid"); }
+        scenario.productions.set(i, v);
+        i = i + 1;
+    }
+}
+
+fn disruptions(inout scenario: model.Scenario) {
+    let mut i: u64 = 0;
+    while i < scenario.disruptions.len() {
+        let v = scenario.disruptions.get_or(i, model.empty_disruption());
+        if v.route >= scenario.routes.len() { model.add_error(inout scenario, 201, "disruption", "route index does not exist"); }
+        if v.start >= v.end || v.end > scenario.duration { model.add_error(inout scenario, 202, "disruption", "time window is invalid"); }
+        if v.capacity_percent > 100 { model.add_error(inout scenario, 202, "disruption", "capacity_percent must be at most 100"); }
+        if v.cost_percent == 0 || v.cost_percent > 10000 { model.add_error(inout scenario, 202, "disruption", "cost_percent must be in 1..10000"); }
+        i = i + 1;
+    }
+}
+
+fn connected(inout scenario: model.Scenario) {
+    if scenario.locations.len() == 0 { return; }
+    let mut seen = BitSet.new();
+    let mut queue = Queue.new();
+    seen.set(0);
+    queue.enqueue(0);
+    while !queue.is_empty() {
+        let at = match queue.dequeue() { OptU64.Some(v) => v, OptU64.None => 0 };
+        let mut i: u64 = 0;
+        while i < scenario.routes.len() {
+            let route = scenario.routes.get_or(i, model.empty_route());
+            let mut next = model.NONE();
+            if route.from == at { next = route.to; }
+            else if route.to == at { next = route.from; }
+            if next < scenario.locations.len() && !seen.test(next) { seen.set(next); queue.enqueue(next); }
+            i = i + 1;
+        }
+    }
+    if seen.count() != scenario.locations.len() { model.add_error(inout scenario, 203, "network", "location graph is not weakly connected"); }
+}
+
+pub fn scenario(inout value: model.Scenario) {
+    header(inout value);
+    let locations = location_index(inout value);
+    let cargoes = cargo_index(inout value);
+    check_vehicle_ids(inout value);
+    routes(inout value, borrow locations);
+    vehicles(inout value, borrow locations);
+    supplies(inout value, borrow locations, borrow cargoes);
+    demands(inout value, borrow locations, borrow cargoes);
+    production(inout value, borrow locations, borrow cargoes);
+    disruptions(inout value);
+    connected(inout value);
+}

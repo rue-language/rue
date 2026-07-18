@@ -1,0 +1,68 @@
+// Stable line-oriented audit log presentation.
+const std = @import("std");
+const model = @import("model.rue");
+const state = @import("state.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn id_or_dash(inout out: StrBuf, borrow scenario: model.Scenario, id: u64) {
+    if id < scenario.strings.len() { text.append_id(inout out, borrow scenario, id); }
+    else { out.push(45); }
+}
+
+fn location_id(borrow scenario: model.Scenario, index: u64) -> u64 {
+    scenario.locations.get_or(index, model.empty_location()).id
+}
+
+fn cargo_id(borrow scenario: model.Scenario, index: u64) -> u64 {
+    scenario.cargoes.get_or(index, model.empty_cargo()).id
+}
+
+fn vehicle_id(borrow scenario: model.Scenario, index: u64) -> u64 {
+    scenario.vehicles.get_or(index, model.empty_vehicle()).id
+}
+
+pub fn render_event(borrow scenario: model.Scenario, event: state.Event) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "t=");
+    text.append_u64(inout out, event.time);
+    text.append_literal(inout out, " type=");
+    text.append_literal(inout out, state.event_name(event.tag));
+    text.append_literal(inout out, " vehicle=");
+    id_or_dash(inout out, borrow scenario, vehicle_id(borrow scenario, event.vehicle));
+    text.append_literal(inout out, " cargo=");
+    id_or_dash(inout out, borrow scenario, cargo_id(borrow scenario, event.cargo));
+    text.append_literal(inout out, " quantity=");
+    text.append_u64(inout out, event.quantity);
+    text.append_literal(inout out, " from=");
+    id_or_dash(inout out, borrow scenario, location_id(borrow scenario, event.from));
+    text.append_literal(inout out, " to=");
+    id_or_dash(inout out, borrow scenario, location_id(borrow scenario, event.to));
+    text.append_literal(inout out, " demand=");
+    if event.demand < scenario.demands.len() { text.append_u64(inout out, event.demand); }
+    else { out.push(45); }
+    text.append_literal(inout out, " cost=");
+    text.append_u64(inout out, event.cost);
+    text.append_literal(inout out, " distance=");
+    text.append_u64(inout out, event.distance);
+    text.append_literal(inout out, " travel=");
+    text.append_u64(inout out, event.travel);
+    out.push(10);
+    out
+}
+
+pub fn render(borrow scenario: model.Scenario, borrow sim: state.State) -> StrBuf {
+    let mut out = StrBuf.new();
+    let mut i: u64 = 0;
+    while i < sim.log.len() {
+        let line = render_event(borrow scenario, sim.log.get_or(i, state.empty_event()));
+        text.append_string(inout out, borrow line);
+        i = i + 1;
+    }
+    out
+}
+
+pub fn fingerprint(borrow scenario: model.Scenario, borrow sim: state.State) -> u64 {
+    let rendered = render(borrow scenario, borrow sim);
+    text.fnv1a(borrow rendered)
+}

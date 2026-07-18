@@ -1,0 +1,41 @@
+{
+  "name": "Northern Reach",
+  "duration": 48,
+  "seed": 1729,
+  "locations": [
+    {"id":"seaport","kind":"port","capacity":1200,"handling":80,"x":0,"y":0},
+    {"id":"mill","kind":"factory","capacity":700,"handling":50,"x":5,"y":2},
+    {"id":"junction","kind":"hub","capacity":900,"handling":70,"x":9,"y":4},
+    {"id":"upland","kind":"market","capacity":500,"handling":40,"x":14,"y":8}
+  ],
+  "routes": [
+    {"from":"seaport","to":"mill","distance":6,"capacity":100,"cost":3,"travel":2,"bidirectional":true},
+    {"from":"mill","to":"junction","distance":5,"capacity":80,"cost":2,"travel":2,"bidirectional":true},
+    {"from":"seaport","to":"junction","distance":12,"capacity":60,"cost":4,"travel":4,"bidirectional":true},
+    {"from":"junction","to":"upland","distance":7,"capacity":70,"cost":3,"travel":3,"bidirectional":true}
+  ],
+  "cargo": [
+    {"id":"grain","unit_value":4,"shelf_life":36,"weight":1},
+    {"id":"tools","unit_value":12,"shelf_life":0,"weight":3}
+  ],
+  "vehicles": [
+    {"id":"truck-a","at":"seaport","capacity":35,"speed":4,"cost":2,"available":0},
+    {"id":"truck-b","at":"mill","capacity":25,"speed":3,"cost":2,"available":1},
+    {"id":"van-c","at":"junction","capacity":15,"speed":5,"cost":1,"available":0}
+  ],
+  "supplies": [
+    {"at":"seaport","cargo":"grain","quantity":180,"available":0},
+    {"at":"mill","cargo":"tools","quantity":55,"available":0}
+  ],
+  "demands": [
+    {"at":"upland","cargo":"grain","quantity":90,"deadline":18,"priority":3},
+    {"at":"upland","cargo":"tools","quantity":30,"deadline":24,"priority":2},
+    {"at":"junction","cargo":"grain","quantity":40,"deadline":12,"priority":1}
+  ],
+  "production": [
+    {"at":"mill","cargo":"grain","quantity":12,"every":6,"start":6,"end":42}
+  ],
+  "disruptions": [
+    {"route":1,"start":8,"end":14,"capacity_percent":25,"cost_percent":180}
+  ]
+}

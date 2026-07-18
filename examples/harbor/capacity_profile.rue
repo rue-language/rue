@@ -1,0 +1,132 @@
+// Replay inventory-changing events to measure peak storage and throughput at
+// each location. This is separate from replay.rue's final-state oracle.
+const std = @import("std");
+const model = @import("model.rue");
+const state = @import("state.rue");
+const U64s = std.arraybuf.ArrayBuf(u64);
+
+pub struct LocationCapacity {
+    location: u64,
+    configured: u64,
+    peak_inventory: u64,
+    peak_time: u64,
+    inbound_units: u64,
+    outbound_units: u64,
+    rejected_units: u64,
+    handling_peak: u64,
+    handling_peak_time: u64,
+    storage_overflow: bool,
+    handling_overflow: bool,
+}
+
+pub const LocationCapacities = std.arraybuf.ArrayBuf(LocationCapacity);
+
+pub struct Summary {
+    locations: LocationCapacities,
+    peak_inventory: u64,
+    rejected_units: u64,
+    storage_overflows: u64,
+    handling_overflows: u64,
+}
+
+fn fill(inout values: U64s, count: u64, value: u64) {
+    let mut i: u64 = 0;
+    while i < count { values.push(value); i = i + 1; }
+}
+
+fn add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+fn inventory_add(inout inventory: U64s, location: u64, quantity: u64) {
+    inventory.set(location, add(inventory.get_or(location, 0), quantity));
+}
+
+fn inventory_take(inout inventory: U64s, location: u64, quantity: u64) {
+    let current = inventory.get_or(location, 0);
+    inventory.set(location, if quantity < current { current - quantity } else { 0 });
+}
+
+pub fn summarize(borrow scenario: model.Scenario, borrow sim: state.State) -> Summary {
+    let mut inventory = U64s.new();
+    let mut peaks = U64s.new();
+    let mut peak_times = U64s.new();
+    let mut inbound = U64s.new();
+    let mut outbound = U64s.new();
+    let mut rejected = U64s.new();
+    let mut handling = U64s.new();
+    let mut handling_peaks = U64s.new();
+    let mut handling_times = U64s.new();
+    fill(inout inventory, scenario.locations.len(), 0);
+    fill(inout peaks, scenario.locations.len(), 0);
+    fill(inout peak_times, scenario.locations.len(), 0);
+    fill(inout inbound, scenario.locations.len(), 0);
+    fill(inout outbound, scenario.locations.len(), 0);
+    fill(inout rejected, scenario.locations.len(), 0);
+    fill(inout handling, scenario.locations.len(), 0);
+    fill(inout handling_peaks, scenario.locations.len(), 0);
+    fill(inout handling_times, scenario.locations.len(), 0);
+    let mut current_time: u64 = 0;
+    let mut i: u64 = 0;
+    while i < sim.log.len() {
+        let event = sim.log.get_or(i, state.empty_event());
+        if event.time != current_time {
+            let mut l: u64 = 0;
+            while l < handling.len() { handling.set(l, 0); l = l + 1; }
+            current_time = event.time;
+        }
+        if event.tag == state.EVENT_SUPPLY() || event.tag == state.EVENT_PRODUCTION() {
+            inventory_add(inout inventory, event.to, event.quantity);
+            inbound.set(event.to, add(inbound.get_or(event.to, 0), event.quantity));
+            handling.set(event.to, add(handling.get_or(event.to, 0), event.quantity));
+        } else if event.tag == state.EVENT_DEPARTURE() {
+            inventory_take(inout inventory, event.from, event.quantity);
+            outbound.set(event.from, add(outbound.get_or(event.from, 0), event.quantity));
+            handling.set(event.from, add(handling.get_or(event.from, 0), event.quantity));
+        } else if event.tag == state.EVENT_EXPIRED() && event.to < rejected.len() {
+            rejected.set(event.to, add(rejected.get_or(event.to, 0), event.quantity));
+        }
+        let mut location: u64 = 0;
+        while location < scenario.locations.len() {
+            if inventory.get_or(location, 0) > peaks.get_or(location, 0) {
+                peaks.set(location, inventory.get_or(location, 0));
+                peak_times.set(location, current_time);
+            }
+            if handling.get_or(location, 0) > handling_peaks.get_or(location, 0) {
+                handling_peaks.set(location, handling.get_or(location, 0));
+                handling_times.set(location, current_time);
+            }
+            location = location + 1;
+        }
+        i = i + 1;
+    }
+    let mut locations = LocationCapacities.new();
+    let mut global_peak: u64 = 0;
+    let mut rejected_units: u64 = 0;
+    let mut storage_overflows: u64 = 0;
+    let mut handling_overflows: u64 = 0;
+    i = 0;
+    while i < scenario.locations.len() {
+        let location = scenario.locations.get_or(i, model.empty_location());
+        let storage_overflow = peaks.get_or(i, 0) > location.capacity;
+        let handling_overflow = handling_peaks.get_or(i, 0) > location.handling;
+        if storage_overflow { storage_overflows = storage_overflows + 1; }
+        if handling_overflow { handling_overflows = handling_overflows + 1; }
+        if peaks.get_or(i, 0) > global_peak { global_peak = peaks.get_or(i, 0); }
+        rejected_units = add(rejected_units, rejected.get_or(i, 0));
+        locations.push(LocationCapacity {
+            location: i, configured: location.capacity,
+            peak_inventory: peaks.get_or(i, 0), peak_time: peak_times.get_or(i, 0),
+            inbound_units: inbound.get_or(i, 0), outbound_units: outbound.get_or(i, 0),
+            rejected_units: rejected.get_or(i, 0), handling_peak: handling_peaks.get_or(i, 0),
+            handling_peak_time: handling_times.get_or(i, 0),
+            storage_overflow: storage_overflow, handling_overflow: handling_overflow,
+        });
+        i = i + 1;
+    }
+    Summary {
+        locations: locations, peak_inventory: global_peak,
+        rejected_units: rejected_units, storage_overflows: storage_overflows,
+        handling_overflows: handling_overflows,
+    }
+}

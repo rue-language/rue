@@ -1,0 +1,166 @@
+// Executable invariant suite. It checks generated scenarios rather than pinning
+// only one fixture, and crosses independent implementations where practical.
+const std = @import("std");
+const conservation = @import("conservation.rue");
+const contingency = @import("contingency.rue");
+const fingerprint = @import("fingerprint.rue");
+const forecast = @import("forecast.rue");
+const json_report = @import("json_report.rue");
+const inventory_policy = @import("inventory_policy.rue");
+const operator_checklist = @import("operator_checklist.rue");
+const replay = @import("replay.rue");
+const readiness_dashboard = @import("readiness_dashboard.rue");
+const risk_register = @import("risk_register.rue");
+const route_audit = @import("route_audit.rue");
+const route_matrix = @import("route_matrix.rue");
+const route_oracle = @import("route_oracle.rue");
+const routing = @import("routing.rue");
+const scenario_json = @import("scenario_json.rue");
+const scenario_compare = @import("scenario_compare.rue");
+const sensitivity_analysis = @import("sensitivity_analysis.rue");
+const service = @import("service.rue");
+const simulate = @import("simulate.rue");
+const shipment_manifest = @import("shipment_manifest.rue");
+const stress = @import("stress.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct Result {
+    checks: u64,
+    failures: u64,
+    scenarios: u64,
+    simulations: u64,
+    route_pairs: u64,
+    events: u64,
+    digest: u64,
+    last_failed_check: u64,
+}
+
+fn record(inout result: Result, condition: bool) {
+    result.checks = result.checks + 1;
+    if !condition {
+        result.failures = result.failures + 1;
+        result.last_failed_check = result.checks;
+    }
+}
+
+fn mix(value: u64, next: u64) -> u64 { @wrapping_mul(value ^ next, 1099511628211) }
+
+fn run_one(inout result: Result, config: stress.Config) {
+    let scenario = stress.generate(config);
+    result.scenarios = result.scenarios + 1;
+    record(inout result, scenario.diagnostics.len() == 0);
+    record(inout result, scenario.locations.len() >= 4);
+    record(inout result, scenario.routes.len() >= scenario.locations.len());
+    record(inout result, scenario.cargoes.len() > 0);
+    record(inout result, scenario.vehicles.len() > 0);
+    record(inout result, scenario.demands.len() > 0);
+    let scenario_hash = fingerprint.scenario(borrow scenario);
+    result.digest = mix(result.digest, scenario_hash);
+    record(inout result, scenario_json.roundtrips(borrow scenario));
+    let structural = route_audit.run(borrow scenario, 0, 1);
+    record(inout result, structural.errors == 0);
+    record(inout result, structural.modes.len() == 3);
+    let variants = scenario_compare.compare(borrow scenario);
+    record(inout result, variants.deltas.len() == scenario.disruptions.len() * 3);
+    let contingencies = contingency.build(borrow scenario);
+    record(inout result, contingencies.windows == scenario.disruptions.len());
+
+    let oracle_mismatches = route_oracle.audit_all_pairs(borrow scenario, 0, 1, routing.MODE_COST());
+    record(inout result, oracle_mismatches == 0);
+    let cost_matrix = route_matrix.compute(borrow scenario, 0, 1, routing.MODE_COST());
+    let time_matrix = route_matrix.compute(borrow scenario, 0, 1, routing.MODE_TIME());
+    let distance_matrix = route_matrix.compute(borrow scenario, 0, 1, routing.MODE_DISTANCE());
+    result.route_pairs = result.route_pairs + cost_matrix.reachable_pairs + cost_matrix.unreachable_pairs;
+    record(inout result, cost_matrix.size == scenario.locations.len());
+    record(inout result, time_matrix.size == cost_matrix.size);
+    record(inout result, distance_matrix.size == cost_matrix.size);
+    record(inout result, cost_matrix.reachable_pairs + cost_matrix.unreachable_pairs == scenario.locations.len() * (scenario.locations.len() - 1));
+    let mut i: u64 = 0;
+    while i < scenario.locations.len() {
+        record(inout result, route_matrix.weight(borrow cost_matrix, i, i) == 0);
+        record(inout result, route_matrix.travel(borrow time_matrix, i, i) == 0);
+        record(inout result, route_matrix.distance(borrow distance_matrix, i, i) == 0);
+        i = i + 1;
+    }
+
+    let projection = forecast.summarize(borrow scenario);
+    record(inout result, projection.cargoes.len() == scenario.cargoes.len());
+    let first = simulate.run(borrow scenario);
+    result.simulations = result.simulations + 1;
+    result.events = result.events + first.log.len();
+    let balance = conservation.audit(borrow scenario, borrow first);
+    let replayed = replay.audit(borrow scenario, borrow first);
+    let served = service.summarize(borrow scenario, borrow first);
+    record(inout result, balance.mismatches == 0);
+    record(inout result, replayed.mismatches == 0);
+    record(inout result, replayed.ordering_errors == 0);
+    record(inout result, replayed.underflows == 0);
+    record(inout result, served.requested == projection.total_requested);
+    record(inout result, served.delivered + served.unmet == served.requested);
+    let risks = risk_register.build(borrow scenario, borrow first);
+    record(inout result, risks.critical + risks.high + risks.medium + risks.low == risks.risks.len());
+    let sensitivity = sensitivity_analysis.run(borrow scenario);
+    record(inout result, sensitivity.cells.len() == 25);
+    record(inout result, sensitivity_analysis.stable(borrow scenario, borrow sensitivity));
+    let manifest = shipment_manifest.build(borrow scenario, borrow first);
+    record(inout result, shipment_manifest.valid(borrow manifest));
+    record(inout result, manifest.departures == first.dispatches);
+    let policies = inventory_policy.build(borrow scenario, borrow first);
+    record(inout result, policies.policies.len() == scenario.locations.len() * scenario.cargoes.len());
+    let dashboard = readiness_dashboard.build(borrow scenario, borrow first);
+    record(inout result, dashboard.dimensions.len() == 6);
+    record(inout result, readiness_dashboard.internally_consistent(borrow dashboard));
+    let checklist = operator_checklist.build(borrow scenario, borrow first);
+    record(inout result, checklist.items.len() > 0);
+    record(inout result, checklist.complete + checklist.open == checklist.items.len());
+    let json = json_report.render(borrow scenario, borrow first);
+    record(inout result, json_report.reparses(borrow json));
+    let first_hash = fingerprint.simulation(borrow first);
+    result.digest = mix(result.digest, first_hash);
+
+    let second = simulate.run(borrow scenario);
+    result.simulations = result.simulations + 1;
+    result.events = result.events + second.log.len();
+    let second_hash = fingerprint.simulation(borrow second);
+    record(inout result, first_hash == second_hash);
+    record(inout result, first.log.len() == second.log.len());
+    record(inout result, first.total_cost == second.total_cost);
+    record(inout result, first.total_distance == second.total_distance);
+    record(inout result, first.dispatches == second.dispatches);
+}
+
+pub fn run() -> Result {
+    let mut result = Result {
+        checks: 0, failures: 0, scenarios: 0, simulations: 0,
+        route_pairs: 0, events: 0, digest: 14695981039346656037,
+        last_failed_check: 0,
+    };
+    run_one(inout result, stress.Config {
+        locations: 4, cargoes: 1, vehicles: 2, demands: 4,
+        duration: 18, seed: 11,
+    });
+    run_one(inout result, stress.Config {
+        locations: 7, cargoes: 2, vehicles: 3, demands: 9,
+        duration: 30, seed: 29,
+    });
+    run_one(inout result, stress.Config {
+        locations: 10, cargoes: 3, vehicles: 5, demands: 15,
+        duration: 42, seed: 47,
+    });
+    result
+}
+
+pub fn render(borrow result: Result) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "selftest checks="); text.append_u64(inout out, result.checks);
+    text.append_literal(inout out, " failures="); text.append_u64(inout out, result.failures); out.push(10);
+    text.append_literal(inout out, "scenarios="); text.append_u64(inout out, result.scenarios);
+    text.append_literal(inout out, " simulations="); text.append_u64(inout out, result.simulations);
+    text.append_literal(inout out, " events="); text.append_u64(inout out, result.events); out.push(10);
+    text.append_literal(inout out, "route_pairs="); text.append_u64(inout out, result.route_pairs);
+    text.append_literal(inout out, " digest="); text.append_u64(inout out, result.digest); out.push(10);
+    text.append_literal(inout out, "last_failed_check="); text.append_u64(inout out, result.last_failed_check); out.push(10);
+    text.append_literal(inout out, "valid="); text.append_bool(inout out, result.failures == 0); out.push(10);
+    out
+}

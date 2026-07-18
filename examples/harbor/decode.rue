@@ -1,0 +1,527 @@
+// Consuming JSON decoder for Harbor's domain schema. std.json owns strings and
+// nested arrays, so this module deliberately pops values out exactly once and
+// converts them into the canonical pooled POD model.
+const std = @import("std");
+const model = @import("model.rue");
+const StrBuf = std.strbuf.StrBuf;
+const Json = std.json.Json;
+const Object = std.json.Object;
+const ParseError = std.json.ParseError;
+const OptU64 = std.option.Option(u64);
+const OptI64 = std.option.Option(i64);
+const OptBool = std.option.Option(bool);
+
+fn same(borrow key: StrBuf, expected: StrBuf) -> bool {
+    StrBuf.equals_borrowed(borrow key, borrow expected)
+}
+
+fn number(value: Json) -> OptU64 {
+    let O = OptU64;
+    match value {
+        Json.Number(text) => {
+            match std.strings.parse_int(text) {
+                std.option.Option(i64).Some(n) => {
+                    if n >= 0 {
+                        let converted: u64 = @intCast(n);
+                        O.Some(converted)
+                    } else { O.None }
+                },
+                std.option.Option(i64).None => O.None,
+            }
+        },
+        _ => O.None,
+    }
+}
+
+fn signed_number(value: Json) -> OptI64 {
+    let O = OptI64;
+    match value {
+        Json.Number(text) => std.strings.parse_int(text),
+        _ => O.None,
+    }
+}
+
+fn boolean(value: Json) -> OptBool {
+    let O = OptBool;
+    match value {
+        Json.Bool(v) => O.Some(v),
+        _ => O.None,
+    }
+}
+
+fn string_id(value: Json, inout scenario: model.Scenario) -> u64 {
+    match value {
+        Json.String(text) => scenario.strings.intern(borrow text),
+        _ => model.NONE(),
+    }
+}
+
+fn field_error(inout scenario: model.Scenario, subject: StrBuf, field: StrBuf) {
+    model.add_error(inout scenario, 102, subject, "field has the wrong JSON type: " + field);
+}
+
+fn unknown_field(inout scenario: model.Scenario, subject: StrBuf, borrow field: StrBuf) {
+    model.add_error(inout scenario, 101, subject, "unknown field: " + field);
+}
+
+fn parse_location(value: Json, inout scenario: model.Scenario) {
+    let mut id = model.NONE();
+    let mut kind_id = model.NONE();
+    let mut capacity: u64 = 0;
+    let mut handling: u64 = 0;
+    let mut x: i64 = 0;
+    let mut y: i64 = 0;
+    match value {
+        Json.Object(value_object) => {
+            let mut object = value_object;
+            while object.keys.len() > 0 && object.values.len() > 0 {
+                let key = object.keys.pop_or("");
+                let item = object.values.pop_or(Json.Null);
+                if same(borrow key, "id") {
+                    id = string_id(item, inout scenario);
+                    if id == model.NONE() { field_error(inout scenario, "location", "id"); }
+                } else if same(borrow key, "kind") {
+                    kind_id = string_id(item, inout scenario);
+                    if kind_id == model.NONE() { field_error(inout scenario, "location", "kind"); }
+                } else if same(borrow key, "capacity") {
+                    capacity = match number(item) {
+                        OptU64.Some(n) => n,
+                        OptU64.None => { field_error(inout scenario, "location", "capacity"); 0 },
+                    };
+                } else if same(borrow key, "handling") {
+                    handling = match number(item) {
+                        OptU64.Some(n) => n,
+                        OptU64.None => { field_error(inout scenario, "location", "handling"); 0 },
+                    };
+                } else if same(borrow key, "x") {
+                    x = match signed_number(item) {
+                        OptI64.Some(n) => n,
+                        OptI64.None => { field_error(inout scenario, "location", "x"); 0 },
+                    };
+                } else if same(borrow key, "y") {
+                    y = match signed_number(item) {
+                        OptI64.Some(n) => n,
+                        OptI64.None => { field_error(inout scenario, "location", "y"); 0 },
+                    };
+                } else {
+                    unknown_field(inout scenario, "location", borrow key);
+                }
+            }
+        },
+        _ => { model.add_error(inout scenario, 101, "locations", "array element must be an object"); },
+    }
+    scenario.locations.push(model.Location {
+        id: id, kind: kind_id, capacity: capacity, handling: handling, x: x, y: y,
+    });
+}
+
+fn parse_route(value: Json, inout scenario: model.Scenario) {
+    let mut from_id = model.NONE();
+    let mut to_id = model.NONE();
+    let mut distance: u64 = 0;
+    let mut capacity: u64 = 0;
+    let mut cost: u64 = 0;
+    let mut travel: u64 = 0;
+    let mut bidirectional = false;
+    match value {
+        Json.Object(value_object) => {
+            let mut object = value_object;
+            while object.keys.len() > 0 && object.values.len() > 0 {
+                let key = object.keys.pop_or("");
+                let item = object.values.pop_or(Json.Null);
+                if same(borrow key, "from") {
+                    from_id = string_id(item, inout scenario);
+                    if from_id == model.NONE() { field_error(inout scenario, "route", "from"); }
+                } else if same(borrow key, "to") {
+                    to_id = string_id(item, inout scenario);
+                    if to_id == model.NONE() { field_error(inout scenario, "route", "to"); }
+                } else if same(borrow key, "distance") {
+                    distance = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "route", "distance"); 0 } };
+                } else if same(borrow key, "capacity") {
+                    capacity = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "route", "capacity"); 0 } };
+                } else if same(borrow key, "cost") {
+                    cost = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "route", "cost"); 0 } };
+                } else if same(borrow key, "travel") {
+                    travel = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "route", "travel"); 0 } };
+                } else if same(borrow key, "bidirectional") {
+                    bidirectional = match boolean(item) { OptBool.Some(v) => v, OptBool.None => { field_error(inout scenario, "route", "bidirectional"); false } };
+                } else {
+                    unknown_field(inout scenario, "route", borrow key);
+                }
+            }
+        },
+        _ => { model.add_error(inout scenario, 101, "routes", "array element must be an object"); },
+    }
+    scenario.routes.push(model.Route {
+        from_id: from_id, to_id: to_id, from: model.NONE(), to: model.NONE(),
+        distance: distance, capacity: capacity, cost: cost, travel: travel,
+        bidirectional: bidirectional,
+    });
+}
+
+fn parse_cargo(value: Json, inout scenario: model.Scenario) {
+    let mut id = model.NONE();
+    let mut unit_value: u64 = 0;
+    let mut shelf_life: u64 = 0;
+    let mut weight: u64 = 1;
+    match value {
+        Json.Object(value_object) => {
+            let mut object = value_object;
+            while object.keys.len() > 0 && object.values.len() > 0 {
+                let key = object.keys.pop_or("");
+                let item = object.values.pop_or(Json.Null);
+                if same(borrow key, "id") {
+                    id = string_id(item, inout scenario);
+                    if id == model.NONE() { field_error(inout scenario, "cargo", "id"); }
+                } else if same(borrow key, "unit_value") {
+                    unit_value = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "cargo", "unit_value"); 0 } };
+                } else if same(borrow key, "shelf_life") {
+                    shelf_life = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "cargo", "shelf_life"); 0 } };
+                } else if same(borrow key, "weight") {
+                    weight = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "cargo", "weight"); 0 } };
+                } else {
+                    unknown_field(inout scenario, "cargo", borrow key);
+                }
+            }
+        },
+        _ => { model.add_error(inout scenario, 101, "cargo", "array element must be an object"); },
+    }
+    scenario.cargoes.push(model.Cargo { id: id, unit_value: unit_value, shelf_life: shelf_life, weight: weight });
+}
+
+fn parse_vehicle(value: Json, inout scenario: model.Scenario) {
+    let mut id = model.NONE();
+    let mut at_id = model.NONE();
+    let mut capacity: u64 = 0;
+    let mut speed: u64 = 0;
+    let mut cost: u64 = 0;
+    let mut available: u64 = 0;
+    match value {
+        Json.Object(value_object) => {
+            let mut object = value_object;
+            while object.keys.len() > 0 && object.values.len() > 0 {
+                let key = object.keys.pop_or("");
+                let item = object.values.pop_or(Json.Null);
+                if same(borrow key, "id") {
+                    id = string_id(item, inout scenario);
+                    if id == model.NONE() { field_error(inout scenario, "vehicle", "id"); }
+                } else if same(borrow key, "at") {
+                    at_id = string_id(item, inout scenario);
+                    if at_id == model.NONE() { field_error(inout scenario, "vehicle", "at"); }
+                } else if same(borrow key, "capacity") {
+                    capacity = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "vehicle", "capacity"); 0 } };
+                } else if same(borrow key, "speed") {
+                    speed = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "vehicle", "speed"); 0 } };
+                } else if same(borrow key, "cost") {
+                    cost = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "vehicle", "cost"); 0 } };
+                } else if same(borrow key, "available") {
+                    available = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "vehicle", "available"); 0 } };
+                } else {
+                    unknown_field(inout scenario, "vehicle", borrow key);
+                }
+            }
+        },
+        _ => { model.add_error(inout scenario, 101, "vehicles", "array element must be an object"); },
+    }
+    scenario.vehicles.push(model.Vehicle {
+        id: id, at_id: at_id, at: model.NONE(), capacity: capacity,
+        speed: speed, cost: cost, available: available,
+    });
+}
+
+fn parse_supply(value: Json, inout scenario: model.Scenario) {
+    let mut location_id = model.NONE();
+    let mut cargo_id = model.NONE();
+    let mut quantity: u64 = 0;
+    let mut available: u64 = 0;
+    match value {
+        Json.Object(value_object) => {
+            let mut object = value_object;
+            while object.keys.len() > 0 && object.values.len() > 0 {
+                let key = object.keys.pop_or("");
+                let item = object.values.pop_or(Json.Null);
+                if same(borrow key, "at") {
+                    location_id = string_id(item, inout scenario);
+                    if location_id == model.NONE() { field_error(inout scenario, "supply", "at"); }
+                } else if same(borrow key, "cargo") {
+                    cargo_id = string_id(item, inout scenario);
+                    if cargo_id == model.NONE() { field_error(inout scenario, "supply", "cargo"); }
+                } else if same(borrow key, "quantity") {
+                    quantity = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "supply", "quantity"); 0 } };
+                } else if same(borrow key, "available") {
+                    available = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "supply", "available"); 0 } };
+                } else {
+                    unknown_field(inout scenario, "supply", borrow key);
+                }
+            }
+        },
+        _ => { model.add_error(inout scenario, 101, "supplies", "array element must be an object"); },
+    }
+    scenario.supplies.push(model.Supply {
+        location_id: location_id, cargo_id: cargo_id, location: model.NONE(), cargo: model.NONE(),
+        quantity: quantity, available: available,
+    });
+}
+
+fn parse_demand(value: Json, inout scenario: model.Scenario) {
+    let mut location_id = model.NONE();
+    let mut cargo_id = model.NONE();
+    let mut quantity: u64 = 0;
+    let mut deadline: u64 = 0;
+    let mut priority: u64 = 1;
+    match value {
+        Json.Object(value_object) => {
+            let mut object = value_object;
+            while object.keys.len() > 0 && object.values.len() > 0 {
+                let key = object.keys.pop_or("");
+                let item = object.values.pop_or(Json.Null);
+                if same(borrow key, "at") {
+                    location_id = string_id(item, inout scenario);
+                    if location_id == model.NONE() { field_error(inout scenario, "demand", "at"); }
+                } else if same(borrow key, "cargo") {
+                    cargo_id = string_id(item, inout scenario);
+                    if cargo_id == model.NONE() { field_error(inout scenario, "demand", "cargo"); }
+                } else if same(borrow key, "quantity") {
+                    quantity = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "demand", "quantity"); 0 } };
+                } else if same(borrow key, "deadline") {
+                    deadline = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "demand", "deadline"); 0 } };
+                } else if same(borrow key, "priority") {
+                    priority = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "demand", "priority"); 0 } };
+                } else {
+                    unknown_field(inout scenario, "demand", borrow key);
+                }
+            }
+        },
+        _ => { model.add_error(inout scenario, 101, "demands", "array element must be an object"); },
+    }
+    scenario.demands.push(model.Demand {
+        location_id: location_id, cargo_id: cargo_id, location: model.NONE(), cargo: model.NONE(),
+        quantity: quantity, deadline: deadline, priority: priority,
+    });
+}
+
+fn parse_production(value: Json, inout scenario: model.Scenario) {
+    let mut location_id = model.NONE();
+    let mut cargo_id = model.NONE();
+    let mut quantity: u64 = 0;
+    let mut every: u64 = 0;
+    let mut start: u64 = 0;
+    let mut end: u64 = 0;
+    match value {
+        Json.Object(value_object) => {
+            let mut object = value_object;
+            while object.keys.len() > 0 && object.values.len() > 0 {
+                let key = object.keys.pop_or("");
+                let item = object.values.pop_or(Json.Null);
+                if same(borrow key, "at") {
+                    location_id = string_id(item, inout scenario);
+                    if location_id == model.NONE() { field_error(inout scenario, "production", "at"); }
+                } else if same(borrow key, "cargo") {
+                    cargo_id = string_id(item, inout scenario);
+                    if cargo_id == model.NONE() { field_error(inout scenario, "production", "cargo"); }
+                } else if same(borrow key, "quantity") {
+                    quantity = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "production", "quantity"); 0 } };
+                } else if same(borrow key, "every") {
+                    every = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "production", "every"); 0 } };
+                } else if same(borrow key, "start") {
+                    start = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "production", "start"); 0 } };
+                } else if same(borrow key, "end") {
+                    end = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "production", "end"); 0 } };
+                } else {
+                    unknown_field(inout scenario, "production", borrow key);
+                }
+            }
+        },
+        _ => { model.add_error(inout scenario, 101, "production", "array element must be an object"); },
+    }
+    scenario.productions.push(model.Production {
+        location_id: location_id, cargo_id: cargo_id, location: model.NONE(), cargo: model.NONE(),
+        quantity: quantity, every: every, start: start, end: end,
+    });
+}
+
+fn parse_disruption(value: Json, inout scenario: model.Scenario) {
+    let mut route = model.NONE();
+    let mut start: u64 = 0;
+    let mut end: u64 = 0;
+    let mut capacity_percent: u64 = 100;
+    let mut cost_percent: u64 = 100;
+    match value {
+        Json.Object(value_object) => {
+            let mut object = value_object;
+            while object.keys.len() > 0 && object.values.len() > 0 {
+                let key = object.keys.pop_or("");
+                let item = object.values.pop_or(Json.Null);
+                if same(borrow key, "route") {
+                    route = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "disruption", "route"); model.NONE() } };
+                } else if same(borrow key, "start") {
+                    start = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "disruption", "start"); 0 } };
+                } else if same(borrow key, "end") {
+                    end = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "disruption", "end"); 0 } };
+                } else if same(borrow key, "capacity_percent") {
+                    capacity_percent = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "disruption", "capacity_percent"); 0 } };
+                } else if same(borrow key, "cost_percent") {
+                    cost_percent = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "disruption", "cost_percent"); 0 } };
+                } else {
+                    unknown_field(inout scenario, "disruption", borrow key);
+                }
+            }
+        },
+        _ => { model.add_error(inout scenario, 101, "disruptions", "array element must be an object"); },
+    }
+    scenario.disruptions.push(model.Disruption {
+        route: route, start: start, end: end,
+        capacity_percent: capacity_percent, cost_percent: cost_percent,
+    });
+}
+
+fn parse_locations(value: Json, inout scenario: model.Scenario) {
+    match value {
+        Json.Array(value_array) => {
+            let mut values = value_array;
+            while values.len() > 0 { parse_location(values.pop_or(Json.Null), inout scenario); }
+            scenario.locations.reverse();
+        },
+        _ => field_error(inout scenario, "scenario", "locations"),
+    }
+}
+
+fn parse_routes(value: Json, inout scenario: model.Scenario) {
+    match value {
+        Json.Array(value_array) => {
+            let mut values = value_array;
+            while values.len() > 0 { parse_route(values.pop_or(Json.Null), inout scenario); }
+            scenario.routes.reverse();
+        },
+        _ => field_error(inout scenario, "scenario", "routes"),
+    }
+}
+
+fn parse_cargoes(value: Json, inout scenario: model.Scenario) {
+    match value {
+        Json.Array(value_array) => {
+            let mut values = value_array;
+            while values.len() > 0 { parse_cargo(values.pop_or(Json.Null), inout scenario); }
+            scenario.cargoes.reverse();
+        },
+        _ => field_error(inout scenario, "scenario", "cargo"),
+    }
+}
+
+fn parse_vehicles(value: Json, inout scenario: model.Scenario) {
+    match value {
+        Json.Array(value_array) => {
+            let mut values = value_array;
+            while values.len() > 0 { parse_vehicle(values.pop_or(Json.Null), inout scenario); }
+            scenario.vehicles.reverse();
+        },
+        _ => field_error(inout scenario, "scenario", "vehicles"),
+    }
+}
+
+fn parse_supplies(value: Json, inout scenario: model.Scenario) {
+    match value {
+        Json.Array(value_array) => {
+            let mut values = value_array;
+            while values.len() > 0 { parse_supply(values.pop_or(Json.Null), inout scenario); }
+            scenario.supplies.reverse();
+        },
+        _ => field_error(inout scenario, "scenario", "supplies"),
+    }
+}
+
+fn parse_demands(value: Json, inout scenario: model.Scenario) {
+    match value {
+        Json.Array(value_array) => {
+            let mut values = value_array;
+            while values.len() > 0 { parse_demand(values.pop_or(Json.Null), inout scenario); }
+            scenario.demands.reverse();
+        },
+        _ => field_error(inout scenario, "scenario", "demands"),
+    }
+}
+
+fn parse_productions(value: Json, inout scenario: model.Scenario) {
+    match value {
+        Json.Array(value_array) => {
+            let mut values = value_array;
+            while values.len() > 0 { parse_production(values.pop_or(Json.Null), inout scenario); }
+            scenario.productions.reverse();
+        },
+        _ => field_error(inout scenario, "scenario", "production"),
+    }
+}
+
+fn parse_disruptions(value: Json, inout scenario: model.Scenario) {
+    match value {
+        Json.Array(value_array) => {
+            let mut values = value_array;
+            while values.len() > 0 { parse_disruption(values.pop_or(Json.Null), inout scenario); }
+            scenario.disruptions.reverse();
+        },
+        _ => field_error(inout scenario, "scenario", "disruptions"),
+    }
+}
+
+fn parse_root(value: Json, inout scenario: model.Scenario) {
+    match value {
+        Json.Object(value_object) => {
+            let mut object = value_object;
+            while object.keys.len() > 0 && object.values.len() > 0 {
+                let key = object.keys.pop_or("");
+                let item = object.values.pop_or(Json.Null);
+                if same(borrow key, "name") {
+                    scenario.name = string_id(item, inout scenario);
+                    if scenario.name == model.NONE() { field_error(inout scenario, "scenario", "name"); }
+                } else if same(borrow key, "duration") {
+                    scenario.duration = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "scenario", "duration"); 0 } };
+                } else if same(borrow key, "seed") {
+                    scenario.seed = match number(item) { OptU64.Some(n) => n, OptU64.None => { field_error(inout scenario, "scenario", "seed"); 1 } };
+                } else if same(borrow key, "locations") {
+                    parse_locations(item, inout scenario);
+                } else if same(borrow key, "routes") {
+                    parse_routes(item, inout scenario);
+                } else if same(borrow key, "cargo") {
+                    parse_cargoes(item, inout scenario);
+                } else if same(borrow key, "vehicles") {
+                    parse_vehicles(item, inout scenario);
+                } else if same(borrow key, "supplies") {
+                    parse_supplies(item, inout scenario);
+                } else if same(borrow key, "demands") {
+                    parse_demands(item, inout scenario);
+                } else if same(borrow key, "production") {
+                    parse_productions(item, inout scenario);
+                } else if same(borrow key, "disruptions") {
+                    parse_disruptions(item, inout scenario);
+                } else {
+                    unknown_field(inout scenario, "scenario", borrow key);
+                }
+            }
+        },
+        _ => model.add_error(inout scenario, 101, "scenario", "root JSON value must be an object"),
+    }
+}
+
+fn parse_error_position(error: ParseError) -> u64 {
+    match error {
+        std.json.ParseError.UnexpectedEnd(at) => at,
+        std.json.ParseError.UnexpectedByte(at) => at,
+        std.json.ParseError.InvalidNumber(at) => at,
+        std.json.ParseError.InvalidEscape(at) => at,
+        std.json.ParseError.InvalidUnicode(at) => at,
+        std.json.ParseError.TrailingCharacters(at) => at,
+        std.json.ParseError.NestingTooDeep(at) => at,
+    }
+}
+
+pub fn source(text: StrBuf) -> model.Scenario {
+    let mut scenario = model.new_scenario();
+    match std.json.parse(text) {
+        std.result.Result(Json, ParseError).Ok(value) => parse_root(value, inout scenario),
+        std.result.Result(Json, ParseError).Err(error) => {
+            let at = parse_error_position(error);
+            model.add_error(inout scenario, 100, "scenario", "invalid JSON at byte " + @to_string(at));
+        },
+    }
+    scenario
+}

@@ -1,0 +1,224 @@
+// harbor — deterministic logistics simulation and route planning (RUE-996).
+const std = @import("std");
+const conservation = @import("conservation.rue");
+const assurance_export = @import("assurance_export.rue");
+const contingency = @import("contingency.rue");
+const csv_report = @import("csv_report.rue");
+const decode = @import("decode.rue");
+const diagnostics = @import("diagnostics.rue");
+const dot_report = @import("dot_report.rue");
+const eventlog = @import("eventlog.rue");
+const fingerprint = @import("fingerprint.rue");
+const forecast = @import("forecast.rue");
+const io = @import("io.rue");
+const inventory_policy = @import("inventory_policy.rue");
+const json_report = @import("json_report.rue");
+const language = @import("language.rue");
+const model = @import("model.rue");
+const operator_checklist = @import("operator_checklist.rue");
+const replay = @import("replay.rue");
+const readiness_dashboard = @import("readiness_dashboard.rue");
+const risk_register = @import("risk_register.rue");
+const report = @import("report.rue");
+const route_audit = @import("route_audit.rue");
+const route_matrix = @import("route_matrix.rue");
+const route_oracle = @import("route_oracle.rue");
+const routing = @import("routing.rue");
+const scenario_json = @import("scenario_json.rue");
+const scenario_compare = @import("scenario_compare.rue");
+const sensitivity_analysis = @import("sensitivity_analysis.rue");
+const selftest = @import("selftest.rue");
+const service = @import("service.rue");
+const simulate = @import("simulate.rue");
+const shipment_manifest = @import("shipment_manifest.rue");
+const stress = @import("stress.rue");
+const state = @import("state.rue");
+const timeline_report = @import("timeline_report.rue");
+const validate = @import("validate.rue");
+const workload = @import("workload.rue");
+const StrBuf = std.strbuf.StrBuf;
+const OptStr = std.option.Option(StrBuf);
+
+fn same(borrow value: StrBuf, literal: StrBuf) -> bool {
+    StrBuf.equals_borrowed(borrow value, borrow literal)
+}
+
+fn run_stress(scale: u64) -> i32 {
+    let result = stress.run(stress.tier(scale));
+    print(stress.render(borrow result));
+    if result.ok { 0 } else { 1 }
+}
+
+fn run_selftest() -> i32 {
+    let result = selftest.run();
+    print(selftest.render(borrow result));
+    if result.failures == 0 { 0 } else { 1 }
+}
+
+fn simulate_summary(
+    borrow scenario: model.Scenario,
+    borrow sim: state.State,
+    route_mismatches: u64,
+) -> i32 {
+    let balance = conservation.audit(borrow scenario, borrow sim);
+    let replayed = replay.audit(borrow scenario, borrow sim);
+    let summary = service.summarize(borrow scenario, borrow sim);
+    let json = json_report.render(borrow scenario, borrow sim);
+    let json_valid = json_report.reparses(borrow json);
+    println(
+        "locations=" + @to_string(scenario.locations.len()) +
+        " routes=" + @to_string(scenario.routes.len()) +
+        " events=" + @to_string(sim.log.len()) +
+        " dispatches=" + @to_string(sim.dispatches) +
+        " delivered=" + @to_string(summary.delivered) +
+        " unmet=" + @to_string(summary.unmet) +
+        " route_mismatches=" + @to_string(route_mismatches) +
+        " balance_mismatches=" + @to_string(balance.mismatches) +
+        " replay_mismatches=" + @to_string(replayed.mismatches) +
+        " json_valid=" + (if json_valid { "true" } else { "false" }) +
+        " fingerprint=" + @to_string(fingerprint.simulation(borrow sim))
+    );
+    if route_mismatches == 0 && balance.mismatches == 0 && replayed.mismatches == 0 && json_valid { 0 } else { 1 }
+}
+
+fn run_file(borrow mode: StrBuf, path: StrBuf) -> i32 {
+    let source = match io.read_text(borrow path) {
+        OptStr.Some(value) => value,
+        OptStr.None => { println("harbor[filesystem]: cannot read scenario"); return 2; },
+    };
+    let mut scenario = decode.source(source);
+    validate.scenario(inout scenario);
+    if scenario.diagnostics.len() > 0 {
+        print(diagnostics.render(borrow scenario));
+        return 1;
+    }
+    if same(borrow mode, "validate") {
+        println(
+            "valid locations=" + @to_string(scenario.locations.len()) +
+            " routes=" + @to_string(scenario.routes.len()) +
+            " cargoes=" + @to_string(scenario.cargoes.len()) +
+            " vehicles=" + @to_string(scenario.vehicles.len()) +
+            " demands=" + @to_string(scenario.demands.len()) +
+            " fingerprint=" + @to_string(fingerprint.scenario(borrow scenario))
+        );
+        return 0;
+    }
+    if same(borrow mode, "routes") {
+        let matrix = route_matrix.compute(borrow scenario, 0, 1, routing.MODE_COST());
+        print(route_matrix.render(borrow scenario, borrow matrix));
+        return if matrix.unreachable_pairs == 0 { 0 } else { 1 };
+    }
+    if same(borrow mode, "forecast") {
+        print(forecast.render(borrow scenario));
+        return 0;
+    }
+    if same(borrow mode, "scenario") {
+        print(scenario_json.render(borrow scenario));
+        return if scenario_json.roundtrips(borrow scenario) { 0 } else { 1 };
+    }
+    if same(borrow mode, "dot") {
+        print(dot_report.render(borrow scenario));
+        return 0;
+    }
+    if same(borrow mode, "audit-routes") {
+        let audit = route_audit.run(borrow scenario, 0, 1);
+        print(route_audit.render(borrow audit));
+        return if audit.errors == 0 { 0 } else { 1 };
+    }
+    if same(borrow mode, "contingency") {
+        let plan = contingency.build(borrow scenario);
+        print(contingency.render(borrow scenario, borrow plan));
+        return 0;
+    }
+    if same(borrow mode, "compare") {
+        let comparison = scenario_compare.compare(borrow scenario);
+        print(scenario_compare.render(borrow scenario, borrow comparison));
+        return 0;
+    }
+    if same(borrow mode, "sensitivity") {
+        let analysis = sensitivity_analysis.run(borrow scenario);
+        print(sensitivity_analysis.render(borrow analysis));
+        return if sensitivity_analysis.stable(borrow scenario, borrow analysis) { 0 } else { 1 };
+    }
+    let route_mismatches = route_oracle.audit_all_pairs(borrow scenario, 0, 1, routing.MODE_COST());
+    let sim = simulate.run(borrow scenario);
+    if same(borrow mode, "simulate") {
+        simulate_summary(borrow scenario, borrow sim, route_mismatches)
+    } else if same(borrow mode, "report") {
+        print(report.render(borrow scenario, borrow sim));
+        if route_mismatches == 0 { 0 } else { 1 }
+    } else if same(borrow mode, "json") {
+        let output = json_report.render(borrow scenario, borrow sim);
+        let valid = json_report.reparses(borrow output);
+        print(output);
+        if valid { 0 } else { 1 }
+    } else if same(borrow mode, "events") {
+        print(eventlog.render(borrow scenario, borrow sim));
+        0
+    } else if same(borrow mode, "csv") {
+        print(csv_report.render(borrow scenario, borrow sim));
+        0
+    } else if same(borrow mode, "timeline") {
+        print(timeline_report.render(borrow scenario, borrow sim));
+        0
+    } else if same(borrow mode, "risks") {
+        let risks = risk_register.build(borrow scenario, borrow sim);
+        print(risk_register.render(borrow risks));
+        0
+    } else if same(borrow mode, "assurance-csv") {
+        print(assurance_export.render(borrow scenario, borrow sim));
+        0
+    } else if same(borrow mode, "manifest") {
+        let manifest = shipment_manifest.build(borrow scenario, borrow sim);
+        print(shipment_manifest.render(borrow scenario, borrow manifest));
+        if shipment_manifest.valid(borrow manifest) { 0 } else { 1 }
+    } else if same(borrow mode, "inventory-policy") {
+        let policies = inventory_policy.build(borrow scenario, borrow sim);
+        print(inventory_policy.render(borrow scenario, borrow policies));
+        0
+    } else if same(borrow mode, "readiness") {
+        let dashboard = readiness_dashboard.build(borrow scenario, borrow sim);
+        print(readiness_dashboard.render(borrow dashboard));
+        if dashboard.gates_failed == 0 { 0 } else { 1 }
+    } else if same(borrow mode, "checklist") {
+        let checklist = operator_checklist.build(borrow scenario, borrow sim);
+        print(operator_checklist.render(borrow checklist));
+        if checklist.blocking == 0 { 0 } else { 1 }
+    } else if same(borrow mode, "stats") {
+        let balance = conservation.audit(borrow scenario, borrow sim);
+        let replayed = replay.audit(borrow scenario, borrow sim);
+        println("scenario_fingerprint=" + @to_string(fingerprint.scenario(borrow scenario)));
+        println("simulation_fingerprint=" + @to_string(fingerprint.simulation(borrow sim)));
+        println("eventlog_fingerprint=" + @to_string(eventlog.fingerprint(borrow scenario, borrow sim)));
+        println("scenario_roundtrip=" + if scenario_json.roundtrips(borrow scenario) { "true" } else { "false" });
+        println("events=" + @to_string(sim.log.len()) + " balance=" + @to_string(balance.mismatches) + " replay=" + @to_string(replayed.mismatches));
+        if balance.mismatches == 0 && replayed.mismatches == 0 { 0 } else { 1 }
+    } else {
+        println("harbor: unknown command; run `harbor help`");
+        1
+    }
+}
+
+fn main() -> i32 {
+    let mode = match std.env.arg(1) {
+        OptStr.Some(value) => value,
+        OptStr.None => { print(language.help()); return 1; },
+    };
+    if same(borrow mode, "help") || same(borrow mode, "--help") {
+        print(language.help());
+        return 0;
+    }
+    if same(borrow mode, "selftest") { return run_selftest(); }
+    if same(borrow mode, "stress1") { return run_stress(1); }
+    if same(borrow mode, "stress2") || same(borrow mode, "stress") || same(borrow mode, "--stress") { return run_stress(2); }
+    if same(borrow mode, "stress4") { return run_stress(4); }
+    if same(borrow mode, "benchmark") {
+        let suite = workload.run(3, 2);
+        print(workload.render(borrow suite));
+        return if suite.failures == 0 && suite.nondeterministic == 0 { 0 } else { 1 };
+    }
+    match std.env.arg(2) {
+        OptStr.Some(path) => run_file(borrow mode, path),
+        OptStr.None => { println("harbor: command requires a scenario path"); 1 },
+    }
+}
