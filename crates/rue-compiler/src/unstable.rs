@@ -6,9 +6,361 @@
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use crate::canonical_semantic::CanonicalSemanticFailurePhase as SemanticFailurePhase;
+
+/// Unstable human-readable compiler stages. These are projections of the
+/// canonical session artifacts, never alternate phase entry points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresentationStage {
+    Tokens,
+    Ast,
+    Rir,
+    Air,
+    Cfg,
+    Lowering,
+    Mir,
+    Liveness,
+    RegAlloc,
+    Asm,
+    StackFrame,
+}
+
+/// One explicitly unstable textual presentation request.
+#[derive(Debug, Clone)]
+pub struct PresentationRequest<'a> {
+    pub stage: PresentationStage,
+    pub options: &'a crate::CompileOptions,
+    pub file_order: &'a [crate::FileId],
+}
+
+/// Owned unstable presentation text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresentationOutput {
+    text: String,
+}
+
+/// Publish a source snapshot with caller-selected diagnostic presentation
+/// order. This is a tooling adapter over the canonical parse query, not a
+/// second parser or supported session operation.
+pub fn update_for_presentation(
+    session: &mut crate::CompilerSession,
+    snapshot: &crate::SourceSnapshot,
+) -> crate::CompilerSessionUpdate {
+    session.update_for_presentation(snapshot)
+}
+
+/// Force the canonical merge query for in-tree query-metrics tooling without
+/// exposing its raw owner.
+pub fn query_merge(session: &mut crate::CompilerSession) -> Result<(), crate::CompileErrors> {
+    session.merge().map(drop)
+}
+
+impl PresentationOutput {
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+}
+
+/// Return semantic instrumentation without exposing the semantic owner.
+pub fn semantic_metrics(view: &crate::SemanticView) -> SemanticMetrics {
+    view.unstable_metrics()
+}
+
+pub fn semantic_input_debug(view: &crate::SemanticView) -> String {
+    view.owner().unstable_input_debug()
+}
+
+pub fn semantic_durable_artifact_status(view: &crate::SemanticView) -> DurableArtifactStatus {
+    view.owner().unstable_durable_artifact_status()
+}
+
+/// Exact, owned semantic-state projection used by in-tree cold-vs-reused
+/// differential tooling. Its contents and formatting are deliberately
+/// unstable and are not an artifact that can be fed back into the compiler.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticParitySnapshot {
+    details: String,
+}
+
+impl SemanticParitySnapshot {
+    pub(crate) fn new(details: String) -> Self {
+        Self { details }
+    }
+}
+
+pub fn semantic_parity_snapshot(view: &crate::SemanticView) -> SemanticParitySnapshot {
+    view.owner().unstable_parity_snapshot()
+}
+
+/// Raw owner-crate state for the in-tree CFG differential model. This is an
+/// explicitly unstable consuming bridge; ordinary compiler clients use views.
+pub struct OracleSemanticState {
+    pub interner: lasso::ThreadedRodeo,
+    pub functions: Vec<UnstableSemanticFunction>,
+    pub type_pool: rue_air::FrozenTypeInternPool,
+    pub strings: Vec<String>,
+    pub rir_payload_storage_stats: rue_rir::RirPayloadStorageStats,
+}
+
+/// Raw function state for in-tree differential and storage-profile tooling.
+pub struct UnstableSemanticFunction {
+    pub analyzed: rue_air::AnalyzedFunction,
+    pub cfg: rue_cfg::ValidatedCfg,
+}
+
+pub fn into_oracle_semantic_state(
+    semantic: Arc<crate::SemanticView>,
+) -> Result<OracleSemanticState, &'static str> {
+    let semantic = Arc::try_unwrap(semantic).map_err(|_| "semantic view is still shared")?;
+    let (semantic_owner, rir_owner) = semantic.into_owners();
+    let rir_owner = Arc::try_unwrap(rir_owner).map_err(|_| "RIR owner is still shared")?;
+    let semantic_owner =
+        Arc::try_unwrap(semantic_owner).map_err(|_| "semantic owner is still shared")?;
+    let rir_payload_storage_stats = rir_owner.rir().payload_storage_stats();
+    let (_, symbols) = rir_owner.into_parts();
+    let (functions, type_pool, strings, _) = semantic_owner.into_parts();
+    Ok(OracleSemanticState {
+        interner: symbols.into_interner(),
+        functions: functions
+            .into_iter()
+            .map(|function| UnstableSemanticFunction {
+                analyzed: function.analyzed,
+                cfg: function.cfg,
+            })
+            .collect(),
+        type_pool,
+        strings,
+        rir_payload_storage_stats,
+    })
+}
+
+/// Inject one typed stale-query fault for in-tree differential testing.
+pub fn inject_stale_query_for_oracle(
+    session: &mut crate::CompilerSession,
+    fault: DifferentialOracleFault,
+) -> bool {
+    session.inject_stale_query_for_oracle(fault)
+}
+
+impl crate::CompilerSession {
+    /// Format one compiler stage from this session's canonical artifacts.
+    pub fn unstable_present(
+        &mut self,
+        request: PresentationRequest<'_>,
+    ) -> Result<PresentationOutput, crate::CompileErrors> {
+        let invalid_input = |message: String| {
+            crate::CompileErrors::from(crate::CompileError::without_span(
+                crate::ErrorKind::InvalidCompilerInput(message),
+            ))
+        };
+        let program = self.published_owner().cloned().ok_or_else(|| {
+            invalid_input("presentation requires a published source revision".into())
+        })?;
+        let mut seen = std::collections::HashSet::with_capacity(request.file_order.len());
+        for file_id in request.file_order {
+            if !seen.insert(*file_id) {
+                return Err(invalid_input(format!(
+                    "presentation order contains duplicate file id {file_id:?}"
+                )));
+            }
+            if !program
+                .modules()
+                .iter()
+                .any(|module| module.file_id() == *file_id)
+            {
+                return Err(invalid_input(format!(
+                    "presentation order contains unknown file id {file_id:?}"
+                )));
+            }
+        }
+        if !matches!(
+            request.stage,
+            PresentationStage::Tokens | PresentationStage::Ast
+        ) && seen.len() != program.modules().len()
+        {
+            return Err(invalid_input(format!(
+                "presentation order must contain every published file exactly once (expected {}, got {})",
+                program.modules().len(),
+                seen.len()
+            )));
+        }
+
+        let mut text = String::new();
+        match request.stage {
+            PresentationStage::Tokens => {
+                for file_id in request.file_order {
+                    let module = program
+                        .modules()
+                        .iter()
+                        .find(|module| module.file_id() == *file_id)
+                        .ok_or_else(|| {
+                            invalid_input(format!(
+                                "presentation order contains unknown file id {file_id:?}"
+                            ))
+                        })?;
+                    for token in module.tokens() {
+                        writeln!(&mut text, "{token}").expect("write to String");
+                    }
+                }
+            }
+            PresentationStage::Ast => {
+                for file_id in request.file_order {
+                    let module = program
+                        .modules()
+                        .iter()
+                        .find(|module| module.file_id() == *file_id)
+                        .ok_or_else(|| {
+                            invalid_input(format!(
+                                "presentation order contains unknown file id {file_id:?}"
+                            ))
+                        })?;
+                    write!(&mut text, "{}", module.ast()).expect("write to String");
+                }
+            }
+            PresentationStage::Rir => {
+                let rir = self.canonical_rir()?;
+                let order = rir.presentation_order(request.file_order.iter().copied());
+                write!(
+                    &mut text,
+                    "{}",
+                    rue_rir::RirPrinter::with_presentation_order(
+                        rir.rir(),
+                        rir.semantic_symbols().interner(),
+                        order.instructions,
+                        order.extra,
+                    )
+                )
+                .expect("write to String");
+            }
+            stage => {
+                let semantic = self.canonical_semantic(request.options)?;
+                let rir = self
+                    .selected_semantic_rir_owner()
+                    .expect("successful semantic query retains canonical RIR");
+                let interner = rir.semantic_symbols().interner();
+                for function in semantic.functions() {
+                    match stage {
+                        PresentationStage::Air => {
+                            writeln!(&mut text, "function {}:", function.analyzed.name)
+                                .expect("write to String");
+                            writeln!(
+                                &mut text,
+                                "{}",
+                                function.analyzed.air.display_with_interner(interner)
+                            )
+                            .expect("write to String");
+                        }
+                        PresentationStage::Cfg => {
+                            writeln!(
+                                &mut text,
+                                "{}",
+                                function.cfg.display_with_interner(interner)
+                            )
+                            .expect("write to String");
+                        }
+                        PresentationStage::Lowering => {
+                            write!(
+                                &mut text,
+                                "{}",
+                                crate::backend::generate_lowering_info(
+                                    &function.cfg,
+                                    semantic.type_pool(),
+                                    interner,
+                                    request.options.target,
+                                )?
+                            )
+                            .expect("write to String");
+                        }
+                        PresentationStage::Mir => {
+                            writeln!(&mut text, "function {}:", function.analyzed.name)
+                                .expect("write to String");
+                            writeln!(
+                                &mut text,
+                                "{}",
+                                crate::backend::generate_mir(
+                                    &function.cfg,
+                                    semantic.type_pool(),
+                                    interner,
+                                    request.options.target,
+                                )?
+                            )
+                            .expect("write to String");
+                        }
+                        PresentationStage::Liveness => {
+                            writeln!(&mut text, "function {}:", function.analyzed.name)
+                                .expect("write to String");
+                            writeln!(
+                                &mut text,
+                                "{}",
+                                crate::backend::generate_liveness_info(
+                                    &function.cfg,
+                                    semantic.type_pool(),
+                                    interner,
+                                    request.options.target,
+                                )?
+                            )
+                            .expect("write to String");
+                        }
+                        PresentationStage::RegAlloc => {
+                            writeln!(&mut text, "function {}:", function.analyzed.name)
+                                .expect("write to String");
+                            write!(
+                                &mut text,
+                                "{}",
+                                crate::backend::generate_regalloc_info(
+                                    &function.cfg,
+                                    semantic.type_pool(),
+                                    interner,
+                                    request.options.target,
+                                )?
+                            )
+                            .expect("write to String");
+                        }
+                        PresentationStage::Asm => {
+                            writeln!(&mut text, ".globl {}", function.analyzed.name)
+                                .expect("write to String");
+                            writeln!(&mut text, "{}:", function.analyzed.name)
+                                .expect("write to String");
+                            write!(
+                                &mut text,
+                                "{}",
+                                crate::backend::generate_emitted_asm(
+                                    &function.cfg,
+                                    semantic.type_pool(),
+                                    semantic.strings(),
+                                    interner,
+                                    request.options.target,
+                                )?
+                            )
+                            .expect("write to String");
+                        }
+                        PresentationStage::StackFrame => {
+                            writeln!(
+                                &mut text,
+                                "{}",
+                                rue_codegen::generate_stack_frame_info(
+                                    &function.cfg,
+                                    &function.analyzed.name,
+                                    semantic.type_pool(),
+                                    interner,
+                                    request.options.target,
+                                )?
+                            )
+                            .expect("write to String");
+                        }
+                        PresentationStage::Tokens
+                        | PresentationStage::Ast
+                        | PresentationStage::Rir => unreachable!(),
+                    }
+                }
+            }
+        }
+        Ok(PresentationOutput { text })
+    }
+}
 
 /// Opaque equality status for session-owned durable artifacts.
 ///

@@ -142,11 +142,10 @@ fn main() {
     let elapsed_ns = started.elapsed().as_nanos();
     ENABLED.store(false, Ordering::SeqCst);
 
-    let rir_stats = session
-        .rir()
-        .expect("successful semantic query retains validated RIR")
-        .rir()
-        .payload_storage_stats();
+    drop(session);
+    let semantic = rue_compiler::unstable::into_oracle_semantic_state(semantic)
+        .expect("one-shot profiler session uniquely owns its frontend artifacts");
+    let rir_stats = semantic.rir_payload_storage_stats;
     let rir_family_logical_bytes: Map<String, Value> = RIR_PAYLOAD_FAMILY_NAMES
         .into_iter()
         .zip(rir_stats.family_logical_bytes)
@@ -155,7 +154,7 @@ fn main() {
 
     let mut total = AirPayloadStorageStats::default();
     let mut cfg_total = CfgPayloadStorageStats::default();
-    for function in semantic.functions() {
+    for function in &semantic.functions {
         let stats = air_payload_storage_stats(&function.analyzed.air);
         for (to, from) in total
             .family_logical_bytes
@@ -208,7 +207,7 @@ fn main() {
             "air_phase_ns": elapsed_ns,
             "allocations": ALLOCATIONS.load(Ordering::SeqCst),
             "allocated_bytes": ALLOCATED_BYTES.load(Ordering::SeqCst),
-            "functions": semantic.functions().len(),
+            "functions": semantic.functions.len(),
             "family_logical_bytes": family_logical_bytes,
             "word_store_logical_bytes": total.word_store_logical_bytes,
             "word_store_capacity_bytes": total.word_store_capacity_bytes,

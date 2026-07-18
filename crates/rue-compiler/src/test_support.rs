@@ -54,8 +54,8 @@ pub(crate) fn test_frontend_snapshot(
 )> {
     let mut session = CompilerSession::new();
     publish_test_snapshot(&mut session, snapshot)?;
-    let rir = session.rir()?;
-    let semantic = session.semantic(options)?;
+    let rir = session.canonical_rir()?;
+    let semantic = session.canonical_semantic(options)?;
     let work = session.work().clone();
     drop(session);
     Ok((rir, semantic, work))
@@ -102,7 +102,9 @@ fn publish_test_snapshot(
     session: &mut CompilerSession,
     snapshot: &SourceSnapshot,
 ) -> MultiErrorResult<()> {
-    let program = session.update_for_presentation(snapshot).into_result()?;
+    let program = session
+        .update_for_presentation(snapshot)
+        .into_owner_result()?;
     if !program.import_directives().is_empty() {
         let graph = test_fixture_import_graph(&program)?;
         session.adopt_test_import_graph(graph);

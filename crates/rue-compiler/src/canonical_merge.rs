@@ -6,7 +6,7 @@ use std::sync::Arc;
 use rue_error::{CompileError, CompileErrors, ErrorKind};
 use rue_span::Span;
 
-use crate::parsed_modules::{ParsedAstView, ParsedItemView, ParsedModule, ParsedProgram};
+use crate::parsed_modules::{ParsedAstView, ParsedModule, ParsedProgram};
 use crate::{DefinitionKind, DefinitionSnapshot, ImportDirectives, ModuleId, SourceRevision};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -55,13 +55,6 @@ impl CanonicalMergedAst {
     }
     pub fn ast_views(&self) -> impl ExactSizeIterator<Item = ParsedAstView> + '_ {
         self.modules.iter().cloned().map(ParsedAstView::from_module)
-    }
-    pub fn item_views(&self) -> impl Iterator<Item = ParsedItemView> + '_ {
-        self.modules.iter().flat_map(|module| {
-            let module = module.clone();
-            (0..module.ast().items.len())
-                .map(move |index| ParsedItemView::from_module_index(module.clone(), index))
-        })
     }
     pub fn validate_view(&self, view: &ParsedAstView) -> Result<(), CompileError> {
         let index = self

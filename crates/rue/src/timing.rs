@@ -705,9 +705,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use rue_compiler::{
-        CompileOptions, CompilerSession, SourceSnapshot, parse_source_snapshot_for_ast_presentation,
-    };
+    use rue_compiler::unstable::update_for_presentation;
+    use rue_compiler::{CompileOptions, CompilerSession, SourceSnapshot};
     use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::*;
@@ -736,14 +735,13 @@ mod tests {
         let direct_subscriber =
             tracing_subscriber::registry().with(TimingLayer::new(direct_data.clone()));
         tracing::subscriber::with_default(direct_subscriber, || {
-            parse_source_snapshot_for_ast_presentation(&snapshot).unwrap();
+            let mut session = CompilerSession::new();
+            update_for_presentation(&mut session, &snapshot)
+                .into_result()
+                .unwrap();
         });
 
         let direct_edges = direct_data.parent_edges();
-        assert!(
-            direct_edges.contains(&("parse".to_owned(), "parse_file".to_owned())),
-            "direct parse edges: {direct_edges:?}"
-        );
         assert!(
             direct_edges.contains(&("parse_file".to_owned(), "lexer".to_owned())),
             "direct parse edges: {direct_edges:?}"
@@ -769,7 +767,7 @@ mod tests {
         let direct_parse = direct_timing
             .passes
             .iter()
-            .find(|pass| pass.name == "parse")
+            .find(|pass| pass.name == "parse_file")
             .unwrap();
         assert_eq!(direct_parse.invocations, 1);
         assert_eq!(direct_parse.root_invocations, 1);
@@ -901,7 +899,10 @@ mod tests {
             let data = TimingData::new();
             let subscriber = tracing_subscriber::registry().with(TimingLayer::new(data.clone()));
             tracing::subscriber::with_default(subscriber, || {
-                parse_source_snapshot_for_ast_presentation(&snapshot).unwrap_err();
+                let mut session = CompilerSession::new();
+                update_for_presentation(&mut session, &snapshot)
+                    .into_result()
+                    .unwrap_err();
             });
             data.parent_edges()
         };

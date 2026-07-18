@@ -187,6 +187,8 @@ impl Mir {
     /// This prints the MIR instructions in assembly-like format.
     /// When called with allocated MIR (post-regalloc), physical registers
     /// are shown (rax, rbx, r12 for x86-64; x0, x1, x19 for aarch64).
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub fn format_assembly(&self) -> String {
         let mut output = String::new();
         match self {

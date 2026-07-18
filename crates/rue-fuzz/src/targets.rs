@@ -59,7 +59,7 @@ mod ice_classification_tests {
 
 fn query_semantics(
     source: &str,
-) -> rue_compiler::MultiErrorResult<std::sync::Arc<rue_compiler::CanonicalSemanticOutput>> {
+) -> rue_compiler::MultiErrorResult<std::sync::Arc<rue_compiler::SemanticView>> {
     let snapshot = rue_compiler::SourceSnapshot::single("<fuzz>", source)
         .map_err(rue_compiler::CompileErrors::from)?;
     let mut session = rue_compiler::CompilerSession::new();

@@ -35,6 +35,7 @@ pub struct CanonicalRirOutput {
     symbols: SemanticSymbolUniverse,
     work: CanonicalRirWork,
     module_ranges: Vec<CanonicalRirModuleRange>,
+    sources: Vec<CanonicalRirSource>,
 }
 
 #[derive(Debug)]
@@ -42,6 +43,13 @@ struct CanonicalRirModuleRange {
     file_id: FileId,
     instructions: Range<u32>,
     extra: Range<u32>,
+}
+
+#[derive(Debug)]
+struct CanonicalRirSource {
+    file_id: FileId,
+    revision: crate::ModuleRevision,
+    length: u32,
 }
 
 /// Ephemeral caller-order indices consumed by the read-only RIR printer.
@@ -67,7 +75,7 @@ impl CanonicalRirOutput {
                 })
     }
 
-    pub fn into_parts(self) -> (ValidatedRir, SemanticSymbolUniverse) {
+    pub(crate) fn into_parts(self) -> (ValidatedRir, SemanticSymbolUniverse) {
         (self.rir, self.symbols)
     }
 
@@ -85,6 +93,18 @@ impl CanonicalRirOutput {
 
     pub fn work(&self) -> CanonicalRirWork {
         self.work
+    }
+
+    pub(crate) fn source_identity_and_length(
+        &self,
+        file_id: FileId,
+    ) -> (&crate::ModuleRevision, u32) {
+        let source = self
+            .sources
+            .iter()
+            .find(|source| source.file_id == file_id)
+            .expect("validated RIR spans name a retained canonical source");
+        (&source.revision, source.length)
     }
 
     /// Return a read-only instruction presentation order for caller-ordered files.
@@ -210,12 +230,16 @@ pub(crate) fn lower_canonical_rir_with_work(
             }
         }
     };
-    let source_lengths: Vec<(FileId, u32)> = ast
+    let sources: Vec<CanonicalRirSource> = ast
         .modules()
         .iter()
         .map(|module| {
             u32::try_from(module.source_text().len())
-                .map(|length| (module.file_id(), length))
+                .map(|length| CanonicalRirSource {
+                    file_id: module.file_id(),
+                    revision: module.revision().clone(),
+                    length,
+                })
                 .map_err(|_| {
                     CompileError::new(
                         ErrorKind::InternalError(
@@ -227,6 +251,10 @@ pub(crate) fn lower_canonical_rir_with_work(
         })
         .collect::<Result<_, _>>()
         .map_err(|error| (error, work))?;
+    let source_lengths = sources
+        .iter()
+        .map(|source| (source.file_id, source.length))
+        .collect::<Vec<_>>();
     let validation = RirValidationContext {
         symbol_count: symbols.interner().len(),
         source_lengths: &source_lengths,
@@ -252,6 +280,7 @@ pub(crate) fn lower_canonical_rir_with_work(
         symbols,
         work,
         module_ranges,
+        sources,
     })
 }
 

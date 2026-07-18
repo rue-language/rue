@@ -18,12 +18,11 @@ use rue_parser::{
     AssignTarget, Ast, Expr, IntrinsicArg, Item, Pattern, Statement, TypeExpr, ast::Visibility,
 };
 use rue_span::{FileId, Span};
-use tracing::info_span;
 
 use crate::definition_snapshot::{definition_parts, validate_span};
 use crate::{
     DefinitionKind, DefinitionNamespace, ImportDirective, ImportDirectives, ModuleId,
-    ModuleRevision, MultiErrorResult, SourceId, SourceRevision, SourceSnapshot, SyntaxWork,
+    ModuleRevision, SourceId, SourceRevision, SourceSnapshot, SyntaxWork,
 };
 
 #[derive(Debug)]
@@ -200,6 +199,7 @@ struct ParsedSyntaxPayload {
     file_id: FileId,
     source_text: Arc<String>,
     token_count: usize,
+    tokens: Arc<[rue_lexer::Token]>,
     ast: ProvenancedAst,
     resolver: FrozenSymbolResolver,
     definitions: ParsedDefinitionIndex,
@@ -259,11 +259,6 @@ pub struct ParsedItemView {
 }
 
 impl ParsedItemView {
-    pub(crate) fn from_module_index(module: Arc<ParsedModule>, index: usize) -> Self {
-        debug_assert!(index < module.ast().items.len());
-        Self { module, index }
-    }
-
     pub fn module(&self) -> &Arc<ParsedModule> {
         &self.module
     }
@@ -313,6 +308,12 @@ impl ParsedModule {
     }
     pub(crate) fn token_count(&self) -> usize {
         self.payload.token_count
+    }
+    pub(crate) fn tokens(&self) -> &[rue_lexer::Token] {
+        &self.payload.tokens
+    }
+    pub(crate) fn resolve_raw_symbol(&self, symbol: Spur) -> &str {
+        self.payload.resolver.resolver.resolve(&symbol)
     }
     pub(crate) fn shared_source_text(&self) -> Arc<String> {
         self.payload.source_text.clone()
@@ -498,6 +499,7 @@ impl ParsedProgram {
             })
     }
 
+    #[cfg(test)]
     pub(crate) fn shared_symbol_strings(&self) -> Option<Vec<&str>> {
         let first = self.modules.first()?;
         if self.modules.iter().all(|module| {
@@ -736,64 +738,6 @@ pub(crate) fn parse_source_snapshot_modules_reusing(
     outcome.result.map(|program| (program, outcome.work))
 }
 
-/// Caller-ordered syntax presentation for AST output.
-#[derive(Debug)]
-pub struct ParsedAstPresentation {
-    files: Vec<(String, Arc<Ast>)>,
-    work: ParsedAstPresentationWork,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ParsedAstPresentationWork {
-    pub parsed: ParsedModulesWork,
-    pub merge_invocations: usize,
-    pub astgen_invocations: usize,
-    pub bind_invocations: usize,
-    pub manifest_invocations: usize,
-}
-
-impl ParsedAstPresentation {
-    pub fn files(&self) -> &[(String, Arc<Ast>)] {
-        &self.files
-    }
-
-    pub fn work(&self) -> ParsedAstPresentationWork {
-        self.work
-    }
-}
-
-/// Parse once for exact shared-Spur AST presentation without merge or lowering.
-pub fn parse_source_snapshot_for_ast_presentation(
-    snapshot: &SourceSnapshot,
-) -> MultiErrorResult<ParsedAstPresentation> {
-    let _span = info_span!(
-        "parse",
-        file_count = snapshot.len(),
-        purpose = "ast_presentation"
-    )
-    .entered();
-    let outcome = crate::syntax::parse_snapshot_for_presentation(snapshot);
-    let syntax = outcome.work;
-    let asts = outcome.result?;
-    let files = snapshot
-        .files()
-        .zip(asts)
-        .map(|(source, ast)| (source.path.to_string(), ast))
-        .collect();
-    Ok(ParsedAstPresentation {
-        files,
-        work: ParsedAstPresentationWork {
-            parsed: ParsedModulesWork {
-                syntax,
-                modules_considered: snapshot.len(),
-                modules_reparsed: snapshot.len(),
-                ..ParsedModulesWork::default()
-            },
-            ..ParsedAstPresentationWork::default()
-        },
-    })
-}
-
 /// Parse one stable module and return the exact syntax work performed.
 #[cfg(test)]
 pub(crate) fn parse_source_snapshot_module_with_stats(
@@ -820,9 +764,17 @@ fn parse_snapshot_file(
     let source = snapshot.source(file_id).expect("metadata membership");
     let outcome = crate::syntax::parse_file(source, ThreadedRodeo::new());
     let work = outcome.work;
+    let tokens = outcome.tokens;
     let result = outcome.result.and_then(|ast| {
-        build_module(snapshot, file_id, ast, outcome.interner, work.tokens)
-            .map_err(CompileErrors::from)
+        build_module(
+            snapshot,
+            file_id,
+            ast,
+            outcome.interner,
+            work.tokens,
+            tokens,
+        )
+        .map_err(CompileErrors::from)
     });
     (result, work)
 }
@@ -920,6 +872,7 @@ fn build_module(
     ast: Arc<Ast>,
     interner: ThreadedRodeo,
     token_count: usize,
+    tokens: Arc<[rue_lexer::Token]>,
 ) -> CompileResult<Arc<ParsedModule>> {
     let token = Arc::new(SymbolProvenance);
     let module = snapshot.module_id(file_id).expect("snapshot membership");
@@ -933,6 +886,7 @@ fn build_module(
         token,
         import_sites,
         token_count,
+        tokens,
     )
 }
 
@@ -944,6 +898,7 @@ fn build_module_with_resolver(
     token: Arc<SymbolProvenance>,
     import_sites: ImportSiteCollector,
     token_count: usize,
+    tokens: Arc<[rue_lexer::Token]>,
 ) -> CompileResult<Arc<ParsedModule>> {
     let module = snapshot
         .module_id(file_id)
@@ -977,6 +932,7 @@ fn build_module_with_resolver(
         file_id,
         source_text,
         token_count,
+        tokens,
         ast: provenanced_ast,
         resolver,
         definitions,

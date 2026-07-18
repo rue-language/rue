@@ -4,16 +4,18 @@
 
 use std::{collections::HashMap, env, process, sync::Arc, time::Instant};
 
+#[cfg(test)]
 use rue_air::{FrozenTypeInternPool, TypeKind};
 use rue_compiler::unstable::{
     DependencyBaseline, DependencyIncompleteReason, DependencySurface, FullInvalidationReason,
-    InvalidationMetrics, InvalidationScope, MetricsSnapshot, ParseMetrics,
+    InvalidationMetrics, InvalidationScope, MetricsSnapshot, ParseMetrics, query_merge,
+    semantic_parity_snapshot,
 };
 use rue_compiler::{
-    AcceptedReadManifestEntry, CanonicalSemanticOutput, CompileOptions, CompilerSession,
-    DiscoverySourceAssembler, FileMetadataFingerprint, FrontendDiagnosticSnapshot,
-    ImportDiscoveryContext, ImportObservationLedger, OptLevel, PhysicalFileIdentity,
-    SourceMetadata, SourceSnapshot,
+    AcceptedReadManifestEntry, CompileOptions, CompilerSession, DiscoverySourceAssembler,
+    FileMetadataFingerprint, FrontendDiagnosticSnapshot, ImportDiscoveryContext,
+    ImportObservationLedger, OptLevel, PhysicalFileIdentity, SemanticView, SourceMetadata,
+    SourceSnapshot,
 };
 use rue_span::FileId;
 use serde_json::{Value, json};
@@ -603,7 +605,7 @@ fn measured_semantic(
     session: &mut CompilerSession,
     source: &SourceSnapshot,
     options: &CompileOptions,
-) -> (Value, Arc<CanonicalSemanticOutput>) {
+) -> (Value, Arc<SemanticView>) {
     let mut output = None;
     let value = measure(session, |session| {
         let update = session.update(source);
@@ -615,6 +617,7 @@ fn measured_semantic(
     (value, output.unwrap())
 }
 
+#[cfg(test)]
 fn type_pool_snapshot(pool: &FrozenTypeInternPool) -> Vec<String> {
     pool.all_types()
         .map(|ty| match ty.kind() {
@@ -657,7 +660,7 @@ fn assert_diagnostic_parity(
 
 fn assert_cold_reused_parity(
     reused_session: &mut CompilerSession,
-    reused: &CanonicalSemanticOutput,
+    reused: &SemanticView,
     source: &SourceSnapshot,
     options: &CompileOptions,
 ) -> Value {
@@ -674,7 +677,7 @@ fn assert_cold_reused_parity(
 
 fn assert_cold_reused_parity_with_discovery<F, G>(
     reused_session: &mut CompilerSession,
-    reused: &CanonicalSemanticOutput,
+    reused: &SemanticView,
     source: &SourceSnapshot,
     options: &CompileOptions,
     std_dir: Option<&str>,
@@ -706,104 +709,8 @@ where
         cold_count(&["cfg", "builds_succeeded"])
     );
     assert_eq!(
-        format!("{:?}", reused.functions()),
-        format!("{:?}", cold.functions())
-    );
-    assert_eq!(reused.unstable_input_debug(), cold.unstable_input_debug());
-    assert_eq!(reused.type_pool().stats(), cold.type_pool().stats());
-    assert_eq!(
-        type_pool_snapshot(reused.type_pool()),
-        type_pool_snapshot(cold.type_pool())
-    );
-    let bound_definition_snapshot = |output: &CanonicalSemanticOutput| {
-        output.bound_definitions().map(|definitions| {
-            definitions
-                .definitions()
-                .iter()
-                .map(|definition| {
-                    format!(
-                        "{:?}|{:?}|{:?}|{:?}",
-                        definition.stable_key(),
-                        definition.occurrence(),
-                        definition.declaration_span(),
-                        definition.visibility()
-                    )
-                })
-                .collect::<Vec<_>>()
-        })
-    };
-    assert_eq!(
-        bound_definition_snapshot(reused),
-        bound_definition_snapshot(&cold)
-    );
-    assert_eq!(reused.strings(), cold.strings());
-    assert_eq!(
-        format!("{:?}", reused.warnings()),
-        format!("{:?}", cold.warnings())
-    );
-    assert_eq!(
-        format!("{:?}", reused.analyzed_body_owners()),
-        format!("{:?}", cold.analyzed_body_owners())
-    );
-    assert_eq!(
-        format!("{:?}", reused.body_named_dependencies()),
-        format!("{:?}", cold.body_named_dependencies())
-    );
-    assert_eq!(
-        format!("{:?}", reused.ordinary_free_function_dependencies()),
-        format!("{:?}", cold.ordinary_free_function_dependencies())
-    );
-    assert_eq!(
-        format!("{:?}", reused.specialized_free_function_origins()),
-        format!("{:?}", cold.specialized_free_function_origins())
-    );
-    assert_eq!(
-        format!("{:?}", reused.specialized_free_function_dependencies()),
-        format!("{:?}", cold.specialized_free_function_dependencies())
-    );
-    assert_eq!(
-        reused.unstable_durable_artifact_status(),
-        cold.unstable_durable_artifact_status()
-    );
-    assert_eq!(
-        reused.ordinary_free_function_dependencies_complete(),
-        cold.ordinary_free_function_dependencies_complete()
-    );
-    assert_eq!(
-        reused.specialized_free_function_dependencies_complete(),
-        cold.specialized_free_function_dependencies_complete()
-    );
-    assert_eq!(
-        reused.non_generic_named_method_dependencies_complete(),
-        cold.non_generic_named_method_dependencies_complete()
-    );
-    assert_eq!(
-        reused.generic_named_method_dependencies_complete(),
-        cold.generic_named_method_dependencies_complete()
-    );
-    assert_eq!(
-        reused.named_destructor_dependencies_complete(),
-        cold.named_destructor_dependencies_complete()
-    );
-    assert_eq!(
-        reused.declaration_type_dependencies_complete(),
-        cold.declaration_type_dependencies_complete()
-    );
-    assert_eq!(
-        reused.declaration_type_call_head_dependencies_complete(),
-        cold.declaration_type_call_head_dependencies_complete()
-    );
-    assert_eq!(
-        reused.supported_type_call_heads_complete(),
-        cold.supported_type_call_heads_complete()
-    );
-    assert_eq!(
-        reused.named_value_const_dependencies_complete(),
-        cold.named_value_const_dependencies_complete()
-    );
-    assert_eq!(
-        reused.implicit_named_destructor_dependencies_complete(),
-        cold.implicit_named_destructor_dependencies_complete()
+        semantic_parity_snapshot(reused),
+        semantic_parity_snapshot(&cold)
     );
 
     let reused_manifest = reused_session
@@ -905,41 +812,6 @@ where
     assert_eq!(
         reused_manifest.definition_universe_complete(),
         cold_manifest.definition_universe_complete()
-    );
-
-    assert_eq!(
-        format!("{:?}", reused.named_method_dependencies()),
-        format!("{:?}", cold.named_method_dependencies())
-    );
-    assert_eq!(
-        format!("{:?}", reused.named_destructor_dependencies()),
-        format!("{:?}", cold.named_destructor_dependencies())
-    );
-    assert_eq!(
-        format!("{:?}", reused.declaration_type_dependencies()),
-        format!("{:?}", cold.declaration_type_dependencies())
-    );
-    assert_eq!(
-        format!("{:?}", reused.declaration_type_call_head_dependencies()),
-        format!("{:?}", cold.declaration_type_call_head_dependencies())
-    );
-    assert_eq!(
-        format!(
-            "{:?}",
-            reused.declaration_builtin_type_call_head_dependencies()
-        ),
-        format!(
-            "{:?}",
-            cold.declaration_builtin_type_call_head_dependencies()
-        )
-    );
-    assert_eq!(
-        format!("{:?}", reused.named_const_dependencies()),
-        format!("{:?}", cold.named_const_dependencies())
-    );
-    assert_eq!(
-        format!("{:?}", reused.implicit_named_destructor_dependencies()),
-        format!("{:?}", cold.implicit_named_destructor_dependencies())
     );
 
     prepare_executable(reused_session, source);
@@ -1111,7 +983,7 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
         "cold",
         measure(&mut session, |session| {
             let parse = session.update(&fixture.base).unstable_metrics();
-            session.merge().unwrap();
+            query_merge(session).unwrap();
             session.rir().unwrap();
             session.semantic(&options).unwrap();
             parse
@@ -1121,7 +993,7 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
         "exact_noop",
         measure(&mut session, |session| {
             let parse = session.update(&fixture.base).unstable_metrics();
-            session.merge().unwrap();
+            query_merge(session).unwrap();
             session.rir().unwrap();
             session.semantic(&options).unwrap();
             parse
@@ -1134,7 +1006,7 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
             assert!(update.downstream_invalidated());
             let parse = update.unstable_metrics();
             update.into_result().unwrap();
-            session.merge().unwrap();
+            query_merge(session).unwrap();
             session.rir().unwrap();
             session.semantic(&options).unwrap();
             parse
@@ -1147,7 +1019,7 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
             assert!(update.downstream_invalidated());
             let parse = update.unstable_metrics();
             update.into_result().unwrap();
-            session.merge().unwrap();
+            query_merge(session).unwrap();
             session.rir().unwrap();
             session.semantic(&options).unwrap();
             parse
@@ -1159,7 +1031,7 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
             let update = session.update(&fixture.syntax_error);
             assert!(update.result().is_err());
             let parse = update.unstable_metrics();
-            session.merge().unwrap();
+            query_merge(session).unwrap();
             session.rir().unwrap();
             session.semantic(&options).unwrap();
             parse
@@ -1169,7 +1041,7 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
         "syntax_recovery",
         measure(&mut session, |session| {
             let parse = session.update(&fixture.identity_edit).unstable_metrics();
-            session.merge().unwrap();
+            query_merge(session).unwrap();
             session.rir().unwrap();
             session.semantic(&options).unwrap();
             parse

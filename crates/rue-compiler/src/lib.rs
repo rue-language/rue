@@ -23,13 +23,14 @@
 //! let mut session = CompilerSession::new();
 //! session.update(&snapshot).into_result()?;
 //! let semantic = session.semantic(&CompileOptions::default())?;
-//! assert_eq!(semantic.functions().len(), 1);
+//! assert_eq!(semantic.function_views().len(), 1);
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
 //! Callers that only need a final executable may use [`compile_snapshot`], the
 //! sole one-shot adapter. Filesystem discovery remains the caller's job.
 
+mod artifact_views;
 mod backend;
 mod bound_definitions;
 mod canonical_lower;
@@ -74,6 +75,11 @@ mod durable_compatibility_tests;
 mod integration_tests;
 
 // Supported source, identity, option, session, and diagnostic surface.
+pub use artifact_views::{
+    CfgBlockView, CfgInstructionView, CfgSuccessorView, CfgView, FunctionView, RirInstructionView,
+    RirOperandView, RirView, SemanticView, SourceIdentityView, SourceLocationView,
+    SyntaxModuleView, SyntaxNodeView, SyntaxView, TokenView, TypeView,
+};
 pub use dependency_envelope::{
     DependencyAcceptedRead, DependencyContext, DependencyEnvelope, DependencyEnvelopeStatus,
     DependencyObservation, DependencyObservationOutcome, DependencyRequest,
@@ -98,13 +104,9 @@ pub use import_graph::{
     ImportDirective, ImportDirectives,
 };
 pub(crate) use import_graph::{ResolvedCodegenRevision, ResolvedProgramRevision};
-pub use parsed_modules::{
-    InvalidImportShape, ParsedAstPresentation, ParsedInvalidImport, ParsedProgram,
-    parse_source_snapshot_for_ast_presentation,
-};
-pub use queries::{
-    CompileOptions, CompileOutput, FunctionWithCfg, LinkerMode, SourceView, compile_snapshot,
-};
+pub(crate) use parsed_modules::{InvalidImportShape, ParsedProgram};
+pub(crate) use queries::FunctionWithCfg;
+pub use queries::{CompileOptions, CompileOutput, LinkerMode, SourceView, compile_snapshot};
 pub use session::{CanonicalImportGraphOutput, CompilerSession, CompilerSessionUpdate};
 pub use source_identity::{ModuleId, ModuleRevision, SourceId, SourceIdVersion, SourceRevision};
 pub use source_metadata::SourceMetadata;
@@ -129,9 +131,7 @@ pub(crate) use definition_snapshot::DefinitionShardWork;
 #[allow(unused_imports)]
 pub(crate) use durable_body::DurableBodyWork;
 #[allow(unused_imports)]
-pub(crate) use parsed_modules::{
-    ParseInvalidationSummary, ParsedAstPresentationWork, ParsedModulesWork,
-};
+pub(crate) use parsed_modules::{ParseInvalidationSummary, ParsedModulesWork};
 pub(crate) use queries::{PipelineWork, SourceStats};
 #[allow(unused_imports)]
 pub(crate) use semantic_symbols::SemanticTranslationWork;
@@ -159,13 +159,15 @@ pub(crate) use source_identity::{
 };
 
 // Immutable query artifacts and stable identities returned by CompilerSession.
+#[cfg(test)]
+pub(crate) use backend::generate_mir;
 pub use bound_definitions::{
     BoundDefinitionId, BoundDefinitionRecord, BoundDefinitionSet, SnapshotBoundDefinitionId,
     StableDefinitionKey, StableDefinitionKind, StableDefinitionNamespace, StableNamedTypeKey,
 };
-pub use canonical_lower::CanonicalRirOutput;
-pub use canonical_merge::{CanonicalMergedAst, CanonicalMergedProgram};
-pub use canonical_semantic::CanonicalSemanticOutput;
+pub(crate) use canonical_lower::CanonicalRirOutput;
+pub(crate) use canonical_merge::CanonicalMergedProgram;
+pub(crate) use canonical_semantic::CanonicalSemanticOutput;
 pub use definition_snapshot::{
     DefinitionId, DefinitionKind, DefinitionNameKey, DefinitionNamespace, DefinitionOccurrenceId,
     DefinitionRecord, DefinitionShard, DefinitionSnapshot, ModuleDefinition,
@@ -188,25 +190,15 @@ pub(crate) use durable_semantics::{
     DurableSemanticProjectionWork, DurableType,
 };
 
-// Backend presentation queries used by the command-line emit modes.
-pub use backend::{
-    Mir, generate_emitted_asm, generate_liveness_info, generate_lowering_info, generate_mir,
-    generate_regalloc_info,
-};
-
 // Small foundational types callers need to configure or inspect the facade.
-pub use rue_air::{FrozenTypeInternPool, TypeInternPool};
+pub(crate) use rue_air::FrozenTypeInternPool;
 pub use rue_cfg::OptLevel;
-pub use rue_codegen::{
-    LoweringDebugInfo, RegAllocDebugInfo, StackFrameInfo, generate_stack_frame_info,
-};
 pub use rue_error::{
     Applicability, CompileError, CompileErrors, CompileResult, CompileWarning, Diagnostic,
     ErrorCode, ErrorKind, MultiErrorResult, PreviewFeature, PreviewFeatures, Suggestion, VERSION,
     WarningKind,
 };
-pub use rue_lexer::{Lexer, Token, TokenKind};
-pub use rue_parser::Ast;
+pub(crate) use rue_lexer::Lexer;
 pub use rue_span::{FileId, Span};
 pub use rue_target::{Arch, Target};
 
@@ -226,10 +218,10 @@ pub(crate) use parsed_modules::CanonicalParseUpdate;
 pub(crate) use queries::build_functions_and_cfgs;
 #[cfg(test)]
 pub(crate) use rue_parser::Item;
-pub use semantic_symbols::{SemanticSymbol, SemanticSymbolUniverse};
+pub(crate) use semantic_symbols::SemanticSymbolUniverse;
 pub(crate) use syntax::SyntaxWork;
 
-pub use lasso::ThreadedRodeo;
+pub(crate) use lasso::ThreadedRodeo;
 pub(crate) use rue_air::{AnalyzedFunction, SemaOutput, Type};
 pub(crate) use rue_cfg::{CfgBuilder, ValidatedCfg as Cfg};
 pub(crate) use rue_codegen::{RelocationKind, X86Mir, aarch64::Aarch64Mir};
@@ -237,7 +229,6 @@ pub(crate) use rue_linker::{
     Archive, CodeRelocation, Linker, ObjectBuilder, ObjectFile, RelocationType,
 };
 pub(crate) use rue_parser::Parser;
-pub use rue_rir::Rir;
 
 /// Configure Rayon's global worker pool once, before issuing compiler queries.
 pub fn configure_thread_pool(jobs: usize) {

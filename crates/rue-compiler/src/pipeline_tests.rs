@@ -77,7 +77,7 @@ mod tests {
             .update_for_presentation(&snapshot)
             .into_result()
             .unwrap();
-        let cold = warm_session.semantic(&cold_options).unwrap();
+        let cold = warm_session.canonical_semantic(&cold_options).unwrap();
         assert_eq!(cold.work().body_analysis.specialized_bodies_attempted, 1);
         assert_eq!(
             cold.work().body_analysis.specialized_body_exports_succeeded,
@@ -94,7 +94,7 @@ mod tests {
             1
         );
         assert!(cold.durable_specialized_body_payloads()[0].dependency_boundary_complete);
-        let warm = warm_session.semantic(&optimized).unwrap();
+        let warm = warm_session.canonical_semantic(&optimized).unwrap();
         assert_eq!(warm.work().body_analysis.specialized_bodies_reused, 1);
         assert_eq!(warm.work().body_analysis.specialized_bodies_attempted, 0);
         assert_eq!(
@@ -110,7 +110,7 @@ mod tests {
             .update_for_presentation(&snapshot)
             .into_result()
             .unwrap();
-        let fresh = fresh_session.semantic(&optimized).unwrap();
+        let fresh = fresh_session.canonical_semantic(&optimized).unwrap();
         assert_eq!(
             format!("{:?}", warm.functions()),
             format!("{:?}", fresh.functions())
@@ -637,7 +637,7 @@ mod tests {
 
         let mut session = CompilerSession::new();
         session.update(&snapshot).into_result().unwrap();
-        let semantic = session.semantic(&options).unwrap();
+        let semantic = session.canonical_semantic(&options).unwrap();
 
         assert_eq!(semantic.functions().len(), 1);
         assert_eq!(semantic.input(), &expected_link.codegen);
@@ -669,7 +669,11 @@ mod tests {
             SourceMetadata::from_sources(&sources, root, std::collections::HashMap::new()).unwrap();
         let snapshot = SourceSnapshot::from_sources(&sources, metadata.clone()).unwrap();
 
-        let errors = parse_source_snapshot_for_ast_presentation(&snapshot).unwrap_err();
+        let mut session = CompilerSession::new();
+        let errors = session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap_err();
         assert_eq!(
             errors
                 .iter()

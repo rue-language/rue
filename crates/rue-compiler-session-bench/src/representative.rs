@@ -7,9 +7,9 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use rue_compiler::{
-    AcceptedImportSource, AcceptedReadManifestEntry, CanonicalSemanticOutput, CompileOptions,
-    CompilerSession, DiscoverySourceAssembler, FileMetadataFingerprint, ImportDiscoveryContext,
-    ImportObservation, ImportObservationLedger, PhysicalFileIdentity, SourceSnapshot,
+    AcceptedImportSource, AcceptedReadManifestEntry, CompileOptions, CompilerSession,
+    DiscoverySourceAssembler, FileMetadataFingerprint, ImportDiscoveryContext, ImportObservation,
+    ImportObservationLedger, PhysicalFileIdentity, SemanticView, SourceSnapshot,
 };
 use serde_json::{Value, json};
 
@@ -183,7 +183,7 @@ fn measured_project_semantic(
     session: &mut CompilerSession,
     source: &SourceSnapshot,
     options: &CompileOptions,
-) -> (Value, Arc<CanonicalSemanticOutput>) {
+) -> (Value, Arc<SemanticView>) {
     let mut output = None;
     let value = measure(session, |session| {
         let update = session.update(source);

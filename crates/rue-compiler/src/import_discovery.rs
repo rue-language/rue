@@ -1503,7 +1503,9 @@ mod tests {
             closed.graph().unwrap().graph().records()[0].resolution(),
             crate::CanonicalImportResolution::Resolved(module) if module.as_str() == "a.rue"
         ));
-        let semantic = session.semantic(&crate::CompileOptions::default()).unwrap();
+        let semantic = session
+            .canonical_semantic(&crate::CompileOptions::default())
+            .unwrap();
         assert_eq!(semantic.functions().len(), 2);
     }
 
@@ -1523,7 +1525,7 @@ mod tests {
         let snapshot =
             SourceSnapshot::single("/project/main.rue", "fn main() { @import(1); }").unwrap();
         let mut session = crate::CompilerSession::new();
-        let parsed = session.update(&snapshot).into_result().unwrap();
+        let parsed = session.update(&snapshot).into_owner_result().unwrap();
         assert_eq!(parsed.invalid_imports().len(), 1);
         assert!(matches!(
             parsed.invalid_imports()[0].shape(),
@@ -1829,7 +1831,7 @@ mod tests {
             .unwrap();
 
         assert!(Arc::ptr_eq(closed.program().unwrap(), &staged));
-        assert!(Arc::ptr_eq(session.published().unwrap(), &staged));
+        assert!(Arc::ptr_eq(session.published_owner().unwrap(), &staged));
         assert_eq!(closed.parse_work().syntax.lexer_invocations, 1);
         assert_eq!(closed.parse_work().syntax.parser_invocations, 1);
         assert_eq!(crate::parsed_modules::parse_operation_entries(), 0);
@@ -1842,7 +1844,7 @@ mod tests {
         assert_eq!(exact.work().syntax.lexer_invocations, 0);
         assert_eq!(exact.work().syntax.parser_invocations, 0);
         assert_eq!(crate::parsed_modules::parse_operation_entries(), 0);
-        assert!(Arc::ptr_eq(exact.result().unwrap(), &staged));
+        assert!(Arc::ptr_eq(exact.result_owner().unwrap(), &staged));
     }
 
     #[test]
@@ -1865,11 +1867,11 @@ mod tests {
                 ImportObservationLedger::default(),
             )
             .unwrap();
-        assert!(session.published().is_none());
+        assert!(session.published_owner().is_none());
         session
             .close_import_discovery(ImportObservationLedger::default())
             .unwrap_err();
-        assert!(session.published().is_none());
+        assert!(session.published_owner().is_none());
 
         let direct = session.update_for_presentation(&source);
         assert_eq!(direct.work(), crate::ParsedModulesWork::default());
@@ -1993,7 +1995,7 @@ mod tests {
         let work = closed.parse_work();
 
         assert!(Arc::ptr_eq(closed.program().unwrap(), &staged));
-        assert!(Arc::ptr_eq(session.published().unwrap(), &staged));
+        assert!(Arc::ptr_eq(session.published_owner().unwrap(), &staged));
         assert_eq!(work.syntax.lexer_invocations, 2);
         assert_eq!(work.syntax.parser_invocations, 2);
         assert_eq!(work.syntax.tokens, staged.token_count());
@@ -2003,7 +2005,7 @@ mod tests {
 
         let exact = session.update_for_presentation(&complete);
         assert_eq!(exact.work(), crate::ParsedModulesWork::default());
-        assert!(Arc::ptr_eq(exact.result().unwrap(), &staged));
+        assert!(Arc::ptr_eq(exact.result_owner().unwrap(), &staged));
 
         let broken_in_presentation_order = snapshot(
             &[
@@ -2577,7 +2579,7 @@ mod tests {
         }
         session.close_import_discovery(ledger).unwrap_err();
         let errors = session
-            .semantic(&crate::CompileOptions::default())
+            .canonical_semantic(&crate::CompileOptions::default())
             .unwrap_err();
         assert_eq!(errors.len(), 1);
         assert!(matches!(
@@ -2596,7 +2598,7 @@ mod tests {
         .unwrap();
         let mut session = crate::CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let errors = session.rir().unwrap_err();
+        let errors = session.canonical_rir().unwrap_err();
         assert_eq!(errors.len(), 1);
         assert!(matches!(
             errors.first().unwrap().kind,
@@ -2613,7 +2615,11 @@ mod tests {
         assert!(input.context().is_none());
         assert_eq!(session.work().rir.executions, 0);
         assert_eq!(session.work().last_rir, crate::CanonicalRirWork::default());
-        assert!(session.semantic(&crate::CompileOptions::default()).is_err());
+        assert!(
+            session
+                .canonical_semantic(&crate::CompileOptions::default())
+                .is_err()
+        );
         assert_eq!(session.work().semantic.executions, 0);
         let one_shot =
             crate::compile_snapshot(&source, &crate::CompileOptions::default()).unwrap_err();
