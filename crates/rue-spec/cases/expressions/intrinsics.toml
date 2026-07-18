@@ -500,13 +500,16 @@ fn main() -> i32 {
 """
 exit_code = 8
 
+# slot-model-default: observes 8-byte alignment under the current default
+# layout (4.13:22, now observe-only). RUE-987 re-golds these values when the
+# compact layout (ADR-0052) becomes the default.
 [[case]]
 name = "align_of_all_types_8"
 spec = ["4.13:22"]
 source = """
 struct Point { x: i32, y: i32 }
 fn main() -> i32 {
-    // All types currently have 8-byte alignment
+    // All types currently observe 8-byte alignment under the default layout.
     if @align_of(i8) != 8 { return 1; }
     if @align_of(i64) != 8 { return 2; }
     if @align_of(bool) != 8 { return 3; }

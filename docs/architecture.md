@@ -24,6 +24,15 @@ Use `rue --emit <stage>` to inspect `tokens`, `ast`, `rir`, `air`, `cfg`,
 `lowering`, `mir`, `liveness`, `regalloc`, `asm`, or `stackframe`. The option
 can be repeated to request several views.
 
+The `stackframe` view reports each frame's byte-based layout — per-slot offsets
+and sizes, callee-saved registers, and the 16-byte-aligned total — from the
+single frame-layout authority (`rue-codegen`'s `frame_layout`, RUE-975), the
+same byte product both backends' prologue/epilogue and spill allocators consume,
+rather than re-deriving `slot * 8` arithmetic per backend. Physical stack layout
+is one representation produced by the ADR-0052 canonical layout authority; the
+internal value decomposition stays slot-shaped, so under the default layout the
+reported offsets are unchanged.
+
 ## Frontend and semantic IRs
 
 - **`rue-lexer`** tokenizes source and records byte spans and interned names.

@@ -214,7 +214,7 @@ The value returned by `@size_of` is determined at compile time.
 
 ```rue
 fn main() -> i32 {
-    @size_of(i32)     // 8 (one 8-byte slot)
+    @size_of(i32)     // 8 (one 8-byte slot, observed under the current default layout)
 }
 ```
 
@@ -224,7 +224,9 @@ fn main() -> i32 {
 struct Point { x: i32, y: i32 }
 
 fn main() -> i32 {
-    @size_of(Point)   // 16 (two 8-byte slots)
+    // 16 under the current default layout (two 8-byte slots); the ratified
+    // compact layout (ADR-0052) would observe 8 (two 4-byte i32 fields).
+    @size_of(Point)   // 16
 }
 ```
 
@@ -246,15 +248,23 @@ The return type of `@align_of` is `i32`.
 
 The value returned by `@align_of` is determined at compile time.
 
-{{ rule(id="4.13:22", cat="normative") }}
+{{ rule(id="4.13:22", cat="informative") }}
 
-All types in Rue currently have 8-byte alignment.
+`@align_of(T)` reports the alignment the implementation has chosen for `T`
+under the layout in effect for the compilation (1.3:6, 3.6:12); it *observes*
+that choice and does not guarantee a particular value. Under the current
+default layout every type observes 8-byte alignment. The ratified compact
+layout (ADR-0052, previewed by the `aggregate_layout` feature) instead gives
+each scalar its natural alignment — `@align_of(i32)` would then observe `4` and
+`@align_of(bool)` `1` — so a portable program must not assume the value `8`.
+Whichever layout is in effect, the size of a type is always a multiple of its
+alignment (3.6:8).
 
 {{ rule(id="4.13:23") }}
 
 ```rue
 fn main() -> i32 {
-    @align_of(i32)    // 8
+    @align_of(i32)    // 8 (observed under the current default layout)
 }
 ```
 
@@ -295,8 +305,8 @@ struct Mixed { a: i32, b: i64, c: bool }
 
 fn main() -> i32 {
     let off_a: u64 = @offset_of(Mixed, a);   // 0
-    let off_b: u64 = @offset_of(Mixed, b);   // 8  (a occupies one 8-byte slot)
-    let off_c: u64 = @offset_of(Mixed, c);   // 16 (a and b occupy two slots)
+    let off_b: u64 = @offset_of(Mixed, b);   // 8  (observed under the current default layout)
+    let off_c: u64 = @offset_of(Mixed, c);   // 16 (observed under the current default layout)
     let sum: u64 = off_a + off_b + off_c;    // 24
     @intCast(sum)
 }
