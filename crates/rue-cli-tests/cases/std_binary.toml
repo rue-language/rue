@@ -1,0 +1,118 @@
+# std.binary (RUE-970) — endianness-explicit integer<->byte conversions.
+#
+# ADR-0059 keeps endianness out of the intrinsic surface; ADR-0060's network
+# marshalling consumes these helpers for the big-endian TCP port field. Every
+# case asserts through @dbg exact-stdout (an exit code is taken mod 256 and
+# could hide a wrong byte).
+
+[section]
+id = "cli.std_binary"
+name = "Standard library v1 — std.binary (RUE-970)"
+description = "u16/u32/u64 big- and little-endian encode/decode: exact bytes and round trips."
+
+# Exact byte order for every width/order pair, on an asymmetric value whose
+# bytes are all distinct, so a swapped, dropped, or duplicated byte is visible.
+[[case]]
+name = "binary_exact_bytes"
+description = "to_*_bytes emits each byte at its specified position for be and le."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let p: u16 = 0x1f90;                       // port 8080
+    let pbe = std.binary.u16_to_be_bytes(p);
+    @dbg(pbe[0]); @dbg(pbe[1]);                // 31 144
+    let ple = std.binary.u16_to_le_bytes(p);
+    @dbg(ple[0]); @dbg(ple[1]);                // 144 31
+
+    let x: u32 = 0x01020304;
+    let xbe = std.binary.u32_to_be_bytes(x);
+    @dbg(xbe[0]); @dbg(xbe[1]); @dbg(xbe[2]); @dbg(xbe[3]);    // 1 2 3 4
+    let xle = std.binary.u32_to_le_bytes(x);
+    @dbg(xle[0]); @dbg(xle[1]); @dbg(xle[2]); @dbg(xle[3]);    // 4 3 2 1
+
+    let w: u64 = 0x0102030405060708;
+    let wbe = std.binary.u64_to_be_bytes(w);
+    @dbg(wbe[0]); @dbg(wbe[3]); @dbg(wbe[7]);  // 1 4 8
+    let wle = std.binary.u64_to_le_bytes(w);
+    @dbg(wle[0]); @dbg(wle[4]); @dbg(wle[7]);  // 8 4 1
+    0
+}
+""" }]
+stdout = "31\n144\n144\n31\n1\n2\n3\n4\n4\n3\n2\n1\n1\n4\n8\n8\n4\n1\n"
+
+# Decoding literal byte arrays reconstructs the value, and both orders decode
+# the same array to byte-reversed values.
+[[case]]
+name = "binary_exact_decode"
+description = "from_*_bytes reads bytes at their specified positions."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let b2: [u8; 2] = [0xab, 0xcd];
+    if std.binary.u16_from_be_bytes(b2) == 0xabcd { @dbg(1); } else { @dbg(0); }
+    let b2r: [u8; 2] = [0xab, 0xcd];
+    if std.binary.u16_from_le_bytes(b2r) == 0xcdab { @dbg(1); } else { @dbg(0); }
+
+    let b4: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
+    if std.binary.u32_from_be_bytes(b4) == 0xdeadbeef { @dbg(1); } else { @dbg(0); }
+    let b4r: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
+    if std.binary.u32_from_le_bytes(b4r) == 0xefbeadde { @dbg(1); } else { @dbg(0); }
+
+    let b8: [u8; 8] = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+    if std.binary.u64_from_be_bytes(b8) == 0x0102030405060708 { @dbg(1); } else { @dbg(0); }
+    let b8r: [u8; 8] = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+    if std.binary.u64_from_le_bytes(b8r) == 0x0807060504030201 { @dbg(1); } else { @dbg(0); }
+    0
+}
+""" }]
+stdout = "1\n1\n1\n1\n1\n1\n"
+
+# Round trips at the boundary values of every width, in both orders.
+[[case]]
+name = "binary_round_trips"
+description = "from(to(v)) == v for 0, max, and an asymmetric value per width/order."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn rt_u16(v: u16) -> bool {
+    let be_ok = std.binary.u16_from_be_bytes(std.binary.u16_to_be_bytes(v)) == v;
+    let le_ok = std.binary.u16_from_le_bytes(std.binary.u16_to_le_bytes(v)) == v;
+    be_ok && le_ok
+}
+
+fn rt_u32(v: u32) -> bool {
+    let be_ok = std.binary.u32_from_be_bytes(std.binary.u32_to_be_bytes(v)) == v;
+    let le_ok = std.binary.u32_from_le_bytes(std.binary.u32_to_le_bytes(v)) == v;
+    be_ok && le_ok
+}
+
+fn rt_u64(v: u64) -> bool {
+    let be_ok = std.binary.u64_from_be_bytes(std.binary.u64_to_be_bytes(v)) == v;
+    let le_ok = std.binary.u64_from_le_bytes(std.binary.u64_to_le_bytes(v)) == v;
+    be_ok && le_ok
+}
+
+fn main() -> i32 {
+    let mut score: i32 = 0;
+    if rt_u16(0) { score = score + 1; }
+    if rt_u16(0xffff) { score = score + 1; }
+    if rt_u16(0x1f90) { score = score + 1; }
+    if rt_u32(0) { score = score + 1; }
+    if rt_u32(0xffffffff) { score = score + 1; }
+    if rt_u32(0xdeadbeef) { score = score + 1; }
+    if rt_u64(0) { score = score + 1; }
+    if rt_u64(0xffffffffffffffff) { score = score + 1; }
+    if rt_u64(0x0102030405060708) { score = score + 1; }
+    if score == 9 { 42 } else { score }
+}
+""" }]
+stdout = ""

@@ -1,0 +1,151 @@
+// std.binary — endianness-explicit integer <-> byte conversions (RUE-970).
+//
+// ADR-0059 keeps endianness out of the intrinsic surface: multi-byte encode
+// and decode are pure Rue library code over byte values, and every call site
+// names the byte order it wants. These helpers are the canonical conversion
+// surface for network marshalling (std.net, ADR-0060) and binary-format code.
+//
+// Naming follows Rust's `to_be_bytes`/`from_be_bytes` spelling rather than
+// host-dependent C names (`htons`) that hide which order is requested:
+//
+//     const std = @import("std");
+//     let port: u16 = 8080;
+//     let b = std.binary.u16_to_be_bytes(port);      // [0x1f, 0x90]
+//     std.binary.u16_from_be_bytes(b) == port;       // true
+//
+// `_be_` (big-endian, network order) puts the most significant byte first;
+// `_le_` (little-endian) puts the least significant byte first. Each width
+// converts to and from a fixed `[u8; N]` array; writing the bytes into a
+// larger buffer at an offset is the caller's composition.
+
+// ============================================================================
+// u16
+// ============================================================================
+
+// Encode `v` as 2 bytes, most significant first (network order).
+pub fn u16_to_be_bytes(v: u16) -> [u8; 2] {
+    let b0: u8 = @intCast((v >> 8) & 0xff);
+    let b1: u8 = @intCast(v & 0xff);
+    [b0, b1]
+}
+
+// Encode `v` as 2 bytes, least significant first.
+pub fn u16_to_le_bytes(v: u16) -> [u8; 2] {
+    let b0: u8 = @intCast(v & 0xff);
+    let b1: u8 = @intCast((v >> 8) & 0xff);
+    [b0, b1]
+}
+
+// Decode 2 bytes with the most significant first (network order).
+pub fn u16_from_be_bytes(b: [u8; 2]) -> u16 {
+    let hi: u16 = @intCast(b[0]);
+    let lo: u16 = @intCast(b[1]);
+    (hi << 8) | lo
+}
+
+// Decode 2 bytes with the least significant first.
+pub fn u16_from_le_bytes(b: [u8; 2]) -> u16 {
+    let lo: u16 = @intCast(b[0]);
+    let hi: u16 = @intCast(b[1]);
+    (hi << 8) | lo
+}
+
+// ============================================================================
+// u32
+// ============================================================================
+
+// Encode `v` as 4 bytes, most significant first (network order).
+pub fn u32_to_be_bytes(v: u32) -> [u8; 4] {
+    let b0: u8 = @intCast((v >> 24) & 0xff);
+    let b1: u8 = @intCast((v >> 16) & 0xff);
+    let b2: u8 = @intCast((v >> 8) & 0xff);
+    let b3: u8 = @intCast(v & 0xff);
+    [b0, b1, b2, b3]
+}
+
+// Encode `v` as 4 bytes, least significant first.
+pub fn u32_to_le_bytes(v: u32) -> [u8; 4] {
+    let b0: u8 = @intCast(v & 0xff);
+    let b1: u8 = @intCast((v >> 8) & 0xff);
+    let b2: u8 = @intCast((v >> 16) & 0xff);
+    let b3: u8 = @intCast((v >> 24) & 0xff);
+    [b0, b1, b2, b3]
+}
+
+// Decode 4 bytes with the most significant first (network order).
+pub fn u32_from_be_bytes(b: [u8; 4]) -> u32 {
+    let b0: u32 = @intCast(b[0]);
+    let b1: u32 = @intCast(b[1]);
+    let b2: u32 = @intCast(b[2]);
+    let b3: u32 = @intCast(b[3]);
+    (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
+}
+
+// Decode 4 bytes with the least significant first.
+pub fn u32_from_le_bytes(b: [u8; 4]) -> u32 {
+    let b0: u32 = @intCast(b[0]);
+    let b1: u32 = @intCast(b[1]);
+    let b2: u32 = @intCast(b[2]);
+    let b3: u32 = @intCast(b[3]);
+    (b3 << 24) | (b2 << 16) | (b1 << 8) | b0
+}
+
+// ============================================================================
+// u64
+// ============================================================================
+
+// Encode `v` as 8 bytes, most significant first (network order).
+pub fn u64_to_be_bytes(v: u64) -> [u8; 8] {
+    let b0: u8 = @intCast((v >> 56) & 0xff);
+    let b1: u8 = @intCast((v >> 48) & 0xff);
+    let b2: u8 = @intCast((v >> 40) & 0xff);
+    let b3: u8 = @intCast((v >> 32) & 0xff);
+    let b4: u8 = @intCast((v >> 24) & 0xff);
+    let b5: u8 = @intCast((v >> 16) & 0xff);
+    let b6: u8 = @intCast((v >> 8) & 0xff);
+    let b7: u8 = @intCast(v & 0xff);
+    [b0, b1, b2, b3, b4, b5, b6, b7]
+}
+
+// Encode `v` as 8 bytes, least significant first.
+pub fn u64_to_le_bytes(v: u64) -> [u8; 8] {
+    let b0: u8 = @intCast(v & 0xff);
+    let b1: u8 = @intCast((v >> 8) & 0xff);
+    let b2: u8 = @intCast((v >> 16) & 0xff);
+    let b3: u8 = @intCast((v >> 24) & 0xff);
+    let b4: u8 = @intCast((v >> 32) & 0xff);
+    let b5: u8 = @intCast((v >> 40) & 0xff);
+    let b6: u8 = @intCast((v >> 48) & 0xff);
+    let b7: u8 = @intCast((v >> 56) & 0xff);
+    [b0, b1, b2, b3, b4, b5, b6, b7]
+}
+
+// Decode 8 bytes with the most significant first (network order).
+pub fn u64_from_be_bytes(b: [u8; 8]) -> u64 {
+    let b0: u64 = @intCast(b[0]);
+    let b1: u64 = @intCast(b[1]);
+    let b2: u64 = @intCast(b[2]);
+    let b3: u64 = @intCast(b[3]);
+    let b4: u64 = @intCast(b[4]);
+    let b5: u64 = @intCast(b[5]);
+    let b6: u64 = @intCast(b[6]);
+    let b7: u64 = @intCast(b[7]);
+    (b0 << 56) | (b1 << 48) | (b2 << 40) | (b3 << 32) | (b4 << 24) | (b5 << 16)
+        | (b6 << 8)
+        | b7
+}
+
+// Decode 8 bytes with the least significant first.
+pub fn u64_from_le_bytes(b: [u8; 8]) -> u64 {
+    let b0: u64 = @intCast(b[0]);
+    let b1: u64 = @intCast(b[1]);
+    let b2: u64 = @intCast(b[2]);
+    let b3: u64 = @intCast(b[3]);
+    let b4: u64 = @intCast(b[4]);
+    let b5: u64 = @intCast(b[5]);
+    let b6: u64 = @intCast(b[6]);
+    let b7: u64 = @intCast(b[7]);
+    (b7 << 56) | (b6 << 48) | (b5 << 40) | (b4 << 32) | (b3 << 24) | (b2 << 16)
+        | (b1 << 8)
+        | b0
+}
