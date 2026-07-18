@@ -17,6 +17,7 @@
 // - std.arraybuf.ArrayBuf: Growable heap-backed collections; ArrayBuf(u8) can
 //   copy from str with `from_str` / `extend_str`
 // - std.fs.File: File IO v0 (open/create/append/read/write/close over @syscall)
+// - std.binary: endianness-explicit integer<->byte conversions
 
 // Re-export library modules.
 pub const math = @import("math.rue");
@@ -31,6 +32,9 @@ pub const arraybuf = @import("arraybuf.rue");
 
 // File IO v0 (RUE-712, ADR-0057): pure-Rue std.fs over @syscall.
 pub const fs = @import("fs.rue");
+
+// Endianness-explicit integer<->byte conversions (RUE-970, ADR-0059/0060).
+pub const binary = @import("binary.rue");
 
 // Collections (Standard library v1, M2).
 pub const stack = @import("stack.rue");
