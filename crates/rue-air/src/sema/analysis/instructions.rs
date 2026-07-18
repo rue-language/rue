@@ -12,8 +12,8 @@ impl<'a> BodySema<'a> {
     /// Returns both the AIR reference and the synthesized type.
     /// Analyze a single RIR instruction and produce the corresponding AIR instruction.
     ///
-    /// This method dispatches to category-specific methods in `analyze_ops.rs` for
-    /// maintainability. Each category handles related instruction types together.
+    /// This method dispatches to category-specific semantic modules. Each category
+    /// handles related instruction types together.
     ///
     /// # Categories
     ///
@@ -436,7 +436,7 @@ impl<'a> BodySema<'a> {
 
     // ========================================================================
     // Implementation methods for complex operations
-    // These are called by the category methods in analyze_ops.rs
+    // These are called by category-specific semantic modules.
     // ========================================================================
 
     /// Implementation for FieldSet - handles both local and parameter field assignment.
