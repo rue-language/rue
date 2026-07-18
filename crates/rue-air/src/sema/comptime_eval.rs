@@ -1350,7 +1350,16 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             return Ok(None);
         };
         let module_file_id = if chain_rev.is_empty() {
-            let Some(binding) = self.module_bindings.get(&(file_id, recv_name)).cloned() else {
+            // Resolve through the declaration namespace, not the raw binding
+            // table: while declarations are being bound, the defining file's
+            // import constant may not be collected yet. A struct field like
+            // `index: std.strmap.StrMap(u64)` reduces `StrMap`'s body during
+            // field resolution, and the nested `let U64s = arraybuf.ArrayBuf(..)`
+            // inside that body names an import of *strmap's* file that nothing
+            // has demanded before — a raw lookup miss here silently made the
+            // whole reduction non-evaluable and surfaced as E1200 (RUE-993).
+            // The re-export chain branch below already resolves on demand.
+            let Some(binding) = self.resolve_module_binding_in_file(file_id, recv_name)? else {
                 return Ok(None);
             };
             let Some(module_id) = binding.ty.as_module() else {

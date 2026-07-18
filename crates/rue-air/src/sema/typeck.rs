@@ -1328,7 +1328,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// constant dependency. Once declaration binding completes, the table is
     /// authoritative: body analysis never rediscovers imports or mutates the
     /// source-declaration namespace after the [`super::BoundSema`] boundary.
-    fn resolve_module_binding_in_file(
+    pub(crate) fn resolve_module_binding_in_file(
         &mut self,
         file_id: FileId,
         name: Spur,
