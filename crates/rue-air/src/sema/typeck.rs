@@ -567,7 +567,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             .resolve_const_info_in_file(type_sym, span.file_id)
             .map(|info| info.value);
         if value.is_none() && self.declaration_binding_active {
-            value = self.try_resolve_indexed_const_during_binding(type_sym, span.file_id);
+            value = self.try_resolve_indexed_const_during_binding(type_sym, span.file_id)?;
         }
         let Some(ConstValue::Type(alias_ty)) = value else {
             return Ok(None);
@@ -962,7 +962,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
                 .get(&(file_id, member_sym))
                 .is_none()
         {
-            self.try_resolve_indexed_const_during_binding(member_sym, file_id);
+            self.try_resolve_indexed_const_during_binding(member_sym, file_id)?;
         }
         if let Some(info) = module_file_id
             .and_then(|file_id| self.constants_by_file_name.get(&(file_id, member_sym)))
@@ -1264,7 +1264,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             ));
         };
         let first_sym = self.interner.get_or_intern(first);
-        let Some(binding) = self.resolve_module_binding_in_file(root_file, first_sym) else {
+        let Some(binding) = self.resolve_module_binding_in_file(root_file, first_sym)? else {
             return Err(CompileError::new(
                 ErrorKind::UnknownType((*first).to_string()),
                 span,
@@ -1288,7 +1288,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
                     span,
                 ));
             };
-            let Some(binding) = self.resolve_module_binding_in_file(module_file_id, segment_sym)
+            let Some(binding) = self.resolve_module_binding_in_file(module_file_id, segment_sym)?
             else {
                 return Err(CompileError::new(
                     ErrorKind::UnknownModuleMember {
@@ -1332,16 +1332,16 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         &mut self,
         file_id: FileId,
         name: Spur,
-    ) -> Option<super::info::ConstInfo> {
+    ) -> CompileResult<Option<super::info::ConstInfo>> {
         if let Some(binding) = self.module_bindings.get(&(file_id, name)) {
-            return Some(binding.clone());
+            return Ok(Some(binding.clone()));
         }
         if !self.declaration_binding_active {
-            return None;
+            return Ok(None);
         }
 
-        self.try_resolve_indexed_const_during_binding(name, file_id);
-        self.module_bindings.get(&(file_id, name)).cloned()
+        self.try_resolve_indexed_const_during_binding(name, file_id)?;
+        Ok(self.module_bindings.get(&(file_id, name)).cloned())
     }
 
     /// Resolve a type-function application written directly in type position
@@ -2132,7 +2132,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
                     info.value
                 } else if self.declaration_binding_active
                     && let Some(v) =
-                        self.try_resolve_indexed_const_during_binding(sym, span.file_id)
+                        self.try_resolve_indexed_const_during_binding(sym, span.file_id)?
                 {
                     // 3. A file-level constant whose indexed declaration is
                     //    being dependency-resolved for a struct field / enum

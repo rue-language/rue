@@ -1749,15 +1749,24 @@ impl<'a> Sema<'a> {
     /// During declaration binding, resolve an indexed constant on demand.
     /// After the `BoundSema` boundary, the namespace is closed and a missing
     /// entry is an authoritative lookup miss.
+    ///
+    /// A collection failure propagates instead of degrading to a lookup miss.
+    /// Every on-demand probe sits on a path that hard-errors after a miss
+    /// (E0204/E0707/E0481), and struct fields resolve before the main const
+    /// walk in `resolve_remaining_declarations` — so a swallowed initializer
+    /// error (e.g. E0705 from a failed `@import`) was *replaced* by the
+    /// downstream miss diagnostic rather than re-reported later (RUE-724).
+    /// A name with no same-file const declaration still resolves to `Ok(None)`.
     pub(crate) fn resolve_indexed_const_binding_impl(
         &mut self,
         name: Spur,
         file_id: FileId,
-    ) -> Option<ConstValue> {
+    ) -> CompileResult<Option<ConstValue>> {
         debug_assert!(self.declaration_binding_active);
-        let _ = self.ensure_const_collected(name, file_id);
-        self.resolve_const_info_in_file(name, file_id)
-            .map(|info| info.value)
+        self.ensure_const_collected(name, file_id)?;
+        Ok(self
+            .resolve_const_info_in_file(name, file_id)
+            .map(|info| info.value))
     }
 
     fn indexed_const(&self, key: (FileId, Spur)) -> Option<PendingConst> {
