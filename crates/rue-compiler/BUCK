@@ -52,7 +52,10 @@ rust_test(
     name = "rue-compiler-public-api-test",
     srcs = ["tests/public_api.rs"],
     crate_root = "tests/public_api.rs",
-    deps = [":rue-compiler"],
+    deps = [
+        ":rue-compiler",
+        "//crates/rue-error:rue-error",
+    ],
 )
 
 # A bounded, deterministic corpus comparing a long-lived session with

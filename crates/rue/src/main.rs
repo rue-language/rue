@@ -19,9 +19,9 @@ mod timing;
 use emit::EmitStage;
 #[cfg(test)]
 use emit::{EmitFrontendRoute, build_emit_frontend, emit_frontend_route};
-use rue_compiler::unstable::ImportDiscoveryStatus;
 #[cfg(test)]
 use rue_compiler::unstable::update_for_presentation;
+use rue_compiler::unstable::{MultiFileFormatter, MultiFileJsonFormatter, SourceInfo};
 use source_loader::{SourceLoadError, SourceLoadRequest};
 #[cfg(test)]
 use source_loader::{
@@ -30,12 +30,12 @@ use source_loader::{
 };
 
 use rue_compiler::{
-    CompileError, CompileErrors, CompileOptions, CompileWarning, FileId, LinkerMode,
-    MultiFileFormatter, MultiFileJsonFormatter, OptLevel, PreviewFeature, PreviewFeatures,
-    SourceInfo, configure_thread_pool,
+    CompileErrors, CompileOptions, CompileWarning, FileId, ImportDiscoveryStatus, LinkerMode,
+    OptLevel, PreviewFeature, PreviewFeatures, configure_thread_pool,
 };
 #[cfg(test)]
 use rue_compiler::{CompilerSession, SourceMetadata, SourceSnapshot};
+use rue_error::CompileError;
 use rue_target::Target;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum LogLevel {
@@ -1275,10 +1275,11 @@ mod tests {
             );
             {
                 let _compile = compile_span.enter();
-                discovery
-                    .session
-                    .executable_in_compile_scope(&CompileOptions::default())
-                    .unwrap();
+                rue_compiler::unstable::executable_in_compile_scope(
+                    &mut discovery.session,
+                    &CompileOptions::default(),
+                )
+                .unwrap();
             }
             drop(compile_span);
         });

@@ -1,4 +1,10 @@
-//! RUE-736 review gate for the curated compiler facade.
+//! Semantic review gate for the curated compiler facade.
+//!
+//! RUE-869 replaces the old source-line budget with an exact inventory of
+//! every root export and every public `CompilerSession`/
+//! `CompilerSessionUpdate` signature. The inventory records ownership,
+//! stability, category, and approved consumers so intentional API changes are
+//! reviewed as semantic one-line diffs.
 
 const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("artifact_views", include_str!("artifact_views.rs")),
@@ -66,6 +72,40 @@ const RUE_868_RAW_FACADE_VOCABULARY: &[&str] = &[
     "LoweringDebugInfo",
     "RegAllocDebugInfo",
     "StackFrameInfo",
+];
+
+const RUE_869_INTERNAL_ROOT_VOCABULARY: &[&str] = &[
+    "BoundDefinitionId",
+    "BoundDefinitionRecord",
+    "BoundDefinitionSet",
+    "DefinitionId",
+    "DefinitionKind",
+    "DefinitionNameKey",
+    "DefinitionNamespace",
+    "DefinitionOccurrenceId",
+    "DefinitionRecord",
+    "DefinitionShard",
+    "DefinitionSnapshot",
+    "DependencyAcceptedRead",
+    "DependencyContext",
+    "DependencyObservation",
+    "DependencyObservationOutcome",
+    "DependencyRequest",
+    "DiscoverySourceAssembler",
+    "IMPORT_DISCOVERY_POLICY_VERSION",
+    "DiagnosticFormatter",
+    "JsonDiagnostic",
+    "JsonDiagnosticFormatter",
+    "MultiFileFormatter",
+    "MultiFileJsonFormatter",
+    "CompileError",
+    "CompileResult",
+    "Diagnostic",
+    "ErrorCode",
+    "ErrorKind",
+    "Suggestion",
+    "WarningKind",
+    "Span",
 ];
 
 fn code_identifiers(source: &str) -> Vec<&str> {
@@ -203,9 +243,20 @@ const RUE_867_DURABLE_VOCABULARY: &[&str] = &[
 fn public_declarations(source: &str) -> Vec<String> {
     let mut declarations = Vec::new();
     let mut lines = source.lines();
+    let mut api_attributes = Vec::new();
     while let Some(line) = lines.next() {
         let trimmed = line.trim_start();
+        if trimmed.starts_with("#[") {
+            if trimmed.starts_with("#[cfg(") || trimmed.starts_with("#[cfg_attr(") {
+                api_attributes.push(trimmed.to_owned());
+            }
+            continue;
+        }
+        if trimmed.is_empty() || trimmed.starts_with("///") || trimmed.starts_with("//!") {
+            continue;
+        }
         if !trimmed.starts_with("pub ") || trimmed.starts_with("pub(crate)") {
+            api_attributes.clear();
             continue;
         }
 
@@ -230,7 +281,11 @@ fn public_declarations(source: &str) -> Vec<String> {
                     | "mod"
             )
         });
-        let mut declaration = String::new();
+        let mut declaration = api_attributes.join("\n");
+        api_attributes.clear();
+        if !declaration.is_empty() {
+            declaration.push('\n');
+        }
         let mut brace_depth = 0isize;
         let mut opened_body = false;
         let mut current = Some(line);
@@ -329,6 +384,39 @@ fn impl_blocks(source: &str) -> Vec<&str> {
     blocks
 }
 
+fn macro_blocks(source: &str) -> Vec<&str> {
+    let mut blocks = Vec::new();
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("macro_rules!") || trimmed.starts_with("pub macro ") {
+            let leading = line.len() - trimmed.len();
+            let start = offset + leading;
+            let rest = &source[start..];
+            let Some(open) = rest.find('{') else {
+                offset += line.len();
+                continue;
+            };
+            let mut depth = 0usize;
+            for (index, byte) in rest[open..].bytes().enumerate() {
+                match byte {
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            blocks.push(&rest[..open + index + 1]);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        offset += line.len();
+    }
+    blocks
+}
+
 fn supported_public_surface(facade: &str, modules: &[(&str, &str)]) -> String {
     let root_declarations = public_declarations(facade);
     let public_module_names = root_declarations
@@ -395,6 +483,98 @@ fn public_use_declarations(source: &str) -> Vec<String> {
     declarations
 }
 
+fn macro_invocation_path(line: &str) -> Option<&str> {
+    let (path, _) = line.split_once('!')?;
+    let path = path.trim();
+    if path == "macro_rules" || path.is_empty() {
+        return None;
+    }
+    path.chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == ':')
+        .then_some(path)
+}
+
+fn unsupported_api_layout(source: &str, root: bool) -> Option<String> {
+    let mut conditional_export = false;
+    let mut test_only_condition = false;
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("#[cfg(") || trimmed.starts_with("#[cfg_attr(") {
+            if !trimmed.ends_with(']') {
+                return Some(trimmed.to_owned());
+            }
+            test_only_condition = !conditional_export && trimmed == "#[cfg(test)]";
+            conditional_export = true;
+            continue;
+        }
+        if trimmed.starts_with("#[macro_export") {
+            return Some(trimmed.to_owned());
+        }
+        if trimmed.starts_with("#[") {
+            continue;
+        }
+        if trimmed.is_empty() || trimmed.starts_with("///") || trimmed.starts_with("//!") {
+            continue;
+        }
+        if trimmed == "pub"
+            || trimmed.starts_with("pub\t")
+            || trimmed.starts_with("pub/*")
+            || trimmed == "impl"
+            || trimmed.starts_with("impl\t")
+            || trimmed.starts_with("impl/*")
+        {
+            return Some(trimmed.to_owned());
+        }
+        if trimmed.starts_with("include!(") || trimmed.starts_with("pub macro ") {
+            return Some(trimmed.to_owned());
+        }
+        if line.len() == trimmed.len()
+            && let Some(path) = macro_invocation_path(trimmed)
+        {
+            let name = path.rsplit("::").next().unwrap_or(path);
+            if root || !matches!(name, "thread_local" | "session_query_metrics_family") {
+                return Some(trimmed.to_owned());
+            }
+        }
+        if root && conditional_export && trimmed.starts_with("pub use ") {
+            return Some(trimmed.to_owned());
+        }
+        let identifiers = code_identifiers(trimmed);
+        if conditional_export
+            && !test_only_condition
+            && (trimmed.starts_with("impl ") || trimmed.starts_with("impl<"))
+            && (identifiers.contains(&"CompilerSession")
+                || identifiers.contains(&"CompilerSessionUpdate"))
+        {
+            return Some(trimmed.to_owned());
+        }
+        conditional_export = false;
+        test_only_condition = false;
+    }
+    for block in macro_blocks(source) {
+        if root || code_identifiers(block).contains(&"pub") {
+            return Some(block.lines().next().unwrap_or("macro_rules!").to_owned());
+        }
+    }
+    for implementation in impl_blocks(source) {
+        if impl_owner(implementation).is_none() {
+            continue;
+        }
+        for line in implementation.lines().skip(1) {
+            let Some(direct) = line.strip_prefix("    ") else {
+                continue;
+            };
+            if direct.chars().next().is_some_and(char::is_whitespace) {
+                continue;
+            }
+            if macro_invocation_path(direct).is_some() {
+                return Some(direct.to_owned());
+            }
+        }
+    }
+    None
+}
+
 fn assert_no_public_use_globs(source: &str) {
     for declaration in public_use_declarations(source) {
         assert!(
@@ -409,6 +589,362 @@ fn public_use_is_glob(declaration: &str) -> bool {
         .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '*'))
         .filter(|token| !token.is_empty())
         .any(|token| token == "*")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ApiInventoryEntry {
+    stability: String,
+    owner: String,
+    class: String,
+    consumer: String,
+    symbol: String,
+    signature: String,
+}
+
+impl ApiInventoryEntry {
+    fn new(
+        stability: &str,
+        owner: impl Into<String>,
+        class: &str,
+        consumer: &str,
+        symbol: impl Into<String>,
+        signature: impl Into<String>,
+    ) -> Self {
+        Self {
+            stability: stability.to_owned(),
+            owner: owner.into(),
+            class: class.to_owned(),
+            consumer: consumer.to_owned(),
+            symbol: symbol.into(),
+            signature: signature.into(),
+        }
+    }
+
+    fn render(&self) -> String {
+        for field in [
+            &self.stability,
+            &self.owner,
+            &self.class,
+            &self.consumer,
+            &self.symbol,
+            &self.signature,
+        ] {
+            assert!(
+                !field.contains('|') && !field.contains('\n'),
+                "semantic API inventory fields must remain one-line and pipe-free: {field:?}"
+            );
+        }
+        format!(
+            "{}|{}|{}|{}|{}|{}",
+            self.stability, self.owner, self.class, self.consumer, self.symbol, self.signature
+        )
+    }
+}
+
+fn canonical_signature(declaration: &str) -> String {
+    let declaration = declaration
+        .lines()
+        .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+        .collect::<String>();
+    let end = declaration
+        .find('{')
+        .or_else(|| declaration.find(';'))
+        .unwrap_or(declaration.len());
+    let source = &declaration[..end];
+    let bytes = source.as_bytes();
+    let mut tokens = Vec::<(String, bool)>::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte.is_ascii_whitespace() {
+            index += 1;
+            continue;
+        }
+        if byte.is_ascii_alphanumeric() || byte == b'_' {
+            let start = index;
+            index += 1;
+            while index < bytes.len()
+                && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_')
+            {
+                index += 1;
+            }
+            tokens.push((source[start..index].to_owned(), true));
+            continue;
+        }
+        if byte == b'\'' && index + 1 < bytes.len() && bytes[index + 1].is_ascii_alphabetic() {
+            let start = index;
+            index += 2;
+            while index < bytes.len()
+                && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_')
+            {
+                index += 1;
+            }
+            tokens.push((source[start..index].to_owned(), true));
+            continue;
+        }
+        let two = (index + 1 < bytes.len()).then(|| &source[index..index + 2]);
+        if matches!(
+            two,
+            Some("->" | "::" | "=>" | ".." | "<=" | ">=" | "==" | "!=")
+        ) {
+            tokens.push((two.unwrap().to_owned(), false));
+            index += 2;
+        } else {
+            tokens.push((source[index..index + 1].to_owned(), false));
+            index += 1;
+        }
+    }
+
+    let mut rendered = String::new();
+    let mut previous_word = false;
+    for (token, word) in tokens {
+        if previous_word && word {
+            rendered.push(' ');
+        }
+        rendered.push_str(&token);
+        previous_word = word;
+    }
+    rendered
+}
+
+fn root_export_metadata(owner: &str, symbol: &str) -> (&'static str, &'static str) {
+    match owner {
+        "artifact_views" => ("artifact-view", "embedders+tooling"),
+        "dependency_envelope" => match symbol {
+            "DependencyEnvelope"
+            | "DependencyEnvelopeStatus"
+            | "DependencyResolutionOutcome"
+            | "DependencyTopology"
+            | "DependencyTopologyRecord" => ("dependency-artifact", "source-loaders+embedders"),
+            _ => panic!("unclassified dependency facade export: {symbol}"),
+        },
+        "import_discovery" => match symbol {
+            "AcceptedImportSource"
+            | "AcceptedReadManifestEntry"
+            | "FileMetadataFingerprint"
+            | "ImportCandidateRole"
+            | "ImportDiscoveryContext"
+            | "ImportDiscoveryPlan"
+            | "ImportDiscoveryRequest"
+            | "ImportObservation"
+            | "ImportObservationLedger"
+            | "ImportObservationStatus"
+            | "ImportOccurrenceKey"
+            | "PhysicalFileIdentity" => ("dependency-artifact", "source-loaders+embedders"),
+            _ => panic!("unclassified import-discovery facade export: {symbol}"),
+        },
+        "import_graph" => match symbol {
+            "CanonicalImportCycle"
+            | "CanonicalImportGraph"
+            | "CanonicalImportGraphProblem"
+            | "CanonicalImportGraphValidation"
+            | "CanonicalImportRecord"
+            | "CanonicalImportResolution"
+            | "ImportDirective"
+            | "ImportDirectives" => ("dependency-artifact", "source-loaders+embedders"),
+            _ => panic!("unclassified import-graph facade export: {symbol}"),
+        },
+        "diagnostic_attempt_store" => ("diagnostic", "cli+embedders"),
+        "rue_error" => match symbol {
+            "CompileErrors" | "CompileWarning" | "MultiErrorResult" | "PreviewFeature"
+            | "PreviewFeatures" | "VERSION" => ("diagnostic", "cli+embedders"),
+            _ => panic!("raw diagnostic type returned to the stable facade: {symbol}"),
+        },
+        "queries" => match symbol {
+            "CompileOptions" | "LinkerMode" => ("compilation-config", "cli+embedders"),
+            "compile_snapshot" => ("one-shot-operation", "cli+embedders"),
+            "CompileOutput" | "SourceView" => ("compile-artifact", "cli+embedders"),
+            _ => panic!("unclassified queries facade export: {symbol}"),
+        },
+        "session" => match symbol {
+            "CompilerSession" | "CompilerSessionUpdate" => ("session-owner", "embedders"),
+            "CanonicalImportGraphOutput" => ("dependency-artifact", "source-loaders+embedders"),
+            _ => panic!("unclassified session facade export: {symbol}"),
+        },
+        "source_identity" | "source_metadata" | "source_snapshot" | "rue_span" => {
+            ("source-input", "cli+embedders")
+        }
+        "rue_cfg" | "rue_target" => ("compilation-config", "cli+embedders"),
+        _ => panic!("unclassified facade export owner: {owner}::{symbol}"),
+    }
+}
+
+fn root_use_exports(facade: &str) -> Vec<ApiInventoryEntry> {
+    let mut entries = Vec::new();
+    for declaration in public_use_declarations(facade) {
+        assert!(
+            !public_use_is_glob(&declaration),
+            "public glob reexports bypass the semantic API inventory: {declaration}"
+        );
+        assert!(
+            !code_identifiers(&declaration).contains(&"as"),
+            "public aliases require explicit semantic inventory support: {declaration}"
+        );
+        let compact = declaration
+            .chars()
+            .filter(|ch| !ch.is_whitespace())
+            .collect::<String>();
+        let path = compact
+            .strip_prefix("pubuse")
+            .and_then(|path| path.strip_suffix(';'))
+            .expect("public-use scanner returns complete declarations");
+        let (owner, symbols) = if let Some((owner, symbols)) = path.split_once("::{") {
+            let symbols = symbols
+                .strip_suffix('}')
+                .expect("grouped public use closes its brace")
+                .split(',')
+                .filter(|symbol| !symbol.is_empty())
+                .collect::<Vec<_>>();
+            (owner, symbols)
+        } else {
+            let (owner, symbol) = path
+                .rsplit_once("::")
+                .expect("public reexport has an owning path");
+            (owner, vec![symbol])
+        };
+        for symbol in symbols {
+            let (class, consumer) = root_export_metadata(owner, symbol);
+            entries.push(ApiInventoryEntry::new(
+                "stable",
+                owner,
+                class,
+                consumer,
+                symbol,
+                format!("pub use {owner}::{symbol}"),
+            ));
+        }
+    }
+    entries
+}
+
+fn impl_owner(implementation: &str) -> Option<&'static str> {
+    let header = implementation.split_once('{')?.0;
+    let identifiers = code_identifiers(header);
+    if identifiers.contains(&"CompilerSessionUpdate") {
+        Some("CompilerSessionUpdate")
+    } else if identifiers.contains(&"CompilerSession") {
+        Some("CompilerSession")
+    } else {
+        None
+    }
+}
+
+fn session_method_metadata(
+    owner: &str,
+    module: &str,
+    symbol: &str,
+    _signature: &str,
+) -> (&'static str, &'static str, &'static str) {
+    let unstable = module == "unstable" || symbol.starts_with("unstable_");
+    if unstable {
+        return ("unstable", "debug-tooling", "in-tree-tooling");
+    }
+    let class = if owner == "CompilerSessionUpdate" {
+        match symbol {
+            "result" | "into_result" | "diagnostics" => "artifact-result",
+            "downstream_invalidated" => "session-status",
+            _ => panic!("unclassified stable CompilerSessionUpdate method: {symbol}"),
+        }
+    } else {
+        match symbol {
+            "new" | "update" | "stage_import_discovery" | "close_import_discovery" => {
+                "session-operation"
+            }
+            "published"
+            | "committed_import_graph"
+            | "import_diagnostics"
+            | "import_graph"
+            | "rir"
+            | "semantic"
+            | "executable" => "artifact-query",
+            "import_discovery_plan" => "dependency-query",
+            "latest_diagnostics"
+            | "latest_successful_diagnostics"
+            | "last_good_semantic_diagnostics" => "diagnostic-query",
+            _ => panic!("unclassified stable CompilerSession method: {symbol}"),
+        }
+    };
+    ("stable", class, "embedders")
+}
+
+fn semantic_api_inventory(facade: &str, modules: &[(&str, &str)]) -> Vec<ApiInventoryEntry> {
+    assert!(
+        unsupported_api_layout(facade, true).is_none(),
+        "root API uses a visibility, impl, include, or macro form the exact inventory does not parse"
+    );
+    for (module, source) in modules {
+        assert!(
+            unsupported_api_layout(source, false).is_none(),
+            "{module} uses a split visibility or impl form the exact inventory does not parse"
+        );
+    }
+    let mut entries = root_use_exports(facade);
+    for declaration in public_declarations(facade) {
+        let signature = canonical_signature(&declaration);
+        if signature.starts_with("pub use ") || signature.starts_with("pub use") {
+            continue;
+        }
+        let symbol = public_declaration_name(&declaration)
+            .expect("every direct root declaration has a name");
+        if signature == "pub mod unstable" {
+            entries.push(ApiInventoryEntry::new(
+                "unstable",
+                "unstable",
+                "debug-module",
+                "in-tree-tooling",
+                symbol,
+                signature,
+            ));
+        } else if symbol == "configure_thread_pool" {
+            entries.push(ApiInventoryEntry::new(
+                "stable",
+                "lib",
+                "runtime-config",
+                "cli+embedders",
+                symbol,
+                signature,
+            ));
+        } else {
+            panic!("unclassified direct root public declaration: {signature}");
+        }
+    }
+
+    for (module, source) in modules {
+        for implementation in impl_blocks(source) {
+            let Some(owner) = impl_owner(implementation) else {
+                continue;
+            };
+            for declaration in public_declarations(implementation) {
+                let symbol = public_declaration_name(&declaration)
+                    .expect("every public session declaration has a name");
+                let signature = canonical_signature(&declaration);
+                let (stability, class, consumer) =
+                    session_method_metadata(owner, module, symbol, &signature);
+                entries.push(ApiInventoryEntry::new(
+                    stability, owner, class, consumer, symbol, signature,
+                ));
+            }
+        }
+    }
+
+    entries.sort();
+    let mut rendered = std::collections::BTreeSet::new();
+    for entry in &entries {
+        assert!(
+            rendered.insert(entry.render()),
+            "duplicate semantic API inventory entry: {}",
+            entry.render()
+        );
+    }
+    entries
+}
+
+fn render_semantic_api_inventory(facade: &str, modules: &[(&str, &str)]) -> String {
+    semantic_api_inventory(facade, modules)
+        .into_iter()
+        .map(|entry| entry.render())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn inherent_impl<'a>(source: &'a str, owner: &str) -> &'a str {
@@ -434,11 +970,6 @@ fn inherent_impl<'a>(source: &'a str, owner: &str) -> &'a str {
 #[test]
 fn facade_stays_small_and_session_centered() {
     let facade = include_str!("lib.rs");
-    assert!(
-        facade.lines().count() <= 260,
-        "rue-compiler's facade grew beyond its reviewed inventory"
-    );
-
     let mut declared_modules = facade
         .lines()
         .filter_map(|line| {
@@ -457,6 +988,7 @@ fn facade_stays_small_and_session_centered() {
             "durable_compatibility_tests",
             "integration_tests",
             "pipeline_tests",
+            "supported_api_inventory",
             "test_support",
         ])
         .collect::<Vec<_>>();
@@ -492,6 +1024,105 @@ fn facade_stays_small_and_session_centered() {
 }
 
 #[test]
+fn semantic_api_inventory_matches_every_root_export_and_session_signature() {
+    let actual = render_semantic_api_inventory(include_str!("lib.rs"), PRODUCTION_MODULES);
+    let approved = crate::supported_api_inventory::APPROVED.trim();
+    assert_eq!(
+        actual, approved,
+        "the public compiler facade changed without a reviewed semantic inventory diff; \
+         classify the owner, stability, category, and approved consumer in \
+         supported_api_inventory.rs\n\nactual inventory:\n{actual}"
+    );
+}
+
+#[test]
+fn semantic_inventory_detects_root_and_signature_changes() {
+    let facade = "pub use queries::CompileOptions;";
+    let expanded = "pub use queries::{CompileOptions, LinkerMode};";
+    assert_eq!(root_use_exports(facade).len(), 1);
+    assert_eq!(root_use_exports(expanded).len(), 2);
+
+    let original = render_semantic_api_inventory(
+        "pub use session::CompilerSession;",
+        &[(
+            "session",
+            "impl CompilerSession {\n    pub fn new() -> Self { todo!() }\n}",
+        )],
+    );
+    let changed = render_semantic_api_inventory(
+        "pub use session::CompilerSession;",
+        &[(
+            "session",
+            "impl CompilerSession {\n    pub fn new(capacity: usize) -> Self { todo!() }\n}",
+        )],
+    );
+    assert_ne!(
+        original, changed,
+        "public signature changes must alter the inventory"
+    );
+    assert!(original.contains("pub fn new()->Self"));
+    assert!(changed.contains("pub fn new(capacity:usize)->Self"));
+    assert!(render_semantic_api_inventory(facade, &[]).contains("CompileOptions"));
+}
+
+#[test]
+fn semantic_inventory_rejects_aliases_and_globs() {
+    let alias = public_use_declarations("pub use queries::CompileOptions as Options;");
+    assert!(code_identifiers(&alias[0]).contains(&"as"));
+    let glob = public_use_declarations("pub use queries::*;");
+    assert!(public_use_is_glob(&glob[0]));
+}
+
+#[test]
+fn semantic_inventory_rejects_unparsed_layouts_and_records_cfg_attributes() {
+    for source in [
+        "pub\nfn hidden() {}",
+        "pub\tfn hidden() {}",
+        "impl\nCompilerSession {}",
+        "impl\tCompilerSession {}",
+    ] {
+        assert!(
+            unsupported_api_layout(source, false).is_some(),
+            "split API syntax bypassed the fail-closed layout guard: {source:?}"
+        );
+    }
+    for source in [
+        "include!(\"api.rs\");",
+        "macro_rules! api { () => {} }",
+        "generated_api!();",
+        "crate::generated_api!();",
+        "foo::bar!();",
+    ] {
+        assert!(unsupported_api_layout(source, true).is_some());
+    }
+    for source in [
+        "include!(\"session_api.rs\");",
+        "macro_rules! api { () => { pub fn escaped() {} } }",
+        "generated_session_impl!();",
+        "#[macro_export]\nmacro_rules! api { () => {} }",
+        "#[macro_export(local_inner_macros)]\nmacro_rules! api { () => {} }",
+        "impl CompilerSession {\n    generated_methods!();\n}",
+        "#[cfg(any(\nunix,\nwindows\n))]\npub fn escaped() {}",
+        "#[cfg(unix)]\nimpl CompilerSession {\n    pub fn new() -> Self { todo!() }\n}",
+        "#[cfg(unix)]\nimpl crate::CompilerSession {\n    pub fn new() -> Self { todo!() }\n}",
+    ] {
+        assert!(unsupported_api_layout(source, false).is_some());
+    }
+    assert!(
+        unsupported_api_layout("#[cfg(unix)]\npub use session::CompilerSession;", true).is_some()
+    );
+
+    let inventory = render_semantic_api_inventory(
+        "pub use session::CompilerSession;",
+        &[(
+            "session",
+            "impl CompilerSession {\n#[cfg(unix)]\npub fn new() -> Self { todo!() }\n}",
+        )],
+    );
+    assert!(inventory.contains("#[cfg(unix)]pub fn new()->Self"));
+}
+
+#[test]
 fn raw_phase_owners_and_backend_drivers_cannot_return_to_the_stable_facade() {
     let facade = include_str!("lib.rs");
     let root_exports = public_use_declarations(facade).concat();
@@ -514,6 +1145,7 @@ fn raw_phase_owners_and_backend_drivers_cannot_return_to_the_stable_facade() {
     let session_methods = code_identifiers(&session);
     for internal in [
         "merge",
+        "stable_definitions",
         "update_for_presentation",
         "inject_stale_query_for_oracle",
     ] {
@@ -572,6 +1204,18 @@ fn raw_phase_owners_and_backend_drivers_cannot_return_to_the_stable_facade() {
         assert!(
             !code_identifiers(&signatures).contains(&"Span"),
             "stable owner-bound view exposes a raw Span: {view}"
+        );
+    }
+}
+
+#[test]
+fn final_internal_records_and_presenters_cannot_return_to_the_stable_root() {
+    let root_exports = public_use_declarations(include_str!("lib.rs")).concat();
+    let identifiers = code_identifiers(&root_exports);
+    for forbidden in RUE_869_INTERNAL_ROOT_VOCABULARY {
+        assert!(
+            !identifiers.contains(forbidden),
+            "RUE-869 internal record or presenter returned to the stable root: {forbidden}"
         );
     }
 }
@@ -652,12 +1296,24 @@ fn query_engine_records_cannot_return_to_the_supported_root() {
 #[test]
 fn unstable_views_do_not_alias_query_engine_records() {
     let unstable = include_str!("unstable.rs");
-    assert!(
-        !unstable.contains("pub use crate::"),
-        "unstable views must own their projections instead of aliasing compiler records"
-    );
     assert!(!unstable.contains("pub type "));
-    assert!(!unstable.contains("pub use "));
+    let reexports = public_use_declarations(unstable)
+        .into_iter()
+        .map(|declaration| {
+            declaration
+                .chars()
+                .filter(|ch| !ch.is_whitespace())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reexports,
+        [
+            "pubusecrate::diagnostic::{ColorChoice,DiagnosticFormatter,JsonDiagnostic,JsonDiagnosticFormatter,JsonSpan,JsonSuggestion,MultiFileFormatter,MultiFileJsonFormatter,SourceInfo,};",
+            "pubusecrate::import_discovery::DiscoverySourceAssembler;",
+        ],
+        "unstable may reexport only reviewed presentation and source-assembly helpers"
+    );
 
     let facade = include_str!("lib.rs");
     assert_no_public_use_globs(facade);

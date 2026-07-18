@@ -3,14 +3,15 @@ use rue_compiler::unstable::MetricsSnapshot;
 #[cfg(test)]
 use rue_compiler::unstable::update_for_presentation;
 use rue_compiler::unstable::{
-    ImportDiscoveryRevision, ImportDiscoveryStatus, LowerMetrics, ParseMetrics,
-    PresentationRequest, PresentationStage, SemanticMetrics, semantic_metrics,
+    LowerMetrics, ParseMetrics, PresentationRequest, PresentationStage, SemanticMetrics,
+    semantic_metrics,
 };
 use rue_compiler::{
-    CompileError, CompileErrors, CompileOptions, CompileWarning, CompilerSession,
-    DependencyEnvelope, DependencyEnvelopeStatus, ErrorKind, RirView, SemanticView, SourceSnapshot,
-    SyntaxView,
+    CompileErrors, CompileOptions, CompileWarning, CompilerSession, DependencyEnvelope,
+    DependencyEnvelopeStatus, ImportDiscoveryStatus, ImportDiscoveryView, RirView, SemanticView,
+    SourceSnapshot, SyntaxView,
 };
+use rue_error::{CompileError, ErrorKind};
 use tracing::info_span;
 
 use crate::DiagnosticOutput;
@@ -218,7 +219,7 @@ pub(crate) struct EmitRequest<'a, 'diagnostics> {
     pub(crate) source_snapshot: &'a SourceSnapshot,
     pub(crate) session: &'a mut CompilerSession,
     pub(crate) stages: &'a [EmitStage],
-    pub(crate) discovery_revision: &'a ImportDiscoveryRevision,
+    pub(crate) discovery_revision: &'a ImportDiscoveryView,
     pub(crate) compile_options: CompileOptions,
     pub(crate) diagnostics: &'a DiagnosticOutput<'diagnostics>,
 }

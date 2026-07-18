@@ -11,6 +11,12 @@ use std::sync::Arc;
 
 use crate::canonical_semantic::CanonicalSemanticFailurePhase as SemanticFailurePhase;
 
+pub use crate::diagnostic::{
+    ColorChoice, DiagnosticFormatter, JsonDiagnostic, JsonDiagnosticFormatter, JsonSpan,
+    JsonSuggestion, MultiFileFormatter, MultiFileJsonFormatter, SourceInfo,
+};
+pub use crate::import_discovery::DiscoverySourceAssembler;
+
 /// Unstable human-readable compiler stages. These are projections of the
 /// canonical session artifacts, never alternate phase entry points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +62,80 @@ pub fn update_for_presentation(
 /// exposing its raw owner.
 pub fn query_merge(session: &mut crate::CompilerSession) -> Result<(), crate::CompileErrors> {
     session.merge().map(drop)
+}
+
+/// Execute the definition-binding query for benchmark instrumentation without
+/// exposing its compiler-owned records.
+pub fn prepare_stable_definitions(
+    session: &mut crate::CompilerSession,
+    options: &crate::CompileOptions,
+) -> Result<(), crate::CompileErrors> {
+    session.stable_definitions(options).map(drop)
+}
+
+/// Return the latest attempted discovery revision for in-tree source-loading
+/// diagnostics. Stable consumers query committed graph and diagnostic views.
+pub fn discovery_attempt(
+    session: &crate::CompilerSession,
+) -> Option<Arc<crate::ImportDiscoveryView>> {
+    session
+        .discovery_attempt_artifact()
+        .map(|artifact| Arc::new(crate::ImportDiscoveryView::new(artifact.clone())))
+}
+
+/// Return the last closed-valid discovery revision for diagnostics tooling.
+pub fn last_good_discovery(
+    session: &crate::CompilerSession,
+) -> Option<Arc<crate::ImportDiscoveryView>> {
+    session
+        .last_good_discovery_artifact()
+        .map(|artifact| Arc::new(crate::ImportDiscoveryView::new(artifact.clone())))
+}
+
+/// Return the closed-valid discovery revision selected by the session.
+pub fn committed_import_discovery(
+    session: &crate::CompilerSession,
+) -> Option<Arc<crate::ImportDiscoveryView>> {
+    session
+        .committed_import_discovery_artifact()
+        .map(|artifact| Arc::new(crate::ImportDiscoveryView::new(artifact.clone())))
+}
+
+/// Debug rendering of the import-graph query input retained by a discovery view.
+pub fn import_discovery_graph_input_debug(view: &crate::ImportDiscoveryView) -> Option<String> {
+    view.inner
+        .graph()
+        .map(|graph| format!("{:?}", graph.input()))
+}
+
+/// Debug rendering of accepted reads retained by a discovery view.
+pub fn import_discovery_accepted_reads_debug(view: &crate::ImportDiscoveryView) -> String {
+    format!("{:?}", view.inner.accepted_read_manifest())
+}
+
+/// Debug rendering of the observation ledger retained by a discovery view.
+pub fn import_discovery_observation_ledger_debug(view: &crate::ImportDiscoveryView) -> String {
+    format!("{:?}", view.inner.ledger())
+}
+
+/// Run the fresh backend tail used by the cold-versus-reused differential
+/// oracle. Stable callers use `CompilerSession::executable`.
+pub fn oracle_executable(
+    session: &mut crate::CompilerSession,
+    snapshot: &crate::SourceSnapshot,
+    options: &crate::CompileOptions,
+) -> crate::MultiErrorResult<crate::CompileOutput> {
+    session.oracle_executable(snapshot, options)
+}
+
+/// Produce an executable inside a compile span owned by the filesystem
+/// driver. Stable callers use `CompilerSession::executable`, which owns its
+/// tracing root.
+pub fn executable_in_compile_scope(
+    session: &mut crate::CompilerSession,
+    options: &crate::CompileOptions,
+) -> crate::MultiErrorResult<crate::CompileOutput> {
+    session.executable_in_compile_scope(options)
 }
 
 impl PresentationOutput {
@@ -881,69 +961,6 @@ fn definition_work_json(work: &crate::session::CompilerSessionWork, from: usize)
         "manifest_bindings_visited": records.iter().map(|record| record.issuance.manifest_bindings_visited).sum::<usize>(),
         "ids_issued": records.iter().map(|record| record.issuance.ids_issued).sum::<usize>(),
     })
-}
-
-/// Opaque import-discovery product retained by the session.
-#[derive(Debug, Clone)]
-pub struct ImportDiscoveryRevision {
-    pub(crate) inner: Arc<crate::session::ImportDiscoveryRevisionArtifact>,
-}
-
-/// Read-only status of an import-discovery product.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ImportDiscoveryStatus {
-    Open,
-    ClosedAttempted,
-    ClosedValid,
-}
-
-impl ImportDiscoveryRevision {
-    #[cfg(not(test))]
-    pub(crate) fn new(inner: Arc<crate::session::ImportDiscoveryRevisionArtifact>) -> Self {
-        Self { inner }
-    }
-
-    pub fn status(&self) -> ImportDiscoveryStatus {
-        match self.inner.status() {
-            crate::session::ImportDiscoveryRevisionStatus::Open => ImportDiscoveryStatus::Open,
-            crate::session::ImportDiscoveryRevisionStatus::ClosedAttempted => {
-                ImportDiscoveryStatus::ClosedAttempted
-            }
-            crate::session::ImportDiscoveryRevisionStatus::ClosedValid => {
-                ImportDiscoveryStatus::ClosedValid
-            }
-        }
-    }
-
-    pub fn source_revision(&self) -> &crate::SourceRevision {
-        self.inner.source_revision()
-    }
-
-    pub fn diagnostics(&self) -> &crate::CompileErrors {
-        self.inner.diagnostics()
-    }
-
-    pub fn diagnostic_snapshot(&self) -> Option<&Arc<crate::FrontendDiagnosticSnapshot>> {
-        self.inner.diagnostic_snapshot()
-    }
-
-    pub fn unstable_metrics(&self) -> ParseMetrics {
-        ParseMetrics::from_work(self.inner.parse_work())
-    }
-
-    pub fn graph_input_debug(&self) -> Option<String> {
-        self.inner
-            .graph()
-            .map(|graph| format!("{:?}", graph.input()))
-    }
-
-    pub fn accepted_reads_debug(&self) -> String {
-        format!("{:?}", self.inner.accepted_read_manifest())
-    }
-
-    pub fn observation_ledger_debug(&self) -> String {
-        format!("{:?}", self.inner.ledger())
-    }
 }
 
 /// Deliberate fault selection for the differential incremental oracle.

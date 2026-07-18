@@ -538,8 +538,7 @@ impl CompilerSession {
     /// Run the fresh backend tail for the exact published snapshot used by the
     /// cold-versus-reused differential oracle, including direct no-discovery
     /// sessions. Production filesystem callers use [`Self::executable`].
-    #[doc(hidden)]
-    pub fn oracle_executable(
+    pub(crate) fn oracle_executable(
         &mut self,
         snapshot: &SourceSnapshot,
         options: &CompileOptions,
@@ -567,7 +566,7 @@ impl CompilerSession {
     /// The filesystem driver uses this after import discovery so the exact
     /// discovery parse and the later query pipeline share one timing root.
     /// Other callers should use [`Self::executable`], which owns that root.
-    pub fn executable_in_compile_scope(
+    pub(crate) fn executable_in_compile_scope(
         &mut self,
         options: &CompileOptions,
     ) -> MultiErrorResult<CompileOutput> {

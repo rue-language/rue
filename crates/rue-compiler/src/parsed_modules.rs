@@ -4,11 +4,13 @@
 //! universe, while [`ParsedProgram`] provides the sole parsed-program
 //! representation used by semantic compilation.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 #[cfg(test)]
 use std::cell::Cell;
+#[cfg(test)]
+use std::collections::BTreeMap;
 
 #[cfg(test)]
 use lasso::Key;
@@ -81,9 +83,11 @@ struct ProvenancedAst {
 }
 
 /// Snapshot-local occurrence of one parsed definition candidate.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ParsedDefinitionOccurrence(u32);
 
+#[cfg(test)]
 impl ParsedDefinitionOccurrence {
     pub fn index(self) -> usize {
         self.0 as usize
@@ -93,17 +97,20 @@ impl ParsedDefinitionOccurrence {
 /// One presemantic definition candidate; duplicates remain distinct values.
 #[derive(Debug, Clone)]
 pub struct ParsedDefinitionCandidate {
+    #[cfg(test)]
     occurrence: ParsedDefinitionOccurrence,
     namespace: DefinitionNamespace,
     kind: DefinitionKind,
     visibility: Option<Visibility>,
     name: Arc<str>,
+    #[cfg(test)]
     symbol: ParsedSymbol,
     name_span: Span,
     declaration_span: Span,
 }
 
 impl ParsedDefinitionCandidate {
+    #[cfg(test)]
     pub fn occurrence(&self) -> ParsedDefinitionOccurrence {
         self.occurrence
     }
@@ -119,6 +126,7 @@ impl ParsedDefinitionCandidate {
     pub fn name(&self) -> &str {
         &self.name
     }
+    #[cfg(test)]
     pub fn symbol(&self) -> &ParsedSymbol {
         &self.symbol
     }
@@ -134,6 +142,7 @@ impl ParsedDefinitionCandidate {
 #[derive(Debug, Clone)]
 pub struct ParsedDefinitionIndex {
     candidates: Arc<[ParsedDefinitionCandidate]>,
+    #[cfg(test)]
     by_name: BTreeMap<(DefinitionNamespace, Arc<str>), Arc<[ParsedDefinitionOccurrence]>>,
 }
 
@@ -142,6 +151,7 @@ impl ParsedDefinitionIndex {
         &self.candidates
     }
 
+    #[cfg(test)]
     pub fn candidates_named(
         &self,
         namespace: DefinitionNamespace,
@@ -169,9 +179,6 @@ pub enum InvalidImportShape {
 }
 
 impl ParsedInvalidImport {
-    pub fn importer(&self) -> &ModuleId {
-        &self.importer
-    }
     pub fn span(&self) -> Span {
         self.span
     }
@@ -239,25 +246,22 @@ impl ParsedAstView {
         self.module.module_id()
     }
 
-    pub fn ast(&self) -> &Ast {
-        self.module.ast()
-    }
-
+    #[cfg(test)]
     pub fn items(&self) -> impl ExactSizeIterator<Item = ParsedItemView> + '_ {
-        (0..self.module.ast().items.len()).map(|index| ParsedItemView {
+        (0..self.module.ast().items.len()).map(|_| ParsedItemView {
             module: self.module.clone(),
-            index,
         })
     }
 }
 
-/// One parsed item paired with the module that owns its local symbols.
+/// Test-only proof that item traversal retains the exact parsed owner.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct ParsedItemView {
     module: Arc<ParsedModule>,
-    index: usize,
 }
 
+#[cfg(test)]
 impl ParsedItemView {
     pub fn module(&self) -> &Arc<ParsedModule> {
         &self.module
@@ -265,10 +269,6 @@ impl ParsedItemView {
 
     pub fn module_id(&self) -> &ModuleId {
         self.module.module_id()
-    }
-
-    pub fn item(&self) -> &Item {
-        &self.module.ast().items[self.index]
     }
 }
 
@@ -320,11 +320,6 @@ impl ParsedModule {
     }
     pub fn ast(&self) -> &Ast {
         &self.payload.ast.ast
-    }
-    /// Retain the immutable AST payload without projecting it into another
-    /// syntax representation.
-    pub fn shared_ast(&self) -> Arc<Ast> {
-        self.payload.ast.ast.clone()
     }
     pub fn definitions(&self) -> &ParsedDefinitionIndex {
         &self.payload.definitions
@@ -467,6 +462,7 @@ impl ParsedProgram {
     }
 
     /// Traverse module-qualified ASTs in canonical logical-module order.
+    #[cfg(test)]
     pub fn ast_views(&self) -> impl ExactSizeIterator<Item = ParsedAstView> + '_ {
         self.modules
             .iter()
@@ -1363,33 +1359,45 @@ fn build_definition_index(
                 right_name,
             ))
     });
+    #[cfg(test)]
     let mut by_name = BTreeMap::<_, Vec<_>>::new();
     let mut candidates = Vec::with_capacity(pending.len());
     for (index, (parts, symbol, name)) in pending.into_iter().enumerate() {
+        #[cfg(not(test))]
+        let _ = index;
+        #[cfg(not(test))]
+        let _ = symbol;
+        #[cfg(test)]
         let index = u32::try_from(index)
             .map_err(|_| invalid_input("parsed definition occurrence count exceeds u32"))?;
+        #[cfg(test)]
         let occurrence = ParsedDefinitionOccurrence(index);
+        #[cfg(test)]
         by_name
             .entry((parts.namespace, name.clone()))
             .or_default()
             .push(occurrence);
         candidates.push(ParsedDefinitionCandidate {
+            #[cfg(test)]
             occurrence,
             namespace: parts.namespace,
             kind: parts.kind,
             visibility: parts.visibility,
             name,
+            #[cfg(test)]
             symbol,
             name_span: parts.name.span,
             declaration_span: parts.declaration_span,
         });
     }
+    #[cfg(test)]
     let by_name = by_name
         .into_iter()
         .map(|(key, value)| (key, value.into()))
         .collect();
     Ok(ParsedDefinitionIndex {
         candidates: candidates.into(),
+        #[cfg(test)]
         by_name,
     })
 }

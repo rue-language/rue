@@ -5,11 +5,11 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use rue_compiler::unstable::ImportDiscoveryRevision;
+use rue_compiler::unstable::{DiscoverySourceAssembler, discovery_attempt};
 use rue_compiler::{
     AcceptedImportSource, AcceptedReadManifestEntry, CompileErrors, CompilerSession,
-    DependencyEnvelope, DiscoverySourceAssembler, FileId, FileMetadataFingerprint,
-    ImportDiscoveryContext, ImportObservation, ImportObservationLedger, ImportObservationStatus,
+    DependencyEnvelope, FileId, FileMetadataFingerprint, ImportDiscoveryContext,
+    ImportDiscoveryView, ImportObservation, ImportObservationLedger, ImportObservationStatus,
     PhysicalFileIdentity, SourceMetadata, SourceSnapshot,
 };
 
@@ -414,7 +414,7 @@ pub(crate) struct ImportDiscoveryResult {
     /// Canonical physical reads accepted while assembling `source_snapshot`.
     pub(crate) read_manifest: Arc<[AcceptedReadManifestEntry]>,
     /// Canonical import topology and diagnostics published by the compiler.
-    pub(crate) revision: Arc<ImportDiscoveryRevision>,
+    pub(crate) revision: Arc<ImportDiscoveryView>,
     pub(crate) session: CompilerSession,
 }
 
@@ -626,10 +626,8 @@ pub(crate) fn discover_and_load_imports(
     let closed = match staging.close_import_discovery(ledger) {
         Ok(closed) => closed,
         Err(_) => {
-            let attempted = staging
-                .discovery_attempt()
-                .expect("failed closure publishes an attempted import revision")
-                .clone();
+            let attempted = discovery_attempt(&staging)
+                .expect("failed closure publishes an attempted import revision");
             if DependencyEnvelope::from_closed_revision(&attempted).is_some() {
                 // Missing and ambiguous resolution are structurally closed and
                 // therefore have canonical topology for `--emit deps`. The

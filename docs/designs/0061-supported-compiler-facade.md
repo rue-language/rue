@@ -6,7 +6,7 @@ tags: [architecture, compiler, tooling, api, incremental]
 feature-flag: null
 created: 2026-07-17
 accepted: 2026-07-17
-implemented:
+implemented: 2026-07-18
 spec-sections: []
 superseded-by:
 relates: ["RUE-865", "RUE-866", "RUE-867", "RUE-868", "RUE-869", "RUE-439", "RUE-749", "ADR-0053", "ADR-0058"]
@@ -16,8 +16,8 @@ relates: ["RUE-865", "RUE-866", "RUE-867", "RUE-868", "RUE-869", "RUE-439", "RUE
 
 ## Status
 
-Accepted under RUE-865 on 2026-07-17. RUE-866 through RUE-869 implement the
-boundary. This is an API and ownership decision; it does not change Rue
+Accepted under RUE-865 on 2026-07-17 and implemented by RUE-866 through RUE-869
+on 2026-07-18. This is an API and ownership decision; it does not change Rue
 language semantics.
 
 ## Summary
@@ -119,8 +119,9 @@ operations:
 
 views/results:
   CompileOutput
-  DiagnosticView, DiagnosticSetView, SourceLocationView, SuggestionView
-  TokenView, SyntaxView, DefinitionView, DependencyGraphView
+  CompileErrors, CompileWarning, FrontendDiagnosticSnapshot, DiagnosticStage
+  ImportDiscoveryView, DependencyEnvelope, CanonicalImportGraphOutput
+  TokenView, SyntaxView, SourceLocationView
   RirView, SemanticView, FunctionView, CfgView
   PresentationRequest/PresentationOutput only in the unstable tooling surface
 ```
@@ -225,9 +226,10 @@ of the supported API.
 | Disposition | Exact current exports | Final class / reason |
 | --- | --- | --- |
 | Keep | `CompileOutput` | Stable final one-shot result, narrowed so its fields use stable diagnostic views/owned output. Current `source_stats` and `work` fields move to the unstable metrics result. |
-| View-wrap | `FrontendDiagnosticSnapshot`, `FrontendDiagnosticStage`, `CompileError`, `CompileErrors`, `CompileWarning`, `Diagnostic`, `ErrorCode`, `ErrorKind`, `WarningKind`, `Suggestion`, `Applicability`, `Span`, `CompileResult`, `MultiErrorResult` | `DiagnosticSetView`, `DiagnosticView`, `SuggestionView`, checked source locations, and stable result aliases over an opaque failure. Raw diagnostic enums remain owned by `rue-error` for direct users. |
+| Keep/narrow | `FrontendDiagnosticSnapshot`, `DiagnosticStage`, `CompileErrors`, `CompileWarning`, `MultiErrorResult` | Stable diagnostic snapshots and aggregate result types remain available. Granular diagnostic records are named through their direct `rue-error` owner rather than reexported by the compiler facade. |
+| Move direct owner | `CompileError`, `Diagnostic`, `ErrorCode`, `ErrorKind`, `WarningKind`, `Suggestion`, `Applicability`, `CompileResult`, `Span` | Raw diagnostic and span records remain available from `rue-error` or `rue-span` for direct users; checked compiler artifact locations use `SourceLocationView`. |
 | Keep | `VERSION` | Compiler version. Machine schemas carry their own independent versions. |
-| View-wrap | `DependencyEnvelope`, `DependencyEnvelopeStatus`, `DependencyTopology`, `DependencyTopologyRecord`, `DependencyResolutionOutcome` | Stable dependency graph/status view used by `--emit deps` and machine tooling. |
+| Keep/narrow | `ImportDiscoveryView`, `ImportDiscoveryStatus`, `DependencyEnvelope`, `DependencyEnvelopeStatus`, `DependencyTopology`, `DependencyTopologyRecord`, `DependencyResolutionOutcome` | Stable owner-retaining discovery status and dependency graph/status outputs used by the source loader, `--emit deps`, and machine tooling. |
 | Move internal | `DependencyAcceptedRead`, `DependencyContext`, `DependencyObservation`, `DependencyObservationOutcome`, `DependencyRequest` | Closure evidence and query request records are engine/source-loader implementation. |
 | View-wrap | `CanonicalImportGraphOutput`, `CanonicalImportGraph`, `CanonicalImportCycle`, `CanonicalImportGraphProblem`, `CanonicalImportGraphValidation`, `CanonicalImportRecord`, `CanonicalImportResolution`, `ImportDirective`, `ImportDirectives` | One immutable dependency/import graph view. Validation and resolution records stay behind the owner. |
 | Move internal | `ResolvedCodegenRevision`, `ResolvedLinkRevision`, `ResolvedProgramRevision` | Query publication/revision joins are not artifact facts for callers. |
@@ -238,10 +240,8 @@ of the supported API.
 | View-wrap | `CanonicalRirOutput`, `CanonicalSemanticOutput`, `FunctionWithCfg` | Private owners publish `RirView`, `SemanticView`, `FunctionView`, and `CfgView`; no raw phase storage leaks. |
 | Move internal/direct owner | `SourceStats` | The explicitly unstable metrics owner replaces this root export; metrics are not a language/tooling compatibility contract. |
 | Move internal | `CanonicalMergeWork`, `CanonicalRirWork`, `CanonicalSemanticFailurePhase`, `CanonicalSemanticFailureWork`, `CanonicalSemanticWork`, `PipelineWork` | Work/failure-path bookkeeping is exposed only through the unstable metrics view where needed. |
-| View-wrap | `DefinitionId`, `DefinitionKind`, `DefinitionNameKey`, `DefinitionNamespace`, `DefinitionOccurrenceId`, `DefinitionRecord`, `DefinitionSnapshot`, `ModuleDefinition` | Opaque definition IDs and immutable definition views. Parsed occurrence identity remains owner-bound. |
-| Move internal | `DefinitionShard`, `DefinitionShardWork` | Storage partitioning and reuse bookkeeping. |
-| View-wrap | `BoundDefinitionId`, `BoundDefinitionRecord`, `BoundDefinitionSet`, `StableDefinitionKey`, `StableDefinitionKind`, `StableDefinitionNamespace`, `StableNamedTypeKey` | Stable semantic identity appears only through opaque IDs and definition views; callers cannot issue or authorize IDs. |
-| Move internal | `SnapshotBoundDefinitionId`, `BoundDefinitionWork` | Issuer-scoped authorization and work records. |
+| Move internal | `DefinitionId`, `DefinitionKind`, `DefinitionNameKey`, `DefinitionNamespace`, `DefinitionOccurrenceId`, `DefinitionRecord`, `DefinitionSnapshot`, `ModuleDefinition`, `DefinitionShard`, `DefinitionShardWork` | No current external consumer uses the raw definition owner. A future navigation consumer must request an owner-retaining definition view rather than reopening these parser records. |
+| Move internal | `BoundDefinitionId`, `BoundDefinitionRecord`, `BoundDefinitionSet`, `StableDefinitionKey`, `StableDefinitionKind`, `StableDefinitionNamespace`, `StableNamedTypeKey`, `SnapshotBoundDefinitionId`, `BoundDefinitionWork` | Definition binding, issuer-scoped authorization, and reuse bookkeeping remain session-owned. A future stable definition identity is introduced only with its immutable view. |
 
 #### Query, invalidation, and durable implementation
 
@@ -277,11 +277,11 @@ operations have these dispositions:
 | --- | --- | --- |
 | Keep | `new`, `update`, `executable` | Stable session lifecycle and final-output query. |
 | Keep | `import_discovery_plan`, `stage_import_discovery`, `close_import_discovery`, `import_graph` | Host-driven import closure remains canonical session orchestration; plans, requests, status, and graphs use immutable views. |
-| View-wrap | `published`, `committed_import_graph`, `rir`, `semantic`, `stable_definitions` | Stable artifact queries return private owners exposing syntax/dependency/RIR/semantic/definition views. |
+| View-wrap | `published`, `committed_import_graph`, `rir`, `semantic` | Stable artifact queries return private owners exposing syntax/dependency/RIR/semantic views. |
 | View-wrap | `latest_diagnostics`, `latest_successful_diagnostics`, `last_good_semantic_diagnostics`, `most_recent_diagnostics_for`, `diagnostics_for`, `import_diagnostics` | Return stable diagnostic views with explicit current/last-good provenance. |
 | Move internal/direct owner | `update_for_presentation`, `work` | Presentation selection and metrics move to explicit unstable requests/snapshots. |
 | Move internal/direct owner | `oracle_executable`, `inject_stale_query_for_oracle` | Crate-private test support preserves differential validation without making fault injection or oracle knobs a supported compiler API. |
-| Move internal | `discovery_attempt`, `last_good_discovery`, `committed_import_discovery`, `merge`, `semantic_dependency_inputs`, `semantic_invalidation_plan`, `executable_in_compile_scope` | Query attempts, canonical merge, durable reuse decisions, invalidation, and scoped orchestration stay session-owned. |
+| Move internal | `discovery_attempt`, `last_good_discovery`, `committed_import_discovery`, `stable_definitions`, `merge`, `semantic_dependency_inputs`, `semantic_invalidation_plan`, `executable_in_compile_scope` | Query attempts, definition binding, canonical merge, durable reuse decisions, invalidation, and scoped orchestration stay session-owned. Benchmarks may trigger them through record-free unstable adapters. |
 
 `CompilerSessionUpdate` likewise keeps only success/diagnostic/view access needed
 to publish a source request. Raw parse work and invalidation accessors move to
@@ -333,10 +333,13 @@ staged rather than silently broken:
   syntax/token/RIR/semantic/type views, migrate CLI/fuzz/oracle users, and
   remove lexer, parser AST, RIR, interner, raw symbol, raw pool, and backend
   presentation exports from their post-M8 owners.
-- **RUE-869:** replace the line-count guard with a mechanically checked semantic
-  inventory of every root export and public session signature. The inventory
-  records owner, class, stability, and approved consumer; CI rejects unreviewed
-  additions and forbidden implementation categories.
+- **RUE-869:** replaced the line-count guard with the mechanically checked
+  `supported_api_inventory.rs` inventory of every root export and public
+  session signature. Each line records owner, class, stability, approved
+  consumer, symbol, and canonical signature; CI rejects unreviewed additions,
+  aliases, globs, and forbidden implementation categories. The maintainer
+  workflow for extending the facade is documented in
+  `docs/process/compiler-facade.md`.
 
 RUE-866 and RUE-867 may proceed after this ADR on their existing prerequisites.
 RUE-868 explicitly waits for RUE-860 and performs the source-boundary recheck

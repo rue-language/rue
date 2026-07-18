@@ -47,9 +47,10 @@ mod generator;
 mod model_gaps;
 mod trap;
 
+use rue_compiler::unstable::DiscoverySourceAssembler;
 use rue_compiler::{
-    AcceptedImportSource, CompilerSession, DiscoverySourceAssembler, FileMetadataFingerprint,
-    ImportDiscoveryContext, ImportObservation, ImportObservationLedger, PhysicalFileIdentity,
+    AcceptedImportSource, CompilerSession, FileMetadataFingerprint, ImportDiscoveryContext,
+    ImportObservation, ImportObservationLedger, PhysicalFileIdentity,
 };
 use rue_error::{PreviewFeature, PreviewFeatures};
 use rue_oracle::{

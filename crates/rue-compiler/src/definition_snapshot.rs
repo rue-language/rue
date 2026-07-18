@@ -70,18 +70,21 @@ impl DefinitionNameKey {
 
     /// The durable module containing this definition.
     #[inline]
+    #[cfg(test)]
     pub fn module(&self) -> &ModuleId {
         &self.module
     }
 
     /// The name-resolution namespace containing this candidate.
     #[inline]
+    #[cfg(test)]
     pub fn namespace(&self) -> DefinitionNamespace {
         self.namespace
     }
 
     /// The resolved, owned source name.
     #[inline]
+    #[cfg(test)]
     pub fn name(&self) -> &str {
         self.name.as_ref()
     }
@@ -101,20 +104,6 @@ pub struct DefinitionOccurrenceId {
 
 /// Compatibility name; occurrence IDs are always snapshot-local.
 pub type DefinitionId = DefinitionOccurrenceId;
-
-impl DefinitionOccurrenceId {
-    /// The issuing snapshot's logical-module index.
-    #[inline]
-    pub fn module_index(self) -> usize {
-        self.module_index
-    }
-
-    /// The record's source-ordered index within its module.
-    #[inline]
-    pub fn definition_index(self) -> usize {
-        self.definition_index
-    }
-}
 
 /// One definition candidate paired with its current request's source locator.
 ///
@@ -141,6 +130,7 @@ impl DefinitionRecord {
 
     /// The durable name-binding key shared by colliding candidates.
     #[inline]
+    #[cfg(test)]
     pub fn name_key(&self) -> &DefinitionNameKey {
         &self.name_key
     }
@@ -158,18 +148,6 @@ impl DefinitionRecord {
     #[inline]
     pub fn visibility(&self) -> Option<Visibility> {
         self.visibility
-    }
-
-    /// The file ID assigned to this module in the current request.
-    #[inline]
-    pub fn file_id(&self) -> FileId {
-        self.file_id
-    }
-
-    /// The current request's span for the definition name.
-    #[inline]
-    pub fn name_span(&self) -> Span {
-        self.name_span
     }
 
     /// The current request's span for the complete declaration.
@@ -215,15 +193,6 @@ struct DefinitionShardRecord {
 }
 
 impl DefinitionShard {
-    pub fn key(&self) -> &ModuleId {
-        &self.key
-    }
-    pub fn len(&self) -> usize {
-        self.records.len()
-    }
-    pub fn is_empty(&self) -> bool {
-        self.records.is_empty()
-    }
     fn matches(&self, module: &crate::parsed_modules::ParsedModule) -> bool {
         self.file_id == module.file_id()
             && self.records.len() == module.definitions().candidates().len()
@@ -245,30 +214,21 @@ impl DefinitionShard {
 impl ModuleDefinition {
     /// The durable logical identity of this module.
     #[inline]
+    #[cfg(test)]
     pub fn key(&self) -> &ModuleId {
         &self.key
     }
 
     /// The file ID assigned to this module in the current request.
     #[inline]
+    #[cfg(test)]
     pub fn file_id(&self) -> FileId {
         self.file_id
     }
 
-    /// Top-level definitions in deterministic source-position order.
-    #[inline]
-    pub fn definitions(&self) -> &[DefinitionRecord] {
-        &self.definitions
-    }
-
-    /// The number of top-level definitions in this module.
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.definitions.len()
-    }
-
     /// Whether this module contains no top-level definitions.
     #[inline]
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.definitions.is_empty()
     }
@@ -289,9 +249,9 @@ impl ModuleDefinition {
 #[derive(Debug, Clone)]
 pub struct DefinitionSnapshot {
     source_snapshot: SourceSnapshot,
+    #[cfg(test)]
     root_module: ModuleId,
     modules: Vec<ModuleDefinition>,
-    definition_count: usize,
     definitions_by_name: HashMap<DefinitionNameKey, Vec<DefinitionId>>,
     shards: Arc<[Arc<DefinitionShard>]>,
 }
@@ -301,6 +261,7 @@ impl DefinitionSnapshot {
     ///
     /// Names are already owned values in each module's definition index; this
     /// path performs no interner lookup, AST traversal, or source-byte hashing.
+    #[cfg(test)]
     pub fn from_parsed_modules(
         program: &crate::parsed_modules::ParsedProgram,
     ) -> CompileResult<Self> {
@@ -403,9 +364,9 @@ impl DefinitionSnapshot {
         Ok((
             Self {
                 source_snapshot,
+                #[cfg(test)]
                 root_module: program.root().clone(),
                 modules,
-                definition_count,
                 definitions_by_name,
                 shards: shards.into(),
             },
@@ -421,27 +382,25 @@ impl DefinitionSnapshot {
 
     /// The explicitly designated root module identity.
     #[inline]
+    #[cfg(test)]
     pub fn root_module(&self) -> &ModuleId {
         &self.root_module
     }
 
-    /// The explicitly designated root module identity.
-    #[inline]
-    pub fn root_key(&self) -> &ModuleId {
-        self.root_module()
-    }
-
     /// All modules in canonical logical-path order, including empty modules.
     #[inline]
+    #[cfg(test)]
     pub fn modules(&self) -> &[ModuleDefinition] {
         &self.modules
     }
 
+    #[cfg(test)]
     pub fn shards(&self) -> &[Arc<DefinitionShard>] {
         &self.shards
     }
 
     /// Find a module by its durable identity.
+    #[cfg(test)]
     pub fn module(&self, id: &ModuleId) -> Option<&ModuleDefinition> {
         self.modules
             .binary_search_by(|module| module.key.cmp(id))
@@ -450,6 +409,7 @@ impl DefinitionSnapshot {
     }
 
     /// Iterate all definitions in module-path then source-position order.
+    #[cfg(test)]
     pub fn definitions(&self) -> impl DoubleEndedIterator<Item = &DefinitionRecord> + '_ {
         self.modules
             .iter()
@@ -490,26 +450,11 @@ impl DefinitionSnapshot {
             })
     }
 
-    /// The total number of top-level definitions in all modules.
-    #[inline]
-    pub fn definition_count(&self) -> usize {
-        self.definition_count
-    }
-
     /// The number of modules, including empty modules.
     #[inline]
+    #[cfg(test)]
     pub fn module_count(&self) -> usize {
         self.modules.len()
-    }
-
-    /// Whether the snapshot contains no modules.
-    ///
-    /// Valid source metadata is nonempty, so successfully built snapshots are
-    /// never empty. This method is provided as the conventional companion to
-    /// [`Self::module_count`].
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.modules.is_empty()
     }
 }
 

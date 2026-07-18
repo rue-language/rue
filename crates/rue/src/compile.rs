@@ -1,4 +1,4 @@
-use rue_compiler::unstable::OneShotMetrics;
+use rue_compiler::unstable::{OneShotMetrics, executable_in_compile_scope};
 use rue_compiler::{CompileErrors, CompileOptions, CompileWarning, CompilerSession};
 
 use crate::output::{PublicationDestination, PublishRequest, publish_executable};
@@ -30,9 +30,7 @@ pub(crate) struct PublicationAttempt {
 
 /// Execute the canonical compiler session through linking.
 pub(crate) fn execute(request: CompileRequest<'_>) -> Result<LinkedExecutable, CompileErrors> {
-    let output = request
-        .session
-        .executable_in_compile_scope(&request.options)?;
+    let output = executable_in_compile_scope(request.session, &request.options)?;
     let metrics = output.unstable_metrics();
     Ok(LinkedExecutable {
         target: request.options.target,

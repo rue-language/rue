@@ -7,15 +7,14 @@ use std::{collections::HashMap, env, process, sync::Arc, time::Instant};
 #[cfg(test)]
 use rue_air::{FrozenTypeInternPool, TypeKind};
 use rue_compiler::unstable::{
-    DependencyBaseline, DependencyIncompleteReason, DependencySurface, FullInvalidationReason,
-    InvalidationMetrics, InvalidationScope, MetricsSnapshot, ParseMetrics, query_merge,
-    semantic_parity_snapshot,
+    DependencyBaseline, DependencyIncompleteReason, DependencySurface, DiscoverySourceAssembler,
+    FullInvalidationReason, InvalidationMetrics, InvalidationScope, MetricsSnapshot, ParseMetrics,
+    prepare_stable_definitions, query_merge, semantic_parity_snapshot,
 };
 use rue_compiler::{
-    AcceptedReadManifestEntry, CompileOptions, CompilerSession, DiscoverySourceAssembler,
-    FileMetadataFingerprint, FrontendDiagnosticSnapshot, ImportDiscoveryContext,
-    ImportObservationLedger, OptLevel, PhysicalFileIdentity, SemanticView, SourceMetadata,
-    SourceSnapshot,
+    AcceptedReadManifestEntry, CompileOptions, CompilerSession, FileMetadataFingerprint,
+    FrontendDiagnosticSnapshot, ImportDiscoveryContext, ImportObservationLedger, OptLevel,
+    PhysicalFileIdentity, SemanticView, SourceMetadata, SourceSnapshot,
 };
 use rue_span::FileId;
 use serde_json::{Value, json};
@@ -1072,14 +1071,14 @@ fn run_iteration(fixture: &Fixture) -> Vec<Value> {
         "stable_definitions_cold",
         measure(&mut stable, |session| {
             let parse = session.update(&fixture.base).unstable_metrics();
-            session.stable_definitions(&options).unwrap();
+            prepare_stable_definitions(session, &options).unwrap();
             parse
         }),
     ));
     scenarios.push(named(
         "stable_definitions_reuse",
         measure(&mut stable, |session| {
-            session.stable_definitions(&options).unwrap();
+            prepare_stable_definitions(session, &options).unwrap();
             ParseMetrics::default()
         }),
     ));
