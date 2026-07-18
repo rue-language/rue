@@ -1,0 +1,80 @@
+// Complete document templates. The `article` and `reference` choices share a
+// canonical shell and differ only in body affordances, avoiding duplicate HTML.
+const std = @import("std");
+const escape = @import("escape.rue");
+const model = @import("model.rue");
+const navigation = @import("navigation.rue");
+const render = @import("render.rue");
+const toc = @import("toc.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn append_meta(borrow site: model.Site, borrow page: model.Page, inout out: StrBuf) {
+    out.push_str("<!doctype html>\n<html lang=\"");
+    let language = site.strings.copy(site.language_id);
+    if language.len() == 0 { out.push_str("en"); } else { escape.html_attribute(borrow language, inout out); }
+    out.push_str("\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>");
+    let title = site.strings.copy(page.title_id);
+    escape.html_text(borrow title, inout out);
+    let site_title = site.strings.copy(site.title_id);
+    if site_title.len() > 0 { out.push_str(" · "); escape.html_text(borrow site_title, inout out); }
+    out.push_str("</title>\n");
+    if page.description_id != model.NONE() {
+        out.push_str("<meta name=\"description\" content=\"");
+        let description = site.strings.copy(page.description_id);
+        escape.html_attribute(borrow description, inout out);
+        out.push_str("\">\n");
+    }
+    out.push_str("<link rel=\"stylesheet\" href=\"mosaic.css\">\n</head>\n<body>\n<a class=\"skip\" href=\"#content\">Skip to content</a>\n");
+}
+
+fn append_header(borrow site: model.Site, page_index: u64, inout out: StrBuf) {
+    out.push_str("<header class=\"site-header\"><a class=\"brand\" href=\"");
+    let root = site.pages.get_or(0, model.empty_page());
+    let root_path = site.strings.copy(root.output_id);
+    escape.url_attribute(borrow root_path, inout out);
+    out.push_str("\">");
+    let title = site.strings.copy(site.title_id);
+    escape.html_text(borrow title, inout out);
+    out.push_str("</a>");
+    let nav = navigation.primary(borrow site, page_index);
+    out.push_str(nav);
+    out.push_str("</header>\n");
+}
+
+fn append_footer(borrow site: model.Site, page_index: u64, inout out: StrBuf) {
+    let pager = navigation.pager(borrow site, page_index);
+    out.push_str(pager);
+    out.push_str("<footer><p>Built deterministically by Mosaic");
+    let author = site.strings.copy(site.author_id);
+    if author.len() > 0 { out.push_str(" for "); escape.html_text(borrow author, inout out); }
+    out.push_str(".</p></footer>\n</body>\n</html>\n");
+}
+
+pub fn page(borrow site: model.Site, page_index: u64) -> StrBuf {
+    let page_model = site.pages.get_or(page_index, model.empty_page());
+    let mut out = StrBuf.new();
+    append_meta(borrow site, borrow page_model, inout out);
+    append_header(borrow site, page_index, inout out);
+    out.push_str("<main id=\"content\">");
+    let template_name = site.strings.copy(page_model.template_id);
+    let reference: StrBuf = "reference";
+    if StrBuf.equals_borrowed(borrow template_name, borrow reference) {
+        out.push_str("<div class=\"reference-layout\">");
+        let contents = toc.render(borrow site, page_index);
+        out.push_str(contents);
+        out.push_str("<article>");
+        let content = render.body(borrow site, page_index);
+        out.push_str(content);
+        out.push_str("</article></div>");
+    } else {
+        out.push_str("<article>");
+        let content = render.body(borrow site, page_index);
+        out.push_str(content);
+        out.push_str("</article>");
+        let contents = toc.render(borrow site, page_index);
+        out.push_str(contents);
+    }
+    out.push_str("</main>\n");
+    append_footer(borrow site, page_index, inout out);
+    out
+}

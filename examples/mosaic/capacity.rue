@@ -1,0 +1,105 @@
+// Approximate live arena capacity and POD storage. This does not claim allocator
+// overhead; it is a stable compiler-workload proxy based on element capacities.
+const std = @import("std");
+const model = @import("model.rue");
+
+pub struct Capacity {
+    page_slots: u64,
+    block_slots: u64,
+    inline_slots: u64,
+    anchor_slots: u64,
+    link_slots: u64,
+    diagnostic_slots: u64,
+    navigation_slots: u64,
+    used_slots: u64,
+    reserved_slots: u64,
+    estimated_bytes: u64,
+}
+
+pub fn collect(borrow site: model.Site) -> Capacity {
+    let page_slots = site.pages.capacity();
+    let block_slots = site.blocks.capacity();
+    let inline_slots = site.inlines.capacity();
+    let anchor_slots = site.anchors.capacity();
+    let link_slots = site.links.capacity();
+    let diagnostic_slots = site.diagnostics.capacity();
+    let navigation_slots = site.navigation.capacity();
+    let used_slots = site.pages.len() +
+        site.blocks.len() +
+        site.inlines.len() +
+        site.anchors.len() +
+        site.links.len() +
+        site.diagnostics.len() +
+        site.navigation.len();
+    let reserved_slots = page_slots +
+        block_slots +
+        inline_slots +
+        anchor_slots +
+        link_slots +
+        diagnostic_slots +
+        navigation_slots;
+    let page_size: u64 = @intCast(@size_of(model.Page));
+    let block_size: u64 = @intCast(@size_of(model.Block));
+    let inline_size: u64 = @intCast(@size_of(model.Inline));
+    let anchor_size: u64 = @intCast(@size_of(model.Anchor));
+    let link_size: u64 = @intCast(@size_of(model.Link));
+    let diagnostic_size: u64 = @intCast(@size_of(model.Diagnostic));
+    let integer_size: u64 = @intCast(@size_of(u64));
+    let estimated_bytes = page_slots * page_size +
+        block_slots * block_size +
+        inline_slots * inline_size +
+        anchor_slots * anchor_size +
+        link_slots * link_size +
+        diagnostic_slots * diagnostic_size +
+        navigation_slots * integer_size;
+    Capacity {
+        page_slots: page_slots,
+        block_slots: block_slots,
+        inline_slots: inline_slots,
+        anchor_slots: anchor_slots,
+        link_slots: link_slots,
+        diagnostic_slots: diagnostic_slots,
+        navigation_slots: navigation_slots,
+        used_slots: used_slots,
+        reserved_slots: reserved_slots,
+        estimated_bytes: estimated_bytes,
+    }
+}
+
+pub fn utilization_percent(borrow value: Capacity) -> u64 {
+    if value.reserved_slots == 0 {
+        100
+    } else {
+        (value.used_slots * 100) / value.reserved_slots
+    }
+}
+
+pub fn append(borrow value: Capacity, inout out: std.strbuf.StrBuf) {
+    out.push_str("arena_used_slots=");
+    out.push_str(@to_string(value.used_slots));
+    out.push(10);
+    out.push_str("arena_reserved_slots=");
+    out.push_str(@to_string(value.reserved_slots));
+    out.push(10);
+    out.push_str("arena_utilization_percent=");
+    out.push_str(@to_string(utilization_percent(borrow value)));
+    out.push(10);
+    out.push_str("arena_estimated_bytes=");
+    out.push_str(@to_string(value.estimated_bytes));
+    out.push(10);
+    out.push_str("page_capacity=");
+    out.push_str(@to_string(value.page_slots));
+    out.push(10);
+    out.push_str("block_capacity=");
+    out.push_str(@to_string(value.block_slots));
+    out.push(10);
+    out.push_str("inline_capacity=");
+    out.push_str(@to_string(value.inline_slots));
+    out.push(10);
+    out.push_str("anchor_capacity=");
+    out.push_str(@to_string(value.anchor_slots));
+    out.push(10);
+    out.push_str("link_capacity=");
+    out.push_str(@to_string(value.link_slots));
+    out.push(10);
+}

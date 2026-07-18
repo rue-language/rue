@@ -1,0 +1,210 @@
+# RUE-994: maintained multi-module static-site generator written in Rue.
+[section]
+id = "cli.examples_mosaic"
+name = "Mosaic static-site generator written in Rue"
+description = "exercise manifests, front matter, block/inline markup, graph validation, deterministic rendering, filesystem output, audits, and scaling"
+
+[[case]]
+name = "mosaic_builds_site_and_shared_artifacts"
+description = "the real build path validates and writes HTML, CSS, JSON, XML, and robots output"
+source_path = "examples/mosaic/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  { path = "site.mosaic", source = "site.title = Test Site\nsite.base = https://example.test/docs\nsite.language = en\nsite.author = Rue\nsite.template = reference\npage = index.md | index.html | Home | 0\n" },
+  { path = "index.md", source = "---\ndescription: Build fixture\n---\n# Home\n\nWelcome to **Mosaic**.\n\n## Details\n\n- safe\n- deterministic\n" },
+]
+program_args = ["build", "site.mosaic"]
+exit_code = 0
+stdout = "built pages=1 outputs=5\n"
+
+[[case]]
+name = "mosaic_checks_cross_page_and_anchor_graph"
+description = "check mode resolves a reachable two-page cycle without filesystem writes"
+source_path = "examples/mosaic/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  { path = "site.mosaic", source = "site.title = Linked\nsite.template = article\npage = index.md | index.html | Home | 0\npage = guide.md | guide.html | Guide | 1\n" },
+  { path = "index.md", source = "---\ndescription: Root\n---\n# Home\n\nRead the [guide](guide.html#start).\n" },
+  { path = "guide.md", source = "---\ndescription: Guide\n---\n# Guide\n\n## Start {#start}\n\nReturn [home](index.html).\n" },
+]
+program_args = ["check", "site.mosaic"]
+exit_code = 0
+stdout = "checked pages=2 links=2\n"
+
+[[case]]
+name = "mosaic_builds_page_without_table_of_contents"
+description = "the output audit accepts a valid page whose only heading is the required h1"
+source_path = "examples/mosaic/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  { path = "site.mosaic", source = "site.title = Minimal\nsite.template = article\npage = index.md | index.html | Home | 0\n" },
+  { path = "index.md", source = "---\ndescription: Minimal page\n---\n# Home\n\nA short page with no table of contents.\n" },
+]
+program_args = ["build", "site.mosaic"]
+exit_code = 0
+stdout = "built pages=1 outputs=5\n"
+
+[[case]]
+name = "mosaic_dumps_parsed_arenas"
+description = "dump exposes blocks, styled inlines, and resolved link identities"
+source_path = "examples/mosaic/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  { path = "site.mosaic", source = "site.title = Dump\nsite.template = article\npage = index.md | index.html | Home | 0\n" },
+  { path = "index.md", source = "---\ndescription: Dump\n---\n# Home\n\n## API\n\nUse *small* and **strong** `code`; [stay](#api).\n" },
+]
+program_args = ["dump", "site.mosaic"]
+exit_code = 0
+stdout_contains = ["site title=\"Dump\" pages=1", "block[", "heading line=", "inline[", "emphasis", "strong", "target=\"#api\" resolved=0"]
+
+[[case]]
+name = "mosaic_reports_deterministic_stats"
+description = "stats derives arena, graph, render, capacity, coverage, and fingerprint evidence"
+source_path = "examples/mosaic/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  { path = "site.mosaic", source = "site.title = Stats\nsite.template = reference\npage = index.md | index.html | Home | 0\n" },
+  { path = "index.md", source = "---\ndescription: Stats\n---\n# Home\n\n## Table\n\n| key | value |\n| --- | --- |\n| one | two |\n" },
+]
+program_args = ["stats", "site.mosaic"]
+exit_code = 0
+stdout_contains = ["pages=1", "tables=1", "diagnostics=0", "pooled_strings=", "html_fingerprint=", "model_fingerprint=", "health_score="]
+
+[[case]]
+name = "mosaic_runs_scaling_and_selftest_invariants"
+description = "stress parses and renders 200 linked pages and checks expected counts and focused subsystem tests"
+source_path = "examples/mosaic/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_args = ["stress"]
+exit_code = 0
+stdout = "stress pages=200 blocks=2200 links=200 anchors=400\nexpected_links=200\ndeterministic=true\nvalid=true\nselftests=30 failures=0\n"
+
+[[case]]
+name = "mosaic_scales_generated_workload_fourfold"
+description = "the 4x tier parses and renders 400 linked pages with proportional model counts"
+source_path = "examples/mosaic/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_args = ["stress4"]
+exit_code = 0
+stdout = "stress pages=400 blocks=4400 links=400 anchors=800\nexpected_links=400\ndeterministic=true\nvalid=true\nselftests=30 failures=0\n"
+
+[[case]]
+name = "mosaic_prints_reference"
+description = "help documents commands, formats, invariants, standard-library exercise, and limits"
+source_path = "examples/mosaic/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_args = ["help"]
+exit_code = 0
+stdout_contains = ["usage:", "manifest grammar:", "markup:", "architecture and phase ownership:", "standard-library exercise:", "intentional v1 limits:"]
+
+[[case]]
+name = "mosaic_rejects_malformed_manifest"
+description = "a declaration without equals is a stable manifest diagnostic"
+source_path = "examples/mosaic/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "site.mosaic", source = "site.title Broken\n" }]
+program_args = ["check", "site.mosaic"]
+exit_code = 1
+stdout_contains = ["mosaic[manifest] site.mosaic:1: expected key = value", "at least one page is required"]
+
+[[case]]
+name = "mosaic_rejects_missing_page_metadata"
+description = "a published document needs a title from manifest or front matter"
+source_path = "examples/mosaic/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  { path = "site.mosaic", source = "site.title = Missing\nsite.template = article\npage = page.md | page.html | | 0\n" },
+  { path = "page.md", source = "# Heading\n\nBody text.\n" },
+]
+program_args = ["check", "site.mosaic"]
+exit_code = 1
+stdout_contains = ["mosaic[metadata] page.md: page title is required"]
+
+[[case]]
+name = "mosaic_rejects_unterminated_fence"
+description = "canonical parser and independent source oracle both reject an unterminated code fence"
+source_path = "examples/mosaic/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  { path = "site.mosaic", source = "site.title = Fence\nsite.template = article\npage = page.md | page.html | Page | 0\n" },
+  { path = "page.md", source = "---\ndescription: Fence\n---\n# Page\n\n```rue\nfn main() {}\n" },
+]
+program_args = ["check", "site.mosaic"]
+exit_code = 1
+stdout_contains = ["unterminated fenced code block", "source oracle found an unterminated fence"]
+
+[[case]]
+name = "mosaic_rejects_broken_page_link"
+description = "graph validation rejects a local target absent from the manifest"
+source_path = "examples/mosaic/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  { path = "site.mosaic", source = "site.title = Broken Link\nsite.template = article\npage = page.md | page.html | Page | 0\n" },
+  { path = "page.md", source = "---\ndescription: Broken\n---\n# Page\n\nGo [missing](absent.html).\n" },
+]
+program_args = ["check", "site.mosaic"]
+exit_code = 1
+stdout_contains = ["mosaic[broken-link] page.md", "link target page does not exist"]
+
+[[case]]
+name = "mosaic_rejects_broken_anchor_link"
+description = "a page may exist while its requested fragment does not"
+source_path = "examples/mosaic/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  { path = "site.mosaic", source = "site.title = Broken Anchor\nsite.template = article\npage = page.md | page.html | Page | 0\n" },
+  { path = "page.md", source = "---\ndescription: Broken\n---\n# Page\n\nGo [missing](#absent).\n" },
+]
+program_args = ["check", "site.mosaic"]
+exit_code = 1
+stdout_contains = ["mosaic[broken-link] page.md", "link target anchor does not exist"]
+
+[[case]]
+name = "mosaic_rejects_unreachable_page"
+description = "queue and bitset traversal rejects a published orphan"
+source_path = "examples/mosaic/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  { path = "site.mosaic", source = "site.title = Orphan\nsite.template = article\npage = index.md | index.html | Home | 0\npage = orphan.md | orphan.html | Orphan | 1\n" },
+  { path = "index.md", source = "---\ndescription: Root\n---\n# Home\n\nNo outgoing links.\n" },
+  { path = "orphan.md", source = "---\ndescription: Orphan\n---\n# Orphan\n\nUnreachable.\n" },
+]
+program_args = ["check", "site.mosaic"]
+exit_code = 1
+stdout_contains = ["mosaic[unreachable-page] orphan.md", "page is unreachable from the first manifest page"]
+
+[[case]]
+name = "mosaic_reports_missing_source_file"
+description = "filesystem input failure is distinguished from markup diagnostics"
+source_path = "examples/mosaic/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "site.mosaic", source = "site.title = Missing File\nsite.template = article\npage = absent.md | absent.html | Absent | 0\n" }]
+program_args = ["check", "site.mosaic"]
+exit_code = 1
+stdout_contains = ["mosaic[filesystem] absent.md", "cannot read page source"]
+
+[[case]]
+name = "mosaic_rejects_unsafe_render_url"
+description = "author content cannot inject a javascript URL into rendered HTML"
+source_path = "examples/mosaic/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  { path = "site.mosaic", source = "site.title = Unsafe\nsite.template = article\npage = page.md | page.html | Page | 0\n" },
+  { path = "page.md", source = "---\ndescription: Unsafe\n---\n# Page\n\nClick [unsafe](javascript:alert(1)).\n" },
+]
+program_args = ["check", "site.mosaic"]
+exit_code = 1
+stdout_contains = ["mosaic[markup] page.md", "unsafe URL scheme"]
+
+[[case]]
+name = "mosaic_rejects_nested_output_without_directory_support"
+description = "the schema prevents an eventual filesystem write into an uncreatable directory"
+source_path = "examples/mosaic/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  { path = "site.mosaic", source = "site.title = Nested\nsite.template = article\npage = page.md | nested/page.html | Page | 0\n" },
+  { path = "page.md", source = "---\ndescription: Nested\n---\n# Page\n\nBody.\n" },
+]
+program_args = ["build", "site.mosaic"]
+exit_code = 1
+stdout_contains = ["mosaic[metadata] page.md", "v1 output paths must be flat"]

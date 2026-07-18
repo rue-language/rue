@@ -1,0 +1,72 @@
+// Site inventory and complexity statistics.
+const std = @import("std");
+const capacity = @import("capacity.rue");
+const complexity = @import("complexity.rue");
+const coverage = @import("coverage.rue");
+const determinism = @import("determinism.rue");
+const graph = @import("graph.rue");
+const health = @import("health.rue");
+const inventory = @import("inventory.rue");
+const linkanalysis = @import("linkanalysis.rue");
+const metrics = @import("metrics.rue");
+const model = @import("model.rue");
+const renderprofile = @import("renderprofile.rue");
+const ratios = @import("ratios.rue");
+const search = @import("search.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn summarize(borrow site: model.Site) -> StrBuf {
+    let mut headings: u64 = 0;
+    let mut paragraphs: u64 = 0;
+    let mut code_blocks: u64 = 0;
+    let mut lists: u64 = 0;
+    let mut tables: u64 = 0;
+    let mut words: u64 = 0;
+    let mut i: u64 = 0;
+    while i < site.blocks.len() {
+        let block = site.blocks.get_or(i, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
+        if block.tag == model.BLOCK_HEADING() { headings = headings + 1; }
+        else if block.tag == model.BLOCK_PARAGRAPH() { paragraphs = paragraphs + 1; }
+        else if block.tag == model.BLOCK_CODE() { code_blocks = code_blocks + 1; }
+        else if block.tag == model.BLOCK_LIST() { lists = lists + 1; }
+        else if block.tag == model.BLOCK_TABLE() { tables = tables + 1; }
+        i = i + 1;
+    }
+    i = 0;
+    while i < site.pages.len() { words = words + site.pages.get_or(i, model.empty_page()).word_count; i = i + 1; }
+    let mut out = StrBuf.new();
+    out.push_str("pages="); out.push_str(@to_string(site.pages.len())); out.push(10);
+    out.push_str("published="); out.push_str(@to_string(search.expected_page_count(borrow site))); out.push(10);
+    out.push_str("blocks="); out.push_str(@to_string(site.blocks.len())); out.push(10);
+    out.push_str("inlines="); out.push_str(@to_string(site.inlines.len())); out.push(10);
+    out.push_str("headings="); out.push_str(@to_string(headings)); out.push(10);
+    out.push_str("paragraphs="); out.push_str(@to_string(paragraphs)); out.push(10);
+    out.push_str("code_blocks="); out.push_str(@to_string(code_blocks)); out.push(10);
+    out.push_str("lists="); out.push_str(@to_string(lists)); out.push(10);
+    out.push_str("tables="); out.push_str(@to_string(tables)); out.push(10);
+    out.push_str("anchors="); out.push_str(@to_string(site.anchors.len())); out.push(10);
+    out.push_str("links="); out.push_str(@to_string(site.links.len())); out.push(10);
+    out.push_str("resolved_internal_links="); out.push_str(@to_string(graph.resolved_internal_count(borrow site))); out.push(10);
+    out.push_str("words="); out.push_str(@to_string(words)); out.push(10);
+    out.push_str("diagnostics="); out.push_str(@to_string(site.diagnostics.len())); out.push(10);
+    let derived = metrics.collect(borrow site);
+    metrics.append(borrow derived, inout out);
+    let links = linkanalysis.collect(borrow site);
+    linkanalysis.append(borrow links, inout out);
+    let profile = renderprofile.collect(borrow site);
+    renderprofile.append(borrow profile, inout out);
+    let features = coverage.collect(borrow site);
+    coverage.append(borrow features, inout out);
+    let storage = capacity.collect(borrow site);
+    capacity.append(borrow storage, inout out);
+    determinism.append(borrow site, inout out);
+    let work = complexity.estimate(borrow site);
+    complexity.append(borrow work, inout out);
+    let status = health.inspect(borrow site);
+    health.append(borrow status, inout out);
+    let normalized = ratios.collect(borrow site);
+    ratios.append(borrow normalized, inout out);
+    let records = inventory.collect(borrow site);
+    inventory.append(borrow records, inout out);
+    out
+}

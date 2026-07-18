@@ -1,0 +1,78 @@
+// Lexer for `{{ variable | filter }}` substitutions. Text outside delimiters is
+// retained as a span into the immutable template source.
+const std = @import("std");
+const ast = @import("template_ast.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn identifier_start(b: u8) -> bool {
+    text.is_alpha(b) || b == 95
+}
+
+fn identifier_continue(b: u8) -> bool {
+    text.is_alnum(b) || b == 95 || b == 46
+}
+
+fn skip_space(borrow source: StrBuf, start: u64) -> u64 {
+    let mut i = start;
+    while i < source.len() && text.is_space(text.byte_of(borrow source, i)) {
+        i = i + 1;
+    }
+    i
+}
+
+fn push(inout tokens: ast.Tokens, tag: u64, start: u64, end: u64) {
+    tokens.push(ast.Token { tag: tag, start: start, end: end });
+}
+
+pub fn lex(borrow source: StrBuf) -> ast.Lexed {
+    let mut tokens = ast.Tokens.new();
+    let mut i: u64 = 0;
+    let mut text_start: u64 = 0;
+    while i < source.len() {
+        if i + 1 < source.len() && text.byte_of(borrow source, i) == 123 && text.byte_of(borrow source, i + 1) == 123 {
+            if i > text_start {
+                push(inout tokens, ast.TOKEN_TEXT(), text_start, i);
+            }
+            push(inout tokens, ast.TOKEN_OPEN(), i, i + 2);
+            i = skip_space(borrow source, i + 2);
+            if i >= source.len() || !identifier_start(text.byte_of(borrow source, i)) {
+                return ast.Lexed { tokens: tokens, ok: false, error_offset: i };
+            }
+            let name_start = i;
+            i = i + 1;
+            while i < source.len() && identifier_continue(text.byte_of(borrow source, i)) {
+                i = i + 1;
+            }
+            push(inout tokens, ast.TOKEN_IDENT(), name_start, i);
+            i = skip_space(borrow source, i);
+            if i < source.len() && text.byte_of(borrow source, i) == 124 {
+                push(inout tokens, ast.TOKEN_PIPE(), i, i + 1);
+                i = skip_space(borrow source, i + 1);
+                if i >= source.len() || !identifier_start(text.byte_of(borrow source, i)) {
+                    return ast.Lexed { tokens: tokens, ok: false, error_offset: i };
+                }
+                let filter_start = i;
+                i = i + 1;
+                while i < source.len() && identifier_continue(text.byte_of(borrow source, i)) {
+                    i = i + 1;
+                }
+                push(inout tokens, ast.TOKEN_IDENT(), filter_start, i);
+                i = skip_space(borrow source, i);
+            }
+            if i + 1 >= source.len() || text.byte_of(borrow source, i) != 125 || text.byte_of(borrow source, i + 1) != 125 {
+                return ast.Lexed { tokens: tokens, ok: false, error_offset: i };
+            }
+            push(inout tokens, ast.TOKEN_CLOSE(), i, i + 2);
+            i = i + 2;
+            text_start = i;
+        } else {
+            i = i + 1;
+        }
+    }
+    if text_start < source.len() {
+        push(inout tokens, ast.TOKEN_TEXT(), text_start, source.len());
+    }
+    push(inout tokens, ast.TOKEN_EOF(), source.len(), source.len());
+    ast.Lexed { tokens: tokens, ok: true, error_offset: 0 }
+}

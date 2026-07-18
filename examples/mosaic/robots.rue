@@ -1,0 +1,18 @@
+// robots.txt is rendered through the tiny template language, exercising its
+// lexer/parser/evaluator in every build rather than leaving it as dead example code.
+const std = @import("std");
+const model = @import("model.rue");
+const template_eval = @import("template_eval.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn build(borrow site: model.Site) -> template_eval.Result {
+    let source: StrBuf = "User-agent: *\nAllow: /\nSitemap: {{ site.base | url }}/sitemap.xml\n# {{ site.title }}: {{ site.page_count }} pages\n";
+    let env = template_eval.Environment {
+        site_title: site.strings.copy(site.title_id),
+        base_url: site.strings.copy(site.base_url_id),
+        language: site.strings.copy(site.language_id),
+        author: site.strings.copy(site.author_id),
+        page_count: @to_string(site.pages.len()),
+    };
+    template_eval.evaluate(source, env)
+}

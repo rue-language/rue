@@ -1,0 +1,160 @@
+// POD site model. Strings are pool ids and tree edges are arena ranges, making
+// every record Copy and safe for repeated ArrayBuf access across modules.
+const std = @import("std");
+const pool = @import("pool.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn NONE() -> u64 { 18446744073709551615 }
+
+pub fn BLOCK_PARAGRAPH() -> u64 { 1 }
+pub fn BLOCK_HEADING() -> u64 { 2 }
+pub fn BLOCK_CODE() -> u64 { 3 }
+pub fn BLOCK_LIST() -> u64 { 4 }
+pub fn BLOCK_ITEM() -> u64 { 5 }
+pub fn BLOCK_QUOTE() -> u64 { 6 }
+pub fn BLOCK_RULE() -> u64 { 7 }
+pub fn BLOCK_TABLE() -> u64 { 8 }
+pub fn BLOCK_TABLE_ROW() -> u64 { 9 }
+
+pub fn INLINE_TEXT() -> u64 { 1 }
+pub fn INLINE_EMPHASIS() -> u64 { 2 }
+pub fn INLINE_STRONG() -> u64 { 3 }
+pub fn INLINE_CODE() -> u64 { 4 }
+pub fn INLINE_LINK() -> u64 { 5 }
+pub fn INLINE_ESCAPE() -> u64 { 6 }
+
+pub struct Page {
+    source_id: u64,
+    output_id: u64,
+    title_id: u64,
+    description_id: u64,
+    template_id: u64,
+    nav_order: u64,
+    draft: bool,
+    block_start: u64,
+    block_count: u64,
+    inline_start: u64,
+    inline_count: u64,
+    anchor_start: u64,
+    anchor_count: u64,
+    link_start: u64,
+    link_count: u64,
+    word_count: u64,
+}
+
+pub struct Block {
+    tag: u64,
+    text_id: u64,
+    level: u64,
+    first: u64,
+    count: u64,
+    line: u64,
+    aux: u64,
+}
+
+pub struct Inline {
+    tag: u64,
+    text_id: u64,
+    target_id: u64,
+    line: u64,
+}
+
+pub struct Anchor {
+    page: u64,
+    name_id: u64,
+    line: u64,
+    heading_block: u64,
+}
+
+pub struct Link {
+    source_page: u64,
+    target_id: u64,
+    label_id: u64,
+    line: u64,
+    resolved_page: u64,
+    resolved_anchor: u64,
+    external: bool,
+}
+
+pub struct Diagnostic {
+    code: u64,
+    path_id: u64,
+    line: u64,
+    detail_id: u64,
+}
+
+pub const Pages = std.arraybuf.ArrayBuf(Page);
+pub const Blocks = std.arraybuf.ArrayBuf(Block);
+pub const Inlines = std.arraybuf.ArrayBuf(Inline);
+pub const Anchors = std.arraybuf.ArrayBuf(Anchor);
+pub const Links = std.arraybuf.ArrayBuf(Link);
+pub const Diagnostics = std.arraybuf.ArrayBuf(Diagnostic);
+pub const U64s = std.arraybuf.ArrayBuf(u64);
+
+pub struct Site {
+    strings: pool.Pool,
+    title_id: u64,
+    base_url_id: u64,
+    language_id: u64,
+    author_id: u64,
+    default_template_id: u64,
+    pages: Pages,
+    blocks: Blocks,
+    inlines: Inlines,
+    anchors: Anchors,
+    links: Links,
+    diagnostics: Diagnostics,
+    navigation: U64s,
+    manifest_path_id: u64,
+}
+
+pub fn new_site() -> Site {
+    let mut strings = pool.Pool.new();
+    let empty = strings.intern_literal("");
+    Site {
+        strings: strings,
+        title_id: empty,
+        base_url_id: empty,
+        language_id: empty,
+        author_id: empty,
+        default_template_id: empty,
+        pages: Pages.new(),
+        blocks: Blocks.new(),
+        inlines: Inlines.new(),
+        anchors: Anchors.new(),
+        links: Links.new(),
+        diagnostics: Diagnostics.new(),
+        navigation: U64s.new(),
+        manifest_path_id: empty,
+    }
+}
+
+pub fn empty_page() -> Page {
+    Page {
+        source_id: NONE(), output_id: NONE(), title_id: NONE(), description_id: NONE(),
+        template_id: NONE(), nav_order: NONE(), draft: false,
+        block_start: 0, block_count: 0, inline_start: 0, inline_count: 0,
+        anchor_start: 0, anchor_count: 0, link_start: 0, link_count: 0, word_count: 0,
+    }
+}
+
+pub fn add_error(inout site: Site, code: u64, path_id: u64, line: u64, detail: StrBuf) {
+    let detail_id = site.strings.intern(borrow detail);
+    site.diagnostics.push(Diagnostic { code: code, path_id: path_id, line: line, detail_id: detail_id });
+}
+
+pub fn code_name(code: u64) -> StrBuf {
+    if code == 100 { "manifest" }
+    else if code == 101 { "metadata" }
+    else if code == 102 { "duplicate-page" }
+    else if code == 200 { "markup" }
+    else if code == 201 { "front-matter" }
+    else if code == 202 { "duplicate-anchor" }
+    else if code == 203 { "oracle" }
+    else if code == 204 { "structure" }
+    else if code == 300 { "broken-link" }
+    else if code == 301 { "unreachable-page" }
+    else if code == 400 { "filesystem" }
+    else if code == 500 { "render" }
+    else { "unknown" }
+}

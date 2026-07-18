@@ -1,0 +1,152 @@
+// Manifest-level semantic schema. Parsing establishes syntax; this pass checks
+// path, metadata, template, navigation-order, and site-wide invariants.
+const std = @import("std");
+const model = @import("model.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn site_error(inout site: model.Site, detail: StrBuf) {
+    model.add_error(inout site, 101, site.manifest_path_id, 0, detail);
+}
+
+fn page_error(inout site: model.Site, page_index: u64, detail: StrBuf) {
+    let page = site.pages.get_or(page_index, model.empty_page());
+    model.add_error(inout site, 101, page.source_id, 0, detail);
+}
+
+fn has_extension(borrow value: StrBuf, extension: StrBuf) -> bool {
+    text.ends_with(borrow value, borrow extension)
+}
+
+fn safe_relative_path(borrow value: StrBuf) -> bool {
+    if value.len() == 0 {
+        return false;
+    }
+    if text.byte_of(borrow value, 0) == 47 || text.byte_of(borrow value, 0) == 92 {
+        return false;
+    }
+    let mut i: u64 = 0;
+    while i < value.len() {
+        let b = text.byte_of(borrow value, i);
+        if b < 32 || b == 127 || b == 58 || b == 92 {
+            return false;
+        }
+        if b == 46 && i + 1 < value.len() && text.byte_of(borrow value, i + 1) == 46 {
+            let before_ok = i == 0 || text.byte_of(borrow value, i - 1) == 47;
+            let after_ok = i + 2 == value.len() || text.byte_of(borrow value, i + 2) == 47;
+            if before_ok && after_ok {
+                return false;
+            }
+        }
+        i = i + 1;
+    }
+    true
+}
+
+fn valid_language(borrow value: StrBuf) -> bool {
+    if value.len() < 2 || value.len() > 16 {
+        return false;
+    }
+    let mut i: u64 = 0;
+    while i < value.len() {
+        let b = text.byte_of(borrow value, i);
+        if !text.is_alpha(b) && b != 45 {
+            return false;
+        }
+        i = i + 1;
+    }
+    true
+}
+
+fn valid_template(borrow value: StrBuf) -> bool {
+    text.equals_literal(borrow value, "article") || text.equals_literal(borrow value, "reference")
+}
+
+fn check_site_fields(inout site: model.Site) {
+    let title = site.strings.copy(site.title_id);
+    if title.len() == 0 {
+        site_error(inout site, "site.title cannot be empty");
+    }
+    if title.len() > 200 {
+        site_error(inout site, "site.title exceeds 200 bytes");
+    }
+    let language = site.strings.copy(site.language_id);
+    if language.len() > 0 && !valid_language(borrow language) {
+        site_error(inout site, "site.language must be a short alphabetic language tag");
+    }
+    let template = site.strings.copy(site.default_template_id);
+    if template.len() > 0 && !valid_template(borrow template) {
+        site_error(inout site, "site.template must be article or reference");
+    }
+    let base = site.strings.copy(site.base_url_id);
+    if base.len() > 0 && text.byte_of(borrow base, base.len() - 1) == 35 {
+        site_error(inout site, "site.base cannot end with a fragment marker");
+    }
+}
+
+fn check_page(inout site: model.Site, page_index: u64) {
+    let page = site.pages.get_or(page_index, model.empty_page());
+    let source = site.strings.copy(page.source_id);
+    let output = site.strings.copy(page.output_id);
+    if !safe_relative_path(borrow source) {
+        page_error(inout site, page_index, "page source must be a safe relative path");
+    }
+    if !safe_relative_path(borrow output) {
+        page_error(inout site, page_index, "page output must be a safe relative path");
+    }
+    if !has_extension(borrow source, ".md") {
+        page_error(inout site, page_index, "page source must use the .md extension");
+    }
+    if !has_extension(borrow output, ".html") {
+        page_error(inout site, page_index, "page output must use the .html extension");
+    }
+    if text.find_byte(borrow output, 47, 0) < output.len() {
+        page_error(inout site, page_index, "v1 output paths must be flat because std.fs has no directory creation");
+    }
+    if page.title_id != model.NONE() {
+        let title = site.strings.copy(page.title_id);
+        if title.len() == 0 || title.len() > 200 {
+            page_error(inout site, page_index, "page title must contain one to 200 bytes");
+        }
+    }
+    if page.description_id != model.NONE() {
+        let description = site.strings.copy(page.description_id);
+        if description.len() > 500 {
+            page_error(inout site, page_index, "page description exceeds 500 bytes");
+        }
+    }
+    if page.template_id != model.NONE() {
+        let template = site.strings.copy(page.template_id);
+        if !valid_template(borrow template) {
+            page_error(inout site, page_index, "page template must be article or reference");
+        }
+    }
+}
+
+fn check_navigation_orders(inout site: model.Site) {
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let a = site.pages.get_or(i, model.empty_page());
+        if a.nav_order != model.NONE() {
+            let mut j = i + 1;
+            while j < site.pages.len() {
+                let b = site.pages.get_or(j, model.empty_page());
+                if b.nav_order == a.nav_order {
+                    page_error(inout site, j, "published navigation orders must be unique");
+                }
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+}
+
+pub fn validate(inout site: model.Site) {
+    check_site_fields(inout site);
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        check_page(inout site, i);
+        i = i + 1;
+    }
+    check_navigation_orders(inout site);
+}

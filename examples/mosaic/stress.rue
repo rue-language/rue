@@ -1,0 +1,72 @@
+// In-memory scaling workload. It creates a long cross-page chain, parses real
+// markup for every page, validates reachability and anchors, renders all pages
+// twice, and checks expected counts plus a stable fingerprint.
+const std = @import("std");
+const graph = @import("graph.rue");
+const markup = @import("markup.rue");
+const model = @import("model.rue");
+const pipeline = @import("pipeline.rue");
+const selftest = @import("selftest.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn page_name(i: u64, extension: StrBuf) -> StrBuf {
+    let mut out = StrBuf.new();
+    out.push_str("page-"); out.push_str(@to_string(i)); out.push_str(extension);
+    out
+}
+
+fn page_source(i: u64, count: u64) -> StrBuf {
+    let mut out = StrBuf.new();
+    out.push_str("---\ntitle: Stress Page "); out.push_str(@to_string(i));
+    out.push_str("\ndescription: generated deterministic stress page\nnav_order: "); out.push_str(@to_string(i));
+    out.push_str("\n---\n# Stress Page "); out.push_str(@to_string(i)); out.push_str(" {#top}\n\n");
+    out.push_str("This page exercises **strong text**, *emphasis*, `code`, and escaped \\* punctuation.\n\n");
+    out.push_str("## Details\n\n- alpha\n- beta\n- gamma\n\n");
+    out.push_str("| key | value |\n| --- | --- |\n| index | "); out.push_str(@to_string(i)); out.push_str(" |\n\n");
+    if i + 1 < count {
+        out.push_str("Continue to [the next page](page-"); out.push_str(@to_string(i + 1)); out.push_str(".html#top).\n");
+    } else {
+        out.push_str("Return to [the first page](page-0.html#top).\n");
+    }
+    out
+}
+
+pub fn run(count: u64) -> StrBuf {
+    let mut site = model.new_site();
+    site.title_id = site.strings.intern_literal("Mosaic Stress");
+    site.language_id = site.strings.intern_literal("en");
+    site.default_template_id = site.strings.intern_literal("reference");
+    let mut i: u64 = 0;
+    while i < count {
+        let source_name = page_name(i, ".md");
+        let output_name = page_name(i, ".html");
+        let mut page = model.empty_page();
+        page.source_id = site.strings.intern(borrow source_name);
+        page.output_id = site.strings.intern(borrow output_name);
+        page.template_id = site.default_template_id;
+        site.pages.push(page);
+        i = i + 1;
+    }
+    i = 0;
+    while i < count {
+        let source = page_source(i, count);
+        markup.parse_page(inout site, i, source);
+        i = i + 1;
+    }
+    graph.validate(inout site);
+    let first = pipeline.output_fingerprint(borrow site);
+    let second = pipeline.output_fingerprint(borrow site);
+    let expected_links = count;
+    let tests = selftest.run();
+    let ok = site.diagnostics.len() == 0 && site.pages.len() == count && site.links.len() == expected_links && first == second && tests.failures == 0;
+    let mut out = StrBuf.new();
+    out.push_str("stress pages="); out.push_str(@to_string(site.pages.len()));
+    out.push_str(" blocks="); out.push_str(@to_string(site.blocks.len()));
+    out.push_str(" links="); out.push_str(@to_string(site.links.len()));
+    out.push_str(" anchors="); out.push_str(@to_string(site.anchors.len())); out.push(10);
+    out.push_str("expected_links="); out.push_str(@to_string(expected_links)); out.push(10);
+    out.push_str("deterministic="); if first == second { out.push_str("true"); } else { out.push_str("false"); } out.push(10);
+    out.push_str("valid="); if ok { out.push_str("true"); } else { out.push_str("false"); } out.push(10);
+    out.push_str("selftests="); out.push_str(@to_string(tests.checks)); out.push_str(" failures="); out.push_str(@to_string(tests.failures)); out.push(10);
+    out
+}

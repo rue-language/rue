@@ -1,0 +1,67 @@
+// Context-specific escaping. HTML text, attributes, URL attributes, and JSON
+// strings have different delimiters and therefore intentionally separate paths.
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn html_text(borrow value: StrBuf, inout out: StrBuf) {
+    let mut i: u64 = 0;
+    while i < value.len() {
+        let b = text.byte_of(borrow value, i);
+        if b == 38 { out.push_str("&amp;"); }
+        else if b == 60 { out.push_str("&lt;"); }
+        else if b == 62 { out.push_str("&gt;"); }
+        else { out.push(b); }
+        i = i + 1;
+    }
+}
+
+pub fn html_attribute(borrow value: StrBuf, inout out: StrBuf) {
+    let mut i: u64 = 0;
+    while i < value.len() {
+        let b = text.byte_of(borrow value, i);
+        if b == 38 { out.push_str("&amp;"); }
+        else if b == 34 { out.push_str("&quot;"); }
+        else if b == 39 { out.push_str("&#39;"); }
+        else if b == 60 { out.push_str("&lt;"); }
+        else if b == 62 { out.push_str("&gt;"); }
+        else { out.push(b); }
+        i = i + 1;
+    }
+}
+
+pub fn url_attribute(borrow value: StrBuf, inout out: StrBuf) {
+    let mut i: u64 = 0;
+    while i < value.len() {
+        let b = text.byte_of(borrow value, i);
+        if b == 32 { out.push_str("%20"); }
+        else if b == 34 { out.push_str("%22"); }
+        else if b == 39 { out.push_str("%27"); }
+        else if b == 60 { out.push_str("%3C"); }
+        else if b == 62 { out.push_str("%3E"); }
+        else if b == 38 { out.push_str("&amp;"); }
+        else { out.push(b); }
+        i = i + 1;
+    }
+}
+
+pub fn json_string(borrow value: StrBuf, inout out: StrBuf) {
+    out.push(34);
+    text.append_escaped_json(borrow value, inout out);
+    out.push(34);
+}
+
+pub fn plain_text(borrow value: StrBuf, inout out: StrBuf) {
+    let mut last_space = true;
+    let mut i: u64 = 0;
+    while i < value.len() {
+        let b = text.byte_of(borrow value, i);
+        if text.is_space(b) || b == 10 {
+            if !last_space { out.push(32); last_space = true; }
+        } else if b != 60 && b != 62 && b != 38 {
+            out.push(b);
+            last_space = false;
+        }
+        i = i + 1;
+    }
+}

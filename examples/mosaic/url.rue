@@ -1,0 +1,157 @@
+// URL classification, splitting, and conservative normalization. Mosaic is not
+// a browser: it preserves external URLs byte-for-byte but rejects dangerous
+// schemes and normalizes local separators and dot segments for graph lookup.
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn KIND_LOCAL() -> u64 { 1 }
+pub fn KIND_FRAGMENT() -> u64 { 2 }
+pub fn KIND_HTTP() -> u64 { 3 }
+pub fn KIND_MAILTO() -> u64 { 4 }
+pub fn KIND_UNSAFE() -> u64 { 5 }
+pub fn KIND_OTHER_EXTERNAL() -> u64 { 6 }
+
+pub struct Parts {
+    kind: u64,
+    path: StrBuf,
+    fragment: StrBuf,
+    query: StrBuf,
+}
+
+fn prefix(borrow value: StrBuf, literal: StrBuf) -> bool {
+    text.starts_with(borrow value, borrow literal)
+}
+
+pub fn classify(borrow value: StrBuf) -> u64 {
+    if value.len() > 0 && text.byte_of(borrow value, 0) == 35 {
+        return KIND_FRAGMENT();
+    }
+    if prefix(borrow value, "http://") || prefix(borrow value, "https://") {
+        return KIND_HTTP();
+    }
+    if prefix(borrow value, "mailto:") {
+        return KIND_MAILTO();
+    }
+    if prefix(borrow value, "javascript:") || prefix(borrow value, "data:") || prefix(borrow value, "vbscript:") {
+        return KIND_UNSAFE();
+    }
+    let colon = text.find_byte(borrow value, 58, 0);
+    let slash = text.find_byte(borrow value, 47, 0);
+    let hash = text.find_byte(borrow value, 35, 0);
+    let question = text.find_byte(borrow value, 63, 0);
+    if colon < slash && colon < hash && colon < question {
+        KIND_OTHER_EXTERNAL()
+    } else {
+        KIND_LOCAL()
+    }
+}
+
+fn _first_delimiter(borrow value: StrBuf, a: u8, b: u8) -> u64 {
+    let aa = text.find_byte(borrow value, a, 0);
+    let bb = text.find_byte(borrow value, b, 0);
+    if aa < bb { aa } else { bb }
+}
+
+pub fn split(borrow value: StrBuf) -> Parts {
+    let kind = classify(borrow value);
+    let hash = text.find_byte(borrow value, 35, 0);
+    let question = text.find_byte(borrow value, 63, 0);
+    let path_end = if hash < question { hash } else { question };
+    let path = if kind == KIND_FRAGMENT() { StrBuf.new() } else { text.slice(borrow value, 0, path_end) };
+    let query = if question < value.len() {
+        let end = if hash > question { hash } else { value.len() };
+        text.slice(borrow value, question + 1, end)
+    } else {
+        StrBuf.new()
+    };
+    let fragment = if hash < value.len() {
+        text.slice(borrow value, hash + 1, value.len())
+    } else {
+        StrBuf.new()
+    };
+    Parts { kind: kind, path: path, fragment: fragment, query: query }
+}
+
+fn segment_count(borrow path: StrBuf) -> u64 {
+    if path.len() == 0 { return 0; }
+    let mut count: u64 = 1;
+    let mut i: u64 = 0;
+    while i < path.len() {
+        if text.byte_of(borrow path, i) == 47 { count = count + 1; }
+        i = i + 1;
+    }
+    count
+}
+
+fn segment_at(borrow path: StrBuf, wanted: u64) -> StrBuf {
+    let mut current: u64 = 0;
+    let mut start: u64 = 0;
+    while current < wanted {
+        let slash = text.find_byte(borrow path, 47, start);
+        if slash >= path.len() { return StrBuf.new(); }
+        start = slash + 1;
+        current = current + 1;
+    }
+    let end = text.find_byte(borrow path, 47, start);
+    text.slice(borrow path, start, end)
+}
+
+pub fn normalize_local(borrow path: StrBuf) -> StrBuf {
+    let normalized = text.normalize_path(borrow path);
+    let count = segment_count(borrow normalized);
+    let U64s = std.arraybuf.ArrayBuf(u64);
+    let mut kept = U64s.new();
+    let mut i: u64 = 0;
+    while i < count {
+        let segment = segment_at(borrow normalized, i);
+        if segment.len() == 0 || text.equals_literal(borrow segment, ".") {
+        } else if text.equals_literal(borrow segment, "..") {
+            let _ = kept.pop();
+        } else {
+            kept.push(i);
+        }
+        i = i + 1;
+    }
+    let mut out = StrBuf.new();
+    i = 0;
+    while i < kept.len() {
+        if i > 0 { out.push(47); }
+        let segment = segment_at(borrow normalized, kept.get_or(i, 0));
+        let mut j: u64 = 0;
+        while j < segment.len() {
+            out.push(text.byte_of(borrow segment, j));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    out
+}
+
+pub fn safe_for_html(borrow value: StrBuf) -> bool {
+    let kind = classify(borrow value);
+    if kind == KIND_UNSAFE() {
+        return false;
+    }
+    let mut i: u64 = 0;
+    while i < value.len() {
+        let b = text.byte_of(borrow value, i);
+        if b < 32 || b == 127 {
+            return false;
+        }
+        i = i + 1;
+    }
+    true
+}
+
+pub fn has_empty_fragment(borrow value: StrBuf) -> bool {
+    value.len() > 0 && text.byte_of(borrow value, value.len() - 1) == 35
+}
+
+pub fn has_query(borrow value: StrBuf) -> bool {
+    text.find_byte(borrow value, 63, 0) < value.len()
+}
+
+pub fn is_external_kind(kind: u64) -> bool {
+    kind == KIND_HTTP() || kind == KIND_MAILTO() || kind == KIND_OTHER_EXTERNAL()
+}

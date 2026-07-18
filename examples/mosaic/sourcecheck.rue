@@ -1,0 +1,122 @@
+// Raw document hygiene checks that deliberately run before markup parsing.
+// Keeping byte-level policy here makes parser diagnostics stable and prevents
+// platform newline or control-byte differences from leaking into generated HTML.
+const std = @import("std");
+const model = @import("model.rue");
+const text = @import("text.rue");
+const utf8 = @import("utf8.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn error(inout site: model.Site, page_index: u64, line: u64, detail: StrBuf) {
+    let page = site.pages.get_or(page_index, model.empty_page());
+    model.add_error(inout site, 200, page.source_id, line, detail);
+}
+
+fn has_bom(borrow source: StrBuf) -> bool {
+    source.len() >= 3 &&
+        text.byte_of(borrow source, 0) == 239 &&
+        text.byte_of(borrow source, 1) == 187 &&
+        text.byte_of(borrow source, 2) == 191
+}
+
+fn check_control_bytes(inout site: model.Site, page_index: u64, borrow source: StrBuf) {
+    let mut line: u64 = 1;
+    let mut i: u64 = 0;
+    while i < source.len() {
+        let b = text.byte_of(borrow source, i);
+        if b == 10 {
+            line = line + 1;
+        } else if b < 32 && b != 9 && b != 13 {
+            error(inout site, page_index, line, "document contains an unsupported control byte");
+        } else if b == 127 {
+            error(inout site, page_index, line, "document contains the delete control byte");
+        }
+        i = i + 1;
+    }
+}
+
+fn check_newlines(inout site: model.Site, page_index: u64, borrow source: StrBuf) {
+    let mut line: u64 = 1;
+    let mut i: u64 = 0;
+    while i < source.len() {
+        let b = text.byte_of(borrow source, i);
+        if b == 13 {
+            if i + 1 >= source.len() || text.byte_of(borrow source, i + 1) != 10 {
+                error(inout site, page_index, line, "bare carriage return is not a supported newline");
+            }
+        }
+        if b == 10 {
+            line = line + 1;
+        }
+        i = i + 1;
+    }
+}
+
+fn check_line_width(inout site: model.Site, page_index: u64, borrow source: StrBuf) {
+    let mut line: u64 = 1;
+    let mut start: u64 = 0;
+    while start < source.len() {
+        let end = text.find_byte(borrow source, 10, start);
+        if end - start > 4096 {
+            error(inout site, page_index, line, "source line exceeds the 4096-byte safety limit");
+        }
+        start = if end < source.len() { end + 1 } else { source.len() };
+        line = line + 1;
+    }
+}
+
+fn check_trailing_space(inout site: model.Site, page_index: u64, borrow source: StrBuf) {
+    let mut line: u64 = 1;
+    let mut start: u64 = 0;
+    while start < source.len() {
+        let end = text.find_byte(borrow source, 10, start);
+        let logical_end = if end > start && text.byte_of(borrow source, end - 1) == 13 { end - 1 } else { end };
+        if logical_end > start {
+            let last = text.byte_of(borrow source, logical_end - 1);
+            if last == 9 {
+                error(inout site, page_index, line, "line ends with a tab; use spaces or remove it");
+            }
+        }
+        start = if end < source.len() { end + 1 } else { source.len() };
+        line = line + 1;
+    }
+}
+
+fn check_front_matter_position(inout site: model.Site, page_index: u64, borrow source: StrBuf) {
+    let mut offset: u64 = 0;
+    let mut line: u64 = 1;
+    while offset < source.len() {
+        let current = text.line_at(borrow source, offset);
+        if line > 1 && text.equals_literal(borrow current, "---") {
+            let first = text.line_at(borrow source, 0);
+            if !text.equals_literal(borrow first, "---") {
+                error(inout site, page_index, line, "front matter delimiter is only valid at the beginning of a document");
+            }
+            return;
+        }
+        if current.len() > 0 {
+            return;
+        }
+        offset = text.next_line(borrow source, offset);
+        line = line + 1;
+    }
+}
+
+pub fn validate(inout site: model.Site, page_index: u64, borrow source: StrBuf) {
+    if source.len() == 0 {
+        error(inout site, page_index, 0, "document is empty");
+        return;
+    }
+    if has_bom(borrow source) {
+        error(inout site, page_index, 1, "UTF-8 BOM is not accepted in document input");
+    }
+    let encoding = utf8.validate(borrow source);
+    if !encoding.ok {
+        error(inout site, page_index, 0, "document is not valid canonical UTF-8");
+    }
+    check_control_bytes(inout site, page_index, borrow source);
+    check_newlines(inout site, page_index, borrow source);
+    check_line_width(inout site, page_index, borrow source);
+    check_trailing_space(inout site, page_index, borrow source);
+    check_front_matter_position(inout site, page_index, borrow source);
+}

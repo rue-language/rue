@@ -1,0 +1,147 @@
+// Project manifest parser. The deliberately small line-oriented grammar is
+// easy to author and deterministic:
+//
+//   site.title = Mosaic Manual
+//   site.base = /manual
+//   site.language = en
+//   site.author = Rue Project
+//   site.template = article
+//   page = index.md | index.html | Home | 0
+//
+// Page title and navigation order may be overridden by document front matter.
+const std = @import("std");
+const model = @import("model.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn value_after_equals(borrow line: StrBuf) -> StrBuf {
+    let at = text.find_byte(borrow line, 61, 0);
+    if at >= line.len() { return StrBuf.new(); }
+    let raw = text.slice(borrow line, at + 1, line.len());
+    text.trim(borrow raw)
+}
+
+fn key_before_equals(borrow line: StrBuf) -> StrBuf {
+    let at = text.find_byte(borrow line, 61, 0);
+    let raw = text.slice(borrow line, 0, at);
+    text.trim(borrow raw)
+}
+
+fn field(borrow value: StrBuf, index: u64) -> StrBuf {
+    let mut start: u64 = 0;
+    let mut current: u64 = 0;
+    while current < index {
+        let bar = text.find_byte(borrow value, 124, start);
+        if bar >= value.len() { return StrBuf.new(); }
+        start = bar + 1;
+        current = current + 1;
+    }
+    let end = text.find_byte(borrow value, 124, start);
+    let raw = text.slice(borrow value, start, end);
+    text.trim(borrow raw)
+}
+
+fn parse_u64(borrow value: StrBuf) -> u64 {
+    let mut total: u64 = 0;
+    let mut i: u64 = 0;
+    if value.len() == 0 { return model.NONE(); }
+    while i < value.len() {
+        let b = text.byte_of(borrow value, i);
+        if !text.is_digit(b) { return model.NONE(); }
+        total = total * 10 + @intCast(b - 48);
+        i = i + 1;
+    }
+    total
+}
+
+fn derive_output(borrow source: StrBuf) -> StrBuf {
+    let mut out = StrBuf.new();
+    let mut dot = source.len();
+    let mut i: u64 = 0;
+    while i < source.len() {
+        let b = text.byte_of(borrow source, i);
+        if b == 46 { dot = i; }
+        i = i + 1;
+    }
+    let stem = text.slice(borrow source, 0, dot);
+    out.push_str(stem);
+    out.push_str(".html");
+    out
+}
+
+fn set_site_field(inout site: model.Site, borrow key: StrBuf, borrow value: StrBuf, line: u64) {
+    if text.equals_literal(borrow key, "site.title") {
+        site.title_id = site.strings.intern(borrow value);
+    } else if text.equals_literal(borrow key, "site.base") {
+        site.base_url_id = site.strings.intern(borrow value);
+    } else if text.equals_literal(borrow key, "site.language") {
+        site.language_id = site.strings.intern(borrow value);
+    } else if text.equals_literal(borrow key, "site.author") {
+        site.author_id = site.strings.intern(borrow value);
+    } else if text.equals_literal(borrow key, "site.template") {
+        site.default_template_id = site.strings.intern(borrow value);
+    } else {
+        model.add_error(inout site, 100, site.manifest_path_id, line, "unknown manifest key");
+    }
+}
+
+fn add_page(inout site: model.Site, borrow value: StrBuf, line: u64) {
+    let source = field(borrow value, 0);
+    if source.len() == 0 {
+        model.add_error(inout site, 100, site.manifest_path_id, line, "page source path is empty");
+        return;
+    }
+    let given_output = field(borrow value, 1);
+    let given_title = field(borrow value, 2);
+    let given_order = field(borrow value, 3);
+    let output = if given_output.len() == 0 { derive_output(borrow source) } else { given_output };
+    let mut page = model.empty_page();
+    page.source_id = site.strings.intern(borrow source);
+    page.output_id = site.strings.intern(borrow output);
+    if given_title.len() > 0 { page.title_id = site.strings.intern(borrow given_title); }
+    page.nav_order = parse_u64(borrow given_order);
+    page.template_id = site.default_template_id;
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let old = site.pages.get_or(i, model.empty_page());
+        if site.strings.ids_equal(old.source_id, page.source_id) || site.strings.ids_equal(old.output_id, page.output_id) {
+            model.add_error(inout site, 102, site.manifest_path_id, line, "duplicate page source or output path");
+            return;
+        }
+        i = i + 1;
+    }
+    site.pages.push(page);
+}
+
+pub fn parse(source: StrBuf, manifest_path: StrBuf) -> model.Site {
+    let mut site = model.new_site();
+    site.manifest_path_id = site.strings.intern(borrow manifest_path);
+    let mut offset: u64 = 0;
+    let mut line_number: u64 = 1;
+    while offset < source.len() {
+        let line = text.line_at(borrow source, offset);
+        if line.len() > 0 && text.byte_of(borrow line, 0) != 35 {
+            let at = text.find_byte(borrow line, 61, 0);
+            if at >= line.len() {
+                model.add_error(inout site, 100, site.manifest_path_id, line_number, "expected key = value");
+            } else {
+                let key = key_before_equals(borrow line);
+                let value = value_after_equals(borrow line);
+                if text.equals_literal(borrow key, "page") {
+                    add_page(inout site, borrow value, line_number);
+                } else {
+                    set_site_field(inout site, borrow key, borrow value, line_number);
+                }
+            }
+        }
+        offset = text.next_line(borrow source, offset);
+        line_number = line_number + 1;
+    }
+    if site.title_id == 0 {
+        model.add_error(inout site, 101, site.manifest_path_id, 0, "site.title is required");
+    }
+    if site.pages.len() == 0 {
+        model.add_error(inout site, 101, site.manifest_path_id, 0, "at least one page is required");
+    }
+    site
+}

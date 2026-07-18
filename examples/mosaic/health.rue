@@ -1,0 +1,95 @@
+// High-level health summary assembled from independently computed evidence.
+const std = @import("std");
+const coverage = @import("coverage.rue");
+const linkanalysis = @import("linkanalysis.rue");
+const model = @import("model.rue");
+
+pub struct Health {
+    valid: bool,
+    feature_complete: bool,
+    every_page_navigable: bool,
+    every_link_resolved: bool,
+    titled_pages: u64,
+    described_pages: u64,
+    published_pages: u64,
+    score: u64,
+}
+
+pub fn inspect(borrow site: model.Site) -> Health {
+    let features = coverage.collect(borrow site);
+    let links = linkanalysis.collect(borrow site);
+    let mut titled: u64 = 0;
+    let mut described: u64 = 0;
+    let mut published: u64 = 0;
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let page = site.pages.get_or(i, model.empty_page());
+        if !page.draft {
+            published = published + 1;
+            if page.title_id != model.NONE() && site.strings.string_len(page.title_id) > 0 {
+                titled = titled + 1;
+            }
+            if page.description_id != model.NONE() && site.strings.string_len(page.description_id) > 0 {
+                described = described + 1;
+            }
+        }
+        i = i + 1;
+    }
+    let valid = site.diagnostics.len() == 0;
+    let feature_complete = coverage.complete(borrow features);
+    let every_page_navigable = site.navigation.len() == published;
+    let every_link_resolved = links.unresolved == 0;
+    let mut score: u64 = 0;
+    if valid {
+        score = score + 40;
+    }
+    if feature_complete {
+        score = score + 20;
+    }
+    if every_page_navigable {
+        score = score + 10;
+    }
+    if every_link_resolved {
+        score = score + 10;
+    }
+    if titled == published {
+        score = score + 10;
+    }
+    if described == published {
+        score = score + 10;
+    }
+    Health {
+        valid: valid,
+        feature_complete: feature_complete,
+        every_page_navigable: every_page_navigable,
+        every_link_resolved: every_link_resolved,
+        titled_pages: titled,
+        described_pages: described,
+        published_pages: published,
+        score: score,
+    }
+}
+
+pub fn append(borrow value: Health, inout out: std.strbuf.StrBuf) {
+    out.push_str("health_score=");
+    out.push_str(@to_string(value.score));
+    out.push_str("/100\n");
+    out.push_str("titled_pages=");
+    out.push_str(@to_string(value.titled_pages));
+    out.push(10);
+    out.push_str("described_pages=");
+    out.push_str(@to_string(value.described_pages));
+    out.push(10);
+    out.push_str("every_page_navigable=");
+    if value.every_page_navigable {
+        out.push_str("true\n");
+    } else {
+        out.push_str("false\n");
+    }
+    out.push_str("every_link_resolved=");
+    if value.every_link_resolved {
+        out.push_str("true\n");
+    } else {
+        out.push_str("false\n");
+    }
+}

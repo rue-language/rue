@@ -1,0 +1,77 @@
+// mosaic — a deterministic static-site generator written in Rue (RUE-994).
+// All normal modes share pipeline.load; build is the only mode that writes.
+const std = @import("std");
+const dump = @import("dump.rue");
+const language = @import("language.rue");
+const pipeline = @import("pipeline.rue");
+const stats = @import("stats.rue");
+const stress = @import("stress.rue");
+const StrBuf = std.strbuf.StrBuf;
+const OptStr = std.option.Option(StrBuf);
+
+fn same(borrow value: StrBuf, literal: StrBuf) -> bool {
+    StrBuf.equals_borrowed(borrow value, borrow literal)
+}
+
+fn require_manifest() -> OptStr {
+    std.env.arg(2)
+}
+
+fn run_project(borrow mode: StrBuf, manifest_path: StrBuf) -> i32 {
+    let loaded = pipeline.load(manifest_path);
+    if loaded.site.diagnostics.len() > 0 {
+        pipeline.report_errors(borrow loaded.site);
+        return 1;
+    }
+    if same(borrow mode, "check") {
+        println("checked pages=" + @to_string(loaded.site.pages.len()) + " links=" + @to_string(loaded.site.links.len()));
+        0
+    } else if same(borrow mode, "dump") {
+        print(dump.site(borrow loaded.site));
+        0
+    } else if same(borrow mode, "stats") {
+        print(stats.summarize(borrow loaded.site));
+        0
+    } else if same(borrow mode, "build") {
+        if pipeline.build(borrow loaded) {
+            println("built pages=" + @to_string(loaded.site.pages.len()) + " outputs=" + @to_string(loaded.site.pages.len() + 4));
+            0
+        } else {
+            println("mosaic[filesystem]: cannot write deterministic output");
+            1
+        }
+    } else {
+        println("mosaic: unknown command; run `mosaic help`");
+        1
+    }
+}
+
+fn main() -> i32 {
+    let mode = match std.env.arg(1) {
+        OptStr.Some(m) => m,
+        OptStr.None => { print(language.help()); return 1; },
+    };
+    if same(borrow mode, "help") || same(borrow mode, "--help") {
+        print(language.help());
+        return 0;
+    }
+    if same(borrow mode, "stress1") {
+        let result = stress.run(100);
+        print(result);
+        return 0;
+    }
+    if same(borrow mode, "stress") || same(borrow mode, "--stress") || same(borrow mode, "stress2") {
+        let result = stress.run(200);
+        print(result);
+        return 0;
+    }
+    if same(borrow mode, "stress4") {
+        let result = stress.run(400);
+        print(result);
+        return 0;
+    }
+    match require_manifest() {
+        OptStr.Some(path) => run_project(borrow mode, path),
+        OptStr.None => { println("mosaic: command requires a project manifest"); 1 },
+    }
+}

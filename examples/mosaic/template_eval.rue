@@ -1,0 +1,96 @@
+// Evaluator for built-in artifact templates. Variable names are resolved by a
+// fixed environment rather than an unbounded dynamic map, making missing values
+// deterministic errors and keeping rendering allocation behavior obvious.
+const std = @import("std");
+const ast = @import("template_ast.rue");
+const escape = @import("escape.rue");
+const lexer = @import("template_lexer.rue");
+const parser = @import("template_parser.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct Environment {
+    site_title: StrBuf,
+    base_url: StrBuf,
+    language: StrBuf,
+    author: StrBuf,
+    page_count: StrBuf,
+}
+
+pub struct Result {
+    output: StrBuf,
+    ok: bool,
+    error_offset: u64,
+}
+
+fn append_source(borrow source: StrBuf, start: u64, end: u64, inout out: StrBuf) {
+    let mut i = start;
+    while i < end && i < source.len() {
+        out.push(text.byte_of(borrow source, i));
+        i = i + 1;
+    }
+}
+
+fn variable(borrow source: StrBuf, borrow node: ast.Node, borrow env: Environment) -> StrBuf {
+    let name = text.slice(borrow source, node.name_start, node.name_end);
+    if text.equals_literal(borrow name, "site.title") {
+        text.slice(borrow env.site_title, 0, env.site_title.len())
+    } else if text.equals_literal(borrow name, "site.base") {
+        text.slice(borrow env.base_url, 0, env.base_url.len())
+    } else if text.equals_literal(borrow name, "site.language") {
+        text.slice(borrow env.language, 0, env.language.len())
+    } else if text.equals_literal(borrow name, "site.author") {
+        text.slice(borrow env.author, 0, env.author.len())
+    } else if text.equals_literal(borrow name, "site.page_count") {
+        text.slice(borrow env.page_count, 0, env.page_count.len())
+    } else {
+        StrBuf.new()
+    }
+}
+
+fn known_variable(borrow source: StrBuf, borrow node: ast.Node) -> bool {
+    let name = text.slice(borrow source, node.name_start, node.name_end);
+    text.equals_literal(borrow name, "site.title") ||
+        text.equals_literal(borrow name, "site.base") ||
+        text.equals_literal(borrow name, "site.language") ||
+        text.equals_literal(borrow name, "site.author") ||
+        text.equals_literal(borrow name, "site.page_count")
+}
+
+fn append_value(borrow value: StrBuf, filter: u64, inout out: StrBuf) {
+    if filter == ast.FILTER_HTML() {
+        escape.html_text(borrow value, inout out);
+    } else if filter == ast.FILTER_ATTRIBUTE() {
+        escape.html_attribute(borrow value, inout out);
+    } else if filter == ast.FILTER_URL() {
+        escape.url_attribute(borrow value, inout out);
+    } else if filter == ast.FILTER_JSON() {
+        escape.json_string(borrow value, inout out);
+    } else {
+        append_source(borrow value, 0, value.len(), inout out);
+    }
+}
+
+pub fn evaluate(source: StrBuf, env: Environment) -> Result {
+    let lexed = lexer.lex(borrow source);
+    let parsed = parser.parse(borrow source, lexed);
+    let mut out = StrBuf.new();
+    if !parsed.ok {
+        return Result { output: out, ok: false, error_offset: parsed.error_offset };
+    }
+    let mut i: u64 = 0;
+    while i < parsed.nodes.len() {
+        let node = parsed.nodes.get_or(i, ast.empty_node());
+        if node.tag == ast.NODE_TEXT() {
+            append_source(borrow source, node.start, node.end, inout out);
+        } else if node.tag == ast.NODE_VALUE() {
+            if !known_variable(borrow source, borrow node) {
+                return Result { output: out, ok: false, error_offset: node.name_start };
+            }
+            let value = variable(borrow source, borrow node, borrow env);
+            append_value(borrow value, node.filter, inout out);
+        }
+        i = i + 1;
+    }
+    Result { output: out, ok: true, error_offset: 0 }
+}

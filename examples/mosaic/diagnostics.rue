@@ -1,0 +1,34 @@
+// Stable user-facing diagnostics, sorted by path id/line/code so parser and
+// graph traversal order cannot make error output nondeterministic.
+const std = @import("std");
+const model = @import("model.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn key(d: model.Diagnostic, index: u64) -> u64 {
+    let path = d.path_id % 10000;
+    let line = d.line % 10000;
+    path * 1000000000000 + line * 100000000 + (d.code % 1000) * 100000 + (index % 100000)
+}
+
+pub fn format(borrow site: model.Site) -> StrBuf {
+    let mut keys = model.U64s.new();
+    let mut i: u64 = 0;
+    while i < site.diagnostics.len() {
+        let d = site.diagnostics.get_or(i, model.Diagnostic { code: 0, path_id: 0, line: 0, detail_id: 0 });
+        keys.push(key(d, i));
+        i = i + 1;
+    }
+    std.sort.insertion_sort(u64, inout keys);
+    let mut out = StrBuf.new();
+    i = 0;
+    while i < keys.len() {
+        let index = keys.get_or(i, 0) % 100000;
+        let d = site.diagnostics.get_or(index, model.Diagnostic { code: 0, path_id: 0, line: 0, detail_id: 0 });
+        out.push_str("mosaic["); out.push_str(model.code_name(d.code)); out.push_str("] ");
+        site.strings.append(d.path_id, inout out);
+        if d.line > 0 { out.push(58); out.push_str(@to_string(d.line)); }
+        out.push_str(": "); site.strings.append(d.detail_id, inout out); out.push(10);
+        i = i + 1;
+    }
+    out
+}

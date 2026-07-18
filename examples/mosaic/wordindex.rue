@@ -1,0 +1,202 @@
+// Search-term index built from canonical block text. A StrMap gives amortized
+// lookup while stable first-seen ids provide deterministic enumeration and tie
+// breaking; ranking keys are sorted as copy-only integers.
+const std = @import("std");
+const escape = @import("escape.rue");
+const model = @import("model.rue");
+const pool = @import("pool.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+const OptU64 = std.option.Option(u64);
+
+pub struct Index {
+    terms: pool.Pool,
+    counts: model.U64s,
+    documents: model.U64s,
+    total_tokens: u64,
+}
+
+fn new_index() -> Index {
+    Index {
+        terms: pool.Pool.new(),
+        counts: model.U64s.new(),
+        documents: model.U64s.new(),
+        total_tokens: 0,
+    }
+}
+
+fn stop_word(borrow word: StrBuf) -> bool {
+    text.equals_literal(borrow word, "a") ||
+        text.equals_literal(borrow word, "an") ||
+        text.equals_literal(borrow word, "and") ||
+        text.equals_literal(borrow word, "are") ||
+        text.equals_literal(borrow word, "as") ||
+        text.equals_literal(borrow word, "at") ||
+        text.equals_literal(borrow word, "be") ||
+        text.equals_literal(borrow word, "by") ||
+        text.equals_literal(borrow word, "for") ||
+        text.equals_literal(borrow word, "from") ||
+        text.equals_literal(borrow word, "in") ||
+        text.equals_literal(borrow word, "is") ||
+        text.equals_literal(borrow word, "it") ||
+        text.equals_literal(borrow word, "of") ||
+        text.equals_literal(borrow word, "on") ||
+        text.equals_literal(borrow word, "or") ||
+        text.equals_literal(borrow word, "that") ||
+        text.equals_literal(borrow word, "the") ||
+        text.equals_literal(borrow word, "this") ||
+        text.equals_literal(borrow word, "to") ||
+        text.equals_literal(borrow word, "with")
+}
+
+fn normalize_word(borrow value: StrBuf, start: u64, end: u64) -> StrBuf {
+    let mut out = StrBuf.new();
+    let mut i = start;
+    while i < end {
+        let b = text.byte_of(borrow value, i);
+        if text.is_alnum(b) {
+            out.push(text.lowercase(b));
+        }
+        i = i + 1;
+    }
+    out
+}
+
+fn add_term(
+    inout index: Index,
+    inout lookup: std.strmap.StrMap(u64),
+    borrow word: StrBuf,
+    page_index: u64,
+) {
+    if word.len() < 2 || stop_word(borrow word) {
+        return;
+    }
+    index.total_tokens = index.total_tokens + 1;
+    match lookup.get(borrow word) {
+        OptU64.Some(id) => {
+            let count = index.counts.get_or(id, 0);
+            index.counts.set(id, count + 1);
+            let last_page = index.documents.get_or(id, model.NONE());
+            if last_page != page_index {
+                index.documents.set(id, page_index);
+            }
+        },
+        OptU64.None => {
+            let id = index.terms.intern(borrow word);
+            lookup.insert(borrow word, id);
+            while index.counts.len() <= id {
+                index.counts.push(0);
+                index.documents.push(model.NONE());
+            }
+            index.counts.set(id, 1);
+            index.documents.set(id, page_index);
+        },
+    }
+}
+
+fn scan_text(
+    inout index: Index,
+    inout lookup: std.strmap.StrMap(u64),
+    borrow value: StrBuf,
+    page_index: u64,
+) {
+    let mut start: u64 = 0;
+    let mut i: u64 = 0;
+    let mut inside = false;
+    while i <= value.len() {
+        let alnum = i < value.len() && text.is_alnum(text.byte_of(borrow value, i));
+        if alnum && !inside {
+            start = i;
+            inside = true;
+        } else if !alnum && inside {
+            let word = normalize_word(borrow value, start, i);
+            add_term(inout index, inout lookup, borrow word, page_index);
+            inside = false;
+        }
+        i = i + 1;
+    }
+}
+
+pub fn build(borrow site: model.Site) -> Index {
+    let M = std.strmap.StrMap(u64);
+    let mut lookup = M.new(model.NONE());
+    let mut index = new_index();
+    let mut page_index: u64 = 0;
+    while page_index < site.pages.len() {
+        let page = site.pages.get_or(page_index, model.empty_page());
+        if !page.draft {
+            let title = site.strings.copy(page.title_id);
+            scan_text(inout index, inout lookup, borrow title, page_index);
+            if page.description_id != model.NONE() {
+                let description = site.strings.copy(page.description_id);
+                scan_text(inout index, inout lookup, borrow description, page_index);
+            }
+            let mut block_index = page.block_start;
+            while block_index < page.block_start + page.block_count {
+                let block = site.blocks.get_or(block_index, model.Block {
+                    tag: 0,
+                    text_id: 0,
+                    level: 0,
+                    first: 0,
+                    count: 0,
+                    line: 0,
+                    aux: 0,
+                });
+                if block.text_id != model.NONE() && block.tag != model.BLOCK_CODE() {
+                    let value = site.strings.copy(block.text_id);
+                    scan_text(inout index, inout lookup, borrow value, page_index);
+                }
+                block_index = block_index + 1;
+            }
+        }
+        page_index = page_index + 1;
+    }
+    index
+}
+
+fn ranking_key(count: u64, id: u64) -> u64 {
+    let bounded = if count > 999999 { 999999 } else { count };
+    (999999 - bounded) * 1000000 + (id % 1000000)
+}
+
+fn ranked_ids(borrow index: Index) -> model.U64s {
+    let mut keys = model.U64s.new();
+    let mut i: u64 = 0;
+    while i < index.terms.len() {
+        keys.push(ranking_key(index.counts.get_or(i, 0), i));
+        i = i + 1;
+    }
+    std.sort.quicksort(u64, inout keys);
+    let mut ids = model.U64s.new();
+    i = 0;
+    while i < keys.len() {
+        ids.push(keys.get_or(i, 0) % 1000000);
+        i = i + 1;
+    }
+    ids
+}
+
+pub fn append_top_json(borrow index: Index, limit: u64, inout out: StrBuf) {
+    let ids = ranked_ids(borrow index);
+    out.push(91);
+    let n = if limit < ids.len() { limit } else { ids.len() };
+    let mut i: u64 = 0;
+    while i < n {
+        if i > 0 {
+            out.push(44);
+        }
+        let id = ids.get_or(i, 0);
+        out.push_str("{\"term\":");
+        let term = index.terms.copy(id);
+        escape.json_string(borrow term, inout out);
+        out.push_str(",\"count\":");
+        out.push_str(@to_string(index.counts.get_or(id, 0)));
+        out.push(125);
+        i = i + 1;
+    }
+    out.push(93);
+}
+
+pub fn distinct(borrow index: Index) -> u64 {
+    index.terms.len()
+}

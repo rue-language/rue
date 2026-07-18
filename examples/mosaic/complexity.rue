@@ -1,0 +1,102 @@
+// Deterministic work-unit estimates for each pipeline phase. These are counts of
+// semantic operations rather than wall time, useful for comparing workloads on
+// different hosts and spotting accidental quadratic growth.
+const std = @import("std");
+const model = @import("model.rue");
+
+pub struct Complexity {
+    pool_probe_units: u64,
+    parse_units: u64,
+    inline_units: u64,
+    graph_units: u64,
+    reachability_units: u64,
+    render_units: u64,
+    search_units: u64,
+    total_units: u64,
+}
+
+fn saturated_add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a {
+        18446744073709551615
+    } else {
+        a + b
+    }
+}
+
+fn saturated_mul(a: u64, b: u64) -> u64 {
+    if a == 0 || b == 0 {
+        return 0;
+    }
+    if a > 18446744073709551615 / b {
+        18446744073709551615
+    } else {
+        a * b
+    }
+}
+
+pub fn estimate(borrow site: model.Site) -> Complexity {
+    let strings = site.strings.len();
+    let pages = site.pages.len();
+    let blocks = site.blocks.len();
+    let inlines = site.inlines.len();
+    let links = site.links.len();
+    let anchors = site.anchors.len();
+    let pool_probe_units = saturated_mul(strings, strings + 1) / 2;
+    let parse_units = saturated_add(blocks, inlines);
+    let inline_units = saturated_add(inlines, links);
+    let graph_units = saturated_mul(links, saturated_add(pages, anchors));
+    let reachability_units = saturated_add(pages, links);
+    let render_units = saturated_add(saturated_add(blocks, inlines), saturated_mul(pages, site.navigation.len()));
+    let mut words: u64 = 0;
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        words = saturated_add(words, site.pages.get_or(i, model.empty_page()).word_count);
+        i = i + 1;
+    }
+    let search_units = saturated_add(words, strings);
+    let mut total_units: u64 = 0;
+    total_units = saturated_add(total_units, pool_probe_units);
+    total_units = saturated_add(total_units, parse_units);
+    total_units = saturated_add(total_units, inline_units);
+    total_units = saturated_add(total_units, graph_units);
+    total_units = saturated_add(total_units, reachability_units);
+    total_units = saturated_add(total_units, render_units);
+    total_units = saturated_add(total_units, search_units);
+    Complexity {
+        pool_probe_units: pool_probe_units,
+        parse_units: parse_units,
+        inline_units: inline_units,
+        graph_units: graph_units,
+        reachability_units: reachability_units,
+        render_units: render_units,
+        search_units: search_units,
+        total_units: total_units,
+    }
+}
+
+pub fn append(borrow value: Complexity, inout out: std.strbuf.StrBuf) {
+    out.push_str("pool_probe_units=");
+    out.push_str(@to_string(value.pool_probe_units));
+    out.push(10);
+    out.push_str("parse_units=");
+    out.push_str(@to_string(value.parse_units));
+    out.push(10);
+    out.push_str("inline_units=");
+    out.push_str(@to_string(value.inline_units));
+    out.push(10);
+    out.push_str("graph_units=");
+    out.push_str(@to_string(value.graph_units));
+    out.push(10);
+    out.push_str("reachability_units=");
+    out.push_str(@to_string(value.reachability_units));
+    out.push(10);
+    out.push_str("render_units=");
+    out.push_str(@to_string(value.render_units));
+    out.push(10);
+    out.push_str("search_units=");
+    out.push_str(@to_string(value.search_units));
+    out.push(10);
+    out.push_str("total_work_units=");
+    out.push_str(@to_string(value.total_units));
+    out.push(10);
+}

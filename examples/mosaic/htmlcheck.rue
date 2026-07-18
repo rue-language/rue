@@ -1,0 +1,130 @@
+// Independent rendered-HTML sanity checker. It is intentionally not a full HTML
+// parser; it verifies Mosaic's shell invariants and balanced tags with a small
+// scanner before bytes reach the filesystem.
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct Result {
+    ok: bool,
+    tags: u64,
+    links: u64,
+    headings: u64,
+    error: StrBuf,
+}
+
+fn contains(borrow value: StrBuf, needle: StrBuf) -> bool {
+    if needle.len() == 0 {
+        return true;
+    }
+    if needle.len() > value.len() {
+        return false;
+    }
+    let mut i: u64 = 0;
+    while i + needle.len() <= value.len() {
+        let mut matched = true;
+        let mut j: u64 = 0;
+        while j < needle.len() {
+            if text.byte_of(borrow value, i + j) != text.byte_of(borrow needle, j) {
+                matched = false;
+                j = needle.len();
+            } else {
+                j = j + 1;
+            }
+        }
+        if matched {
+            return true;
+        }
+        i = i + 1;
+    }
+    false
+}
+
+fn count_prefix(borrow value: StrBuf, prefix: StrBuf) -> u64 {
+    let mut count: u64 = 0;
+    let mut i: u64 = 0;
+    while i + prefix.len() <= value.len() {
+        let mut matched = true;
+        let mut j: u64 = 0;
+        while j < prefix.len() {
+            if text.byte_of(borrow value, i + j) != text.byte_of(borrow prefix, j) {
+                matched = false;
+                j = prefix.len();
+            } else {
+                j = j + 1;
+            }
+        }
+        if matched {
+            count = count + 1;
+            i = i + prefix.len();
+        } else {
+            i = i + 1;
+        }
+    }
+    count
+}
+
+fn fail(message: StrBuf, tags: u64, links: u64, headings: u64) -> Result {
+    Result { ok: false, tags: tags, links: links, headings: headings, error: message }
+}
+
+fn balanced_pair(borrow html: StrBuf, open: StrBuf, close: StrBuf) -> bool {
+    count_prefix(borrow html, open) == count_prefix(borrow html, close)
+}
+
+fn no_raw_controls(borrow html: StrBuf) -> bool {
+    let mut i: u64 = 0;
+    while i < html.len() {
+        let b = text.byte_of(borrow html, i);
+        if b < 32 && b != 9 && b != 10 && b != 13 {
+            return false;
+        }
+        i = i + 1;
+    }
+    true
+}
+
+pub fn verify(borrow html: StrBuf) -> Result {
+    let tags = text.count_byte(borrow html, 60);
+    let links = count_prefix(borrow html, "<a ");
+    let headings = count_prefix(borrow html, "<h1") +
+        count_prefix(borrow html, "<h2") +
+        count_prefix(borrow html, "<h3") +
+        count_prefix(borrow html, "<h4") +
+        count_prefix(borrow html, "<h5") +
+        count_prefix(borrow html, "<h6");
+    if !contains(borrow html, "<!doctype html>") {
+        return fail("missing HTML doctype", tags, links, headings);
+    }
+    if count_prefix(borrow html, "<html ") != 1 || count_prefix(borrow html, "</html>") != 1 {
+        return fail("document needs exactly one html element", tags, links, headings);
+    }
+    if count_prefix(borrow html, "<head>") != 1 || count_prefix(borrow html, "</head>") != 1 {
+        return fail("document needs exactly one head element", tags, links, headings);
+    }
+    if count_prefix(borrow html, "<body>") != 1 || count_prefix(borrow html, "</body>") != 1 {
+        return fail("document needs exactly one body element", tags, links, headings);
+    }
+    if count_prefix(borrow html, "<main id=\"content\">") != 1 || count_prefix(borrow html, "</main>") != 1 {
+        return fail("document needs exactly one content main", tags, links, headings);
+    }
+    if count_prefix(borrow html, "<title>") != 1 || count_prefix(borrow html, "</title>") != 1 {
+        return fail("document needs exactly one title", tags, links, headings);
+    }
+    if !balanced_pair(borrow html, "<article>", "</article>") {
+        return fail("article tags are unbalanced", tags, links, headings);
+    }
+    if !balanced_pair(borrow html, "<table>", "</table>") {
+        return fail("table tags are unbalanced", tags, links, headings);
+    }
+    if !balanced_pair(borrow html, "<pre>", "</pre>") {
+        return fail("pre tags are unbalanced", tags, links, headings);
+    }
+    if headings == 0 {
+        return fail("rendered page has no headings", tags, links, headings);
+    }
+    if !no_raw_controls(borrow html) {
+        return fail("rendered page contains a raw control byte", tags, links, headings);
+    }
+    Result { ok: true, tags: tags, links: links, headings: headings, error: StrBuf.new() }
+}

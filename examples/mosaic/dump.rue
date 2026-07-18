@@ -1,0 +1,95 @@
+// Structural dump used for debugging and deterministic CLI tests.
+const std = @import("std");
+const model = @import("model.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn block_name(tag: u64) -> StrBuf {
+    if tag == model.BLOCK_PARAGRAPH() { "paragraph" }
+    else if tag == model.BLOCK_HEADING() { "heading" }
+    else if tag == model.BLOCK_CODE() { "code" }
+    else if tag == model.BLOCK_LIST() { "list" }
+    else if tag == model.BLOCK_ITEM() { "item" }
+    else if tag == model.BLOCK_QUOTE() { "quote" }
+    else if tag == model.BLOCK_RULE() { "rule" }
+    else if tag == model.BLOCK_TABLE() { "table" }
+    else if tag == model.BLOCK_TABLE_ROW() { "row" }
+    else { "unknown" }
+}
+
+fn inline_name(tag: u64) -> StrBuf {
+    if tag == model.INLINE_TEXT() { "text" }
+    else if tag == model.INLINE_EMPHASIS() { "emphasis" }
+    else if tag == model.INLINE_STRONG() { "strong" }
+    else if tag == model.INLINE_CODE() { "code" }
+    else if tag == model.INLINE_LINK() { "link" }
+    else if tag == model.INLINE_ESCAPE() { "escape" }
+    else { "unknown" }
+}
+
+fn quoted_pool(borrow site: model.Site, id: u64, inout out: StrBuf) {
+    out.push(34);
+    if id != model.NONE() { site.strings.append(id, inout out); }
+    out.push(34);
+}
+
+fn dump_page(borrow site: model.Site, index: u64, inout out: StrBuf) {
+    let page = site.pages.get_or(index, model.empty_page());
+    out.push_str("page["); out.push_str(@to_string(index)); out.push_str("] source=");
+    quoted_pool(borrow site, page.source_id, inout out);
+    out.push_str(" output="); quoted_pool(borrow site, page.output_id, inout out);
+    out.push_str(" title="); quoted_pool(borrow site, page.title_id, inout out);
+    out.push_str(" blocks="); out.push_str(@to_string(page.block_count));
+    out.push_str(" anchors="); out.push_str(@to_string(page.anchor_count));
+    out.push_str(" links="); out.push_str(@to_string(page.link_count)); out.push(10);
+    let mut i = page.block_start;
+    while i < page.block_start + page.block_count {
+        let block = site.blocks.get_or(i, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
+        out.push_str("  block["); out.push_str(@to_string(i)); out.push_str("] ");
+        out.push_str(block_name(block.tag)); out.push_str(" line="); out.push_str(@to_string(block.line));
+        if block.level > 0 { out.push_str(" level="); out.push_str(@to_string(block.level)); }
+        if block.text_id != model.NONE() { out.push_str(" text="); quoted_pool(borrow site, block.text_id, inout out); }
+        out.push(10);
+        i = i + 1;
+    }
+}
+
+fn dump_inlines(borrow site: model.Site, inout out: StrBuf) {
+    let mut i: u64 = 0;
+    while i < site.inlines.len() {
+        let node = site.inlines.get_or(i, model.Inline { tag: 0, text_id: 0, target_id: 0, line: 0 });
+        out.push_str("inline["); out.push_str(@to_string(i)); out.push_str("] "); out.push_str(inline_name(node.tag));
+        out.push_str(" text="); quoted_pool(borrow site, node.text_id, inout out);
+        if node.tag == model.INLINE_LINK() { out.push_str(" target="); quoted_pool(borrow site, node.target_id, inout out); }
+        out.push(10);
+        i = i + 1;
+    }
+}
+
+fn dump_links(borrow site: model.Site, inout out: StrBuf) {
+    let mut i: u64 = 0;
+    while i < site.links.len() {
+        let link = site.links.get_or(i, model.Link {
+            source_page: 0, target_id: 0, label_id: 0, line: 0,
+            resolved_page: model.NONE(), resolved_anchor: model.NONE(), external: false,
+        });
+        out.push_str("link["); out.push_str(@to_string(i)); out.push_str("] page="); out.push_str(@to_string(link.source_page));
+        out.push_str(" target="); quoted_pool(borrow site, link.target_id, inout out);
+        out.push_str(" resolved=");
+        if link.external { out.push_str("external"); }
+        else if link.resolved_page == model.NONE() { out.push_str("none"); }
+        else { out.push_str(@to_string(link.resolved_page)); }
+        out.push(10);
+        i = i + 1;
+    }
+}
+
+pub fn site(borrow value: model.Site) -> StrBuf {
+    let mut out = StrBuf.new();
+    out.push_str("site title="); quoted_pool(borrow value, value.title_id, inout out);
+    out.push_str(" pages="); out.push_str(@to_string(value.pages.len())); out.push(10);
+    let mut i: u64 = 0;
+    while i < value.pages.len() { dump_page(borrow value, i, inout out); i = i + 1; }
+    dump_inlines(borrow value, inout out);
+    dump_links(borrow value, inout out);
+    out
+}

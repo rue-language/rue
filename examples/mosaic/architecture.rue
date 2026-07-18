@@ -1,0 +1,143 @@
+// Extended architecture reference assembled into help output. It documents the
+// invariants that make the example maintainable as a compiler workload grows.
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn pipeline(inout out: StrBuf) {
+    out.push_str("architecture and phase ownership:\n");
+    out.push_str("  io             reads manifests/documents and writes final byte streams\n");
+    out.push_str("  manifest       parses project declarations into page records\n");
+    out.push_str("  schema         validates metadata and safe flat output paths\n");
+    out.push_str("  sourcecheck    validates UTF-8, newlines, controls, and source hygiene\n");
+    out.push_str("  frontmatter    applies bounded page metadata before body parsing\n");
+    out.push_str("  markup         lowers blocks into a flat POD arena\n");
+    out.push_str("  inline         lowers emphasis, code, escapes, and graph edges\n");
+    out.push_str("  oracle         independently inventories source constructs\n");
+    out.push_str("  graph          resolves pages/fragments and proves reachability\n");
+    out.push_str("  contentcheck   enforces author-facing structural policy\n");
+    out.push_str("  arena_check    proves every range, id, and ownership relation\n");
+    out.push_str("  template       renders semantic HTML from validated records\n");
+    out.push_str("  outputaudit    compares rendered structure with the model\n");
+    out.push_str("  artifactcheck  validates JSON, XML, CSS, and robots before writes\n\n");
+}
+
+fn representation(inout out: StrBuf) {
+    out.push_str("representation:\n");
+    out.push_str("  All source strings are interned in one byte pool. Records retain integer\n");
+    out.push_str("  ids, not owned strings. Pages own contiguous ranges of blocks, inlines,\n");
+    out.push_str("  anchors, and links. Container blocks own contiguous child block ranges.\n");
+    out.push_str("  This POD shape permits repeated ArrayBuf reads without moving drop values,\n");
+    out.push_str("  supports stable dumps, and makes integrity verification straightforward.\n\n");
+}
+
+fn determinism(inout out: StrBuf) {
+    out.push_str("determinism contract:\n");
+    out.push_str("  Manifest order establishes page identity and search-index order.\n");
+    out.push_str("  Navigation order is encoded into integer keys and sorted explicitly.\n");
+    out.push_str("  Diagnostics are sorted by path, line, code, and discovery index.\n");
+    out.push_str("  Hash-map probe order never appears in user-visible output.\n");
+    out.push_str("  Each HTML page is rendered twice and compared before its first write.\n");
+    out.push_str("  Stress mode fingerprints two complete renders of a generated site.\n");
+    out.push_str("  Build and check share one loader and graph validator.\n\n");
+}
+
+fn safety(inout out: StrBuf) {
+    out.push_str("safety and validation:\n");
+    out.push_str("  Inputs must be canonical UTF-8 with supported newline/control bytes.\n");
+    out.push_str("  Source and output paths are safe relative paths; v1 outputs are flat.\n");
+    out.push_str("  Page titles, templates, descriptions, and navigation orders are checked.\n");
+    out.push_str("  Heading levels, table widths, code languages, and URL schemes are checked.\n");
+    out.push_str("  Internal links name an existing page and, when present, an existing anchor.\n");
+    out.push_str("  Queue plus BitSet traversal starts at the first page and rejects orphans.\n");
+    out.push_str("  HTML text, attributes, URLs, JSON, and XML use context-specific escaping.\n");
+    out.push_str("  Shared artifact validators run before the filesystem sees output bytes.\n\n");
+}
+
+fn standard_library(inout out: StrBuf) {
+    out.push_str("standard-library exercise:\n");
+    out.push_str("  std.env obtains commands and manifest paths.\n");
+    out.push_str("  std.fs performs chunked reads and complete deterministic writes.\n");
+    out.push_str("  StrBuf owns inputs, pooled bytes, diagnostics, and rendered artifacts.\n");
+    out.push_str("  ArrayBuf stores page, block, inline, anchor, link, token, and node arenas.\n");
+    out.push_str("  StrMap resolves source and output paths and builds the term index.\n");
+    out.push_str("  Queue and BitSet implement reachability and feature coverage.\n");
+    out.push_str("  sort orders navigation, diagnostics, and ranked search terms.\n");
+    out.push_str("  option and result make filesystem and collection failure explicit.\n\n");
+}
+
+fn outputs(inout out: StrBuf) {
+    out.push_str("build outputs:\n");
+    out.push_str("  one semantic HTML document per published page\n");
+    out.push_str("  mosaic.css with responsive and accessible built-in presentation\n");
+    out.push_str("  search-index.json with page records and ranked terms\n");
+    out.push_str("  sitemap.xml with one URL record per published page\n");
+    out.push_str("  robots.txt rendered through the checked template expression language\n\n");
+}
+
+fn scaling(inout out: StrBuf) {
+    out.push_str("scaling evidence:\n");
+    out.push_str("  stats reports arena sizes, capacities, ratios, work-unit estimates,\n");
+    out.push_str("  feature coverage, graph degrees, output sizes, and model fingerprints.\n");
+    out.push_str("  stress creates 200 linked pages with headings, tables, lists, code, and\n");
+    out.push_str("  inline markup; it validates expected page/link/anchor counts, repeatable\n");
+    out.push_str("  output fingerprints, and focused subsystem self-tests.\n\n");
+}
+
+fn modes(inout out: StrBuf) {
+    out.push_str("mode boundaries:\n");
+    out.push_str("  build loads, parses, validates, plans, renders, audits, then writes.\n");
+    out.push_str("  No page or shared artifact is written while semantic diagnostics exist.\n");
+    out.push_str("  check stops after the same load and validation path, with no writes.\n");
+    out.push_str("  dump prints page/block/inline/link identities after graph resolution.\n");
+    out.push_str("  stats derives metrics from the same validated arenas and renderers.\n");
+    out.push_str("  help is independent of project IO and documents the accepted grammar.\n");
+    out.push_str("  stress constructs source in memory, then invokes real parsing and rendering.\n");
+    out.push_str("  Unknown commands and missing manifests fail with stable nonzero exits.\n\n");
+}
+
+fn extension_points(inout out: StrBuf) {
+    out.push_str("extension points:\n");
+    out.push_str("  New block syntax belongs in markup and receives a distinct POD tag.\n");
+    out.push_str("  New inline syntax belongs in inline and must update source-oracle coverage.\n");
+    out.push_str("  New cross-page references become Link records and graph edges.\n");
+    out.push_str("  New metadata keys update frontmatter, schema, dump, search, and templates.\n");
+    out.push_str("  New output artifacts join buildplan and receive an independent audit.\n");
+    out.push_str("  New templates reuse the canonical shell rather than fork rendering phases.\n");
+    out.push_str("  New statistics remain derived consumers and never mutate the site model.\n\n");
+}
+
+fn limits(inout out: StrBuf) {
+    out.push_str("intentional v1 limits:\n");
+    out.push_str("  Output files are flat because the current std.fs has no mkdir surface.\n");
+    out.push_str("  Markup punctuation is ASCII while content bytes are canonical UTF-8.\n");
+    out.push_str("  Tables, lists, and block quotes are one structural level deep.\n");
+    out.push_str("  Template expressions expose a fixed environment and explicit filters.\n");
+    out.push_str("  Local links may contain fragments but not query strings.\n");
+    out.push_str("  External HTTP, HTTPS, mailto, and unknown safe schemes are not crawled.\n");
+    out.push_str("  Draft documents are parsed but omitted from navigation and outputs.\n\n");
+}
+
+fn maintenance(inout out: StrBuf) {
+    out.push_str("maintenance gates:\n");
+    out.push_str("  Keep the checked-in handbook valid under build, check, dump, and stats.\n");
+    out.push_str("  Keep stress counts explicit when generators or syntax change.\n");
+    out.push_str("  Add deterministic CLI cases for every new representative failure.\n");
+    out.push_str("  Update the frontend differential corpus count for every Rue module.\n");
+    out.push_str("  Preserve one canonical model and treat audits as read-only consumers.\n\n");
+}
+
+pub fn reference() -> StrBuf {
+    let mut out = StrBuf.new();
+    pipeline(inout out);
+    representation(inout out);
+    determinism(inout out);
+    safety(inout out);
+    standard_library(inout out);
+    outputs(inout out);
+    scaling(inout out);
+    modes(inout out);
+    extension_points(inout out);
+    limits(inout out);
+    maintenance(inout out);
+    out
+}

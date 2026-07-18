@@ -1,0 +1,68 @@
+// Aggregate generated-output size and fingerprint metrics.
+const std = @import("std");
+const model = @import("model.rue");
+const template = @import("template.rue");
+const text = @import("text.rue");
+
+pub struct Profile {
+    pages: u64,
+    bytes: u64,
+    smallest: u64,
+    largest: u64,
+    fingerprint: u64,
+}
+
+pub fn collect(borrow site: model.Site) -> Profile {
+    let mut value = Profile {
+        pages: 0,
+        bytes: 0,
+        smallest: model.NONE(),
+        largest: 0,
+        fingerprint: 14695981039346656037,
+    };
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let page = site.pages.get_or(i, model.empty_page());
+        if !page.draft {
+            let html = template.page(borrow site, i);
+            value.pages = value.pages + 1;
+            value.bytes = value.bytes + html.len();
+            if html.len() < value.smallest {
+                value.smallest = html.len();
+            }
+            if html.len() > value.largest {
+                value.largest = html.len();
+            }
+            let mut j: u64 = 0;
+            while j < html.len() {
+                value.fingerprint = value.fingerprint ^ @intCast(text.byte_of(borrow html, j));
+                value.fingerprint = @wrapping_mul(value.fingerprint, 1099511628211);
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+    if value.pages == 0 {
+        value.smallest = 0;
+    }
+    value
+}
+
+pub fn append(borrow value: Profile, inout out: std.strbuf.StrBuf) {
+    let average = if value.pages == 0 { 0 } else { value.bytes / value.pages };
+    out.push_str("html_bytes=");
+    out.push_str(@to_string(value.bytes));
+    out.push(10);
+    out.push_str("average_html_bytes=");
+    out.push_str(@to_string(average));
+    out.push(10);
+    out.push_str("smallest_html_bytes=");
+    out.push_str(@to_string(value.smallest));
+    out.push(10);
+    out.push_str("largest_html_bytes=");
+    out.push_str(@to_string(value.largest));
+    out.push(10);
+    out.push_str("html_fingerprint=");
+    out.push_str(@to_string(value.fingerprint));
+    out.push(10);
+}
