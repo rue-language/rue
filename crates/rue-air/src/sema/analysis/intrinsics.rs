@@ -466,19 +466,9 @@ impl<'a> BodySema<'a> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         let root = self.extract_root_variable(coll);
-        let move_before = root.and_then(|v| ctx.moved_vars.get(&v).cloned());
+        let move_before = self.snapshot_move_state(root, ctx);
         let coll_result = self.analyze_inst(air, coll, ctx)?;
-        if let Some(var) = root {
-            match move_before {
-                Some(state) => {
-                    ctx.moved_vars.insert(var, state);
-                }
-                None => {
-                    ctx.moved_vars.remove(&var);
-                }
-            }
-        }
-        air.cancel_move_marker(coll_result.air_ref);
+        self.restore_move_state_and_cancel(air, coll_result.air_ref, move_before, ctx);
         Ok(coll_result)
     }
 
@@ -512,10 +502,7 @@ impl<'a> BodySema<'a> {
         // argument (literal, arithmetic, call result) has no owning variable to
         // preserve, so it is analyzed normally.
         let byref_root = root_variable_of(self.rir, args[0].value);
-        let prev_byref_root = std::mem::replace(&mut ctx.byref_arg_root, byref_root);
-        let arg_result = self.analyze_inst(air, args[0].value, ctx);
-        ctx.byref_arg_root = prev_byref_root;
-        let arg_result = arg_result?;
+        let arg_result = self.analyze_with_borrow_root(air, args[0].value, byref_root, ctx)?;
         let arg_type = arg_result.ty;
 
         // An `<error>`-typed argument reaching here via `Ok` means no

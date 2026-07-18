@@ -507,7 +507,7 @@ impl<'a> BodySema<'a> {
                 if !self.type_requires_consumption(p.ty) {
                     continue;
                 }
-                let state = ctx.moved_vars.get(&p.name);
+                let state = self.moved_state(&ctx, &p.name);
                 if !state.is_some_and(|s| s.full_move_on_all_paths) {
                     // Element-wise consumption of a linear array parameter
                     // (RUE-186) satisfies the obligation like a whole move.

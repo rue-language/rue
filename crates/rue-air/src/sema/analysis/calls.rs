@@ -125,15 +125,13 @@ impl<'a> BodySema<'a> {
             })
         };
 
-        let receiver_move_state_before = receiver_var.and_then(|v| ctx.moved_vars.get(&v).cloned());
+        let receiver_move_state_before = self.snapshot_move_state(receiver_var, ctx);
 
         // Analyze the receiver expression. When it is a by-ref receiver,
         // `byref_arg_root` makes the var-ref / field / index reads borrow the
         // place instead of moving out of it (restored afterwards).
-        let prev_byref_root = std::mem::replace(&mut ctx.byref_arg_root, receiver_byref_root);
-        let receiver_result = self.analyze_inst(air, receiver, ctx);
-        ctx.byref_arg_root = prev_byref_root;
-        let mut receiver_result = receiver_result?;
+        let mut receiver_result =
+            self.analyze_with_borrow_root(air, receiver, receiver_byref_root, ctx)?;
         let receiver_type = receiver_result.ty;
 
         // Handle module member access: module.function() becomes a direct function call
@@ -291,7 +289,7 @@ impl<'a> BodySema<'a> {
                 receiver_result = AnalysisResult::new(borrowed, receiver_result.ty);
                 receiver_temp_scope = temp_scope;
             }
-            require_air_byref_place(
+            self.require_addressable_read(
                 air,
                 receiver_result.air_ref,
                 receiver_mode == AirArgMode::Inout,
@@ -362,15 +360,12 @@ impl<'a> BodySema<'a> {
                 // no-ops for a well-formed place receiver (and still cover the
                 // now-vestigial path where the receiver root differs from the
                 // byref root). Mirrors the builtin ByRef/ByMutRef handling.
-                match receiver_move_state_before.clone() {
-                    Some(state) => {
-                        ctx.moved_vars.insert(receiver_root, state);
-                    }
-                    None => {
-                        ctx.moved_vars.remove(&receiver_root);
-                    }
-                }
-                air.cancel_move_marker(receiver_result.air_ref);
+                self.restore_move_state_and_cancel(
+                    air,
+                    receiver_result.air_ref,
+                    receiver_move_state_before.clone(),
+                    ctx,
+                );
             }
         } else {
             // Check for exclusive access violation (by-value receiver)

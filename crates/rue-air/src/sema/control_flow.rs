@@ -1667,10 +1667,10 @@ impl<'a> BodySema<'a> {
                 span: pattern_span,
             });
 
-            // Allocate a local slot and register the binding.
-            let slot = ctx.next_slot;
-            let num_slots = self.require_layout_slots(field_ty, pattern_span)?;
-            ctx.next_slot += num_slots;
+            // Allocate the binding through the canonical local-storage owner,
+            // then register the match arm's source-level name in this scope.
+            let (slot, storage_live, alloc) =
+                self.allocate_local_storage(air, get_ref, field_ty, pattern_span, ctx)?;
             ctx.insert_local(
                 *binding_name,
                 LocalVar {
@@ -1682,19 +1682,6 @@ impl<'a> BodySema<'a> {
                 },
             );
 
-            let storage_live = air.add_inst(AirInst {
-                data: AirInstData::StorageLive { slot },
-                ty: field_ty,
-                span: pattern_span,
-            });
-            let alloc = air.add_inst(AirInst {
-                data: AirInstData::Alloc {
-                    slot,
-                    init: get_ref,
-                },
-                ty: Type::UNIT,
-                span: pattern_span,
-            });
             stmts.push(storage_live.as_u32());
             stmts.push(alloc.as_u32());
         }
