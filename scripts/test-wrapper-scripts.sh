@@ -703,6 +703,41 @@ EOF
   rm -rf "$sb"
 }
 
+# The cache probe must distinguish a genuine same-run cold-to-warm conversion
+# from an already-warm shared cache or a second build that did no better.
+test_cache_probe_counter_validation() {
+  local sb; sb="$(mktemp -d)"
+  cp "$SRC_ROOT/scripts/check-cache-probe" "$sb/check-cache-probe"; chmod +x "$sb/check-cache-probe"
+
+  printf '%s\n' 'Commands: 100 (cached: 10, remote: 0, local: 90)' >"$sb/cold.log"
+  printf '%s\n' 'Commands: 100 (cached: 95, remote: 0, local: 5)' >"$sb/warm.log"
+  local rc=0 out
+  out="$("$sb/check-cache-probe" "$sb/cold.log" "$sb/warm.log" 2>&1)" || rc=$?
+  check "cache probe: accepts a genuine cold-to-warm conversion" \
+    "$([ "$rc" -eq 0 ] && grep -Fq 'Warm cache reused cold results' <<<"$out" && echo 0 || echo 1)"
+
+  printf '%s\n' 'Commands: 100 (cached: 100, remote: 0, local: 0)' >"$sb/cold.log"
+  rc=0
+  out="$("$sb/check-cache-probe" "$sb/cold.log" "$sb/warm.log" 2>&1)" || rc=$?
+  check "cache probe: rejects an already-warm cold phase" \
+    "$([ "$rc" -ne 0 ] && grep -Fq 'zero local actions' <<<"$out" && echo 0 || echo 1)"
+
+  printf '%s\n' 'Commands: 100 (cached: 10, remote: 0, local: 90)' >"$sb/cold.log"
+  printf '%s\n' 'Commands: 100 (cached: 10, remote: 0, local: 90)' >"$sb/warm.log"
+  rc=0
+  out="$("$sb/check-cache-probe" "$sb/cold.log" "$sb/warm.log" 2>&1)" || rc=$?
+  check "cache probe: rejects a warm phase with no improvement" \
+    "$([ "$rc" -ne 0 ] && grep -Fq 'did not increase cache hits' <<<"$out" && echo 0 || echo 1)"
+
+  printf '%s\n' 'no Buck summary' >"$sb/warm.log"
+  rc=0
+  out="$("$sb/check-cache-probe" "$sb/cold.log" "$sb/warm.log" 2>&1)" || rc=$?
+  check "cache probe: rejects an unparseable summary" \
+    "$([ "$rc" -ne 0 ] && grep -Fq 'Could not parse' <<<"$out" && echo 0 || echo 1)"
+
+  rm -rf "$sb"
+}
+
 # An explicit heavy-suite shard must still prove that Buck discovered and
 # reported its assigned target; a green command with no result is a RUE-924
 # false green even when the target pattern was explicit.
@@ -861,6 +896,7 @@ test_rue_unit_zero_match_fails_loud
 test_rue_unit_failing_test_propagates_exit
 test_rue_unit_unknown_crate_errors_cleanly
 test_ci_timed_preserves_status_and_summarizes_actions
+test_cache_probe_counter_validation
 test_ci_heavy_suite_audits_its_target
 test_testsh_unfiltered_audits_corpus_presence
 test_sanitizer_defaults_std_path

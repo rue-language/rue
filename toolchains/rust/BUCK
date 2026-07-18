@@ -97,6 +97,14 @@ _OPT_FLAGS = select({
     "root//constraints:release": ["-Copt-level=3", "-Clto=thin"],
 })
 
+# The manual cache probe supplies a unique value for each workflow attempt so
+# its first build cannot reuse Rust actions populated by an earlier run. The
+# value is an otherwise-unused cfg, so it changes Rust action keys without
+# overriding the prelude's target-unique crate metadata. Ordinary builds leave
+# the setting empty and retain their existing flags and action keys (RUE-1034).
+_CACHE_PROBE_NONCE = read_root_config("rue", "cache_probe_nonce", "")
+_CACHE_PROBE_FLAGS = ['--cfg=rue_cache_probe_nonce="{}"'.format(_CACHE_PROBE_NONCE)] if _CACHE_PROBE_NONCE else []
+
 # macOS linker flags to work around Xcode linker bugs
 # The new ld-prime linker in Xcode 15+ has a bug where it crashes on very long
 # symbol names (ld: Assertion failed: name.size() <= maxLength).
@@ -180,7 +188,7 @@ hermetic_rust_toolchain(
     default_edition = "2024",
     deny_lints = ["warnings"],
     allow_lints = _CLIPPY_ALLOW,
-    rustc_flags = _OPT_FLAGS,
+    rustc_flags = _OPT_FLAGS + _CACHE_PROBE_FLAGS,
     visibility = ["PUBLIC"],
 )
 
@@ -192,7 +200,7 @@ hermetic_rust_toolchain(
     default_edition = "2024",
     deny_lints = ["warnings"],
     allow_lints = _CLIPPY_ALLOW,
-    rustc_flags = _OPT_FLAGS,
+    rustc_flags = _OPT_FLAGS + _CACHE_PROBE_FLAGS,
     visibility = ["PUBLIC"],
 )
 
@@ -204,7 +212,7 @@ hermetic_rust_toolchain(
     default_edition = "2024",
     deny_lints = ["warnings"],
     allow_lints = _CLIPPY_ALLOW,
-    rustc_flags = _OPT_FLAGS + _MACOS_LINKER_FLAGS,
+    rustc_flags = _OPT_FLAGS + _MACOS_LINKER_FLAGS + _CACHE_PROBE_FLAGS,
     visibility = ["PUBLIC"],
 )
 
@@ -216,7 +224,7 @@ hermetic_rust_toolchain(
     default_edition = "2024",
     deny_lints = ["warnings"],
     allow_lints = _CLIPPY_ALLOW,
-    rustc_flags = _OPT_FLAGS + _MACOS_LINKER_FLAGS,
+    rustc_flags = _OPT_FLAGS + _MACOS_LINKER_FLAGS + _CACHE_PROBE_FLAGS,
     visibility = ["PUBLIC"],
 )
 

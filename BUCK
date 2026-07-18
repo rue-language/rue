@@ -406,6 +406,7 @@ filegroup(
         "fmt.sh",
         "scripts/ci-heavy-suite",
         "scripts/ci-timed",
+        "scripts/check-cache-probe",
         "scripts/rue",
         "scripts/rue-bin",
         "scripts/provision-build-cache",
