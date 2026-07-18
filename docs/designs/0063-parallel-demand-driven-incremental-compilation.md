@@ -1,28 +1,34 @@
 ---
 id: 0063
 title: "Parallel demand-driven incremental compilation"
-status: proposal
+status: accepted
 tags: [architecture, compiler, incremental, parallelism, codegen, linker, performance]
 feature-flag: null
 created: 2026-07-18
-accepted:
+accepted: 2026-07-18
 implemented:
 spec-sections: []
 superseded-by:
 supersedes: [0045, 0053]
 amends: [0051]
-relates: ["ADR-0050", "ADR-0052", "ADR-0055", "ADR-0058", "ADR-0061", "RUE-328", "RUE-812"]
+relates: ["ADR-0050", "ADR-0052", "ADR-0055", "ADR-0058", "ADR-0061", "RUE-328", "RUE-648", "RUE-812", "RUE-1021", "RUE-1022", "RUE-1023", "RUE-1024", "RUE-1025", "RUE-1026", "RUE-1027", "RUE-1028", "RUE-1029", "RUE-1030", "RUE-1031", "RUE-1032", "RUE-1033"]
 ---
 
 # ADR-0063: Parallel demand-driven incremental compilation
 
 ## Status
 
-Proposal. This ADR does not authorize implementation yet. It is intended to
-receive architectural review before acceptance and before an implementation
-project is created.
+Accepted by Steve on 2026-07-18 after adversarial review in PR #1824. This is
+an internal compiler and tooling design with no language-semantics or preview-
+feature change. It authorizes the phased demand-driven compilation project
+through fresh linking; incremental linker implementation still requires the
+follow-up ADR described below.
 
-If accepted, this ADR supersedes ADR-0045's compiler-architecture rollout and
+Implementation is tracked by the Linear project **Parallel demand-driven
+incremental compilation** under the RUE-648 epic. RUE-1021 through RUE-1033 are
+the dependency-ordered phase issues.
+
+This ADR supersedes ADR-0045's compiler-architecture rollout and
 its exclusion of cross-request and cross-invocation incremental state. It
 retains and restates ADR-0045's language-semantic rule that observable semantic
 checking and emitted code are selected by explicit roots.
@@ -49,10 +55,10 @@ and rule that semantic work begins only after a complete valid import graph are
 replaced by batched demand fulfillment and validity of the rooted dependency
 closure. Section 7 defines the amended protocol.
 
-Until this proposal is accepted, ADR-0045, ADR-0051, and ADR-0053 remain
-authoritative and their metadata is unchanged. Acceptance requires marking
-ADR-0045 and ADR-0053 superseded with reciprocal `superseded-by: 0063` metadata
-and adding `amended-by: 0063` to ADR-0051.
+ADR-0045 and ADR-0053 carry reciprocal `superseded-by: 0063` metadata.
+ADR-0051 remains accepted with `amended-by: 0063` because its import authority,
+policy, and provenance rules survive while this ADR replaces its whole-graph
+staging boundary.
 
 ## Summary
 
@@ -628,8 +634,7 @@ oracle.
 
 ## Implementation Phases
 
-Linear project and issue identifiers will be assigned only after this ADR is
-accepted. The dependency order is:
+Tracked in Linear under the RUE-648 epic. The dependency order is:
 
 - [ ] **Phase 0: Runtime prototype and benchmark gate.** Prove exact-key
   claim-or-join, different-key parallel execution, red/green propagation,
@@ -637,52 +642,59 @@ accepted. The dependency order is:
   handling, bounded retention, and progress with one permit and adversarial
   claim/join/dependency schedules on representative query shapes. Compare an
   in-house evolution with a query-library prototype if substrate choice remains
-  open.
+  open. — RUE-1022
 - [ ] **Phase 1: Revisioned keyed database and compatibility shim.** Introduce
   immutable revisions, per-key nodes, joined waiters, task-scoped dependency
   recording, and single-worker scheduling beneath a compatibility shim over the
   selected-state API. Do not require all query families to change call
-  discipline in one diff.
+  discipline in one diff. — RUE-1021 (blocked by RUE-1022)
 - [ ] **Phase 2: Source and import inputs.** Publish per-module source leaves,
   fulfill rooted missing import observations in deduplicated frontier batches,
   prohibit speculative host demands, and preserve canonical read policy,
   precedence, provenance, and discovery-epoch reuse across successor attempts.
+  — RUE-1023 (blocked by RUE-1021)
 - [ ] **Phase 3: Module syntax/RIR queries.** Parse and lower demanded modules,
   provide stable definition/name/import indexes, and keep whole-program views as
-  thin projections.
+  thin projections. — RUE-1024 (blocked by RUE-1023)
 - [ ] **Phase 4: Complete stable semantic identity.** Cover named definitions,
   specializations, anonymous nominals, methods/destructors,
   definition-relative structural anchors, and synthesized entities with
-  schedule- and position-independent keys.
+  schedule- and position-independent keys. — RUE-1025 (blocked by RUE-1024)
 - [ ] **Phase 5: Declaration and comptime queries.** Move shells, signatures,
   constants, type constructors, method lookup, and domain-specific cycle
-  handling behind keyed canonical queries.
+  handling behind keyed canonical queries. — RUE-1026 (blocked by RUE-1025)
 - [ ] **Phase 6: Per-body semantics and projections.** Analyze one body per
   query, publish canonical bodies and independently stamped `BodyReferences`,
   including deterministic references from failed bodies, and remove the
-  whole-program mutable Sema epoch as an authority.
+  whole-program mutable Sema epoch as an authority. — RUE-1027 (blocked by
+  RUE-1026)
 - [ ] **Phase 7: Reachability and parallel scheduling.** Implement
   database-owned reachability with per-identity memberships, correct edge
   deletion, and separate addition/deletion measurement gates; handle legal call
   SCCs; move existing Rayon CFG/backend parallelism onto the shared budget; and
-  prove progress plus one-worker/many-worker equivalence.
+  prove progress plus one-worker/many-worker equivalence. — RUE-1028 (blocked by
+  RUE-1027)
 - [ ] **Phase 8: Type/layout/ABI/drop queries.** Replace full-pool scans and
-  destructor roots with demand-driven facts, layouts, call ABI, and glue.
+  destructor roots with demand-driven facts, layouts, call ABI, and glue. —
+  RUE-1029 (blocked by RUE-1028)
 - [ ] **Phase 9: CFG and optimization queries.** Publish per-function
   unoptimized and optimized CFG artifacts with precise layout, warning, string,
-  symbol, and interprocedural dependencies.
+  symbol, and interprocedural dependencies. — RUE-1030 (blocked by RUE-1029)
 - [ ] **Phase 10: MIR and `CodegenUnit` queries.** Query both native backends per
   reached function, normalize link atoms, migrate all backend presentation to
-  the canonical path, and retain only justified backend boundaries.
+  the canonical path, and retain only justified backend boundaries. — RUE-1031
+  (blocked by RUE-1030)
 - [ ] **Phase 11: `ProgramImagePlan` and fresh-link adapter.** Aggregate stable
   typed units, project the current per-function objects, invoke the existing
   fresh internal/system linker paths, and establish the delta/fingerprint
-  contract for follow-up direct and incremental internal linking.
+  contract for follow-up direct and incremental internal linking. — RUE-1032
+  (blocked by RUE-1031)
 - [ ] **Phase 12: Compatibility and performance completion.** Generalize the
   cold-versus-reused oracle, add multi-worker determinism and cancellation
   schedules and source-position-shift cases, delete the selected-state
   compatibility shim and peer cache state, enforce memory budgets, and publish
-  warm edit-to-codegen and edit-to-runnable baselines.
+  warm edit-to-codegen and edit-to-runnable baselines. — RUE-1033 (blocked by
+  RUE-1032)
 
 Each family migrates through the compatibility shim one at a time and must pass
 the cold-versus-reused differential oracle before the next family moves. Each

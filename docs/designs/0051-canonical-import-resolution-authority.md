@@ -9,6 +9,7 @@ accepted: 2026-07-13
 implemented:
 spec-sections: []
 superseded-by:
+amended-by: [0063]
 relates: ["ADR-0026", "ADR-0047", "ADR-0050", "RUE-806", "RUE-807", "RUE-808", "RUE-809", "RUE-810"]
 ---
 
@@ -19,7 +20,10 @@ relates: ["ADR-0026", "ADR-0047", "ADR-0050", "RUE-806", "RUE-807", "RUE-808", "
 Accepted under RUE-806 after adversarial review, 2026-07-13. RUE-807 through
 RUE-810 implement it. This is an internal compiler and tooling design. It does
 not change import syntax or language semantics, so it has no preview feature and
-requires no specification change.
+requires no specification change. [ADR-0063](0063-parallel-demand-driven-incremental-compilation.md)
+amends the closed-whole-graph staging boundary into batched, rooted demand
+fulfillment while retaining this ADR's compiler authority, host read policy,
+candidate precedence, provenance, typed observations, and ledger contracts.
 
 ## Summary
 
