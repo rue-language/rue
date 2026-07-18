@@ -5,7 +5,7 @@
 //! lowerers consume the normalized slot vector and only choose how to marshal
 //! those slots for their ABI.
 
-use rue_air::{FrozenTypeInternPool, NativeCallAbi, ReturnClass};
+use rue_air::{ArgClass, ArgConvention, FrozenTypeInternPool, NativeCallAbi, ReturnClass};
 use rue_cfg::{Cfg, CfgArgMode, CfgCallArg, Type};
 use rue_runtime_abi::{ReservedExportClass, ReservedExportId};
 
@@ -186,6 +186,12 @@ pub struct CallPlan {
     pub result: Option<VReg>,
     pub stack_slot_count: usize,
     pub stack_bytes: u32,
+    /// Total bytes of caller-owned compact-image buffers reserved for by-value
+    /// indirect aggregate arguments (RUE-1005). Allocated below the sret buffer
+    /// and above the outgoing stack arguments; freed together right after the
+    /// call, before the sret read-back. Zero when no argument crosses
+    /// indirectly.
+    pub caller_indirect_bytes: u32,
 }
 
 /// Input metadata for one CFG call argument. This is copied out of the CFG
@@ -198,6 +204,17 @@ pub enum CallArgInput {
         value: rue_cfg::CfgValue,
         slot_count: u32,
         is_multislot_aggregate: bool,
+    },
+    /// A by-value non-slot-identical compact aggregate the classifier forces
+    /// indirect under `aggregate_layout` (RUE-976/RUE-1005): the caller writes
+    /// its compact memory `image` into a caller-owned buffer of `storage_bytes`
+    /// and passes one pointer to the callee, which unmarshals it in its
+    /// prologue. Kept separate from `Value` so the single pointer ABI slot and
+    /// the buffer accounting cannot be confused with an N-slot direct value.
+    IndirectValue {
+        value: rue_cfg::CfgValue,
+        image: Vec<crate::types::PhysicalEnumSlot>,
+        storage_bytes: u32,
     },
     ByRef {
         mode: ByRefMode,
@@ -235,6 +252,30 @@ impl CallInputs {
             .zip(by_ref_plans)
             .map(|(arg, by_ref_plan)| {
                 let arg_ty = cfg.get_inst(arg.value).ty;
+                // A by-value aggregate the classifier forces indirect under the
+                // compact layout crosses through a caller-owned compact image
+                // buffer (RUE-1005), not as N direct decomposition slots. The
+                // refusal scan has already guaranteed such an aggregate has a
+                // variant-independent image before lowering reaches here.
+                if matches!(arg.mode, CfgArgMode::Normal)
+                    && matches!(
+                        NativeCallAbi::for_arguments(type_pool)
+                            .classify_arg(arg_ty, ArgConvention::ByValue),
+                        ArgClass::Indirect
+                    )
+                {
+                    let image = types::aggregate_physical_slot_map(type_pool, arg_ty).expect(
+                        "a by-value indirect compact aggregate argument must have a \
+                         variant-independent memory image (guaranteed by the refusal scan)",
+                    );
+                    let storage_bytes =
+                        align_up(types::type_size_bytes(type_pool, arg_ty) as u32, 16);
+                    return CallArgInput::IndirectValue {
+                        value: arg.value,
+                        image,
+                        storage_bytes,
+                    };
+                }
                 normalize_call_arg(
                     arg.mode,
                     arg.value,
@@ -299,6 +340,16 @@ pub trait CallMaterializer {
     fn materialize_aggregate(&mut self, value: rue_cfg::CfgValue) -> Vec<VReg>;
     fn materialize_by_ref(&mut self, plan: &crate::value_plan::ByRefAddressPlan) -> VReg;
     fn materialize_sret_pointer(&mut self, storage_bytes: u32) -> VReg;
+    /// Reserve a `storage_bytes` caller-owned buffer, write the aggregate
+    /// `value`'s compact `image` into it, and return a pointer to it (RUE-1005).
+    /// The single pointer becomes the argument's ABI slot; the callee prologue
+    /// homes it and unmarshals the image into its frame parameter slots.
+    fn materialize_indirect_value_arg(
+        &mut self,
+        value: rue_cfg::CfgValue,
+        image: &[crate::types::PhysicalEnumSlot],
+        storage_bytes: u32,
+    ) -> VReg;
 }
 
 impl CallPlan {
@@ -355,6 +406,7 @@ impl CallPlan {
         }
 
         let mut user_args = Vec::with_capacity(args.len());
+        let mut caller_indirect_bytes = 0u32;
         for arg in args {
             let (mode, slots) = match arg {
                 CallArgInput::ByRef { mode, address } => (
@@ -363,6 +415,20 @@ impl CallPlan {
                     // no storage slots. This branch precedes ZST omission.
                     vec![materializer.materialize_by_ref(address)],
                 ),
+                CallArgInput::IndirectValue {
+                    value,
+                    image,
+                    storage_bytes,
+                } => {
+                    // The caller writes the aggregate's compact image into its
+                    // own buffer and passes one pointer (RUE-1005). The buffers
+                    // are reserved below the sret storage and freed together
+                    // after the call.
+                    caller_indirect_bytes += *storage_bytes;
+                    let pointer =
+                        materializer.materialize_indirect_value_arg(*value, image, *storage_bytes);
+                    (UserArgMode::Value, vec![pointer])
+                }
                 CallArgInput::Value {
                     value,
                     slot_count,
@@ -407,6 +473,7 @@ impl CallPlan {
             result,
             stack_slot_count,
             stack_bytes,
+            caller_indirect_bytes,
         }
     }
 
@@ -428,6 +495,7 @@ impl CallPlan {
             result: None,
             stack_slot_count,
             stack_bytes: align_up((stack_slot_count * 8) as u32, 16),
+            caller_indirect_bytes: 0,
         }
     }
 }
@@ -475,6 +543,15 @@ mod tests {
 
         fn materialize_sret_pointer(&mut self, _storage_bytes: u32) -> VReg {
             VReg::new(40)
+        }
+
+        fn materialize_indirect_value_arg(
+            &mut self,
+            _value: rue_cfg::CfgValue,
+            _image: &[crate::types::PhysicalEnumSlot],
+            _storage_bytes: u32,
+        ) -> VReg {
+            VReg::new(50)
         }
     }
 
@@ -566,6 +643,7 @@ mod tests {
             result: None,
             stack_slot_count: 0,
             stack_bytes: 0,
+            caller_indirect_bytes: 0,
         };
 
         assert!(plan.user_args[0].slots.is_empty());

@@ -9,6 +9,48 @@ use rue_air::FrozenTypeInternPool;
 use rue_cfg::Cfg;
 use rue_error::CompileResult;
 
+/// How the callee prologue homes one source parameter's incoming argument
+/// registers into its frame parameter slots (ADR-0052 phase 5.8, RUE-1005).
+///
+/// The historical prologue assumed one incoming register per parameter slot. A
+/// by-value indirect compact aggregate breaks that: it arrives as one pointer
+/// register (`reg_count == 1`) yet reserves `slot_count` frame slots, so
+/// subsequent parameters' incoming registers shift. Each entry homes `reg_count`
+/// consecutive incoming registers starting at the running argument index into
+/// frame parameter slots `[start_slot, start_slot + reg_count)`; the parameter's
+/// remaining reserved slots (for an indirect aggregate) are filled lazily by the
+/// body from the homed pointer. With the gate off every parameter is direct and
+/// `reg_count == slot_count`, so the emitted prologue is byte-identical.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ParamHoming {
+    pub(crate) start_slot: u32,
+    pub(crate) reg_count: u32,
+}
+
+/// Build the callee prologue's per-source-parameter homing plan from the CFG's
+/// grouped descriptors, each carrying its precomputed incoming-register crossing
+/// width (RUE-1005). Falls back to one register per parameter slot when the CFG
+/// carries no grouped source-parameter layout (a directly constructed CFG in
+/// synthetic tests), reproducing the historical prologue exactly.
+pub(crate) fn param_homing_plan(cfg: &Cfg) -> Vec<ParamHoming> {
+    let source_params = cfg.source_param_abi();
+    if source_params.is_empty() {
+        return (0..cfg.num_params())
+            .map(|slot| ParamHoming {
+                start_slot: slot,
+                reg_count: 1,
+            })
+            .collect();
+    }
+    source_params
+        .iter()
+        .map(|param| ParamHoming {
+            start_slot: param.start_slot,
+            reg_count: param.crossing_regs,
+        })
+        .collect()
+}
+
 /// A target's MIR after allocation, peephole optimization, scheduling, and
 /// stack verification, together with the frame metadata its emitter needs.
 pub(crate) struct PreparedMir<M, R> {
@@ -18,6 +60,8 @@ pub(crate) struct PreparedMir<M, R> {
     pub(crate) num_params: u32,
     pub(crate) has_sret: bool,
     pub(crate) used_callee_saved: Vec<R>,
+    /// Per-source-parameter prologue homing plan (RUE-1005).
+    pub(crate) param_homing: Vec<ParamHoming>,
 }
 
 /// Run the target-independent backend pipeline around concrete pass hooks.
@@ -49,6 +93,7 @@ where
     let num_locals_original = cfg.num_locals();
     let num_params = cfg.num_params();
     let has_sret = crate::cfg_lower::fn_uses_sret_return(cfg, type_pool, return_reg_count);
+    let param_homing = param_homing_plan(cfg);
 
     let mir = lower()?;
     let existing_slots = num_locals_original + num_params + u32::from(has_sret);
@@ -65,6 +110,7 @@ where
         num_params,
         has_sret,
         used_callee_saved,
+        param_homing,
     })
 }
 

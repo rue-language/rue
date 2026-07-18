@@ -739,6 +739,14 @@ pub struct Cfg {
     /// on either side of such a write are NOT interchangeable. Passes that
     /// treat parameter reads as pure must consult this set.
     address_taken_params: std::collections::HashSet<u32>,
+    /// Grouped per-source-parameter ABI descriptors (ADR-0052 phase 5.8,
+    /// RUE-1005), derived at construction from the AIR parameter types and the
+    /// per-slot by-reference vector. Empty for a directly constructed CFG
+    /// (synthetic tests), in which case code generation homes one incoming
+    /// register per parameter slot (the historical prologue). Deriving it from
+    /// the AIR keeps a durable/imported body — which rebuilds its CFG from the
+    /// same AIR — identical to its freshly analyzed counterpart.
+    source_param_abi: Vec<rue_air::SourceParamAbi>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -895,6 +903,7 @@ impl Clone for Cfg {
             param_modes: self.param_modes.clone(),
             address_taken_slots: self.address_taken_slots.clone(),
             address_taken_params: self.address_taken_params.clone(),
+            source_param_abi: self.source_param_abi.clone(),
         }
     }
 }
@@ -924,6 +933,23 @@ impl Cfg {
         cfg.entry = self.entry;
         cfg.address_taken_slots = self.address_taken_slots.clone();
         cfg.address_taken_params = self.address_taken_params.clone();
+        // Descriptors carry a type only for a by-value indirect aggregate
+        // parameter, remapped across pools like any other CFG type (RUE-1005).
+        cfg.source_param_abi = self
+            .source_param_abi
+            .iter()
+            .map(|param| {
+                Ok(rue_air::SourceParamAbi {
+                    start_slot: param.start_slot,
+                    slot_count: param.slot_count,
+                    crossing_regs: param.crossing_regs,
+                    ty: match param.ty {
+                        Some(t) => Some(ty(t).map_err(CfgRemapError::Domain)?),
+                        None => None,
+                    },
+                })
+            })
+            .collect::<Result<Vec<_>, CfgRemapError<E>>>()?;
 
         macro_rules! binary {
             ($variant:ident, $a:expr, $b:expr) => {
@@ -1183,7 +1209,15 @@ impl Cfg {
             param_modes: param_modes.into(),
             address_taken_slots: std::collections::HashSet::new(),
             address_taken_params: std::collections::HashSet::new(),
+            source_param_abi: Vec::new(),
         }
+    }
+
+    /// Install the grouped per-source-parameter ABI descriptors derived by the
+    /// CFG builder from the AIR (RUE-1005). See the `source_param_abi` field.
+    #[inline]
+    pub fn set_source_param_abi(&mut self, descriptors: Vec<rue_air::SourceParamAbi>) {
+        self.source_param_abi = descriptors;
     }
 
     /// Record that `slot`'s address escapes through an address-taking
@@ -1304,6 +1338,14 @@ impl Cfg {
     #[inline]
     pub fn param_modes(&self) -> &[bool] {
         self.param_modes.by_ref()
+    }
+
+    /// Get the grouped per-source-parameter ABI descriptors (RUE-1005), or an
+    /// empty slice for a directly constructed CFG (synthetic tests), in which
+    /// case code generation homes one incoming register per parameter slot.
+    #[inline]
+    pub fn source_param_abi(&self) -> &[rue_air::SourceParamAbi] {
+        &self.source_param_abi
     }
 
     /// Create a new basic block and return its ID.

@@ -98,7 +98,8 @@ where
         &prepared.used_callee_saved,
         &local_strings,
     )
-    .with_sret(prepared.has_sret);
+    .with_sret(prepared.has_sret)
+    .with_param_homing(prepared.param_homing.clone());
     let emitted = emit(emitter)?;
     Ok((emitted, local_strings))
 }

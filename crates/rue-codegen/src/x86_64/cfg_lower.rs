@@ -102,6 +102,30 @@ impl crate::call_plan::CallMaterializer for CfgLower<'_> {
         });
         pointer
     }
+
+    fn materialize_indirect_value_arg(
+        &mut self,
+        value: CfgValue,
+        image: &[crate::types::PhysicalEnumSlot],
+        storage_bytes: u32,
+    ) -> VReg {
+        // Reserve a caller-owned buffer just below the sret storage (RUE-1005),
+        // capture its address, and write the aggregate's compact image into it —
+        // each slot truncated to its physical width at its compact byte offset,
+        // exactly the image the callee prologue unmarshals.
+        self.mir.push(X86Inst::AddRI {
+            dst: Operand::Physical(Reg::Rsp),
+            imm: -(storage_bytes as i32),
+        });
+        let pointer = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRR {
+            dst: Operand::Virtual(pointer),
+            src: Operand::Physical(Reg::Rsp),
+        });
+        let slots = self.require_aggregate_slots(value);
+        crate::agg_slots::store_enum_slots_through_ptr(self, &slots, pointer, image);
+        pointer
+    }
 }
 
 impl<'a> CfgLower<'a> {
@@ -942,6 +966,15 @@ impl<'a> CfgLower<'a> {
             self.mir.push(X86Inst::AddRI {
                 dst: Operand::Physical(Reg::Rsp),
                 imm: plan.stack_bytes as i32,
+            });
+        }
+        // Free the by-value indirect argument buffers (RUE-1005), restoring rsp
+        // to the sret storage (or the pre-call baseline) before the sret
+        // read-back reads its buffer at a fixed offset.
+        if plan.caller_indirect_bytes > 0 {
+            self.mir.push(X86Inst::AddRI {
+                dst: Operand::Physical(Reg::Rsp),
+                imm: plan.caller_indirect_bytes as i32,
             });
         }
         let slots = match plan.return_plan {
@@ -2491,6 +2524,12 @@ impl crate::terminator_plan::TerminatorAdapter for CfgLower<'_> {
 impl crate::terminator_plan::CfgLowerAdapter for CfgLower<'_> {
     fn preload_by_ref_params(&mut self) {
         self.preload_by_ref_param_ptrs();
+        // Unmarshal each by-value indirect compact aggregate parameter from the
+        // homed pointer into its frame slots at entry (RUE-1005), so field
+        // projection and whole-value reads see the correct decomposition.
+        for (base_slot, map) in crate::value_plan::indirect_value_params(&self.ctx) {
+            crate::agg_slots::unmarshal_indirect_value_param(self, base_slot, &map);
+        }
     }
 
     fn prepare_block_param(&mut self, block: BlockId, index: u32, value: CfgValue, ty: Type) {
@@ -3028,6 +3067,16 @@ mod tests {
         source: &str,
         preview: PreviewFeatures,
     ) -> rue_error::CompileResult<X86Mir> {
+        try_lower_named_fn(source, preview, None)
+    }
+
+    /// Lower a specific function by name (or the first function when `None`),
+    /// so tests can exercise a callee whose caller sorts ahead of it.
+    fn try_lower_named_fn(
+        source: &str,
+        preview: PreviewFeatures,
+        name: Option<&str>,
+    ) -> rue_error::CompileResult<X86Mir> {
         let lexer = Lexer::new(source);
         let (tokens, interner) = lexer.tokenize().unwrap();
         let parser = Parser::new(tokens, interner);
@@ -3038,7 +3087,14 @@ mod tests {
         let output = Sema::new_synthetic(&rir, &mut interner, preview)
             .analyze_all()
             .unwrap();
-        let func = &output.functions[0];
+        let func = match name {
+            Some(name) => output
+                .functions
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("no function named `{name}`")),
+            None => &output.functions[0],
+        };
         let type_pool = &output.type_pool;
         let cfg_output = CfgBuilder::build(
             &func.air,
@@ -3208,23 +3264,151 @@ mod tests {
         .expect("an inout compact struct argument must lower");
     }
 
-    /// RUE-1004 keeps refusing a non-slot-identical struct passed BY VALUE across
-    /// a call: the callee parameter ABI is not yet remapped from the CFG's N
-    /// decomposition slots to one incoming compact-buffer pointer.
+    /// RUE-1005: under `aggregate_layout`, a non-slot-identical struct passed BY
+    /// VALUE across a call now lowers. The caller (`main`, first here) writes the
+    /// aggregate's compact image into a caller-owned buffer with narrow stores
+    /// and passes one pointer. Gate-off, the same call passes slot-shaped
+    /// registers and emits no narrow store.
     #[test]
-    fn aggregate_layout_refuses_by_value_compact_struct_arg() {
+    fn aggregate_layout_allows_by_value_compact_struct_arg_caller() {
+        let source = "struct Padded { a: u8, b: i32, c: u8 } \
+                      fn main() -> i32 { sum(Padded { a: 1, b: 5, c: 3 }) } \
+                      fn sum(p: Padded) -> i32 { p.b }";
         let mut preview = PreviewFeatures::new();
         preview.insert(PreviewFeature::AggregateLayout);
-        let err = try_lower_first_fn(
-            "struct Padded { a: u8, b: i32, c: u8 } \
-             fn main() -> i32 { sum(Padded { a: 1, b: 5, c: 3 }) } \
-             fn sum(p: Padded) -> i32 { p.b }",
-            preview,
-        )
-        .expect_err("a by-value compact struct argument must be refused");
+        let mir = try_lower_first_fn(source, preview)
+            .expect("a by-value compact struct argument must lower");
         assert!(
-            format!("{err:?}").contains("aggregate_layout"),
-            "refusal must name the feature, got: {err:?}"
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::NarrowStoreIndexed { width: 1, .. })),
+            "the caller must write the u8 fields narrow into the compact argument buffer"
+        );
+
+        let off = try_lower_first_fn(source, PreviewFeatures::new())
+            .expect("the same program lowers under the default slot model");
+        assert!(
+            off.instructions()
+                .iter()
+                .all(|inst| !matches!(inst, X86Inst::NarrowStoreIndexed { .. })),
+            "gate-off must not emit any narrow argument-buffer store"
+        );
+    }
+
+    /// RUE-1005 callee side: the function receiving a by-value compact aggregate
+    /// unmarshals its compact image (narrow loads) from the homed pointer into
+    /// its frame slots at entry. Gate-off, it reads slot-shaped registers with no
+    /// narrow load.
+    #[test]
+    fn aggregate_layout_allows_by_value_compact_struct_arg_callee() {
+        let source = "struct Padded { a: u8, b: i32, c: u8 } \
+                      fn sum(p: Padded) -> i32 { p.b } \
+                      fn main() -> i32 { sum(Padded { a: 1, b: 5, c: 3 }) }";
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::AggregateLayout);
+        let mir = try_lower_named_fn(source, preview, Some("sum"))
+            .expect("the callee of a by-value compact struct argument must lower");
+        assert!(
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::NarrowLoadIndexed { width: 1, .. })),
+            "the callee must unmarshal the u8 fields narrow from the homed pointer"
+        );
+
+        let off = try_lower_named_fn(source, PreviewFeatures::new(), Some("sum"))
+            .expect("the same program lowers under the default slot model");
+        assert!(
+            off.instructions()
+                .iter()
+                .all(|inst| !matches!(inst, X86Inst::NarrowLoadIndexed { .. })),
+            "gate-off must not emit any narrow parameter unmarshalling"
+        );
+    }
+
+    /// RUE-1005 descriptor plumbing: with the gate off, the per-source-parameter
+    /// prologue homing plan is byte-identical to the historical one-register-per-
+    /// slot loop — a multi-slot direct struct parameter homes exactly one
+    /// incoming register per frame slot, so the flattened register→slot mapping is
+    /// the identity. With the gate on, the same struct parameter crosses as one
+    /// indirect pointer, so its plan entry consumes a single register while still
+    /// reserving all three frame slots.
+    #[test]
+    fn param_homing_plan_is_inert_gate_off_and_collapses_indirect_gate_on() {
+        use rue_cfg::CfgBuilder;
+        let source = "struct Padded { a: u8, b: i32, c: u8 } \
+                      fn take(p: Padded, q: i32) -> i32 { p.b + q } \
+                      fn main() -> i32 { take(Padded { a: 1, b: 5, c: 3 }, 9) }";
+
+        let plan_for = |preview: PreviewFeatures| {
+            let lexer = Lexer::new(source);
+            let (tokens, interner) = lexer.tokenize().unwrap();
+            let (ast, mut interner) = Parser::new(tokens, interner).parse().unwrap();
+            let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+            astgen.append_items(&ast.items);
+            let rir = astgen.finish();
+            let output = Sema::new_synthetic(&rir, &mut interner, preview)
+                .analyze_all()
+                .unwrap();
+            let func = output.functions.iter().find(|f| f.name == "take").unwrap();
+            let type_pool = &output.type_pool;
+            let cfg = CfgBuilder::build(
+                &func.air,
+                func.num_locals,
+                func.num_param_slots,
+                &func.name,
+                type_pool,
+                func.param_modes.clone(),
+                &interner,
+                func.allow_unreachable_code,
+            )
+            .cfg
+            .unwrap();
+            let _ = type_pool;
+            let plan = crate::codegen_pipeline::param_homing_plan(&cfg);
+            (plan, cfg.num_params())
+        };
+
+        // Gate-off: total incoming registers equals the parameter slot count and
+        // register i homes into frame slot i (identity) — the historical prologue.
+        let (off, num_params) = plan_for(PreviewFeatures::new());
+        assert_eq!(off.iter().map(|h| h.reg_count).sum::<u32>(), num_params);
+        let mut reg = 0u32;
+        for homing in &off {
+            for k in 0..homing.reg_count {
+                assert_eq!(
+                    homing.start_slot + k,
+                    reg,
+                    "gate-off homing must be identity"
+                );
+                reg += 1;
+            }
+        }
+
+        // Gate-on: the compact struct parameter collapses to one incoming pointer
+        // register while its three frame slots stay reserved, so the total
+        // incoming register count drops below the parameter slot count.
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::AggregateLayout);
+        let (on, num_params_on) = plan_for(preview);
+        assert_eq!(num_params_on, 4, "Padded (3 slots) + i32 (1 slot)");
+        assert_eq!(
+            on.iter().map(|h| h.reg_count).sum::<u32>(),
+            2,
+            "one pointer for the compact struct plus one register for the i32"
+        );
+        assert_eq!(
+            on[0],
+            crate::codegen_pipeline::ParamHoming {
+                start_slot: 0,
+                reg_count: 1
+            }
+        );
+        assert_eq!(
+            on[1],
+            crate::codegen_pipeline::ParamHoming {
+                start_slot: 3,
+                reg_count: 1
+            }
         );
     }
 

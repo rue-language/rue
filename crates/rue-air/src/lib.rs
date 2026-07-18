@@ -78,8 +78,8 @@ pub use sema::{
     SemanticBindingManifestWork, SemanticDeclarationExport, SemanticDeclarationExportWork,
     SemanticDeclarationPayload, SemanticDeclarationShell, SemanticDeclarationShellIdentity,
     SemanticExportConstValue, SemanticExportFailure, SemanticExportParameter, SemanticExportType,
-    SemanticNominalIdentity, SemanticParameterMode, SpecializedFreeFunctionDependencyEvent,
-    SpecializedFreeFunctionOrigin,
+    SemanticNominalIdentity, SemanticParameterMode, SourceParamAbi,
+    SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
 };
 pub use semantic_body::{
     SEMANTIC_BODY_INST_KINDS, SemanticBody, SemanticBodyAnchor, SemanticBodyCallArg,
