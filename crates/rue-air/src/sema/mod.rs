@@ -154,7 +154,7 @@ pub trait DeclarationPhase: std::ops::Deref<Target = DeclarationNamespace> + Siz
         sema: &mut Sema<'_, Self>,
         name: Spur,
         file_id: FileId,
-    ) -> Option<ConstValue>;
+    ) -> rue_error::CompileResult<Option<ConstValue>>;
 
     fn collect_free_function_signature(
         sema: &mut Sema<'_, Self>,
@@ -168,7 +168,7 @@ impl DeclarationPhase for MutableDeclarations {
         sema: &mut Sema<'_, Self>,
         name: Spur,
         file_id: FileId,
-    ) -> Option<ConstValue> {
+    ) -> rue_error::CompileResult<Option<ConstValue>> {
         sema.resolve_indexed_const_binding_impl(name, file_id)
     }
 
@@ -186,8 +186,8 @@ impl DeclarationPhase for SourceDeclarations {
         _sema: &mut Sema<'_, Self>,
         _name: Spur,
         _file_id: FileId,
-    ) -> Option<ConstValue> {
-        None
+    ) -> rue_error::CompileResult<Option<ConstValue>> {
+        Ok(None)
     }
 
     fn collect_free_function_signature(
@@ -498,7 +498,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         &mut self,
         name: Spur,
         file_id: FileId,
-    ) -> Option<ConstValue> {
+    ) -> rue_error::CompileResult<Option<ConstValue>> {
         D::resolve_indexed_const(self, name, file_id)
     }
 

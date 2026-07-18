@@ -1,0 +1,49 @@
+[section]
+id = "diagnostics.import-error-masking"
+name = "Failed imports are not masked by downstream diagnostics"
+description = "A constant initializer whose @import fails must report the import root cause even when the constant is first demanded by struct-field type resolution, which runs before the main const-collection walk (RUE-724)."
+
+# The harness strips RUE_STD_PATH and no std/ directory exists next to these
+# programs, so @import("std") fails to resolve in every case below.
+
+# The original masked repro: the failed import feeds a struct field type
+# through a const type alias. Struct fields resolve before the main const
+# walk, and the on-demand collection error used to be swallowed — the only
+# diagnostic was E0204 `unknown type 'Ints'` at the struct, hiding the E0705
+# root cause entirely.
+[[case]]
+name = "failed_std_import_reported_for_struct_field_alias"
+source = """
+const std = @import("std");
+const Ints = std.arraybuf.ArrayBuf(i64);
+struct S { xs: Ints }
+fn main() -> i32 { let s = S { xs: Ints.new() }; @intCast(s.xs.len()) }
+"""
+compile_fail = true
+error_contains = ["E0705", "standard library not found", "1:13"]
+
+# Same masking through the qualified-type-call path: the struct field names
+# the module binding directly instead of going through an alias. This used to
+# surface as E0204 `unknown type 'std'` at the field.
+[[case]]
+name = "failed_std_import_reported_for_qualified_struct_field"
+source = """
+const std = @import("std");
+struct S { xs: std.arraybuf.ArrayBuf(i64) }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0705", "standard library not found", "1:13"]
+
+# The user-module equivalent: a failed @import of an ordinary module must
+# report E0704 at the import site, not E0204 at the struct that consumes it.
+[[case]]
+name = "failed_user_import_reported_for_struct_field_alias"
+source = """
+const m = @import("missing_helper");
+const T = m.SomeType;
+struct S { x: T }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0704", "missing_helper", "1:11"]
