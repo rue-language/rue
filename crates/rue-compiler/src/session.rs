@@ -1769,6 +1769,7 @@ impl FrontendQueryDatabase {
 struct DurableDeclarationCache {
     schema_version: crate::DurableSemanticSchemaVersion,
     root: crate::ModuleId,
+    imports: CanonicalImportGraph,
     target: crate::Target,
     preview_features: crate::PreviewFeatures,
     fingerprints: Arc<[StableDefinitionInputFingerprint]>,
@@ -4939,6 +4940,7 @@ impl CompilerSession {
                 return None;
             }
             if cache.root != *merged.ast().root()
+                || cache.imports != imports
                 || cache.target != options.target
                 || cache.preview_features != options.preview_features
             {
@@ -5047,6 +5049,7 @@ impl CompilerSession {
                         published_declaration_cache = Some(DurableDeclarationCache {
                             schema_version: crate::DURABLE_SEMANTIC_SCHEMA_VERSION,
                             root: merged.ast().root().clone(),
+                            imports: imports.clone(),
                             target: options.target,
                             preview_features: options.preview_features.clone(),
                             fingerprints: fingerprints.into(),
@@ -6831,10 +6834,50 @@ fn declaration_surfaces_match(
     if previous.len() != current.len() {
         return (false, 0);
     }
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    struct JoinKey {
+        module: crate::ModuleId,
+        namespace: StableDefinitionNamespace,
+        kind: StableDefinitionKind,
+        name: Arc<str>,
+        owner: Option<(crate::ModuleId, StableDefinitionKind, Arc<str>)>,
+    }
+    let join_key = |fingerprint: &StableDefinitionInputFingerprint| {
+        let key = &fingerprint.key;
+        JoinKey {
+            module: key.module().clone(),
+            namespace: key.namespace(),
+            // The current pre-resolution shell cannot distinguish these two
+            // kinds. The cached payload must still be a distinct
+            // ModuleBinding and is checked below.
+            kind: match key.kind() {
+                StableDefinitionKind::ModuleBinding => StableDefinitionKind::ValueConst,
+                kind => kind,
+            },
+            name: Arc::from(key.name()),
+            owner: key.owner().map(|owner| {
+                (
+                    owner.module().clone(),
+                    owner.kind(),
+                    Arc::from(owner.name()),
+                )
+            }),
+        }
+    };
+    let current = current
+        .iter()
+        .map(|fingerprint| (join_key(fingerprint), fingerprint))
+        .collect::<BTreeMap<_, _>>();
+    if current.len() != previous.len() {
+        return (false, 0);
+    }
     let mut compared = 0;
-    for (left, right) in previous.iter().zip(current) {
+    for left in previous {
         compared += 1;
-        let supported = matches!(
+        let Some(right) = current.get(&join_key(left)) else {
+            return (false, compared);
+        };
+        let ordinary_supported = matches!(
             left.key.kind(),
             StableDefinitionKind::Function
                 | StableDefinitionKind::Struct
@@ -6846,12 +6889,20 @@ fn declaration_surfaces_match(
             left.precision,
             StableDefinitionFingerprintPrecision::SignatureAndInitializer
         );
-        let matches = supported
+        let module_binding_supported = left.key.kind() == StableDefinitionKind::ModuleBinding
+            && matches!(
+                right.key.kind(),
+                StableDefinitionKind::ValueConst | StableDefinitionKind::ModuleBinding
+            )
+            && left.precision == StableDefinitionFingerprintPrecision::SignatureAndInitializer
+            && right.precision == StableDefinitionFingerprintPrecision::SignatureAndInitializer
+            && left.body_or_initializer == right.body_or_initializer;
+        let matches = (ordinary_supported || module_binding_supported)
             && left.schema_version == right.schema_version
-            && left.key == right.key
-            && left.declaration == right.declaration
             && left.signature == right.signature
-            && left.precision == right.precision;
+            && left.precision == right.precision
+            && (module_binding_supported
+                || (left.key == right.key && left.declaration == right.declaration));
         if !matches {
             return (false, compared);
         }
@@ -8577,6 +8628,136 @@ mod tests {
             format!("{:?}", reused.warnings()),
             format!("{:?}", ordinary.warnings())
         );
+    }
+
+    #[test]
+    fn module_bindings_populate_the_durable_baseline_and_reuse_across_relocation() {
+        let original = snapshot(
+            &[
+                (
+                    71,
+                    "/old/main.rue",
+                    "main.rue",
+                    "const lib = @import(\"lib.rue\"); fn main() -> i32 { lib.value() + 1 }",
+                ),
+                (
+                    72,
+                    "/old/lib.rue",
+                    "lib.rue",
+                    "pub fn value() -> i32 { 40 }",
+                ),
+            ],
+            71,
+        );
+        let relocated_edit = snapshot(
+            &[
+                (4, "/new/lib.rue", "lib.rue", "pub fn value() -> i32 { 40 }"),
+                (
+                    9,
+                    "/new/main.rue",
+                    "main.rue",
+                    "const lib = @import(\"lib.rue\"); fn main() -> i32 { lib.value() + 2 }",
+                ),
+            ],
+            9,
+        );
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        publish_with_test_imports(&mut session, &original);
+        let cold = session.semantic(&options).unwrap();
+        assert_eq!(cold.work().binding.declaration_resolution_invocations, 1);
+        assert_eq!(
+            cold.work()
+                .declaration_reuse
+                .durable_cache_population_exports,
+            1
+        );
+        let module = session
+            .durable_declaration_cache
+            .as_ref()
+            .unwrap()
+            .semantics
+            .iter()
+            .find(|record| record.key.kind() == StableDefinitionKind::ModuleBinding)
+            .unwrap();
+        assert!(matches!(
+            &module.payload,
+            crate::DurableDeclarationPayload::ModuleBinding { target }
+                if target.as_str() == "lib.rue"
+        ));
+
+        publish_with_test_imports(&mut session, &relocated_edit);
+        let reused = session.semantic(&options).unwrap();
+        assert_eq!(reused.work().binding.declaration_resolution_invocations, 0);
+        assert_eq!(reused.work().binding.durable_payloads_installed, 3);
+        assert_eq!(reused.work().declaration_reuse.durable_records_reused, 3);
+        assert_eq!(
+            reused
+                .work()
+                .declaration_reuse
+                .ordinary_declaration_resolutions_skipped,
+            1
+        );
+        assert_eq!(reused.work().declaration_reuse.fallbacks, 0);
+
+        let mut fresh = CompilerSession::new();
+        publish_with_test_imports(&mut fresh, &relocated_edit);
+        let ordinary = fresh.semantic(&options).unwrap();
+        assert_semantic_artifact_parity(&session, &reused, &ordinary);
+        assert_diagnostic_parity(&session, &fresh);
+    }
+
+    #[test]
+    fn unresolved_durable_module_target_falls_back_without_installing() {
+        let source = |body: i32| {
+            snapshot(
+                &[
+                    (
+                        1,
+                        "/p/main.rue",
+                        "main.rue",
+                        &format!(
+                            "const lib = @import(\"lib.rue\"); fn main() -> i32 {{ lib.value() + {body} }}"
+                        ),
+                    ),
+                    (2, "/p/lib.rue", "lib.rue", "pub fn value() -> i32 { 40 }"),
+                ],
+                1,
+            )
+        };
+        let first = source(1);
+        let edited = source(2);
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        publish_with_test_imports(&mut session, &first);
+        session.semantic(&options).unwrap();
+        let cache = session.durable_declaration_cache.as_mut().unwrap();
+        let mut records = cache.semantics.to_vec();
+        let module = records
+            .iter_mut()
+            .find(|record| record.key.kind() == StableDefinitionKind::ModuleBinding)
+            .unwrap();
+        module.payload = crate::DurableDeclarationPayload::ModuleBinding {
+            target: crate::ModuleId::from_logical_path("missing.rue").unwrap(),
+        };
+        cache.semantics = records.into();
+
+        publish_with_test_imports(&mut session, &edited);
+        let fallback = session.semantic(&options).unwrap();
+        assert_eq!(
+            fallback.work().binding.declaration_resolution_invocations,
+            1
+        );
+        assert_eq!(fallback.work().binding.durable_install_invocations, 0);
+        assert_eq!(fallback.work().binding.durable_payloads_installed, 0);
+        assert_eq!(fallback.work().declaration_reuse.fallbacks, 1);
+        assert_eq!(fallback.work().declaration_reuse.fallback_epochs_started, 0);
+
+        let mut fresh = CompilerSession::new();
+        publish_with_test_imports(&mut fresh, &edited);
+        let ordinary = fresh.semantic(&options).unwrap();
+        assert_semantic_artifact_parity(&session, &fallback, &ordinary);
+        assert_diagnostic_parity(&session, &fresh);
     }
 
     #[test]
