@@ -1,13 +1,14 @@
 ---
 id: 0045
 title: Lazy semantic analysis (compile-on-reference)
-status: accepted
+status: superseded
 tags: [compiler, semantics, comptime, modules, stdlib, language-shape]
 feature-flag: lazy-analysis
 created: 2026-07-03
 accepted: 2026-07-03
 implemented:
 spec-sections: []
+superseded-by: 0063
 relates: ["ADR-0025", "ADR-0026", "ADR-0042", "RUE-315", "RUE-328"]
 ---
 
@@ -15,11 +16,10 @@ relates: ["ADR-0025", "ADR-0026", "ADR-0042", "RUE-315", "RUE-328"]
 
 ## Status
 
-**Accepted — ratified by Steve, 2026-07-03 (RUE-328, out of the ADR-0042
-discussion).** The *design* is decided (Zig-style lazy analysis, rolled out
-incrementally); the implementation is tracked separately and broken into Linear
-tasks after this ADR lands. This ADR documents the decided model, not a menu of
-options.
+**Superseded by [ADR-0063](0063-parallel-demand-driven-incremental-compilation.md)
+on 2026-07-18.** Its root-driven language-semantic rule remains binding.
+ADR-0063 replaces this ADR's staged compiler-architecture rollout and its
+exclusion of cross-request and cross-invocation incremental state.
 
 ## Summary
 

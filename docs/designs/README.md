@@ -207,7 +207,7 @@ The table is generated from ADR frontmatter. Run
 | [0042](0042-std-availability-model.md) | Standard-library availability model (str/String split, prelude vs explicit std) | Accepted | stdlib, modules, strings, prelude, ergonomics, language-shape |
 | [0043](0043-collection-string-type-trio.md) | The collection & string type trio: fixed / slice / growable | Implemented | strings, collections, slices, arrays, vec, allocators, stdlib |
 | [0044](0044-optimization-levels.md) | Optimization Levels (-O0/-O1/-O2/-O3) | Accepted | compiler, codegen, process |
-| [0045](0045-lazy-semantic-analysis.md) | Lazy semantic analysis (compile-on-reference) | Accepted | compiler, semantics, comptime, modules, stdlib, language-shape |
+| [0045](0045-lazy-semantic-analysis.md) | Lazy semantic analysis (compile-on-reference) | Superseded | compiler, semantics, comptime, modules, stdlib, language-shape |
 | [0046](0046-delete-flat-mode.md) | Delete flat multi-file mode (all cross-file references go through @import) | Implemented | modules, semantics, cli, language-shape, ergonomics |
 | [0047](0047-root-module-build-inputs.md) | Root-module compilation units and build-system inputs | Accepted | modules, compiler, build-system, packages, cli, language-shape |
 | [0048](0048-shared-codegen-middle-layer.md) | Shared codegen middle layer (reduce x86-64/aarch64 backend duplication) | Accepted | codegen, architecture, backends, refactor, maintainability |
@@ -215,7 +215,7 @@ The table is generated from ADR frontmatter. Run
 | [0050](0050-semantic-dependency-manifest.md) | Stable semantic dependency manifests | Accepted | compiler, incremental, tooling |
 | [0051](0051-canonical-import-resolution-authority.md) | CanonicalImportGraph as the sole import-resolution authority | Accepted | architecture, compiler, modules, incremental, tooling |
 | [0052](0052-canonical-physical-type-layout.md) | Canonical Physical Type Layout | Accepted | types, semantics, compiler, codegen, abi, memory |
-| [0053](0053-typed-compiler-query-state.md) | Typed CompilerSession query state | Accepted | architecture, compiler, incremental, tooling |
+| [0053](0053-typed-compiler-query-state.md) | Typed CompilerSession query state | Superseded | architecture, compiler, incremental, tooling |
 | [0054](0054-loop-optimizations.md) | Loop Optimizations — LICM and Unrolling | Accepted | compiler, codegen, optimization |
 | [0055](0055-typed-runtime-abi-manifest.md) | Typed compiler-runtime ABI manifest | Implemented | architecture, compiler, runtime, abi, codegen |
 | [0056](0056-typed-ir-payload-schemas.md) | Typed IR payload schemas | Implemented | architecture, compiler, ir, performance, validation |
@@ -225,5 +225,5 @@ The table is generated from ADR frontmatter. Run
 | [0060](0060-network-io-v1.md) | Network IO v1: blocking IPv4 TCP in pure Rue | Accepted | stdlib, io, networking, tcp, syscalls, error-handling, ownership |
 | [0061](0061-supported-compiler-facade.md) | Supported compiler facade and immutable artifact views | Accepted | architecture, compiler, tooling, api, incremental |
 | [0062](0062-place-returning-borrow-accessors.md) | Place-returning borrow accessors: projection reads of owned elements | Accepted | ownership, borrows, collections, accessors, stdlib, formal-semantics |
-| [0063](0063-parallel-demand-driven-incremental-compilation.md) | Parallel demand-driven incremental compilation | Proposal | architecture, compiler, incremental, parallelism, codegen, linker, performance |
+| [0063](0063-parallel-demand-driven-incremental-compilation.md) | Parallel demand-driven incremental compilation | Accepted | architecture, compiler, incremental, parallelism, codegen, linker, performance |
 <!-- ADR-INDEX:END -->

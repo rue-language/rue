@@ -1,14 +1,14 @@
 ---
 id: 0053
 title: Typed CompilerSession query state
-status: accepted
+status: superseded
 tags: [architecture, compiler, incremental, tooling]
 feature-flag: null
 created: 2026-07-15
 accepted: 2026-07-15
 implemented:
 spec-sections: []
-superseded-by:
+superseded-by: 0063
 relates: ["ADR-0050", "ADR-0051", "RUE-627", "RUE-720", "RUE-730", "RUE-812"]
 ---
 
@@ -16,9 +16,12 @@ relates: ["ADR-0050", "ADR-0051", "RUE-627", "RUE-720", "RUE-730", "RUE-812"]
 
 ## Status
 
-Accepted under RUE-812 on 2026-07-15. RUE-813 through RUE-818 implement the
-additive migration. This is an internal compiler and tooling design with no
-language-semantics or preview-feature change.
+Superseded by [ADR-0063](0063-parallel-demand-driven-incremental-compilation.md)
+on 2026-07-18. ADR-0063 retains invariants 2 through 8 and 10 through 17,
+modifies invariants 1, 9, and 18 for per-key parallel execution, and supersedes
+invariant 19 by retaining code generation while keeping the first linker path
+fresh. RUE-813 through RUE-818 remain the implemented foundation inherited by
+the successor design.
 
 ## Summary
 
