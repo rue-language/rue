@@ -1,0 +1,793 @@
+// Recursive-descent and Pratt parser for Rue, written in Rue.
+//
+// This follows the normative grammar in spec appendix A. The output is a POD
+// arena with byte spans and interner ids, dumped as deterministic S-expressions
+// for differential testing against the Rust frontend.
+
+const std = @import("std");
+const token = @import("token.rue");
+const ast = @import("ast.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct ParseOutput {
+    dump: StrBuf,
+    errors: StrBuf,
+    node_count: u64,
+}
+
+pub struct Parser {
+    tokens: token.Tokens,
+    pos: u64,
+    arena: ast.Arena,
+    errors: StrBuf,
+    error_count: u64,
+
+    fn new(tokens: token.Tokens) -> Self {
+        Self {
+            tokens: tokens,
+            pos: 0,
+            arena: ast.Arena.new(),
+            errors: StrBuf.new(),
+            error_count: 0,
+        }
+    }
+
+    fn fallback() -> token.Token {
+        token.Token { kind: token.EOF, start: 0, end: 0, value: 0 }
+    }
+
+    fn current(borrow self) -> token.Token {
+        self.tokens.get_or(self.pos, Self.fallback())
+    }
+
+    fn kind_at(borrow self, pos: u64) -> u64 {
+        self.tokens.get_or(pos, Self.fallback()).kind
+    }
+
+    fn previous(borrow self) -> token.Token {
+        if self.pos == 0 { Self.fallback() }
+        else { self.tokens.get_or(self.pos - 1, Self.fallback()) }
+    }
+
+    fn kind(borrow self) -> u64 { self.current().kind }
+    fn at(borrow self, kind: u64) -> bool { self.kind() == kind }
+    fn eof(borrow self) -> bool { self.at(token.EOF) }
+
+    fn bump(inout self) -> token.Token {
+        let t = self.current();
+        if t.kind != token.EOF { self.pos = self.pos + 1; }
+        t
+    }
+
+    fn eat(inout self, kind: u64) -> bool {
+        if self.at(kind) { let _ = self.bump(); true } else { false }
+    }
+
+    fn report(inout self, expected: u64) {
+        let got = self.current();
+        self.errors.push_str("parse error at byte ");
+        self.errors.push_str(@to_string(got.start));
+        self.errors.push_str(": expected token ");
+        self.errors.push_str(@to_string(expected));
+        self.errors.push_str(", got ");
+        self.errors.push_str(@to_string(got.kind));
+        self.errors.push_str("\n");
+        self.error_count = self.error_count + 1;
+    }
+
+    fn expect(inout self, kind: u64) -> token.Token {
+        if self.at(kind) { self.bump() }
+        else {
+            self.report(kind);
+            let t = self.current();
+            if !self.eof() { let _ = self.bump(); }
+            t
+        }
+    }
+
+    fn add(inout self, kind: u64, value: u64, start: u64, end: u64, a: u64, b: u64, c: u64) -> u64 {
+        self.arena.add(kind, value, start, end, a, b, c)
+    }
+
+    fn add_meta(inout self, kind: u64, value: u64, aux: u64, start: u64, end: u64, a: u64, b: u64, c: u64, d: u64) -> u64 {
+        self.arena.add_meta(kind, value, aux, start, end, a, b, c, d)
+    }
+
+    fn append(inout self, list: u64, item: u64) -> u64 {
+        let n = self.arena.at(item);
+        self.arena.list(list, item, n.start, n.end)
+    }
+
+    // Binding power is ordered from loose to tight. Zero means non-infix.
+    fn binding_power(kind: u64) -> u64 {
+        if kind == token.PIPEPIPE { 1 }
+        else if kind == token.AMPAMP { 2 }
+        else if kind == token.EQEQ || kind == token.BANGEQ || kind == token.LT || kind == token.GT || kind == token.LTEQ || kind == token.GTEQ { 3 }
+        else if kind == token.PIPE { 4 }
+        else if kind == token.CARET { 5 }
+        else if kind == token.AMP { 6 }
+        else if kind == token.LTLT || kind == token.GTGT { 7 }
+        else if kind == token.PLUS || kind == token.MINUS { 8 }
+        else if kind == token.STAR || kind == token.SLASH || kind == token.PERCENT { 9 }
+        else { 0 }
+    }
+
+    fn parse_expr(inout self, min_bp: u64, allow_struct: bool) -> u64 {
+        let mut lhs = self.parse_prefix(allow_struct);
+        loop {
+            let op = self.kind();
+            let bp = Self.binding_power(op);
+            if bp == 0 || bp <= min_bp { break; }
+            let _ = self.bump();
+            let rhs = self.parse_expr(bp, allow_struct);
+            let l = self.arena.at(lhs);
+            let r = self.arena.at(rhs);
+            lhs = self.add(ast.BINARY, op, l.start, r.end, lhs, rhs, 0);
+        }
+        lhs
+    }
+
+    fn parse_prefix(inout self, allow_struct: bool) -> u64 {
+        let t = self.current();
+        let mut base = if t.kind == token.INT {
+            let _ = self.bump();
+            self.add(ast.INT, t.value, t.start, t.end, 0, 0, 0)
+        } else if t.kind == token.STRING {
+            let _ = self.bump();
+            self.add(ast.STRING, t.value, t.start, t.end, 0, 0, 0)
+        } else if t.kind == token.TRUE || t.kind == token.FALSE {
+            let _ = self.bump();
+            let v: u64 = if t.kind == token.TRUE { 1 } else { 0 };
+            self.add(ast.BOOL, v, t.start, t.end, 0, 0, 0)
+        } else if t.kind == token.IDENT || t.kind == token.SELF {
+            self.parse_ident_primary(allow_struct)
+        } else if t.kind == token.SELFTYPE {
+            self.parse_self_type_primary(allow_struct)
+        } else if Self.is_primitive(t.kind) {
+            let _ = self.bump();
+            self.add(ast.TYPE, t.kind, t.start, t.end, 0, 0, 0)
+        } else if t.kind == token.LPAREN {
+            self.parse_paren()
+        } else if t.kind == token.LBRACKET {
+            self.parse_array()
+        } else if t.kind == token.LBRACE {
+            self.parse_block()
+        } else if t.kind == token.COMPTIME {
+            let start = self.bump().start;
+            let body = self.parse_block();
+            let end = self.arena.at(body).end;
+            self.add(ast.COMPTIME_BLOCK, 0, start, end, body, 0, 0)
+        } else if t.kind == token.CHECKED {
+            let start = self.bump().start;
+            let body = self.parse_block();
+            let end = self.arena.at(body).end;
+            self.add(ast.CHECKED_BLOCK, 0, start, end, body, 0, 0)
+        } else if t.kind == token.IF {
+            self.parse_if()
+        } else if t.kind == token.MATCH {
+            self.parse_match()
+        } else if t.kind == token.WHILE {
+            self.parse_while()
+        } else if t.kind == token.LOOP {
+            self.parse_loop()
+        } else if t.kind == token.FOR {
+            self.parse_for()
+        } else if t.kind == token.BREAK {
+            self.parse_break()
+        } else if t.kind == token.CONTINUE {
+            let x = self.bump();
+            self.add(ast.CONTINUE, 0, x.start, x.end, 0, 0, 0)
+        } else if t.kind == token.RETURN {
+            self.parse_return()
+        } else if t.kind == token.AT {
+            self.parse_intrinsic()
+        } else if t.kind == token.MINUS || t.kind == token.BANG || t.kind == token.TILDE {
+            let op = self.bump();
+            let inner = self.parse_prefix(allow_struct);
+            let end = self.arena.at(inner).end;
+            self.add(ast.UNARY, op.kind, op.start, end, inner, 0, 0)
+        } else if t.kind == token.STRUCT {
+            self.parse_anon_struct_type(true)
+        } else if t.kind == token.ENUM {
+            self.parse_anon_enum_type()
+        } else {
+            self.report(token.IDENT);
+            let bad = self.bump();
+            self.add(ast.ERROR, bad.kind, bad.start, bad.end, 0, 0, 0)
+        };
+        base = self.parse_postfix(base, allow_struct);
+        base
+    }
+
+    fn parse_ident_primary(inout self, allow_struct: bool) -> u64 {
+        let name = self.bump();
+        let ident = self.add(ast.IDENT, name.value, name.start, name.end, 0, 0, 0);
+        if self.at(token.LPAREN) {
+            let args = self.parse_call_args();
+            let end = self.previous().end;
+            self.add(ast.CALL, 0, name.start, end, ident, args, 0)
+        } else if allow_struct && self.at(token.LBRACE) {
+            let fields = self.parse_field_inits();
+            let end = self.previous().end;
+            self.add(ast.STRUCT_LITERAL, 0, name.start, end, ident, fields, 0)
+        } else { ident }
+    }
+
+    fn parse_self_type_primary(inout self, allow_struct: bool) -> u64 {
+        let name = self.bump();
+        let ty = self.add(ast.TYPE, token.SELFTYPE, name.start, name.end, 0, 0, 0);
+        if allow_struct && self.at(token.LBRACE) {
+            let fields = self.parse_field_inits();
+            self.add(ast.STRUCT_LITERAL, 0, name.start, self.previous().end, ty, fields, 0)
+        } else { ty }
+    }
+
+    fn parse_postfix(inout self, seed: u64, allow_struct: bool) -> u64 {
+        let mut base = seed;
+        loop {
+            if self.eat(token.DOT) {
+                let name = self.expect(token.IDENT);
+                if self.at(token.LPAREN) {
+                    let args = self.parse_call_args();
+                    let begin = self.arena.at(base).start;
+                    base = self.add(ast.METHOD_CALL, name.value, begin, self.previous().end, base, args, 0);
+                } else if allow_struct && self.at(token.LBRACE) {
+                    let field = self.add(ast.FIELD, name.value, self.arena.at(base).start, name.end, base, 0, 0);
+                    let fields = self.parse_field_inits();
+                    base = self.add(ast.STRUCT_LITERAL, 0, self.arena.at(field).start, self.previous().end, field, fields, 0);
+                } else {
+                    let begin = self.arena.at(base).start;
+                    base = self.add(ast.FIELD, name.value, begin, name.end, base, 0, 0);
+                }
+            } else if self.eat(token.LBRACKET) {
+                let idx = self.parse_expr(0, true);
+                let close = self.expect(token.RBRACKET);
+                let begin = self.arena.at(base).start;
+                base = self.add(ast.INDEX, 0, begin, close.end, base, idx, 0);
+            } else if self.eat(token.QUESTION) {
+                let begin = self.arena.at(base).start;
+                base = self.add(ast.TRY, 0, begin, self.previous().end, base, 0, 0);
+            } else { break; }
+        }
+        base
+    }
+
+    fn parse_call_args(inout self) -> u64 {
+        let _ = self.expect(token.LPAREN);
+        let mut args: u64 = 0;
+        while !self.at(token.RPAREN) && !self.eof() {
+            let start = self.current().start;
+            let mode: u64 = if self.eat(token.INOUT) { token.INOUT }
+                else if self.eat(token.BORROW) { token.BORROW }
+                else { 0 };
+            let value = self.parse_expr(0, true);
+            let arg = self.add(ast.ARG, mode, start, self.arena.at(value).end, value, 0, 0);
+            args = self.append(args, arg);
+            if !self.eat(token.COMMA) { break; }
+        }
+        let _ = self.expect(token.RPAREN);
+        args
+    }
+
+    fn parse_field_inits(inout self) -> u64 {
+        let _ = self.expect(token.LBRACE);
+        let mut fields: u64 = 0;
+        while !self.at(token.RBRACE) && !self.eof() {
+            let name = self.expect(token.IDENT);
+            let shorthand = if self.eat(token.COLON) { 0 } else { 1 };
+            let value = if shorthand == 1 {
+                self.add(ast.IDENT, name.value, name.start, name.end, 0, 0, 0)
+            } else { self.parse_expr(0, true) };
+            let field = self.add_meta(ast.FIELD_INIT, name.value, shorthand, name.start, self.arena.at(value).end, value, 0, 0, 0);
+            fields = self.append(fields, field);
+            if !self.eat(token.COMMA) { break; }
+        }
+        let _ = self.expect(token.RBRACE);
+        fields
+    }
+
+    fn parse_paren(inout self) -> u64 {
+        let open = self.bump();
+        if self.eat(token.RPAREN) {
+            self.add(ast.UNIT, 0, open.start, self.previous().end, 0, 0, 0)
+        } else {
+            let inner = self.parse_expr(0, true);
+            let _ = self.expect(token.RPAREN);
+            inner
+        }
+    }
+
+    fn parse_array(inout self) -> u64 {
+        let open = self.bump();
+        if self.eat(token.RBRACKET) {
+            return self.add(ast.ARRAY_LITERAL, 0, open.start, self.previous().end, 0, 0, 0);
+        }
+        let first = self.parse_expr(0, true);
+        if self.eat(token.SEMI) {
+            let count = self.parse_expr(0, true);
+            let close = self.expect(token.RBRACKET);
+            return self.add(ast.REPEAT_ARRAY, 0, open.start, close.end, first, count, 0);
+        }
+        let mut elems = self.append(0, first);
+        while self.eat(token.COMMA) && !self.at(token.RBRACKET) {
+            elems = self.append(elems, self.parse_expr(0, true));
+        }
+        let close = self.expect(token.RBRACKET);
+        self.add(ast.ARRAY_LITERAL, 0, open.start, close.end, elems, 0, 0)
+    }
+
+    fn parse_intrinsic(inout self) -> u64 {
+        let at = self.bump();
+        let name = if self.at(token.IDENT) || self.at(token.DROP) { self.bump() } else { self.expect(token.IDENT) };
+        let args = self.parse_call_args();
+        self.add_meta(ast.INTRINSIC, name.value, name.kind, at.start, self.previous().end, args, 0, 0, 0)
+    }
+
+    fn parse_if(inout self) -> u64 {
+        let start = self.bump().start;
+        let cond = self.parse_expr(0, false);
+        let then_part = self.parse_block();
+        let mut else_part: u64 = 0;
+        if self.eat(token.ELSE) {
+            else_part = if self.at(token.IF) { self.parse_if() } else { self.parse_block() };
+        }
+        let end = if else_part != 0 { self.arena.at(else_part).end } else { self.arena.at(then_part).end };
+        self.add(ast.IF, 0, start, end, cond, then_part, else_part)
+    }
+
+    fn parse_match(inout self) -> u64 {
+        let start = self.bump().start;
+        let value = self.parse_expr(0, false);
+        let _ = self.expect(token.LBRACE);
+        let mut arms: u64 = 0;
+        while !self.at(token.RBRACE) && !self.eof() {
+            let pat = self.parse_pattern();
+            let _ = self.expect(token.FATARROW);
+            let body = self.parse_expr(0, true);
+            let arm = self.add(ast.ARM, 0, self.arena.at(pat).start, self.arena.at(body).end, pat, body, 0);
+            arms = self.append(arms, arm);
+            if !self.eat(token.COMMA) { break; }
+        }
+        let close = self.expect(token.RBRACE);
+        self.add(ast.MATCH, 0, start, close.end, value, arms, 0)
+    }
+
+    fn parse_pattern(inout self) -> u64 {
+        let start = self.current().start;
+        let mut negative: u64 = 0;
+        if self.eat(token.MINUS) { negative = 1; }
+        if self.at(token.INT) {
+            let n = self.bump();
+            return self.add_meta(ast.PATTERN, n.value, negative, start, n.end, 0, 0, 0, 0);
+        }
+        if self.at(token.TRUE) || self.at(token.FALSE) || self.at(token.UNDERSCORE) {
+            let p = self.bump();
+            return self.add(ast.PATTERN, p.kind, start, p.end, 0, 0, 0);
+        }
+        let first = self.expect(token.IDENT);
+        let mut path = self.add(ast.IDENT, first.value, first.start, first.end, 0, 0, 0);
+        loop {
+            if self.at(token.LPAREN) && self.paren_followed_by_dot() {
+                let args = self.parse_type_args();
+                path = self.add(ast.TYPE_CALL, 0, first.start, self.previous().end, path, args, 0);
+            } else if self.eat(token.DOT) {
+                let seg = self.expect(token.IDENT);
+                path = self.add(ast.FIELD, seg.value, first.start, seg.end, path, 0, 0);
+            } else { break; }
+        }
+        let mut binds: u64 = 0;
+        if self.eat(token.LPAREN) {
+            while !self.at(token.RPAREN) && !self.eof() {
+                let b = self.expect(token.IDENT);
+                binds = self.append(binds, self.add(ast.IDENT, b.value, b.start, b.end, 0, 0, 0));
+                if !self.eat(token.COMMA) { break; }
+            }
+            let _ = self.expect(token.RPAREN);
+        }
+        self.add(ast.PATTERN, 0, start, self.previous().end, path, binds, 0)
+    }
+
+    fn paren_followed_by_dot(borrow self) -> bool {
+        if !self.at(token.LPAREN) { return false; }
+        let mut p = self.pos;
+        let mut depth: u64 = 0;
+        loop {
+            let k = self.kind_at(p);
+            if k == token.EOF { return false; }
+            if k == token.LPAREN { depth = depth + 1; }
+            else if k == token.RPAREN {
+                depth = depth - 1;
+                if depth == 0 { return self.kind_at(p + 1) == token.DOT; }
+            }
+            p = p + 1;
+        }
+    }
+
+    fn parse_while(inout self) -> u64 {
+        let start = self.bump().start;
+        let cond = self.parse_expr(0, false);
+        let body = self.parse_block();
+        self.add(ast.WHILE, 0, start, self.arena.at(body).end, cond, body, 0)
+    }
+
+    fn parse_loop(inout self) -> u64 {
+        let start = self.bump().start;
+        let body = self.parse_block();
+        self.add(ast.LOOP, 0, start, self.arena.at(body).end, body, 0, 0)
+    }
+
+    fn parse_for(inout self) -> u64 {
+        let start = self.bump().start;
+        let name = if self.at(token.IDENT) || self.at(token.UNDERSCORE) { self.bump() } else { self.expect(token.IDENT) };
+        let _ = self.expect(token.IN);
+        let iter = self.parse_expr(0, false);
+        let body = self.parse_block();
+        self.add_meta(ast.FOR, name.value, name.kind, start, self.arena.at(body).end, iter, body, 0, 0)
+    }
+
+    fn expression_starts(kind: u64) -> bool {
+        kind == token.INT || kind == token.STRING || kind == token.TRUE || kind == token.FALSE ||
+        kind == token.IDENT || kind == token.SELF || kind == token.SELFTYPE ||
+        kind == token.LPAREN || kind == token.LBRACKET || kind == token.LBRACE ||
+        kind == token.COMPTIME || kind == token.CHECKED || kind == token.IF ||
+        kind == token.MATCH || kind == token.WHILE || kind == token.LOOP ||
+        kind == token.FOR || kind == token.BREAK || kind == token.CONTINUE ||
+        kind == token.RETURN || kind == token.AT || kind == token.MINUS ||
+        kind == token.BANG || kind == token.TILDE || kind == token.STRUCT || kind == token.ENUM || Self.is_primitive(kind)
+    }
+
+    fn parse_break(inout self) -> u64 {
+        let start = self.bump().start;
+        let value = if Self.expression_starts(self.kind()) && !self.at(token.RBRACE) && !self.at(token.COMMA) { self.parse_expr(0, true) } else { 0 };
+        let end = if value == 0 { self.previous().end } else { self.arena.at(value).end };
+        self.add(ast.BREAK, 0, start, end, value, 0, 0)
+    }
+
+    fn parse_return(inout self) -> u64 {
+        let start = self.bump().start;
+        let value = if Self.expression_starts(self.kind()) && !self.at(token.RBRACE) && !self.at(token.COMMA) { self.parse_expr(0, true) } else { 0 };
+        let end = if value == 0 { self.previous().end } else { self.arena.at(value).end };
+        self.add(ast.RETURN, 0, start, end, value, 0, 0)
+    }
+
+    fn parse_block(inout self) -> u64 {
+        let open = self.expect(token.LBRACE);
+        let mut stmts: u64 = 0;
+        let mut tail: u64 = 0;
+        while !self.at(token.RBRACE) && !self.eof() {
+            if self.at(token.LET) || self.directives_before_let() {
+                let directives = self.parse_directives();
+                let s = self.parse_let(directives);
+                stmts = self.append(stmts, s);
+                continue;
+            }
+            let start = self.current().start;
+            let expr = self.parse_expr(0, true);
+            if self.eat(token.EQ) {
+                let rhs = self.parse_expr(0, true);
+                let semi = self.expect(token.SEMI);
+                let s = self.add(ast.ASSIGN, 0, start, semi.end, expr, rhs, 0);
+                stmts = self.append(stmts, s);
+            } else if self.eat(token.SEMI) {
+                let s = self.add(ast.EXPR_STMT, 0, start, self.previous().end, expr, 0, 0);
+                stmts = self.append(stmts, s);
+            } else if self.at(token.RBRACE) {
+                tail = expr;
+                break;
+            } else if Self.can_omit_semi(self.arena.at(expr).kind) {
+                let s = self.add(ast.EXPR_STMT, 0, start, self.arena.at(expr).end, expr, 0, 0);
+                stmts = self.append(stmts, s);
+            } else {
+                self.report(token.SEMI);
+                if !self.eof() { let _ = self.bump(); }
+            }
+        }
+        let close = self.expect(token.RBRACE);
+        self.add(ast.BLOCK, 0, open.start, close.end, stmts, tail, 0)
+    }
+
+    fn can_omit_semi(kind: u64) -> bool {
+        kind == ast.BLOCK || kind == ast.IF || kind == ast.MATCH || kind == ast.WHILE ||
+        kind == ast.LOOP || kind == ast.FOR || kind == ast.BREAK || kind == ast.CONTINUE || kind == ast.RETURN
+    }
+
+    // Directives and intrinsics share the same `@ IDENT (...)` prefix. Scan
+    // without producing diagnostics so an expression statement such as
+    // `@dbg(f(i));` is not damaged by speculative directive parsing.
+    fn directives_before_let(borrow self) -> bool {
+        if !self.at(token.AT) { return false; }
+        let mut p = self.pos;
+        loop {
+            if self.kind_at(p) != token.AT { break; }
+            p = p + 1;
+            if self.kind_at(p) != token.IDENT { return false; }
+            p = p + 1;
+            if self.kind_at(p) == token.LPAREN {
+                p = p + 1;
+                while self.kind_at(p) != token.RPAREN && self.kind_at(p) != token.EOF {
+                    p = p + 1;
+                }
+                if self.kind_at(p) != token.RPAREN { return false; }
+                p = p + 1;
+            }
+        }
+        self.kind_at(p) == token.LET
+    }
+
+    fn parse_let(inout self, directives: u64) -> u64 {
+        let start = self.expect(token.LET).start;
+        let mutable: u64 = if self.eat(token.MUT) { 1 } else { 0 };
+        let name = if self.at(token.IDENT) || self.at(token.UNDERSCORE) { self.bump() } else { self.expect(token.IDENT) };
+        let ty = if self.eat(token.COLON) { self.parse_type() } else { 0 };
+        let _ = self.expect(token.EQ);
+        let value = self.parse_expr(0, true);
+        let semi = self.expect(token.SEMI);
+        let flags = mutable + name.kind * 256;
+        self.add_meta(ast.LET, name.value, flags, start, semi.end, directives, ty, value, 0)
+    }
+
+    fn is_primitive(kind: u64) -> bool { kind >= token.TYPE_I8 && kind <= token.TYPE_TYPE }
+
+    fn parse_type(inout self) -> u64 {
+        let t = self.current();
+        if Self.is_primitive(t.kind) || t.kind == token.SELFTYPE {
+            let _ = self.bump();
+            return self.add(ast.TYPE, t.kind, t.start, t.end, 0, 0, 0);
+        }
+        if t.kind == token.BANG {
+            let _ = self.bump();
+            return self.add(ast.TYPE, token.BANG, t.start, t.end, 0, 0, 0);
+        }
+        if t.kind == token.LPAREN {
+            let start = self.bump().start;
+            let close = self.expect(token.RPAREN);
+            return self.add(ast.TYPE, token.LPAREN, start, close.end, 0, 0, 0);
+        }
+        if t.kind == token.LBRACKET {
+            let start = self.bump().start;
+            let elem = self.parse_type();
+            let _ = self.expect(token.SEMI);
+            let len = self.parse_expr(0, true);
+            let close = self.expect(token.RBRACKET);
+            return self.add(ast.ARRAY_TYPE, 0, start, close.end, elem, len, 0);
+        }
+        if t.kind == token.PTR {
+            let start = self.bump().start;
+            let mode = if self.eat(token.CONST) { token.CONST } else if self.eat(token.MUT) { token.MUT } else { self.report(token.CONST); 0 };
+            let inner = self.parse_type();
+            return self.add(ast.PTR_TYPE, mode, start, self.arena.at(inner).end, inner, 0, 0);
+        }
+        if t.kind == token.STRUCT { return self.parse_anon_struct_type(false); }
+        if t.kind == token.ENUM { return self.parse_anon_enum_type(); }
+        let name = self.expect(token.IDENT);
+        let mut path = self.add(ast.IDENT, name.value, name.start, name.end, 0, 0, 0);
+        while self.eat(token.DOT) {
+            let seg = self.expect(token.IDENT);
+            path = self.add(ast.FIELD, seg.value, name.start, seg.end, path, 0, 0);
+        }
+        if self.at(token.LPAREN) {
+            let args = self.parse_type_args();
+            self.add(ast.TYPE_CALL, 0, name.start, self.previous().end, path, args, 0)
+        } else { self.add(ast.TYPE, token.IDENT, name.start, self.arena.at(path).end, path, 0, 0) }
+    }
+
+    fn parse_type_args(inout self) -> u64 {
+        let _ = self.expect(token.LPAREN);
+        let mut args: u64 = 0;
+        while !self.at(token.RPAREN) && !self.eof() {
+            let arg = if Self.is_primitive(self.kind()) || self.at(token.SELFTYPE) || self.at(token.LBRACKET) || self.at(token.PTR) || self.at(token.STRUCT) || self.at(token.ENUM) {
+                self.parse_type()
+            } else if self.at(token.MINUS) || self.at(token.INT) {
+                self.parse_expr(0, true)
+            } else { self.parse_type() };
+            args = self.append(args, arg);
+            if !self.eat(token.COMMA) { break; }
+        }
+        let _ = self.expect(token.RPAREN);
+        args
+    }
+
+    fn parse_directives(inout self) -> u64 {
+        let mut list: u64 = 0;
+        while self.at(token.AT) {
+            let start = self.bump().start;
+            let name = self.expect(token.IDENT);
+            let mut args: u64 = 0;
+            if self.eat(token.LPAREN) {
+                while !self.at(token.RPAREN) && !self.eof() {
+                    let a = self.expect(token.IDENT);
+                    args = self.append(args, self.add(ast.IDENT, a.value, a.start, a.end, 0, 0, 0));
+                    if !self.eat(token.COMMA) { break; }
+                }
+                let _ = self.expect(token.RPAREN);
+            }
+            let d = self.add(ast.DIRECTIVE, name.value, start, self.previous().end, args, 0, 0);
+            list = self.append(list, d);
+        }
+        list
+    }
+
+    fn parse_params(inout self, method: bool) -> u64 {
+        let _ = self.expect(token.LPAREN);
+        let mut params: u64 = 0;
+        let receiver = self.at(token.SELF) ||
+            ((self.at(token.INOUT) || self.at(token.BORROW) || self.at(token.MUT)) && self.kind_at(self.pos + 1) == token.SELF);
+        if method && receiver {
+            let start = self.current().start;
+            let mode = if self.at(token.SELF) { 0 } else { self.bump().kind };
+            let receiver = self.expect(token.SELF);
+            let p = self.add_meta(ast.PARAM, receiver.value, mode, start, receiver.end, 0, 0, 0, 0);
+            params = self.append(params, p);
+            let _ = self.eat(token.COMMA);
+        }
+        while !self.at(token.RPAREN) && !self.eof() {
+            let start = self.current().start;
+            let mode = if self.at(token.COMPTIME) || self.at(token.INOUT) || self.at(token.BORROW) { self.bump().kind } else { 0 };
+            let name = self.expect(token.IDENT);
+            let _ = self.expect(token.COLON);
+            let ty = self.parse_type();
+            let p = self.add_meta(ast.PARAM, name.value, mode, start, self.arena.at(ty).end, ty, 0, 0, 0);
+            params = self.append(params, p);
+            if !self.eat(token.COMMA) { break; }
+        }
+        let _ = self.expect(token.RPAREN);
+        params
+    }
+
+    fn parse_function(inout self, directives: u64, flags: u64, method: bool) -> u64 {
+        let start = self.expect(token.FN).start;
+        let name = self.expect(token.IDENT);
+        let params = self.parse_params(method);
+        let ret = if self.eat(token.ARROW) { self.parse_type() } else { 0 };
+        let body = self.parse_block();
+        let kind = if method { ast.METHOD } else { ast.FUNCTION };
+        self.add_meta(kind, name.value, flags, start, self.arena.at(body).end, directives, params, ret, body)
+    }
+
+    fn parse_struct(inout self, directives: u64, flags: u64) -> u64 {
+        let start = self.expect(token.STRUCT).start;
+        let name = self.expect(token.IDENT);
+        let _ = self.expect(token.LBRACE);
+        let mut members: u64 = 0;
+        while !self.at(token.RBRACE) && !self.eof() {
+            let dirs = self.parse_directives();
+            if self.at(token.FN) {
+                members = self.append(members, self.parse_function(dirs, 0, true));
+            } else if self.at(token.DROP) {
+                members = self.append(members, self.parse_drop(true));
+            } else {
+                let field = self.expect(token.IDENT);
+                let _ = self.expect(token.COLON);
+                let ty = self.parse_type();
+                members = self.append(members, self.add(ast.FIELD_DEF, field.value, field.start, self.arena.at(ty).end, ty, dirs, 0));
+                let _ = self.eat(token.COMMA);
+            }
+        }
+        let close = self.expect(token.RBRACE);
+        self.add_meta(ast.STRUCT_DEF, name.value, flags, start, close.end, directives, members, 0, 0)
+    }
+
+    fn parse_anon_struct_type(inout self, with_methods: bool) -> u64 {
+        let start = self.expect(token.STRUCT).start;
+        let _ = self.expect(token.LBRACE);
+        let mut members: u64 = 0;
+        while !self.at(token.RBRACE) && !self.eof() {
+            let dirs = self.parse_directives();
+            if with_methods && self.at(token.FN) {
+                members = self.append(members, self.parse_function(dirs, 0, true));
+            } else if with_methods && self.at(token.DROP) {
+                members = self.append(members, self.parse_drop(true));
+            } else {
+                let field = self.expect(token.IDENT);
+                let _ = self.expect(token.COLON);
+                let ty = self.parse_type();
+                members = self.append(members, self.add(ast.FIELD_DEF, field.value, field.start, self.arena.at(ty).end, ty, dirs, 0));
+                let _ = self.eat(token.COMMA);
+            }
+        }
+        let close = self.expect(token.RBRACE);
+        self.add(ast.ANON_STRUCT_TYPE, 0, start, close.end, members, 0, 0)
+    }
+
+    fn parse_anon_enum_type(inout self) -> u64 {
+        let start = self.expect(token.ENUM).start;
+        let _ = self.expect(token.LBRACE);
+        let mut variants: u64 = 0;
+        while !self.at(token.RBRACE) && !self.eof() {
+            let v = self.expect(token.IDENT);
+            let mut payload: u64 = 0;
+            if self.eat(token.LPAREN) {
+                while !self.at(token.RPAREN) && !self.eof() {
+                    payload = self.append(payload, self.parse_type());
+                    if !self.eat(token.COMMA) { break; }
+                }
+                let _ = self.expect(token.RPAREN);
+            }
+            variants = self.append(variants, self.add(ast.VARIANT, v.value, v.start, self.previous().end, payload, 0, 0));
+            if !self.eat(token.COMMA) { break; }
+        }
+        let close = self.expect(token.RBRACE);
+        self.add(ast.ANON_ENUM_TYPE, 0, start, close.end, variants, 0, 0)
+    }
+
+    fn parse_enum(inout self, flags: u64) -> u64 {
+        let start = self.expect(token.ENUM).start;
+        let name = self.expect(token.IDENT);
+        let _ = self.expect(token.LBRACE);
+        let mut variants: u64 = 0;
+        while !self.at(token.RBRACE) && !self.eof() {
+            let v = self.expect(token.IDENT);
+            let mut payload: u64 = 0;
+            if self.eat(token.LPAREN) {
+                while !self.at(token.RPAREN) && !self.eof() {
+                    payload = self.append(payload, self.parse_type());
+                    if !self.eat(token.COMMA) { break; }
+                }
+                let _ = self.expect(token.RPAREN);
+            }
+            variants = self.append(variants, self.add(ast.VARIANT, v.value, v.start, self.previous().end, payload, 0, 0));
+            if !self.eat(token.COMMA) { break; }
+        }
+        let close = self.expect(token.RBRACE);
+        self.add_meta(ast.ENUM_DEF, name.value, flags, start, close.end, variants, 0, 0, 0)
+    }
+
+    fn parse_const(inout self, directives: u64, flags: u64) -> u64 {
+        let start = self.expect(token.CONST).start;
+        let name = self.expect(token.IDENT);
+        let ty = if self.eat(token.COLON) { self.parse_type() } else { 0 };
+        let _ = self.expect(token.EQ);
+        let value = self.parse_expr(0, true);
+        let semi = self.expect(token.SEMI);
+        self.add_meta(ast.CONST_DECL, name.value, flags, start, semi.end, directives, ty, value, 0)
+    }
+
+    fn parse_drop(inout self, anonymous: bool) -> u64 {
+        let start = self.expect(token.DROP).start;
+        let _ = self.expect(token.FN);
+        let name = if anonymous { Self.fallback() } else { self.expect(token.IDENT) };
+        let _ = self.expect(token.LPAREN);
+        let _ = self.expect(token.SELF);
+        let _ = self.expect(token.RPAREN);
+        let body = self.parse_block();
+        self.add(ast.DROP_FN, name.value, start, self.arena.at(body).end, body, 0, 0)
+    }
+
+    fn parse_item(inout self) -> u64 {
+        let directives = self.parse_directives();
+        let mut flags: u64 = 0;
+        if self.eat(token.PUB) { flags = flags + 1; }
+        if self.eat(token.UNCHECKED) { flags = flags + 2; }
+        if self.eat(token.LINEAR) { flags = flags + 4; }
+        if self.at(token.FN) { self.parse_function(directives, flags, false) }
+        else if self.at(token.STRUCT) { self.parse_struct(directives, flags) }
+        else if self.at(token.ENUM) { self.parse_enum(flags) }
+        else if self.at(token.DROP) { self.parse_drop(false) }
+        else if self.at(token.CONST) { self.parse_const(directives, flags) }
+        else {
+            self.report(token.FN);
+            let bad = self.bump();
+            self.add(ast.ERROR, bad.kind, bad.start, bad.end, directives, 0, 0)
+        }
+    }
+
+    fn parse_program(inout self) -> u64 {
+        let start = self.current().start;
+        let mut items: u64 = 0;
+        while !self.eof() {
+            items = self.append(items, self.parse_item());
+        }
+        self.add(ast.PROGRAM, self.error_count, start, self.current().end, items, 0, 0)
+    }
+
+    fn finish(mut self) -> ParseOutput {
+        let root = self.parse_program();
+        let count = self.arena.len();
+        let dump = self.arena.dump(root);
+        ParseOutput { dump: dump, errors: self.errors, node_count: count }
+    }
+}
+
+pub fn parse(tokens: token.Tokens) -> ParseOutput {
+    Parser.new(tokens).finish()
+}

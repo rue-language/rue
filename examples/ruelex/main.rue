@@ -1,4 +1,5 @@
-// ruelex — the Rue lexer, written in Rue. Dogfooding maturity rung 3 (RUE-941).
+// ruelex — the Rue stage-1 frontend, written in Rue. Dogfooding maturity
+// rungs 3 and 4 (RUE-941 / RUE-942).
 //
 // This is a self-hosting milestone: a lexer for Rue, implemented in Rue, that
 // reproduces the reference compiler's own `--emit tokens` dump byte-for-byte.
@@ -11,54 +12,72 @@
 // phantom intern of the word `import`. RUE-949 resolved that drift by making
 // the compiler conform to the spec, so ruelex needs no special cases.
 //
-// The modules: lex.rue (tokenizer), interner.rue (symbol numbering),
-// fmtutil.rue (StrBuf/padding helpers), this root (I/O, argv, driver).
+// The `--ast` mode extends that lexer with a recursive-descent + Pratt parser
+// for the current Rue grammar. It stores a traversable tree in a POD arena and
+// prints a deterministic S-expression containing symbols and byte spans.
+// Native corpus validation covers all 117 valid `.rue` files in examples,
+// std, benchmarks, and reproducibility fixtures, including deep nesting.
 //
-// Usage:  ruelex [--pretty] <file.rue> [<file.rue> ...]
+// The modules: token.rue (POD tokens), lex.rue (tokenizer), interner.rue
+// (symbol numbering), ast.rue (POD arena), parse.rue (grammar + recovery),
+// fmtutil.rue (formatting helpers), this root (I/O, argv, driver).
+//
+// Usage:  ruelex [--pretty|--ast] <file.rue> [<file.rue> ...]
 //
 // For each file argument, tokenizes the entire file and prints one line per
 // token. The default output reproduces the Rue compiler's own `--emit tokens`
 // dump — `{start:>4}..{end:<3}  KIND` with 0-based byte offsets — so the two
-// can be diffed. `--pretty` prints `LINE:COL KIND` with 1-based spans instead.
+// can be diffed. `--pretty` prints `LINE:COL KIND` with 1-based spans instead;
+// `--ast` parses and prints the arena tree, returning nonzero on syntax errors.
 //
 // Reading uses std.fs (open + chunked read loop); argv comes from std.env;
 // output goes to stdout via the `print` builtin (which writes a borrowed StrBuf
 // with nothing appended — the token dump already carries its own trailing
 // newlines, so `print` keeps the bytes identical to `--emit tokens`). The lexer
-// itself lives in lex.rue / interner.rue / fmtutil.rue.
+// itself lives in the modules listed above.
 
 const std = @import("std");
 const lex = @import("lex.rue");
+const parse = @import("parse.rue");
 const StrBuf = std.strbuf.StrBuf;
 const Bytes = std.arraybuf.ArrayBuf(u8);
 const OptStr = std.option.Option(StrBuf);
 const FileRes = std.result.Result(std.fs.File, std.fs.FileError);
 const ReadRes = std.result.Result(u64, std.fs.FileError);
 
-// Read the whole file at `path` into a byte buffer. On open/read error the
-// bytes read so far (possibly empty) are returned; the diagnostic is the
-// caller's concern.
-fn read_file(borrow path: StrBuf) -> Bytes {
+struct FileInput {
+    data: Bytes,
+    ok: bool,
+}
+
+// Read the whole file at `path` into a byte buffer. Open/read failures retain
+// any bytes acquired so ownership stays simple, but `ok` makes the driver
+// reject the input instead of silently parsing a partial or empty program.
+fn read_file(borrow path: StrBuf) -> FileInput {
     let mut data = Bytes.new();
     let mut f = match std.fs.File.open(borrow path) {
         FileRes.Ok(file) => file,
         FileRes.Err(e) => {
-            return data;
+            return FileInput { data: data, ok: false };
         },
     };
+    let mut ok = true;
     let chunk: u64 = 65536;
     loop {
         data.reserve(chunk);
         let n = match f.read(inout data) {
             ReadRes.Ok(k) => k,
-            ReadRes.Err(e) => 0,
+            ReadRes.Err(e) => {
+                ok = false;
+                0
+            },
         };
         if n == 0 {
             break;
         }
     }
     let _ = f.close();
-    data
+    FileInput { data: data, ok: ok }
 }
 
 // Whether StrBuf `a` equals `flag`. `flag` is taken by value so a string
@@ -69,7 +88,7 @@ fn str_eq(borrow a: StrBuf, flag: StrBuf) -> bool {
 
 // Tokenize one file and print its dump. When `with_header`, precede it with a
 // `=== <path> ===` banner so multi-file output stays navigable.
-fn process_file(borrow path: StrBuf, pretty: bool, with_header: bool) {
+fn process_file(borrow path: StrBuf, pretty: bool, ast_mode: bool, with_header: bool) -> bool {
     if with_header {
         let mut h = StrBuf.new();
         h.push_str("=== ");
@@ -77,9 +96,31 @@ fn process_file(borrow path: StrBuf, pretty: bool, with_header: bool) {
         h.push_str(" ===\n");
         print(h);
     }
-    let data = read_file(borrow path);
-    let dump = lex.tokenize(data, pretty);
-    print(dump);
+    let input = read_file(borrow path);
+    if !input.ok {
+        let mut message = StrBuf.new();
+        message.push_str("ruelex: cannot read ");
+        message.push_str(path.clone());
+        message.push_str("\n");
+        print(message);
+        return false;
+    }
+    let data = input.data;
+    if ast_mode {
+        let result = parse.parse(lex.scan(data));
+        if result.errors.len() != 0 {
+            print(result.errors);
+            print(result.dump);
+            false
+        } else {
+            print(result.dump);
+            true
+        }
+    } else {
+        let dump = lex.tokenize(data, pretty);
+        print(dump);
+        true
+    }
 }
 
 fn main() -> i32 {
@@ -87,6 +128,7 @@ fn main() -> i32 {
 
     // First pass: pick up flags and count file arguments.
     let mut pretty = false;
+    let mut ast_mode = false;
     let mut nfiles: u64 = 0;
     let mut i: u64 = 1;
     while i < argc {
@@ -94,6 +136,8 @@ fn main() -> i32 {
             OptStr.Some(a) => {
                 if str_eq(borrow a, "--pretty") {
                     pretty = true;
+                } else if str_eq(borrow a, "--ast") {
+                    ast_mode = true;
                 } else {
                     nfiles = nfiles + 1;
                 }
@@ -114,14 +158,19 @@ fn main() -> i32 {
     let with_header = nfiles > 1;
 
     // Second pass: process each file argument in order.
+    let mut ok = true;
     i = 1;
     while i < argc {
         match std.env.arg(i) {
             OptStr.Some(a) => {
                 if str_eq(borrow a, "--pretty") {
                     // flag, skip
+                } else if str_eq(borrow a, "--ast") {
+                    // flag, skip
                 } else {
-                    process_file(borrow a, pretty, with_header);
+                    if !process_file(borrow a, pretty, ast_mode, with_header) {
+                        ok = false;
+                    }
                 }
             },
             OptStr.None => {},
@@ -129,11 +178,11 @@ fn main() -> i32 {
         i = i + 1;
     }
 
-    0
+    if ok { 0 } else { 1 }
 }
 
 fn usage_text() -> StrBuf {
     let mut u = StrBuf.new();
-    u.push_str("usage: ruelex [--pretty] <file.rue> [<file.rue> ...]\n");
+    u.push_str("usage: ruelex [--pretty|--ast] <file.rue> [<file.rue> ...]\n");
     u
 }

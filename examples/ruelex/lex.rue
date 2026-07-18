@@ -14,6 +14,7 @@
 const std = @import("std");
 const fmtutil = @import("fmtutil.rue");
 const interner = @import("interner.rue");
+const token = @import("token.rue");
 const StrBuf = std.strbuf.StrBuf;
 const Bytes = std.arraybuf.ArrayBuf(u8);
 
@@ -83,6 +84,8 @@ pub struct Lexer {
     col: u64,
     interner: interner.Interner,
     pretty: bool,
+    last_kind: u64,
+    last_value: u64,
 
     fn new(src: Bytes, pretty: bool) -> Self {
         let mut lx = Self {
@@ -93,6 +96,8 @@ pub struct Lexer {
             col: 1,
             interner: interner.Interner.new(),
             pretty: pretty,
+            last_kind: token.UNKNOWN,
+            last_value: 0,
         };
         lx.n = lx.src.len();
         lx
@@ -219,6 +224,8 @@ pub struct Lexer {
         if word_eq(borrow key, "type") { return "TYPE(type)"; }
 
         let sym = self.interner.intern(borrow key);
+        self.last_kind = token.IDENT;
+        self.last_value = sym;
         fmtutil.kn("IDENT(sym:", sym, ")")
     }
 
@@ -247,6 +254,8 @@ pub struct Lexer {
                 break;
             }
         }
+        self.last_kind = token.INT;
+        self.last_value = val;
         fmtutil.kn("INT(", val, ")")
     }
 
@@ -277,8 +286,11 @@ pub struct Lexer {
             }
         }
         if !any {
+            self.last_kind = token.ERROR;
             return "ERROR(empty base literal)";
         }
+        self.last_kind = token.INT;
+        self.last_value = val;
         fmtutil.kn("INT(", val, ")")
     }
 
@@ -287,10 +299,12 @@ pub struct Lexer {
         let mut key = StrBuf.new();
         loop {
             if self.pos >= self.n {
+                self.last_kind = token.ERROR;
                 return "ERROR(unterminated string)";
             }
             let c = self.peek(0);
             if c == 10 {
+                self.last_kind = token.ERROR;
                 return "ERROR(unterminated string)";
             }
             if c == 34 {
@@ -300,15 +314,18 @@ pub struct Lexer {
             if c == 92 {
                 self.advance(); // backslash
                 if self.pos >= self.n {
+                    self.last_kind = token.ERROR;
                     return "ERROR(unterminated string)";
                 }
                 let e = self.peek(0);
                 if e == 10 {
+                    self.last_kind = token.ERROR;
                     return "ERROR(unterminated string)";
                 }
                 let dec = decode_escape(e);
                 if dec == 256 {
                     self.advance();
+                    self.last_kind = token.ERROR;
                     return "ERROR(invalid escape)";
                 }
                 let db: u8 = @intCast(dec);
@@ -321,6 +338,8 @@ pub struct Lexer {
             }
         }
         let sym = self.interner.intern(borrow key);
+        self.last_kind = token.STRING;
+        self.last_value = sym;
         fmtutil.kn("STRING(sym:", sym, ")")
     }
 
@@ -397,7 +416,7 @@ pub struct Lexer {
 
     // Tokenize the whole input, appending one line per token to `out`, ending
     // with an EOF token whose span is (n, n).
-    fn run(inout self, inout out: StrBuf) {
+    fn run(inout self, inout out: StrBuf, inout tokens: token.Tokens) {
         loop {
             self.skip_trivia();
             if self.pos >= self.n {
@@ -407,6 +426,8 @@ pub struct Lexer {
             let sl = self.line;
             let sc = self.col;
             let c = self.peek(0);
+            self.last_kind = token.UNKNOWN;
+            self.last_value = 0;
             let kind = if is_ident_start(c) {
                 self.lex_ident(start)
             } else if is_digit(c) {
@@ -417,8 +438,25 @@ pub struct Lexer {
                 self.lex_op(start)
             };
             let end = self.pos;
+            let compact_kind = if self.last_kind == token.UNKNOWN {
+                token.kind_from_name(borrow kind)
+            } else {
+                self.last_kind
+            };
+            tokens.push(token.Token {
+                kind: compact_kind,
+                start: start,
+                end: end,
+                value: self.last_value,
+            });
             self.emit(inout out, start, end, sl, sc, kind);
         }
+        tokens.push(token.Token {
+            kind: token.EOF,
+            start: self.n,
+            end: self.n,
+            value: 0,
+        });
         self.emit(inout out, self.n, self.n, self.line, self.col, "EOF");
     }
 }
@@ -426,7 +464,19 @@ pub struct Lexer {
 // Tokenize `src`, returning the full formatted dump. Consumes `src`.
 pub fn tokenize(src: Bytes, pretty: bool) -> StrBuf {
     let mut out = StrBuf.new();
+    let mut tokens = token.Tokens.new();
     let mut lx = Lexer.new(src, pretty);
-    lx.run(inout out);
+    lx.run(inout out, inout tokens);
     out
+}
+
+// Tokenize `src` into a compact POD stream for rueparse. The formatted output
+// is intentionally discarded; both public entry points execute the same
+// recognizers so differential lexer coverage also protects parser input.
+pub fn scan(src: Bytes) -> token.Tokens {
+    let mut out = StrBuf.new();
+    let mut tokens = token.Tokens.new();
+    let mut lx = Lexer.new(src, false);
+    lx.run(inout out, inout tokens);
+    tokens
 }
