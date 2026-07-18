@@ -2,227 +2,37 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::Read;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
-#[cfg(target_os = "macos")]
-use std::process::Command;
 use std::sync::Arc;
 
-use tracing::{Level, info_span};
+use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::{EnvFilter, Layer as _, fmt};
 
 #[cfg(rue_benchmark_allocations)]
 mod allocation;
+mod compile;
+mod emit;
+mod output;
+mod platform_signing;
 mod timing;
 
+use emit::EmitStage;
 #[cfg(test)]
-use rue_compiler::unstable::MetricsSnapshot;
-use rue_compiler::unstable::{
-    ImportDiscoveryRevision, ImportDiscoveryStatus, LowerMetrics, ParseMetrics, SemanticMetrics,
-};
+use emit::{EmitFrontendRoute, build_emit_frontend, emit_frontend_route};
+#[cfg(test)]
+use rue_compiler::parse_source_snapshot_for_ast_presentation;
+use rue_compiler::unstable::{ImportDiscoveryRevision, ImportDiscoveryStatus};
+
 use rue_compiler::{
-    AcceptedImportSource, Ast, CanonicalRirOutput, CanonicalSemanticOutput, CompileError,
-    CompileErrors, CompileOptions, CompileWarning, CompilerSession, DependencyEnvelope,
-    DependencyEnvelopeStatus, DiscoverySourceAssembler, ErrorKind, FileId, FileMetadataFingerprint,
-    FrozenTypeInternPool, ImportDiscoveryContext, ImportObservation, ImportObservationLedger,
-    ImportObservationStatus, Lexer, LinkerMode, MultiFileFormatter, MultiFileJsonFormatter,
-    OptLevel, PhysicalFileIdentity, PreviewFeature, PreviewFeatures, SourceInfo, SourceMetadata,
-    SourceSnapshot, Token, configure_thread_pool, generate_emitted_asm, generate_liveness_info,
-    generate_lowering_info, generate_mir, generate_regalloc_info, generate_stack_frame_info,
-    parse_source_snapshot_for_ast_presentation,
+    AcceptedImportSource, CompileError, CompileErrors, CompileOptions, CompileWarning,
+    CompilerSession, DependencyEnvelope, DiscoverySourceAssembler, FileId, FileMetadataFingerprint,
+    ImportDiscoveryContext, ImportObservation, ImportObservationLedger, ImportObservationStatus,
+    LinkerMode, MultiFileFormatter, MultiFileJsonFormatter, OptLevel, PhysicalFileIdentity,
+    PreviewFeature, PreviewFeatures, SourceInfo, SourceMetadata, SourceSnapshot,
+    configure_thread_pool,
 };
-use rue_rir::RirPrinter;
 use rue_target::Target;
-
-/// Compilation stages that can be emitted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EmitStage {
-    /// Emit tokens from the lexer.
-    Tokens,
-    /// Emit the abstract syntax tree.
-    Ast,
-    /// Emit RIR (untyped intermediate representation).
-    Rir,
-    /// Emit AIR (typed intermediate representation).
-    Air,
-    /// Emit CFG (control flow graph).
-    Cfg,
-    /// Emit lowering (CFG to MIR instruction selection).
-    Lowering,
-    /// Emit MIR (machine intermediate representation).
-    Mir,
-    /// Emit liveness analysis information.
-    Liveness,
-    /// Emit register allocation debug info.
-    RegAlloc,
-    /// Emit assembly text.
-    Asm,
-    /// Emit stack frame layout per function.
-    StackFrame,
-    /// Emit the source dependency graph discovered while loading imports.
-    Deps,
-}
-
-struct EmitFrontend {
-    parsed: Arc<rue_compiler::ParsedProgram>,
-    rir: Arc<CanonicalRirOutput>,
-    semantic: Arc<CanonicalSemanticOutput>,
-    work: EmitWork,
-    #[cfg(test)]
-    session_work: MetricsSnapshot,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct EmitWork {
-    parsed: ParseMetrics,
-    lowered: LowerMetrics,
-    semantic: SemanticMetrics,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EmitFrontendRoute {
-    None,
-    AstOnlySyntax,
-    SessionQuery,
-}
-
-fn emit_frontend_route(stages: &[EmitStage]) -> EmitFrontendRoute {
-    if stages.iter().any(|stage| {
-        matches!(
-            stage,
-            EmitStage::Rir
-                | EmitStage::Air
-                | EmitStage::Cfg
-                | EmitStage::Lowering
-                | EmitStage::Mir
-                | EmitStage::Liveness
-                | EmitStage::RegAlloc
-                | EmitStage::Asm
-                | EmitStage::StackFrame
-        )
-    }) {
-        EmitFrontendRoute::SessionQuery
-    } else if stages.contains(&EmitStage::Ast) {
-        EmitFrontendRoute::AstOnlySyntax
-    } else {
-        EmitFrontendRoute::None
-    }
-}
-
-fn build_emit_frontend_in_session(
-    session: &mut CompilerSession,
-    options: CompileOptions,
-) -> Result<EmitFrontend, CompileErrors> {
-    let parsed = session.published().cloned().ok_or_else(|| {
-        CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
-            "emit requires a published closed discovery revision".into(),
-        )))
-    })?;
-    let rir = {
-        let _span = info_span!("semantic_astgen").entered();
-        session.rir()?
-    };
-    let semantic = session.semantic(&options)?;
-    let session_work = session.unstable_metrics();
-    Ok(EmitFrontend {
-        parsed,
-        rir,
-        semantic: semantic.clone(),
-        work: EmitWork {
-            parsed: session_work.parse_metrics(),
-            lowered: session_work.lower_metrics(),
-            semantic: semantic.unstable_metrics(),
-        },
-        #[cfg(test)]
-        session_work,
-    })
-}
-
-#[cfg(test)]
-fn build_emit_frontend(
-    source_snapshot: &SourceSnapshot,
-    options: CompileOptions,
-) -> Result<EmitFrontend, CompileErrors> {
-    let mut session = CompilerSession::new();
-    session
-        .update_for_presentation(source_snapshot)
-        .into_result()?;
-    build_emit_frontend_in_session(&mut session, options)
-}
-
-impl EmitFrontend {
-    fn rir(&self) -> &rue_compiler::Rir {
-        self.rir.rir()
-    }
-
-    fn interner(&self) -> &rue_compiler::ThreadedRodeo {
-        self.rir.semantic_symbols().interner()
-    }
-
-    fn functions(&self) -> &[rue_compiler::FunctionWithCfg] {
-        self.semantic.functions()
-    }
-
-    fn type_pool(&self) -> &FrozenTypeInternPool {
-        self.semantic.type_pool()
-    }
-
-    fn strings(&self) -> &[String] {
-        self.semantic.strings()
-    }
-
-    fn warnings(&self) -> &[CompileWarning] {
-        self.semantic.warnings()
-    }
-
-    fn query_work(&self) -> EmitWork {
-        self.work
-    }
-}
-
-/// Error returned when parsing an emit stage name fails.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ParseEmitStageError(String);
-
-impl std::fmt::Display for ParseEmitStageError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "unknown emit stage '{}'", self.0)
-    }
-}
-
-impl std::error::Error for ParseEmitStageError {}
-
-impl std::str::FromStr for EmitStage {
-    type Err = ParseEmitStageError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "tokens" => Ok(EmitStage::Tokens),
-            "ast" => Ok(EmitStage::Ast),
-            "rir" => Ok(EmitStage::Rir),
-            "air" => Ok(EmitStage::Air),
-            "cfg" => Ok(EmitStage::Cfg),
-            "lowering" => Ok(EmitStage::Lowering),
-            "mir" => Ok(EmitStage::Mir),
-            "liveness" => Ok(EmitStage::Liveness),
-            "regalloc" => Ok(EmitStage::RegAlloc),
-            "asm" => Ok(EmitStage::Asm),
-            "stackframe" => Ok(EmitStage::StackFrame),
-            "deps" => Ok(EmitStage::Deps),
-            _ => Err(ParseEmitStageError(s.to_string())),
-        }
-    }
-}
-
-impl EmitStage {
-    fn all_names() -> &'static str {
-        "tokens, ast, rir, air, cfg, lowering, mir, liveness, regalloc, asm, stackframe, deps"
-    }
-}
-
-/// Log level for tracing output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum LogLevel {
     /// No logging output (default).
@@ -477,180 +287,6 @@ enum ParseResult {
     Error,
     /// User requested help or version (already printed, should exit 0).
     Exit,
-}
-
-/// Resolve a path to a canonical key for the output-clobber comparison.
-///
-/// Sources always exist, so they canonicalize directly. The output file
-/// usually does NOT exist yet, so `canonicalize` fails on it; in that case we
-/// canonicalize the parent directory and re-attach the file name, which still
-/// collapses `./prog` and `prog` (or `dir/../prog`) to the same key. When even
-/// the parent can't be resolved — as in unit tests with fake paths that touch
-/// no real files — we fall back to the raw path, preserving the old
-/// exact-string behavior. Extension is irrelevant; only the resolved location
-/// matters (RUE-351).
-fn clobber_key(path: &str) -> PathBuf {
-    let p = Path::new(path);
-    if let Ok(canon) = fs::canonicalize(p) {
-        return canon;
-    }
-    match (p.parent(), p.file_name()) {
-        (Some(parent), Some(name)) => {
-            // An empty parent means the path is a bare file name in the cwd.
-            let parent = if parent.as_os_str().is_empty() {
-                Path::new(".")
-            } else {
-                parent
-            };
-            match fs::canonicalize(parent) {
-                Ok(canon_parent) => canon_parent.join(name),
-                Err(_) => p.to_path_buf(),
-            }
-        }
-        _ => p.to_path_buf(),
-    }
-}
-
-/// Would writing the output destroy the source file at `source`?
-///
-/// Two complementary checks (RUE-527):
-/// - resolved-path equality via [`clobber_key`], which collapses spellings
-///   and symlinks — and works when the output does not exist yet;
-/// - device+inode equality, which catches HARD links: `ln main.rue program`
-///   gives two distinct canonical names for one shared inode, so writing
-///   `program` destroys `main.rue`. Only checkable when the output exists;
-///   `output_meta` is its metadata (`None` when it doesn't exist).
-fn output_would_clobber(
-    output_key: &Path,
-    output_meta: Option<&fs::Metadata>,
-    source: &str,
-) -> bool {
-    if clobber_key(source) == *output_key {
-        return true;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if let (Some(out_meta), Ok(src_meta)) = (output_meta, fs::metadata(source)) {
-            return out_meta.dev() == src_meta.dev() && out_meta.ino() == src_meta.ino();
-        }
-    }
-    false
-}
-
-/// Refuse an output path that names (or hard-links) any source of the
-/// compilation. `sources` is whatever set is known at the call site: the
-/// positional paths at argument-parse time, and the full import-discovered
-/// set later — imports are appended after parsing, so the guard must run
-/// again once they are known (RUE-527).
-fn check_output_clobbers_source<'a>(
-    output_path: &str,
-    sources: impl IntoIterator<Item = &'a str>,
-) -> Result<(), ()> {
-    let output_key = clobber_key(output_path);
-    let output_meta = fs::metadata(output_path).ok();
-    for source in sources {
-        if output_would_clobber(&output_key, output_meta.as_ref(), source) {
-            eprintln!(
-                "Error: output path '{output_path}' is also an input source file; \
-                 refusing to overwrite it"
-            );
-            return Err(());
-        }
-    }
-    Ok(())
-}
-
-/// Publish the linked executable image to `output_path` atomically.
-///
-/// The image is written to a same-directory temporary file, finalized there
-/// (executable permissions; ad-hoc codesign for Mach-O targets on a macOS
-/// host, which Mach-O executables require to run), and renamed into place
-/// only once complete. On any failure the temporary file is removed and an
-/// `OutputPublication` error is returned, so the output path never holds a
-/// partial, mis-permissioned, or unsigned artifact: it either keeps its
-/// previous contents or receives the fully finalized executable (RUE-781).
-///
-/// Signing before the rename is sound because the signing identifier is
-/// pinned (`dev.rue-lang.program`, RUE-619): the temporary path does not
-/// influence the signed bytes.
-fn publish_executable(output_path: &str, image: &[u8], target: Target) -> Result<(), CompileError> {
-    #[cfg(not(target_os = "macos"))]
-    let _ = target;
-    let fail = |message: String| {
-        Err(CompileError::without_span(ErrorKind::OutputPublication(
-            message,
-        )))
-    };
-    let temp_path = format!("{}.tmp.{}", output_path, std::process::id());
-    let cleanup = |result| {
-        let _ = fs::remove_file(&temp_path);
-        result
-    };
-
-    if let Err(e) = fs::write(&temp_path, image) {
-        return cleanup(fail(format!("could not write {temp_path}: {e}")));
-    }
-
-    #[cfg(unix)]
-    {
-        let path = Path::new(&temp_path);
-        let metadata = match fs::metadata(path) {
-            Ok(metadata) => metadata,
-            Err(e) => {
-                return cleanup(fail(format!(
-                    "could not read file metadata for {temp_path}: {e}"
-                )));
-            }
-        };
-        let mut perms = metadata.permissions();
-        perms.set_mode(0o755);
-        if let Err(e) = fs::set_permissions(path, perms) {
-            return cleanup(fail(format!(
-                "could not set executable permissions on {temp_path}: {e}"
-            )));
-        }
-    }
-
-    // Ad-hoc codesign for macOS-target executables (required to run on
-    // ARM64). A command-line Mach-O has no Info.plist, so codesign's default
-    // identifier would come from the file name; pin both identity and
-    // timestamp policy so the destination path never changes the program
-    // bytes (RUE-619).
-    #[cfg(target_os = "macos")]
-    if target.is_macho() {
-        let result = Command::new("codesign")
-            .args([
-                "-f",
-                "-s",
-                "-",
-                "--identifier",
-                "dev.rue-lang.program",
-                "--timestamp=none",
-                &temp_path,
-            ])
-            .output();
-        match result {
-            Ok(output) => {
-                if !output.status.success() {
-                    return cleanup(fail(format!(
-                        "codesign failed: {}",
-                        String::from_utf8_lossy(&output.stderr)
-                    )));
-                }
-            }
-            Err(e) => {
-                return cleanup(fail(format!("could not run codesign: {e}")));
-            }
-        }
-    }
-
-    if let Err(e) = fs::rename(&temp_path, output_path) {
-        return cleanup(fail(format!(
-            "could not move finished executable to {output_path}: {e}"
-        )));
-    }
-    Ok(())
 }
 
 fn parse_jobs_value(jobs_str: &str) -> Option<usize> {
@@ -2003,31 +1639,32 @@ fn main() {
         .collect();
     let diagnostics = DiagnosticOutput::new(options.error_format, source_infos);
 
-    if options.emit_stages.contains(&EmitStage::Deps) {
-        if options.emit_stages.len() != 1 {
-            eprintln!("Error: --emit deps cannot be combined with other --emit stages");
-            std::process::exit(1);
-        }
-        if options.benchmark_json {
-            eprintln!(
-                "Error: --emit cannot be combined with --benchmark-json (both write to stdout)"
-            );
-            std::process::exit(1);
-        }
-        let dependency_envelope =
-            DependencyEnvelope::from_closed_revision(&import_discovery.revision)
-                .expect("closed valid or resolution-incomplete discovery has dependency topology");
-        let incomplete = dependency_envelope.status == DependencyEnvelopeStatus::Incomplete;
-        match serde_json::to_string_pretty(&dependency_envelope) {
-            Ok(json) => println!("{json}"),
-            Err(e) => {
-                eprintln!("Error emitting dependency envelope: {e}");
+    // --emit and --benchmark-json both own stdout, so combining them would
+    // interleave IR text with the benchmark JSON and corrupt it — reject early.
+    if options.benchmark_json && !options.emit_stages.is_empty() {
+        eprintln!("Error: --emit cannot be combined with --benchmark-json (both write to stdout)");
+        std::process::exit(1);
+    }
+
+    // Handle emit modes with multi-file support
+    if !options.emit_stages.is_empty() {
+        {
+            let _compile = compile_span.enter();
+            if let Err(()) = emit::execute(emit::EmitRequest {
+                source_snapshot: &source_snapshot,
+                session: &mut import_discovery.session,
+                stages: &options.emit_stages,
+                discovery_revision: &import_discovery.revision,
+                compile_options: CompileOptions {
+                    target: options.target,
+                    linker: options.linker.clone(),
+                    opt_level: options.opt_level,
+                    preview_features: options.preview_features.clone(),
+                },
+                diagnostics: &diagnostics,
+            }) {
                 std::process::exit(1);
             }
-        }
-        if incomplete {
-            diagnostics.print_errors(import_discovery.revision.diagnostics());
-            std::process::exit(1);
         }
         drop(compile_span);
         print_timing_output(
@@ -2046,52 +1683,26 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Only a closed-valid revision may reach output validation. Canonical
-    // attempted-revision diagnostics take precedence over an output-path
-    // conflict, matching discovery failure ordering. Run the guard only now,
-    // once @import discovery has appended the full source set. --emit never
-    // writes the output path.
-    if options.emit_stages.is_empty()
-        && check_output_clobbers_source(
-            &options.output_path,
-            source_snapshot.files().map(|source| source.path),
-        )
-        .is_err()
-    {
-        std::process::exit(1);
-    }
-
-    // --emit and --benchmark-json both own stdout, so combining them would
-    // interleave IR text with the benchmark JSON and corrupt it — reject early.
-    if options.benchmark_json && !options.emit_stages.is_empty() {
-        eprintln!("Error: --emit cannot be combined with --benchmark-json (both write to stdout)");
-        std::process::exit(1);
-    }
-
-    // Handle emit modes with multi-file support
-    if !options.emit_stages.is_empty() {
-        {
-            let _compile = compile_span.enter();
-            if let Err(()) = handle_emit_multi_file(
-                &source_snapshot,
-                &mut import_discovery.session,
-                &options,
-                &diagnostics,
-            ) {
-                std::process::exit(1);
-            }
+    // Closed discovery fixes the complete source identity set. Validate the
+    // destination before semantic/codegen/link work, then retain that set for
+    // mandatory revalidation immediately before atomic publication.
+    let publication_destination = match output::preflight_destination(
+        Path::new(&options.output_path),
+        source_snapshot.files().map(|source| source.path),
+    ) {
+        Ok(destination) => destination,
+        Err(output::PublishError::WouldClobberSource) => {
+            eprintln!(
+                "Error: output path '{}' is also an input source file; refusing to overwrite it",
+                options.output_path
+            );
+            std::process::exit(1);
         }
-        drop(compile_span);
-        print_timing_output(
-            &timing_data,
-            options.time_passes,
-            options.benchmark_json,
-            &options.target,
-            None,
-            None,
-        );
-        return;
-    }
+        Err(error) => {
+            diagnostics.print_error(&error.into_compile_error());
+            std::process::exit(1);
+        }
+    };
 
     // Normal compilation - uses multi-file compilation for all source files
     let compile_options = CompileOptions {
@@ -2106,9 +1717,11 @@ fn main() {
     }
     let compile_result = {
         let _compile = compile_span.enter();
-        import_discovery
-            .session
-            .executable_in_compile_scope(&compile_options)
+        compile::execute(compile::CompileRequest {
+            session: &mut import_discovery.session,
+            options: compile_options,
+            destination: publication_destination,
+        })
     };
     drop(compile_span);
     #[cfg(rue_benchmark_allocations)]
@@ -2117,18 +1730,25 @@ fn main() {
     }
     match compile_result {
         Ok(output) => {
-            // Print warnings using the diagnostic formatter
-            diagnostics.print_warnings(&output.warnings);
-
-            // Publish the executable atomically. Any failure is fatal: a
-            // partially written, mis-permissioned, or unsigned artifact must
-            // not be left at the output path behind a success exit (RUE-781).
-            if let Err(error) =
-                publish_executable(&options.output_path, &output.elf, compile_options.target)
-            {
-                diagnostics.print_error(&error);
-                std::process::exit(1);
-            }
+            let publication = output.publish();
+            // Warnings live outside the publication result so failures cannot
+            // discard them; present them before inspecting and reporting the
+            // publication outcome.
+            diagnostics.print_warnings(&publication.warnings);
+            let output = match publication.result {
+                Ok(output) => output,
+                Err(output::PublishError::WouldClobberSource) => {
+                    eprintln!(
+                        "Error: output path '{}' is also an input source file; refusing to overwrite it",
+                        options.output_path
+                    );
+                    std::process::exit(1);
+                }
+                Err(error) => {
+                    diagnostics.print_error(&error.into_compile_error());
+                    std::process::exit(1);
+                }
+            };
 
             // Don't print normal compilation message when using --benchmark-json
             // as it would interfere with JSON parsing
@@ -2157,7 +1777,9 @@ fn main() {
                         tokens: source_stats.tokens,
                     }
                 }),
-                options.benchmark_json.then_some(output.elf.as_slice()),
+                options
+                    .benchmark_json
+                    .then_some(output.linked_bytes.as_slice()),
             );
         }
         Err(errors) => {
@@ -2165,337 +1787,6 @@ fn main() {
             std::process::exit(1);
         }
     }
-}
-
-/// Handle emit stages for multi-file compilation.
-///
-/// For early stages (tokens, ast), each file is processed and labeled individually.
-/// For later stages (rir, air, cfg, etc.), the merged program is used.
-fn handle_emit_multi_file(
-    source_snapshot: &SourceSnapshot,
-    session: &mut CompilerSession,
-    options: &Options,
-    diagnostics: &DiagnosticOutput<'_>,
-) -> Result<(), ()> {
-    // Determine which stages we need
-    let needs_tokens = options.emit_stages.contains(&EmitStage::Tokens);
-    let needs_ast = options.emit_stages.contains(&EmitStage::Ast);
-
-    // For tokens, we need to lex each file separately (before parsing merges interners)
-    // We'll collect per-file tokens if needed
-    let per_file_tokens: Option<Vec<(String, Vec<Token>)>> = if needs_tokens {
-        let mut file_tokens = Vec::with_capacity(source_snapshot.len());
-        for source in source_snapshot.files() {
-            // Lex with the file's real FileId so a lex error in the Nth file
-            // is attributed to that file, not to the first one (RUE-38).
-            let lexer = Lexer::with_file_id(source.source, source.file_id);
-            match lexer.tokenize_preserving_interner() {
-                Ok((tokens, _interner)) => {
-                    file_tokens.push((source.path.to_string(), tokens));
-                }
-                Err((errors, _interner)) => {
-                    diagnostics.print_errors(&errors);
-                    return Err(());
-                }
-            }
-        }
-        Some(file_tokens)
-    } else {
-        None
-    };
-
-    let frontend_route = emit_frontend_route(&options.emit_stages);
-    // AST-only preserves its syntax-only behavior (duplicates are printable).
-    // Combined AST+later canonical modes reuse the unit's once-only projection.
-    let mut per_file_asts: Option<Vec<(String, std::sync::Arc<Ast>)>> =
-        if frontend_route == EmitFrontendRoute::AstOnlySyntax {
-            match parse_source_snapshot_for_ast_presentation(source_snapshot) {
-                Ok(presentation) => {
-                    debug_assert_eq!(
-                        presentation.work().parsed.syntax.parser_invocations,
-                        source_snapshot.len()
-                    );
-                    Some(presentation.files().to_vec())
-                }
-                Err(errors) => {
-                    diagnostics.print_errors(&errors);
-                    return Err(());
-                }
-            }
-        } else {
-            None
-        };
-
-    let frontend_state = if frontend_route == EmitFrontendRoute::SessionQuery {
-        let compile_options = CompileOptions {
-            target: options.target,
-            linker: options.linker.clone(),
-            opt_level: options.opt_level,
-            preview_features: options.preview_features.clone(),
-        };
-        let frontend = match build_emit_frontend_in_session(session, compile_options) {
-            Ok(frontend) => frontend,
-            Err(errors) => {
-                diagnostics.print_errors(&errors);
-                return Err(());
-            }
-        };
-        if needs_ast {
-            per_file_asts = Some(
-                source_snapshot
-                    .files()
-                    .map(|source| {
-                        let module = frontend
-                            .parsed
-                            .modules()
-                            .iter()
-                            .find(|module| module.file_id() == source.file_id)
-                            .expect("frontend parsed every snapshot source");
-                        (source.path.to_string(), module.shared_ast())
-                    })
-                    .collect(),
-            );
-        }
-        Some(frontend)
-    } else {
-        None
-    };
-    if let Some(state) = &frontend_state {
-        // Every --emit mode must surface frontend warnings (RUE-130).
-        diagnostics.print_warnings(state.warnings());
-        let work = state.query_work();
-        debug_assert_eq!(state.parsed.modules().len(), source_snapshot.len());
-        debug_assert!(work.parsed.parser_invocations <= source_snapshot.len());
-        debug_assert_eq!(work.lowered.parser_invocations, 0);
-        debug_assert_eq!(work.semantic.binding.bind_invocations, 1);
-        debug_assert_eq!(work.semantic.manifest.build_invocations, 1);
-    }
-
-    use std::fmt::Write as _;
-
-    // Now emit in order
-    for stage in &options.emit_stages {
-        match stage {
-            EmitStage::Tokens => {
-                if let Some(ref file_tokens) = per_file_tokens {
-                    for (path, tokens) in file_tokens {
-                        println!("=== Tokens ({}) ===", path);
-                        for token in tokens {
-                            println!("{}", token);
-                        }
-                        println!();
-                    }
-                }
-            }
-            EmitStage::Ast => {
-                if let Some(ref asts) = per_file_asts {
-                    for (path, ast) in asts {
-                        println!("=== AST ({}) ===", path);
-                        print!("{}", ast);
-                        println!();
-                    }
-                }
-            }
-            EmitStage::Rir => {
-                println!("=== RIR ===");
-                if let Some(ref state) = frontend_state {
-                    let order = state
-                        .rir
-                        .presentation_order(source_snapshot.files().map(|source| source.file_id));
-                    let printer = RirPrinter::with_presentation_order(
-                        state.rir(),
-                        state.interner(),
-                        order.instructions,
-                        order.extra,
-                    );
-                    println!("{}", printer);
-                }
-                println!();
-            }
-            EmitStage::Air => {
-                println!("=== AIR ===");
-                if let Some(ref state) = frontend_state {
-                    for func in state.functions() {
-                        println!("function {}:", func.analyzed.name);
-                        println!(
-                            "{}",
-                            func.analyzed.air.display_with_interner(state.interner())
-                        );
-                    }
-                }
-                println!();
-            }
-            EmitStage::Cfg => {
-                println!("=== CFG ===");
-                if let Some(ref state) = frontend_state {
-                    for func in state.functions() {
-                        println!("{}", func.cfg.display_with_interner(state.interner()));
-                    }
-                }
-                println!();
-            }
-            EmitStage::Lowering => {
-                let mut output = String::new();
-                if let Some(ref state) = frontend_state {
-                    for func in state.functions() {
-                        let lowering_info = match generate_lowering_info(
-                            &func.cfg,
-                            state.type_pool(),
-                            state.interner(),
-                            options.target,
-                        ) {
-                            Ok(info) => info,
-                            Err(e) => {
-                                diagnostics.print_error(&e);
-                                return Err(());
-                            }
-                        };
-                        write!(&mut output, "{}", lowering_info).expect("write to String");
-                    }
-                }
-                output.push('\n');
-                print!("{}", output);
-            }
-            EmitStage::Mir => {
-                let mut output = String::new();
-                writeln!(&mut output, "=== MIR ({}) ===", options.target).expect("write to String");
-                if let Some(ref state) = frontend_state {
-                    for func in state.functions() {
-                        let mir = match generate_mir(
-                            &func.cfg,
-                            state.type_pool(),
-                            state.interner(),
-                            options.target,
-                        ) {
-                            Ok(mir) => mir,
-                            Err(e) => {
-                                diagnostics.print_error(&e);
-                                return Err(());
-                            }
-                        };
-                        writeln!(&mut output, "function {}:", func.analyzed.name)
-                            .expect("write to String");
-                        writeln!(&mut output, "{}", mir).expect("write to String");
-                    }
-                }
-                output.push('\n');
-                print!("{}", output);
-            }
-            EmitStage::Liveness => {
-                let mut output = String::new();
-                writeln!(
-                    &mut output,
-                    "=== Liveness Analysis ({}) ===",
-                    options.target
-                )
-                .expect("write to String");
-                if let Some(ref state) = frontend_state {
-                    for func in state.functions() {
-                        let liveness_info = match generate_liveness_info(
-                            &func.cfg,
-                            state.type_pool(),
-                            state.interner(),
-                            options.target,
-                        ) {
-                            Ok(info) => info,
-                            Err(e) => {
-                                diagnostics.print_error(&e);
-                                return Err(());
-                            }
-                        };
-                        writeln!(&mut output, "function {}:", func.analyzed.name)
-                            .expect("write to String");
-                        writeln!(&mut output, "{}", liveness_info).expect("write to String");
-                    }
-                }
-                output.push('\n');
-                print!("{}", output);
-            }
-            EmitStage::RegAlloc => {
-                let mut output = String::new();
-                writeln!(
-                    &mut output,
-                    "=== Register Allocation ({}) ===",
-                    options.target
-                )
-                .expect("write to String");
-                if let Some(ref state) = frontend_state {
-                    for func in state.functions() {
-                        let regalloc_info = match generate_regalloc_info(
-                            &func.cfg,
-                            state.type_pool(),
-                            state.interner(),
-                            options.target,
-                        ) {
-                            Ok(info) => info,
-                            Err(e) => {
-                                diagnostics.print_error(&e);
-                                return Err(());
-                            }
-                        };
-                        writeln!(&mut output, "function {}:", func.analyzed.name)
-                            .expect("write to String");
-                        write!(&mut output, "{}", regalloc_info).expect("write to String");
-                    }
-                }
-                output.push('\n');
-                print!("{}", output);
-            }
-            EmitStage::Asm => {
-                let mut output = String::new();
-                writeln!(&mut output, "=== Assembly ({}) ===", options.target)
-                    .expect("write to String");
-                if let Some(ref state) = frontend_state {
-                    for func in state.functions() {
-                        let asm = match generate_emitted_asm(
-                            &func.cfg,
-                            state.type_pool(),
-                            state.strings(),
-                            state.interner(),
-                            options.target,
-                        ) {
-                            Ok(asm) => asm,
-                            Err(e) => {
-                                diagnostics.print_error(&e);
-                                return Err(());
-                            }
-                        };
-                        writeln!(&mut output, ".globl {}", func.analyzed.name)
-                            .expect("write to String");
-                        writeln!(&mut output, "{}:", func.analyzed.name).expect("write to String");
-                        write!(&mut output, "{}", asm).expect("write to String");
-                    }
-                }
-                output.push('\n');
-                print!("{}", output);
-            }
-            EmitStage::StackFrame => {
-                let mut output = String::new();
-                if let Some(ref state) = frontend_state {
-                    for func in state.functions() {
-                        let frame_info = match generate_stack_frame_info(
-                            &func.cfg,
-                            &func.analyzed.name,
-                            state.type_pool(),
-                            state.interner(),
-                            options.target,
-                        ) {
-                            Ok(info) => info,
-                            Err(e) => {
-                                diagnostics.print_error(&e);
-                                return Err(());
-                            }
-                        };
-                        writeln!(&mut output, "{}", frame_info).expect("write to String");
-                    }
-                }
-                print!("{}", output);
-            }
-            EmitStage::Deps => unreachable!("--emit deps is handled before frontend emission"),
-        }
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -3103,45 +2394,6 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
     }
-
-    #[cfg(unix)]
-    #[test]
-    fn clobber_guard_catches_hard_link_alias() {
-        // RUE-527: a hard link gives the output a DIFFERENT canonical path
-        // from the source while sharing its inode — `ln main.rue program;
-        // rue main.rue -o program` destroyed main.rue. The guard must compare
-        // device+inode, not just resolved paths.
-        let dir =
-            std::env::temp_dir().join(format!("rue-clobber-hardlink-test-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let source = dir.join("main.rue");
-        let link = dir.join("program");
-        let _ = fs::remove_file(&link);
-        fs::write(&source, "fn main() -> i32 { 0 }\n").unwrap();
-        fs::hard_link(&source, &link).unwrap();
-
-        let source_str = source.to_str().unwrap();
-        let link_str = link.to_str().unwrap();
-        let output_key = clobber_key(link_str);
-        let output_meta = fs::metadata(link_str).ok();
-        assert!(output_would_clobber(
-            &output_key,
-            output_meta.as_ref(),
-            source_str
-        ));
-
-        // A distinct file in the same directory is NOT a clobber.
-        let other = dir.join("other.rue");
-        fs::write(&other, "fn main() -> i32 { 1 }\n").unwrap();
-        assert!(!output_would_clobber(
-            &output_key,
-            output_meta.as_ref(),
-            other.to_str().unwrap()
-        ));
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
     #[test]
     fn parse_emit_ast() {
         let opts = unwrap_options(parse_args_from(&["--emit", "ast", "source.rue"]));
@@ -3872,61 +3124,5 @@ mod tests {
     #[test]
     fn log_format_all_names() {
         assert_eq!(LogFormat::all_names(), "text, json");
-    }
-
-    // ========== Atomic executable publication (RUE-781) ==========
-
-    fn publish_test_dir(label: &str) -> std::path::PathBuf {
-        let dir = env::temp_dir().join(format!("rue-publish-{label}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("create publish test dir");
-        dir
-    }
-
-    #[test]
-    fn publish_executable_success_installs_output_and_no_temp() {
-        let dir = publish_test_dir("ok");
-        let output = dir.join("prog");
-        let output_str = output.to_str().unwrap();
-        publish_executable(output_str, b"image-bytes", Target::X86_64Linux)
-            .expect("publication succeeds");
-        assert_eq!(fs::read(&output).unwrap(), b"image-bytes");
-        #[cfg(unix)]
-        assert_eq!(
-            fs::metadata(&output).unwrap().permissions().mode() & 0o777,
-            0o755
-        );
-        let leftovers: Vec<_> = fs::read_dir(&dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
-            .filter(|name| name != "prog")
-            .collect();
-        assert!(leftovers.is_empty(), "temp files left: {leftovers:?}");
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn publish_executable_failure_is_atomic() {
-        let dir = publish_test_dir("fail");
-        // The output path is an existing directory, so the final rename must
-        // fail after the temp file was fully written — the failure mode where
-        // a non-atomic implementation leaves debris.
-        let output = dir.join("occupied");
-        fs::create_dir_all(&output).unwrap();
-        let output_str = output.to_str().unwrap();
-        let error = publish_executable(output_str, b"image-bytes", Target::X86_64Linux)
-            .expect_err("publication must fail");
-        assert!(matches!(error.kind, ErrorKind::OutputPublication(_)));
-        assert!(output.is_dir(), "output path must be untouched");
-        let leftovers: Vec<_> = fs::read_dir(&dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
-            .filter(|name| name != "occupied")
-            .collect();
-        assert!(
-            leftovers.is_empty(),
-            "failed publication left artifacts: {leftovers:?}"
-        );
-        let _ = fs::remove_dir_all(&dir);
     }
 }

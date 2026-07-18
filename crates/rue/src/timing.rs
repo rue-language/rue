@@ -713,13 +713,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn emit_driver_does_not_restore_the_retired_peer_orchestrator() {
+    fn cli_orchestration_modules_do_not_restore_the_retired_peer_orchestrator() {
         let retired_type = ["Compilation", "Unit"].concat();
-        let source = include_str!("main.rs");
-        assert!(
-            !source.contains(&retired_type),
-            "emit paths must query CompilerSession directly"
-        );
+        for (name, source) in [
+            ("main.rs", include_str!("main.rs")),
+            ("compile.rs", include_str!("compile.rs")),
+            ("emit.rs", include_str!("emit.rs")),
+        ] {
+            assert!(
+                !source.contains(&retired_type),
+                "{name} must query CompilerSession directly"
+            );
+        }
     }
 
     #[test]

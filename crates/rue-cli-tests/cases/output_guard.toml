@@ -37,6 +37,16 @@ args = ["a.rue", "prog"]
 exit_code = 5
 
 [[case]]
+# Destination/source identity is a closed-discovery preflight. It must win over
+# semantic diagnostics so an unsafe request does no semantic/codegen/link work.
+name = "output_alias_preflight_precedes_invalid_semantics"
+files = [{ path = "invalid.rue", source = "fn main() -> i32 { missing_name }\n" }]
+args = ["invalid.rue", "-o", "invalid.rue"]
+compile_fail = true
+error_contains = ["also an input source file"]
+compile_stderr_not_contains = ["missing_name"]
+
+[[case]]
 # RUE-351: an EXTENSIONLESS source used as `-o` must be refused. The old guard
 # only recognized inputs by a `.rue` suffix, so `rue prog -o prog` (prog is a
 # source) slipped through and the compiled ELF silently overwrote the source.

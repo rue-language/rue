@@ -19,7 +19,12 @@ name = "output_path_is_directory_fails"
 description = "-o pointing at a directory is a fatal E1403, not a warning + success."
 args = ["main.rue", "-o", "outdir"]
 compile_fail = true
-error_contains = ["output publication failed"]
+error_contains = [
+    "output publication failed",
+    "could not atomically install finished executable",
+    "rue-tmp",
+    "outdir",
+]
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 { 42 }
@@ -39,7 +44,7 @@ args = ["main.rue", "-o", "prog"]
 only_on = ["aarch64-macos"]
 env = { PATH = "" }
 compile_fail = true
-error_contains = ["output publication failed", "codesign"]
+error_contains = ["output publication failed", "could not sign temporary executable", "rue-tmp", "codesign"]
 files = [{ path = "main.rue", source = """
 fn main() -> i32 { 42 }
 """ }]
