@@ -652,6 +652,82 @@ test_rue_unit_unknown_crate_errors_cleanly() {
   rm -rf "$sb"
 }
 
+# CI timing summaries must preserve the wrapped command's output and exact exit
+# status while aggregating every Buck command summary emitted by a multi-step
+# wrapper such as test.sh.
+test_ci_timed_preserves_status_and_summarizes_actions() {
+  local sb; sb="$(mktemp -d)"
+  cp "$SRC_ROOT/scripts/ci-timed" "$sb/ci-timed"; chmod +x "$sb/ci-timed"
+  cat >"$sb/fake-command" <<'EOF'
+#!/usr/bin/env bash
+echo 'first line'
+echo 'Commands: 10 (cached: 7, remote: 1, local: 2)'
+echo 'Commands: 5 (cached: 3, remote: 1, local: 1)'
+exit "${FAKE_EXIT:-0}"
+EOF
+  chmod +x "$sb/fake-command"
+
+  local rc=0 out
+  out="$(GITHUB_STEP_SUMMARY="$sb/summary" "$sb/ci-timed" "wrapper test" -- "$sb/fake-command" 2>&1)" || rc=$?
+  check "ci-timed: wrapped output remains visible" \
+    "$(grep -Fq 'first line' <<<"$out" && echo 0 || echo 1)"
+  check "ci-timed: successful command exit is preserved" \
+    "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
+  check "ci-timed: all Buck summaries are aggregated" \
+    "$(grep -Fq '| passed |' "$sb/summary" && grep -Fq '| 2 | 15 | 10 | 2 | 3 |' "$sb/summary" && echo 0 || echo 1)"
+
+  : >"$sb/summary"; rc=0
+  GITHUB_STEP_SUMMARY="$sb/summary" FAKE_EXIT=23 \
+    "$sb/ci-timed" "failing wrapper" -- "$sb/fake-command" >/dev/null 2>&1 || rc=$?
+  check "ci-timed: wrapped failure exit is preserved" \
+    "$([ "$rc" -eq 23 ] && echo 0 || echo 1)"
+  check "ci-timed: failed result is recorded" \
+    "$(grep -Fq '| failed (23) |' "$sb/summary" && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
+# An explicit heavy-suite shard must still prove that Buck discovered and
+# reported its assigned target; a green command with no result is a RUE-924
+# false green even when the target pattern was explicit.
+test_ci_heavy_suite_audits_its_target() {
+  local sb; sb="$(mktemp -d)"
+  cp "$SRC_ROOT/scripts/ci-heavy-suite" "$sb/ci-heavy-suite"; chmod +x "$sb/ci-heavy-suite"
+  cat >"$sb/buck2" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = "uquery" ]; then
+  echo 'root//:cli-tests'
+  exit 0
+fi
+if [ "$1" = "test" ]; then
+  if [ "${FAKE_OMIT:-0}" != 1 ]; then echo 'Pass: root//:cli-tests (0.1s)'; fi
+  exit "${FAKE_EXIT:-0}"
+fi
+exit 90
+EOF
+  chmod +x "$sb/buck2"
+
+  local rc=0 out
+  (cd "$sb" && ./ci-heavy-suite //:cli-tests) >/dev/null 2>&1 || rc=$?
+  check "ci-heavy-suite: labeled target with a result succeeds" \
+    "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
+
+  rc=0
+  out="$(cd "$sb" && ./ci-heavy-suite //:spec-tests 2>&1)" || rc=$?
+  check "ci-heavy-suite: unlabeled shard target fails closed" \
+    "$([ "$rc" -ne 0 ] && grep -Fq 'not labeled rue_heavy_suite' <<<"$out" && echo 0 || echo 1)"
+
+  rc=0
+  out="$(cd "$sb" && FAKE_OMIT=1 ./ci-heavy-suite //:cli-tests 2>&1)" || rc=$?
+  check "ci-heavy-suite: omitted explicit result fails closed" \
+    "$([ "$rc" -ne 0 ] && grep -Fq 'produced no result' <<<"$out" && echo 0 || echo 1)"
+
+  rc=0
+  (cd "$sb" && FAKE_EXIT=29 ./ci-heavy-suite //:cli-tests) >/dev/null 2>&1 || rc=$?
+  check "ci-heavy-suite: Buck failure exit is preserved" \
+    "$([ "$rc" -eq 29 ] && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
 # ===========================================================================
 # RUE-924 — an unfiltered test.sh must FAIL LOUDLY when a corpus harness is
 # silently omitted from the run's results, instead of reporting a green tally
@@ -672,10 +748,11 @@ test_testsh_unfiltered_audits_corpus_presence() {
   cat >"$sb/buck2" <<'EOF'
 #!/usr/bin/env bash
 if [ "$1" = "uquery" ]; then
-  for t in $FAKE_HEAVY_SUITES; do printf '%s\n' "$t"; done
+  for t in $FAKE_HEAVY_SUITES; do printf 'root%s\n' "$t"; done
   exit 0
 fi
 if [ "$1" = "test" ]; then
+  if [ -n "${FAKE_CALL_LOG:-}" ]; then printf '%s\n' "$*" >>"$FAKE_CALL_LOG"; fi
   tgt="$2"
   if [ "$tgt" = "//..." ]; then
     printf 'Pass: root//crates/rue-lexer:rue-lexer-test (0.1s)\n'
@@ -683,7 +760,7 @@ if [ "$1" = "test" ]; then
     exit "${FAKE_BUCK_EXIT:-0}"
   fi
   for t in $FAKE_PASS_TARGETS; do
-    if [ "$t" = "$tgt" ]; then printf 'Pass: root%s (0.1s)\n' "$t"; fi
+    if [ "$t" = "${tgt#root}" ]; then printf 'Pass: root%s (0.1s)\n' "$t"; fi
   done
   printf 'Tests finished: Pass 1. Fail 0. Skip 0.\n'
   exit 0
@@ -696,7 +773,7 @@ EOF
 
   # (1) Full corpus present + buck2 green -> test.sh reports success.
   local rc=0 out
-  out="$(cd "$sb" && RUE_FULL_SUITE_LOCK_HELD=1 FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$all" ./test.sh 2>&1)" || rc=$?
+  out="$(cd "$sb" && RUE_CI_DEFER_HEAVY_SUITES= RUE_FULL_SUITE_LOCK_HELD=1 FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$all" ./test.sh 2>&1)" || rc=$?
   check "test.sh: unfiltered run with the full corpus reports success" \
     "$([ "$rc" -eq 0 ] && grep -Fxq '=== TEST SUITE: PASSED ===' <<< "$out" && echo 0 || echo 1)"
 
@@ -704,7 +781,7 @@ EOF
   #     the RUE-924 false-green: it must become a hard failure naming the suite.
   local partial="//:spec-tests //:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests"
   rc=0
-  out="$(cd "$sb" && RUE_FULL_SUITE_LOCK_HELD=1 FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$partial" ./test.sh 2>&1)" || rc=$?
+  out="$(cd "$sb" && RUE_CI_DEFER_HEAVY_SUITES= RUE_FULL_SUITE_LOCK_HELD=1 FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$partial" ./test.sh 2>&1)" || rc=$?
   check "test.sh: a silently omitted corpus harness fails the run" \
     "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
   check "test.sh: the omission message names the missing harness" \
@@ -715,9 +792,38 @@ EOF
   # (3) A genuine buck2 failure with the full corpus present is still
   #     propagated verbatim (the audit must not mask real failures).
   rc=0
-  out="$(cd "$sb" && RUE_FULL_SUITE_LOCK_HELD=1 FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$all" FAKE_BUCK_EXIT=17 ./test.sh 2>&1)" || rc=$?
+  out="$(cd "$sb" && RUE_CI_DEFER_HEAVY_SUITES= RUE_FULL_SUITE_LOCK_HELD=1 FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$all" FAKE_BUCK_EXIT=17 ./test.sh 2>&1)" || rc=$?
   check "test.sh: unfiltered buck2 failure exit code is propagated" \
     "$([ "$rc" -eq 17 ] && echo 0 || echo 1)"
+
+  # (4) Required CI may explicitly defer known live heavy targets to separate
+  # jobs. The owning invocation must skip and stop auditing exactly those
+  # targets while retaining every other corpus assertion.
+  local owned="//:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests"
+  : >"$sb/calls.log"; rc=0
+  out="$(cd "$sb" && CI=true RUE_FULL_SUITE_LOCK_HELD=1 \
+      RUE_CI_DEFER_HEAVY_SUITES='//:cli-tests //:spec-tests' \
+      FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$owned" \
+      FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
+  check "test.sh: required CI may defer live heavy suites" \
+    "$([ "$rc" -eq 0 ] && grep -Fq 'Deferring heavy suite root//:cli-tests' <<<"$out" && echo 0 || echo 1)"
+  check "test.sh: deferred suites are not executed by the owning shard" \
+    "$(! grep -Eq '^test (root)?//:(cli|spec)-tests' "$sb/calls.log" && echo 0 || echo 1)"
+
+  # (5) A stale shard name or local attempt to suppress coverage fails closed.
+  rc=0
+  out="$(cd "$sb" && CI=true RUE_FULL_SUITE_LOCK_HELD=1 \
+      RUE_CI_DEFER_HEAVY_SUITES='//:missing-suite' \
+      FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$all" ./test.sh 2>&1)" || rc=$?
+  check "test.sh: unknown deferred CI suite fails closed" \
+    "$([ "$rc" -ne 0 ] && grep -Fq 'not labeled rue_heavy_suite' <<<"$out" && echo 0 || echo 1)"
+
+  rc=0
+  out="$(cd "$sb" && CI= RUE_FULL_SUITE_LOCK_HELD=1 \
+      RUE_CI_DEFER_HEAVY_SUITES='//:cli-tests' \
+      FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$all" ./test.sh 2>&1)" || rc=$?
+  check "test.sh: local callers cannot defer corpus coverage" \
+    "$([ "$rc" -ne 0 ] && grep -Fq 'reserved for required CI' <<<"$out" && echo 0 || echo 1)"
 
   rm -rf "$sb"
 }
@@ -737,6 +843,8 @@ test_rue_unit_maps_crate_and_forwards_args
 test_rue_unit_zero_match_fails_loud
 test_rue_unit_failing_test_propagates_exit
 test_rue_unit_unknown_crate_errors_cleanly
+test_ci_timed_preserves_status_and_summarizes_actions
+test_ci_heavy_suite_audits_its_target
 test_testsh_unfiltered_audits_corpus_presence
 test_sanitizer_defaults_std_path
 test_sanitizer_recursive_discovery_contract

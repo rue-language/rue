@@ -237,7 +237,7 @@ EOF
 }
 
 test_full_suite_orchestration() {
-    local sb rc=0
+    local sb out rc=0
     sb="$(mktemp -d)"
     mkdir -p "$sb/scripts"
     cp "$SRC_ROOT/test.sh" "$sb/test.sh"
@@ -266,7 +266,14 @@ elif [[ "${1:-}" == "test" ]]; then
 fi
 EOF
     chmod +x "$sb/buck2"
-    BUCK_LOG="$sb/calls" RUE_FULL_SUITE_LOCK_DIR="$sb/lock" "$sb/test.sh" >/dev/null 2>&1 || rc=$?
+    # The required macOS job sets this variable for its outer test.sh. Keep
+    # this fixture's baseline full-suite contract independent of that caller
+    # environment; deferral behavior has its own focused tests.
+    out="$(BUCK_LOG="$sb/calls" RUE_CI_DEFER_HEAVY_SUITES= \
+        RUE_FULL_SUITE_LOCK_DIR="$sb/lock" "$sb/test.sh" 2>&1)" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+        printf '%s\n' "$out" >&2
+    fi
     check "suite: unfiltered orchestration succeeds" "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
     check "suite: broad discovery excludes opaque heavy tests" \
         "$(grep -Fxq 'test //... --exclude rue_heavy_suite --always-exclude' "$sb/calls" && echo 0 || echo 1)"

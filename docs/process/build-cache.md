@@ -116,9 +116,10 @@ for default-on RE.
 ## CI
 
 CI reads the key from the `BUILDBUDDY_API_KEY` repo secret (never from a file).
-The cache is provisioned (RUE-1006) in the `CI` workflow's `clippy`, `release`,
-and non-x64 `test` jobs, and in the sanitizer `valgrind` job, via
-`scripts/provision-build-cache install && apply` gated on secret presence.
+The cache is provisioned (RUE-1006/RUE-1019) in the `CI` workflow's `clippy`,
+`release`, ordinary platform-test, and macOS corpus jobs, and in the sanitizer
+`valgrind` job, via `scripts/provision-build-cache install && apply` gated on
+secret presence.
 
 Availability rules, which the workflow steps must respect:
 
@@ -131,13 +132,13 @@ Availability rules, which the workflow steps must respect:
   bottleneck, so this is where the warm cache pays off. These runs execute
   already-approved, queued code, which is also why letting them write to the
   shared cache (`allow_cache_uploads`) is acceptable.
-- **The linux-x64 `test` lane is intentionally cache-free.** It runs
-  `scripts/check-reproducible-compiler.sh` (RUE-617), which hard-errors on a
-  `.buckconfig.local`: the reference and relocated candidate builds must be
+- **The dedicated compiler-reproducibility job is intentionally cache-free.**
+  It runs `scripts/check-reproducible-compiler.sh` (RUE-617), which hard-errors
+  on a `.buckconfig.local`: the reference and relocated candidate builds must be
   identically configured for the byte comparison to indict path/scheduling/
-  environment leaks rather than configuration drift. Warming that lane by
-  removing the config before the repro step is a possible follow-up once the
-  queue has demonstrated real hit-rates.
+  environment leaks rather than configuration drift. Keeping that proof in an
+  independent job lets the ordinary linux-x64 build and tests use the shared
+  cache without changing the reproducibility contract.
 
 The `cache-probe` workflow (`.github/workflows/cache-probe.yml`) remains the
 measurement tool: it writes a transient config from the secret, does a cold
@@ -145,6 +146,13 @@ release build of `//crates/...` then a clean-and-rebuild, and reports buck2's
 `Commands: (cached / remote / local)` line. It fails when the warm build does
 not convert any cold local actions into cache hits. Run it with
 `gh workflow run cache-probe.yml`.
+
+Required CI also records per-step wall time and aggregate cached/remote/local
+command counts in each job summary via `scripts/ci-timed`. The probe answers
+whether unchanged actions are reusable; the job summaries answer the different
+question of how expensive a real change's remaining local actions were. Both
+signals matter: a central Rust or ThinLTO change can have a high numerical hit
+rate while a few invalidated actions remain on the critical path.
 
 ## Toward a fully hermetic linker
 

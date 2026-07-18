@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Run one explicitly assigned CI heavy suite and fail if Buck omits its result.
+set -uo pipefail
+
+if [[ $# -ne 1 || "$1" != //:* ]]; then
+    echo "usage: scripts/ci-heavy-suite //:TARGET" >&2
+    exit 2
+fi
+target="$1"
+
+if ! ./buck2 uquery 'attrfilter(labels, rue_heavy_suite, //...)' |
+    grep -Fxq "root$target"; then
+    echo "error: CI shard target is not labeled rue_heavy_suite: $target" >&2
+    exit 1
+fi
+
+log="$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/rue-ci-heavy-suite.XXXXXX")"
+cleanup() {
+    rm -f "$log"
+}
+trap cleanup EXIT
+
+./buck2 test "$target" 2>&1 | tee "$log"
+status=${PIPESTATUS[0]}
+if [[ "$status" -ne 0 ]]; then
+    exit "$status"
+fi
+
+if ! grep -qE "(Pass|Fail|Skip|Timeout|Fatal|Omit|Flaky): root${target} " "$log"; then
+    echo "error: explicit CI shard produced no result for $target" >&2
+    exit 1
+fi
