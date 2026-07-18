@@ -164,9 +164,11 @@ The target-C runtime subset had no conformance defect within its current
 surface. The audit did find one native return-classification defect:
 
 - [RUE-946](https://linear.app/rue/issue/RUE-946/large-payload-enum-returns-exceed-the-register-budget-and-ice-instead)
-  tracks large payload enums. Enum returns are currently excluded from indirect
+  tracked large payload enums. Enum returns were excluded from indirect
   return classification, so a payload wider than six x86-64 slots or eight
-  AArch64 slots indexes beyond the backend's return-register table and panics.
+  AArch64 slots indexed beyond the backend's return-register table and
+  panicked. The fix routes oversized enum returns through the same sret policy
+  as structs and arrays.
 
 RUE-946 owns the compiler repair and regression cases. Keeping it separate
 prevents an investigative ABI audit from silently becoming a cross-backend

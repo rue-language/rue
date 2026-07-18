@@ -284,7 +284,9 @@ pub fn type_uses_sret_return(
             }
             types::type_slot_count(type_pool, ty) > ret_reg_budget
         }
-        TypeKind::Array(_) => types::type_slot_count(type_pool, ty) > ret_reg_budget,
+        TypeKind::Array(_) | TypeKind::Enum(_) => {
+            types::type_slot_count(type_pool, ty) > ret_reg_budget
+        }
         _ => false,
     }
 }

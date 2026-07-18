@@ -624,3 +624,92 @@ fn main() -> i32 {
 }
 """ }]
 stdout = "17\n"
+
+# by-value return at each backend's return-register budget (RUE-946). An enum
+# is 1 discriminant slot + widest payload, so an N-i32 payload is N+1 slots.
+# The register budget is 6 on x86-64 and 8 on aarch64; oversized returns must
+# switch to sret instead of indexing past the return-register array. The
+# divergent middle sizes (7 and 8 slots) are registers on one backend and sret
+# on the other, so both policy arms run on every CI platform. Each case prints
+# a position-weighted payload sum, so any single dropped or misrouted slot
+# changes the output.
+
+# 6 slots: at the x86-64 budget, registers on both backends.
+[[case]]
+name = "enum_return_at_x86_budget"
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum E { V(i32, i32, i32, i32, i32), Empty }
+fn make() -> E { E.V(1, 2, 3, 4, 5) }
+fn weighted(e: E) -> i32 {
+    match e {
+        E.V(a, b, c, d, e) => a * 1 + b * 2 + c * 3 + d * 4 + e * 5,
+        E.Empty => -1,
+    }
+}
+fn main() -> i32 {
+    @dbg(weighted(make()));
+    0
+}
+""" }]
+stdout = "55\n"
+
+# 7 slots: sret on x86-64, registers on aarch64.
+[[case]]
+name = "enum_return_above_x86_budget"
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum E { V(i32, i32, i32, i32, i32, i32), Empty }
+fn make() -> E { E.V(1, 2, 3, 4, 5, 6) }
+fn weighted(e: E) -> i32 {
+    match e {
+        E.V(a, b, c, d, e, f) => a * 1 + b * 2 + c * 3 + d * 4 + e * 5 + f * 6,
+        E.Empty => -1,
+    }
+}
+fn main() -> i32 {
+    @dbg(weighted(make()));
+    0
+}
+""" }]
+stdout = "91\n"
+
+# 8 slots: sret on x86-64, at the aarch64 budget in registers.
+[[case]]
+name = "enum_return_at_aarch64_budget"
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum E { V(i32, i32, i32, i32, i32, i32, i32), Empty }
+fn make() -> E { E.V(1, 2, 3, 4, 5, 6, 7) }
+fn weighted(e: E) -> i32 {
+    match e {
+        E.V(a, b, c, d, e, f, g) => a * 1 + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 + g * 7,
+        E.Empty => -1,
+    }
+}
+fn main() -> i32 {
+    @dbg(weighted(make()));
+    0
+}
+""" }]
+stdout = "140\n"
+
+# 9 slots: above both budgets, sret on every backend (the RUE-946 ICE repro).
+[[case]]
+name = "enum_return_above_all_budgets"
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum E { V(i32, i32, i32, i32, i32, i32, i32, i32), Empty }
+fn make() -> E { E.V(1, 2, 3, 4, 5, 6, 7, 8) }
+fn weighted(e: E) -> i32 {
+    match e {
+        E.V(a, b, c, d, e, f, g, h) => a * 1 + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 + g * 7 + h * 8,
+        E.Empty => -1,
+    }
+}
+fn main() -> i32 {
+    @dbg(weighted(make()));
+    0
+}
+""" }]
+stdout = "204\n"
