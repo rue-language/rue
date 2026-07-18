@@ -224,4 +224,5 @@ The table is generated from ADR frontmatter. Run
 | [0059](0059-byte-oriented-memory-intrinsics.md) | Byte-oriented memory intrinsics: unify the two low-level families | Accepted | intrinsics, memory, pointers, allocator, bytes, semantics, stdlib, abi |
 | [0060](0060-network-io-v1.md) | Network IO v1: blocking IPv4 TCP in pure Rue | Accepted | stdlib, io, networking, tcp, syscalls, error-handling, ownership |
 | [0061](0061-supported-compiler-facade.md) | Supported compiler facade and immutable artifact views | Accepted | architecture, compiler, tooling, api, incremental |
+| [0062](0062-place-returning-borrow-accessors.md) | Place-returning borrow accessors: projection reads of owned elements | Accepted | ownership, borrows, collections, accessors, stdlib, formal-semantics |
 <!-- ADR-INDEX:END -->
