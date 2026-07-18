@@ -547,6 +547,33 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::FieldPointer),
         &[],
     ),
+    // ADR-0052 phase 5.5 (RUE-989): the narrow-access execution cases reach
+    // memory through `@field_ptr` and `@alloc`, both outside the oracle model
+    // (same gaps as the entries above and the heap_intrinsics corpus).
+    Entry::new(
+        "cli.aggregate_layout",
+        "compact_struct_field_narrow_roundtrip",
+        intrinsic(UnsupportedIntrinsicKind::FieldPointer),
+        &[],
+    ),
+    Entry::new(
+        "cli.aggregate_layout",
+        "mixed_struct_field_roundtrip",
+        intrinsic(UnsupportedIntrinsicKind::FieldPointer),
+        &[],
+    ),
+    Entry::new(
+        "cli.aggregate_layout",
+        "narrow_heap_array_walk",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
+    Entry::new(
+        "cli.aggregate_layout",
+        "narrow_heap_roundtrip_scalars",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
     Entry::new(
         "cli.partial_move_depth",
         "disjoint_sibling_after_subfield_move_ok",
