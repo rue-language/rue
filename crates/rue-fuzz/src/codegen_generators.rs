@@ -453,11 +453,96 @@ pub fn arb_aarch64_mir(inst_count: usize) -> impl Strategy<Value = Aarch64Mir> {
     })
 }
 
+/// One entry in a generated AArch64 branch sequence: either an ordinary filler
+/// instruction or a branch of a specific form targeting a label (by index).
+#[derive(Clone, Debug)]
+enum Aarch64SeqEntry {
+    Filler(Aarch64Inst),
+    B(usize),
+    BCond(Aarch64Cond, usize),
+    Bvs(usize),
+    Bvc(usize),
+    Cbz(Aarch64Reg, usize),
+    Cbnz(Aarch64Reg, usize),
+}
+
+impl Aarch64SeqEntry {
+    fn into_inst(self, labels: &[LabelId]) -> Aarch64Inst {
+        let pick = |t: usize| labels[t % labels.len()];
+        match self {
+            Aarch64SeqEntry::Filler(inst) => inst,
+            Aarch64SeqEntry::B(t) => Aarch64Inst::B { label: pick(t) },
+            Aarch64SeqEntry::BCond(cond, t) => Aarch64Inst::BCond {
+                cond,
+                label: pick(t),
+            },
+            Aarch64SeqEntry::Bvs(t) => Aarch64Inst::Bvs { label: pick(t) },
+            Aarch64SeqEntry::Bvc(t) => Aarch64Inst::Bvc { label: pick(t) },
+            Aarch64SeqEntry::Cbz(rt, t) => Aarch64Inst::Cbz {
+                src: Aarch64Operand::Physical(rt),
+                label: pick(t),
+            },
+            Aarch64SeqEntry::Cbnz(rt, t) => Aarch64Inst::Cbnz {
+                src: Aarch64Operand::Physical(rt),
+                label: pick(t),
+            },
+        }
+    }
+}
+
+fn arb_aarch64_seq_entry(num_labels: usize) -> BoxedStrategy<Aarch64SeqEntry> {
+    let n = num_labels.max(1);
+    prop_oneof![
+        3 => arb_aarch64_inst_physical().prop_map(Aarch64SeqEntry::Filler),
+        1 => (0..n).prop_map(Aarch64SeqEntry::B),
+        1 => (arb_aarch64_cond(), 0..n).prop_map(|(c, t)| Aarch64SeqEntry::BCond(c, t)),
+        1 => (0..n).prop_map(Aarch64SeqEntry::Bvs),
+        1 => (0..n).prop_map(Aarch64SeqEntry::Bvc),
+        1 => (arb_aarch64_reg(), 0..n).prop_map(|(r, t)| Aarch64SeqEntry::Cbz(r, t)),
+        1 => (arb_aarch64_reg(), 0..n).prop_map(|(r, t)| Aarch64SeqEntry::Cbnz(r, t)),
+    ]
+    .boxed()
+}
+
+/// Generate an `Aarch64Mir` of branch/label control flow: `num_labels` labels
+/// each defined exactly once, interleaved with forward and backward branches of
+/// every form (B, B.cond, B.vs, B.vc, CBZ, CBNZ). Because every label is defined
+/// exactly once, all branch targets resolve and the sequence emits without
+/// undefined-label errors; a branch placed before its label's definition is a
+/// forward edge, one placed after is a backward edge.
+pub fn arb_aarch64_branch_mir(
+    inst_count: usize,
+    num_labels: usize,
+) -> impl Strategy<Value = Aarch64Mir> {
+    let num_labels = num_labels.clamp(1, 16);
+    let entries = prop::collection::vec(arb_aarch64_seq_entry(num_labels), inst_count);
+    let label_positions = prop::collection::vec(0..inst_count.max(1), num_labels);
+    (entries, label_positions).prop_map(move |(entries, label_positions)| {
+        let labels: Vec<LabelId> = (0..num_labels as u32).map(LabelId::new).collect();
+        let mut insts: Vec<Aarch64Inst> =
+            entries.into_iter().map(|e| e.into_inst(&labels)).collect();
+        // Define each label exactly once at its chosen position. Adding `i`
+        // accounts for the labels already inserted ahead of this one.
+        for (i, &pos) in label_positions.iter().enumerate() {
+            let at = (pos + i).min(insts.len());
+            insts.insert(at, Aarch64Inst::Label { id: labels[i] });
+        }
+        insts.push(Aarch64Inst::Ret);
+        let mut mir = Aarch64Mir::new();
+        for inst in insts {
+            mir.push(inst);
+        }
+        mir
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::strategy::ValueTree;
     use proptest::test_runner::TestRunner;
+    use rue_codegen::aarch64::{Aarch64Inst as AInst, Emitter as Aarch64Emitter};
+    use std::collections::HashSet;
 
     #[test]
     fn test_arb_reg_generates_valid_regs() {
@@ -510,6 +595,33 @@ mod tests {
         for _ in 0..10 {
             let mir = arb_aarch64_mir(10).new_tree(&mut runner).unwrap().current();
             assert_eq!(mir.instructions().len(), 10);
+        }
+    }
+
+    #[test]
+    fn test_arb_aarch64_branch_mir_defines_each_label_once_and_emits() {
+        let mut runner = TestRunner::default();
+        for _ in 0..25 {
+            let mir = arb_aarch64_branch_mir(20, 3)
+                .new_tree(&mut runner)
+                .unwrap()
+                .current();
+
+            // Every label is defined exactly once.
+            let mut seen = HashSet::new();
+            for inst in mir.instructions() {
+                if let AInst::Label { id } = inst {
+                    assert!(
+                        seen.insert(id.index()),
+                        "label {} defined more than once",
+                        id.index()
+                    );
+                }
+            }
+
+            // Emission must not panic (a graceful ICE Err is acceptable).
+            let emitter = Aarch64Emitter::new(&mir, 0, 0, 0, &[], &[]);
+            let _ = emitter.emit();
         }
     }
 }
