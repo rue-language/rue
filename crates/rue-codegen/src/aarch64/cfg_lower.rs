@@ -371,6 +371,11 @@ impl<'a> CfgLower<'a> {
 
     /// Lower CFG to Aarch64Mir.
     pub fn lower(mut self) -> CompileResult<Aarch64Mir> {
+        crate::types::ensure_compact_layout_codegen_supported(
+            self.ctx.cfg,
+            self.ctx.type_pool,
+            self.interner,
+        )?;
         let ctx = self.ctx;
         crate::terminator_plan::lower_cfg(&ctx, &mut self, None, RET_REGS.len() as u32);
         Ok(self.mir)
@@ -381,6 +386,11 @@ impl<'a> CfgLower<'a> {
     /// This is like `lower()` but also captures detailed information about
     /// how each CFG instruction maps to MIR instructions.
     pub fn lower_with_debug(mut self) -> CompileResult<(Aarch64Mir, crate::LoweringDebugInfo)> {
+        crate::types::ensure_compact_layout_codegen_supported(
+            self.ctx.cfg,
+            self.ctx.type_pool,
+            self.interner,
+        )?;
         let mut debug_info = crate::LoweringDebugInfo {
             fn_name: self.fn_name.to_string(),
             target_arch: "aarch64".to_string(),
@@ -3030,6 +3040,72 @@ mod tests {
         )
         .lower()
         .expect("test lowering should succeed")
+    }
+
+    fn try_lower_first_fn(
+        source: &str,
+        preview: PreviewFeatures,
+    ) -> rue_error::CompileResult<Aarch64Mir> {
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        let parser = Parser::new(tokens, interner);
+        let (ast, mut interner) = parser.parse().unwrap();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
+        let output = Sema::new_synthetic(&rir, &mut interner, preview)
+            .analyze_all()
+            .unwrap();
+        let func = &output.functions[0];
+        let type_pool = &output.type_pool;
+        let cfg_output = CfgBuilder::build(
+            &func.air,
+            func.num_locals,
+            func.num_param_slots,
+            &func.name,
+            type_pool,
+            func.param_modes.clone(),
+            &interner,
+            func.allow_unreachable_code,
+        );
+        CfgLower::new(
+            cfg_output.cfg.as_ref().unwrap(),
+            type_pool,
+            &interner,
+            Target::Aarch64Linux,
+        )
+        .lower()
+    }
+
+    /// Under `aggregate_layout`, a non-slot-identical aggregate that would need
+    /// narrow physical memory codegen is refused loudly on AArch64 too, in
+    /// lockstep with x86-64 (ADR-0052 phase 3; RUE-975/RUE-976 follow-up).
+    #[test]
+    fn aggregate_layout_refuses_narrow_physical_layout_codegen() {
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::AggregateLayout);
+        let err = try_lower_first_fn(
+            "struct Pair { a: i32, b: i32 } fn main() -> i32 { let p = Pair { a: 7, b: 9 }; p.a }",
+            preview,
+        )
+        .expect_err("a narrow aggregate must refuse compact codegen, not miscompile");
+        assert!(
+            format!("{err:?}").contains("aggregate_layout"),
+            "refusal must name the feature, got: {err:?}"
+        );
+    }
+
+    /// A slot-identical aggregate (all eight-byte leaves) marshals correctly
+    /// under compact layout on AArch64 and is accepted.
+    #[test]
+    fn aggregate_layout_allows_slot_identical_physical_layout_codegen() {
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::AggregateLayout);
+        try_lower_first_fn(
+            "struct Cell { a: i64, b: i64 } fn main() -> i32 { let c = Cell { a: 7, b: 9 }; @intCast(c.a) }",
+            preview,
+        )
+        .expect("a slot-identical aggregate must lower under compact layout");
     }
 
     fn immediate_for_operand(mir: &Aarch64Mir, operand: Operand) -> Option<i64> {

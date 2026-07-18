@@ -511,6 +511,21 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::FieldPointer),
         &[],
     ),
+    // ADR-0052 phase 3 (RUE-974): the compact-layout CLI cases reach a field
+    // through `@field_ptr`, which the oracle model does not model (same gap as
+    // the `offset_of_field_ptr` cases above).
+    Entry::new(
+        "cli.aggregate_layout",
+        "compact_slot_identical_field_ptr_roundtrip",
+        intrinsic(UnsupportedIntrinsicKind::FieldPointer),
+        &[],
+    ),
+    Entry::new(
+        "cli.aggregate_layout",
+        "narrow_program_unchanged_without_the_preview",
+        intrinsic(UnsupportedIntrinsicKind::FieldPointer),
+        &[],
+    ),
     Entry::new(
         "cli.partial_move_depth",
         "disjoint_sibling_after_subfield_move_ok",

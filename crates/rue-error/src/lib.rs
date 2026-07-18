@@ -520,6 +520,15 @@ pub enum PreviewFeature {
     /// operations intentionally bypass Rue's slot-sized typed-pointer model so
     /// source-defined packed representations can use the runtime byte ABI.
     RawBytes,
+    /// Compact native physical type layout (ADR-0052). Replaces the flattened
+    /// eight-byte ABI-slot physical layout with natural scalar widths and
+    /// alignments, declaration-order struct fields with padding, ascending
+    /// array stride, and tagged-enum representation. Gated while compact-memory
+    /// code generation is staged: RUE-974 lands the layout authority and the
+    /// compile-time layout queries (`@size_of`/`@align_of`/`@offset_of`);
+    /// RUE-975/RUE-976 land the stack-and-value separation and call-ABI
+    /// classifier that compact heap/pointer code generation depends on.
+    AggregateLayout,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -542,6 +551,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra => "test_infra",
             PreviewFeature::Slices => "slices",
             PreviewFeature::RawBytes => "raw_bytes",
+            PreviewFeature::AggregateLayout => "aggregate_layout",
         }
     }
 
@@ -552,6 +562,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra => "ADR-0005",
             PreviewFeature::Slices => "ADR-0043",
             PreviewFeature::RawBytes => "RUE-879",
+            PreviewFeature::AggregateLayout => "ADR-0052",
         }
     }
 
@@ -561,6 +572,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra,
             PreviewFeature::Slices,
             PreviewFeature::RawBytes,
+            PreviewFeature::AggregateLayout,
         ]
     }
 
@@ -586,6 +598,7 @@ impl std::str::FromStr for PreviewFeature {
             "test_infra" => Ok(PreviewFeature::TestInfra),
             "slices" => Ok(PreviewFeature::Slices),
             "raw_bytes" => Ok(PreviewFeature::RawBytes),
+            "aggregate_layout" => Ok(PreviewFeature::AggregateLayout),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -2589,7 +2602,7 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra, slices, raw_bytes");
+        assert_eq!(names, "test_infra, slices, raw_bytes, aggregate_layout");
     }
 
     #[test]
