@@ -251,6 +251,7 @@ fn semantic_definition_taxonomy_has_one_enum_declaration() {
     let bindings = include_str!("sema/binding_manifest.rs");
     let bodies = include_str!("semantic_body.rs");
 
+    assert!(canonical.contains("macro_rules! stable_definition_kind_schema"));
     assert_eq!(
         canonical.matches("pub enum StableDefinitionKind").count(),
         1

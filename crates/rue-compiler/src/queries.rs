@@ -129,7 +129,7 @@ pub(crate) struct CfgFrontendOutput {
     pub(crate) durable_cfgs: std::sync::Arc<[DurableCfgArtifact]>,
 }
 
-const DURABLE_CFG_SCHEMA_VERSION: u32 = 1;
+pub(crate) const DURABLE_CFG_SCHEMA_VERSION: u32 = 1;
 
 /// Last-good, fail-closed CFG candidate retained between semantic requests.
 ///

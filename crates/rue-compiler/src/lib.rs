@@ -66,6 +66,8 @@ mod pipeline_tests;
 #[cfg(test)]
 mod api_inventory;
 #[cfg(test)]
+mod durable_compatibility_tests;
+#[cfg(test)]
 mod integration_tests;
 
 // Supported source, identity, option, session, and diagnostic surface.

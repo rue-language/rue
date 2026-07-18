@@ -9,48 +9,71 @@ pub enum StableDefinitionNamespace {
     Method,
 }
 
-/// The exhaustive kind of a semantically bound definition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum StableDefinitionKind {
-    Function,
-    Struct,
-    Enum,
-    ValueConst,
-    ModuleBinding,
-    Destructor,
-    Method,
-    AssociatedFunction,
-}
+/// Reviewable inventory of every stable semantic namespace.
+pub const STABLE_DEFINITION_NAMESPACES: &[StableDefinitionNamespace] = &[
+    StableDefinitionNamespace::Value,
+    StableDefinitionNamespace::Type,
+    StableDefinitionNamespace::Destructor,
+    StableDefinitionNamespace::Method,
+];
 
-impl StableDefinitionKind {
-    /// The only namespace in which this kind can be issued.
-    pub const fn namespace(self) -> StableDefinitionNamespace {
-        match self {
-            Self::Function | Self::ValueConst | Self::ModuleBinding => {
-                StableDefinitionNamespace::Value
-            }
-            Self::Struct | Self::Enum => StableDefinitionNamespace::Type,
-            Self::Destructor => StableDefinitionNamespace::Destructor,
-            Self::Method | Self::AssociatedFunction => StableDefinitionNamespace::Method,
+// One reviewable source generates the stable kind enum, inventory, namespace,
+// and ownership policy. Adding a kind cannot compile until all taxonomy fields
+// are supplied here.
+macro_rules! stable_definition_kind_schema {
+    ($consumer:ident) => {
+        $consumer! {
+            Function, Value, true, false;
+            Struct, Type, false, false;
+            Enum, Type, false, false;
+            ValueConst, Value, false, false;
+            ModuleBinding, Value, false, false;
+            Destructor, Destructor, true, true;
+            Method, Method, true, true;
+            AssociatedFunction, Method, true, true;
         }
-    }
-
-    /// Whether this definition owns an executable semantic body.
-    pub const fn owns_body(self) -> bool {
-        matches!(
-            self,
-            Self::Function | Self::Destructor | Self::Method | Self::AssociatedFunction
-        )
-    }
-
-    /// Whether this definition must name an owning nominal type.
-    pub const fn requires_owner(self) -> bool {
-        matches!(
-            self,
-            Self::Destructor | Self::Method | Self::AssociatedFunction
-        )
-    }
+    };
 }
+
+macro_rules! define_stable_definition_kind_schema {
+    ($( $kind:ident, $namespace:ident, $owns_body:literal, $requires_owner:literal; )*) => {
+        /// The exhaustive kind of a semantically bound definition.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub enum StableDefinitionKind {
+            $( $kind, )*
+        }
+
+        /// Reviewable inventory of every stable semantic definition kind.
+        pub const STABLE_DEFINITION_KINDS: &[StableDefinitionKind] = &[
+            $( StableDefinitionKind::$kind, )*
+        ];
+
+        impl StableDefinitionKind {
+            /// The only namespace in which this kind can be issued.
+            pub const fn namespace(self) -> StableDefinitionNamespace {
+                match self {
+                    $( Self::$kind => StableDefinitionNamespace::$namespace, )*
+                }
+            }
+
+            /// Whether this definition owns an executable semantic body.
+            pub const fn owns_body(self) -> bool {
+                match self {
+                    $( Self::$kind => $owns_body, )*
+                }
+            }
+
+            /// Whether this definition must name an owning nominal type.
+            pub const fn requires_owner(self) -> bool {
+                match self {
+                    $( Self::$kind => $requires_owner, )*
+                }
+            }
+        }
+    };
+}
+
+stable_definition_kind_schema!(define_stable_definition_kind_schema);
 
 #[cfg(test)]
 mod tests {
