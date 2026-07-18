@@ -115,6 +115,17 @@ use super::mir::{LabelId, Reg, X86Inst, X86Mir};
 use crate::vreg::BLOCK_LABEL_BASE;
 use crate::{EmittedCode, EmittedInst, EmittedRelocation, format_offset};
 
+/// The assembly operand-size keyword for a narrow memory access width, used only
+/// in the textual disassembly listing of the narrow load/store instructions.
+fn narrow_width_keyword(width: u8) -> &'static str {
+    match width {
+        1 => "byte ",
+        2 => "word ",
+        4 => "dword ",
+        _ => "",
+    }
+}
+
 /// Kind of jump fixup.
 ///
 /// We always use rel32 encoding to support jumps of any size within a function.
@@ -375,6 +386,8 @@ impl<'a> Emitter<'a> {
                     | X86Inst::MovMRIndexed { .. }
                     | X86Inst::Movzx8RMIndexed { .. }
                     | X86Inst::MovMR8Indexed { .. }
+                    | X86Inst::NarrowLoadIndexed { .. }
+                    | X86Inst::NarrowStoreIndexed { .. }
             ) {
                 return Err(ice_error!(
                     "post-regalloc verification failed",
@@ -685,6 +698,35 @@ impl<'a> Emitter<'a> {
                     "mov byte [{}{}], {}",
                     base,
                     format_offset(adjusted_offset),
+                    src.as_physical()
+                );
+            }
+            X86Inst::NarrowLoadRM {
+                dst,
+                base,
+                width,
+                signed,
+            } => {
+                self.begin_inst();
+                self.emit_narrow_load_rm(dst.as_physical(), *base, *width, *signed);
+                let ext = if *signed { "movsx" } else { "movzx" };
+                end_inst!(
+                    self,
+                    "{} {}, {}[{}]",
+                    ext,
+                    dst.as_physical(),
+                    narrow_width_keyword(*width),
+                    base
+                );
+            }
+            X86Inst::NarrowStoreMR { base, src, width } => {
+                self.begin_inst();
+                self.emit_narrow_store_mr(*base, src.as_physical(), *width);
+                end_inst!(
+                    self,
+                    "mov {}[{}], {}",
+                    narrow_width_keyword(*width),
+                    base,
                     src.as_physical()
                 );
             }
@@ -1127,10 +1169,12 @@ impl<'a> Emitter<'a> {
             X86Inst::MovRMIndexed { .. }
             | X86Inst::MovMRIndexed { .. }
             | X86Inst::Movzx8RMIndexed { .. }
-            | X86Inst::MovMR8Indexed { .. } => {
-                // Regalloc lowers these into MovRM/MovMR, and
-                // emit_internal() verifies none survive before this dispatch loop runs,
-                // returning an ICE instead of ever reaching this arm.
+            | X86Inst::MovMR8Indexed { .. }
+            | X86Inst::NarrowLoadIndexed { .. }
+            | X86Inst::NarrowStoreIndexed { .. } => {
+                // Regalloc lowers these into MovRM/MovMR/NarrowLoadRM/NarrowStoreMR,
+                // and emit_internal() verifies none survive before this dispatch loop
+                // runs, returning an ICE instead of ever reaching this arm.
                 unreachable!("indexed memory pseudo rejected by pre-emission verification")
             }
 
@@ -1427,6 +1471,70 @@ impl<'a> Emitter<'a> {
         self.code.push(rex);
         self.code.push(0x88);
         self.emit_modrm_memory(src.encoding(), base.encoding(), offset);
+    }
+
+    /// Emit a narrow (1/2/4-byte) load of `[base]` extended into the 64-bit
+    /// `dst` (RUE-989). The address is fully materialized in `base`, so no
+    /// displacement is encoded.
+    ///
+    /// - width 1, zero: `movzx r64, byte [m]`  = REX.W 0F B6 /r
+    /// - width 1, sign: `movsx r64, byte [m]`  = REX.W 0F BE /r
+    /// - width 2, zero: `movzx r64, word [m]`  = REX.W 0F B7 /r
+    /// - width 2, sign: `movsx r64, word [m]`  = REX.W 0F BF /r
+    /// - width 4, zero: `mov r32, dword [m]`   = 8B /r (no REX.W; zero-extends)
+    /// - width 4, sign: `movsxd r64, dword [m]`= REX.W 63 /r
+    fn emit_narrow_load_rm(&mut self, dst: Reg, base: Reg, width: u8, signed: bool) {
+        if width == 4 && !signed {
+            // 32-bit `mov` writes the low dword and zeroes the upper dword of the
+            // 64-bit destination, so no REX.W (a bare REX only if a high register
+            // is referenced).
+            let rex =
+                if dst.needs_rex() { 0x04 } else { 0 } | if base.needs_rex() { 0x01 } else { 0 };
+            if rex != 0 {
+                self.code.push(0x40 | rex);
+            }
+            self.code.push(0x8b);
+            self.emit_modrm_memory(dst.encoding(), base.encoding(), 0);
+            return;
+        }
+        let rex =
+            0x48 | if dst.needs_rex() { 0x04 } else { 0 } | if base.needs_rex() { 0x01 } else { 0 };
+        self.code.push(rex);
+        match (width, signed) {
+            (1, false) => self.code.extend_from_slice(&[0x0f, 0xb6]),
+            (1, true) => self.code.extend_from_slice(&[0x0f, 0xbe]),
+            (2, false) => self.code.extend_from_slice(&[0x0f, 0xb7]),
+            (2, true) => self.code.extend_from_slice(&[0x0f, 0xbf]),
+            (4, true) => self.code.push(0x63),
+            _ => unreachable!("narrow load width must be 1, 2, or 4: {width}"),
+        }
+        self.emit_modrm_memory(dst.encoding(), base.encoding(), 0);
+    }
+
+    /// Emit a narrow (1/2/4-byte) store of the low `width` bytes of `src` to
+    /// `[base]` (RUE-989).
+    ///
+    /// - width 1: `mov byte [m], r8`   = [REX] 88 /r
+    /// - width 2: `mov word [m], r16`  = 66 [REX] 89 /r
+    /// - width 4: `mov dword [m], r32` = [REX] 89 /r
+    fn emit_narrow_store_mr(&mut self, base: Reg, src: Reg, width: u8) {
+        match width {
+            1 => self.emit_mov_mr8(base, 0, src),
+            2 | 4 => {
+                if width == 2 {
+                    // 16-bit operand-size override; must precede any REX prefix.
+                    self.code.push(0x66);
+                }
+                let rex = if src.needs_rex() { 0x04 } else { 0 }
+                    | if base.needs_rex() { 0x01 } else { 0 };
+                if rex != 0 {
+                    self.code.push(0x40 | rex);
+                }
+                self.code.push(0x89);
+                self.emit_modrm_memory(src.encoding(), base.encoding(), 0);
+            }
+            _ => unreachable!("narrow store width must be 1, 2, or 4: {width}"),
+        }
     }
 
     /// Emit `mov dst, [base + index*scale + disp]` - Load with SIB addressing.
@@ -3796,6 +3904,53 @@ mod tests {
         });
         // movzx rax, cx -> 48 0F B7 C1 (REX.W 0F B7 /r)
         assert_eq!(code, vec![0x48, 0x0F, 0xB7, 0xC1]);
+    }
+
+    /// RUE-989: the narrow physical load through a pointer encodes the correct
+    /// movzx/movsx/movsxd/`mov r32` per width and signedness, extending into the
+    /// 64-bit destination. Base Rbx (no REX), dst Rax; the address carries no
+    /// displacement (offset 0 -> mod=01 disp8=0, as in the byte forms).
+    #[test]
+    fn test_narrow_load_encoding() {
+        let load = |width, signed| {
+            emit_single(X86Inst::NarrowLoadRM {
+                dst: Operand::Physical(Reg::Rax),
+                base: Reg::Rbx,
+                width,
+                signed,
+            })
+        };
+        // movzx rax, byte [rbx] -> REX.W 0F B6
+        assert_eq!(load(1, false), vec![0x48, 0x0f, 0xb6, 0x43, 0x00]);
+        // movsx rax, byte [rbx] -> REX.W 0F BE
+        assert_eq!(load(1, true), vec![0x48, 0x0f, 0xbe, 0x43, 0x00]);
+        // movzx rax, word [rbx] -> REX.W 0F B7
+        assert_eq!(load(2, false), vec![0x48, 0x0f, 0xb7, 0x43, 0x00]);
+        // movsx rax, word [rbx] -> REX.W 0F BF
+        assert_eq!(load(2, true), vec![0x48, 0x0f, 0xbf, 0x43, 0x00]);
+        // mov eax, dword [rbx] -> 8B (no REX.W; zero-extends into rax)
+        assert_eq!(load(4, false), vec![0x8b, 0x43, 0x00]);
+        // movsxd rax, dword [rbx] -> REX.W 63
+        assert_eq!(load(4, true), vec![0x48, 0x63, 0x43, 0x00]);
+    }
+
+    /// RUE-989: the narrow physical store through a pointer truncates the source
+    /// to 1/2/4 bytes. Base Rbx (no REX), src Rcx.
+    #[test]
+    fn test_narrow_store_encoding() {
+        let store = |width| {
+            emit_single(X86Inst::NarrowStoreMR {
+                base: Reg::Rbx,
+                src: Operand::Physical(Reg::Rcx),
+                width,
+            })
+        };
+        // mov byte [rbx], cl -> [REX] 88
+        assert_eq!(store(1), vec![0x40, 0x88, 0x4b, 0x00]);
+        // mov word [rbx], cx -> 66 89 (operand-size prefix, no REX needed)
+        assert_eq!(store(2), vec![0x66, 0x89, 0x4b, 0x00]);
+        // mov dword [rbx], ecx -> 89 (no prefix, no REX needed)
+        assert_eq!(store(4), vec![0x89, 0x4b, 0x00]);
     }
 
     // --- Add with immediate ---

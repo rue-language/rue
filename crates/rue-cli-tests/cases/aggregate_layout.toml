@@ -1,15 +1,18 @@
-# Compact native physical layout through the real driver (ADR-0052 phase 3,
-# RUE-974). With `--preview aggregate_layout` the canonical layout authority
+# Compact native physical layout through the real driver (ADR-0052, RUE-974 +
+# RUE-989). With `--preview aggregate_layout` the canonical layout authority
 # reports the ratified compact representation: natural scalar widths and
 # alignments, declaration-order struct fields with interior/tail padding,
 # ascending array stride, a smallest-sufficient enum tag, and the uniform
 # zero-sized-type rule. The compile-time layout queries (@size_of / @align_of /
 # @offset_of) observe those values; slot-identical aggregates (all eight-byte
-# leaves) still marshal correctly through memory; and a program that would need
-# narrow (one/two/four-byte) physical memory access fails loudly rather than
-# emitting slot-shaped access against a compact layout (the narrow load/store
-# code generation is staged for RUE-975/RUE-976). Without the flag every case
-# below observes today's eight-byte slot model unchanged.
+# leaves) marshal correctly through memory; and RUE-989 lowers narrow
+# (one/two/four-byte) scalar access through typed pointers with the correct
+# zero/sign extension, so narrow heap round-trips, compact struct field access,
+# and heap arrays of narrow scalars compile and execute. A program that would
+# still need unimplemented whole-aggregate marshalling through a pointer or
+# across a call (or compact enum memory) fails loudly rather than emitting
+# slot-shaped access against a compact layout. Without the flag every case below
+# observes today's eight-byte slot model unchanged.
 
 [section]
 id = "cli.aggregate_layout"
@@ -133,12 +136,14 @@ fn main() -> i32 {
 stdout = "true\ntrue\ntrue\n"
 exit_code = 0
 
-# A program that would require narrow physical memory access under the compact
-# layout is refused loudly rather than miscompiled with slot-shaped access. The
-# narrow load/store code generation is staged for RUE-975/RUE-976.
+# RUE-989: writing a narrow i32 field through a `@field_ptr` pointer now lowers
+# and executes under the compact layout. The frame stores the field in an
+# eight-byte slot; `@field_ptr` addresses that slot, and the narrow four-byte
+# store hits its low bytes (little-endian), so the round-trip is correct.
 [[case]]
-name = "compact_narrow_physical_access_fails_loudly"
-description = "Writing through a pointer into a struct with narrow i32 fields is refused, not silently miscompiled."
+name = "compact_struct_field_narrow_roundtrip"
+description = "Writing a narrow i32 field through a pointer round-trips under --preview aggregate_layout (RUE-989)."
+differential_opt = true
 args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Pair { a: i32, b: i32 }
@@ -148,14 +153,15 @@ fn main() -> i32 {
         let fp: ptr mut i32 = @field_ptr(p.b);
         @ptr_write(fp, 100);
     };
+    @dbg(p.a);
     p.b
 }
 """ }]
-compile_fail = true
-error_contains = ["aggregate_layout", "not yet implemented"]
+stdout = "7\n"
+exit_code = 100
 
-# Without the preview flag, the exact same narrow program compiles and runs
-# unchanged under today's eight-byte slot model.
+# The same narrow-field program also compiles and runs under the default slot
+# model when the preview is off (byte-identical gate-off behavior).
 [[case]]
 name = "narrow_program_unchanged_without_the_preview"
 description = "The narrow-field program compiles and runs under the default slot model when the preview is off."
@@ -171,3 +177,132 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 100
+
+# RUE-989: narrow scalar heap round-trips through @alloc/@ptr_write/@ptr_read
+# for i32, i16 (signed, storing -1 and reading it back), u16 (zero-extended),
+# and u8. The load extends the narrow physical value into its slot per the
+# scalar's signedness.
+[[case]]
+name = "narrow_heap_roundtrip_scalars"
+description = "i32/i16/u16/u8 heap round-trips with correct sign/zero extension under --preview aggregate_layout (RUE-989)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    checked {
+        let pi: ptr mut i32 = @alloc(1);
+        @ptr_write(pi, 10);
+        @dbg(@ptr_read(pi));
+        @free(pi, 1);
+        let ps: ptr mut i16 = @alloc(1);
+        let neg: i16 = -1;
+        @ptr_write(ps, neg);
+        @dbg(@ptr_read(ps));
+        @free(ps, 1);
+        let pu: ptr mut u16 = @alloc(1);
+        let big: u16 = 65535;
+        @ptr_write(pu, big);
+        @dbg(@ptr_read(pu));
+        @free(pu, 1);
+        let pb: ptr mut u8 = @alloc(1);
+        let by: u8 = 200;
+        @ptr_write(pb, by);
+        @dbg(@ptr_read(pb));
+        @free(pb, 1);
+    };
+    0
+}
+""" }]
+stdout = "10\n-1\n65535\n200\n"
+exit_code = 0
+
+# RUE-989: heap arrays of narrow scalars walked with @ptr_offset at the compact
+# stride (u8 stride 1, i16 stride 2, i32 stride 4), covering signed negatives.
+[[case]]
+name = "narrow_heap_array_walk"
+description = "Walk heap [u8;4], [i16;3] (with negatives), [i32;3] at compact stride under --preview aggregate_layout (RUE-989)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    checked {
+        let pa: ptr mut u8 = @alloc(4);
+        let v0: u8 = 10; let v1: u8 = 20; let v2: u8 = 30; let v3: u8 = 40;
+        @ptr_write(@ptr_offset(pa, 0), v0);
+        @ptr_write(@ptr_offset(pa, 1), v1);
+        @ptr_write(@ptr_offset(pa, 2), v2);
+        @ptr_write(@ptr_offset(pa, 3), v3);
+        @dbg(@ptr_read(@ptr_offset(pa, 0)));
+        @dbg(@ptr_read(@ptr_offset(pa, 3)));
+        @free(pa, 4);
+        let ph: ptr mut i16 = @alloc(3);
+        let h0: i16 = -5; let h1: i16 = 6; let h2: i16 = -7;
+        @ptr_write(@ptr_offset(ph, 0), h0);
+        @ptr_write(@ptr_offset(ph, 1), h1);
+        @ptr_write(@ptr_offset(ph, 2), h2);
+        @dbg(@ptr_read(@ptr_offset(ph, 0)));
+        @dbg(@ptr_read(@ptr_offset(ph, 2)));
+        @free(ph, 3);
+        let pw: ptr mut i32 = @alloc(3);
+        @ptr_write(@ptr_offset(pw, 0), 100);
+        @ptr_write(@ptr_offset(pw, 1), 200);
+        @ptr_write(@ptr_offset(pw, 2), 300);
+        @dbg(@ptr_read(@ptr_offset(pw, 2)));
+        @free(pw, 3);
+    };
+    0
+}
+""" }]
+stdout = "10\n40\n-5\n-7\n300\n"
+exit_code = 0
+
+# RUE-989: mixed struct { a: u8, b: i32, c: u8 } field round-trips through
+# @field_ptr, each field written and read at its own narrow width.
+[[case]]
+name = "mixed_struct_field_roundtrip"
+description = "Round-trip every field of { a: u8, b: i32, c: u8 } through narrow field pointers (RUE-989)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Mixed { a: u8, b: i32, c: u8 }
+fn main() -> i32 {
+    let mut m = Mixed { a: 1, b: 2, c: 3 };
+    checked {
+        let pa: ptr mut u8 = @field_ptr(m.a);
+        let av: u8 = 250;
+        @ptr_write(pa, av);
+        let pb: ptr mut i32 = @field_ptr(m.b);
+        @ptr_write(pb, -12345);
+        let pc: ptr mut u8 = @field_ptr(m.c);
+        let cv: u8 = 99;
+        @ptr_write(pc, cv);
+    };
+    @dbg(m.a);
+    @dbg(m.b);
+    @dbg(m.c);
+    0
+}
+""" }]
+stdout = "250\n-12345\n99\n"
+exit_code = 0
+
+# A whole non-slot-identical aggregate marshalled through a pointer as a single
+# value is still refused loudly: that marshalling (and the frame-versus-heap
+# pointer provenance it depends on) is unimplemented. RUE-989 lifts the refusal
+# only for narrow SCALAR access.
+[[case]]
+name = "narrow_aggregate_through_pointer_still_fails"
+description = "Writing a whole narrow struct through a pointer is still refused, not silently miscompiled."
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Pair { a: i32, b: i32 }
+fn main() -> i32 {
+    checked {
+        let p: ptr mut Pair = @alloc(1);
+        @ptr_write(p, Pair { a: 1, b: 2 });
+    };
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["aggregate_layout", "not yet implemented"]

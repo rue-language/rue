@@ -461,6 +461,44 @@ pub enum Aarch64Inst {
         base: VReg,
     },
 
+    /// Pre-register-allocation narrow (1/2/4-byte) load through a virtual
+    /// address, extended into the 64-bit `dst` (ADR-0052, RUE-989). `signed`
+    /// selects `ldrsb`/`ldrsh`/`ldrsw` (sign-extend) versus `ldrb`/`ldrh`/`ldr w`
+    /// (zero-extend). The address is fully materialized in `base`, so no offset
+    /// is encoded. Register allocation lowers this to [`Aarch64Inst::NarrowLoad`].
+    NarrowLoadIndexed {
+        dst: Operand,
+        base: VReg,
+        width: u8,
+        signed: bool,
+    },
+
+    /// Pre-register-allocation narrow (1/2/4-byte) store of the low `width` bytes
+    /// of `src` through a virtual address (`strb`/`strh`/`str w`). Register
+    /// allocation lowers this to [`Aarch64Inst::NarrowStore`].
+    NarrowStoreIndexed {
+        src: Operand,
+        base: VReg,
+        width: u8,
+    },
+
+    /// Narrow (1/2/4-byte) load of `[base]` extended into the 64-bit `dst`, the
+    /// physical-base form of [`Aarch64Inst::NarrowLoadIndexed`].
+    NarrowLoad {
+        dst: Operand,
+        base: Reg,
+        width: u8,
+        signed: bool,
+    },
+
+    /// Narrow (1/2/4-byte) store of the low `width` bytes of `src` to `[base]`,
+    /// the physical-base form of [`Aarch64Inst::NarrowStoreIndexed`].
+    NarrowStore {
+        src: Operand,
+        base: Reg,
+        width: u8,
+    },
+
     /// `ldr dst, [base, #offset]` - Load from memory via register with offset.
     LdrIndexedOffset {
         dst: Operand,
@@ -962,6 +1000,31 @@ impl Aarch64Inst {
     }
 }
 
+/// The load mnemonic for a narrow access width and extension, used in the
+/// textual MIR dump of the narrow load instructions.
+pub(crate) fn narrow_load_mnemonic(width: u8, signed: bool) -> &'static str {
+    match (width, signed) {
+        (1, false) => "ldrb",
+        (1, true) => "ldrsb",
+        (2, false) => "ldrh",
+        (2, true) => "ldrsh",
+        (4, false) => "ldr",
+        (4, true) => "ldrsw",
+        _ => "ldr?",
+    }
+}
+
+/// The store mnemonic for a narrow access width, used in the textual MIR dump of
+/// the narrow store instructions.
+pub(crate) fn narrow_store_mnemonic(width: u8) -> &'static str {
+    match width {
+        1 => "strb",
+        2 => "strh",
+        4 => "str",
+        _ => "str?",
+    }
+}
+
 impl fmt::Display for Aarch64Inst {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -991,6 +1054,36 @@ impl fmt::Display for Aarch64Inst {
             Aarch64Inst::StrIndexed { src, base } => write!(f, "str {}, [{}]", src, base),
             Aarch64Inst::LdrbIndexed { dst, base } => write!(f, "ldrb {}, [{}]", dst, base),
             Aarch64Inst::StrbIndexed { src, base } => write!(f, "strb {}, [{}]", src, base),
+            Aarch64Inst::NarrowLoadIndexed {
+                dst,
+                base,
+                width,
+                signed,
+            } => write!(
+                f,
+                "{} {}, [{}]",
+                narrow_load_mnemonic(*width, *signed),
+                dst,
+                base
+            ),
+            Aarch64Inst::NarrowStoreIndexed { src, base, width } => {
+                write!(f, "{} {}, [{}]", narrow_store_mnemonic(*width), src, base)
+            }
+            Aarch64Inst::NarrowLoad {
+                dst,
+                base,
+                width,
+                signed,
+            } => write!(
+                f,
+                "{} {}, [{}]",
+                narrow_load_mnemonic(*width, *signed),
+                dst,
+                base
+            ),
+            Aarch64Inst::NarrowStore { src, base, width } => {
+                write!(f, "{} {}, [{}]", narrow_store_mnemonic(*width), src, base)
+            }
             Aarch64Inst::LdrIndexedOffset { dst, base, offset } => {
                 if *offset == 0 {
                     write!(f, "ldr {}, [{}]", dst, base)

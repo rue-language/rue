@@ -770,6 +770,56 @@ impl RegAlloc {
                 });
             }
 
+            X86Inst::NarrowLoadIndexed {
+                dst,
+                base,
+                width,
+                signed,
+            } => {
+                let base_reg = Self::load_operand(context, mir, Operand::Virtual(base), Reg::Rax)?;
+                let base_phys = base_reg.as_physical();
+                match Self::get_allocation(context, dst) {
+                    Some(Allocation::Register(reg)) => mir.push(X86Inst::NarrowLoadRM {
+                        dst: Operand::Physical(reg),
+                        base: base_phys,
+                        width,
+                        signed,
+                    }),
+                    Some(Allocation::Spill(spill_off)) => {
+                        mir.push(X86Inst::NarrowLoadRM {
+                            dst: Operand::Physical(Reg::Rdx),
+                            base: base_phys,
+                            width,
+                            signed,
+                        });
+                        mir.push_after(X86Inst::MovMR {
+                            base: Reg::Rbp,
+                            offset: spill_off,
+                            src: Operand::Physical(Reg::Rdx),
+                        });
+                    }
+                    Some(Allocation::Rematerialize(_)) => {
+                        unreachable!("destination cannot be rematerializable")
+                    }
+                    None => mir.push(X86Inst::NarrowLoadRM {
+                        dst,
+                        base: base_phys,
+                        width,
+                        signed,
+                    }),
+                }
+            }
+
+            X86Inst::NarrowStoreIndexed { base, src, width } => {
+                let src_op = Self::load_operand(context, mir, src, Reg::Rdx)?;
+                let base_reg = Self::load_operand(context, mir, Operand::Virtual(base), Reg::Rax)?;
+                mir.push(X86Inst::NarrowStoreMR {
+                    base: base_reg.as_physical(),
+                    src: src_op,
+                    width,
+                });
+            }
+
             X86Inst::MovRMSib {
                 dst,
                 base,
@@ -909,6 +959,23 @@ impl RegAlloc {
             X86Inst::Syscall => mir.push(X86Inst::Syscall),
             X86Inst::Ret => mir.push(X86Inst::Ret),
             X86Inst::Ud2 => mir.push(X86Inst::Ud2),
+            // The physical-base narrow forms are produced by this pass from the
+            // indexed pseudos above with already-allocated operands; they never
+            // appear in the pre-allocation input, so pass them through unchanged.
+            X86Inst::NarrowLoadRM {
+                dst,
+                base,
+                width,
+                signed,
+            } => mir.push(X86Inst::NarrowLoadRM {
+                dst,
+                base,
+                width,
+                signed,
+            }),
+            X86Inst::NarrowStoreMR { base, src, width } => {
+                mir.push(X86Inst::NarrowStoreMR { base, src, width })
+            }
         }
         Ok(())
     }
