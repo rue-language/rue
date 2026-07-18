@@ -12,6 +12,7 @@
 
 #[cfg(test)]
 mod api_inventory;
+pub mod call_abi;
 mod canonical_imports;
 mod inference;
 mod inst;
@@ -32,6 +33,9 @@ mod type_encoding;
 mod type_properties;
 mod types;
 
+pub use call_abi::{
+    ArgClass, ArgConvention, CallAbi, NativeCallAbi, ReturnClass, is_slot_identical_layout,
+};
 pub use canonical_imports::CanonicalImportView;
 pub use inference::{
     Constraint, ConstraintContext, ConstraintGenerator, ExprInfo, FunctionSig, InferType,

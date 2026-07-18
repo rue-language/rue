@@ -5,11 +5,10 @@
 //! lowerers consume the normalized slot vector and only choose how to marshal
 //! those slots for their ABI.
 
-use rue_air::FrozenTypeInternPool;
+use rue_air::{FrozenTypeInternPool, NativeCallAbi, ReturnClass};
 use rue_cfg::{Cfg, CfgArgMode, CfgCallArg, Type};
 use rue_runtime_abi::{ReservedExportClass, ReservedExportId};
 
-use crate::cfg_lower::type_uses_sret_return;
 use crate::types;
 use crate::vreg::VReg;
 
@@ -410,21 +409,21 @@ impl CallPlan {
     }
 }
 
-/// The one shared return policy.  In particular, sret selection remains
-/// delegated to `type_uses_sret_return` rather than being inferred by a caller.
+/// The one shared return policy.  Return classification (scalar / registers /
+/// sret) is delegated to the canonical call-ABI classifier
+/// [`NativeCallAbi::classify_return`]; this function only maps its result onto
+/// the codegen [`ReturnPlan`], adding the caller-storage byte size that sret
+/// needs. Keeping the classification in the shared authority is what makes both
+/// backends and the oracle agree by construction.
 pub fn return_plan(type_pool: &FrozenTypeInternPool, ty: Type, ret_reg_budget: u32) -> ReturnPlan {
-    let slot_count = types::type_slot_count(type_pool, ty);
-    if slot_count == 0 {
-        ReturnPlan::ZeroSized
-    } else if type_uses_sret_return(type_pool, ty, ret_reg_budget) {
-        ReturnPlan::Sret {
+    match NativeCallAbi::new(type_pool, ret_reg_budget).classify_return(ty) {
+        ReturnClass::ZeroSized => ReturnPlan::ZeroSized,
+        ReturnClass::Scalar => ReturnPlan::Scalar,
+        ReturnClass::Registers { slot_count } => ReturnPlan::Registers { slot_count },
+        ReturnClass::Indirect { slot_count } => ReturnPlan::Sret {
             slot_count,
             storage_bytes: align_up(slot_count * 8, 16),
-        }
-    } else if types::is_multislot_aggregate(type_pool, ty) {
-        ReturnPlan::Registers { slot_count }
-    } else {
-        ReturnPlan::Scalar
+        },
     }
 }
 
