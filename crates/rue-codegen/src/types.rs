@@ -560,6 +560,25 @@ fn push_physical_slots(
     }
 }
 
+/// The internal-slot → physical-byte image used to marshal a whole aggregate
+/// pointee through a typed pointer. An enum uses its variant-independent image
+/// (RUE-1000); a **struct** uses its compact image (RUE-987) only when it is NOT
+/// slot-identical — a slot-identical struct keeps the byte-identical full-slot
+/// marshalling path. Scalars (handled by narrow access) and arrays (no
+/// variant-independent compact image) return `None`.
+pub(crate) fn pointer_image_slot_map(
+    type_pool: &FrozenTypeInternPool,
+    ty: Type,
+) -> Option<Vec<PhysicalEnumSlot>> {
+    match ty.kind() {
+        TypeKind::Enum(_) => enum_physical_slot_map(type_pool, ty),
+        TypeKind::Struct(_) if !is_slot_identical_layout(type_pool, ty) => {
+            aggregate_physical_slot_map(type_pool, ty)
+        }
+        _ => None,
+    }
+}
+
 /// The pointee of a pointer type, or the type itself when it is not a pointer.
 fn pointee_or_self(type_pool: &FrozenTypeInternPool, ty: Type) -> Type {
     match ty.kind() {
@@ -651,7 +670,17 @@ pub(crate) fn compact_physical_access_unsupported(
     let unimplemented_through_pointer = |ty: Type| -> bool {
         match ty.kind() {
             TypeKind::Enum(_) => enum_physical_slot_map(type_pool, ty).is_none(),
-            TypeKind::Struct(_) | TypeKind::Array(_) => !is_slot_identical_layout(type_pool, ty),
+            // A compact (non-slot-identical) struct WITH a variant-independent
+            // memory image marshals its whole value through the pointer via its
+            // internal-slot → physical-byte map (RUE-987), exactly like a compact
+            // enum (RUE-1000). A slot-identical struct keeps the byte-identical
+            // full-slot path; a struct WITHOUT an image (it contains an array or
+            // an imageless enum) stays refused.
+            TypeKind::Struct(_) => {
+                !is_slot_identical_layout(type_pool, ty)
+                    && aggregate_physical_slot_map(type_pool, ty).is_none()
+            }
+            TypeKind::Array(_) => !is_slot_identical_layout(type_pool, ty),
             _ => false,
         }
     };
@@ -776,8 +805,9 @@ pub(crate) fn ensure_compact_layout_codegen_supported(
                  (RUE-989), compact enum memory for enums with a variant-independent memory image \
                  (RUE-1000), and call-boundary marshalling of a compact aggregate through its \
                  memory image — sret returns and `inout`/`borrow` parameters (RUE-1004), and \
-                 by-value arguments (RUE-1005) — are lowered, but whole struct/array marshalling \
-                 through arbitrary pointers, arrays crossing a call, and enums without a \
+                 by-value arguments (RUE-1005), and whole compact-struct marshalling through \
+                 typed pointers (RUE-987) — are lowered, but whole-array marshalling through \
+                 pointers, arrays crossing a call, and enums (and structs) without a \
                  variant-independent memory image are still staged for a follow-up.",
                 cfg.fn_name()
             )),

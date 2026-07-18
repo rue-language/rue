@@ -3240,6 +3240,63 @@ mod tests {
         );
     }
 
+    /// RUE-987: a whole compact struct round-trips through a typed pointer on
+    /// x86-64, reusing the enum-image slot machinery — `@ptr_write` stores each
+    /// field narrow at its compact offset and `@ptr_read` reloads it. Gate-off
+    /// keeps the eight-byte slot access.
+    #[test]
+    fn aggregate_layout_allows_compact_struct_memory() {
+        let source = "struct Padded { a: u8, b: i32, c: u8 } \
+                      fn main() -> i32 { checked { let p: ptr mut Padded = @alloc(1); \
+                      @ptr_write(p, Padded { a: 7, b: 1000, c: 9 }); let s = @ptr_read(p); \
+                      @dbg(s.b); @free(p, 1); }; 0 }";
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::AggregateLayout);
+        let mir = try_lower_first_fn(source, preview).expect(
+            "a whole compact struct through a typed pointer must lower under compact layout",
+        );
+        assert!(
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::NarrowStoreIndexed { width: 1, .. })),
+            "the struct write must store the u8 fields narrow at their compact offsets"
+        );
+        assert!(
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::NarrowLoadIndexed { width: 4, .. })),
+            "the struct read must reload the i32 field narrow from its compact offset"
+        );
+
+        let off = try_lower_first_fn(source, PreviewFeatures::new())
+            .expect("the same program lowers under the default slot model");
+        assert!(
+            off.instructions().iter().all(|inst| !matches!(
+                inst,
+                X86Inst::NarrowStoreIndexed { .. } | X86Inst::NarrowLoadIndexed { .. }
+            )),
+            "gate-off must not emit any narrow access"
+        );
+    }
+
+    /// RUE-987: a struct WITHOUT a variant-independent compact image (a field is a
+    /// fixed array, whose compact stride differs from the slot stride) is still
+    /// refused loudly through a pointer on x86-64, not miscompiled.
+    #[test]
+    fn aggregate_layout_refuses_image_less_struct_memory() {
+        let source = "struct HasArr { xs: [i32; 2] } \
+                      fn main() -> i32 { checked { let p: ptr mut HasArr = @alloc(1); \
+                      @ptr_write(p, HasArr { xs: [1, 2] }); }; 0 }";
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::AggregateLayout);
+        let err = try_lower_first_fn(source, preview)
+            .expect_err("a struct with no compact image must refuse, not miscompile");
+        assert!(
+            format!("{err:?}").contains("aggregate_layout"),
+            "refusal must name the feature, got: {err:?}"
+        );
+    }
+
     /// RUE-1004: under `aggregate_layout`, a non-slot-identical struct returned
     /// by value is forced indirect (sret); the caller reads the callee-written
     /// compact image back from the sret buffer, extending each narrow field from

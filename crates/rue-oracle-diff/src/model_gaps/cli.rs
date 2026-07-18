@@ -607,6 +607,37 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::Allocate),
         &[],
     ),
+    // ADR-0052 phase 5.10 (RUE-987): the whole compact-struct-through-pointer
+    // round-trip reaches memory through `@alloc`, outside the oracle model (same
+    // gap as the narrow/enum heap cases above).
+    Entry::new(
+        "cli.aggregate_layout",
+        "compact_struct_through_pointer_roundtrip",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
+    // ADR-0052 phase 5.10 (RUE-987): the std-under-gate sweep's heap cases reach
+    // memory through `@alloc`, outside the oracle model. (The container dogfood is
+    // multi-file and excluded upstream; the two refusal sentinels are expected
+    // compile failures.)
+    Entry::new(
+        "cli.aggregate_layout_std_sweep",
+        "heap_struct_array_walk",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
+    Entry::new(
+        "cli.aggregate_layout_std_sweep",
+        "nested_compact_struct_through_pointer",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
+    Entry::new(
+        "cli.aggregate_layout_std_sweep",
+        "narrow_byte_buffer_roundtrip",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
     Entry::new(
         "cli.partial_move_depth",
         "disjoint_sibling_after_subfield_move_ok",

@@ -1630,15 +1630,17 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     ),
                     _ => None,
                 };
-                // A compact enum pointee marshals its whole value through the
-                // pointer via the enum's internal-slot → physical-byte map
-                // (RUE-1000). The read's pointee is its result type; the write's
-                // pointee is the value operand's type.
+                // A compact aggregate pointee marshals its whole value through the
+                // pointer via its internal-slot → physical-byte image: a compact
+                // enum (RUE-1000) or a compact struct (RUE-987). The read's pointee
+                // is its result type; the write's pointee is the value operand's
+                // type. Scalars (narrow access) and slot-identical structs (the
+                // byte-identical full-slot path) yield `None`.
                 let physical_slots = match operation {
                     IntrinsicOperation::PtrRead => {
-                        crate::types::enum_physical_slot_map(ctx.type_pool, inst.ty)
+                        crate::types::pointer_image_slot_map(ctx.type_pool, inst.ty)
                     }
-                    IntrinsicOperation::PtrWrite => crate::types::enum_physical_slot_map(
+                    IntrinsicOperation::PtrWrite => crate::types::pointer_image_slot_map(
                         ctx.type_pool,
                         ctx.cfg.get_inst(args[1]).ty,
                     ),

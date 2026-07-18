@@ -286,20 +286,53 @@ fn main() -> i32 {
 stdout = "250\n-12345\n99\n"
 exit_code = 0
 
-# A whole non-slot-identical aggregate marshalled through a pointer as a single
-# value is still refused loudly: that marshalling (and the frame-versus-heap
-# pointer provenance it depends on) is unimplemented. RUE-989 lifts the refusal
-# only for narrow SCALAR access.
+# ADR-0052 phase 5.10 (RUE-987): a whole compact (non-slot-identical) struct with
+# a variant-independent memory image marshals through a typed pointer as a single
+# value. `@ptr_write` stores each field truncated to its physical width at its
+# compact byte offset (zeroing padding first, RUE-1007), and `@ptr_read` reloads
+# each field extended from its physical width — reusing the RUE-1000 enum-image
+# slot machinery. A padded { a: u8, b: i32, c: u8 } (size 12) round-trips through
+# a heap pointer.
 [[case]]
-name = "narrow_aggregate_through_pointer_still_fails"
-description = "Writing a whole narrow struct through a pointer is still refused, not silently miscompiled."
+name = "compact_struct_through_pointer_roundtrip"
+description = "A whole compact struct round-trips through a typed heap pointer via its compact memory image (RUE-987)."
 args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
 files = [{ path = "main.rue", source = """
-struct Pair { a: i32, b: i32 }
+struct Padded { a: u8, b: i32, c: u8 }
+fn main() -> i32 {
+    let r = checked {
+        let p: ptr mut Padded = @alloc(1);
+        @ptr_write(p, Padded { a: 7, b: 100000, c: 9 });
+        let q = @ptr_read(p);
+        @free(p, 1);
+        q
+    };
+    let ra: i32 = @intCast(r.a);
+    let rc: i32 = @intCast(r.c);
+    @dbg(ra);
+    @dbg(r.b);
+    @dbg(rc);
+    0
+}
+""" }]
+stdout = "7\n100000\n9\n"
+exit_code = 0
+
+# A struct WITHOUT a variant-independent compact memory image — here one whose
+# field is a fixed array, whose compact stride differs from the slot stride — is
+# still refused loudly through a pointer rather than silently miscompiled. The
+# RUE-987 image path admits a struct only when every leaf flattens to a scalar
+# position (no array, no imageless enum).
+[[case]]
+name = "array_bearing_struct_through_pointer_still_fails"
+description = "A struct containing a fixed array has no compact image and is still refused through a pointer, not miscompiled."
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct HasArr { xs: [i32; 2] }
 fn main() -> i32 {
     checked {
-        let p: ptr mut Pair = @alloc(1);
-        @ptr_write(p, Pair { a: 1, b: 2 });
+        let p: ptr mut HasArr = @alloc(1);
+        @ptr_write(p, HasArr { xs: [1, 2] });
     };
     0
 }
@@ -912,4 +945,107 @@ pub fn ArrayBuf(comptime T: type) -> type {
 """ },
 ]
 stdout = "3\n20\n30\n2\n"
+exit_code = 0
+
+# ADR-0052 phase 5.10 (RUE-987): a generic ArrayBuf(compact struct) dogfood. The
+# element is a compact { x: i32, y: i32 } (size 8, non-slot-identical). push/set
+# store the whole struct through the heap pointer via its compact image
+# (@ptr_write), get/pop_or read it back (@ptr_read) and return it BY VALUE across
+# the sret boundary (RUE-1004). This is the first @import generic container of a
+# COMPACT STRUCT element to compile and run under the gate — the ArrayBuf(struct)
+# blocker called out by RUE-1005's std sweep. `differential_opt` pins identical
+# behavior across all opt levels; the output matches the gate-off run.
+[[case]]
+name = "compact_arraybuf_struct_element_dogfood"
+description = "A generic ArrayBuf(Point) with a compact struct element: push/get/set/pop_or round-trip the whole struct through heap pointers and sret returns under --preview aggregate_layout (RUE-987)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """const arraybuf = @import("arraybuf.rue");
+
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let V = arraybuf.ArrayBuf(Point);
+    let mut v = V.new();
+    v.push(Point { x: 1, y: 2 });
+    v.push(Point { x: 3, y: 4 });
+    v.push(Point { x: 5, y: 6 });
+    @dbg(v.len());
+    let p1 = v.get(1);
+    @dbg(p1.x);
+    @dbg(p1.y);
+    v.set(0, Point { x: 90, y: 91 });
+    let p0 = v.get(0);
+    @dbg(p0.x);
+    @dbg(p0.y);
+    let last = v.pop_or(Point { x: 0, y: 0 });
+    @dbg(last.x);
+    @dbg(last.y);
+    @dbg(v.len());
+    v.free();
+    0
+}""" },
+  { path = "arraybuf.rue", source = """
+pub fn ArrayBuf(comptime T: type) -> type {
+    struct {
+        buf: ptr mut T,
+        len: u64,
+        cap: u64,
+
+        fn new() -> Self {
+            let zero: u64 = 0;
+            Self { buf: checked { @int_to_ptr(zero) }, len: 0, cap: 0 }
+        }
+        fn len(borrow self) -> u64 { self.len }
+
+        fn reserve(inout self) {
+            if self.len == self.cap {
+                let new_cap: u64 = if self.cap == 0 { 4 } else { self.cap * 2 };
+                checked {
+                    let grown = @realloc(self.buf, self.cap, new_cap);
+                    self.buf = grown;
+                };
+                self.cap = new_cap;
+            }
+        }
+        fn push(inout self, x: T) {
+            self.reserve();
+            checked {
+                let slot = @ptr_offset(self.buf, self.len);
+                @ptr_write(slot, x);
+            };
+            self.len = self.len + 1;
+        }
+        fn get(borrow self, i: u64) -> T {
+            checked { @ptr_read(@ptr_offset(self.buf, i)) }
+        }
+        fn set(inout self, i: u64, x: T) {
+            if i < self.len {
+                checked {
+                    let slot = @ptr_offset(self.buf, i);
+                    @ptr_write(slot, x);
+                };
+            }
+        }
+        fn pop_or(inout self, default: T) -> T {
+            if self.len == 0 {
+                default
+            } else {
+                self.len = self.len - 1;
+                checked { @ptr_read(@ptr_offset(self.buf, self.len)) }
+            }
+        }
+        fn free(inout self) {
+            checked { @free(self.buf, self.cap); };
+            let zero: u64 = 0;
+            self.buf = checked { @int_to_ptr(zero) };
+            self.len = 0;
+            self.cap = 0;
+        }
+    }
+}
+""" },
+]
+stdout = "3\n3\n4\n90\n91\n5\n6\n2\n"
 exit_code = 0
