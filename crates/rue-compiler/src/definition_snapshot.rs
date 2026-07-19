@@ -639,9 +639,27 @@ pub(crate) fn definition_parts(item: &Item) -> Option<DefinitionParts> {
             name: constant.name,
             declaration_span: constant.span,
         },
+        // A foreign `extern "C"` block declares several definitions at once, so
+        // it does not fit the one-item/one-definition shape here. The definition
+        // index expands it via `extern_definition_parts` (ADR-0064 C FFI).
+        Item::Extern(_) => return None,
         Item::Error(_) => return None,
     };
     Some(parts)
+}
+
+/// Per-`fn` definition parts for a foreign `extern "C"` block. Each member is an
+/// independent module-item definition keyed by its own declaration span.
+pub(crate) fn extern_definition_parts(
+    block: &rue_parser::ast::ExternBlock,
+) -> impl Iterator<Item = DefinitionParts> + '_ {
+    block.fns.iter().map(|foreign| DefinitionParts {
+        namespace: DefinitionNamespace::ModuleItem,
+        kind: DefinitionKind::Function,
+        visibility: Some(Visibility::Private),
+        name: foreign.name,
+        declaration_span: foreign.span,
+    })
 }
 
 pub(crate) fn validate_span(

@@ -155,6 +155,7 @@ impl Validator<'_> {
             }
             Item::Enum(_) => {}
             Item::DropFn(d) => self.check_expr(&d.body),
+            Item::Extern(_) => {}
             Item::Const(c) => {
                 self.check_directives(&c.directives, DirectiveSite::Const);
                 self.check_expr(&c.init);

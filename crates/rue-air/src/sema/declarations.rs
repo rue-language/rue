@@ -12,7 +12,9 @@
 use std::collections::{HashMap, HashSet};
 
 use lasso::Spur;
-use rue_error::{CompileError, CompileResult, CopyStructNonCopyFieldError, ErrorKind, ice};
+use rue_error::{
+    CompileError, CompileResult, CopyStructNonCopyFieldError, ErrorKind, PreviewFeature, ice,
+};
 use rue_rir::{InstData, InstRef, RirParamMode};
 use rue_span::{FileId, Span};
 
@@ -1055,6 +1057,7 @@ impl<'a> Sema<'a> {
                 InstData::FnDecl {
                     is_pub,
                     is_unchecked,
+                    is_extern,
                     name,
                     params,
                     return_type,
@@ -1098,6 +1101,7 @@ impl<'a> Sema<'a> {
                         inst.span,
                         *is_pub,
                         *is_unchecked,
+                        *is_extern,
                     )?;
                 }
 
@@ -1274,6 +1278,7 @@ impl<'a> Sema<'a> {
     }
 
     /// Collect a function signature for forward reference.
+    #[allow(clippy::too_many_arguments)]
     fn collect_function_signature(
         &mut self,
         declaration: InstRef,
@@ -1283,6 +1288,7 @@ impl<'a> Sema<'a> {
         span: Span,
         is_pub: bool,
         is_unchecked: bool,
+        is_extern: bool,
     ) -> CompileResult<()> {
         // Reject user functions whose name collides with a runtime/codegen helper
         // symbol (e.g. `__rue_str_eq`, `__rue_alloc`, `_start`). Without this, such a
@@ -1416,6 +1422,41 @@ impl<'a> Sema<'a> {
             self.resolve_type(return_type_sym, span)?
         };
 
+        // Foreign `extern "C"` declarations are gated behind the `c_ffi` preview
+        // and restricted to the P1 type set — the types whose native and
+        // target-C representations coincide (ADR-0064 P1): `i64`, `u64`, and
+        // pointers, plus `()` in return position (C `void`). Every other type
+        // (narrow integers, `bool`, aggregates, floats, enums) awaits a later
+        // FFI phase and is rejected here with a clear not-yet diagnostic.
+        if is_extern {
+            self.require_preview(
+                PreviewFeature::CFfi,
+                "an `extern \"C\"` foreign declaration",
+                span,
+            )?;
+            let is_supported_extern_scalar = |ty: Type| {
+                ty == Type::I64 || ty == Type::U64 || ty.is_ptr_const() || ty.is_ptr_mut()
+            };
+            for &param_type in &param_types {
+                if !is_supported_extern_scalar(param_type) {
+                    return Err(CompileError::new(
+                        ErrorKind::ExternSignatureTypeUnsupported {
+                            ty: self.format_type_name(param_type),
+                        },
+                        span,
+                    ));
+                }
+            }
+            if ret_type != Type::UNIT && !is_supported_extern_scalar(ret_type) {
+                return Err(CompileError::new(
+                    ErrorKind::ExternSignatureTypeUnsupported {
+                        ty: self.format_type_name(ret_type),
+                    },
+                    span,
+                ));
+            }
+        }
+
         // Allocate parameter data in the arena
         let params_range = self.param_arena.alloc(
             param_names.into_iter(),
@@ -1441,6 +1482,7 @@ impl<'a> Sema<'a> {
                 is_generic,
                 is_pub,
                 is_unchecked,
+                is_extern,
                 allow_unused_function,
                 allow_unused_variable,
                 allow_unreachable_code,
@@ -2710,19 +2752,27 @@ impl<'a> Sema<'a> {
         let Some(inst_ref) = self.declaration_index.first_free_function(target, file_id) else {
             return Ok(None);
         };
-        let (span, is_pub, return_type, body, is_unchecked) = {
+        let (span, is_pub, return_type, body, is_unchecked, is_extern) = {
             let inst = self.rir.get(inst_ref);
             let InstData::FnDecl {
                 is_pub,
                 return_type,
                 body,
                 is_unchecked,
+                is_extern,
                 ..
             } = &inst.data
             else {
                 unreachable!("free-function index contains only FnDecl instructions");
             };
-            (inst.span, *is_pub, *return_type, *body, *is_unchecked)
+            (
+                inst.span,
+                *is_pub,
+                *return_type,
+                *body,
+                *is_unchecked,
+                *is_extern,
+            )
         };
 
         let internal_target = self.internal_function_name(target, span.file_id);
@@ -2743,6 +2793,7 @@ impl<'a> Sema<'a> {
                 span,
                 is_pub,
                 is_unchecked,
+                is_extern,
             );
             self.fn_signatures_in_flight.remove(&internal_target);
             collected?;

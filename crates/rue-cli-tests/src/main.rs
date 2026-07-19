@@ -98,6 +98,58 @@ use std::time::Duration;
 
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
 use rue_target::{Arch, Target};
+
+/// Build a tiny C-free static archive exporting `answer() -> 42` as pure machine
+/// code for `target` (ADR-0064 C FFI P1 proof). The object is produced with the
+/// compiler's own `rue_linker::ObjectBuilder` (which emits a defined global
+/// symbol named `answer`), then wrapped in a GNU `ar` archive — the same static
+/// archive shape the linker already resolves the runtime from.
+fn synthesize_answer_archive(target: Target) -> TestResult<Vec<u8>> {
+    // A leaf function that returns the integer 42 and nothing else.
+    let code: Vec<u8> = match target.arch() {
+        // mov eax, 42 ; ret
+        Arch::X86_64 => vec![0xB8, 0x2A, 0x00, 0x00, 0x00, 0xC3],
+        // movz w0, #42 ; ret
+        Arch::Aarch64 => vec![0x40, 0x05, 0x80, 0x52, 0xC0, 0x03, 0x5F, 0xD6],
+    };
+    let object = rue_linker::ObjectBuilder::new(target, "answer")
+        .code(code)
+        .build();
+    Ok(ar_archive(&[("answer.o", &object)]))
+}
+
+/// Assemble a minimal GNU `ar` archive from named object members. Only the
+/// fields the internal linker's archive reader consumes are populated.
+fn ar_archive(members: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"!<arch>\n");
+    for (name, data) in members {
+        // GNU short-name members terminate the name with `/`.
+        let header_name = format!("{name}/");
+        let mut header = [b' '; 60];
+        let name_bytes = header_name.as_bytes();
+        header[..name_bytes.len()].copy_from_slice(name_bytes);
+        write_ar_field(&mut header, 16, 12, b"0"); // mtime
+        write_ar_field(&mut header, 28, 6, b"0"); // uid
+        write_ar_field(&mut header, 34, 6, b"0"); // gid
+        write_ar_field(&mut header, 40, 8, b"644"); // mode (octal)
+        write_ar_field(&mut header, 48, 10, data.len().to_string().as_bytes()); // size
+        header[58] = b'`';
+        header[59] = b'\n';
+        out.extend_from_slice(&header);
+        out.extend_from_slice(data);
+        if data.len() % 2 == 1 {
+            out.push(b'\n');
+        }
+    }
+    out
+}
+
+/// Left-justify `value` into a fixed-width `ar` header field.
+fn write_ar_field(header: &mut [u8; 60], offset: usize, width: usize, value: &[u8]) {
+    let len = value.len().min(width);
+    header[offset..offset + len].copy_from_slice(&value[..len]);
+}
 use rue_test_runner::{
     DEFAULT_TIMEOUT_MS, ExpectedFailureOutcome, KNOWN_TARGETS, TestFailure, TestResult,
     classify_expected_failure, compiler_command, find_dir, find_rue_binary, ice_message,
@@ -465,6 +517,14 @@ struct Case {
     /// Compiler arguments, relative to the temp dir (default: first file + `-o prog`).
     #[serde(default)]
     args: Option<Vec<String>>,
+    /// Synthesize a tiny C-free static archive exporting `answer() -> 42` as
+    /// pure machine code for the case's target, and substitute its path for the
+    /// `${FFI_ARCHIVE}` token in `args` (ADR-0064 C FFI P1 proof program). The
+    /// archive is produced with the compiler's own object machinery
+    /// (`rue_linker::ObjectBuilder`), mirroring how the runtime archive is
+    /// linked in — no C toolchain is required.
+    #[serde(default)]
+    ffi_answer_archive: bool,
     /// Name of the executable the compiler is expected to produce.
     #[serde(default)]
     output: Option<String>,
@@ -1091,6 +1151,28 @@ fn run_case(
         for argument in &mut args {
             if argument == "${SOURCE}" {
                 *argument = source_path.clone();
+            }
+        }
+    }
+    // Synthesize the C FFI proof archive (ADR-0064 P1) and substitute its path
+    // for the `${FFI_ARCHIVE}` token. The archive target matches the case's
+    // `executable_target` (default host) so the emitted machine code is valid.
+    if case.ffi_answer_archive {
+        let archive_target = match &case.executable_target {
+            Some(name) => name.parse::<Target>().map_err(|_| {
+                TestFailure::assertion(format!("invalid executable_target `{name}`"))
+            })?,
+            None => Target::host()
+                .ok_or_else(|| TestFailure::assertion("no host target for ffi_answer_archive"))?,
+        };
+        let archive_path = dir.join("libanswer.a");
+        let archive_bytes = synthesize_answer_archive(archive_target)?;
+        std::fs::write(&archive_path, &archive_bytes)
+            .map_err(|e| TestFailure::fatal(format!("failed to write ffi answer archive: {e}")))?;
+        let archive_path = archive_path.display().to_string();
+        for argument in &mut args {
+            if argument == "${FFI_ARCHIVE}" {
+                *argument = archive_path.clone();
             }
         }
     }

@@ -6,6 +6,7 @@ load("//crates:defs.bzl", "rue_binary")
 rue_binary(
     name = "rue-cli-tests",
     deps = [
+        "//crates/rue-linker:rue-linker",
         "//crates/rue-target:rue-target",
         "//crates/rue-test-runner:rue-test-runner",
         "//third-party:libtest2-mimic",

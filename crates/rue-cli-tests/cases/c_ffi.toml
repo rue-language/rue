@@ -1,0 +1,154 @@
+# C FFI P1 (ADR-0064, RUE-1055): `extern "C"` foreign declarations and
+# static-archive linking, gated behind the `c_ffi` preview.
+#
+# The proof program declares a foreign `answer() -> i64`, calls it inside a
+# `checked {}` block, and prints the result. The archive that defines `answer`
+# is synthesized in-tree by the harness with the compiler's own object machinery
+# (`ffi_answer_archive` -> `rue_linker::ObjectBuilder`), producing pure machine
+# code that returns 42 for each target — no C toolchain is involved, mirroring
+# how the runtime archive is linked in.
+
+[section]
+id = "cli.c_ffi"
+name = "C FFI — extern fn declarations and static-archive linking"
+description = "Foreign `extern \"C\"` calls resolve from a supplied static archive; the preview gate, checked-context, and signature-type diagnostics hold."
+
+# --- Execution-verified proof program (both backends) ----------------------
+# Target-pinned like cli.abi_conformance: every host compiles and links both;
+# the matching native host also executes and checks exact output.
+
+[[case]]
+name = "x86_64_linux_extern_answer_returns_42"
+description = "extern answer() resolved from a static archive prints 42 on x86-64."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 {
+    let result = checked { answer() };
+    @dbg(result);
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "x86-64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = "42\n"
+exit_code = 0
+
+[[case]]
+name = "aarch64_linux_extern_answer_returns_42"
+description = "extern answer() resolved from a static archive prints 42 on AArch64."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 {
+    let result = checked { answer() };
+    @dbg(result);
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "aarch64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = "42\n"
+exit_code = 0
+
+# --- Diagnostics -----------------------------------------------------------
+
+[[case]]
+name = "extern_declaration_requires_preview"
+description = "An `extern \"C\"` declaration is inert without `--preview c_ffi`."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["c_ffi", "preview"]
+
+[[case]]
+name = "extern_call_requires_checked_block"
+description = "Calling a foreign function outside `checked {}` is rejected (unchecked-only ruling)."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 {
+    let result = answer();
+    @dbg(result);
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+compile_fail = true
+error_contains = ["foreign function", "checked"]
+
+[[case]]
+name = "extern_unsupported_signature_type_rejected"
+description = "A P1-unsupported type (i32) in an extern signature gets a clear not-yet diagnostic."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn f(x: i32) -> i32;
+}
+
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+compile_fail = true
+error_contains = ["i32", "not yet supported", "ADR-0064"]
+
+[[case]]
+name = "extern_unsupported_bool_return_rejected"
+description = "`bool` is not in the P1 extern type set (narrow scalar boundary is a later phase)."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn ready() -> bool;
+}
+
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+compile_fail = true
+error_contains = ["bool", "not yet supported"]
+
+[[case]]
+name = "extern_unsupported_abi_rejected"
+description = "Only the \"C\" ABI is accepted in v0."
+files = [{ path = "main.rue", source = """
+extern "Rust" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+compile_fail = true
+error_contains = ["unsupported extern ABI", "\"C\""]
+
+[[case]]
+name = "extern_unresolved_symbol_at_link_time"
+description = "A foreign call with no archive defining the symbol fails at link, naming the symbol and searched archives."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn answer() -> i64;
+}
+
+fn main() -> i32 {
+    let result = checked { answer() };
+    @dbg(result);
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+compile_fail = true
+error_contains = ["undefined symbol", "answer", "searched"]

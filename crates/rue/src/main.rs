@@ -196,6 +196,9 @@ struct Options {
     linker: LinkerMode,
     opt_level: OptLevel,
     preview_features: PreviewFeatures,
+    /// Static archives (`.a`) supplied with `--link-archive`, resolved for
+    /// undefined `extern "C"` symbols at link time (ADR-0064 C FFI).
+    link_archives: Vec<std::path::PathBuf>,
     log_level: LogLevel,
     log_format: LogFormat,
     error_format: ErrorFormat,
@@ -238,6 +241,9 @@ Options:
   -o, --output <path>  Set output path
   --source-manifest <path>
                        Restrict source imports to a line-oriented manifest
+  --link-archive <path>
+                       Link a static archive (.a) resolving extern \"C\" symbols
+                       (ADR-0064 C FFI); can be repeated
   --target <target>    Set compilation target (default: host)
                        Valid targets: {targets}
   --linker <linker>    Set linker to use (default: internal)
@@ -366,6 +372,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     let mut jobs: Option<usize> = None;
     let mut source_manifest_path: Option<String> = None;
     let mut output_path: Option<String> = None;
+    let mut link_archives: Vec<std::path::PathBuf> = Vec::new();
     let mut positional = Vec::new();
     let mut args_iter = args.iter().peekable();
 
@@ -497,6 +504,13 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
                     return ParseResult::Error;
                 };
                 source_manifest_path = Some(path.to_string());
+            }
+            "--link-archive" => {
+                let Some(path) = args_iter.next() else {
+                    eprintln!("Error: --link-archive requires a path");
+                    return ParseResult::Error;
+                };
+                link_archives.push(std::path::PathBuf::from(path));
             }
             "--time-passes" => {
                 time_passes = true;
@@ -636,6 +650,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         linker: linker.unwrap_or_default(),
         opt_level: opt_level.unwrap_or_default(),
         preview_features,
+        link_archives,
         log_level: log_level.unwrap_or_default(),
         log_format: log_format.unwrap_or_default(),
         error_format: error_format.unwrap_or_default(),
@@ -1070,6 +1085,7 @@ fn main() {
                     linker: options.linker.clone(),
                     opt_level: options.opt_level,
                     preview_features: options.preview_features.clone(),
+                    link_archives: options.link_archives.clone(),
                 },
                 diagnostics: &diagnostics,
             }) {
@@ -1120,6 +1136,7 @@ fn main() {
         linker: options.linker.clone(),
         opt_level: options.opt_level,
         preview_features: options.preview_features.clone(),
+        link_archives: options.link_archives.clone(),
     };
     #[cfg(rue_benchmark_allocations)]
     if options.benchmark_json {

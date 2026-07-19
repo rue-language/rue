@@ -435,6 +435,8 @@ pub enum LogosTokenKind {
     Unchecked,
     #[token("ptr")]
     Ptr,
+    #[token("extern")]
+    Extern,
 
     // Type keywords
     #[token("i8")]
@@ -611,6 +613,7 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::Checked => TokenKind::Checked,
             LogosTokenKind::Unchecked => TokenKind::Unchecked,
             LogosTokenKind::Ptr => TokenKind::Ptr,
+            LogosTokenKind::Extern => TokenKind::Extern,
             LogosTokenKind::I8 => TokenKind::I8,
             LogosTokenKind::I16 => TokenKind::I16,
             LogosTokenKind::I32 => TokenKind::I32,

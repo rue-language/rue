@@ -1187,11 +1187,13 @@ impl RirEditor {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn add_fn_decl(
         &mut self,
         directives: &[RirDirective],
         is_pub: bool,
         is_unchecked: bool,
+        is_extern: bool,
         name: Spur,
         params: &[RirParam],
         return_type: Spur,
@@ -1209,6 +1211,7 @@ impl RirEditor {
                     directives,
                     is_pub,
                     is_unchecked,
+                    is_extern,
                     name,
                     params,
                     return_type,
@@ -1651,6 +1654,7 @@ impl RirEditor {
                         directives,
                         is_pub,
                         is_unchecked,
+                        is_extern,
                         name,
                         params,
                         return_type,
@@ -1675,6 +1679,7 @@ impl RirEditor {
                             &directives,
                             *is_pub,
                             *is_unchecked,
+                            *is_extern,
                             symbol(*name),
                             &params,
                             symbol(*return_type),
@@ -4176,6 +4181,11 @@ pub enum InstData {
         is_pub: bool,
         /// Whether this function is marked `unchecked` (can only be called from checked blocks)
         is_unchecked: bool,
+        /// Whether this is a foreign `extern "C"` declaration (ADR-0064 C FFI):
+        /// a body-less import lowered to an undefined linker symbol. When true
+        /// `body` is a synthesized placeholder that is never analyzed or
+        /// code-generated.
+        is_extern: bool,
         name: Spur,
         /// Index into extra data where params start
         params: RirParamsRange,
@@ -4928,6 +4938,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     directives,
                     is_pub,
                     is_unchecked,
+                    is_extern,
                     name,
                     params,
                     return_type,
@@ -4937,7 +4948,13 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     self_is_mut,
                 } => {
                     let pub_str = if *is_pub { "pub " } else { "" };
-                    let unchecked_str = if *is_unchecked { "unchecked " } else { "" };
+                    let unchecked_str = if *is_unchecked {
+                        "unchecked "
+                    } else if *is_extern {
+                        "extern "
+                    } else {
+                        ""
+                    };
                     let name_str = self.interner.resolve(&*name);
                     let ret_str = self.interner.resolve(&*return_type);
                     let self_str = if *has_self {
@@ -5585,6 +5602,7 @@ mod typed_payload_tests {
             .add_fn_decl(
                 &directives,
                 true,
+                false,
                 false,
                 a,
                 &[RirParam {
@@ -6321,6 +6339,7 @@ mod typed_payload_tests {
                 directives: RirDirectivesRange::payload_fallback(),
                 is_pub: false,
                 is_unchecked: false,
+                is_extern: false,
                 name: a,
                 params,
                 return_type: a,

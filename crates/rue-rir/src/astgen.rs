@@ -7,7 +7,7 @@
 
 use lasso::{Spur, ThreadedRodeo};
 
-use rue_parser::ast::{ConstDecl, DropFn};
+use rue_parser::ast::{ConstDecl, DropFn, ExternBlock, ExternFn};
 use rue_parser::intrinsics::{OFFSET_OF_INTRINSIC, TYPE_INTRINSICS};
 use rue_parser::{
     ArgMode, ArrayLength, AssignTarget, BinaryOp, CallArg, Directive, DirectiveArg, EnumDecl, Expr,
@@ -192,6 +192,9 @@ impl<'a> AstGen<'a> {
             }
             Item::DropFn(drop_fn) => {
                 self.gen_drop_fn(drop_fn);
+            }
+            Item::Extern(extern_block) => {
+                self.gen_extern_block(extern_block);
             }
             Item::Const(const_decl) => {
                 self.gen_const(const_decl);
@@ -570,6 +573,7 @@ impl<'a> AstGen<'a> {
                 &directives,
                 false,
                 false,
+                false,
                 name,
                 &params,
                 return_type,
@@ -675,6 +679,7 @@ impl<'a> AstGen<'a> {
                 &directives,
                 func.visibility == Visibility::Public,
                 func.is_unchecked,
+                false,
                 name,
                 &params,
                 return_type,
@@ -687,6 +692,65 @@ impl<'a> AstGen<'a> {
             .record_failure(&mut self.payload_error);
 
         decl
+    }
+
+    /// Lower an `extern "C" { ... }` block: each member becomes a body-less
+    /// foreign `FnDecl` (`is_extern = true`) with a synthesized unit placeholder
+    /// body. Sema never analyzes and codegen never emits the placeholder; a call
+    /// to the declaration lowers to an undefined linker symbol (ADR-0064).
+    fn gen_extern_block(&mut self, extern_block: &ExternBlock) {
+        for foreign in &extern_block.fns {
+            self.with_producer_root(|this| this.gen_extern_fn(foreign));
+        }
+    }
+
+    fn gen_extern_fn(&mut self, foreign: &ExternFn) -> InstRef {
+        let name = self.symbol(foreign.name.name);
+        let return_type = match &foreign.return_type {
+            Some(ty) => self.intern_type_at(crate::RirStructuralPathSegment::ReturnType, ty),
+            None => self.interner.get_or_intern("()"),
+        };
+        let params: Vec<_> = foreign
+            .params
+            .iter()
+            .enumerate()
+            .map(|(index, p)| RirParam {
+                name: self.symbol(p.name.name),
+                ty: self.intern_type_at(
+                    crate::RirStructuralPathSegment::ParameterType(index as u32),
+                    &p.ty,
+                ),
+                mode: self.convert_param_mode(p.mode),
+                is_comptime: p.mode == ParamMode::Comptime,
+                span: p.name.span,
+            })
+            .collect();
+        // A foreign declaration has no body; synthesize a unit placeholder that
+        // is never analyzed or code-generated (guarded by `is_extern`).
+        let body = self.rir.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: foreign.span,
+        });
+        self.rir
+            .add_fn_decl(
+                &[],
+                // Foreign declarations carry no Rue visibility modifier (treated
+                // as a private free function for resolution) and are not
+                // `unchecked` functions — the checked-context gate is enforced
+                // at the call site instead (ADR-0064 unchecked-only ruling).
+                false,
+                false,
+                true,
+                name,
+                &params,
+                return_type,
+                body,
+                false,
+                RirParamMode::Normal,
+                false,
+                foreign.span,
+            )
+            .record_failure(&mut self.payload_error)
     }
 
     fn gen_expr(&mut self, expr: &Expr) -> InstRef {

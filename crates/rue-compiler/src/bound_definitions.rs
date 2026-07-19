@@ -1029,6 +1029,12 @@ fn definition_input_partition(
         Item::Struct(value) => value.span == binding.declaration_span,
         Item::Enum(value) => value.span == binding.declaration_span,
         Item::DropFn(value) => value.span == binding.declaration_span,
+        // A foreign declaration's binding span is the individual `fn`'s span,
+        // not the enclosing `extern` block's (ADR-0064 C FFI).
+        Item::Extern(block) => block
+            .fns
+            .iter()
+            .any(|foreign| foreign.span == binding.declaration_span),
         Item::Const(value) => value.span == binding.declaration_span,
         Item::Error(_) => false,
     });
@@ -1042,6 +1048,18 @@ fn definition_input_partition(
         Some(Item::Enum(value)) => Ok(BoundDefinitionInputPartition::ExactSignature(
             vec![value.span].into(),
         )),
+        // A foreign `extern "C"` declaration is signature-only: the whole
+        // declaration is its exact-signature partition (there is no body).
+        Some(Item::Extern(block)) => {
+            let foreign = block
+                .fns
+                .iter()
+                .find(|foreign| foreign.span == binding.declaration_span)
+                .ok_or_else(|| invalid("extern binding does not join canonical syntax"))?;
+            Ok(BoundDefinitionInputPartition::ExactSignature(
+                vec![foreign.span].into(),
+            ))
+        }
         Some(Item::Error(_)) | None => Err(invalid(
             "semantic binding does not join an authoritative canonical syntax item",
         )),

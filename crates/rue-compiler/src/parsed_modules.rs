@@ -1083,6 +1083,17 @@ fn collect_imports(
                 }
             }
             Item::DropFn(value) => walk_expr(&value.body, module, resolver, &mut imports)?,
+            Item::Extern(block) => {
+                for foreign in &block.fns {
+                    walk_signature(
+                        &foreign.params,
+                        foreign.return_type.as_ref(),
+                        module,
+                        resolver,
+                        &mut imports,
+                    )?;
+                }
+            }
             Item::Const(value) => {
                 if let Some(ty) = &value.ty {
                     walk_type_expr(ty, module, resolver, &mut imports)?;
@@ -1384,32 +1395,42 @@ fn build_definition_index(
 ) -> CompileResult<ParsedDefinitionIndex> {
     let mut pending = Vec::new();
     for item in &ast.items {
-        let Some(parts) = definition_parts(item) else {
-            let Item::Error(span) = item else {
-                unreachable!()
+        // A foreign `extern "C"` block expands into one module-item definition
+        // per member `fn` (ADR-0064 C FFI); every other item is a single
+        // definition.
+        let item_parts: Vec<_> = if let Item::Extern(block) = item {
+            crate::definition_snapshot::extern_definition_parts(block).collect()
+        } else {
+            let Some(parts) = definition_parts(item) else {
+                let Item::Error(span) = item else {
+                    unreachable!()
+                };
+                return Err(invalid_input(format!(
+                    "parsed module contains recovered error item at {}..{}",
+                    span.start, span.end
+                )));
             };
-            return Err(invalid_input(format!(
-                "parsed module contains recovered error item at {}..{}",
-                span.start, span.end
-            )));
+            vec![parts]
         };
-        validate_span(
-            "definition declaration",
-            parts.declaration_span,
-            file_id,
-            source_text,
-        )?;
-        validate_span("definition name", parts.name.span, file_id, source_text)?;
-        if parts.name.span.start < parts.declaration_span.start
-            || parts.name.span.end > parts.declaration_span.end
-        {
-            return Err(invalid_input(
-                "definition name span is outside its declaration span",
-            ));
+        for parts in item_parts {
+            validate_span(
+                "definition declaration",
+                parts.declaration_span,
+                file_id,
+                source_text,
+            )?;
+            validate_span("definition name", parts.name.span, file_id, source_text)?;
+            if parts.name.span.start < parts.declaration_span.start
+                || parts.name.span.end > parts.declaration_span.end
+            {
+                return Err(invalid_input(
+                    "definition name span is outside its declaration span",
+                ));
+            }
+            let symbol = resolver.symbol(parts.name.name)?;
+            let name: Arc<str> = Arc::from(resolver.resolve(&symbol)?);
+            pending.push((parts, symbol, name));
         }
-        let symbol = resolver.symbol(parts.name.name)?;
-        let name: Arc<str> = Arc::from(resolver.resolve(&symbol)?);
-        pending.push((parts, symbol, name));
     }
     pending.sort_by(|(left, _, left_name), (right, _, right_name)| {
         (

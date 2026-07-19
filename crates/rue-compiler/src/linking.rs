@@ -170,6 +170,23 @@ pub(crate) fn parse_runtime_archive(runtime_bytes: &[u8]) -> Result<Archive, Str
     Ok(archive)
 }
 
+/// Read and parse a user-supplied static archive passed with `--link-archive`
+/// (ADR-0064 C FFI). Its object members satisfy undefined `extern "C"` symbols.
+fn read_user_archive(path: &Path) -> Result<Archive, ErrorKind> {
+    let bytes = std::fs::read(path).map_err(|e| {
+        ErrorKind::LinkError(format!(
+            "failed to read link archive `{}`: {e}",
+            path.display()
+        ))
+    })?;
+    Archive::parse_strict_objects(&bytes).map_err(|e| {
+        ErrorKind::LinkError(format!(
+            "failed to parse link archive `{}`: {e}",
+            path.display()
+        ))
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuntimeSymbolKind {
     Function,
@@ -497,6 +514,20 @@ pub(crate) fn link_internal_with_warnings(
     // archive linking only includes objects that define needed symbols.
     linker.require_symbol(entry_point);
 
+    // Add user-supplied static archives (`--link-archive`, ADR-0064 C FFI)
+    // before the runtime so a foreign member that itself depends on a runtime
+    // symbol can still be satisfied. Each archive resolves the undefined
+    // `extern "C"` symbols referenced by the compiled objects.
+    for archive_path in &options.link_archives {
+        let archive = read_user_archive(archive_path)
+            .map_err(CompileError::without_span)
+            .map_err(CompileErrors::from)?;
+        linker
+            .add_archive(archive)
+            .map_err(link_error)
+            .map_err(CompileErrors::from)?;
+    }
+
     // Add the runtime library
     let runtime = validate_runtime_archive(runtime_bytes, options.target)
         .map_err(link_error)
@@ -506,10 +537,25 @@ pub(crate) fn link_internal_with_warnings(
         .map_err(link_error)
         .map_err(CompileErrors::from)?;
 
-    // Link to executable
+    // Link to executable. An undefined symbol at this point is an unresolved
+    // `extern "C"` import (or a runtime gap); name the symbol and the archives
+    // that were searched (ADR-0064 C FFI).
     let executable = linker
         .link(entry_point)
-        .map_err(link_error)
+        .map_err(|err| match &err {
+            rue_linker::LinkError::UndefinedSymbol(symbol) => {
+                let mut searched = vec!["the bundled rue-runtime archive".to_string()];
+                for archive_path in &options.link_archives {
+                    searched.push(format!("`{}`", archive_path.display()));
+                }
+                CompileError::without_span(ErrorKind::LinkError(format!(
+                    "undefined symbol `{symbol}`: no supplied archive defines it \
+                     (searched {})",
+                    searched.join(", ")
+                )))
+            }
+            _ => link_error(err),
+        })
         .map_err(CompileErrors::from)?;
     info!(
         object_count = object_files.len(),
@@ -572,6 +618,12 @@ pub(crate) fn link_system_with_warnings(
     // Add object files
     for path in &temp_dir.obj_paths {
         cmd.arg(path);
+    }
+
+    // Add user-supplied static archives (`--link-archive`, ADR-0064 C FFI)
+    // before the runtime so the runtime can satisfy any dependency they pull.
+    for archive_path in &options.link_archives {
+        cmd.arg(archive_path);
     }
 
     // Add the runtime library
