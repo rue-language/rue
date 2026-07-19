@@ -37,8 +37,8 @@ use crate::diagnostic_attempt_store::{
 };
 use crate::typed_query_store::{
     AbortedQueryReason, AttemptExecution as QueryAttemptExecution, AttemptView,
-    QUERY_TERMINAL_RETENTION_LIMIT, TerminalHandle, TerminalKind, TypedEquivalentLookupFamily,
-    TypedQueryFamily, TypedQueryStore, TypedSecondaryLookupFamily,
+    QUERY_TERMINAL_RETENTION_LIMIT, TerminalKind, TypedEquivalentLookupFamily, TypedQueryFamily,
+    TypedQueryStore, TypedSecondaryLookupFamily,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -218,7 +218,13 @@ impl QueryAttemptIndex {
 }
 
 fn project_lifecycle(work: &mut FrontendQueryWork, attempt: &dyn AttemptView) {
-    let _ = (attempt.outcome(), attempt.dependencies(), attempt.work());
+    let _ = (
+        attempt.outcome(),
+        attempt.dependencies(),
+        attempt.runtime_observations(),
+        attempt.runtime_work(),
+        attempt.work(),
+    );
     work.calls += 1;
     match attempt.execution() {
         QueryAttemptExecution::Computed => work.executions += 1,
@@ -1717,7 +1723,9 @@ pub struct CompilerSession {
 /// dependency/reverse-dependency state only.
 #[derive(Debug)]
 struct FrontendQueryDatabase {
-    parse: TypedQueryStore<ParseQuery>,
+    /// Canonical Phase 1 execution substrate. The legacy stores below are
+    /// removed family-by-family as callers move through its selected-state shim.
+    revisioned: crate::revisioned_query_database::RevisionedQueryDatabase,
     import_plans: TypedQueryStore<ImportPlanQuery>,
     import_closures: TypedQueryStore<ImportClosureQuery>,
     import_diagnostics: TypedQueryStore<ImportDiagnosticQuery>,
@@ -1728,7 +1736,6 @@ struct FrontendQueryDatabase {
     manifests: TypedQueryStore<DependencyManifestQuery>,
     invalidation_plans: TypedQueryStore<InvalidationPlanQuery>,
     graph: crate::query_graph::QueryGraph,
-    parse_inputs: crate::query_graph::TypedLeafStore<ExactSourceInput>,
     import_plan_inputs: crate::query_graph::TypedLeafStore<ImportPlanQueryKey>,
     import_closure_inputs: crate::query_graph::TypedLeafStore<ImportClosureQueryKey>,
     source_inputs: crate::query_graph::TypedLeafStore<ExactSourceInput>,
@@ -1741,7 +1748,7 @@ struct FrontendQueryDatabase {
 impl Default for FrontendQueryDatabase {
     fn default() -> Self {
         Self {
-            parse: TypedQueryStore::default(),
+            revisioned: crate::revisioned_query_database::RevisionedQueryDatabase::default(),
             import_plans: TypedQueryStore::default(),
             import_closures: TypedQueryStore::default(),
             import_diagnostics: TypedQueryStore::default(),
@@ -1752,7 +1759,6 @@ impl Default for FrontendQueryDatabase {
             manifests: TypedQueryStore::default(),
             invalidation_plans: TypedQueryStore::default(),
             graph: crate::query_graph::QueryGraph::default(),
-            parse_inputs: crate::query_graph::TypedLeafStore::new(QUERY_TERMINAL_RETENTION_LIMIT),
             import_plan_inputs: crate::query_graph::TypedLeafStore::new(
                 QUERY_TERMINAL_RETENTION_LIMIT,
             ),
@@ -1839,21 +1845,29 @@ struct DependencyManifestCacheEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ParseQueryKey {
+pub(crate) struct ParseQueryKey {
     source: ExactSourceInput,
     presentation: DiagnosticAttemptProvenance,
 }
 
+impl ParseQueryKey {
+    pub(crate) fn source(&self) -> &ExactSourceInput {
+        &self.source
+    }
+}
+
 #[derive(Debug, Clone)]
-struct ParseQueryRecord {
+pub(crate) struct ParseQueryRecord {
     key: ParseQueryKey,
     snapshot: SourceSnapshot,
     result: Result<Arc<ParsedProgram>, CompileErrors>,
     diagnostics: Arc<FrontendDiagnosticSnapshot>,
+    work: ParsedModulesWork,
+    invalidation: ParseInvalidationSummary,
 }
 
 #[derive(Debug)]
-struct ParseQuery;
+pub(crate) struct ParseQuery;
 
 impl TypedQueryFamily for ParseQuery {
     type Key = ParseQueryKey;
@@ -1901,32 +1915,6 @@ impl TypedQueryFamily for ParseQuery {
             && record.diagnostics.source_revision() == &record.key.source.revision
             && record.diagnostics.identity() == &FrontendDiagnosticIdentity::Syntax
             && record.diagnostics.provenance == record.key.presentation
-    }
-}
-
-#[derive(Debug, Clone)]
-struct ParsedProgramLookup {
-    source: ExactSourceInput,
-    program: Arc<ParsedProgram>,
-}
-
-impl PartialEq for ParsedProgramLookup {
-    fn eq(&self, other: &Self) -> bool {
-        self.source == other.source && Arc::ptr_eq(&self.program, &other.program)
-    }
-}
-
-impl Eq for ParsedProgramLookup {}
-
-impl TypedSecondaryLookupFamily for ParseQuery {
-    type SecondaryKey = ParsedProgramLookup;
-
-    fn matches_secondary(record: &Self::Record, key: &Self::SecondaryKey) -> bool {
-        record.key.source == key.source
-            && record
-                .result
-                .as_ref()
-                .is_ok_and(|program| Arc::ptr_eq(program, &key.program))
     }
 }
 
@@ -2533,7 +2521,7 @@ session_query_metrics_family!(
 
 /// Explicit compiler inputs read by a terminal attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ExactSourceInput {
+pub(crate) struct ExactSourceInput {
     revision: SourceRevision,
     metadata: crate::SourceMetadata,
 }
@@ -3651,7 +3639,7 @@ impl CompilerSession {
         let diagnostics = self.diagnostics.retention_metrics();
 
         let stores = [
-            self.queries.parse.retention(&self.queries.graph),
+            self.queries.revisioned.parse_retention(),
             self.queries.import_plans.retention(&self.queries.graph),
             self.queries.import_closures.retention(&self.queries.graph),
             self.queries
@@ -3668,7 +3656,7 @@ impl CompilerSession {
         ];
 
         let mut pinned_attempts = BTreeSet::new();
-        pinned_attempts.extend(self.queries.parse.origin_attempt_ids());
+        pinned_attempts.extend(self.queries.revisioned.parse.origin_attempt_ids());
         pinned_attempts.extend(self.queries.import_plans.origin_attempt_ids());
         pinned_attempts.extend(self.queries.import_closures.origin_attempt_ids());
         pinned_attempts.extend(self.queries.import_diagnostics.origin_attempt_ids());
@@ -3697,7 +3685,7 @@ impl CompilerSession {
             validation_tombstones: stores.iter().map(|store| store.tombstones).sum(),
             graph_retained_disappeared_nodes: self.queries.graph.retained_disappeared_count(),
             query_evictions: stores.iter().map(|store| store.evictions).sum(),
-            aborted_query_attempts: self.queries.parse.aborted_len()
+            aborted_query_attempts: self.queries.revisioned.parse.retained_aborted_len()
                 + self.queries.import_plans.aborted_len()
                 + self.queries.import_closures.aborted_len()
                 + self.queries.import_diagnostics.aborted_len()
@@ -3728,9 +3716,9 @@ impl CompilerSession {
         }
         self.select_diagnostic_presentation(None);
         let provenance = self.syntax_diagnostic_provenance();
-        let (key, dependency, publish) = self.select_parse_query(snapshot, &provenance);
-        let update = self.prepare_parse_update(snapshot, &publish, parse_canonical_snapshot);
-        self.finish_update(snapshot, update, key, dependency, publish)
+        self.run_parse_update(snapshot, provenance, |baseline| {
+            parse_canonical_snapshot(snapshot, baseline)
+        })
     }
 
     /// Publish a snapshot while retaining its caller-selected presentation order.
@@ -3753,9 +3741,9 @@ impl CompilerSession {
                 .collect(),
         ));
         let provenance = self.syntax_diagnostic_provenance();
-        let (key, dependency, publish) = self.select_parse_query(snapshot, &provenance);
-        let update = self.prepare_parse_update(snapshot, &publish, parse_presentation_snapshot);
-        self.finish_update(snapshot, update, key, dependency, publish)
+        self.run_parse_update(snapshot, provenance, |baseline| {
+            parse_presentation_snapshot(snapshot, baseline)
+        })
     }
 
     fn adopt_discovery_program_for_presentation(
@@ -3775,38 +3763,14 @@ impl CompilerSession {
                 .collect(),
         ));
         let provenance = self.syntax_diagnostic_provenance();
-        let (key, dependency, publish) = self.select_parse_query(snapshot, &provenance);
-        let update = if let Some((record, _)) = &publish {
-            crate::CanonicalParseUpdate::reused(
-                record.result.clone(),
-                self.parse_invalidation(snapshot),
-            )
-        } else {
-            let baseline = self.parse_baseline();
-            adopt_exact_parsed_program(snapshot, baseline.as_deref(), program, work)
-        };
-        self.finish_update(snapshot, update, key, dependency, publish)
-    }
-
-    fn prepare_parse_update(
-        &self,
-        snapshot: &SourceSnapshot,
-        reused: &Option<(ParseQueryRecord, TerminalHandle<ParseQuery>)>,
-        parse: fn(&SourceSnapshot, Option<&ParsedProgram>) -> crate::CanonicalParseUpdate,
-    ) -> crate::CanonicalParseUpdate {
-        if let Some((record, _)) = reused {
-            crate::CanonicalParseUpdate::reused(
-                record.result.clone(),
-                self.parse_invalidation(snapshot),
-            )
-        } else {
-            let baseline = self.parse_baseline();
-            parse(snapshot, baseline.as_deref())
-        }
+        self.run_parse_update(snapshot, provenance, |baseline| {
+            adopt_exact_parsed_program(snapshot, baseline, program, work)
+        })
     }
 
     fn parse_baseline(&self) -> Option<Arc<ParsedProgram>> {
         self.queries
+            .revisioned
             .parse
             .last_good_record()
             .and_then(|record| record.result.as_ref().ok())
@@ -3830,31 +3794,94 @@ impl CompilerSession {
         self.batch_diagnostic_order = order;
     }
 
-    fn select_parse_query(
+    fn execute_parse_query(
         &mut self,
         snapshot: &SourceSnapshot,
-        presentation: &DiagnosticAttemptProvenance,
+        presentation: DiagnosticAttemptProvenance,
+        attempt_id: AttemptId,
+        compute: impl FnOnce(Option<&ParsedProgram>) -> crate::CanonicalParseUpdate,
     ) -> (
-        ParseQueryKey,
-        crate::query_graph::ObservedDependency,
-        Option<(ParseQueryRecord, TerminalHandle<ParseQuery>)>,
+        ParseQueryRecord,
+        Arc<dyn AttemptView>,
+        QueryAttemptExecution,
+        ParsedModulesWork,
+        ParseInvalidationSummary,
     ) {
         let source = ExactSourceInput::new(snapshot);
-        let dependency = self
-            .queries
-            .parse_inputs
-            .publish_retained(&mut self.queries.graph, source.clone());
         let key = ParseQueryKey {
-            source,
-            presentation: presentation.clone(),
+            source: source.clone(),
+            presentation,
         };
-        let attempt_id = self.metrics.allocate_attempt_id();
-        let reused = self
-            .queries
-            .parse
-            .request_selected(&mut self.queries.graph, key.clone(), attempt_id.0)
-            .unwrap_or_else(query_control_error);
-        (key, dependency, reused)
+        let revision = self.queries.revisioned.source_revision(&source);
+        let prepared = self.queries.revisioned.parse.prepare(key.clone());
+        let baseline = self.parse_baseline();
+        let attempt = prepared.execute(revision, attempt_id, |context| {
+            context.input(rue_query::InputIdentity::new(
+                crate::revisioned_query_database::RevisionedQueryDatabase::SOURCE_INPUT,
+                "current",
+            ))?;
+            let update = compute(baseline.as_deref());
+            let work = update.work();
+            let invalidation = update.invalidation().clone();
+            let result = update.into_result();
+            // Freeze diagnostics privately with the query output. Session
+            // selection and metrics happen only after atomic publication.
+            let diagnostics = Arc::new(FrontendDiagnosticSnapshot {
+                source: snapshot.clone(),
+                stage: FrontendDiagnosticIdentity::Syntax,
+                provenance: key.presentation.clone(),
+                errors: result
+                    .as_ref()
+                    .err()
+                    .map_or_else(|| Arc::from([]), |errors| errors.as_slice().to_vec().into()),
+                warnings: Arc::from([]),
+            });
+            Ok(ParseQueryRecord {
+                key,
+                snapshot: snapshot.clone(),
+                result,
+                diagnostics,
+                work,
+                invalidation,
+            })
+        });
+        self.queries.revisioned.select_parse(&attempt);
+        let terminal = attempt
+            .terminal()
+            .unwrap_or_else(|| panic!("parse query aborted: {:?}", attempt.abort()));
+        let record = match terminal.outcome() {
+            rue_query::QueryOutcome::Success(record) => record.clone(),
+            rue_query::QueryOutcome::Failure(_) => unreachable!("parse retains typed records"),
+        };
+        let execution = match attempt.execution() {
+            rue_query::RequestExecution::Computed => {
+                self.metrics
+                    .diagnostic_publication(self.diagnostics.latest().is_some());
+                QueryAttemptExecution::Computed
+            }
+            rue_query::RequestExecution::Reused | rue_query::RequestExecution::Joined => {
+                self.reuse_diagnostics(record.diagnostics.clone());
+                QueryAttemptExecution::Reused
+            }
+            rue_query::RequestExecution::Aborted => unreachable!(),
+        };
+        let work = if execution == QueryAttemptExecution::Computed {
+            record.work
+        } else {
+            ParsedModulesWork::default()
+        };
+        let invalidation = if execution == QueryAttemptExecution::Computed {
+            record.invalidation.clone()
+        } else {
+            self.parse_invalidation(snapshot)
+        };
+        let view = self.queries.revisioned.parse.attempt_view(
+            attempt_id,
+            attempt,
+            QueryStructuralWork::Parse(work),
+        );
+        self.diagnostics.select(view.clone());
+        (record, view, execution, work, invalidation)
     }
 
     fn parse_staging_snapshot(
@@ -3868,52 +3895,16 @@ impl CompilerSession {
             .collect::<Vec<_>>();
         self.select_diagnostic_presentation(Some(order.clone()));
         let presentation = DiagnosticAttemptProvenance::Presentation(order.into());
-        let (key, dependency, reused) = self.select_parse_query(snapshot, &presentation);
+        let attempt_id = guard.id;
+        let (record, view, execution, work, _invalidation) =
+            self.execute_parse_query(snapshot, presentation, attempt_id, |baseline| {
+                parse_presentation_snapshot(snapshot, baseline)
+            });
         guard.started();
-        let update = self.prepare_parse_update(snapshot, &reused, parse_presentation_snapshot);
-        let work = update.work();
-        let result = update.into_result();
-        let diagnostics = if let Some((record, _)) = &reused {
-            self.reuse_diagnostics(record.diagnostics.clone());
-            record.diagnostics.clone()
-        } else {
-            self.publish_diagnostics(
-                snapshot,
-                FrontendDiagnosticIdentity::Syntax,
-                result.as_ref().err(),
-                &[],
-            )
-        };
-        guard.observe([dependency]);
-        guard.attach_diagnostics(diagnostics.clone());
-        if let Some((_, handle)) = reused {
-            self.diagnostics.select(handle.as_view());
-            guard.bind(handle.as_view());
-        } else {
-            let handle = self
-                .queries
-                .parse
-                .publish_selected_with_work(
-                    &mut self.queries.graph,
-                    ParseQueryRecord {
-                        key,
-                        snapshot: snapshot.clone(),
-                        result: result.clone(),
-                        diagnostics,
-                    },
-                    [dependency],
-                    QueryStructuralWork::Parse(work),
-                )
-                .unwrap_or_else(query_control_error);
-            self.diagnostics.select(handle.as_view());
-            guard.bind(handle.as_view());
-        }
-        guard.finish(
-            QueryAttemptExecution::Computed,
-            None,
-            &result,
-            QueryStructuralWork::None,
-        );
+        let result = record.result.clone();
+        guard.attach_diagnostics(record.diagnostics.clone());
+        guard.bind(view);
+        guard.finish(execution, None, &result, QueryStructuralWork::None);
         self.metrics.synchronize();
         (result, work)
     }
@@ -4047,61 +4038,23 @@ impl CompilerSession {
         }
     }
 
-    fn finish_update(
+    fn run_parse_update(
         &mut self,
         snapshot: &SourceSnapshot,
-        update: crate::CanonicalParseUpdate,
-        key: ParseQueryKey,
-        dependency: crate::query_graph::ObservedDependency,
-        reused: Option<(ParseQueryRecord, TerminalHandle<ParseQuery>)>,
+        presentation: DiagnosticAttemptProvenance,
+        compute: impl FnOnce(Option<&ParsedProgram>) -> crate::CanonicalParseUpdate,
     ) -> CompilerSessionUpdate {
         let mut guard = self.metrics.begin_unprojected("parse");
+        let attempt_id = guard.id;
+        let (record, view, execution, parse_work, invalidation) =
+            self.execute_parse_query(snapshot, presentation, attempt_id, compute);
         guard.started();
-        let parse_work = update.work();
-        let invalidation = update.invalidation().clone();
         self.metrics.update(parse_work, invalidation.clone());
-        let result = update.into_result();
-        let diagnostics = if let Some((record, _)) = &reused {
-            self.reuse_diagnostics(record.diagnostics.clone());
-            record.diagnostics.clone()
-        } else {
-            self.publish_diagnostics(
-                snapshot,
-                FrontendDiagnosticIdentity::Syntax,
-                result.as_ref().err(),
-                &[],
-            )
-        };
-        guard.observe([dependency]);
+        let result = record.result.clone();
+        let diagnostics = record.diagnostics.clone();
         guard.attach_diagnostics(diagnostics.clone());
-        if let Some((_, handle)) = reused {
-            self.diagnostics.select(handle.as_view());
-            guard.bind(handle.as_view());
-        } else {
-            let handle = self
-                .queries
-                .parse
-                .publish_selected_with_work(
-                    &mut self.queries.graph,
-                    ParseQueryRecord {
-                        key,
-                        snapshot: snapshot.clone(),
-                        result: result.clone(),
-                        diagnostics: diagnostics.clone(),
-                    },
-                    [dependency],
-                    QueryStructuralWork::Parse(parse_work),
-                )
-                .unwrap_or_else(query_control_error);
-            self.diagnostics.select(handle.as_view());
-            guard.bind(handle.as_view());
-        }
-        guard.finish(
-            QueryAttemptExecution::Computed,
-            None,
-            &result,
-            QueryStructuralWork::None,
-        );
+        guard.bind(view);
+        guard.finish(execution, None, &result, QueryStructuralWork::None);
         self.metrics.synchronize();
         match result {
             Ok(candidate) => {
@@ -4365,26 +4318,14 @@ impl CompilerSession {
             .source_inputs
             .selected(&self.queries.graph)
             .expect("merge retains its exact source input");
-        let parse_lookup = ParsedProgramLookup {
-            source: ExactSourceInput::new(
-                self.published_snapshot
-                    .as_ref()
-                    .expect("a published parsed program retains its exact source snapshot"),
-            ),
-            program: parsed.clone(),
-        };
-        let parse_dependency = self
-            .queries
-            .parse
-            .get_secondary_with_handle(&parse_lookup)
-            .map(|(_, handle)| handle.observed())
-            .expect("merge consumes the successful parse terminal for its published source");
-        guard.observe([source_dependency, parse_dependency]);
+        // The runtime parse terminal already validated this exact leaf. Merge
+        // remains on the compatibility projection until its family migrates.
+        guard.observe([source_dependency]);
         if let Some(entry) = self.queries.merge.publish_selected_equivalent(
             &mut self.queries.graph,
             key.clone(),
             &key.source.revision,
-            [source_dependency, parse_dependency],
+            [source_dependency],
         ) {
             *execution = QueryAttemptExecution::Reused;
             *origin = Some(
@@ -4401,7 +4342,7 @@ impl CompilerSession {
                 .expect("equivalent merge publication retains its attempt");
             self.diagnostics.select(handle.as_view());
             guard.bind(handle.as_view());
-            guard.observe([source_dependency, parse_dependency]);
+            guard.observe([source_dependency]);
             guard.attach_diagnostics(entry.diagnostics.clone());
             self.reuse_diagnostics(entry.diagnostics.clone());
             return entry.result;
@@ -4471,7 +4412,7 @@ impl CompilerSession {
                     result: merged.clone(),
                     diagnostics,
                 },
-                [source_dependency, parse_dependency],
+                [source_dependency],
                 guard.structural(),
                 *execution,
             )
@@ -8411,7 +8352,9 @@ mod tests {
             crate::typed_query_store::AttemptOutcomeKind::Aborted(AbortedQueryReason::Canceled)
         );
         assert_eq!(attempt.attempt.execution(), QueryAttemptExecution::Computed);
-        assert_eq!(attempt.attempt.dependencies().len(), 2);
+        // Parse is runtime-owned; the legacy Merge adapter observes only the
+        // exact source leaf rather than recreating a peer parse graph node.
+        assert_eq!(attempt.attempt.dependencies().len(), 1);
         assert!(attempt.attempt.diagnostics().is_none());
         let QueryStructuralWork::Merge(work) = attempt.attempt.work() else {
             panic!("canceled merge must retain exact prefix work");

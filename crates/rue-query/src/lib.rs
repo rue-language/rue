@@ -3,9 +3,8 @@
 //! This crate owns execution mechanics only. Compiler query families keep
 //! their typed keys, results, equality, and algorithms outside the runtime.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
-use std::hash::Hash;
 use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::rc::Rc;
@@ -15,9 +14,48 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
 
 /// A logical key suitable for a retained query family.
-pub trait QueryKey: Clone + Eq + Hash + Send + Sync + 'static {
-    /// A stable, collision-free textual identity within the family.
+pub trait QueryKey: Clone + Eq + Send + Sync + 'static {
+    /// A deterministic user-visible identity within the family.
+    ///
+    /// This text is presentation only and may collide. Exact `Self::eq`
+    /// remains authoritative for memo-node lookup.
     fn stable_identity(&self) -> String;
+}
+
+/// Collision-free identity of one immutable input leaf.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct InputIdentity {
+    family: Arc<str>,
+    key: Arc<str>,
+}
+
+impl InputIdentity {
+    /// Creates a family/key input identity.
+    pub fn new(family: impl Into<Arc<str>>, key: impl Into<Arc<str>>) -> Self {
+        Self {
+            family: family.into(),
+            key: key.into(),
+        }
+    }
+
+    /// Stable input-family name.
+    pub fn family(&self) -> &str {
+        &self.family
+    }
+
+    /// Stable key within the input family.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+}
+
+/// Exact value stamp of one leaf in an immutable input revision.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InputObservation {
+    /// Collision-free input identity.
+    pub input: InputIdentity,
+    /// Family-owned exact value stamp. This is not a memo-node identity.
+    pub stamp: u64,
 }
 
 /// An immutable input revision pinned by one request.
@@ -44,11 +82,17 @@ impl Revision {
     }
 }
 
-/// Stable identity of one logical memo node.
+/// Canonical user-visible identity of one logical memo node.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeIdentity {
     family: Arc<str>,
     key: Arc<str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ExactNodeIdentity {
+    display: NodeIdentity,
+    incarnation: u64,
 }
 
 impl NodeIdentity {
@@ -166,10 +210,20 @@ pub enum QueryOutcome<V> {
     Failure(QueryFailure),
 }
 
+/// Family-owned semantic classification of a terminal record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryTerminalKind {
+    /// A successful family record.
+    Success,
+    /// A deterministic family failure record.
+    Failure,
+}
+
 /// Private computation output awaiting atomic publication.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryOutput<V> {
     outcome: QueryOutcome<V>,
+    kind: QueryTerminalKind,
     diagnostics: Vec<QueryDiagnostic>,
     work: Vec<WorkItem>,
 }
@@ -179,6 +233,7 @@ impl<V> QueryOutput<V> {
     pub fn success(value: V) -> Self {
         Self {
             outcome: QueryOutcome::Success(value),
+            kind: QueryTerminalKind::Success,
             diagnostics: Vec::new(),
             work: Vec::new(),
         }
@@ -188,6 +243,7 @@ impl<V> QueryOutput<V> {
     pub fn failure(failure: QueryFailure) -> Self {
         Self {
             outcome: QueryOutcome::Failure(failure),
+            kind: QueryTerminalKind::Failure,
             diagnostics: Vec::new(),
             work: Vec::new(),
         }
@@ -204,6 +260,13 @@ impl<V> QueryOutput<V> {
         self.work = work;
         self
     }
+
+    /// Applies the typed family's semantic success/failure classification.
+    /// This is useful when both variants retain the same typed record shape.
+    pub fn with_terminal_kind(mut self, kind: QueryTerminalKind) -> Self {
+        self.kind = kind;
+        self
+    }
 }
 
 /// An immutable published terminal.
@@ -214,15 +277,18 @@ pub struct QueryTerminal<V> {
     node_incarnation: u64,
     revision: Revision,
     stamp: u64,
+    origin_request: u64,
     outcome: QueryOutcome<V>,
+    kind: QueryTerminalKind,
     diagnostics: Arc<[QueryDiagnostic]>,
     work: Arc<[(Arc<str>, u64)]>,
     dependencies: Arc<[Observation]>,
+    inputs: Arc<[InputObservation]>,
     pins: AtomicUsize,
 }
 
 impl<V> QueryTerminal<V> {
-    /// Logical node which owns this attempt.
+    /// Canonical display identity of the node which owns this attempt.
     pub fn node(&self) -> &NodeIdentity {
         &self.node
     }
@@ -237,9 +303,19 @@ impl<V> QueryTerminal<V> {
         self.stamp
     }
 
+    /// Runtime request which originally computed this immutable terminal.
+    pub fn origin_request_id(&self) -> u64 {
+        self.origin_request
+    }
+
     /// Canonical success or deterministic failure.
     pub fn outcome(&self) -> &QueryOutcome<V> {
         &self.outcome
+    }
+
+    /// Family-owned semantic success/failure classification.
+    pub fn kind(&self) -> QueryTerminalKind {
+        self.kind
     }
 
     /// Deterministically sorted diagnostics with current positions.
@@ -256,6 +332,11 @@ impl<V> QueryTerminal<V> {
     pub fn dependencies(&self) -> &[Observation] {
         &self.dependencies
     }
+
+    /// Exact input leaves read directly by the computing body.
+    pub fn inputs(&self) -> &[InputObservation] {
+        &self.inputs
+    }
 }
 
 /// A non-terminal query-control result.
@@ -267,6 +348,181 @@ pub enum QueryAbort {
     Cycle(Arc<[NodeIdentity]>),
     /// The family belongs to a different runtime.
     ForeignRuntime,
+    /// The requested immutable revision has not been published or was retired.
+    UnpublishedRevision(Revision),
+    /// A query requested a leaf absent from its pinned immutable revision.
+    MissingInput(InputIdentity),
+}
+
+/// How one immutable request attempt reached its result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestExecution {
+    /// This request owned and ran the query body.
+    Computed,
+    /// This request reused a validated retained terminal.
+    Reused,
+    /// This request parked behind the compatible exact-key owner.
+    Joined,
+    /// This request ended without publishing a terminal.
+    Aborted,
+}
+
+/// Runtime-owned immutable record of one nested query request.
+///
+/// The value remains owned by its typed terminal. This type-erased lifecycle
+/// is sufficient for diagnostics, metrics, and provenance without forging a
+/// second typed memo record in a compatibility adapter.
+#[derive(Debug, Clone)]
+pub struct NestedQueryAttempt {
+    id: u64,
+    node: NodeIdentity,
+    node_incarnation: Option<u64>,
+    origin_request: u64,
+    execution: RequestExecution,
+    terminal_revision: Option<Revision>,
+    terminal_stamp: Option<u64>,
+    abort: Option<QueryAbort>,
+    dependencies: Arc<[Observation]>,
+    inputs: Arc<[InputObservation]>,
+    work: Arc<[(Arc<str>, u64)]>,
+}
+
+impl NestedQueryAttempt {
+    /// Runtime-local identity of this nested request.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Display identity of the node requested by this lifecycle.
+    pub fn node(&self) -> &NodeIdentity {
+        &self.node
+    }
+
+    /// Opaque exact node incarnation when the request returned a terminal.
+    pub fn node_incarnation(&self) -> Option<u64> {
+        self.node_incarnation
+    }
+
+    /// Caller-owned origin frozen into a computed terminal, or inherited from
+    /// the terminal reused or joined by this request.
+    pub fn origin_request_id(&self) -> u64 {
+        self.origin_request
+    }
+
+    /// Computed, reused, joined, or aborted lifecycle classification.
+    pub fn execution(&self) -> RequestExecution {
+        self.execution
+    }
+
+    /// Revision of the terminal returned by this request.
+    pub fn terminal_revision(&self) -> Option<Revision> {
+        self.terminal_revision
+    }
+
+    /// Red/green stamp of the terminal returned by this request.
+    pub fn terminal_stamp(&self) -> Option<u64> {
+        self.terminal_stamp
+    }
+
+    /// Non-terminal control result, present exactly for aborted attempts.
+    pub fn abort(&self) -> Option<&QueryAbort> {
+        self.abort.as_ref()
+    }
+
+    /// Exact dependency prefix observed by this nested request.
+    pub fn dependencies(&self) -> &[Observation] {
+        &self.dependencies
+    }
+
+    /// Exact direct-input prefix observed by this nested request.
+    pub fn inputs(&self) -> &[InputObservation] {
+        &self.inputs
+    }
+
+    /// Runtime-owned work prefix for this nested request.
+    pub fn work(&self) -> &[(Arc<str>, u64)] {
+        &self.work
+    }
+}
+
+/// Runtime-owned immutable record of one top-level query request.
+#[derive(Debug)]
+pub struct QueryRequestAttempt<V> {
+    id: u64,
+    origin_request: u64,
+    execution: RequestExecution,
+    terminal: Option<Arc<QueryTerminal<V>>>,
+    abort: Option<QueryAbort>,
+    dependencies: Arc<[Observation]>,
+    inputs: Arc<[InputObservation]>,
+    work: Arc<[(Arc<str>, u64)]>,
+    nested_attempts: Arc<[NestedQueryAttempt]>,
+}
+
+impl<V> QueryRequestAttempt<V> {
+    /// Session-local request identity.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Caller-owned origin identity frozen by the runtime for this request.
+    pub fn origin_request_id(&self) -> u64 {
+        self.origin_request
+    }
+
+    /// Computed, reused, joined, or aborted lifecycle classification.
+    pub fn execution(&self) -> RequestExecution {
+        self.execution
+    }
+
+    /// Published terminal, absent for a non-terminal abort.
+    pub fn terminal(&self) -> Option<&Arc<QueryTerminal<V>>> {
+        self.terminal.as_ref()
+    }
+
+    /// Non-terminal control result, present exactly for aborted attempts.
+    pub fn abort(&self) -> Option<&QueryAbort> {
+        self.abort.as_ref()
+    }
+
+    /// Exact dependency prefix observed by this request.
+    pub fn dependencies(&self) -> &[Observation] {
+        &self.dependencies
+    }
+
+    /// Exact input prefix observed directly, or propagated through an aborted
+    /// nested request which had no terminal dependency to represent it.
+    pub fn inputs(&self) -> &[InputObservation] {
+        &self.inputs
+    }
+
+    /// Exact structural-work prefix owned by this request.
+    ///
+    /// Reuse and join attempts carry no historical work. Computed and aborted
+    /// attempts retain work performed by their own task before termination.
+    pub fn work(&self) -> &[(Arc<str>, u64)] {
+        &self.work
+    }
+
+    /// Runtime-owned nested request ledger in deterministic completion order.
+    /// Descendants precede the parent nested request which demanded them.
+    pub fn nested_attempts(&self) -> &[NestedQueryAttempt] {
+        &self.nested_attempts
+    }
+
+    /// Origin terminal revision for reuse/join provenance.
+    pub fn origin_revision(&self) -> Option<Revision> {
+        self.terminal.as_ref().map(|terminal| terminal.revision())
+    }
+
+    /// Converts this attempt to the legacy terminal-or-abort call shape.
+    pub fn into_result(self) -> Result<Arc<QueryTerminal<V>>, QueryAbort> {
+        match (self.terminal, self.abort) {
+            (Some(terminal), None) => Ok(terminal),
+            (None, Some(abort)) => Err(abort),
+            _ => unreachable!("request attempt has exactly one outcome"),
+        }
+    }
 }
 
 /// Cooperative request cancellation.
@@ -342,6 +598,10 @@ pub struct RuntimeMetrics {
     pub peak_active_bodies: u64,
     /// Times a parked joiner released its permit.
     pub donated_permits: u64,
+    /// Immutable revision views currently retained by the runtime.
+    pub retained_revisions: u64,
+    /// Configured immutable-revision view bound.
+    pub revision_limit: u64,
 }
 
 /// Bounded retained ownership for one query family.
@@ -387,6 +647,8 @@ impl Metrics {
             retained_terminals: self.retained_terminals.load(Ordering::Relaxed),
             peak_active_bodies: self.peak_active_bodies.load(Ordering::Relaxed),
             donated_permits: self.donated_permits.load(Ordering::Relaxed),
+            retained_revisions: 0,
+            revision_limit: REVISION_RETENTION_LIMIT as u64,
         }
     }
 
@@ -412,12 +674,47 @@ struct RuntimeCore {
     permits: PermitBudget,
     wait_graph: Mutex<BTreeMap<TaskId, WaitEdge>>,
     family_names: Mutex<BTreeSet<Arc<str>>>,
+    revisions: Mutex<RevisionStore>,
+    nodes: Mutex<BTreeMap<u64, Weak<dyn ErasedNode>>>,
     next_task: AtomicU64,
     next_family: AtomicU64,
     next_node: AtomicU64,
     metrics: Metrics,
     #[cfg(test)]
     test_events: TestEvents,
+}
+
+const REVISION_RETENTION_LIMIT: usize = 64;
+
+#[derive(Debug)]
+struct RevisionStore {
+    entries: BTreeMap<u64, RevisionEntry>,
+    retired_through: u64,
+}
+
+#[derive(Debug)]
+struct RevisionEntry {
+    revision: Revision,
+    inputs: Arc<BTreeMap<InputIdentity, u64>>,
+    active_requests: usize,
+}
+
+struct RevisionLease {
+    core: Arc<RuntimeCore>,
+    revision: Revision,
+}
+
+impl Drop for RevisionLease {
+    fn drop(&mut self) {
+        let mut revisions = lock(&self.core.revisions);
+        let entry = revisions
+            .entries
+            .get_mut(&self.revision.id)
+            .filter(|entry| entry.revision == self.revision)
+            .expect("active request pins its published revision");
+        entry.active_requests -= 1;
+        self.core.enforce_revision_retention(&mut revisions);
+    }
 }
 
 #[cfg(test)]
@@ -438,6 +735,11 @@ impl QueryRuntime {
                 permits: PermitBudget::new(max_concurrency),
                 wait_graph: Mutex::new(BTreeMap::new()),
                 family_names: Mutex::new(BTreeSet::new()),
+                revisions: Mutex::new(RevisionStore {
+                    entries: BTreeMap::new(),
+                    retired_through: 0,
+                }),
+                nodes: Mutex::new(BTreeMap::new()),
                 next_task: AtomicU64::new(1),
                 next_family: AtomicU64::new(1),
                 next_node: AtomicU64::new(1),
@@ -458,6 +760,89 @@ impl QueryRuntime {
         K: QueryKey,
         V: Clone + Eq + Send + Sync + 'static,
     {
+        self.family_with_equality(stable_name, retention_limit, PartialEq::eq)
+    }
+
+    /// Creates a typed family with family-owned canonical value equality.
+    ///
+    /// Compiler families use this when their retained success values do not
+    /// implement blanket `Eq`, or when only a canonical projection participates
+    /// in red/green publication.
+    pub fn family_with_equality<K, V>(
+        &self,
+        stable_name: impl Into<Arc<str>>,
+        retention_limit: usize,
+        value_equal: fn(&V, &V) -> bool,
+    ) -> Result<QueryFamily<K, V>, FamilyError>
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+    {
+        self.family_with_optional_evaluator(stable_name, retention_limit, value_equal, None)
+    }
+
+    /// Creates a typed family with a canonical family-owned evaluator.
+    ///
+    /// Registered evaluators can be demanded by dependency validation from an
+    /// exact retained key. They therefore support root-only red propagation;
+    /// no per-request `FnOnce` is retained or reconstructed.
+    pub fn family_with_evaluator<K, V, E>(
+        &self,
+        stable_name: impl Into<Arc<str>>,
+        retention_limit: usize,
+        evaluator: E,
+    ) -> Result<QueryFamily<K, V>, FamilyError>
+    where
+        K: QueryKey,
+        V: Clone + Eq + Send + Sync + 'static,
+        E: Fn(&QueryContext, &QueryFamily<K, V>, &K) -> Result<QueryOutput<V>, QueryAbort>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.family_with_equality_and_evaluator(
+            stable_name,
+            retention_limit,
+            PartialEq::eq,
+            evaluator,
+        )
+    }
+
+    /// Creates a typed family with family-owned equality and evaluator.
+    pub fn family_with_equality_and_evaluator<K, V, E>(
+        &self,
+        stable_name: impl Into<Arc<str>>,
+        retention_limit: usize,
+        value_equal: fn(&V, &V) -> bool,
+        evaluator: E,
+    ) -> Result<QueryFamily<K, V>, FamilyError>
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+        E: Fn(&QueryContext, &QueryFamily<K, V>, &K) -> Result<QueryOutput<V>, QueryAbort>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.family_with_optional_evaluator(
+            stable_name,
+            retention_limit,
+            value_equal,
+            Some(Arc::new(evaluator)),
+        )
+    }
+
+    fn family_with_optional_evaluator<K, V>(
+        &self,
+        stable_name: impl Into<Arc<str>>,
+        retention_limit: usize,
+        value_equal: fn(&V, &V) -> bool,
+        evaluator: Option<Arc<FamilyEvaluator<K, V>>>,
+    ) -> Result<QueryFamily<K, V>, FamilyError>
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+    {
         let name = stable_name.into();
         if name.is_empty() {
             return Err(FamilyError::EmptyName);
@@ -474,13 +859,60 @@ impl QueryRuntime {
                     family: self.core.next_family.fetch_add(1, Ordering::Relaxed),
                 },
                 retention_limit,
-                nodes: Mutex::new(HashMap::new()),
+                value_equal,
+                evaluator,
+                nodes: Mutex::new(Vec::new()),
                 retention: Mutex::new(VecDeque::new()),
                 retained_count: AtomicUsize::new(0),
                 retained_nodes: AtomicUsize::new(0),
                 retained_revisions: Mutex::new(BTreeMap::new()),
             }),
         })
+    }
+
+    /// Publishes the complete immutable leaf view for one revision.
+    ///
+    /// Re-publishing the same view is idempotent. A different view for an
+    /// existing revision is rejected, so a pinned query can never observe a
+    /// mutable input revision.
+    pub fn publish_revision(
+        &self,
+        revision: Revision,
+        inputs: impl IntoIterator<Item = (InputIdentity, u64)>,
+    ) -> Result<(), RevisionError> {
+        let mut exact = BTreeMap::new();
+        for (input, stamp) in inputs {
+            if let Some(previous) = exact.insert(input.clone(), stamp)
+                && previous != stamp
+            {
+                return Err(RevisionError::ConflictingInput(input));
+            }
+        }
+        let inputs = Arc::new(exact);
+        let mut revisions = lock(&self.core.revisions);
+        match revisions.entries.get(&revision.id) {
+            Some(previous)
+                if previous.revision == revision && previous.inputs.as_ref() == inputs.as_ref() =>
+            {
+                Ok(())
+            }
+            Some(_) => Err(RevisionError::AlreadyPublished(revision)),
+            None => {
+                if revision.id <= revisions.retired_through {
+                    return Err(RevisionError::Retired(revision));
+                }
+                revisions.entries.insert(
+                    revision.id,
+                    RevisionEntry {
+                        revision,
+                        inputs,
+                        active_requests: 0,
+                    },
+                );
+                self.core.enforce_revision_retention(&mut revisions);
+                Ok(())
+            }
+        }
     }
 
     /// Executes or reuses one top-level query in a newly allocated task.
@@ -494,26 +926,200 @@ impl QueryRuntime {
     ) -> Result<Arc<QueryTerminal<V>>, QueryAbort>
     where
         K: QueryKey,
-        V: Clone + Eq + Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
+        F: FnOnce(&QueryContext) -> Result<QueryOutput<V>, QueryAbort>,
+    {
+        self.request(family, revision, key, cancellation, compute)
+            .into_result()
+    }
+
+    /// Executes one top-level request and retains its lifecycle even on abort.
+    pub fn request<K, V, F>(
+        &self,
+        family: &QueryFamily<K, V>,
+        revision: Revision,
+        key: K,
+        cancellation: CancellationToken,
+        compute: F,
+    ) -> QueryRequestAttempt<V>
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+        F: FnOnce(&QueryContext) -> Result<QueryOutput<V>, QueryAbort>,
+    {
+        self.request_with_origin(family, revision, key, cancellation, None, compute)
+    }
+
+    /// Executes a top-level request with a caller-owned provenance identity.
+    ///
+    /// The runtime freezes this identity into computed terminals and all
+    /// lifecycle attempts, avoiding a separately retained origin registry in
+    /// compatibility adapters.
+    pub fn request_with_origin<K, V, F>(
+        &self,
+        family: &QueryFamily<K, V>,
+        revision: Revision,
+        key: K,
+        cancellation: CancellationToken,
+        origin_request: Option<u64>,
+        compute: F,
+    ) -> QueryRequestAttempt<V>
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+        F: FnOnce(&QueryContext) -> Result<QueryOutput<V>, QueryAbort>,
+    {
+        self.request_impl(
+            family,
+            revision,
+            key,
+            cancellation,
+            origin_request,
+            Some(compute),
+        )
+    }
+
+    /// Executes a top-level request through a family-owned evaluator.
+    pub fn request_registered<K, V>(
+        &self,
+        family: &QueryFamily<K, V>,
+        revision: Revision,
+        key: K,
+        cancellation: CancellationToken,
+    ) -> QueryRequestAttempt<V>
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+    {
+        self.request_registered_with_origin(family, revision, key, cancellation, None)
+    }
+
+    /// Executes a registered top-level request with caller-owned provenance.
+    pub fn request_registered_with_origin<K, V>(
+        &self,
+        family: &QueryFamily<K, V>,
+        revision: Revision,
+        key: K,
+        cancellation: CancellationToken,
+        origin_request: Option<u64>,
+    ) -> QueryRequestAttempt<V>
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+    {
+        assert!(
+            family.inner.evaluator.is_some(),
+            "closure-free requests require a registered evaluator"
+        );
+        self.request_impl::<K, V, fn(&QueryContext) -> Result<QueryOutput<V>, QueryAbort>>(
+            family,
+            revision,
+            key,
+            cancellation,
+            origin_request,
+            None,
+        )
+    }
+
+    fn request_impl<K, V, F>(
+        &self,
+        family: &QueryFamily<K, V>,
+        revision: Revision,
+        key: K,
+        cancellation: CancellationToken,
+        origin_request: Option<u64>,
+        compute: Option<F>,
+    ) -> QueryRequestAttempt<V>
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
         F: FnOnce(&QueryContext) -> Result<QueryOutput<V>, QueryAbort>,
     {
         if !Arc::ptr_eq(&self.core, &family.core) {
-            return Err(QueryAbort::ForeignRuntime);
+            return QueryRequestAttempt {
+                id: 0,
+                origin_request: origin_request.unwrap_or(0),
+                execution: RequestExecution::Aborted,
+                terminal: None,
+                abort: Some(QueryAbort::ForeignRuntime),
+                dependencies: Arc::from([]),
+                inputs: Arc::from([]),
+                work: Arc::from([]),
+                nested_attempts: Arc::from([]),
+            };
         }
+        let id = self.core.next_task.fetch_add(1, Ordering::Relaxed);
+        let origin_request = origin_request.unwrap_or(id);
+        let Some(_revision_lease) = self.core.pin_revision(revision) else {
+            return QueryRequestAttempt {
+                id,
+                origin_request,
+                execution: RequestExecution::Aborted,
+                terminal: None,
+                abort: Some(QueryAbort::UnpublishedRevision(revision)),
+                dependencies: Arc::from([]),
+                inputs: Arc::from([]),
+                work: Arc::from([]),
+                nested_attempts: Arc::from([]),
+            };
+        };
         let task = Arc::new(Task {
-            id: TaskId(self.core.next_task.fetch_add(1, Ordering::Relaxed)),
+            id: TaskId(id),
             core: self.core.clone(),
             revision,
             cancellation,
             owns_permit: AtomicBool::new(false),
             stack: Mutex::new(Vec::new()),
+            nested_attempts: Mutex::new(Vec::new()),
         });
-        family.query_task(task, key, compute)
+        let result = match compute {
+            Some(compute) => family.query_task(task.clone(), key, origin_request, compute),
+            None => family.query_task_registered(task.clone(), key, origin_request),
+        };
+        let nested_attempts: Arc<[NestedQueryAttempt]> = lock(&task.nested_attempts).clone().into();
+        match result {
+            TaskQueryResult::Terminal {
+                terminal,
+                execution,
+                work,
+            } => {
+                let origin_request = terminal.origin_request_id();
+                QueryRequestAttempt {
+                    id,
+                    origin_request,
+                    execution,
+                    dependencies: terminal.dependencies.clone(),
+                    inputs: terminal.inputs.clone(),
+                    work: work.into(),
+                    terminal: Some(terminal),
+                    abort: None,
+                    nested_attempts,
+                }
+            }
+            TaskQueryResult::Aborted {
+                abort,
+                dependencies,
+                inputs,
+                work,
+            } => QueryRequestAttempt {
+                id,
+                origin_request,
+                execution: RequestExecution::Aborted,
+                terminal: None,
+                abort: Some(abort),
+                dependencies: dependencies.into(),
+                inputs: inputs.into(),
+                work: work.into(),
+                nested_attempts,
+            },
+        }
     }
 
     /// Returns a point-in-time structural metrics snapshot.
     pub fn metrics(&self) -> RuntimeMetrics {
-        self.core.metrics.snapshot()
+        let mut metrics = self.core.metrics.snapshot();
+        metrics.retained_revisions = lock(&self.core.revisions).entries.len() as u64;
+        metrics
     }
 
     #[cfg(test)]
@@ -526,6 +1132,17 @@ impl QueryRuntime {
     }
 }
 
+/// An immutable revision cannot be changed after publication.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RevisionError {
+    /// The revision identity is already bound to different leaf values.
+    AlreadyPublished(Revision),
+    /// One publication supplied two different values for the same exact leaf.
+    ConflictingInput(InputIdentity),
+    /// This publication identity is older than the bounded retired watermark.
+    Retired(Revision),
+}
+
 /// Invalid family declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FamilyError {
@@ -536,15 +1153,48 @@ pub enum FamilyError {
 }
 
 /// A typed memo table sharing its runtime's scheduler and wait graph.
-pub struct QueryFamily<K: QueryKey, V: Clone + Eq + Send + Sync + 'static> {
+pub struct QueryFamily<K: QueryKey, V: Clone + Send + Sync + 'static> {
     core: Arc<RuntimeCore>,
     inner: Arc<FamilyInner<K, V>>,
+}
+
+/// Non-owning handle for evaluator graphs with cross-family back edges.
+pub struct WeakQueryFamily<K: QueryKey, V: Clone + Send + Sync + 'static> {
+    core: Weak<RuntimeCore>,
+    inner: Weak<FamilyInner<K, V>>,
+}
+
+impl<K, V> Clone for WeakQueryFamily<K, V>
+where
+    K: QueryKey,
+    V: Clone + Send + Sync + 'static,
+{
+    fn clone(&self) -> Self {
+        Self {
+            core: self.core.clone(),
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<K, V> WeakQueryFamily<K, V>
+where
+    K: QueryKey,
+    V: Clone + Send + Sync + 'static,
+{
+    /// Upgrades this handle while the family remains owned by its database.
+    pub fn upgrade(&self) -> Option<QueryFamily<K, V>> {
+        Some(QueryFamily {
+            core: self.core.upgrade()?,
+            inner: self.inner.upgrade()?,
+        })
+    }
 }
 
 impl<K, V> fmt::Debug for QueryFamily<K, V>
 where
     K: QueryKey,
-    V: Clone + Eq + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -558,7 +1208,7 @@ where
 impl<K, V> Clone for QueryFamily<K, V>
 where
     K: QueryKey,
-    V: Clone + Eq + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
 {
     fn clone(&self) -> Self {
         Self {
@@ -568,25 +1218,110 @@ where
     }
 }
 
-#[derive(Debug)]
-struct FamilyInner<K: QueryKey, V: Clone + Eq + Send + Sync + 'static> {
+struct FamilyInner<K: QueryKey, V: Clone + Send + Sync + 'static> {
     name: Arc<str>,
     token: FamilyToken,
     retention_limit: usize,
-    nodes: Mutex<HashMap<K, Arc<Node<V>>>>,
+    value_equal: fn(&V, &V) -> bool,
+    evaluator: Option<Arc<FamilyEvaluator<K, V>>>,
+    nodes: Mutex<Vec<(K, Arc<Node<V>>)>>,
     retention: Mutex<VecDeque<RetentionEntry<V>>>,
     retained_count: AtomicUsize,
     retained_nodes: AtomicUsize,
     retained_revisions: Mutex<BTreeMap<Revision, usize>>,
 }
 
-#[derive(Debug)]
+impl<K, V> fmt::Debug for FamilyInner<K, V>
+where
+    K: QueryKey,
+    V: Clone + Send + Sync + 'static,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FamilyInner")
+            .field("name", &self.name)
+            .field("retention_limit", &self.retention_limit)
+            .field("has_evaluator", &self.evaluator.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+type FamilyEvaluator<K, V> = dyn Fn(&QueryContext, &QueryFamily<K, V>, &K) -> Result<QueryOutput<V>, QueryAbort>
+    + Send
+    + Sync;
+
 struct Node<V> {
     identity: NodeIdentity,
     incarnation: u64,
     users: AtomicUsize,
     wait: Arc<WaitCell>,
+    demand: Option<Arc<dyn Fn(Arc<Task>, u64) -> TaskQueryResult<V> + Send + Sync>>,
     state: Mutex<NodeState<V>>,
+}
+
+impl<V> fmt::Debug for Node<V> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Node")
+            .field("identity", &self.identity)
+            .field("incarnation", &self.incarnation)
+            .finish_non_exhaustive()
+    }
+}
+
+trait ErasedNode: fmt::Debug + Send + Sync {
+    fn validated_stamp(
+        &self,
+        core: &RuntimeCore,
+        task: &Arc<Task>,
+        active: &mut BTreeSet<u64>,
+    ) -> Result<Option<u64>, QueryAbort>;
+}
+
+impl<V> ErasedNode for Node<V>
+where
+    V: Clone + Send + Sync + 'static,
+{
+    fn validated_stamp(
+        &self,
+        core: &RuntimeCore,
+        task: &Arc<Task>,
+        active: &mut BTreeSet<u64>,
+    ) -> Result<Option<u64>, QueryAbort> {
+        if !active.insert(self.incarnation) {
+            return Ok(None);
+        }
+        if let Some(demand) = &self.demand {
+            let request_id = task.next_nested_request();
+            let result = demand(task.clone(), request_id);
+            task.record_nested(request_id, self.identity.clone(), &result);
+            active.remove(&self.incarnation);
+            return match result {
+                TaskQueryResult::Terminal { terminal, .. } => Ok(Some(terminal.stamp)),
+                TaskQueryResult::Aborted { abort, .. } => Err(abort),
+            };
+        }
+        let candidates = lock(&self.state)
+            .attempts
+            .iter()
+            .rev()
+            .filter_map(|attempt| match &attempt.state {
+                AttemptState::Terminal { terminal, .. } => Some(terminal.clone()),
+                AttemptState::Computing { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        let stamp = candidates.into_iter().try_fold(None, |stamp, terminal| {
+            if stamp.is_some() {
+                Ok(stamp)
+            } else if core.valid_for_revision_inner(&terminal, task, active)? {
+                Ok(Some(terminal.stamp))
+            } else {
+                Ok(None)
+            }
+        });
+        active.remove(&self.incarnation);
+        stamp
+    }
 }
 
 #[derive(Debug)]
@@ -632,7 +1367,30 @@ struct RetentionEntry<V> {
     attempt: u64,
 }
 
-struct NodeLease<K: QueryKey, V: Clone + Eq + Send + Sync + 'static> {
+enum TaskQueryResult<V> {
+    Terminal {
+        terminal: Arc<QueryTerminal<V>>,
+        execution: RequestExecution,
+        work: Vec<(Arc<str>, u64)>,
+    },
+    Aborted {
+        abort: QueryAbort,
+        dependencies: Vec<Observation>,
+        inputs: Vec<InputObservation>,
+        work: Vec<(Arc<str>, u64)>,
+    },
+}
+
+impl<V> TaskQueryResult<V> {
+    fn into_result(self) -> Result<Arc<QueryTerminal<V>>, QueryAbort> {
+        match self {
+            Self::Terminal { terminal, .. } => Ok(terminal),
+            Self::Aborted { abort, .. } => Err(abort),
+        }
+    }
+}
+
+struct NodeLease<K: QueryKey, V: Clone + Send + Sync + 'static> {
     family: Weak<FamilyInner<K, V>>,
     key: K,
     node: Arc<Node<V>>,
@@ -641,7 +1399,7 @@ struct NodeLease<K: QueryKey, V: Clone + Eq + Send + Sync + 'static> {
 impl<K, V> Drop for NodeLease<K, V>
 where
     K: QueryKey,
-    V: Clone + Eq + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
 {
     fn drop(&mut self) {
         if self.node.users.fetch_sub(1, Ordering::AcqRel) != 1 {
@@ -657,10 +1415,14 @@ where
         if self.node.users.load(Ordering::Acquire) == 0
             && lock(&self.node.state).attempts.is_empty()
             && nodes
-                .get(&self.key)
-                .is_some_and(|candidate| Arc::ptr_eq(candidate, &self.node))
+                .iter()
+                .any(|(key, candidate)| key == &self.key && Arc::ptr_eq(candidate, &self.node))
         {
-            nodes.remove(&self.key);
+            let index = nodes
+                .iter()
+                .position(|(key, candidate)| key == &self.key && Arc::ptr_eq(candidate, &self.node))
+                .expect("leased node remains indexed");
+            nodes.remove(index);
             family.retained_nodes.fetch_sub(1, Ordering::Relaxed);
         }
     }
@@ -669,8 +1431,16 @@ where
 impl<K, V> QueryFamily<K, V>
 where
     K: QueryKey,
-    V: Clone + Eq + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
 {
+    /// Creates a non-owning handle suitable for evaluator dependency graphs.
+    pub fn downgrade(&self) -> WeakQueryFamily<K, V> {
+        WeakQueryFamily {
+            core: Arc::downgrade(&self.core),
+            inner: Arc::downgrade(&self.inner),
+        }
+    }
+
     /// Returns deterministic retained-ownership gauges for this family.
     pub fn retention(&self) -> FamilyRetention {
         FamilyRetention {
@@ -680,91 +1450,239 @@ where
         }
     }
 
-    fn node(&self, key: K) -> NodeLease<K, V> {
-        let mut nodes = lock(&self.inner.nodes);
-        let mut created = false;
-        let node = nodes
-            .entry(key.clone())
-            .or_insert_with(|| {
-                created = true;
-                Arc::new(Node {
-                    identity: NodeIdentity {
-                        family: self.inner.name.clone(),
-                        key: key.stable_identity().into(),
-                    },
-                    incarnation: self.core.next_node.fetch_add(1, Ordering::Relaxed),
-                    users: AtomicUsize::new(0),
-                    wait: Arc::new(WaitCell { cv: Condvar::new() }),
-                    state: Mutex::new(NodeState {
-                        next_attempt: 1,
-                        next_stamp: 1,
-                        attempts: VecDeque::new(),
-                    }),
-                })
+    /// Whether a currently live memo node has a key matching `predicate`.
+    ///
+    /// This exact O(n) Phase 1 bridge supports lifetime-coupled input
+    /// identities. ADR-0063 Phase 7 replaces it for high-cardinality families.
+    pub fn any_retained_key(&self, mut predicate: impl FnMut(&K) -> bool) -> bool {
+        lock(&self.inner.nodes)
+            .iter()
+            .any(|(key, _)| predicate(key))
+    }
+
+    /// Caller-owned provenance identities for every retained reusable terminal.
+    pub fn retained_origin_request_ids(&self) -> BTreeSet<u64> {
+        let nodes = lock(&self.inner.nodes)
+            .iter()
+            .map(|(_, node)| node.clone())
+            .collect::<Vec<_>>();
+        nodes
+            .iter()
+            .flat_map(|node| {
+                lock(&node.state)
+                    .attempts
+                    .iter()
+                    .filter_map(|attempt| match &attempt.state {
+                        AttemptState::Terminal { terminal, .. } => {
+                            Some(terminal.origin_request_id())
+                        }
+                        AttemptState::Computing { .. } => None,
+                    })
+                    .collect::<Vec<_>>()
             })
-            .clone();
-        if created {
+            .collect()
+    }
+
+    fn node(&self, key: K) -> Result<NodeLease<K, V>, QueryAbort> {
+        // Exact equality, not the display identity, is authoritative. This
+        // Phase 1 O(n) lookup is deliberately retained until the ADR-0063
+        // Phase 7 high-cardinality family migration supplies family hashing.
+        let mut nodes = lock(&self.inner.nodes);
+        let node = if let Some((_, node)) = nodes.iter().find(|(candidate, _)| candidate == &key) {
+            node.clone()
+        } else {
+            let stable_key: Arc<str> = key.stable_identity().into();
+            let incarnation = self.core.next_node.fetch_add(1, Ordering::Relaxed);
+            let demand = self.inner.evaluator.as_ref().map(|_| {
+                let core = self.core.clone();
+                let family = Arc::downgrade(&self.inner);
+                let key = key.clone();
+                Arc::new(move |task: Arc<Task>, origin_request: u64| {
+                    let Some(inner) = family.upgrade() else {
+                        return TaskQueryResult::Aborted {
+                            abort: QueryAbort::ForeignRuntime,
+                            dependencies: Vec::new(),
+                            inputs: Vec::new(),
+                            work: Vec::new(),
+                        };
+                    };
+                    QueryFamily {
+                        core: core.clone(),
+                        inner,
+                    }
+                    .query_task_registered(task, key.clone(), origin_request)
+                })
+                    as Arc<dyn Fn(Arc<Task>, u64) -> TaskQueryResult<V> + Send + Sync>
+            });
+            let node = Arc::new(Node {
+                identity: NodeIdentity {
+                    family: self.inner.name.clone(),
+                    key: stable_key,
+                },
+                incarnation,
+                users: AtomicUsize::new(0),
+                wait: Arc::new(WaitCell { cv: Condvar::new() }),
+                demand,
+                state: Mutex::new(NodeState {
+                    next_attempt: 1,
+                    next_stamp: 1,
+                    attempts: VecDeque::new(),
+                }),
+            });
+            let erased: Arc<dyn ErasedNode> = node.clone();
+            let mut registry = lock(&self.core.nodes);
+            registry.retain(|_, node| node.strong_count() > 0);
+            registry.insert(incarnation, Arc::downgrade(&erased));
+            nodes.push((key.clone(), node.clone()));
             self.inner.retained_nodes.fetch_add(1, Ordering::Relaxed);
-        }
+            node
+        };
         node.users.fetch_add(1, Ordering::AcqRel);
-        NodeLease {
+        Ok(NodeLease {
             family: Arc::downgrade(&self.inner),
             key,
             node,
-        }
+        })
     }
 
     fn query_task<F>(
         &self,
         task: Arc<Task>,
         key: K,
+        origin_request: u64,
         compute: F,
-    ) -> Result<Arc<QueryTerminal<V>>, QueryAbort>
+    ) -> TaskQueryResult<V>
     where
         F: FnOnce(&QueryContext) -> Result<QueryOutput<V>, QueryAbort>,
     {
-        let lease = self.node(key);
+        assert!(
+            self.inner.evaluator.is_none(),
+            "registered families must use the closure-free request API"
+        );
+        self.query_task_impl(task, key, origin_request, Some(compute))
+    }
+
+    fn query_task_registered(
+        &self,
+        task: Arc<Task>,
+        key: K,
+        origin_request: u64,
+    ) -> TaskQueryResult<V> {
+        self.query_task_impl::<fn(&QueryContext) -> Result<QueryOutput<V>, QueryAbort>>(
+            task,
+            key,
+            origin_request,
+            None,
+        )
+    }
+
+    fn query_task_impl<F>(
+        &self,
+        task: Arc<Task>,
+        key: K,
+        origin_request: u64,
+        mut compute: Option<F>,
+    ) -> TaskQueryResult<V>
+    where
+        F: FnOnce(&QueryContext) -> Result<QueryOutput<V>, QueryAbort>,
+    {
+        let lease = match self.node(key) {
+            Ok(lease) => lease,
+            Err(abort) => {
+                return TaskQueryResult::Aborted {
+                    abort,
+                    dependencies: Vec::new(),
+                    inputs: Vec::new(),
+                    work: Vec::new(),
+                };
+            }
+        };
         let node = &lease.node;
-        if let Some(cycle) = task.stack_cycle(&node.identity) {
+        let exact_node = ExactNodeIdentity {
+            display: node.identity.clone(),
+            incarnation: node.incarnation,
+        };
+        if let Some(cycle) = task.stack_cycle(&exact_node) {
             self.core.metrics.cycles.fetch_add(1, Ordering::Relaxed);
-            return Err(QueryAbort::Cycle(cycle));
+            return TaskQueryResult::Aborted {
+                abort: QueryAbort::Cycle(cycle),
+                dependencies: Vec::new(),
+                inputs: Vec::new(),
+                work: Vec::new(),
+            };
         }
-        let mut compute = Some(compute);
         loop {
             if task.cancellation.is_canceled() {
                 self.core
                     .metrics
                     .cancellations
                     .fetch_add(1, Ordering::Relaxed);
-                return Err(QueryAbort::Canceled);
+                return TaskQueryResult::Aborted {
+                    abort: QueryAbort::Canceled,
+                    dependencies: Vec::new(),
+                    inputs: Vec::new(),
+                    work: Vec::new(),
+                };
             }
 
-            enum Action<V> {
-                Return(Arc<QueryTerminal<V>>),
+            enum Action {
                 Join { attempt: u64, owner: TaskId },
                 Compute { attempt: u64 },
+            }
+
+            let candidates = lock(&node.state)
+                .attempts
+                .iter()
+                .rev()
+                .filter_map(|attempt| match &attempt.state {
+                    AttemptState::Terminal { terminal, .. } => Some(terminal.clone()),
+                    AttemptState::Computing { .. } => None,
+                })
+                .collect::<Vec<_>>();
+            for terminal in candidates {
+                match self.core.valid_for_revision(&terminal, &task) {
+                    Ok(true) => {
+                        self.core.metrics.reuses.fetch_add(1, Ordering::Relaxed);
+                        task.observe(&terminal);
+                        return TaskQueryResult::Terminal {
+                            terminal,
+                            execution: RequestExecution::Reused,
+                            work: Vec::new(),
+                        };
+                    }
+                    Ok(false) => {}
+                    Err(abort) => {
+                        return TaskQueryResult::Aborted {
+                            abort,
+                            dependencies: Vec::new(),
+                            inputs: Vec::new(),
+                            work: Vec::new(),
+                        };
+                    }
+                }
             }
 
             let action = {
                 let mut state = lock(&node.state);
                 let mut action = None;
                 for attempt in state.attempts.iter_mut().rev() {
-                    if !attempt.revision.is_compatible_with(task.revision) {
-                        continue;
-                    }
                     match &mut attempt.state {
-                        AttemptState::Terminal { terminal, .. } => {
-                            action = Some(Action::Return(terminal.clone()));
-                        }
+                        AttemptState::Terminal { .. } => {}
                         AttemptState::Computing { owner, waiters } => {
-                            *waiters += 1;
-                            action = Some(Action::Join {
-                                attempt: attempt.id,
-                                owner: *owner,
-                            });
+                            // A body has not yet frozen its observed leaves, so
+                            // only the identical pinned revision may join it.
+                            if attempt.revision == task.revision {
+                                *waiters += 1;
+                                action = Some(Action::Join {
+                                    attempt: attempt.id,
+                                    owner: *owner,
+                                });
+                            }
                         }
                     }
-                    break;
+                    if action.is_some() {
+                        break;
+                    }
                 }
                 action.unwrap_or_else(|| {
                     let attempt = state.next_attempt;
@@ -782,21 +1700,28 @@ where
             };
 
             match action {
-                Action::Return(terminal) => {
-                    self.core.metrics.reuses.fetch_add(1, Ordering::Relaxed);
-                    task.observe(&terminal);
-                    return Ok(terminal);
-                }
                 Action::Join { attempt, owner } => {
                     self.core.metrics.joins.fetch_add(1, Ordering::Relaxed);
                     #[cfg(test)]
                     self.core.test_changed();
-                    match self.join(&task, node, attempt, owner)? {
-                        Some(terminal) => {
-                            task.observe(&terminal);
-                            return Ok(terminal);
+                    match self.join(&task, node, attempt, owner) {
+                        Err(abort) => {
+                            return TaskQueryResult::Aborted {
+                                abort,
+                                dependencies: Vec::new(),
+                                inputs: Vec::new(),
+                                work: Vec::new(),
+                            };
                         }
-                        None => continue,
+                        Ok(Some(terminal)) => {
+                            task.observe(&terminal);
+                            return TaskQueryResult::Terminal {
+                                terminal,
+                                execution: RequestExecution::Joined,
+                                work: Vec::new(),
+                            };
+                        }
+                        Ok(None) => continue,
                     }
                 }
                 Action::Compute { attempt } => {
@@ -804,21 +1729,22 @@ where
                     #[cfg(test)]
                     self.core.test_changed();
                     let acquired_here = task.acquire_permit(&self.core);
-                    task.push(node.identity.clone());
+                    task.push(exact_node.clone());
                     self.core.metrics.body_entered();
                     let context = QueryContext {
                         task: task.clone(),
                         not_send_or_sync: PhantomData,
                     };
-                    let body = catch_unwind(AssertUnwindSafe(|| {
-                        compute.take().expect("query body executes at most once")(&context)
+                    let body = catch_unwind(AssertUnwindSafe(|| match &self.inner.evaluator {
+                        Some(evaluator) => evaluator(&context, self, &lease.key),
+                        None => compute.take().expect("query body executes at most once")(&context),
                     }));
                     self.core.metrics.body_left();
                     self.core
                         .metrics
                         .body_completions
                         .fetch_add(1, Ordering::Relaxed);
-                    let dependencies = task.pop(&node.identity);
+                    let (dependencies, inputs, work_prefix) = task.pop(&exact_node);
 
                     let result = match body {
                         Ok(result) if !task.cancellation.is_canceled() => result,
@@ -834,13 +1760,28 @@ where
 
                     match result {
                         Ok(output) => {
-                            let terminal =
-                                self.publish(node, attempt, task.revision, output, dependencies);
+                            let terminal = self.publish(
+                                node,
+                                attempt,
+                                task.revision,
+                                origin_request,
+                                output,
+                                dependencies,
+                                inputs,
+                            );
                             if acquired_here {
                                 task.release_permit(&self.core);
                             }
+                            let mut work = work_prefix;
+                            work.extend(terminal.work().iter().cloned());
+                            let work = canonical_reduced_work(work);
                             task.observe(&terminal);
-                            return Ok(terminal);
+                            task.observe_work(&work);
+                            return TaskQueryResult::Terminal {
+                                terminal,
+                                execution: RequestExecution::Computed,
+                                work,
+                            };
                         }
                         Err(abort) => {
                             self.abort_attempt(node, attempt);
@@ -853,7 +1794,13 @@ where
                                     .cancellations
                                     .fetch_add(1, Ordering::Relaxed);
                             }
-                            return Err(abort);
+                            task.observe_abort_prefix(&dependencies, &inputs, &work_prefix);
+                            return TaskQueryResult::Aborted {
+                                abort,
+                                dependencies,
+                                inputs,
+                                work: work_prefix,
+                            };
                         }
                     }
                 }
@@ -893,7 +1840,14 @@ where
                 ..
             } => assert_eq!(*actual_owner, owner),
         }
-        if let Err(cycle) = self.core.begin_wait(task.id, owner, node.identity.clone()) {
+        if let Err(cycle) = self.core.begin_wait(
+            task.id,
+            owner,
+            ExactNodeIdentity {
+                display: node.identity.clone(),
+                incarnation: node.incarnation,
+            },
+        ) {
             decrement_waiter(&mut state, attempt_id);
             self.core.metrics.cycles.fetch_add(1, Ordering::Relaxed);
             return Err(QueryAbort::Cycle(cycle));
@@ -954,8 +1908,10 @@ where
         node: &Arc<Node<V>>,
         attempt_id: u64,
         revision: Revision,
+        origin_request: u64,
         output: QueryOutput<V>,
         dependencies: Vec<Observation>,
+        inputs: Vec<InputObservation>,
     ) -> Arc<QueryTerminal<V>> {
         let diagnostics = canonical_diagnostics(output.diagnostics);
         let work = canonical_work(output.work);
@@ -969,9 +1925,9 @@ where
                 AttemptState::Computing { .. } => None,
             });
         let red = previous.as_ref().is_some_and(|terminal| {
-            terminal.outcome == output.outcome
+            terminal.kind == output.kind
+                && outcomes_equal(self.inner.value_equal, &terminal.outcome, &output.outcome)
                 && semantic_diagnostics_equal(&terminal.diagnostics, &diagnostics)
-                && terminal.dependencies.as_ref() == dependencies.as_slice()
         });
         let stamp = if red {
             previous.expect("red publication has a predecessor").stamp
@@ -986,10 +1942,13 @@ where
             node_incarnation: node.incarnation,
             revision,
             stamp,
+            origin_request,
             outcome: output.outcome,
+            kind: output.kind,
             diagnostics: diagnostics.into(),
             work: work.into(),
             dependencies: dependencies.into(),
+            inputs: inputs.into(),
             pins: AtomicUsize::new(0),
         });
         let attempt = state
@@ -1075,17 +2034,15 @@ where
             self.inner.retained_count.fetch_sub(1, Ordering::Relaxed);
             if empty && node.users.load(Ordering::Acquire) == 0 {
                 let mut nodes = lock(&self.inner.nodes);
-                let key = nodes.iter().find_map(|(key, candidate)| {
-                    Arc::ptr_eq(candidate, &node).then(|| key.clone())
-                });
-                if let Some(key) = key
+                let index = nodes
+                    .iter()
+                    .position(|(_, candidate)| Arc::ptr_eq(candidate, &node));
+                if let Some(index) = index
                     && node.users.load(Ordering::Acquire) == 0
                     && lock(&node.state).attempts.is_empty()
-                    && nodes
-                        .get(&key)
-                        .is_some_and(|candidate| Arc::ptr_eq(candidate, &node))
+                    && Arc::ptr_eq(&nodes[index].1, &node)
                 {
-                    nodes.remove(&key);
+                    nodes.remove(index);
                     self.inner.retained_nodes.fetch_sub(1, Ordering::Relaxed);
                 }
             }
@@ -1115,14 +2072,35 @@ where
         RevisionPin {
             family: self.clone(),
             revision,
+            view: self.core.pin_revision(revision),
+        }
+    }
+
+    /// Creates request/session-owned current and last-good publication roots.
+    pub fn selection(&self) -> QuerySelection<K, V> {
+        QuerySelection {
+            family: self.clone(),
+            current: None,
+            last_good: None,
         }
     }
 }
 
 /// An explicit retained terminal root.
-pub struct TerminalPin<K: QueryKey, V: Clone + Eq + Send + Sync + 'static> {
+pub struct TerminalPin<K: QueryKey, V: Clone + Send + Sync + 'static> {
     family: QueryFamily<K, V>,
     terminal: Arc<QueryTerminal<V>>,
+}
+
+impl<K, V> TerminalPin<K, V>
+where
+    K: QueryKey,
+    V: Clone + Send + Sync + 'static,
+{
+    /// The immutable terminal protected by this root.
+    pub fn terminal(&self) -> &Arc<QueryTerminal<V>> {
+        &self.terminal
+    }
 }
 
 /// A terminal cannot be pinned by a different family or runtime.
@@ -1135,7 +2113,7 @@ pub enum PinError {
 impl<K, V> Drop for TerminalPin<K, V>
 where
     K: QueryKey,
-    V: Clone + Eq + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
 {
     fn drop(&mut self) {
         self.terminal.pins.fetch_sub(1, Ordering::AcqRel);
@@ -1144,15 +2122,16 @@ where
 }
 
 /// An explicit current/last-good revision root.
-pub struct RevisionPin<K: QueryKey, V: Clone + Eq + Send + Sync + 'static> {
+pub struct RevisionPin<K: QueryKey, V: Clone + Send + Sync + 'static> {
     family: QueryFamily<K, V>,
     revision: Revision,
+    view: Option<RevisionLease>,
 }
 
 impl<K, V> Drop for RevisionPin<K, V>
 where
     K: QueryKey,
-    V: Clone + Eq + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
 {
     fn drop(&mut self) {
         let mut revisions = lock(&self.family.inner.retained_revisions);
@@ -1165,6 +2144,50 @@ where
         }
         drop(revisions);
         self.family.enforce_retention();
+        // The revision-view lease drops after terminal retention bookkeeping.
+        let _ = &self.view;
+    }
+}
+
+/// Request/session publication over immutable terminal attempts.
+///
+/// This deliberately lives above memo nodes. Selecting a failed current
+/// attempt preserves the preceding successful terminal as last-good.
+pub struct QuerySelection<K: QueryKey, V: Clone + Send + Sync + 'static> {
+    family: QueryFamily<K, V>,
+    current: Option<TerminalPin<K, V>>,
+    last_good: Option<TerminalPin<K, V>>,
+}
+
+impl<K, V> QuerySelection<K, V>
+where
+    K: QueryKey,
+    V: Clone + Send + Sync + 'static,
+{
+    /// Publishes one immutable attempt as the request's current result.
+    pub fn publish(&mut self, terminal: &Arc<QueryTerminal<V>>) -> Result<(), PinError> {
+        let current = self.family.pin_terminal(terminal)?;
+        if terminal.kind() == QueryTerminalKind::Success {
+            self.last_good = Some(self.family.pin_terminal(terminal)?);
+        }
+        self.current = Some(current);
+        Ok(())
+    }
+
+    /// Current selected attempt, including a deterministic failure.
+    pub fn current(&self) -> Option<&Arc<QueryTerminal<V>>> {
+        self.current.as_ref().map(TerminalPin::terminal)
+    }
+
+    /// Most recently selected successful attempt.
+    pub fn last_good(&self) -> Option<&Arc<QueryTerminal<V>>> {
+        self.last_good.as_ref().map(TerminalPin::terminal)
+    }
+
+    /// Clears request-current publication after a non-terminal abort while
+    /// preserving the independently pinned last-good success.
+    pub fn clear_current(&mut self) {
+        self.current = None;
     }
 }
 
@@ -1190,6 +2213,25 @@ impl QueryContext {
         }
     }
 
+    /// Reads and records one exact leaf from this task's pinned revision.
+    pub fn input(&self, input: InputIdentity) -> Result<u64, QueryAbort> {
+        let stamp = self
+            .task
+            .core
+            .revision_input(self.task.revision, &input)
+            .ok_or_else(|| QueryAbort::MissingInput(input.clone()))?;
+        self.task.observe_input(input, stamp);
+        Ok(stamp)
+    }
+
+    /// Records structural work as it is completed by the active body.
+    ///
+    /// Unlike terminal-attached output work, this prefix survives cancellation
+    /// and deterministic aborts and is owned by the runtime attempt.
+    pub fn record_work(&self, item: WorkItem) {
+        self.task.record_work(item);
+    }
+
     /// Requests a dependency in the same task and pinned revision.
     pub fn query<K, V, F>(
         &self,
@@ -1199,13 +2241,59 @@ impl QueryContext {
     ) -> Result<Arc<QueryTerminal<V>>, QueryAbort>
     where
         K: QueryKey,
-        V: Clone + Eq + Send + Sync + 'static,
+        V: Clone + Send + Sync + 'static,
         F: FnOnce(&QueryContext) -> Result<QueryOutput<V>, QueryAbort>,
     {
-        if !Arc::ptr_eq(&self.task_runtime(), &family.core) {
-            return Err(QueryAbort::ForeignRuntime);
-        }
-        family.query_task(self.task.clone(), key, compute)
+        let node = NodeIdentity {
+            family: family.inner.name.clone(),
+            key: key.stable_identity().into(),
+        };
+        let request_id = self.task.next_nested_request();
+        let result = if Arc::ptr_eq(&self.task_runtime(), &family.core) {
+            family.query_task(self.task.clone(), key, request_id, compute)
+        } else {
+            TaskQueryResult::Aborted {
+                abort: QueryAbort::ForeignRuntime,
+                dependencies: Vec::new(),
+                inputs: Vec::new(),
+                work: Vec::new(),
+            }
+        };
+        self.task.record_nested(request_id, node, &result);
+        result.into_result()
+    }
+
+    /// Requests a dependency through its canonical family-owned evaluator.
+    pub fn query_registered<K, V>(
+        &self,
+        family: &QueryFamily<K, V>,
+        key: K,
+    ) -> Result<Arc<QueryTerminal<V>>, QueryAbort>
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+    {
+        assert!(
+            family.inner.evaluator.is_some(),
+            "closure-free dependency requests require a registered evaluator"
+        );
+        let node = NodeIdentity {
+            family: family.inner.name.clone(),
+            key: key.stable_identity().into(),
+        };
+        let request_id = self.task.next_nested_request();
+        let result = if Arc::ptr_eq(&self.task_runtime(), &family.core) {
+            family.query_task_registered(self.task.clone(), key, request_id)
+        } else {
+            TaskQueryResult::Aborted {
+                abort: QueryAbort::ForeignRuntime,
+                dependencies: Vec::new(),
+                inputs: Vec::new(),
+                work: Vec::new(),
+            }
+        };
+        self.task.record_nested(request_id, node, &result);
+        result.into_result()
     }
 
     fn task_runtime(&self) -> Arc<RuntimeCore> {
@@ -1224,15 +2312,63 @@ struct Task {
     cancellation: CancellationToken,
     owns_permit: AtomicBool,
     stack: Mutex<Vec<TaskFrame>>,
+    nested_attempts: Mutex<Vec<NestedQueryAttempt>>,
 }
 
 #[derive(Debug)]
 struct TaskFrame {
-    node: NodeIdentity,
-    dependencies: BTreeMap<NodeIdentity, (u64, u64)>,
+    node: ExactNodeIdentity,
+    dependencies: BTreeMap<ExactNodeIdentity, u64>,
+    inputs: BTreeMap<InputIdentity, u64>,
+    work: BTreeMap<Arc<str>, u64>,
 }
 
 impl Task {
+    fn next_nested_request(&self) -> u64 {
+        self.core.next_task.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn record_nested<V>(&self, id: u64, node: NodeIdentity, result: &TaskQueryResult<V>) {
+        let attempt = match result {
+            TaskQueryResult::Terminal {
+                terminal,
+                execution,
+                work,
+            } => NestedQueryAttempt {
+                id,
+                node,
+                node_incarnation: Some(terminal.node_incarnation),
+                origin_request: terminal.origin_request_id(),
+                execution: *execution,
+                terminal_revision: Some(terminal.revision()),
+                terminal_stamp: Some(terminal.stamp()),
+                abort: None,
+                dependencies: terminal.dependencies.clone(),
+                inputs: terminal.inputs.clone(),
+                work: work.clone().into(),
+            },
+            TaskQueryResult::Aborted {
+                abort,
+                dependencies,
+                inputs,
+                work,
+            } => NestedQueryAttempt {
+                id,
+                node,
+                node_incarnation: None,
+                origin_request: id,
+                execution: RequestExecution::Aborted,
+                terminal_revision: None,
+                terminal_stamp: None,
+                abort: Some(abort.clone()),
+                dependencies: dependencies.clone().into(),
+                inputs: inputs.clone().into(),
+                work: work.clone().into(),
+            },
+        };
+        lock(&self.nested_attempts).push(attempt);
+    }
+
     fn acquire_permit(&self, core: &Arc<RuntimeCore>) -> bool {
         if self.owns_permit.load(Ordering::Acquire) {
             return false;
@@ -1250,46 +2386,119 @@ impl Task {
         true
     }
 
-    fn push(&self, node: NodeIdentity) {
+    fn push(&self, node: ExactNodeIdentity) {
         lock(&self.stack).push(TaskFrame {
             node,
             dependencies: BTreeMap::new(),
+            inputs: BTreeMap::new(),
+            work: BTreeMap::new(),
         });
     }
 
-    fn pop(&self, expected: &NodeIdentity) -> Vec<Observation> {
+    fn pop(
+        &self,
+        expected: &ExactNodeIdentity,
+    ) -> (
+        Vec<Observation>,
+        Vec<InputObservation>,
+        Vec<(Arc<str>, u64)>,
+    ) {
         let frame = lock(&self.stack)
             .pop()
             .expect("query computation owns one dependency frame");
         assert_eq!(&frame.node, expected);
-        frame
+        let dependencies = frame
             .dependencies
             .into_iter()
-            .map(|(node, (incarnation, stamp))| Observation {
-                node,
-                incarnation,
+            .map(|(node, stamp)| Observation {
+                node: node.display,
+                incarnation: node.incarnation,
                 stamp,
             })
-            .collect()
+            .collect();
+        let inputs = frame
+            .inputs
+            .into_iter()
+            .map(|(input, stamp)| InputObservation { input, stamp })
+            .collect();
+        (dependencies, inputs, frame.work.into_iter().collect())
     }
 
     fn observe<V>(&self, terminal: &QueryTerminal<V>) {
         if let Some(frame) = lock(&self.stack).last_mut() {
             frame.dependencies.insert(
-                terminal.node.clone(),
-                (terminal.node_incarnation, terminal.stamp),
+                ExactNodeIdentity {
+                    display: terminal.node.clone(),
+                    incarnation: terminal.node_incarnation,
+                },
+                terminal.stamp,
             );
         }
     }
 
-    fn stack_cycle(&self, node: &NodeIdentity) -> Option<Arc<[NodeIdentity]>> {
+    fn observe_work(&self, work: &[(Arc<str>, u64)]) {
+        if let Some(frame) = lock(&self.stack).last_mut() {
+            for (identity, amount) in work {
+                *frame.work.entry(identity.clone()).or_default() += amount;
+            }
+        }
+    }
+
+    fn record_work(&self, item: WorkItem) {
+        let mut stack = lock(&self.stack);
+        let frame = stack
+            .last_mut()
+            .expect("work recording occurs only inside a query computation");
+        *frame.work.entry(item.identity).or_default() += item.amount;
+    }
+
+    fn observe_abort_prefix(
+        &self,
+        dependencies: &[Observation],
+        inputs: &[InputObservation],
+        work: &[(Arc<str>, u64)],
+    ) {
+        let mut stack = lock(&self.stack);
+        let Some(frame) = stack.last_mut() else {
+            return;
+        };
+        for dependency in dependencies {
+            frame.dependencies.insert(
+                ExactNodeIdentity {
+                    display: dependency.node.clone(),
+                    incarnation: dependency.incarnation,
+                },
+                dependency.stamp,
+            );
+        }
+        for input in inputs {
+            if let Some(previous) = frame.inputs.insert(input.input.clone(), input.stamp) {
+                assert_eq!(previous, input.stamp);
+            }
+        }
+        for (identity, amount) in work {
+            *frame.work.entry(identity.clone()).or_default() += amount;
+        }
+    }
+
+    fn observe_input(&self, input: InputIdentity, stamp: u64) {
+        let mut stack = lock(&self.stack);
+        let frame = stack
+            .last_mut()
+            .expect("input reads occur only inside a query computation");
+        if let Some(previous) = frame.inputs.insert(input, stamp) {
+            assert_eq!(previous, stamp);
+        }
+    }
+
+    fn stack_cycle(&self, node: &ExactNodeIdentity) -> Option<Arc<[NodeIdentity]>> {
         let stack = lock(&self.stack);
         let start = stack.iter().position(|frame| &frame.node == node)?;
         Some(canonical_cycle(
             stack[start..]
                 .iter()
-                .map(|frame| frame.node.clone())
-                .chain(std::iter::once(node.clone())),
+                .map(|frame| frame.node.display.clone())
+                .chain(std::iter::once(node.display.clone())),
         ))
     }
 }
@@ -1297,10 +2506,96 @@ impl Task {
 #[derive(Debug)]
 struct WaitEdge {
     owner: TaskId,
-    node: NodeIdentity,
+    node: ExactNodeIdentity,
 }
 
 impl RuntimeCore {
+    fn revision_input(&self, revision: Revision, input: &InputIdentity) -> Option<u64> {
+        lock(&self.revisions)
+            .entries
+            .get(&revision.id)
+            .filter(|entry| entry.revision == revision)
+            .and_then(|entry| entry.inputs.get(input).copied())
+    }
+
+    fn valid_for_revision<V>(
+        &self,
+        terminal: &QueryTerminal<V>,
+        task: &Arc<Task>,
+    ) -> Result<bool, QueryAbort> {
+        self.valid_for_revision_inner(terminal, task, &mut BTreeSet::new())
+    }
+
+    fn valid_for_revision_inner<V>(
+        &self,
+        terminal: &QueryTerminal<V>,
+        task: &Arc<Task>,
+        active: &mut BTreeSet<u64>,
+    ) -> Result<bool, QueryAbort> {
+        if !terminal.revision.is_compatible_with(task.revision) {
+            return Ok(false);
+        }
+        // Compatibility tokens are only a scheduling hint. Direct inputs are
+        // checked exactly, while dependency stamps are validated recursively
+        // against the current compatible terminal of the exact child node.
+        let revisions = lock(&self.revisions);
+        let Some(entry) = revisions
+            .entries
+            .get(&task.revision.id)
+            .filter(|entry| entry.revision == task.revision)
+        else {
+            return Ok(false);
+        };
+        let direct_inputs_valid = terminal
+            .inputs
+            .iter()
+            .all(|observed| entry.inputs.get(&observed.input) == Some(&observed.stamp));
+        drop(revisions);
+        if !direct_inputs_valid {
+            return Ok(false);
+        }
+        for observed in terminal.dependencies.iter() {
+            let node = lock(&self.nodes)
+                .get(&observed.incarnation)
+                .and_then(Weak::upgrade);
+            let stamp = match node {
+                Some(node) => node.validated_stamp(self, task, active)?,
+                None => None,
+            };
+            if stamp != Some(observed.stamp) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn pin_revision(self: &Arc<Self>, revision: Revision) -> Option<RevisionLease> {
+        let mut revisions = lock(&self.revisions);
+        let entry = revisions
+            .entries
+            .get_mut(&revision.id)
+            .filter(|entry| entry.revision == revision)?;
+        entry.active_requests += 1;
+        Some(RevisionLease {
+            core: self.clone(),
+            revision,
+        })
+    }
+
+    fn enforce_revision_retention(&self, revisions: &mut RevisionStore) {
+        while revisions.entries.len() > REVISION_RETENTION_LIMIT {
+            let Some(id) = revisions
+                .entries
+                .iter()
+                .find_map(|(id, entry)| (entry.active_requests == 0).then_some(*id))
+            else {
+                break;
+            };
+            revisions.entries.remove(&id);
+            revisions.retired_through = revisions.retired_through.max(id);
+        }
+    }
+
     #[cfg(test)]
     fn test_changed(&self) {
         *lock(&self.test_events.generation) += 1;
@@ -1311,14 +2606,14 @@ impl RuntimeCore {
         &self,
         waiter: TaskId,
         owner: TaskId,
-        node: NodeIdentity,
+        node: ExactNodeIdentity,
     ) -> Result<(), Arc<[NodeIdentity]>> {
         let mut graph = lock(&self.wait_graph);
         graph.insert(waiter, WaitEdge { owner, node });
         let mut cursor = owner;
         let mut nodes = Vec::new();
         while let Some(edge) = graph.get(&cursor) {
-            nodes.push(edge.node.clone());
+            nodes.push(edge.node.display.clone());
             cursor = edge.owner;
             if cursor == waiter {
                 nodes.push(
@@ -1326,6 +2621,7 @@ impl RuntimeCore {
                         .get(&waiter)
                         .expect("new wait edge is present")
                         .node
+                        .display
                         .clone(),
                 );
                 graph.remove(&waiter);
@@ -1402,10 +2698,31 @@ fn semantic_diagnostics_equal(left: &[QueryDiagnostic], right: &[QueryDiagnostic
             .all(|(left, right)| left.identity == right.identity && left.payload == right.payload)
 }
 
+fn outcomes_equal<V>(
+    value_equal: fn(&V, &V) -> bool,
+    left: &QueryOutcome<V>,
+    right: &QueryOutcome<V>,
+) -> bool {
+    match (left, right) {
+        (QueryOutcome::Success(left), QueryOutcome::Success(right)) => value_equal(left, right),
+        (QueryOutcome::Failure(left), QueryOutcome::Failure(right)) => left == right,
+        (QueryOutcome::Success(_), QueryOutcome::Failure(_))
+        | (QueryOutcome::Failure(_), QueryOutcome::Success(_)) => false,
+    }
+}
+
 fn canonical_work(work: Vec<WorkItem>) -> Vec<(Arc<str>, u64)> {
     let mut aggregate = BTreeMap::<Arc<str>, u64>::new();
     for item in work {
         *aggregate.entry(item.identity).or_default() += item.amount;
+    }
+    aggregate.into_iter().collect()
+}
+
+fn canonical_reduced_work(work: Vec<(Arc<str>, u64)>) -> Vec<(Arc<str>, u64)> {
+    let mut aggregate = BTreeMap::<Arc<str>, u64>::new();
+    for (identity, amount) in work {
+        *aggregate.entry(identity).or_default() += amount;
     }
     aggregate.into_iter().collect()
 }
@@ -1450,9 +2767,16 @@ mod tests {
         Revision::new(id, id)
     }
 
+    fn publish_empty(runtime: &QueryRuntime, revisions: impl IntoIterator<Item = Revision>) {
+        for revision in revisions {
+            runtime.publish_revision(revision, []).unwrap();
+        }
+    }
+
     #[test]
     fn compatible_exact_key_is_computed_once_and_joined_by_many_waiters() {
         let runtime = QueryRuntime::new(8);
+        publish_empty(&runtime, [revision(1)]);
         let family = runtime.family::<Key, u64>("join", 16).unwrap();
         let (started_tx, started_rx) = mpsc::channel();
         let (finish_tx, finish_rx) = mpsc::channel();
@@ -1502,6 +2826,7 @@ mod tests {
     #[test]
     fn different_ready_keys_execute_concurrently() {
         let runtime = QueryRuntime::new(2);
+        publish_empty(&runtime, [revision(1)]);
         let family = runtime.family::<Key, u64>("overlap", 4).unwrap();
         let barrier = Arc::new(Barrier::new(2));
         let handles = [Key("a"), Key("b")].map(|key| {
@@ -1524,6 +2849,7 @@ mod tests {
     #[test]
     fn one_permit_joiner_donates_to_already_claimed_owner() {
         let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
         let outer = runtime.family::<Key, u64>("outer", 4).unwrap();
         let target = runtime.family::<Key, u64>("target", 4).unwrap();
         let (outer_started_tx, outer_started_rx) = mpsc::channel();
@@ -1583,6 +2909,7 @@ mod tests {
     #[test]
     fn one_permit_cross_task_cycle_is_distinct_from_queued_owner_starvation() {
         let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
         let left = runtime.family::<Key, u64>("one-cycle-left", 4).unwrap();
         let right = runtime.family::<Key, u64>("one-cycle-right", 4).unwrap();
         let (left_started_tx, left_started_rx) = mpsc::channel();
@@ -1642,6 +2969,7 @@ mod tests {
     #[test]
     fn exact_stack_cycle_is_not_reported_as_starvation() {
         let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
         let family = runtime.family::<Key, u64>("self-cycle", 4).unwrap();
         let nested = family.clone();
         let result = runtime.query(
@@ -1664,6 +2992,7 @@ mod tests {
     #[test]
     fn cross_task_wait_cycle_is_detected_without_deadlock() {
         let runtime = QueryRuntime::new(2);
+        publish_empty(&runtime, [revision(1)]);
         let left = runtime.family::<Key, u64>("cycle-left", 4).unwrap();
         let right = runtime.family::<Key, u64>("cycle-right", 4).unwrap();
         let barrier = Arc::new(Barrier::new(2));
@@ -1715,6 +3044,7 @@ mod tests {
     #[test]
     fn incompatible_revisions_do_not_join_and_can_overlap() {
         let runtime = QueryRuntime::new(2);
+        publish_empty(&runtime, [revision(1), revision(2)]);
         let family = runtime.family::<Key, u64>("revisions", 4).unwrap();
         let barrier = Arc::new(Barrier::new(2));
         let handles = [revision(1), revision(2)].map(|revision| {
@@ -1745,6 +3075,7 @@ mod tests {
     #[test]
     fn red_publication_preserves_stamp_across_revision_and_position_changes() {
         let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1), revision(2), revision(3)]);
         let leaf = runtime.family::<Key, u64>("red-leaf", 8).unwrap();
         let parent = runtime.family::<Key, u64>("red-parent", 8).unwrap();
 
@@ -1793,14 +3124,18 @@ mod tests {
         );
 
         let third = run(revision(3), 6, 100).unwrap();
-        assert_ne!(second.stamp(), third.stamp());
+        // The green child forces the parent body to run, but equal parent
+        // semantics retain the parent's red stamp.
+        assert_eq!(second.stamp(), third.stamp());
         assert_ne!(second.dependencies(), third.dependencies());
+        assert_eq!(runtime.metrics().claims, 6);
         assert!(runtime.metrics().red_publications >= 2);
     }
 
     #[test]
     fn canceling_a_waiter_does_not_cancel_shared_work() {
         let runtime = QueryRuntime::new(2);
+        publish_empty(&runtime, [revision(1)]);
         let family = runtime.family::<Key, u64>("waiter-cancel", 4).unwrap();
         let (started_tx, started_rx) = mpsc::channel();
         let (finish_tx, finish_rx) = mpsc::channel();
@@ -1846,6 +3181,7 @@ mod tests {
     #[test]
     fn canceled_owner_does_not_publish_and_live_waiter_reclaims() {
         let runtime = QueryRuntime::new(2);
+        publish_empty(&runtime, [revision(1)]);
         let family = runtime.family::<Key, u64>("owner-cancel", 4).unwrap();
         let owner_token = CancellationToken::new();
         let owner_cancel = owner_token.clone();
@@ -1893,6 +3229,16 @@ mod tests {
     #[test]
     fn failures_are_reused_and_retention_respects_pins() {
         let runtime = QueryRuntime::new(1);
+        publish_empty(
+            &runtime,
+            [
+                revision(1),
+                Revision::new(99, 1),
+                revision(2),
+                revision(3),
+                revision(4),
+            ],
+        );
         let family = runtime.family::<Key, u64>("retention", 2).unwrap();
         let failed = runtime
             .query(
@@ -1943,6 +3289,7 @@ mod tests {
     fn terminal_diagnostics_and_work_are_worker_order_independent() {
         fn run(workers: usize, reverse: bool) -> Arc<QueryTerminal<u64>> {
             let runtime = QueryRuntime::new(workers);
+            publish_empty(&runtime, [revision(1)]);
             let family = runtime.family::<Key, u64>("determinism", 2).unwrap();
             runtime
                 .query(
@@ -1984,6 +3331,7 @@ mod tests {
     #[test]
     fn family_names_and_key_text_form_collision_free_node_identities() {
         let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
         let left = runtime.family::<Key, u64>("left", 2).unwrap();
         let right = runtime.family::<Key, u64>("right", 2).unwrap();
         assert!(matches!(
@@ -2015,6 +3363,7 @@ mod tests {
     #[test]
     fn active_joiner_protects_terminal_until_wake_with_zero_retention() {
         let runtime = QueryRuntime::new(2);
+        publish_empty(&runtime, [revision(1)]);
         let family = runtime
             .family::<Key, u64>("zero-retention-join", 0)
             .unwrap();
@@ -2071,6 +3420,7 @@ mod tests {
         let runtime = QueryRuntime::new(1);
         let family = runtime.family::<NumberKey, u64>("key-churn", 0).unwrap();
         for key in 0..256 {
+            publish_empty(&runtime, [revision(key + 1)]);
             runtime
                 .query(
                     &family,
@@ -2094,6 +3444,7 @@ mod tests {
     #[test]
     fn foreign_same_named_family_cannot_pin_terminal() {
         let first_runtime = QueryRuntime::new(1);
+        publish_empty(&first_runtime, [revision(1)]);
         let first = first_runtime.family::<Key, u64>("same-name", 1).unwrap();
         let terminal = first_runtime
             .query(
@@ -2117,6 +3468,7 @@ mod tests {
     #[test]
     fn evicted_and_recreated_node_cannot_repeat_an_old_observation() {
         let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1), revision(2)]);
         let leaf = runtime.family::<Key, u64>("aba-leaf", 0).unwrap();
         let parent = runtime.family::<Key, u64>("aba-parent", 4).unwrap();
         let run = |revision, leaf_value| {
@@ -2142,6 +3494,660 @@ mod tests {
             second.dependencies()[0].incarnation
         );
         assert_ne!(first.dependencies(), second.dependencies());
-        assert_ne!(first.stamp(), second.stamp());
+        // The ABA-safe child identity forced recomputation. Dependency lists
+        // are provenance and do not make equal parent semantics green.
+        assert_eq!(first.stamp(), second.stamp());
+        assert_eq!(runtime.metrics().claims, 4);
+    }
+
+    #[test]
+    fn cross_revision_reuse_validates_every_exact_input_leaf() {
+        let runtime = QueryRuntime::new(1);
+        let family = runtime.family::<Key, u64>("validated", 4).unwrap();
+        let input = InputIdentity::new("source", "main.rue");
+        let first_revision = Revision::new(1, 7);
+        let equivalent_revision = Revision::new(2, 7);
+        let changed_revision = Revision::new(3, 7);
+        let missing_revision = Revision::new(4, 7);
+        runtime
+            .publish_revision(first_revision, [(input.clone(), 11)])
+            .unwrap();
+        runtime
+            .publish_revision(equivalent_revision, [(input.clone(), 11)])
+            .unwrap();
+        runtime
+            .publish_revision(changed_revision, [(input.clone(), 12)])
+            .unwrap();
+        runtime.publish_revision(missing_revision, []).unwrap();
+
+        let first = runtime
+            .query(
+                &family,
+                first_revision,
+                Key("same"),
+                CancellationToken::new(),
+                |context| {
+                    assert_eq!(context.input(input.clone())?, 11);
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        let reused = runtime
+            .query(
+                &family,
+                equivalent_revision,
+                Key("same"),
+                CancellationToken::new(),
+                |_| panic!("equal compatibility is insufficient; exact leaves prove reuse"),
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&first, &reused));
+
+        let recomputed = runtime
+            .query(
+                &family,
+                changed_revision,
+                Key("same"),
+                CancellationToken::new(),
+                |context| {
+                    assert_eq!(context.input(input.clone())?, 12);
+                    Ok(QueryOutput::success(2))
+                },
+            )
+            .unwrap();
+        assert_eq!(recomputed.outcome(), &QueryOutcome::Success(2));
+        let missing = runtime.request(
+            &family,
+            missing_revision,
+            Key("same"),
+            CancellationToken::new(),
+            |context| {
+                context.input(input.clone())?;
+                unreachable!("missing exact input fails closed")
+            },
+        );
+        assert_eq!(
+            missing.abort(),
+            Some(&QueryAbort::MissingInput(input.clone()))
+        );
+        assert_eq!(runtime.metrics().claims, 3);
+        assert_eq!(runtime.metrics().reuses, 1);
+    }
+
+    #[test]
+    fn red_green_validation_is_direct_recursive_and_semantic() {
+        let runtime = QueryRuntime::new(1);
+        let leaf = runtime.family::<Key, u64>("rg-leaf", 8).unwrap();
+        let middle = runtime.family::<Key, u64>("rg-middle", 8).unwrap();
+        let root = runtime.family::<Key, u64>("rg-root", 8).unwrap();
+        let input = InputIdentity::new("source", "main");
+        let revisions = [
+            Revision::new(10, 1),
+            Revision::new(11, 1),
+            Revision::new(12, 1),
+        ];
+        for (revision, stamp) in revisions.into_iter().zip([1, 2, 3]) {
+            runtime
+                .publish_revision(revision, [(input.clone(), stamp)])
+                .unwrap();
+        }
+
+        let initial_leaf = leaf.clone();
+        let initial_middle = middle.clone();
+        let first = runtime
+            .query(
+                &root,
+                revisions[0],
+                Key("root"),
+                CancellationToken::new(),
+                |context| {
+                    let middle = context.query(&initial_middle, Key("middle"), |context| {
+                        let leaf = context.query(&initial_leaf, Key("leaf"), |context| {
+                            context.input(input.clone())?;
+                            Ok(QueryOutput::success(10))
+                        })?;
+                        let QueryOutcome::Success(value) = leaf.outcome() else {
+                            unreachable!()
+                        };
+                        Ok(QueryOutput::success(*value))
+                    })?;
+                    assert_eq!(middle.inputs().len(), 0);
+                    Ok(QueryOutput::success(99))
+                },
+            )
+            .unwrap();
+        assert_eq!(first.inputs().len(), 0);
+        assert_eq!(first.dependencies().len(), 1);
+        let first_leaf = runtime
+            .query(
+                &leaf,
+                revisions[0],
+                Key("leaf"),
+                CancellationToken::new(),
+                |_| panic!("initial leaf terminal is retained"),
+            )
+            .unwrap();
+
+        // The direct leaf changes input but recomputes to equal semantics, so
+        // it stays red. Recursive validation can then reuse both ancestors.
+        let red_leaf = runtime
+            .query(
+                &leaf,
+                revisions[1],
+                Key("leaf"),
+                CancellationToken::new(),
+                |context| {
+                    context.input(input.clone())?;
+                    Ok(QueryOutput::success(10))
+                },
+            )
+            .unwrap();
+        assert_eq!(red_leaf.stamp(), first_leaf.stamp());
+        let reused = runtime.request(
+            &root,
+            revisions[1],
+            Key("root"),
+            CancellationToken::new(),
+            |_| panic!("validated red dependency chain must reuse the root"),
+        );
+        assert_eq!(reused.execution(), RequestExecution::Reused);
+
+        // A green leaf makes the middle invalid, which recursively makes the
+        // root recompute. Equal root semantics still retain the root stamp.
+        let green_leaf = runtime
+            .query(
+                &leaf,
+                revisions[2],
+                Key("leaf"),
+                CancellationToken::new(),
+                |context| {
+                    context.input(input.clone())?;
+                    Ok(QueryOutput::success(11))
+                },
+            )
+            .unwrap();
+        assert_ne!(green_leaf.stamp(), red_leaf.stamp());
+        let recompute_leaf = leaf.clone();
+        let recompute_middle = middle.clone();
+        let recomputed = runtime.request(
+            &root,
+            revisions[2],
+            Key("root"),
+            CancellationToken::new(),
+            |context| {
+                let middle = context.query(&recompute_middle, Key("middle"), |context| {
+                    let leaf = context.query(&recompute_leaf, Key("leaf"), |_| {
+                        panic!("green leaf was already validated")
+                    })?;
+                    let QueryOutcome::Success(value) = leaf.outcome() else {
+                        unreachable!()
+                    };
+                    Ok(QueryOutput::success(*value))
+                })?;
+                assert_eq!(middle.outcome(), &QueryOutcome::Success(11));
+                Ok(QueryOutput::success(99))
+            },
+        );
+        assert_eq!(recomputed.execution(), RequestExecution::Computed);
+        assert_eq!(recomputed.terminal().unwrap().stamp(), first.stamp());
+    }
+
+    #[test]
+    fn registered_evaluators_propagate_red_from_a_root_only_request() {
+        let runtime = QueryRuntime::new(1);
+        let input = InputIdentity::new("source", "registered");
+        let leaf_runs = Arc::new(AtomicUsize::new(0));
+        let leaf_input = input.clone();
+        let leaf_counter = leaf_runs.clone();
+        let leaf = runtime
+            .family_with_evaluator::<Key, u64, _>("registered-leaf", 8, move |context, _, _| {
+                leaf_counter.fetch_add(1, Ordering::Relaxed);
+                let stamp = context.input(leaf_input.clone())?;
+                Ok(QueryOutput::success(if stamp < 3 { 10 } else { 11 }))
+            })
+            .unwrap();
+
+        let middle_runs = Arc::new(AtomicUsize::new(0));
+        let middle_leaf = leaf.clone();
+        let middle_counter = middle_runs.clone();
+        let middle = runtime
+            .family_with_evaluator::<Key, u64, _>("registered-middle", 8, move |context, _, _| {
+                middle_counter.fetch_add(1, Ordering::Relaxed);
+                let leaf = context.query_registered(&middle_leaf, Key("leaf"))?;
+                let QueryOutcome::Success(value) = leaf.outcome() else {
+                    unreachable!()
+                };
+                Ok(QueryOutput::success(*value))
+            })
+            .unwrap();
+
+        let root_runs = Arc::new(AtomicUsize::new(0));
+        let root_middle = middle.clone();
+        let root_counter = root_runs.clone();
+        let root = runtime
+            .family_with_evaluator::<Key, u64, _>("registered-root", 8, move |context, _, _| {
+                root_counter.fetch_add(1, Ordering::Relaxed);
+                context.query_registered(&root_middle, Key("middle"))?;
+                Ok(QueryOutput::success(99))
+            })
+            .unwrap();
+
+        let revisions = [
+            Revision::new(30, 1),
+            Revision::new(31, 1),
+            Revision::new(32, 1),
+        ];
+        for (revision, stamp) in revisions.into_iter().zip([1, 2, 3]) {
+            runtime
+                .publish_revision(revision, [(input.clone(), stamp)])
+                .unwrap();
+        }
+
+        let first =
+            runtime.request_registered(&root, revisions[0], Key("root"), CancellationToken::new());
+        assert_eq!(first.execution(), RequestExecution::Computed);
+        assert_eq!(leaf_runs.load(Ordering::Relaxed), 1);
+        assert_eq!(middle_runs.load(Ordering::Relaxed), 1);
+        assert_eq!(root_runs.load(Ordering::Relaxed), 1);
+
+        // Only the root is requested. Validation demands the dirty leaf by its
+        // recorded exact key. Equal leaf semantics preserve its stamp, so both
+        // ancestors validate without running their bodies.
+        let red =
+            runtime.request_registered(&root, revisions[1], Key("root"), CancellationToken::new());
+        assert_eq!(red.execution(), RequestExecution::Reused);
+        assert_eq!(leaf_runs.load(Ordering::Relaxed), 2);
+        assert_eq!(middle_runs.load(Ordering::Relaxed), 1);
+        assert_eq!(root_runs.load(Ordering::Relaxed), 1);
+        assert!(
+            red.nested_attempts()
+                .iter()
+                .any(|attempt| attempt.node().family() == "registered-leaf"
+                    && attempt.execution() == RequestExecution::Computed)
+        );
+
+        // A green leaf invalidates and recomputes each ancestor. The root's
+        // own equal semantics remain red even though its body must run.
+        let green =
+            runtime.request_registered(&root, revisions[2], Key("root"), CancellationToken::new());
+        assert_eq!(green.execution(), RequestExecution::Computed);
+        assert_eq!(leaf_runs.load(Ordering::Relaxed), 3);
+        assert_eq!(middle_runs.load(Ordering::Relaxed), 2);
+        assert_eq!(root_runs.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            green.terminal().unwrap().stamp(),
+            first.terminal().unwrap().stamp()
+        );
+    }
+
+    #[test]
+    fn nested_requests_retain_computed_and_reused_lifecycles() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let child = runtime
+            .family::<Key, u64>("nested-ledger-child", 4)
+            .unwrap();
+        let root = runtime.family::<Key, u64>("nested-ledger-root", 4).unwrap();
+
+        let first_child = child.clone();
+        let first = runtime.request(
+            &root,
+            revision(1),
+            Key("first"),
+            CancellationToken::new(),
+            move |context| {
+                context.query(&first_child, Key("child"), |_| {
+                    Ok(QueryOutput::success(7).with_work(vec![WorkItem::new("child", 2)]))
+                })?;
+                Ok(QueryOutput::success(1))
+            },
+        );
+        assert_eq!(first.nested_attempts().len(), 1);
+        assert_eq!(
+            first.nested_attempts()[0].execution(),
+            RequestExecution::Computed
+        );
+        assert_eq!(
+            first.nested_attempts()[0].id(),
+            first.nested_attempts()[0].origin_request_id()
+        );
+        assert!(first.nested_attempts()[0].node_incarnation().is_some());
+        assert_eq!(
+            first.nested_attempts()[0].work(),
+            &[(Arc::<str>::from("child"), 2)]
+        );
+
+        let reused_child = child.clone();
+        let second = runtime.request(
+            &root,
+            revision(1),
+            Key("second"),
+            CancellationToken::new(),
+            move |context| {
+                context.query(&reused_child, Key("child"), |_| {
+                    panic!("the retained child must be reused")
+                })?;
+                Ok(QueryOutput::success(2))
+            },
+        );
+        assert_eq!(second.nested_attempts().len(), 1);
+        assert_eq!(
+            second.nested_attempts()[0].execution(),
+            RequestExecution::Reused
+        );
+        assert!(second.nested_attempts()[0].work().is_empty());
+        assert_eq!(
+            second.nested_attempts()[0].origin_request_id(),
+            first.nested_attempts()[0].id()
+        );
+    }
+
+    #[test]
+    fn registered_same_family_cycle_aborts_recovers_and_does_not_retain_itself() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let family = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "registered-self-cycle",
+                4,
+                |context, family, key| match key.0 {
+                    "left" => {
+                        context.query_registered(family, Key("right"))?;
+                        Ok(QueryOutput::success(1))
+                    }
+                    "right" => {
+                        context.query_registered(family, Key("left"))?;
+                        Ok(QueryOutput::success(2))
+                    }
+                    "recovery" => Ok(QueryOutput::success(3)),
+                    _ => unreachable!(),
+                },
+            )
+            .unwrap();
+        let weak = family.downgrade();
+
+        let cycle =
+            runtime.request_registered(&family, revision(1), Key("left"), CancellationToken::new());
+        assert!(matches!(cycle.abort(), Some(QueryAbort::Cycle(_))));
+        assert!(
+            cycle
+                .nested_attempts()
+                .iter()
+                .any(|attempt| attempt.execution() == RequestExecution::Aborted)
+        );
+
+        let recovery = runtime.request_registered(
+            &family,
+            revision(1),
+            Key("recovery"),
+            CancellationToken::new(),
+        );
+        assert_eq!(recovery.execution(), RequestExecution::Computed);
+        assert_eq!(
+            recovery.terminal().unwrap().outcome(),
+            &QueryOutcome::Success(3)
+        );
+
+        drop(recovery);
+        drop(cycle);
+        drop(family);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn aborted_requests_retain_nested_dependency_input_and_work_prefixes() {
+        let runtime = QueryRuntime::new(1);
+        let grandchild = runtime.family::<Key, u64>("abort-grandchild", 4).unwrap();
+        let child = runtime.family::<Key, u64>("abort-child", 4).unwrap();
+        let root = runtime.family::<Key, u64>("abort-root", 4).unwrap();
+        let input = InputIdentity::new("source", "abort");
+        let revision = Revision::new(20, 1);
+        runtime
+            .publish_revision(revision, [(input.clone(), 7)])
+            .unwrap();
+
+        let nested_child = child.clone();
+        let nested_grandchild = grandchild.clone();
+        let attempt = runtime.request(
+            &root,
+            revision,
+            Key("root"),
+            CancellationToken::new(),
+            |context| {
+                context.query(&nested_child, Key("child"), |context| {
+                    context.input(input)?;
+                    context.query(&nested_grandchild, Key("grandchild"), |_| {
+                        Ok(QueryOutput::success(1).with_work(vec![WorkItem::new("grandchild", 2)]))
+                    })?;
+                    context.record_work(WorkItem::new("child-prefix", 3));
+                    Err(QueryAbort::Canceled)
+                })?;
+                unreachable!("nested abort propagates")
+            },
+        );
+        assert_eq!(attempt.execution(), RequestExecution::Aborted);
+        assert_eq!(attempt.abort(), Some(&QueryAbort::Canceled));
+        assert_eq!(attempt.dependencies().len(), 1);
+        assert_eq!(
+            attempt.inputs(),
+            &[InputObservation {
+                input: InputIdentity::new("source", "abort"),
+                stamp: 7
+            }]
+        );
+        assert_eq!(
+            attempt.work(),
+            &[
+                (Arc::<str>::from("child-prefix"), 3),
+                (Arc::<str>::from("grandchild"), 2),
+            ]
+        );
+        assert_eq!(attempt.nested_attempts().len(), 2);
+        assert_eq!(
+            attempt.nested_attempts()[0].execution(),
+            RequestExecution::Computed
+        );
+        assert_eq!(
+            attempt.nested_attempts()[1].execution(),
+            RequestExecution::Aborted
+        );
+        assert_eq!(
+            attempt.nested_attempts()[1].abort(),
+            Some(&QueryAbort::Canceled)
+        );
+        assert_eq!(
+            attempt.nested_attempts()[1].inputs(),
+            &[InputObservation {
+                input: InputIdentity::new("source", "abort"),
+                stamp: 7
+            }]
+        );
+    }
+
+    #[test]
+    fn unpublished_revisions_fail_closed_and_active_views_are_bounded_and_pinned() {
+        let runtime = QueryRuntime::new(1);
+        let family = runtime.family::<Key, u64>("revision-liveness", 2).unwrap();
+        assert_eq!(
+            runtime
+                .request(
+                    &family,
+                    revision(1),
+                    Key("missing"),
+                    CancellationToken::new(),
+                    |_| Ok(QueryOutput::success(1)),
+                )
+                .abort(),
+            Some(&QueryAbort::UnpublishedRevision(revision(1)))
+        );
+
+        let active = revision(2);
+        publish_empty(&runtime, [active]);
+        let revision_pin = family.retain_revision(active);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (finish_tx, finish_rx) = mpsc::channel();
+        let worker_runtime = runtime.clone();
+        let worker_family = family.clone();
+        let worker = thread::spawn(move || {
+            worker_runtime.query(
+                &worker_family,
+                active,
+                Key("active"),
+                CancellationToken::new(),
+                |_| {
+                    started_tx.send(()).unwrap();
+                    finish_rx.recv().unwrap();
+                    Ok(QueryOutput::success(2))
+                },
+            )
+        });
+        started_rx.recv().unwrap();
+        for id in 3..=(REVISION_RETENTION_LIMIT as u64 + 10) {
+            publish_empty(&runtime, [revision(id)]);
+        }
+        assert_eq!(
+            runtime.metrics().retained_revisions,
+            REVISION_RETENTION_LIMIT as u64
+        );
+        runtime.publish_revision(active, []).unwrap();
+        finish_tx.send(()).unwrap();
+        assert_eq!(
+            worker.join().unwrap().unwrap().outcome(),
+            &QueryOutcome::Success(2)
+        );
+        assert_eq!(
+            runtime
+                .query(
+                    &family,
+                    active,
+                    Key("active"),
+                    CancellationToken::new(),
+                    |_| panic!("explicit revision pin retains the reusable view"),
+                )
+                .unwrap()
+                .outcome(),
+            &QueryOutcome::Success(2)
+        );
+        drop(revision_pin);
+        assert_eq!(
+            runtime.publish_revision(revision(1), []),
+            Err(RevisionError::Retired(revision(1)))
+        );
+    }
+
+    #[test]
+    fn revisions_and_key_identities_fail_closed_on_conflicts() {
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        struct CollidingKey(u8);
+
+        impl QueryKey for CollidingKey {
+            fn stable_identity(&self) -> String {
+                "collision".to_owned()
+            }
+        }
+
+        let runtime = QueryRuntime::new(1);
+        let input = InputIdentity::new("source", "main.rue");
+        assert_eq!(
+            runtime.publish_revision(revision(1), [(input.clone(), 1), (input.clone(), 2)]),
+            Err(RevisionError::ConflictingInput(input))
+        );
+        publish_empty(&runtime, [revision(1)]);
+
+        let family = runtime
+            .family::<CollidingKey, u64>("colliding-keys", 2)
+            .unwrap();
+        let first = runtime
+            .query(
+                &family,
+                revision(1),
+                CollidingKey(1),
+                CancellationToken::new(),
+                |_| Ok(QueryOutput::success(1)),
+            )
+            .unwrap();
+        let second = runtime
+            .query(
+                &family,
+                revision(1),
+                CollidingKey(2),
+                CancellationToken::new(),
+                |_| Ok(QueryOutput::success(2)),
+            )
+            .unwrap();
+        assert_eq!(first.node().family(), "colliding-keys");
+        assert_eq!(first.node().key(), "collision");
+        // The schedule-dependent incarnation stays out of canonical display
+        // ordering while exact K equality still chooses distinct memo nodes.
+        assert_eq!(first.node(), second.node());
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert_ne!(first.outcome(), second.outcome());
+    }
+
+    #[test]
+    fn family_policy_and_selection_preserve_last_good_above_terminals() {
+        #[derive(Debug, Clone)]
+        struct Value {
+            canonical: u64,
+            presentation: u64,
+        }
+
+        fn canonical_equal(left: &Value, right: &Value) -> bool {
+            left.canonical == right.canonical
+        }
+
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1), revision(2), revision(3)]);
+        let family = runtime
+            .family_with_equality::<Key, Value>("family-policy", 4, canonical_equal)
+            .unwrap();
+        let success = runtime
+            .query(
+                &family,
+                revision(1),
+                Key("selected"),
+                CancellationToken::new(),
+                |_| {
+                    Ok(QueryOutput::success(Value {
+                        canonical: 1,
+                        presentation: 10,
+                    }))
+                },
+            )
+            .unwrap();
+        let red = runtime
+            .query(
+                &family,
+                revision(2),
+                Key("selected"),
+                CancellationToken::new(),
+                |_| {
+                    Ok(QueryOutput::success(Value {
+                        canonical: 1,
+                        presentation: 20,
+                    }))
+                },
+            )
+            .unwrap();
+        assert_eq!(success.stamp(), red.stamp());
+        let QueryOutcome::Success(value) = red.outcome() else {
+            unreachable!()
+        };
+        assert_eq!(value.presentation, 20);
+
+        let failure = runtime
+            .query(
+                &family,
+                revision(3),
+                Key("selected"),
+                CancellationToken::new(),
+                |_| Ok(QueryOutput::failure(QueryFailure::new("E", "failed"))),
+            )
+            .unwrap();
+        let mut selection = family.selection();
+        selection.publish(&red).unwrap();
+        selection.publish(&failure).unwrap();
+        assert!(Arc::ptr_eq(selection.current().unwrap(), &failure));
+        assert!(Arc::ptr_eq(selection.last_good().unwrap(), &red));
     }
 }

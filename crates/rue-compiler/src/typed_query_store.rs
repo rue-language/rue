@@ -113,8 +113,28 @@ pub(crate) trait AttemptView: std::fmt::Debug + Send + Sync {
     fn outcome(&self) -> AttemptOutcomeKind;
     fn origin_id(&self) -> AttemptId;
     fn dependencies(&self) -> &[ObservedDependency];
+    /// Runtime-native observations which cannot be forged into legacy graph
+    /// node identities during family migration.
+    fn runtime_observations(&self) -> &[RuntimeObservation] {
+        &[]
+    }
+    /// Runtime-owned reduced work for revisioned-runtime attempts. This is
+    /// separate from family-typed structural work during migration.
+    fn runtime_work(&self) -> &[(Arc<str>, u64)] {
+        &[]
+    }
     fn work(&self) -> &QueryStructuralWork;
     fn diagnostics(&self) -> Option<&Arc<crate::FrontendDiagnosticSnapshot>>;
+}
+
+/// Explicit compatibility projection for revisioned-runtime provenance.
+///
+/// These values remain runtime-owned; adapters must not allocate peer
+/// `QueryGraph` nodes merely to satisfy the legacy `dependencies()` shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RuntimeObservation {
+    Dependency(rue_query::Observation),
+    Input(rue_query::InputObservation),
 }
 
 /// The sole immutable record of one request to a typed query family.

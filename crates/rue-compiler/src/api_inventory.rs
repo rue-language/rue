@@ -36,6 +36,10 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("parsed_modules", include_str!("parsed_modules.rs")),
     ("queries", include_str!("queries.rs")),
     ("query_graph", include_str!("query_graph.rs")),
+    (
+        "revisioned_query_database",
+        include_str!("revisioned_query_database.rs"),
+    ),
     ("semantic_symbols", include_str!("semantic_symbols.rs")),
     ("session", include_str!("session.rs")),
     ("source_identity", include_str!("source_identity.rs")),
@@ -1477,6 +1481,27 @@ fn query_attempts_have_one_family_owned_representation() {
         production.contains("attempt: Arc<dyn AttemptView>"),
         "diagnostic and metrics indexes must retain the family-owned attempt Arc"
     );
+}
+
+#[test]
+fn revisioned_parse_family_has_no_peer_legacy_authority() {
+    let session = include_str!("session.rs");
+    let runtime = include_str!("revisioned_query_database.rs");
+    for removed in [
+        "parse: TypedQueryStore<ParseQuery>",
+        "parse_inputs",
+        "ParsedProgramLookup",
+        "queries.parse",
+        "QueryNodeFamily::Parse",
+    ] {
+        assert!(
+            !session.contains(removed),
+            "legacy parse query authority returned: {removed}"
+        );
+    }
+    assert!(session.contains("revisioned.source_revision(&source)"));
+    assert!(session.contains("revisioned.select_parse(&attempt)"));
+    assert!(runtime.contains("parse: RevisionedFamily<super::session::ParseQuery>"));
 }
 
 #[test]

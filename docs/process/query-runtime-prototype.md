@@ -46,15 +46,27 @@ removed.
 
 `QueryRuntime` owns the permit budget, cross-task wait graph, task identities,
 and structural metrics. `QueryFamily<K, V>` owns exact `K`-keyed memo nodes and
-bounded FIFO attempts. `QueryRuntime::query` creates a task pinned to a
-`Revision`; `QueryContext::query` requests typed dependencies in that same task
-and revision.
+bounded FIFO attempts. `QueryRuntime::request_registered` creates a task pinned
+to a `Revision`; `QueryContext::query_registered` requests typed dependencies
+in that same task and revision. A registered evaluator is immutable family
+policy and receives a non-owning reference to its own family, so recursive
+families do not capture themselves. Weak family handles express cross-family
+back edges without ownership cycles. The closure-per-request entry points are a
+compatibility path for transitional families which do not register evaluators.
 
-Logical node identity is the collision-free pair of a unique stable family name
-and the `QueryKey` implementation's stable identity. It is never a hash. The
-runtime also assigns each retained node incarnation an opaque session-local
+Validation demands a dirty registered dependency from its recorded exact key
+under the requesting task before accepting or rejecting the parent terminal.
+No node or family lock is held across that demand. This lets an equal child
+recomputation preserve its red stamp and validate an entire ancestor chain from
+a root-only request. Every nested demand also freezes a unique immutable
+computed/reused/joined/aborted lifecycle in the top-level request ledger,
+including its terminal origin, dependency/input/work prefix, and abort.
+
+Memo lookup uses exact family-local `QueryKey::eq`; its stable identity is only
+display text and may collide. It is never a hash or memo authority. The runtime
+also assigns each retained exact node incarnation an opaque session-local
 generation. Dependency observations include that generation so evicting and
-recreating a logical node cannot repeat `(node, stamp)` and falsely validate an
+recreating an exact node cannot repeat `(node, stamp)` and falsely validate an
 old dependent. The generation is query-control metadata; it does not enter a
 canonical compiler artifact or user-visible ordering.
 
@@ -66,9 +78,11 @@ owns a permit releases it before parking and reacquires it before returning to
 its body. Nested work by the same task reuses its existing permit.
 
 Publication sorts diagnostics and reduces work by stable identity. Red equality
-compares the canonical success/failure outcome, semantic diagnostic identities
-and payloads, and exact dependency observations. Presentation positions,
-revision numbers, attempt order, and structural work are excluded. A red
+compares only the family-owned terminal kind, canonical success/failure outcome,
+and semantic diagnostic identities and payloads. Dependency and input
+observations are provenance used to validate whether recomputation is required;
+they do not make equal semantics green. Presentation positions, revision
+numbers, attempt order, and structural work are also excluded. A red
 recomputation publishes current positions and work while preserving its prior
 terminal stamp.
 
