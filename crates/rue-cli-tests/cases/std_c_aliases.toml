@@ -1,0 +1,254 @@
+# std.c transparent C scalar aliases + the target data-model descriptor
+# (RUE-742 / RUE-1064, ADR-0064 Amendment 1 / P1.5b).
+#
+# std.c is ordinary Rue source (like std.fs / std.net): transparent type
+# aliases naming each C scalar by the width and signedness the *selected
+# compilation target's* platform psABI assigns it. Every supported target is
+# LP64, so the widths are target-invariant and asserted with a single
+# @size_of fingerprint; the three target-pinned cases confirm std.c compiles
+# cross-target to the same widths (native host also executes, exactly as
+# cli.c_ffi / cli.abi_conformance pin their probes).
+#
+# The one row that is NOT target-invariant — plain `char` signedness (signed on
+# x86-64-linux and aarch64-macos, unsigned on aarch64-linux) — cannot yet be a
+# transparent alias, because target intrinsics do not fold in const/comptime
+# type position. std.c therefore ships `c_schar`/`c_uchar` (unconditional and
+# correct everywhere); their observable sign/zero extension is asserted here.
+
+[section]
+id = "cli.std_c_aliases"
+name = "std.c transparent C scalar aliases + target data-model descriptor"
+description = "std.c width/signedness aliases match the target psABI; @target_data_model() reports LP64 for every supported target (RUE-1064, ADR-0064 P1.5b)."
+
+# --- Width fingerprint, pinned to each supported target --------------------
+# Sum of @size_of over every alias: 1+1 (schar/uchar) + 2+2 (short/ushort)
+# + 4+4 (int/uint) + 8*7 (long/ulong/longlong/ulonglong/size_t/ssize_t/
+# ptrdiff_t) + 4 (wchar_t) + 1 (bool) = 75. Identical on every LP64 target.
+
+[[case]]
+name = "x86_64_linux_std_c_alias_widths"
+description = "std.c alias widths sum to 75 (LP64) on x86-64-linux."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let mut acc: i32 = 0;
+    acc = acc + @intCast(@size_of(std.c.c_schar));
+    acc = acc + @intCast(@size_of(std.c.c_uchar));
+    acc = acc + @intCast(@size_of(std.c.c_short));
+    acc = acc + @intCast(@size_of(std.c.c_ushort));
+    acc = acc + @intCast(@size_of(std.c.c_int));
+    acc = acc + @intCast(@size_of(std.c.c_uint));
+    acc = acc + @intCast(@size_of(std.c.c_long));
+    acc = acc + @intCast(@size_of(std.c.c_ulong));
+    acc = acc + @intCast(@size_of(std.c.c_longlong));
+    acc = acc + @intCast(@size_of(std.c.c_ulonglong));
+    acc = acc + @intCast(@size_of(std.c.c_size_t));
+    acc = acc + @intCast(@size_of(std.c.c_ssize_t));
+    acc = acc + @intCast(@size_of(std.c.c_ptrdiff_t));
+    acc = acc + @intCast(@size_of(std.c.wchar_t));
+    acc = acc + @intCast(@size_of(std.c.c_bool));
+    acc
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 75
+
+[[case]]
+name = "aarch64_linux_std_c_alias_widths"
+description = "std.c alias widths sum to 75 (LP64) on aarch64-linux."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let mut acc: i32 = 0;
+    acc = acc + @intCast(@size_of(std.c.c_schar));
+    acc = acc + @intCast(@size_of(std.c.c_uchar));
+    acc = acc + @intCast(@size_of(std.c.c_short));
+    acc = acc + @intCast(@size_of(std.c.c_ushort));
+    acc = acc + @intCast(@size_of(std.c.c_int));
+    acc = acc + @intCast(@size_of(std.c.c_uint));
+    acc = acc + @intCast(@size_of(std.c.c_long));
+    acc = acc + @intCast(@size_of(std.c.c_ulong));
+    acc = acc + @intCast(@size_of(std.c.c_longlong));
+    acc = acc + @intCast(@size_of(std.c.c_ulonglong));
+    acc = acc + @intCast(@size_of(std.c.c_size_t));
+    acc = acc + @intCast(@size_of(std.c.c_ssize_t));
+    acc = acc + @intCast(@size_of(std.c.c_ptrdiff_t));
+    acc = acc + @intCast(@size_of(std.c.wchar_t));
+    acc = acc + @intCast(@size_of(std.c.c_bool));
+    acc
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 75
+
+[[case]]
+name = "aarch64_macos_std_c_alias_widths"
+description = "std.c alias widths sum to 75 (LP64) on aarch64-macos."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let mut acc: i32 = 0;
+    acc = acc + @intCast(@size_of(std.c.c_schar));
+    acc = acc + @intCast(@size_of(std.c.c_uchar));
+    acc = acc + @intCast(@size_of(std.c.c_short));
+    acc = acc + @intCast(@size_of(std.c.c_ushort));
+    acc = acc + @intCast(@size_of(std.c.c_int));
+    acc = acc + @intCast(@size_of(std.c.c_uint));
+    acc = acc + @intCast(@size_of(std.c.c_long));
+    acc = acc + @intCast(@size_of(std.c.c_ulong));
+    acc = acc + @intCast(@size_of(std.c.c_longlong));
+    acc = acc + @intCast(@size_of(std.c.c_ulonglong));
+    acc = acc + @intCast(@size_of(std.c.c_size_t));
+    acc = acc + @intCast(@size_of(std.c.c_ssize_t));
+    acc = acc + @intCast(@size_of(std.c.c_ptrdiff_t));
+    acc = acc + @intCast(@size_of(std.c.wchar_t));
+    acc = acc + @intCast(@size_of(std.c.c_bool));
+    acc
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-macos", "-o", "prog"]
+executable_target = "aarch64-macos"
+execute_if_native = true
+exit_code = 75
+
+# --- Per-alias exact widths (host run) -------------------------------------
+# Pins the two widths that define LP64: c_long is 8 (it is 4 under ILP32/LLP64)
+# and c_int is 4. Encoded as c_long*10 + c_int = 84, which fits a u8 exit code.
+
+[[case]]
+name = "std_c_alias_exact_widths"
+description = "c_long is 8 and c_int is 4 (the LP64 signature): c_long*10 + c_int == 84."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let i: i32 = @intCast(@size_of(std.c.c_int));
+    let l: i32 = @intCast(@size_of(std.c.c_long));
+    l * 10 + i
+}
+""" }]
+exit_code = 84
+
+# --- char-family signedness is observable ----------------------------------
+# c_schar (i8) sign-extends -1 to -1; c_uchar (u8) zero-extends 255 to 255.
+# 255 + (-1) == 254. This is the observable signedness fact of the normative
+# scalar table's char rows (the signed/unsigned char types).
+
+[[case]]
+name = "std_c_char_family_signedness"
+description = "c_schar sign-extends and c_uchar zero-extends: (255 as c_uchar) + (-1 as c_schar) == 254."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let s: std.c.c_schar = -1;
+    let sw: i32 = @intCast(s);
+    let u: std.c.c_uchar = 255;
+    let uw: i32 = @intCast(u);
+    uw + sw
+}
+""" }]
+exit_code = 254
+
+# --- c_int is transparently i32 (no wrapper) -------------------------------
+# A std.c.c_int value flows into an i32 binding with no cast/coercion, proving
+# the alias is transparent rather than a newtype.
+
+[[case]]
+name = "std_c_int_is_transparent_i32"
+description = "A std.c.c_int value is directly usable as i32 with no coercion (transparent alias)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let x: std.c.c_int = 41;
+    let y: i32 = x;
+    y + 1
+}
+""" }]
+exit_code = 42
+
+# --- Target data-model descriptor, pinned to each supported target ---------
+# @target_data_model() specializes for the emitted target (RUE-417), exactly
+# like @target_arch()/@target_os(). Every supported target is LP64 => 64.
+
+[[case]]
+name = "x86_64_linux_data_model_is_lp64"
+description = "@target_data_model() is DataModel.Lp64 on x86-64-linux."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    match @target_data_model() {
+        DataModel.Ilp32 => 32,
+        DataModel.Lp64 => 64,
+        DataModel.Llp64 => 65,
+    }
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 64
+
+[[case]]
+name = "aarch64_linux_data_model_is_lp64"
+description = "@target_data_model() is DataModel.Lp64 on aarch64-linux (architecture alone does not fix the data model)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    match @target_data_model() {
+        DataModel.Ilp32 => 32,
+        DataModel.Lp64 => 64,
+        DataModel.Llp64 => 65,
+    }
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 64
+
+[[case]]
+name = "aarch64_macos_data_model_is_lp64"
+description = "@target_data_model() is DataModel.Lp64 on aarch64-macos."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    match @target_data_model() {
+        DataModel.Ilp32 => 32,
+        DataModel.Lp64 => 64,
+        DataModel.Llp64 => 65,
+    }
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-macos", "-o", "prog"]
+executable_target = "aarch64-macos"
+execute_if_native = true
+exit_code = 64
+
+# --- @target_data_model() takes no arguments -------------------------------
+
+[[case]]
+name = "data_model_rejects_arguments"
+description = "@target_data_model(x) is rejected: the intrinsic takes no arguments."
+compile_fail = true
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    match @target_data_model(1) {
+        DataModel.Ilp32 => 32,
+        DataModel.Lp64 => 64,
+        DataModel.Llp64 => 65,
+    }
+}
+""" }]
+error_contains = ["target_data_model"]

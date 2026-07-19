@@ -3821,12 +3821,12 @@ fn main() -> i32 {
         // Only source structs are registered; StrBuf comes from an explicit
         // std import and is absent in this source-only unit fixture.
         assert_eq!(stats.struct_count, 2);
-        // 3 enums: Arch (builtin) + Os (builtin) + E
-        assert_eq!(stats.enum_count, 3);
+        // 4 enums: Arch (builtin) + Os (builtin) + DataModel (builtin) + E
+        assert_eq!(stats.enum_count, 4);
         // No arrays in Phase 1
         assert_eq!(stats.array_count, 0);
-        // Total: 5 composite types
-        assert_eq!(stats.total, 5);
+        // Total: 6 composite types
+        assert_eq!(stats.total, 6);
     }
 
     #[test]

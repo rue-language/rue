@@ -423,11 +423,29 @@ pub static OS_ENUM: BuiltinEnumDef = BuiltinEnumDef {
     variants: &["Linux", "Macos"],
 };
 
+/// The built-in DataModel enum for C data-model detection (ADR-0064
+/// Amendment 1).
+///
+/// The data model names the widths a platform psABI assigns to C `int`,
+/// `long`, and pointers. Architecture alone is insufficient (AAPCS64 is the
+/// worked example), so it is a distinct target fact.
+///
+/// Variants (order fixed by `rue_target::DataModel`):
+/// - `Ilp32` (index 0): `int`/`long`/pointer = 32
+/// - `Lp64` (index 1): `int` = 32, `long`/pointer = 64 (all supported targets)
+/// - `Llp64` (index 2): `int`/`long` = 32, `long long`/pointer = 64
+///
+/// Used with the `@target_data_model()` intrinsic for platform-specific code.
+pub static DATA_MODEL_ENUM: BuiltinEnumDef = BuiltinEnumDef {
+    name: "DataModel",
+    variants: &["Ilp32", "Lp64", "Llp64"],
+};
+
 /// All built-in enums.
 ///
 /// The compiler iterates over this to inject synthetic enums before
 /// processing user code.
-pub static BUILTIN_ENUMS: &[&BuiltinEnumDef] = &[&ARCH_ENUM, &OS_ENUM];
+pub static BUILTIN_ENUMS: &[&BuiltinEnumDef] = &[&ARCH_ENUM, &OS_ENUM, &DATA_MODEL_ENUM];
 
 /// Look up a built-in enum by name.
 pub fn get_builtin_enum(name: &str) -> Option<&'static BuiltinEnumDef> {
@@ -653,9 +671,19 @@ mod tests {
     }
 
     #[test]
+    fn test_data_model_enum() {
+        assert_eq!(DATA_MODEL_ENUM.name, "DataModel");
+        assert_eq!(DATA_MODEL_ENUM.variants.len(), 3);
+        assert_eq!(DATA_MODEL_ENUM.variants[0], "Ilp32");
+        assert_eq!(DATA_MODEL_ENUM.variants[1], "Lp64");
+        assert_eq!(DATA_MODEL_ENUM.variants[2], "Llp64");
+    }
+
+    #[test]
     fn test_get_builtin_enum() {
         assert!(get_builtin_enum("Arch").is_some());
         assert!(get_builtin_enum("Os").is_some());
+        assert!(get_builtin_enum("DataModel").is_some());
         assert!(get_builtin_enum("Target").is_none());
     }
 
@@ -663,11 +691,12 @@ mod tests {
     fn test_is_reserved_enum_name() {
         assert!(is_reserved_enum_name("Arch"));
         assert!(is_reserved_enum_name("Os"));
+        assert!(is_reserved_enum_name("DataModel"));
         assert!(!is_reserved_enum_name("MyEnum"));
     }
 
     #[test]
     fn test_builtin_enums_count() {
-        assert_eq!(BUILTIN_ENUMS.len(), 2);
+        assert_eq!(BUILTIN_ENUMS.len(), 3);
     }
 }

@@ -69,6 +69,24 @@ impl Target {
         }
     }
 
+    /// Returns the C data model of this target: the widths the platform psABI
+    /// assigns to C `int`, `long`, and pointers (ADR-0064 Amendment 1).
+    ///
+    /// Architecture alone does not fix the data model — AAPCS64 is the worked
+    /// example: an AArch64 target can be LP64 (Linux, macOS) or LLP64 — so the
+    /// data model is a named target fact. Every currently-supported target is
+    /// LP64 (`int` = 32, `long` = 64, pointer = 64). It is exposed to Rue source
+    /// through the `@target_data_model()` intrinsic, mirroring `@target_arch()`
+    /// / `@target_os()`, so `std.c`'s width-dependent aliases can eventually be
+    /// selected per target once const-context target branching exists.
+    pub fn data_model(&self) -> DataModel {
+        match self {
+            // SysV AMD64, AAPCS64 (Linux), and the Apple ARM64 platform ABI are
+            // all LP64.
+            Target::X86_64Linux | Target::Aarch64Linux | Target::Aarch64Macos => DataModel::Lp64,
+        }
+    }
+
     /// Returns the ELF e_machine value for this target, if it uses ELF format.
     ///
     /// This is used when generating ELF object files and executables.
@@ -250,6 +268,34 @@ impl fmt::Display for Os {
     }
 }
 
+/// The C data model of a target: the widths the platform psABI assigns to the
+/// standard C integer and pointer types (ADR-0064 Amendment 1).
+///
+/// The data model is the compact way psABIs name their scalar-width choices.
+/// It is orthogonal to architecture (an AArch64 target may be LP64 or LLP64),
+/// which is why the target descriptor carries it as a distinct fact. Variant
+/// order is stable: it fixes the `@target_data_model()` intrinsic's enum
+/// discriminants (0 = ILP32, 1 = LP64, 2 = LLP64).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DataModel {
+    /// `int` = 32, `long` = 32, pointer = 32 (32-bit Unix, Win32).
+    Ilp32,
+    /// `int` = 32, `long` = 64, pointer = 64 (64-bit Unix: Linux, macOS).
+    Lp64,
+    /// `int` = 32, `long` = 32, `long long` = 64, pointer = 64 (64-bit Windows).
+    Llp64,
+}
+
+impl fmt::Display for DataModel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DataModel::Ilp32 => write!(f, "ilp32"),
+            DataModel::Lp64 => write!(f, "lp64"),
+            DataModel::Llp64 => write!(f, "llp64"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,6 +365,26 @@ mod tests {
         assert_eq!(Target::X86_64Linux.os(), Os::Linux);
         assert_eq!(Target::Aarch64Linux.os(), Os::Linux);
         assert_eq!(Target::Aarch64Macos.os(), Os::Macos);
+    }
+
+    #[test]
+    fn test_data_model_decomposition() {
+        // Every currently-supported target is LP64.
+        assert_eq!(Target::X86_64Linux.data_model(), DataModel::Lp64);
+        assert_eq!(Target::Aarch64Linux.data_model(), DataModel::Lp64);
+        assert_eq!(Target::Aarch64Macos.data_model(), DataModel::Lp64);
+    }
+
+    #[test]
+    fn test_data_model_discriminants_are_stable() {
+        // The `@target_data_model()` intrinsic maps these to enum variant
+        // indices; the order must not drift.
+        assert_eq!(DataModel::Ilp32 as u8, 0);
+        assert_eq!(DataModel::Lp64 as u8, 1);
+        assert_eq!(DataModel::Llp64 as u8, 2);
+        assert_eq!(DataModel::Ilp32.to_string(), "ilp32");
+        assert_eq!(DataModel::Lp64.to_string(), "lp64");
+        assert_eq!(DataModel::Llp64.to_string(), "llp64");
     }
 
     #[test]

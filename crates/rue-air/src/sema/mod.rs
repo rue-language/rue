@@ -325,6 +325,9 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     pub(crate) builtin_arch_id: Option<EnumId>,
     /// EnumId of the synthetic Os enum (for @target_os intrinsic).
     pub(crate) builtin_os_id: Option<EnumId>,
+    /// EnumId of the synthetic DataModel enum (for @target_data_model
+    /// intrinsic, ADR-0064 Amendment 1).
+    pub(crate) builtin_data_model_id: Option<EnumId>,
     /// Pre-interned known symbols for fast comparison.
     pub(crate) known: KnownSymbols,
     /// Canonical composite-type storage for this semantic epoch (ADR-0024).
@@ -461,6 +464,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             target,
             builtin_arch_id,
             builtin_os_id,
+            builtin_data_model_id,
             known,
             type_pool,
             module_registry,
@@ -528,6 +532,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             target,
             builtin_arch_id,
             builtin_os_id,
+            builtin_data_model_id,
             known,
             type_pool,
             module_registry,
@@ -989,6 +994,7 @@ impl<'a> Sema<'a> {
             target,
             builtin_arch_id: None,
             builtin_os_id: None,
+            builtin_data_model_id: None,
             known: KnownSymbols::new(interner),
             type_pool,
             module_registry: crate::module_registry::ModuleRegistry::new(),

@@ -154,6 +154,9 @@ pub struct KnownSymbols {
     pub target_arch: Spur,
     /// The `target_os` intrinsic symbol - returns target operating system.
     pub target_os: Spur,
+    /// The `target_data_model` intrinsic symbol - returns the target C data
+    /// model (ADR-0064 Amendment 1).
+    pub target_data_model: Spur,
     // Builtin type names
 
     // Special function names
@@ -222,6 +225,7 @@ impl KnownSymbols {
             // Target platform intrinsics
             target_arch: interner.get_or_intern_static("target_arch"),
             target_os: interner.get_or_intern_static("target_os"),
+            target_data_model: interner.get_or_intern_static("target_data_model"),
             // Builtin type names
 
             // Special function names
@@ -310,6 +314,10 @@ mod tests {
         assert_eq!(interner.resolve(&known.byte_set), "byte_set");
         assert_eq!(interner.resolve(&known.target_arch), "target_arch");
         assert_eq!(interner.resolve(&known.target_os), "target_os");
+        assert_eq!(
+            interner.resolve(&known.target_data_model),
+            "target_data_model"
+        );
     }
 
     #[test]

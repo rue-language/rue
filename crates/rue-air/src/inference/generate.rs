@@ -1701,6 +1701,17 @@ impl<'a> ConstraintGenerator<'a> {
                     } else {
                         InferType::Concrete(Type::ERROR)
                     }
+                } else if intrinsic_name == "target_data_model" {
+                    // @target_data_model: returns DataModel enum
+                    if let Some(dm_spur) = self.interner.get("DataModel") {
+                        if let Some(&dm_ty) = self.builtin_enums.get(&dm_spur) {
+                            InferType::Concrete(dm_ty)
+                        } else {
+                            InferType::Concrete(Type::ERROR)
+                        }
+                    } else {
+                        InferType::Concrete(Type::ERROR)
+                    }
                 } else if intrinsic_name == "import" {
                     // @import("path"): a module value. Resolving the path to a
                     // real ModuleId needs the registry, which inference doesn't

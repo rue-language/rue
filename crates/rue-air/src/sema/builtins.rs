@@ -48,6 +48,8 @@ impl<'a> Sema<'a> {
                 self.builtin_arch_id = Some(enum_id);
             } else if builtin_enum.name == "Os" {
                 self.builtin_os_id = Some(enum_id);
+            } else if builtin_enum.name == "DataModel" {
+                self.builtin_data_model_id = Some(enum_id);
             }
         }
     }

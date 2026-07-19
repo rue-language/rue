@@ -1,0 +1,124 @@
+// std.c — transparent C scalar-type aliases for the FFI boundary.
+//
+// ADR-0064 Amendment 1 (RUE-742). These are the normative `std.c` scalar
+// aliases that name each C scalar type by the width and signedness the
+// *selected compilation target's* platform psABI assigns it — never "whatever
+// the host C compiler happens to emit."
+//
+//     const std = @import("std");
+//     extern "C" {
+//         fn getpid() -> std.c.c_int;
+//     }
+//
+// TRANSPARENT, not newtypes. On the LP64 targets Rue supports today, `c_int`
+// **is** `i32`, `c_long` **is** `i64`, and so on (the ADR-0042/0043 aliasing
+// pattern): an ordinary transparent type alias, no wrapper and no coercion.
+// `@size_of(std.c.c_int) == @size_of(i32)`, and a `std.c.c_int` value is an
+// `i32` value.
+//
+// DATA MODEL. Every currently-supported target — x86-64-linux (SysV AMD64),
+// aarch64-linux (AAPCS64), and aarch64-macos (Apple ARM64) — is **LP64**:
+// `int` = 32, `long` = 64, `long long` = 64, pointer = 64, `size_t` = 64. The
+// widths below are therefore target-invariant across the supported set and are
+// written as direct aliases. The target descriptor's data-model field
+// (`@target_data_model()` → `DataModel.Lp64` here) records this fact
+// machine-readably and is the hook a future ILP32/LLP64 target would branch on
+// once const-context target selection exists (see the c_char note below).
+
+// ---------------------------------------------------------------------------
+// Character types
+// ---------------------------------------------------------------------------
+
+// SIGNED / UNSIGNED char — always exactly these, on every target.
+//
+// `signed char` is always an 8-bit two's-complement integer and `unsigned
+// char` is always an 8-bit unsigned integer, on every psABI. So these two are
+// unconditional and correct everywhere.
+pub const c_schar = i8;
+pub const c_uchar = u8;
+
+// PLAIN `char` — its SIGNEDNESS IS TARGET-CONDITIONAL and is NOT yet expressible
+// as a transparent alias (see the module-level limitation note at the bottom of
+// this file). The correct mapping per supported target, from the platform
+// psABI documents, is:
+//
+//   - x86-64-linux (System V AMD64 psABI, "Fundamental Types"): `char` is
+//     SIGNED  →  i8
+//   - aarch64-linux (AAPCS64 / "Procedure Call Standard for the Arm 64-bit
+//     Architecture", §5.1 Fundamental Data Types): `char` is UNSIGNED  →  u8
+//   - aarch64-macos (Apple, "Writing ARM64 Code for Apple Platforms": "The
+//     char type is signed", overriding the AAPCS default): SIGNED  →  i8
+//
+// Because plain-`char` signedness varies by target and target intrinsics do not
+// fold in const/comptime type position today, `std.c` cannot ship a single
+// transparent `c_char` alias that is correct on all three targets. Until that
+// gap closes, select the explicit-signedness type your target's `char` uses:
+// `c_schar` (x86-64-linux, aarch64-macos) or `c_uchar` (aarch64-linux). This is
+// deliberately left unbound rather than silently approximated to a wrong type
+// on one target.
+
+// `wchar_t` — 4-byte signed integer on Linux and macOS (it is `int`-shaped on
+// every supported target; it is 2 bytes only on Windows, which Rue does not
+// target). Target-invariant across the supported set.
+pub const wchar_t = i32;
+
+// ---------------------------------------------------------------------------
+// Standard integer types (all supported targets are LP64)
+// ---------------------------------------------------------------------------
+
+// `short` / `unsigned short` — 16-bit on every supported target.
+pub const c_short = i16;
+pub const c_ushort = u16;
+
+// `int` / `unsigned int` — 32-bit on every supported target (LP64).
+pub const c_int = i32;
+pub const c_uint = u32;
+
+// `long` / `unsigned long` — 64-bit under LP64 (the distinguishing width of the
+// data model: it is 32-bit under ILP32/LLP64). Correct here because every
+// supported target is LP64.
+pub const c_long = i64;
+pub const c_ulong = u64;
+
+// `long long` / `unsigned long long` — 64-bit on every supported target.
+pub const c_longlong = i64;
+pub const c_ulonglong = u64;
+
+// ---------------------------------------------------------------------------
+// Pointer-width and size types
+// ---------------------------------------------------------------------------
+
+// `size_t` / `ssize_t` — pointer-width unsigned / signed. 64-bit under LP64.
+pub const c_size_t = u64;
+pub const c_ssize_t = i64;
+
+// `ptrdiff_t` — signed pointer-difference type, pointer-width. 64-bit here.
+pub const c_ptrdiff_t = i64;
+
+// ---------------------------------------------------------------------------
+// Boolean
+// ---------------------------------------------------------------------------
+
+// C `_Bool` — a 1-byte type with the 0/1 validity contract (ADR-0064 secondary
+// ruling A). Rue's `bool` is physically 1 byte (`@size_of(bool) == 1`), so
+// `c_bool` is a transparent alias to `bool`. Note the runtime ABI's *canonical*
+// boolean is a 64-bit word (`BoolWordI64`); the `TargetC` classifier narrows to
+// a 1-byte `_Bool` at the boundary (materializing exactly 0/1). That boundary
+// narrowing is classifier work (P2), independent of this alias.
+pub const c_bool = bool;
+
+// ---------------------------------------------------------------------------
+// Module-level limitation note (ADR-0064 Amendment 1 reject-don't-guess)
+// ---------------------------------------------------------------------------
+//
+// One row of the normative scalar table — plain `c_char`, whose SIGNEDNESS is
+// target-conditional — cannot yet be expressed as a transparent alias here.
+// A per-target alias would need to select `i8` vs `u8` from `@target_arch()` /
+// `@target_os()` (or `@target_data_model()`), but target intrinsics do not fold
+// in const/comptime *type* position: a `const c_char = match @target_arch()
+// { ... }` and a `pub fn c_char() -> type { match @target_arch() { ... } }` both
+// fail to reduce to a concrete type at compile time. Closing this requires
+// const-context target-branching in the comptime/declaration machinery, which
+// is out of scope for this change. The signed/unsigned char types (`c_schar`,
+// `c_uchar`) are provided unconditionally in the meantime; the WIDTHS above are
+// all target-invariant across the supported LP64 set and so are fully correct.

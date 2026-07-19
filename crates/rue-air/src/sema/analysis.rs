@@ -19,7 +19,7 @@ use rue_error::{
 };
 use rue_rir::{InstData, InstRef, Rir, RirArgMode, RirCallArg, RirParamMode};
 use rue_span::{FileId, Span};
-use rue_target::{Arch, Os};
+use rue_target::{Arch, DataModel, Os};
 
 use super::context::{AnalysisContext, AnalysisResult, CallLoanKind, ConstValue, ParamInfo};
 use super::{AnalyzedFunction, BodySema, InferenceContext, MethodInfo, ParamSlotModes, SemaOutput};

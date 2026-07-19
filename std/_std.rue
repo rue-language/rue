@@ -20,6 +20,8 @@
 //   over @syscall) plus fs.rename/remove/create_dir/remove_dir/metadata
 // - std.binary: endianness-explicit integer<->byte conversions
 // - std.net: network IO v1 address model + Linux sockaddr marshalling
+// - std.c: transparent C scalar-type aliases for the FFI boundary
+//   (c_int/c_long/c_size_t/wchar_t/...) sized per the target psABI
 
 // Re-export library modules.
 pub const math = @import("math.rue");
@@ -41,6 +43,10 @@ pub const binary = @import("binary.rue");
 
 // Network IO v1: address model + Linux sockaddr marshalling (RUE-982, ADR-0060).
 pub const net = @import("net.rue");
+
+// C FFI transparent scalar aliases (RUE-742, ADR-0064 Amendment 1 / P1.5):
+// c_int, c_long, c_size_t, wchar_t, ... named by the target psABI's C widths.
+pub const c = @import("c.rue");
 
 // Collections (Standard library v1, M2).
 pub const stack = @import("stack.rue");
