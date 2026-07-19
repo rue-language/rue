@@ -99,6 +99,9 @@ pub use import_discovery::{
     ImportDiscoveryContext, ImportDiscoveryPlan, ImportDiscoveryRequest, ImportObservation,
     ImportObservationLedger, ImportObservationStatus, ImportOccurrenceKey, PhysicalFileIdentity,
 };
+pub(crate) use import_discovery::{
+    ImportDemandFrontier, ImportDemandMode, ImportDemandRoots, ImportInputRevision,
+};
 pub use import_graph::{
     CanonicalImportCycle, CanonicalImportGraph, CanonicalImportGraphProblem,
     CanonicalImportGraphValidation, CanonicalImportRecord, CanonicalImportResolution,

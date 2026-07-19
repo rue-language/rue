@@ -12,13 +12,13 @@ stable|CompilerSession|artifact-query|embedders|import_graph|pub fn import_graph
 stable|CompilerSession|artifact-query|embedders|published|pub fn published(&self)->Option<crate::SyntaxView>
 stable|CompilerSession|artifact-query|embedders|rir|pub fn rir(&mut self)->Result<Arc<crate::RirView>,CompileErrors>
 stable|CompilerSession|artifact-query|embedders|semantic|pub fn semantic(&mut self,options:&CompileOptions,)->Result<Arc<crate::SemanticView>,CompileErrors>
-stable|CompilerSession|dependency-query|embedders|import_discovery_plan|pub fn import_discovery_plan(&self,context:crate::ImportDiscoveryContext,)->crate::CompileResult<crate::ImportDiscoveryPlan>
+stable|CompilerSession|compatibility-boundary|legacy-embedders|close_import_discovery|#[cfg(not(test))]pub fn close_import_discovery(&mut self,ledger:crate::ImportObservationLedger,)->Result<Arc<crate::ImportDiscoveryView>,CompileErrors>
+stable|CompilerSession|compatibility-boundary|legacy-embedders|import_discovery_plan|pub fn import_discovery_plan(&self,context:crate::ImportDiscoveryContext,)->crate::CompileResult<crate::ImportDiscoveryPlan>
+stable|CompilerSession|compatibility-boundary|legacy-embedders|stage_import_discovery|pub fn stage_import_discovery(&mut self,snapshot:&SourceSnapshot,context:crate::ImportDiscoveryContext,accepted_reads:Arc<[crate::AcceptedReadManifestEntry]>,carried_ledger:crate::ImportObservationLedger,)->Result<crate::ImportDiscoveryPlan,CompileErrors>
 stable|CompilerSession|diagnostic-query|embedders|last_good_semantic_diagnostics|pub fn last_good_semantic_diagnostics(&self)->Option<&Arc<FrontendDiagnosticSnapshot>>
 stable|CompilerSession|diagnostic-query|embedders|latest_diagnostics|pub fn latest_diagnostics(&self)->Option<&Arc<FrontendDiagnosticSnapshot>>
 stable|CompilerSession|diagnostic-query|embedders|latest_successful_diagnostics|pub fn latest_successful_diagnostics(&self)->Option<&Arc<FrontendDiagnosticSnapshot>>
-stable|CompilerSession|session-operation|embedders|close_import_discovery|#[cfg(not(test))]pub fn close_import_discovery(&mut self,ledger:crate::ImportObservationLedger,)->Result<Arc<crate::ImportDiscoveryView>,CompileErrors>
 stable|CompilerSession|session-operation|embedders|new|pub fn new()->Self
-stable|CompilerSession|session-operation|embedders|stage_import_discovery|pub fn stage_import_discovery(&mut self,snapshot:&SourceSnapshot,context:crate::ImportDiscoveryContext,accepted_reads:Arc<[crate::AcceptedReadManifestEntry]>,carried_ledger:crate::ImportObservationLedger,)->Result<crate::ImportDiscoveryPlan,CompileErrors>
 stable|CompilerSession|session-operation|embedders|update|pub fn update(&mut self,snapshot:&SourceSnapshot)->CompilerSessionUpdate
 stable|CompilerSessionUpdate|artifact-result|embedders|diagnostics|pub fn diagnostics(&self)->&Arc<FrontendDiagnosticSnapshot>
 stable|CompilerSessionUpdate|artifact-result|embedders|into_result|pub fn into_result(self)->Result<crate::SyntaxView,CompileErrors>
@@ -49,16 +49,16 @@ stable|dependency_envelope|dependency-artifact|source-loaders+embedders|Dependen
 stable|dependency_envelope|dependency-artifact|source-loaders+embedders|DependencyTopologyRecord|pub use dependency_envelope::DependencyTopologyRecord
 stable|diagnostic_attempt_store|diagnostic|cli+embedders|DiagnosticStage|pub use diagnostic_attempt_store::DiagnosticStage
 stable|diagnostic_attempt_store|diagnostic|cli+embedders|FrontendDiagnosticSnapshot|pub use diagnostic_attempt_store::FrontendDiagnosticSnapshot
-stable|import_discovery|dependency-artifact|source-loaders+embedders|AcceptedImportSource|pub use import_discovery::AcceptedImportSource
+stable|import_discovery|compatibility-boundary|legacy-embedders|AcceptedImportSource|pub use import_discovery::AcceptedImportSource
+stable|import_discovery|compatibility-boundary|legacy-embedders|ImportDiscoveryPlan|pub use import_discovery::ImportDiscoveryPlan
+stable|import_discovery|compatibility-boundary|legacy-embedders|ImportDiscoveryRequest|pub use import_discovery::ImportDiscoveryRequest
+stable|import_discovery|compatibility-boundary|legacy-embedders|ImportObservation|pub use import_discovery::ImportObservation
+stable|import_discovery|compatibility-boundary|legacy-embedders|ImportObservationLedger|pub use import_discovery::ImportObservationLedger
+stable|import_discovery|compatibility-boundary|legacy-embedders|ImportObservationStatus|pub use import_discovery::ImportObservationStatus
 stable|import_discovery|dependency-artifact|source-loaders+embedders|AcceptedReadManifestEntry|pub use import_discovery::AcceptedReadManifestEntry
 stable|import_discovery|dependency-artifact|source-loaders+embedders|FileMetadataFingerprint|pub use import_discovery::FileMetadataFingerprint
 stable|import_discovery|dependency-artifact|source-loaders+embedders|ImportCandidateRole|pub use import_discovery::ImportCandidateRole
 stable|import_discovery|dependency-artifact|source-loaders+embedders|ImportDiscoveryContext|pub use import_discovery::ImportDiscoveryContext
-stable|import_discovery|dependency-artifact|source-loaders+embedders|ImportDiscoveryPlan|pub use import_discovery::ImportDiscoveryPlan
-stable|import_discovery|dependency-artifact|source-loaders+embedders|ImportDiscoveryRequest|pub use import_discovery::ImportDiscoveryRequest
-stable|import_discovery|dependency-artifact|source-loaders+embedders|ImportObservation|pub use import_discovery::ImportObservation
-stable|import_discovery|dependency-artifact|source-loaders+embedders|ImportObservationLedger|pub use import_discovery::ImportObservationLedger
-stable|import_discovery|dependency-artifact|source-loaders+embedders|ImportObservationStatus|pub use import_discovery::ImportObservationStatus
 stable|import_discovery|dependency-artifact|source-loaders+embedders|ImportOccurrenceKey|pub use import_discovery::ImportOccurrenceKey
 stable|import_discovery|dependency-artifact|source-loaders+embedders|PhysicalFileIdentity|pub use import_discovery::PhysicalFileIdentity
 stable|import_graph|dependency-artifact|source-loaders+embedders|CanonicalImportCycle|pub use import_graph::CanonicalImportCycle

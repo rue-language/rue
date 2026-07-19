@@ -1726,6 +1726,9 @@ struct FrontendQueryDatabase {
     /// Canonical Phase 1 execution substrate. The legacy stores below are
     /// removed family-by-family as callers move through its selected-state shim.
     revisioned: crate::revisioned_query_database::RevisionedQueryDatabase,
+    // RUE-1024 DELETION GATE: Phase 3 must delete these whole-snapshot import
+    // plan/closure stores and their leaf stores after their remaining
+    // diagnostic and projection consumers query the granular runtime directly.
     import_plans: TypedQueryStore<ImportPlanQuery>,
     import_closures: TypedQueryStore<ImportClosureQuery>,
     import_diagnostics: TypedQueryStore<ImportDiagnosticQuery>,
@@ -2851,7 +2854,11 @@ impl CompilerSession {
         self.supplied_test_import_graph = Some(graph);
     }
     /// Derive the pre-closure import plan for the session's current parsed
-    /// revision. Hosts may execute only the requests carried by this query.
+    /// revision.
+    ///
+    /// This is retained only as part of the RUE-1033 legacy supported import
+    /// path. It is not freshness- or speculation-safe, and new consumers must
+    /// use the unstable begin/frontier/publish protocol.
     pub fn import_discovery_plan(
         &self,
         context: crate::ImportDiscoveryContext,
@@ -2862,6 +2869,71 @@ impl CompilerSession {
             ))
         })?;
         crate::ImportDiscoveryPlan::new(program, context)
+    }
+
+    /// Begins one fresh rooted external-input request with granular immutable
+    /// module source, accepted-read provenance, and observation leaves.
+    /// Successor carry is available only through batch publication.
+    pub(crate) fn begin_import_input_request(
+        &mut self,
+        snapshot: &SourceSnapshot,
+        context: crate::ImportDiscoveryContext,
+        accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
+    ) -> crate::CompileResult<crate::ImportInputRevision> {
+        self.queries
+            .revisioned
+            .begin_import_inputs(snapshot, context, accepted_reads)
+    }
+
+    /// Evaluates every currently demanded module against one pinned revision
+    /// and returns one deduplicated compiler-ordered frontier.
+    pub(crate) fn import_demand_frontier(
+        &mut self,
+        revision: crate::ImportInputRevision,
+        plan: &crate::ImportDiscoveryPlan,
+        mode: crate::ImportDemandMode,
+    ) -> crate::CompileResult<crate::ImportDemandFrontier> {
+        let roots = crate::ImportDemandRoots::whole_plan(plan);
+        self.queries
+            .revisioned
+            .import_frontier(revision, plan, mode, &roots)
+    }
+
+    pub(crate) fn import_demand_frontier_for_roots(
+        &mut self,
+        revision: crate::ImportInputRevision,
+        plan: &crate::ImportDiscoveryPlan,
+        mode: crate::ImportDemandMode,
+        roots: &crate::ImportDemandRoots,
+    ) -> crate::CompileResult<crate::ImportDemandFrontier> {
+        self.queries
+            .revisioned
+            .import_frontier(revision, plan, mode, roots)
+    }
+
+    /// Publishes exactly one compiler-produced rooted host batch as one
+    /// successor immutable revision.
+    pub(crate) fn publish_import_observation_batch(
+        &mut self,
+        frontier: &crate::ImportDemandFrontier,
+        snapshot: &SourceSnapshot,
+        accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
+        observations: Vec<crate::ImportObservation>,
+    ) -> crate::CompileResult<crate::ImportInputRevision> {
+        self.queries.revisioned.publish_import_batch(
+            frontier,
+            snapshot,
+            accepted_reads,
+            observations,
+        )
+    }
+
+    /// Returns the immutable canonical ledger carried by one input revision.
+    pub(crate) fn import_observation_ledger(
+        &self,
+        revision: crate::ImportInputRevision,
+    ) -> crate::CompileResult<crate::ImportObservationLedger> {
+        self.queries.revisioned.import_ledger(revision)
     }
     #[cfg(test)]
     pub(crate) fn discovery_attempt(&self) -> Option<&Arc<ImportDiscoveryRevisionArtifact>> {
@@ -3036,6 +3108,11 @@ impl CompilerSession {
 
     /// Parse an immutable staging snapshot without publishing it to semantic
     /// or dependency queries.
+    ///
+    /// The carried ledger and this operation are retained only for the
+    /// RUE-1033 legacy compatibility boundary. They are not freshness- or
+    /// speculation-safe; new consumers must use the unstable canonical
+    /// begin/frontier/publish protocol.
     pub fn stage_import_discovery(
         &mut self,
         snapshot: &SourceSnapshot,
@@ -3235,6 +3312,10 @@ impl CompilerSession {
     /// Close the current staging revision. Missing, ambiguous, and malformed
     /// imports retain a closed attempted artifact; only a diagnostic-free graph
     /// is atomically adopted as the committed compiler revision.
+    ///
+    /// Caller-supplied closure is retained only for the RUE-1033 legacy
+    /// compatibility boundary. It is not freshness- or speculation-safe; new
+    /// consumers must publish compiler-ordered canonical frontier batches.
     #[cfg(not(test))]
     pub fn close_import_discovery(
         &mut self,
@@ -8264,6 +8345,134 @@ mod tests {
         CanonicalSemanticFailurePhase, LinkerMode, ModuleId, OptLevel, PreviewFeature,
         PreviewFeatures, SourceMetadata, SourceSnapshot, Target,
     };
+
+    #[test]
+    fn phase_two_import_compatibility_has_an_exact_phase_three_deletion_gate() {
+        let production = include_str!("session.rs")
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .unwrap();
+        let gate = "RUE-1024 DELETION GATE: Phase 3 must delete these whole-snapshot import";
+        assert_eq!(production.matches(gate).count(), 1);
+        let discovery = include_str!("import_discovery.rs");
+        assert!(!discovery.contains("pub fn pending_requests("));
+        let revisioned = include_str!("revisioned_query_database.rs");
+        assert_eq!(
+            revisioned
+                .matches("RUE-1026 DELETION GATE: this selected-revision compatibility")
+                .count(),
+            1
+        );
+        let unstable = include_str!("unstable.rs");
+        assert_eq!(
+            unstable
+                .matches("Phase-2 full-plan compatibility adapter. RUE-1024/RUE-1026")
+                .count(),
+            1
+        );
+        for transitional_authority in [
+            "import_plans: TypedQueryStore<ImportPlanQuery>",
+            "import_closures: TypedQueryStore<ImportClosureQuery>",
+            "import_plan_inputs: crate::query_graph::TypedLeafStore<ImportPlanQueryKey>",
+            "import_closure_inputs: crate::query_graph::TypedLeafStore<ImportClosureQueryKey>",
+        ] {
+            assert!(
+                production.contains(transitional_authority),
+                "deletion gate inventory drifted: {transitional_authority}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_import_authority_is_one_explicit_compatibility_boundary() {
+        let discovery = include_str!("import_discovery.rs")
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .unwrap();
+        let session = include_str!("session.rs")
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .unwrap();
+        let gate = "RUE-1033 DELETION/REPLACEMENT GATE: retire the entire legacy supported";
+        assert_eq!(discovery.matches(gate).count(), 1);
+        assert_eq!(session.matches(gate).count(), 0);
+
+        // ADR-0061 keeps this legacy host-driven surface stable for now. Every
+        // listed item can participate in bypassing canonical
+        // begin/frontier/publish freshness or speculation authority, so the
+        // inventory must change atomically when RUE-1033 replaces it.
+        for (surface, declaration) in [
+            (
+                "ImportObservationStatus construction",
+                "pub enum ImportObservationStatus {",
+            ),
+            (
+                "AcceptedImportSource::new",
+                "pub fn new(\n        requested_path: impl Into<Arc<str>>",
+            ),
+            (
+                "ImportObservation::absent",
+                "pub fn absent(request: ImportDiscoveryRequest)",
+            ),
+            (
+                "ImportObservation::accepted",
+                "pub fn accepted(\n        request: ImportDiscoveryRequest",
+            ),
+            (
+                "ImportObservation::failure",
+                "pub fn failure(\n        request: ImportDiscoveryRequest",
+            ),
+            (
+                "ImportObservationLedger::default",
+                "derive(Debug, Clone, Default, PartialEq, Eq, Hash)",
+            ),
+            (
+                "ImportObservationLedger::record",
+                "pub fn record(&mut self, observation: ImportObservation)",
+            ),
+            (
+                "ImportDiscoveryPlan::groups",
+                "pub fn groups(&self) -> &[Arc<[ImportDiscoveryRequest]>]",
+            ),
+        ] {
+            assert_eq!(
+                discovery.matches(declaration).count(),
+                1,
+                "RUE-1033 discovery bypass inventory drifted at {surface}"
+            );
+        }
+        for (surface, declaration) in [
+            (
+                "CompilerSession::import_discovery_plan",
+                "pub fn import_discovery_plan(",
+            ),
+            (
+                "CompilerSession::stage_import_discovery",
+                "pub fn stage_import_discovery(",
+            ),
+            (
+                "CompilerSession::close_import_discovery",
+                "pub fn close_import_discovery(",
+            ),
+        ] {
+            assert_eq!(
+                session.matches(declaration).count(),
+                1,
+                "RUE-1033 session bypass inventory drifted at {surface}"
+            );
+        }
+
+        let unstable = include_str!("unstable.rs");
+        let begin = unstable
+            .split_once("pub fn begin_import_input_request(")
+            .unwrap()
+            .1
+            .split_once(") -> crate::CompileResult<ImportInputRevision>")
+            .unwrap()
+            .0;
+        assert!(!begin.contains("ImportObservationLedger"));
+        assert!(!begin.contains("carried_ledger"));
+    }
 
     fn snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
         let physical = entries

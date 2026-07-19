@@ -12,16 +12,17 @@ use std::{collections::HashMap, fmt::Write as _, sync::Arc};
 
 use rue_cfg::OptLevel;
 use rue_compiler::unstable::{
-    DifferentialOracleFault, DiscoverySourceAssembler, PresentationRequest, PresentationStage,
-    discovery_attempt, import_discovery_accepted_reads_debug, import_discovery_graph_input_debug,
-    import_discovery_observation_ledger_debug, inject_stale_query_for_oracle, oracle_executable,
+    DifferentialOracleFault, DiscoverySourceAssembler, ImportDemandMode, PresentationRequest,
+    PresentationStage, begin_import_input_request, discovery_attempt, import_demand_frontier,
+    import_discovery_accepted_reads_debug, import_discovery_graph_input_debug,
+    import_discovery_observation_ledger_debug, import_observation_ledger,
+    inject_stale_query_for_oracle, oracle_executable, publish_import_observation_batch,
     semantic_input_debug,
 };
 use rue_compiler::{
     AcceptedImportSource, AcceptedReadManifestEntry, CompileOptions, CompilerSession,
     FileMetadataFingerprint, FrontendDiagnosticSnapshot, ImportDiscoveryContext, ImportObservation,
-    ImportObservationLedger, PhysicalFileIdentity, PreviewFeature, PreviewFeatures, SourceMetadata,
-    SourceSnapshot,
+    PhysicalFileIdentity, PreviewFeature, PreviewFeatures, SourceMetadata, SourceSnapshot,
 };
 use rue_span::FileId;
 use rue_target::Target;
@@ -134,47 +135,74 @@ fn close_discovery(session: &mut CompilerSession, step: &Step) -> String {
     let Some(discovery) = &step.discovery else {
         return "direct".to_owned();
     };
-    let plan = match session.stage_import_discovery(
+    let mut revision = begin_import_input_request(
+        session,
         &step.snapshot,
         discovery.context.clone(),
         discovery.accepted_reads.clone(),
-        ImportObservationLedger::default(),
-    ) {
-        Ok(plan) => plan,
-        Err(errors) => return format!("stage-error:{errors:?}"),
-    };
-    let mut ledger = ImportObservationLedger::default();
-    for request in plan.pending_requests(&ledger) {
-        let accepted = discovery
-            .accepted_reads
-            .iter()
-            .find(|read| read.requested_path() == request.requested_path());
-        let observation = if let Some(read) = accepted {
-            let source = step
-                .snapshot
-                .files()
-                .find(|source| step.snapshot.module_id(source.file_id) == Some(read.module()))
-                .expect("accepted manifest path belongs to the snapshot");
-            ImportObservation::accepted(
-                request.clone(),
-                AcceptedImportSource::new(
-                    request.requested_path(),
-                    read.canonical_path(),
-                    read.metadata_identity(),
-                    read.metadata_fingerprint(),
-                    Arc::new(source.source.to_owned()),
-                )
-                .unwrap(),
-            )
-            .unwrap()
-        } else {
-            ImportObservation::absent(request.clone())
+    )
+    .unwrap();
+    loop {
+        let ledger = import_observation_ledger(session, revision).unwrap();
+        let plan = match session.stage_import_discovery(
+            &step.snapshot,
+            discovery.context.clone(),
+            discovery.accepted_reads.clone(),
+            ledger.clone(),
+        ) {
+            Ok(plan) => plan,
+            Err(errors) => return format!("stage-error:{errors:?}"),
         };
-        ledger.record(observation).unwrap();
-    }
-    match session.close_import_discovery(ledger) {
-        Ok(artifact) => render_import_discovery(&artifact),
-        Err(errors) => format!("close-error:{errors:?}"),
+        let frontier =
+            import_demand_frontier(session, revision, &plan, ImportDemandMode::Rooted).unwrap();
+        if frontier.requests().is_empty() {
+            return match session.close_import_discovery(ledger) {
+                Ok(artifact) => render_import_discovery(&artifact),
+                Err(errors) => format!("close-error:{errors:?}"),
+            };
+        }
+        let observations = frontier
+            .requests()
+            .iter()
+            .cloned()
+            .map(|request| {
+                let accepted = discovery
+                    .accepted_reads
+                    .iter()
+                    .find(|read| read.requested_path() == request.requested_path());
+                if let Some(read) = accepted {
+                    let source = step
+                        .snapshot
+                        .files()
+                        .find(|source| {
+                            step.snapshot.module_id(source.file_id) == Some(read.module())
+                        })
+                        .expect("accepted manifest path belongs to the snapshot");
+                    ImportObservation::accepted(
+                        request.clone(),
+                        AcceptedImportSource::new(
+                            request.requested_path(),
+                            read.canonical_path(),
+                            read.metadata_identity(),
+                            read.metadata_fingerprint(),
+                            Arc::new(source.source.to_owned()),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap()
+                } else {
+                    ImportObservation::absent(request)
+                }
+            })
+            .collect();
+        revision = publish_import_observation_batch(
+            session,
+            &frontier,
+            &step.snapshot,
+            discovery.accepted_reads.clone(),
+            observations,
+        )
+        .unwrap();
     }
 }
 

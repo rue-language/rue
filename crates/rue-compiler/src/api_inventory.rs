@@ -724,15 +724,15 @@ fn root_export_metadata(owner: &str, symbol: &str) -> (&'static str, &'static st
         },
         "import_discovery" => match symbol {
             "AcceptedImportSource"
-            | "AcceptedReadManifestEntry"
-            | "FileMetadataFingerprint"
-            | "ImportCandidateRole"
-            | "ImportDiscoveryContext"
             | "ImportDiscoveryPlan"
             | "ImportDiscoveryRequest"
             | "ImportObservation"
             | "ImportObservationLedger"
-            | "ImportObservationStatus"
+            | "ImportObservationStatus" => ("compatibility-boundary", "legacy-embedders"),
+            "AcceptedReadManifestEntry"
+            | "FileMetadataFingerprint"
+            | "ImportCandidateRole"
+            | "ImportDiscoveryContext"
             | "ImportOccurrenceKey"
             | "PhysicalFileIdentity" => ("dependency-artifact", "source-loaders+embedders"),
             _ => panic!("unclassified import-discovery facade export: {symbol}"),
@@ -851,8 +851,9 @@ fn session_method_metadata(
         }
     } else {
         match symbol {
-            "new" | "update" | "stage_import_discovery" | "close_import_discovery" => {
-                "session-operation"
+            "new" | "update" => "session-operation",
+            "import_discovery_plan" | "stage_import_discovery" | "close_import_discovery" => {
+                return ("stable", "compatibility-boundary", "legacy-embedders");
             }
             "published"
             | "committed_import_graph"
@@ -861,7 +862,6 @@ fn session_method_metadata(
             | "rir"
             | "semantic"
             | "executable" => "artifact-query",
-            "import_discovery_plan" => "dependency-query",
             "latest_diagnostics"
             | "latest_successful_diagnostics"
             | "last_good_semantic_diagnostics" => "diagnostic-query",
@@ -1314,9 +1314,9 @@ fn unstable_views_do_not_alias_query_engine_records() {
         reexports,
         [
             "pubusecrate::diagnostic::{ColorChoice,DiagnosticFormatter,JsonDiagnostic,JsonDiagnosticFormatter,JsonSpan,JsonSuggestion,MultiFileFormatter,MultiFileJsonFormatter,SourceInfo,};",
-            "pubusecrate::import_discovery::DiscoverySourceAssembler;",
+            "pubusecrate::import_discovery::{DiscoverySourceAssembler,ImportDemandFrontier,ImportDemandMode,ImportDemandRoots,ImportInputRevision,};",
         ],
-        "unstable may reexport only reviewed presentation and source-assembly helpers"
+        "unstable may reexport only reviewed presentation, source-assembly, and Phase-2 demand helpers"
     );
 
     let facade = include_str!("lib.rs");

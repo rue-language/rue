@@ -47,10 +47,13 @@ mod generator;
 mod model_gaps;
 mod trap;
 
-use rue_compiler::unstable::DiscoverySourceAssembler;
+use rue_compiler::unstable::{
+    DiscoverySourceAssembler, ImportDemandMode, begin_import_input_request, import_demand_frontier,
+    import_observation_ledger, publish_import_observation_batch,
+};
 use rue_compiler::{
     AcceptedImportSource, CompilerSession, FileMetadataFingerprint, ImportDiscoveryContext,
-    ImportObservation, ImportObservationLedger, PhysicalFileIdentity,
+    ImportObservation, PhysicalFileIdentity,
 };
 use rue_error::{PreviewFeature, PreviewFeatures};
 use rue_oracle::{
@@ -688,12 +691,21 @@ fn run_source_with_real_std(
         root_source,
     )
     .map_err(|error| error.to_string())?;
-    let mut ledger = ImportObservationLedger::default();
     let mut session = CompilerSession::new();
     let mut identities = BTreeMap::<PathBuf, PhysicalFileIdentity>::new();
+    let initial = assembler.snapshot().map_err(|error| error.to_string())?;
+    let mut revision = begin_import_input_request(
+        &mut session,
+        &initial,
+        context.clone(),
+        assembler.accepted_read_manifest(),
+    )
+    .map_err(|error| error.to_string())?;
 
     loop {
         let snapshot = assembler.snapshot().map_err(|error| error.to_string())?;
+        let ledger =
+            import_observation_ledger(&session, revision).map_err(|error| error.to_string())?;
         let plan = session
             .stage_import_discovery(
                 &snapshot,
@@ -702,7 +714,17 @@ fn run_source_with_real_std(
                 ledger.clone(),
             )
             .map_err(|errors| format!("{errors:#?}"))?;
-        for request in plan.pending_requests(&ledger) {
+        let frontier =
+            import_demand_frontier(&mut session, revision, &plan, ImportDemandMode::Rooted)
+                .map_err(|error| error.to_string())?;
+        if frontier.requests().is_empty() {
+            session
+                .close_import_discovery(ledger)
+                .map_err(|errors| format!("{errors:#?}"))?;
+            return Ok(run_session_with_preview_features(session, preview_features));
+        }
+        let mut observations = Vec::new();
+        for request in frontier.requests().iter().cloned() {
             let requested = request.requested_path().to_owned();
             let path = Path::new(&requested);
             let observation = match path.canonicalize() {
@@ -731,22 +753,26 @@ fn run_source_with_real_std(
                 }
                 _ => ImportObservation::absent(request),
             };
-            ledger
+            observations.push(observation);
+        }
+        let mut assembly_ledger = ledger;
+        for observation in observations.iter().cloned() {
+            assembly_ledger
                 .record(observation)
                 .map_err(|error| error.to_string())?;
         }
-        if plan.failures(&ledger).next().is_some() {
-            return Err("real-std import discovery failed".to_string());
-        }
-        let added = assembler
-            .add_plan_reads(&plan, &ledger)
+        assembler
+            .add_plan_reads(&plan, &assembly_ledger)
             .map_err(|error| error.to_string())?;
-        if added == 0 {
-            session
-                .close_import_discovery(ledger)
-                .map_err(|errors| format!("{errors:#?}"))?;
-            return Ok(run_session_with_preview_features(session, preview_features));
-        }
+        let successor = assembler.snapshot().map_err(|error| error.to_string())?;
+        revision = publish_import_observation_batch(
+            &mut session,
+            &frontier,
+            &successor,
+            assembler.accepted_read_manifest(),
+            observations,
+        )
+        .map_err(|error| error.to_string())?;
     }
 }
 

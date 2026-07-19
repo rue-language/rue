@@ -7,13 +7,20 @@
 //! 12 deletes this selected-state-shaped shim after every family calls the
 //! runtime directly.
 
-use std::collections::VecDeque;
-use std::sync::Arc;
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::{Arc, Mutex};
 
 use rue_query::{
     CancellationToken, InputIdentity, QueryAbort, QueryFamily, QueryKey, QueryOutput,
     QueryRequestAttempt, QueryRuntime, QuerySelection, QueryTerminalKind, RequestExecution,
     Revision,
+};
+
+use crate::{
+    AcceptedReadManifestEntry, CompileError, CompileResult, ErrorKind, ImportDemandFrontier,
+    ImportDemandMode, ImportDemandRoots, ImportDiscoveryContext, ImportDiscoveryPlan,
+    ImportDiscoveryRequest, ImportInputRevision, ImportObservation, ImportObservationLedger,
+    ModuleId, ModuleRevision, SourceSnapshot,
 };
 
 use crate::session::{AttemptId, QueryStructuralWork};
@@ -22,6 +29,8 @@ use crate::typed_query_store::{
     AttemptView, RuntimeObservation,
 };
 use crate::typed_query_store::{TerminalKind, TypedQueryFamily};
+
+const IMPORT_INPUT_REVISION_RETENTION: usize = 64;
 
 #[derive(Debug, Clone)]
 pub(crate) struct CompatibilityKey<K> {
@@ -368,24 +377,512 @@ pub(crate) struct RevisionedQueryDatabase {
     next_revision: u64,
     next_source_stamp: u64,
     source_stamps: VecDeque<(super::session::ExactSourceInput, u64)>,
+    import_store: Arc<Mutex<ImportInputStore>>,
+    import_frontiers: QueryFamily<ImportModuleDemandKey, ImportModuleDemandValue>,
+    next_import_request: u64,
+    current_import_revision: Option<ImportInputRevision>,
     pub(crate) parse: RevisionedFamily<super::session::ParseQuery>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ImportModuleDemandKey {
+    module: ModuleId,
+    groups: Arc<[Arc<[ImportDiscoveryRequest]>]>,
+    mode: ImportDemandMode,
+}
+
+impl QueryKey for ImportModuleDemandKey {
+    fn stable_identity(&self) -> String {
+        self.module.as_str().to_owned()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ImportModuleDemandValue {
+    requests: Arc<[ImportDiscoveryRequest]>,
+    speculative_blocked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ImportHostOperationKey {
+    context: ImportDiscoveryContext,
+    requested_path: Arc<str>,
+}
+
+impl ImportHostOperationKey {
+    fn new(request: &ImportDiscoveryRequest) -> Self {
+        Self {
+            context: request.context().clone(),
+            requested_path: Arc::from(request.requested_path()),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ImportInputView {
+    revision: Revision,
+    generation: u64,
+    context: ImportDiscoveryContext,
+    sources: Arc<[ModuleRevision]>,
+    accepted_reads: Arc<[AcceptedReadManifestEntry]>,
+    ledger: ImportObservationLedger,
+}
+
+#[derive(Debug)]
+struct ImportInputStore {
+    revisions: VecDeque<Arc<ImportInputView>>,
+    next_stamp: u64,
+    source_stamps: Vec<(ModuleRevision, u64)>,
+    provenance_stamps: Vec<(AcceptedReadManifestEntry, u64)>,
+    observation_stamps: Vec<(ImportObservation, u64)>,
+}
+
+impl Default for ImportInputStore {
+    fn default() -> Self {
+        Self {
+            revisions: VecDeque::new(),
+            next_stamp: 1,
+            source_stamps: Vec::new(),
+            provenance_stamps: Vec::new(),
+            observation_stamps: Vec::new(),
+        }
+    }
+}
+
+fn module_source_input(module: &ModuleId) -> InputIdentity {
+    InputIdentity::new("module-source", Arc::<str>::from(module.as_str()))
+}
+
+fn accepted_read_input(module: &ModuleId) -> InputIdentity {
+    InputIdentity::new(
+        "accepted-read-provenance",
+        Arc::<str>::from(module.as_str()),
+    )
+}
+
+fn import_observation_input(request: &ImportDiscoveryRequest) -> InputIdentity {
+    InputIdentity::new("import-observation", request.runtime_input_key())
+}
+
+fn import_input_error(message: impl Into<String>) -> CompileError {
+    CompileError::without_span(ErrorKind::InvalidCompilerInput(message.into()))
+}
+
+fn exact_value_stamp<T: Clone + Eq>(
+    next_stamp: &mut u64,
+    values: &mut Vec<(T, u64)>,
+    value: &T,
+) -> u64 {
+    values
+        .iter()
+        .find_map(|(candidate, stamp)| (candidate == value).then_some(*stamp))
+        .unwrap_or_else(|| {
+            let stamp = *next_stamp;
+            *next_stamp += 1;
+            values.push((value.clone(), stamp));
+            stamp
+        })
+}
+
+fn lock_import_store(
+    store: &Mutex<ImportInputStore>,
+) -> std::sync::MutexGuard<'_, ImportInputStore> {
+    store
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn pending_module_requests(
+    groups: &[Arc<[ImportDiscoveryRequest]>],
+    ledger: &ImportObservationLedger,
+) -> Vec<ImportDiscoveryRequest> {
+    let mut pending = Vec::new();
+    let mut by_site = BTreeMap::<_, Vec<_>>::new();
+    for group in groups {
+        by_site
+            .entry(group[0].occurrence())
+            .or_default()
+            .push(group);
+    }
+    for groups in by_site.values() {
+        for group in groups {
+            let observations = group
+                .iter()
+                .map(|request| ledger.get(request))
+                .collect::<Vec<_>>();
+            if observations
+                .iter()
+                .any(|observation| observation.is_some_and(|value| value.status().is_failure()))
+            {
+                break;
+            }
+            let missing = group
+                .iter()
+                .zip(&observations)
+                .filter_map(|(request, observation)| {
+                    observation.is_none().then_some(request.clone())
+                })
+                .collect::<Vec<_>>();
+            if !missing.is_empty() {
+                pending.extend(missing);
+                break;
+            }
+            if observations.iter().any(|observation| {
+                observation.is_some_and(|value| value.accepted_source().is_some())
+            }) {
+                break;
+            }
+        }
+    }
+    pending
 }
 
 impl Default for RevisionedQueryDatabase {
     fn default() -> Self {
         let runtime = QueryRuntime::new(1);
+        let import_store = Arc::new(Mutex::new(ImportInputStore::default()));
+        let evaluator_store = import_store.clone();
+        let import_frontiers = runtime
+            .family_with_evaluator(
+                "compiler.import-module-frontier",
+                IMPORT_INPUT_REVISION_RETENTION,
+                move |context, _, key: &ImportModuleDemandKey| {
+                    let view = {
+                        let store = lock_import_store(&evaluator_store);
+                        store
+                            .revisions
+                            .iter()
+                            .find(|view| view.revision == context.revision())
+                            .cloned()
+                    }
+                    .ok_or_else(|| QueryAbort::UnpublishedRevision(context.revision()))?;
+                    context.input(module_source_input(&key.module))?;
+                    context.input(accepted_read_input(&key.module))?;
+                    for request in key.groups.iter().flat_map(|group| group.iter()) {
+                        let present = context
+                            .optional_input(import_observation_input(request))
+                            .is_some();
+                        assert_eq!(present, view.ledger.get(request).is_some());
+                    }
+                    let pending = pending_module_requests(&key.groups, &view.ledger);
+                    let speculative_blocked =
+                        key.mode == ImportDemandMode::Speculative && !pending.is_empty();
+                    Ok(QueryOutput::success(ImportModuleDemandValue {
+                        requests: if speculative_blocked {
+                            Arc::from([])
+                        } else {
+                            pending.into()
+                        },
+                        speculative_blocked,
+                    }))
+                },
+            )
+            .expect("the import frontier family has one canonical name");
         Self {
             parse: RevisionedFamily::new(&runtime, "compiler.parse"),
             runtime,
             next_revision: 1,
             next_source_stamp: 1,
             source_stamps: VecDeque::new(),
+            import_store,
+            import_frontiers,
+            next_import_request: 0,
+            current_import_revision: None,
         }
     }
 }
 
 impl RevisionedQueryDatabase {
     pub(crate) const SOURCE_INPUT: &'static str = "selected-source";
+
+    pub(crate) fn begin_import_inputs(
+        &mut self,
+        snapshot: &SourceSnapshot,
+        context: ImportDiscoveryContext,
+        accepted_reads: Arc<[AcceptedReadManifestEntry]>,
+    ) -> CompileResult<ImportInputRevision> {
+        self.next_import_request += 1;
+        let generation = self.next_import_request;
+        self.current_import_revision = None;
+        // A new request generation is a fresh filesystem observation epoch.
+        // Reuse requires a future explicit watch/read-policy proof token. The
+        // API deliberately has no carried-ledger input that could be mistaken
+        // for freshness authority.
+        self.publish_import_view(
+            snapshot,
+            context,
+            accepted_reads,
+            ImportObservationLedger::default(),
+            generation,
+            0,
+        )
+    }
+
+    pub(crate) fn import_frontier(
+        &mut self,
+        revision: ImportInputRevision,
+        plan: &ImportDiscoveryPlan,
+        mode: ImportDemandMode,
+        roots: &ImportDemandRoots,
+    ) -> CompileResult<ImportDemandFrontier> {
+        if self.current_import_revision != Some(revision) {
+            return Err(import_input_error(
+                "import demand requested from a non-current immutable revision",
+            ));
+        }
+        let runtime_revision = Revision::new(revision.revision_id, revision.request_generation);
+        let view = {
+            let store = lock_import_store(&self.import_store);
+            store
+                .revisions
+                .iter()
+                .find(|view| view.revision == runtime_revision)
+                .cloned()
+        }
+        .ok_or_else(|| import_input_error("import input revision is no longer retained"))?;
+        if plan.context() != &view.context
+            || plan.source_revision().modules() != view.sources.as_ref()
+        {
+            return Err(import_input_error(
+                "import plan does not match its pinned granular input revision",
+            ));
+        }
+        if roots.occurrences().iter().any(|occurrence| {
+            !plan
+                .groups()
+                .iter()
+                .any(|group| group[0].occurrence() == occurrence)
+        }) {
+            return Err(import_input_error(
+                "import demand roots contain an occurrence outside the pinned plan",
+            ));
+        }
+        let mut requests = Vec::new();
+        let mut fanout = Vec::<Vec<ImportDiscoveryRequest>>::new();
+        let mut operation_indices = BTreeMap::<ImportHostOperationKey, usize>::new();
+        let mut speculative_blocked = false;
+        for source in plan.source_revision().modules() {
+            let groups = plan.groups_for_demand(&source.module, roots);
+            if groups.is_empty() {
+                continue;
+            }
+            let key = ImportModuleDemandKey {
+                module: source.module.clone(),
+                groups,
+                mode,
+            };
+            // RUE-1026 DELETION GATE: this selected-revision compatibility
+            // shim owns one synchronous request and therefore has no caller
+            // cancellation token to thread yet. Canonical multi-request
+            // consumers must supply their token when this shim is deleted.
+            let attempt = self.runtime.request_registered(
+                &self.import_frontiers,
+                runtime_revision,
+                key,
+                CancellationToken::new(),
+            );
+            let terminal = attempt.terminal().ok_or_else(|| {
+                import_input_error(format!(
+                    "import module demand query aborted: {:?}",
+                    attempt.abort()
+                ))
+            })?;
+            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+                unreachable!("import frontier family publishes typed success values")
+            };
+            speculative_blocked |= value.speculative_blocked;
+            for request in value.requests.iter() {
+                let operation = ImportHostOperationKey::new(request);
+                if let Some(index) = operation_indices.get(&operation).copied() {
+                    fanout[index].push(request.clone());
+                } else {
+                    let index = requests.len();
+                    operation_indices.insert(operation, index);
+                    requests.push(request.clone());
+                    fanout.push(vec![request.clone()]);
+                }
+            }
+        }
+        Ok(ImportDemandFrontier {
+            revision,
+            mode,
+            requests: requests.into(),
+            fanout: fanout
+                .into_iter()
+                .map(|requests| Arc::<[ImportDiscoveryRequest]>::from(requests))
+                .collect::<Vec<_>>()
+                .into(),
+            speculative_blocked,
+        })
+    }
+
+    pub(crate) fn publish_import_batch(
+        &mut self,
+        frontier: &ImportDemandFrontier,
+        snapshot: &SourceSnapshot,
+        accepted_reads: Arc<[AcceptedReadManifestEntry]>,
+        observations: Vec<ImportObservation>,
+    ) -> CompileResult<ImportInputRevision> {
+        if frontier.mode != ImportDemandMode::Rooted {
+            return Err(import_input_error(
+                "speculative import work cannot publish host observations",
+            ));
+        }
+        if self.current_import_revision != Some(frontier.revision) {
+            return Err(import_input_error(
+                "import batch belongs to a stale immutable revision",
+            ));
+        }
+        if observations.len() != frontier.requests.len()
+            || observations
+                .iter()
+                .zip(frontier.requests.iter())
+                .any(|(observation, request)| observation.request() != request)
+        {
+            return Err(import_input_error(
+                "host import results must exactly preserve the compiler-produced batch order",
+            ));
+        }
+        let (context, mut ledger) = {
+            let store = lock_import_store(&self.import_store);
+            let view = store
+                .revisions
+                .iter()
+                .find(|view| view.revision.id() == frontier.revision.revision_id)
+                .ok_or_else(|| import_input_error("import input revision is no longer retained"))?;
+            (view.context.clone(), view.ledger.clone())
+        };
+        for (observation, fanout) in observations.into_iter().zip(frontier.fanout.iter()) {
+            for request in fanout.iter().cloned() {
+                ledger.record(observation.fanout_to(request)?)?;
+            }
+        }
+        self.publish_import_view(
+            snapshot,
+            context,
+            accepted_reads,
+            ledger,
+            frontier.revision.request_generation,
+            frontier.revision.frontier_round + 1,
+        )
+    }
+
+    pub(crate) fn import_ledger(
+        &self,
+        revision: ImportInputRevision,
+    ) -> CompileResult<ImportObservationLedger> {
+        let store = lock_import_store(&self.import_store);
+        store
+            .revisions
+            .iter()
+            .find(|view| {
+                view.revision.id() == revision.revision_id
+                    && view.generation == revision.request_generation
+            })
+            .map(|view| view.ledger.clone())
+            .ok_or_else(|| import_input_error("import input revision is no longer retained"))
+    }
+
+    fn publish_import_view(
+        &mut self,
+        snapshot: &SourceSnapshot,
+        context: ImportDiscoveryContext,
+        accepted_reads: Arc<[AcceptedReadManifestEntry]>,
+        ledger: ImportObservationLedger,
+        generation: u64,
+        frontier_round: u64,
+    ) -> CompileResult<ImportInputRevision> {
+        let sources: Arc<[ModuleRevision]> = snapshot.source_revision().modules().to_vec().into();
+        let provenance = accepted_reads
+            .iter()
+            .map(|entry| (entry.module(), entry))
+            .collect::<BTreeMap<_, _>>();
+        if sources
+            .iter()
+            .any(|source| !provenance.contains_key(&source.module))
+        {
+            return Err(import_input_error(
+                "every module source leaf requires accepted-read provenance",
+            ));
+        }
+        if ledger
+            .iter()
+            .any(|observation| observation.request().context() != &context)
+        {
+            return Err(import_input_error(
+                "import observation belongs to a different discovery epoch",
+            ));
+        }
+        let revision = Revision::new(self.next_revision, generation);
+        self.next_revision += 1;
+        let mut leaves = Vec::new();
+        {
+            let mut store = lock_import_store(&self.import_store);
+            let ImportInputStore {
+                next_stamp,
+                source_stamps,
+                provenance_stamps,
+                observation_stamps,
+                ..
+            } = &mut *store;
+            for source in sources.iter() {
+                leaves.push((
+                    module_source_input(&source.module),
+                    exact_value_stamp(next_stamp, source_stamps, source),
+                ));
+                let accepted = provenance[&source.module];
+                leaves.push((
+                    accepted_read_input(&source.module),
+                    exact_value_stamp(next_stamp, provenance_stamps, accepted),
+                ));
+            }
+            for observation in ledger.iter() {
+                leaves.push((
+                    import_observation_input(observation.request()),
+                    exact_value_stamp(next_stamp, observation_stamps, observation),
+                ));
+            }
+        }
+        self.runtime
+            .publish_revision(revision, leaves)
+            .map_err(|error| {
+                import_input_error(format!("cannot publish import revision: {error:?}"))
+            })?;
+        let view = Arc::new(ImportInputView {
+            revision,
+            generation,
+            context,
+            sources,
+            accepted_reads,
+            ledger,
+        });
+        let mut store = lock_import_store(&self.import_store);
+        store.revisions.push_back(view);
+        while store.revisions.len() > IMPORT_INPUT_REVISION_RETENTION {
+            store.revisions.pop_front();
+        }
+        let retained = store.revisions.iter().cloned().collect::<Vec<_>>();
+        store
+            .source_stamps
+            .retain(|(candidate, _)| retained.iter().any(|view| view.sources.contains(candidate)));
+        store.provenance_stamps.retain(|(candidate, _)| {
+            retained
+                .iter()
+                .any(|view| view.accepted_reads.contains(candidate))
+        });
+        store.observation_stamps.retain(|(candidate, _)| {
+            retained
+                .iter()
+                .any(|view| view.ledger.iter().any(|value| value == candidate))
+        });
+        let published = ImportInputRevision {
+            revision_id: revision.id(),
+            request_generation: generation,
+            frontier_round,
+        };
+        self.current_import_revision = Some(published);
+        Ok(published)
+    }
 
     pub(crate) fn source_revision(
         &mut self,
@@ -448,6 +945,54 @@ pub(crate) fn execution(attempt: &QueryRequestAttempt<impl Sized>) -> RequestExe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        CompilerSession, DiscoverySourceAssembler, FileMetadataFingerprint, ImportDiscoveryContext,
+        ImportObservation, PhysicalFileIdentity,
+    };
+    use std::collections::BTreeSet;
+
+    fn import_fixture(
+        epoch: u64,
+        source: &str,
+    ) -> (
+        CompilerSession,
+        DiscoverySourceAssembler,
+        ImportDiscoveryContext,
+    ) {
+        let context =
+            ImportDiscoveryContext::new(epoch, "/project", Some("/sdk"), "test-policy").unwrap();
+        let assembler = DiscoverySourceAssembler::new(
+            context.clone(),
+            "/project/main.rue",
+            "/physical/main.rue",
+            PhysicalFileIdentity::new(1, 1),
+            FileMetadataFingerprint::new(1, 2, 3),
+            Arc::new(source.to_owned()),
+        )
+        .unwrap();
+        (CompilerSession::new(), assembler, context)
+    }
+
+    fn begin_and_plan(
+        session: &mut CompilerSession,
+        assembler: &DiscoverySourceAssembler,
+        context: ImportDiscoveryContext,
+    ) -> (ImportInputRevision, ImportDiscoveryPlan) {
+        let snapshot = assembler.snapshot().unwrap();
+        let reads = assembler.accepted_read_manifest();
+        let revision = session
+            .begin_import_input_request(&snapshot, context.clone(), reads.clone())
+            .unwrap();
+        let plan = session
+            .stage_import_discovery(
+                &snapshot,
+                context,
+                reads,
+                ImportObservationLedger::default(),
+            )
+            .unwrap();
+        (revision, plan)
+    }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct Key(&'static str);
@@ -491,6 +1036,338 @@ mod tests {
         fn record_is_consistent(record: &Self::Record) -> bool {
             !record.key.0.is_empty()
         }
+    }
+
+    #[test]
+    fn wide_root_imports_form_one_exact_compiler_frontier() {
+        let source = r#"
+            const a = @import("a");
+            const b = @import("b");
+            const c = @import("c");
+            const d = @import("d");
+            fn main() -> i32 { 0 }
+        "#;
+        let (mut session, assembler, context) = import_fixture(1, source);
+        let (revision, plan) = begin_and_plan(&mut session, &assembler, context);
+        let frontier = session
+            .import_demand_frontier(revision, &plan, ImportDemandMode::Rooted)
+            .unwrap();
+        assert_eq!(frontier.revision(), revision);
+        assert_eq!(frontier.revision().frontier_round(), 0);
+        assert!(!frontier.requests().is_empty());
+        assert_eq!(
+            frontier
+                .requests()
+                .iter()
+                .map(|request| request.occurrence())
+                .collect::<BTreeSet<_>>()
+                .len(),
+            4,
+            "all same-depth roots must be returned in one host batch"
+        );
+
+        let mut reversed = frontier
+            .requests()
+            .iter()
+            .cloned()
+            .map(ImportObservation::absent)
+            .collect::<Vec<_>>();
+        reversed.reverse();
+        assert!(
+            session
+                .publish_import_observation_batch(
+                    &frontier,
+                    &assembler.snapshot().unwrap(),
+                    assembler.accepted_read_manifest(),
+                    reversed,
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("exactly preserve")
+        );
+
+        let observations = frontier
+            .requests()
+            .iter()
+            .cloned()
+            .map(ImportObservation::absent)
+            .collect();
+        let successor = session
+            .publish_import_observation_batch(
+                &frontier,
+                &assembler.snapshot().unwrap(),
+                assembler.accepted_read_manifest(),
+                observations,
+            )
+            .unwrap();
+        assert_eq!(successor.frontier_round(), 1);
+        assert_eq!(
+            session
+                .import_observation_ledger(successor)
+                .unwrap()
+                .iter()
+                .count(),
+            frontier.requests().len()
+        );
+    }
+
+    #[test]
+    fn speculative_frontiers_are_effect_free_and_cannot_publish_host_results() {
+        let (mut session, assembler, context) = import_fixture(
+            2,
+            r#"const helper = @import("helper"); fn main() -> i32 { 0 }"#,
+        );
+        let (revision, plan) = begin_and_plan(&mut session, &assembler, context);
+        let speculative = session
+            .import_demand_frontier(revision, &plan, ImportDemandMode::Speculative)
+            .unwrap();
+        assert!(speculative.requests().is_empty());
+        assert!(speculative.speculative_blocked());
+        assert_eq!(
+            session
+                .import_observation_ledger(revision)
+                .unwrap()
+                .iter()
+                .count(),
+            0
+        );
+        assert!(
+            session
+                .publish_import_observation_batch(
+                    &speculative,
+                    &assembler.snapshot().unwrap(),
+                    assembler.accepted_read_manifest(),
+                    Vec::new(),
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("speculative")
+        );
+
+        let rooted = session
+            .import_demand_frontier(revision, &plan, ImportDemandMode::Rooted)
+            .unwrap();
+        assert!(!rooted.requests().is_empty());
+        assert_eq!(rooted.revision(), revision);
+    }
+
+    #[test]
+    fn explicit_occurrence_roots_select_one_of_twenty_seven_without_speculative_io() {
+        let mut source = String::new();
+        for index in 0..27 {
+            source.push_str(&format!(
+                "pub const m{index} = @import(\"m{index}.rue\");\n"
+            ));
+        }
+        source.push_str("fn main() -> i32 { 0 }\n");
+        let (mut session, assembler, context) = import_fixture(21, &source);
+        let (revision, plan) = begin_and_plan(&mut session, &assembler, context);
+        let selected = plan
+            .groups()
+            .iter()
+            .find(|group| group[0].exact_specifier() == "m7.rue")
+            .unwrap()[0]
+            .occurrence()
+            .clone();
+        let roots = ImportDemandRoots::new([selected.clone()]);
+
+        let speculative = session
+            .import_demand_frontier_for_roots(
+                revision,
+                &plan,
+                ImportDemandMode::Speculative,
+                &roots,
+            )
+            .unwrap();
+        assert!(speculative.requests().is_empty());
+        assert!(speculative.speculative_blocked());
+        assert!(
+            session
+                .import_observation_ledger(revision)
+                .unwrap()
+                .is_empty()
+        );
+
+        let rooted = session
+            .import_demand_frontier_for_roots(revision, &plan, ImportDemandMode::Rooted, &roots)
+            .unwrap();
+        assert!(!rooted.requests().is_empty());
+        assert!(
+            rooted
+                .requests()
+                .iter()
+                .all(|request| request.occurrence() == &selected)
+        );
+    }
+
+    #[test]
+    fn new_request_generation_has_no_carried_ledger_authority() {
+        let (mut session, assembler, context) = import_fixture(
+            22,
+            r#"const missing = @import("missing.rue"); fn main() -> i32 { 0 }"#,
+        );
+        let (first_revision, first_plan) =
+            begin_and_plan(&mut session, &assembler, context.clone());
+        let first = session
+            .import_demand_frontier(first_revision, &first_plan, ImportDemandMode::Rooted)
+            .unwrap();
+        let successor = session
+            .publish_import_observation_batch(
+                &first,
+                &assembler.snapshot().unwrap(),
+                assembler.accepted_read_manifest(),
+                first
+                    .requests()
+                    .iter()
+                    .cloned()
+                    .map(ImportObservation::absent)
+                    .collect(),
+            )
+            .unwrap();
+        let stale = session.import_observation_ledger(successor).unwrap();
+        assert!(!stale.is_empty());
+
+        let snapshot = assembler.snapshot().unwrap();
+        let reads = assembler.accepted_read_manifest();
+        let fresh_revision = session
+            .begin_import_input_request(&snapshot, context.clone(), reads.clone())
+            .unwrap();
+        let fresh_ledger = session.import_observation_ledger(fresh_revision).unwrap();
+        assert!(fresh_ledger.is_empty());
+        let fresh_plan = session
+            .stage_import_discovery(&snapshot, context, reads, fresh_ledger)
+            .unwrap();
+        let reread = session
+            .import_demand_frontier(fresh_revision, &fresh_plan, ImportDemandMode::Rooted)
+            .unwrap();
+        assert_eq!(
+            reread
+                .requests()
+                .iter()
+                .map(ImportDiscoveryRequest::requested_path)
+                .collect::<Vec<_>>(),
+            first
+                .requests()
+                .iter()
+                .map(ImportDiscoveryRequest::requested_path)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn duplicate_occurrences_share_one_host_operation_and_fan_out_typed_results() {
+        let (mut session, assembler, context) = import_fixture(
+            23,
+            r#"
+                const first = @import("shared.rue");
+                const second = @import("shared.rue");
+                fn main() -> i32 { 0 }
+            "#,
+        );
+        let (revision, plan) = begin_and_plan(&mut session, &assembler, context);
+        let frontier = session
+            .import_demand_frontier(revision, &plan, ImportDemandMode::Rooted)
+            .unwrap();
+        assert_eq!(frontier.requests().len(), 1, "one host candidate operation");
+
+        let successor = session
+            .publish_import_observation_batch(
+                &frontier,
+                &assembler.snapshot().unwrap(),
+                assembler.accepted_read_manifest(),
+                vec![ImportObservation::absent(frontier.requests()[0].clone())],
+            )
+            .unwrap();
+        let ledger = session.import_observation_ledger(successor).unwrap();
+        assert_eq!(
+            ledger.len(),
+            2,
+            "result fans out to both source occurrences"
+        );
+        assert_eq!(
+            ledger
+                .iter()
+                .map(|observation| observation.request().occurrence())
+                .collect::<BTreeSet<_>>()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn successor_revisions_carry_observations_but_new_epochs_reread() {
+        let source = r#"const helper = @import("helper"); fn main() -> i32 { 0 }"#;
+        let (mut session, assembler, context) = import_fixture(3, source);
+        let (revision, plan) = begin_and_plan(&mut session, &assembler, context);
+        let first = session
+            .import_demand_frontier(revision, &plan, ImportDemandMode::Rooted)
+            .unwrap();
+        let first_paths = first
+            .requests()
+            .iter()
+            .map(|request| request.requested_path().to_owned())
+            .collect::<BTreeSet<_>>();
+        let successor = session
+            .publish_import_observation_batch(
+                &first,
+                &assembler.snapshot().unwrap(),
+                assembler.accepted_read_manifest(),
+                first
+                    .requests()
+                    .iter()
+                    .cloned()
+                    .map(ImportObservation::absent)
+                    .collect(),
+            )
+            .unwrap();
+        let carried = session.import_observation_ledger(successor).unwrap();
+        assert_eq!(carried.iter().count(), first.requests().len());
+        let successor_plan = session
+            .stage_import_discovery(
+                &assembler.snapshot().unwrap(),
+                plan.context().clone(),
+                assembler.accepted_read_manifest(),
+                carried,
+            )
+            .unwrap();
+        let next = session
+            .import_demand_frontier(successor, &successor_plan, ImportDemandMode::Rooted)
+            .unwrap();
+        assert!(
+            next.requests()
+                .iter()
+                .all(|request| !first_paths.contains(request.requested_path()))
+        );
+
+        let new_context =
+            ImportDiscoveryContext::new(4, "/project", Some("/sdk"), "test-policy").unwrap();
+        let new_snapshot = assembler.snapshot().unwrap();
+        let new_revision = session
+            .begin_import_input_request(
+                &new_snapshot,
+                new_context.clone(),
+                assembler.accepted_read_manifest(),
+            )
+            .unwrap();
+        let new_plan = session
+            .stage_import_discovery(
+                &new_snapshot,
+                new_context,
+                assembler.accepted_read_manifest(),
+                ImportObservationLedger::default(),
+            )
+            .unwrap();
+        let reread = session
+            .import_demand_frontier(new_revision, &new_plan, ImportDemandMode::Rooted)
+            .unwrap();
+        assert_eq!(
+            reread
+                .requests()
+                .iter()
+                .map(|request| request.requested_path().to_owned())
+                .collect::<BTreeSet<_>>(),
+            first_paths
+        );
     }
 
     #[test]

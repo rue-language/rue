@@ -1144,10 +1144,13 @@ fn option_returning_intrinsics_require_the_exact_payload_type() {
 
 #[test]
 fn read_line_requires_trusted_source_strbuf_payload_metadata() {
-    use rue_compiler::unstable::DiscoverySourceAssembler;
+    use rue_compiler::unstable::{
+        DiscoverySourceAssembler, ImportDemandMode, begin_import_input_request,
+        import_demand_frontier, import_observation_ledger, publish_import_observation_batch,
+    };
     use rue_compiler::{
         AcceptedImportSource, CompilerSession, FileMetadataFingerprint, ImportDiscoveryContext,
-        ImportObservation, ImportObservationLedger, PhysicalFileIdentity,
+        ImportObservation, PhysicalFileIdentity,
     };
     use std::sync::Arc;
 
@@ -1192,9 +1195,17 @@ fn read_line_requires_trusted_source_strbuf_payload_metadata() {
         (3, "/project/std/option.rue", option),
     ];
     let mut session = CompilerSession::new();
-    let mut ledger = ImportObservationLedger::default();
+    let initial = assembler.snapshot().expect("trusted std root snapshot");
+    let mut revision = begin_import_input_request(
+        &mut session,
+        &initial,
+        context.clone(),
+        assembler.accepted_read_manifest(),
+    )
+    .expect("begin trusted std request");
     loop {
         let snapshot = assembler.snapshot().expect("trusted std snapshot");
+        let ledger = import_observation_ledger(&session, revision).expect("current std ledger");
         let plan = session
             .stage_import_discovery(
                 &snapshot,
@@ -1203,37 +1214,55 @@ fn read_line_requires_trusted_source_strbuf_payload_metadata() {
                 ledger.clone(),
             )
             .expect("valid trusted std discovery plan");
-        for request in plan.pending_requests(&ledger) {
-            let requested = request.requested_path();
-            let (index, canonical, source) = standard_sources
-                .iter()
-                .find(|(_, path, _)| *path == requested)
-                .unwrap_or_else(|| panic!("unexpected import request {requested}"));
-            let accepted = AcceptedImportSource::new(
-                requested,
-                *canonical,
-                PhysicalFileIdentity::new(1, *index),
-                FileMetadataFingerprint::new(source.len() as u64, 0, 0),
-                source.clone(),
-            )
-            .expect("accepted trusted standard-library source");
-            let observation = ImportObservation::accepted(request, accepted)
-                .expect("observation matches discovery request");
-            ledger
-                .record(observation)
-                .expect("unique import observation");
-        }
-        assert!(plan.failures(&ledger).next().is_none());
-        if assembler
-            .add_plan_reads(&plan, &ledger)
-            .expect("assemble accepted std reads")
-            == 0
-        {
+        let frontier =
+            import_demand_frontier(&mut session, revision, &plan, ImportDemandMode::Rooted)
+                .expect("trusted std frontier");
+        if frontier.requests().is_empty() {
             session
                 .close_import_discovery(ledger)
                 .expect("close valid import discovery revision");
             break;
         }
+        let observations = frontier
+            .requests()
+            .iter()
+            .cloned()
+            .map(|request| {
+                let requested = request.requested_path();
+                let (index, canonical, source) = standard_sources
+                    .iter()
+                    .find(|(_, path, _)| *path == requested)
+                    .unwrap_or_else(|| panic!("unexpected import request {requested}"));
+                let accepted = AcceptedImportSource::new(
+                    requested,
+                    *canonical,
+                    PhysicalFileIdentity::new(1, *index),
+                    FileMetadataFingerprint::new(source.len() as u64, 0, 0),
+                    source.clone(),
+                )
+                .expect("accepted trusted standard-library source");
+                ImportObservation::accepted(request, accepted)
+                    .expect("observation matches discovery request")
+            })
+            .collect::<Vec<_>>();
+        let mut assembly_ledger = ledger;
+        for observation in observations.iter().cloned() {
+            assembly_ledger
+                .record(observation)
+                .expect("unique representative observation");
+        }
+        assembler
+            .add_plan_reads(&plan, &assembly_ledger)
+            .expect("assemble accepted std reads");
+        let successor = assembler.snapshot().expect("successor std snapshot");
+        revision = publish_import_observation_batch(
+            &mut session,
+            &frontier,
+            &successor,
+            assembler.accepted_read_manifest(),
+            observations,
+        )
+        .expect("publish std observation batch");
     }
     let state = query_cfg_state_from_session(session, &CompileOptions::default())
         .expect("trusted Option(StrBuf) @read_line probe must compile");

@@ -5,11 +5,14 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use rue_compiler::unstable::{DiscoverySourceAssembler, discovery_attempt};
+use rue_compiler::unstable::{
+    DiscoverySourceAssembler, ImportDemandMode, begin_import_input_request, discovery_attempt,
+    import_demand_frontier, import_observation_ledger, publish_import_observation_batch,
+};
 use rue_compiler::{
     AcceptedImportSource, AcceptedReadManifestEntry, CompileErrors, CompilerSession,
     DependencyEnvelope, FileId, FileMetadataFingerprint, ImportDiscoveryContext,
-    ImportDiscoveryView, ImportObservation, ImportObservationLedger, ImportObservationStatus,
+    ImportDiscoveryRequest, ImportDiscoveryView, ImportObservation, ImportObservationStatus,
     PhysicalFileIdentity, SourceMetadata, SourceSnapshot,
 };
 
@@ -230,6 +233,72 @@ fn same_file_observation(left: &fs::Metadata, right: &fs::Metadata) -> bool {
         && left.is_file() == right.is_file()
 }
 
+fn execute_import_request(
+    request: ImportDiscoveryRequest,
+    source_manifest: Option<&SourceManifest>,
+) -> ImportObservation {
+    let candidate = Path::new(request.requested_path());
+    if source_manifest.is_some_and(|manifest| !manifest.declares_path_without_probe(candidate)) {
+        return ImportObservation::failure(request, ImportObservationStatus::DeniedLexical)
+            .expect("lexical denial is a valid terminal observation");
+    }
+
+    match fs::canonicalize(candidate) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            ImportObservation::absent(request)
+        }
+        Err(error) => ImportObservation::failure(
+            request,
+            ImportObservationStatus::PresentUnreadable(Arc::from(error.to_string())),
+        )
+        .expect("unreadable candidates are valid terminal observations"),
+        Ok(canonical)
+            if source_manifest.is_some_and(|manifest| !manifest.allows_canonical(&canonical)) =>
+        {
+            ImportObservation::failure(
+                request,
+                ImportObservationStatus::DeniedCanonical {
+                    canonical_path: Arc::from(canonical.to_string_lossy().into_owned()),
+                },
+            )
+            .expect("canonical denial is a valid terminal observation")
+        }
+        Ok(canonical) if !canonical.is_file() => ImportObservation::failure(
+            request,
+            ImportObservationStatus::InvalidPhysicalType {
+                canonical_path: Arc::from(canonical.to_string_lossy().into_owned()),
+            },
+        )
+        .expect("non-file candidates are valid terminal observations"),
+        Ok(canonical) => match stable_read_to_string(&canonical) {
+            Ok(read) => {
+                let accepted = AcceptedImportSource::new(
+                    Arc::from(request.requested_path()),
+                    Arc::from(canonical.to_string_lossy().into_owned()),
+                    read.identity,
+                    read.fingerprint,
+                    Arc::new(read.source),
+                )
+                .expect("stable file reads satisfy accepted import invariants");
+                ImportObservation::accepted(request, accepted)
+                    .expect("accepted source matches its compiler request")
+            }
+            Err(StableReadError::Io(error)) => ImportObservation::failure(
+                request,
+                ImportObservationStatus::PresentUnreadable(Arc::from(error.to_string())),
+            )
+            .expect("read failures are valid terminal observations"),
+            Err(StableReadError::Changed) => ImportObservation::failure(
+                request,
+                ImportObservationStatus::UnstableRead(Arc::from(
+                    "candidate metadata changed during read",
+                )),
+            )
+            .expect("unstable reads are valid terminal observations"),
+        },
+    }
+}
+
 /// Compute `target` relative to `base` without consulting the filesystem.
 ///
 /// Both inputs are expected to be absolute and lexically normalized. Keeping
@@ -415,6 +484,8 @@ pub(crate) struct ImportDiscoveryResult {
     pub(crate) read_manifest: Arc<[AcceptedReadManifestEntry]>,
     /// Canonical import topology and diagnostics published by the compiler.
     pub(crate) revision: Arc<ImportDiscoveryView>,
+    #[cfg(test)]
+    pub(crate) input_revision: rue_compiler::unstable::ImportInputRevision,
     pub(crate) session: CompilerSession,
 }
 
@@ -501,12 +572,23 @@ pub(crate) fn discover_and_load_imports(
     )
     .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
 
-    let mut ledger = ImportObservationLedger::default();
     let mut staging = CompilerSession::new();
+    let initial_snapshot = assembler
+        .snapshot()
+        .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+    let mut input_revision = begin_import_input_request(
+        &mut staging,
+        &initial_snapshot,
+        context.clone(),
+        assembler.accepted_read_manifest(),
+    )
+    .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
     let final_plan;
     loop {
         let snapshot = assembler
             .snapshot()
+            .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+        let ledger = import_observation_ledger(&staging, input_revision)
             .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
         let plan = match staging.stage_import_discovery(
             &snapshot,
@@ -526,96 +608,43 @@ pub(crate) fn discover_and_load_imports(
                 });
             }
         };
-        loop {
-            let pending = plan.pending_requests(&ledger);
-            if pending.is_empty() {
-                break;
-            }
-            for request in pending {
-                let candidate = Path::new(request.requested_path());
-                let observation = if let Some(manifest) = source_manifest
-                    && !manifest.declares_path_without_probe(candidate)
-                {
-                    ImportObservation::failure(request, ImportObservationStatus::DeniedLexical)
-                        .unwrap()
-                } else {
-                    match fs::canonicalize(candidate) {
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                            ImportObservation::absent(request)
-                        }
-                        Err(error) => ImportObservation::failure(
-                            request,
-                            ImportObservationStatus::PresentUnreadable(Arc::from(
-                                error.to_string(),
-                            )),
-                        )
-                        .unwrap(),
-                        Ok(canonical)
-                            if source_manifest
-                                .is_some_and(|manifest| !manifest.allows_canonical(&canonical)) =>
-                        {
-                            ImportObservation::failure(
-                                request,
-                                ImportObservationStatus::DeniedCanonical {
-                                    canonical_path: Arc::from(
-                                        canonical.to_string_lossy().into_owned(),
-                                    ),
-                                },
-                            )
-                            .unwrap()
-                        }
-                        Ok(canonical) if !canonical.is_file() => ImportObservation::failure(
-                            request,
-                            ImportObservationStatus::InvalidPhysicalType {
-                                canonical_path: Arc::from(canonical.to_string_lossy().into_owned()),
-                            },
-                        )
-                        .unwrap(),
-                        Ok(canonical) => match stable_read_to_string(&canonical) {
-                            Ok(read) => {
-                                let accepted = AcceptedImportSource::new(
-                                    Arc::from(request.requested_path()),
-                                    Arc::from(canonical.to_string_lossy().into_owned()),
-                                    read.identity,
-                                    read.fingerprint,
-                                    Arc::new(read.source),
-                                )
-                                .unwrap();
-                                ImportObservation::accepted(request, accepted).unwrap()
-                            }
-                            Err(StableReadError::Io(error)) => ImportObservation::failure(
-                                request,
-                                ImportObservationStatus::PresentUnreadable(Arc::from(
-                                    error.to_string(),
-                                )),
-                            )
-                            .unwrap(),
-                            Err(StableReadError::Changed) => ImportObservation::failure(
-                                request,
-                                ImportObservationStatus::UnstableRead(Arc::from(
-                                    "candidate metadata changed during read",
-                                )),
-                            )
-                            .unwrap(),
-                        },
-                    }
-                };
-                ledger
-                    .record(observation)
-                    .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
-            }
-        }
-        if plan.failures(&ledger).next().is_some() {
+        let frontier = import_demand_frontier(
+            &mut staging,
+            input_revision,
+            &plan,
+            ImportDemandMode::Rooted,
+        )
+        .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+        if frontier.requests().is_empty() {
             final_plan = plan;
             break;
         }
-        let added = assembler
-            .add_plan_reads(&plan, &ledger)
+        let observations = frontier
+            .requests()
+            .iter()
+            .cloned()
+            .map(|request| execute_import_request(request, source_manifest))
+            .collect::<Vec<_>>();
+        let mut next_ledger = ledger;
+        for observation in observations.iter().cloned() {
+            next_ledger
+                .record(observation)
+                .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+        }
+        let _ = assembler
+            .add_plan_reads(&plan, &next_ledger)
             .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
-        if added == 0 {
-            final_plan = plan;
-            break;
-        }
+        let successor_snapshot = assembler
+            .snapshot()
+            .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+        input_revision = publish_import_observation_batch(
+            &mut staging,
+            &frontier,
+            &successor_snapshot,
+            assembler.accepted_read_manifest(),
+            observations,
+        )
+        .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
     }
 
     let snapshot = assembler
@@ -623,9 +652,11 @@ pub(crate) fn discover_and_load_imports(
         .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
     let read_manifest = assembler.accepted_read_manifest();
     debug_assert_eq!(final_plan.source_revision(), snapshot.source_revision());
+    let ledger = import_observation_ledger(&staging, input_revision)
+        .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
     let closed = match staging.close_import_discovery(ledger) {
         Ok(closed) => closed,
-        Err(_) => {
+        Err(errors) => {
             let attempted = discovery_attempt(&staging)
                 .expect("failed closure publishes an attempted import revision");
             if DependencyEnvelope::from_closed_revision(&attempted).is_some() {
@@ -635,10 +666,6 @@ pub(crate) fn discover_and_load_imports(
                 // can be written first. All other failures have no topology.
                 attempted
             } else {
-                let diagnostics = staging
-                    .import_diagnostics()
-                    .expect("failed closure publishes canonical import diagnostics");
-                let errors = CompileErrors::from(diagnostics.errors().to_vec());
                 return Err(SourceLoadError::Compiler {
                     snapshot: Some(snapshot),
                     errors,
@@ -651,6 +678,8 @@ pub(crate) fn discover_and_load_imports(
         resolution: SourceResolutionInputs { root_path, context },
         read_manifest,
         revision: closed,
+        #[cfg(test)]
+        input_revision,
         session: staging,
     })
 }
@@ -668,7 +697,7 @@ mod architecture_tests {
 
     fn production_before_tests(source: &str) -> &str {
         source
-            .split("\n#[cfg(test)]\nmod tests {")
+            .split("\n#[cfg(test)]\nmod ")
             .next()
             .unwrap_or(source)
     }
@@ -696,6 +725,23 @@ mod architecture_tests {
     }
 
     #[test]
+    fn cli_executes_only_revision_pinned_compiler_frontiers() {
+        let production = production_before_tests(include_str!("source_loader.rs"));
+        assert!(!production.contains(".pending_requests("));
+        for required_boundary in [
+            "begin_import_input_request(",
+            "import_demand_frontier(",
+            "publish_import_observation_batch(",
+        ] {
+            assert_eq!(
+                production.matches(required_boundary).count(),
+                1,
+                "host boundary must have exactly one call: {required_boundary}"
+            );
+        }
+    }
+
+    #[test]
     fn authority_scan_looks_past_test_gated_imports_but_not_into_test_modules() {
         let peer = r#"
 #[cfg(test)]
@@ -718,5 +764,141 @@ mod tests {
             Some("stage_import_discovery")
         );
         assert!(!production_before_tests(peer).contains("close_import_discovery"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path =
+                std::env::temp_dir().join(format!("rue-{name}-{}-{unique}", std::process::id()));
+            fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        fn write(&self, relative: &str, source: &str) -> PathBuf {
+            let path = self.path.join(relative);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&path, source).unwrap();
+            path
+        }
+    }
+
+    #[test]
+    fn wide_same_depth_imports_use_one_host_frontier_round() {
+        let single = TestDir::new("single-frontier");
+        let single_main = single.write(
+            "main.rue",
+            r#"const a = @import("a.rue"); fn main() -> i32 { 0 }"#,
+        );
+        single.write("a.rue", "pub fn value() -> i32 { 1 }");
+        let single_result =
+            discover_and_load_imports(single_main.to_str().unwrap(), None, None).unwrap();
+
+        let wide = TestDir::new("wide-frontier");
+        let mut source = String::new();
+        for index in 0..24 {
+            source.push_str(&format!("const m{index} = @import(\"m{index}.rue\");\n"));
+            wide.write(
+                &format!("m{index}.rue"),
+                &format!("pub fn value{index}() -> i32 {{ {index} }}"),
+            );
+        }
+        source.push_str("fn main() -> i32 { 0 }\n");
+        let wide_main = wide.write("main.rue", &source);
+        let wide_result =
+            discover_and_load_imports(wide_main.to_str().unwrap(), None, None).unwrap();
+
+        assert_eq!(single_result.input_revision.frontier_round(), 1);
+        assert_eq!(
+            wide_result.input_revision.frontier_round(),
+            single_result.input_revision.frontier_round(),
+            "frontier count must depend on graph depth, not same-depth width"
+        );
+        assert_eq!(wide_result.read_manifest.len(), 25);
+    }
+
+    #[test]
+    fn import_chain_adds_one_frontier_round_per_depth() {
+        let dir = TestDir::new("depth-frontier");
+        let main = dir.write(
+            "main.rue",
+            r#"const a = @import("a.rue"); fn main() -> i32 { a.b.c.value() }"#,
+        );
+        dir.write(
+            "a.rue",
+            r#"pub const b = @import("b.rue"); pub fn a() -> i32 { 1 }"#,
+        );
+        dir.write(
+            "b.rue",
+            r#"pub const c = @import("c.rue"); pub fn b() -> i32 { 2 }"#,
+        );
+        dir.write("c.rue", "pub fn value() -> i32 { 3 }");
+
+        let result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+        assert_eq!(result.input_revision.frontier_round(), 3);
+        assert_eq!(result.read_manifest.len(), 4);
+    }
+
+    #[test]
+    fn rooted_std_discovery_does_not_read_unrelated_std_modules() {
+        let project = TestDir::new("std-project");
+        let stdlib = TestDir::new("std-library");
+        let main = project.write(
+            "main.rue",
+            r#"const std = @import("std"); fn main() -> i32 { 0 }"#,
+        );
+        stdlib.write("_std.rue", r#"pub const math = @import("math.rue");"#);
+        stdlib.write("math.rue", "pub fn answer() -> i32 { 42 }");
+        let unrelated =
+            fs::canonicalize(stdlib.write("unrelated.rue", "pub fn unused() -> i32 { 0 }"))
+                .unwrap();
+        let std_root = fs::canonicalize(&stdlib.path).unwrap();
+
+        let result =
+            discover_and_load_imports(main.to_str().unwrap(), None, Some(&std_root)).unwrap();
+        assert_eq!(result.input_revision.frontier_round(), 2);
+        assert_eq!(result.read_manifest.len(), 3);
+        assert!(
+            result
+                .read_manifest
+                .iter()
+                .all(|entry| entry.canonical_path() != unrelated.to_string_lossy())
+        );
+    }
+
+    #[test]
+    fn manifest_denial_remains_a_typed_fail_closed_diagnostic() {
+        let project = TestDir::new("manifest-denial");
+        let main = project.write(
+            "main.rue",
+            r#"const missing = @import("missing"); fn main() -> i32 { 0 }"#,
+        );
+        let manifest_path = project.write("sources.manifest", "main.rue\n");
+        let manifest = SourceManifest::load(manifest_path.to_str().unwrap()).unwrap();
+        match discover_and_load_imports(main.to_str().unwrap(), Some(&manifest), None) {
+            Err(SourceLoadError::Compiler { errors, .. }) => {
+                let rendered = errors.to_string();
+                assert!(rendered.contains("source manifest"), "{rendered}");
+                assert!(rendered.contains("missing.rue"), "{rendered}");
+            }
+            Err(SourceLoadError::Message(message)) => {
+                panic!("policy denial escaped typed diagnostics: {message}")
+            }
+            Ok(_) => panic!("policy denial unexpectedly closed successfully"),
+        }
     }
 }

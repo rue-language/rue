@@ -882,6 +882,9 @@ impl QueryRuntime {
     ) -> Result<(), RevisionError> {
         let mut exact = BTreeMap::new();
         for (input, stamp) in inputs {
+            if stamp == 0 {
+                return Err(RevisionError::ReservedInputStamp(input));
+            }
             if let Some(previous) = exact.insert(input.clone(), stamp)
                 && previous != stamp
             {
@@ -1139,6 +1142,8 @@ pub enum RevisionError {
     AlreadyPublished(Revision),
     /// One publication supplied two different values for the same exact leaf.
     ConflictingInput(InputIdentity),
+    /// Stamp zero is reserved for a recorded absent optional leaf.
+    ReservedInputStamp(InputIdentity),
     /// This publication identity is older than the bounded retired watermark.
     Retired(Revision),
 }
@@ -2224,6 +2229,19 @@ impl QueryContext {
         Ok(stamp)
     }
 
+    /// Reads and records an optional exact leaf from this task's revision.
+    ///
+    /// Absence is recorded as a negative observation. A successor which adds
+    /// the leaf therefore invalidates the terminal without turning absence
+    /// into a query failure. External-input coordinators use this to publish a
+    /// typed demand terminal; speculative work can instead park on the same
+    /// negative observation without emitting a host request.
+    pub fn optional_input(&self, input: InputIdentity) -> Option<u64> {
+        let stamp = self.task.core.revision_input(self.task.revision, &input);
+        self.task.observe_input(input, stamp.unwrap_or(0));
+        stamp
+    }
+
     /// Records structural work as it is completed by the active body.
     ///
     /// Unlike terminal-attached output work, this prefix survives cancellation
@@ -2546,10 +2564,13 @@ impl RuntimeCore {
         else {
             return Ok(false);
         };
-        let direct_inputs_valid = terminal
-            .inputs
-            .iter()
-            .all(|observed| entry.inputs.get(&observed.input) == Some(&observed.stamp));
+        let direct_inputs_valid = terminal.inputs.iter().all(|observed| {
+            if observed.stamp == 0 {
+                !entry.inputs.contains_key(&observed.input)
+            } else {
+                entry.inputs.get(&observed.input) == Some(&observed.stamp)
+            }
+        });
         drop(revisions);
         if !direct_inputs_valid {
             return Ok(false);
@@ -4082,6 +4103,78 @@ mod tests {
         assert_eq!(first.node(), second.node());
         assert!(!Arc::ptr_eq(&first, &second));
         assert_ne!(first.outcome(), second.outcome());
+    }
+
+    #[test]
+    fn optional_inputs_record_negative_observations_and_invalidate_on_publication() {
+        let runtime = QueryRuntime::new(1);
+        let family = runtime.family::<Key, bool>("optional-input", 4).unwrap();
+        let input = InputIdentity::new("candidate", "helper.rue");
+        let absent = revision(20);
+        let present = revision(21);
+        let absent_again = revision(22);
+        runtime.publish_revision(absent, []).unwrap();
+        runtime
+            .publish_revision(present, [(input.clone(), 7)])
+            .unwrap();
+        runtime.publish_revision(absent_again, []).unwrap();
+
+        let first = runtime.request(
+            &family,
+            absent,
+            Key("helper"),
+            CancellationToken::new(),
+            |context| {
+                Ok(QueryOutput::success(
+                    context.optional_input(input.clone()).is_some(),
+                ))
+            },
+        );
+        assert_eq!(first.execution(), RequestExecution::Computed);
+        assert_eq!(
+            first.inputs(),
+            &[InputObservation {
+                input: input.clone(),
+                stamp: 0,
+            }]
+        );
+
+        let changed = runtime.request(
+            &family,
+            present,
+            Key("helper"),
+            CancellationToken::new(),
+            |context| {
+                Ok(QueryOutput::success(
+                    context.optional_input(input.clone()).is_some(),
+                ))
+            },
+        );
+        assert_eq!(changed.execution(), RequestExecution::Computed);
+        assert!(matches!(
+            changed.terminal().unwrap().outcome(),
+            QueryOutcome::Success(true)
+        ));
+
+        let absent_result = runtime.request(
+            &family,
+            absent_again,
+            Key("helper"),
+            CancellationToken::new(),
+            |context| {
+                Ok(QueryOutput::success(
+                    context.optional_input(input.clone()).is_some(),
+                ))
+            },
+        );
+        assert!(matches!(
+            absent_result.terminal().unwrap().outcome(),
+            QueryOutcome::Success(false)
+        ));
+        assert_eq!(
+            runtime.publish_revision(revision(23), [(input.clone(), 0)]),
+            Err(RevisionError::ReservedInputStamp(input))
+        );
     }
 
     #[test]
