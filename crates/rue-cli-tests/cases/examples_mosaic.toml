@@ -76,6 +76,7 @@ description = "stress parses and renders 200 linked pages and checks expected co
 source_path = "examples/mosaic/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 program_args = ["stress"]
+timeout_ms = 30000
 exit_code = 0
 stdout = "stress pages=200 blocks=2200 links=200 anchors=400\nexpected_links=200\ndeterministic=true\nvalid=true\nselftests=30 failures=0\n"
 
@@ -85,9 +86,11 @@ description = "the 4x tier parses and renders 400 linked pages with proportional
 source_path = "examples/mosaic/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 # Rendered navigation is a bounded window (RUE-1003), so generated output
-# volume is linear in page count and this tier fits the default budget that
-# its quadratic predecessor blew on loaded macOS CI runners (RUE-999).
+# volume is linear in page count. Both scaling tiers remain sub-second in
+# isolated Linux x64 runs, but need the large-example allowance while the
+# parallel CLI corpus competes for loaded Linux runners (RUE-999).
 program_args = ["stress4"]
+timeout_ms = 30000
 exit_code = 0
 stdout = "stress pages=400 blocks=4400 links=400 anchors=800\nexpected_links=400\ndeterministic=true\nvalid=true\nselftests=30 failures=0\n"
 
