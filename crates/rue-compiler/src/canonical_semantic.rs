@@ -1612,8 +1612,8 @@ fn finish_canonical_analysis(
     .unwrap_or_else(|_| Arc::from([]));
     let anonymous_nominal_associations = sema_output
         .anonymous_nominal_identities_by_type
-        .iter()
-        .map(|(_, identities)| {
+        .values()
+        .map(|identities| {
             let representative = project_anonymous_nominal_key(
                 &identities.representative,
                 merged,
