@@ -627,7 +627,6 @@ impl<'a> Emitter<'a> {
             Reg::X6,
             Reg::X7,
         ];
-        let callee_saved_size = self.callee_saved_stack_size();
         let abi_shift = self.has_sret as u32;
         // Home incoming argument registers into the frame parameter area. Each
         // source parameter consumes `reg_count` consecutive incoming registers
@@ -643,8 +642,11 @@ impl<'a> Emitter<'a> {
                 // slots): CfgLower generated the body's param reads against the
                 // pre-spill count. (RUE-129)
                 let slot = self.num_locals_original + homing.start_slot + k;
-                // Skip past callee-saved registers in the offset calculation
-                let offset = -callee_saved_size + crate::frame_layout::slot_offset_pre_saved(slot);
+                // Slot location past the callee-saved area — the single
+                // AArch64 authority shared with the `--emit stackframe`
+                // reporter (RUE-774).
+                let offset =
+                    crate::frame_layout::aarch64_slot_offset(self.callee_saved.len(), slot);
 
                 if abi_index < param_regs.len() {
                     self.begin_inst();
@@ -669,7 +671,7 @@ impl<'a> Emitter<'a> {
         // loads it back to store the result through.
         if self.has_sret {
             let slot = self.num_locals_original + self.num_params;
-            let offset = -callee_saved_size + crate::frame_layout::slot_offset_pre_saved(slot);
+            let offset = crate::frame_layout::aarch64_slot_offset(self.callee_saved.len(), slot);
             self.begin_inst();
             self.emit_str(param_regs[0], Reg::Fp, offset);
             end_inst!(self, "str {}, [x29, #{}] ; sret ptr", param_regs[0], offset);

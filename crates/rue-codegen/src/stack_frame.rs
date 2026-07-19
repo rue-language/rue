@@ -448,39 +448,46 @@ fn generate_aarch64_stack_frame(
     );
     let frame_size = frame.frame_size() as usize;
 
-    // FP and LR are saved separately (16 bytes) at the very top of the frame.
-    let fp_lr_size = 16;
+    // Every FP-relative location below is derived from the same frame-layout
+    // authority the emitter uses (RUE-774), so the reported slots match the
+    // prologue/body instructions exactly. AArch64 sets FP *at* the saved FP/LR
+    // pair, so the FP/LR bytes sit at and above FP and are not part of the
+    // below-FP saved area — only the callee-saved pairs are.
+    use crate::frame_layout::{aarch64_callee_saved_pair_offset, aarch64_slot_offset};
+    let num_callee_saved = used_callee_saved.len();
+    let slot_offset = |slot: u32| aarch64_slot_offset(num_callee_saved, slot);
 
     let mut slots = Vec::new();
 
-    // Add callee-saved registers (in pairs, starting after FP/LR save area)
-    // Note: FP/LR are at [SP, #-16]! at the very top of the frame
-    let mut reg_offset = -(fp_lr_size as i32); // Start after FP/LR
+    // Callee-saved registers, stored in pairs by the prologue starting at
+    // `[fp -16]`; a trailing odd register occupies the low half of the next
+    // pair slot.
     let mut i = 0;
-    while i + 1 < used_callee_saved.len() {
-        reg_offset -= 16;
+    let mut pair_index = 0;
+    while i + 1 < num_callee_saved {
+        let base = aarch64_callee_saved_pair_offset(pair_index);
         slots.push(StackSlot {
             name: Some(format!("saved {}", used_callee_saved[i])),
-            offset: reg_offset,
+            offset: base,
             size: 8,
             ty: "i64".to_string(),
             kind: StackSlotKind::CalleeSaved,
         });
         slots.push(StackSlot {
             name: Some(format!("saved {}", used_callee_saved[i + 1])),
-            offset: reg_offset + 8,
+            offset: base + 8,
             size: 8,
             ty: "i64".to_string(),
             kind: StackSlotKind::CalleeSaved,
         });
         i += 2;
+        pair_index += 1;
     }
     // Handle odd register
-    if i < used_callee_saved.len() {
-        reg_offset -= 16;
+    if i < num_callee_saved {
         slots.push(StackSlot {
             name: Some(format!("saved {}", used_callee_saved[i])),
-            offset: reg_offset,
+            offset: aarch64_callee_saved_pair_offset(pair_index),
             size: 8,
             ty: "i64".to_string(),
             kind: StackSlotKind::CalleeSaved,
@@ -491,7 +498,7 @@ fn generate_aarch64_stack_frame(
     for i in 0..num_locals {
         slots.push(StackSlot {
             name: None,
-            offset: frame.slot_offset(i),
+            offset: slot_offset(i),
             size: frame.slot_size(i) as usize,
             ty: "i64".to_string(),
             kind: StackSlotKind::Local,
@@ -504,7 +511,7 @@ fn generate_aarch64_stack_frame(
         let slot = num_locals + i;
         slots.push(StackSlot {
             name: None,
-            offset: frame.slot_offset(slot),
+            offset: slot_offset(slot),
             size: frame.slot_size(slot) as usize,
             ty: "i64".to_string(),
             kind: StackSlotKind::Parameter,
@@ -516,7 +523,7 @@ fn generate_aarch64_stack_frame(
         let slot = num_locals + num_params;
         slots.push(StackSlot {
             name: Some("sret ptr".to_string()),
-            offset: frame.slot_offset(slot),
+            offset: slot_offset(slot),
             size: frame.slot_size(slot) as usize,
             ty: "ptr".to_string(),
             kind: StackSlotKind::Parameter,
@@ -528,7 +535,7 @@ fn generate_aarch64_stack_frame(
         let slot = num_locals + num_params + sret_slots + i;
         slots.push(StackSlot {
             name: None,
-            offset: frame.slot_offset(slot),
+            offset: slot_offset(slot),
             size: frame.slot_size(slot) as usize,
             ty: "i64".to_string(),
             kind: StackSlotKind::Spill,
@@ -656,5 +663,125 @@ mod tests {
         assert!(output.contains("saved rbx"));
         assert!(output.contains("rdi"));
         assert!(output.contains("rax"));
+    }
+
+    /// Compile a Rue function to a validated CFG for the codegen tests.
+    fn compile_named_fn(
+        source: &str,
+        name: &str,
+    ) -> (rue_cfg::ValidatedCfg, FrozenTypeInternPool, ThreadedRodeo) {
+        use rue_air::Sema;
+        use rue_error::PreviewFeatures;
+        use rue_lexer::Lexer;
+        use rue_parser::Parser;
+        use rue_rir::AstGen;
+
+        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+        let (ast, mut interner) = Parser::new(tokens, interner).parse().unwrap();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
+        let output = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new())
+            .analyze_all()
+            .unwrap();
+        let func = output
+            .functions
+            .iter()
+            .find(|f| f.name == name)
+            .expect("requested test function should exist");
+        let cfg = CfgBuilder::build(
+            &func.air,
+            func.num_locals,
+            func.num_param_slots,
+            &func.name,
+            &output.type_pool,
+            func.param_modes.clone(),
+            &interner,
+            func.allow_unreachable_code,
+        )
+        .cfg
+        .expect("test function CFG must build");
+        (cfg, output.type_pool, interner)
+    }
+
+    /// RUE-774: the reported AArch64 slots must match the offsets in the emitted
+    /// prologue/body. `gcd`'s iterative body forces callee-saved registers and
+    /// homes both parameters, so it exercises callee-saved, local, and parameter
+    /// slots together.
+    #[test]
+    fn aarch64_reported_slots_match_emitted_instructions() {
+        let source = "\
+fn gcd(a: i32, b: i32) -> i32 {
+    let mut x = a;
+    let mut y = b;
+    while y != 0 {
+        let temp = y;
+        y = x % y;
+        x = temp;
+    }
+    x
+}
+
+fn main() -> i32 {
+    gcd(1071, 462)
+}
+";
+        let (cfg, type_pool, interner) = compile_named_fn(source, "gcd");
+        let target = Target::Aarch64Linux;
+
+        let info = generate_stack_frame_info(&cfg, "gcd", &type_pool, &interner, target).unwrap();
+        let (_machine_code, asm) =
+            crate::aarch64::generate_with_asm(&cfg, &type_pool, &[], &interner, target).unwrap();
+
+        // Parameters are homed into the frame by explicit `str x*, [x29, #N]`
+        // prologue stores; every reported parameter slot must appear at that
+        // exact FP-relative offset in the emitted assembly.
+        let params: Vec<i32> = info
+            .slots
+            .iter()
+            .filter(|s| s.kind == StackSlotKind::Parameter)
+            .map(|s| s.offset)
+            .collect();
+        assert_eq!(params.len(), 2, "gcd homes two parameters");
+        for offset in &params {
+            let needle = format!("[x29, #{offset}]");
+            assert!(
+                asm.contains(&needle),
+                "reported parameter slot at fp{offset} is not homed at that offset in:\n{asm}"
+            );
+        }
+
+        // Callee-saved registers are pushed in `stp .., [sp, #-16]!` pairs after
+        // the FP/LR pair; the reported count must match the emitted pushes and
+        // the first pair must land at [fp -16] (the pre-RUE-774 bug reported
+        // [fp -32]).
+        let saved: Vec<i32> = info
+            .slots
+            .iter()
+            .filter(|s| s.kind == StackSlotKind::CalleeSaved)
+            .map(|s| s.offset)
+            .collect();
+        assert!(
+            !saved.is_empty(),
+            "gcd must allocate callee-saved registers"
+        );
+        assert_eq!(saved[0], -16, "first callee-saved slot must be at [fp -16]");
+        let predecrement_pushes = asm.matches("[sp, #-16]!").count();
+        let callee_saved_pairs = saved.len().div_ceil(2);
+        assert_eq!(
+            predecrement_pushes,
+            1 + callee_saved_pairs,
+            "one FP/LR push plus one push per callee-saved pair must be emitted"
+        );
+
+        // Nothing should still be reported below the frame's own size.
+        for slot in &info.slots {
+            assert!(
+                slot.offset >= -(info.frame_size as i32),
+                "slot offset {} escapes the {}-byte frame",
+                slot.offset,
+                info.frame_size
+            );
+        }
     }
 }
