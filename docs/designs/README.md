@@ -226,4 +226,5 @@ The table is generated from ADR frontmatter. Run
 | [0061](0061-supported-compiler-facade.md) | Supported compiler facade and immutable artifact views | Accepted | architecture, compiler, tooling, api, incremental |
 | [0062](0062-place-returning-borrow-accessors.md) | Place-returning borrow accessors: projection reads of owned elements | Accepted | ownership, borrows, collections, accessors, stdlib, formal-semantics |
 | [0063](0063-parallel-demand-driven-incremental-compilation.md) | Parallel demand-driven incremental compilation | Accepted | architecture, compiler, incremental, parallelism, codegen, linker, performance |
+| [0064](0064-c-ffi.md) | C FFI: a guaranteed target-C boundary for imports and exports | Proposal | ffi, abi, codegen, linker, types, semantics, unsafe, interop |
 <!-- ADR-INDEX:END -->
