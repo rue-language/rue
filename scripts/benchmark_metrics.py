@@ -36,6 +36,17 @@ MIN_SAMPLES = 3
 DEFAULT_MEASUREMENT_FAMILY = "compiler"
 DEFAULT_SCENARIO_FAMILY = "cold_compilation"
 
+# The extreme-range guard exists to reject a *deceptively small* scaled MAD, not
+# to punish honest dispersion. When the scaled MAD is already a healthy fraction
+# of the center it faithfully represents the spread, so the growth bounds derived
+# from it are trustworthy however wide the raw range is. Shared CI runners
+# routinely add one-sided scheduler spikes to sub-20ms compiles; those inflate
+# the MAD (which then honestly reports the uncertainty) rather than hiding it, so
+# distrusting the range in that regime only produces indeterminate false alarms.
+# Only when the scaled MAD falls below this fraction of the center is it too
+# tight to be believed and an extreme range signals untrustworthy evidence.
+MAD_TRUST_FRACTION = 0.08
+
 
 def measurement_identity(run: dict) -> dict[str, str]:
     """Return the semantic identity of a run, including historical defaults."""
@@ -137,7 +148,11 @@ def robust_summary(values: object) -> dict | None:
     # The 50%-of-center floor tolerates ordinary scheduler noise while six
     # scaled MADs covers dispersed samples.
     range_guard_threshold = max(abs(center) * 0.5, scaled_mad * 6.0)
-    extreme_range = guarded_range > range_guard_threshold
+    # A healthy scaled MAD already represents the spread (see MAD_TRUST_FRACTION):
+    # trust it and its bounds even when a minority of samples spiked the raw
+    # range. The guard fires only when the MAD is too tight to be believed.
+    mad_reflects_spread = scaled_mad > abs(center) * MAD_TRUST_FRACTION
+    extreme_range = guarded_range > range_guard_threshold and not mad_reflects_spread
     return {
         "center": center,
         "scaled_mad": scaled_mad,
