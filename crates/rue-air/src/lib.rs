@@ -14,6 +14,7 @@
 mod api_inventory;
 pub mod call_abi;
 mod canonical_imports;
+pub mod drop_glue_names;
 mod inference;
 mod inst;
 mod intern_pool;
