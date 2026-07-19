@@ -1499,7 +1499,7 @@ fn revisioned_parse_family_has_no_peer_legacy_authority() {
             "legacy parse query authority returned: {removed}"
         );
     }
-    assert!(session.contains("revisioned.source_revision(&source)"));
+    assert!(session.contains(".source_revision(&source, snapshot)"));
     assert!(session.contains("revisioned.select_parse(&attempt)"));
     assert!(runtime.contains("parse: RevisionedFamily<super::session::ParseQuery>"));
 }

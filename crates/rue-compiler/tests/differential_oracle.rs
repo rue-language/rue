@@ -46,6 +46,8 @@ struct DiscoveryInput {
 struct Observation {
     update: String,
     diagnostics: String,
+    syntax: String,
+    rir: String,
     semantic: String,
     semantic_hash: String,
     executable_hash: String,
@@ -240,6 +242,29 @@ fn observe_with_fault(
         )
     };
     let mut imports = close_discovery(session, step);
+    let file_order = step
+        .snapshot
+        .files()
+        .map(|source| source.file_id)
+        .collect::<Vec<_>>();
+    let present = |session: &mut CompilerSession, stage| {
+        session
+            .unstable_present(PresentationRequest {
+                stage,
+                options: &step.options,
+                file_order: &file_order,
+            })
+            .map_or_else(
+                |errors| format!("error:{errors:?}"),
+                |artifact| artifact.as_str().to_owned(),
+            )
+    };
+    let syntax = format!(
+        "tokens={};ast={}",
+        present(session, PresentationStage::Tokens),
+        present(session, PresentationStage::Ast)
+    );
+    let rir = present(session, PresentationStage::Rir);
     if fault == Some(DifferentialOracleFault::Semantic) {
         let _ = session.semantic(&step.options);
         assert!(inject_stale_query_for_oracle(
@@ -261,11 +286,6 @@ fn observe_with_fault(
                 })
                 .collect::<Vec<_>>();
             let strings = output.string_literals().collect::<Vec<_>>();
-            let file_order = step
-                .snapshot
-                .files()
-                .map(|source| source.file_id)
-                .collect::<Vec<_>>();
             let air = session
                 .unstable_present(PresentationRequest {
                     stage: PresentationStage::Air,
@@ -359,6 +379,8 @@ fn observe_with_fault(
     Observation {
         update,
         diagnostics,
+        syntax,
+        rir,
         semantic,
         semantic_hash,
         executable_hash,
@@ -376,6 +398,8 @@ fn differing_fields(left: &Observation, right: &Observation) -> Vec<&'static str
     [
         (left.update != right.update, "update"),
         (left.diagnostics != right.diagnostics, "diagnostics"),
+        (left.syntax != right.syntax, "syntax"),
+        (left.rir != right.rir, "rir"),
         (left.semantic != right.semantic, "semantic"),
         (
             left.semantic_hash != right.semantic_hash,

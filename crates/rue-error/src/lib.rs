@@ -899,6 +899,19 @@ impl<K> DiagnosticWrapper<K> {
         &self.diagnostic
     }
 
+    /// Rebind every source location carried by this diagnostic while
+    /// preserving its kind and explanatory payload.
+    pub fn map_spans(mut self, mut map: impl FnMut(Span) -> Span) -> Self {
+        self.span = self.span.map(&mut map);
+        for label in &mut self.diagnostic.labels {
+            label.span = map(label.span);
+        }
+        for suggestion in &mut self.diagnostic.suggestions {
+            suggestion.span = map(suggestion.span);
+        }
+        self
+    }
+
     /// Add a secondary label pointing to related code.
     ///
     /// Labels appear as additional annotations in the source snippet.
@@ -1908,6 +1921,17 @@ impl CompileErrors {
     /// Get all errors as a slice.
     pub fn as_slice(&self) -> &[CompileError] {
         &self.errors
+    }
+
+    /// Rebind every source location in every contained diagnostic.
+    pub fn map_spans(self, mut map: impl FnMut(Span) -> Span) -> Self {
+        Self {
+            errors: self
+                .errors
+                .into_iter()
+                .map(|error| error.map_spans(&mut map))
+                .collect(),
+        }
     }
 
     /// Check if the collection contains errors and return as a result.

@@ -70,7 +70,7 @@ pub struct ImportOccurrenceKey {
 }
 
 impl ImportOccurrenceKey {
-    fn from_directive(site: &ImportDirective) -> Self {
+    pub(crate) fn from_directive(site: &ImportDirective) -> Self {
         Self {
             importer: site.importer().clone(),
             source_offset: site.source_offset(),
@@ -265,6 +265,7 @@ impl FileMetadataFingerprint {
 }
 
 impl ImportObservationStatus {
+    #[cfg(test)]
     fn is_present(&self) -> bool {
         matches!(self, Self::PresentReadable { .. })
     }
@@ -584,45 +585,15 @@ impl ImportDiscoveryPlan {
         program: &ParsedProgram,
         context: ImportDiscoveryContext,
     ) -> CompileResult<Self> {
-        let root_dir = context.project_root().to_owned();
         let mut groups = Vec::new();
         for site in program.import_directives().iter() {
             let occurrence = ImportOccurrenceKey::from_directive(site);
             let importer_path = requested_path_for_module(&context, site.importer())?;
-            let importer_dir = parent_dir(&importer_path);
-            let mut bases = vec![importer_dir];
-            if !bases.contains(&root_dir) {
-                bases.push(root_dir.clone());
-            }
-            let candidate_groups =
-                discovery_candidate_groups(site.specifier(), &bases, context.std_root());
-            let normalized_specifier = normalize_path(site.specifier());
-            for (group_index, candidates) in candidate_groups.into_iter().enumerate() {
-                let group_index = u32::try_from(group_index)
-                    .map_err(|_| invalid_input("import candidate group count exceeds u32::MAX"))?;
-                let requests = candidates
-                    .into_iter()
-                    .enumerate()
-                    .map(|(position, candidate)| {
-                        let position = u32::try_from(position)
-                            .expect("candidate group size is bounded by policy");
-                        let role = candidate_role(site.specifier(), group_index, position);
-                        ImportDiscoveryRequest {
-                            context: context.clone(),
-                            occurrence: occurrence.clone(),
-                            exact_specifier: Arc::from(site.specifier()),
-                            normalized_specifier: Arc::from(normalized_specifier.as_str()),
-                            importer_anchor: Arc::from(importer_path.as_str()),
-                            root_anchor: Arc::from(context.project_root()),
-                            group: group_index,
-                            position,
-                            requested_path: Arc::from(normalize_path(&candidate)),
-                            role,
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                groups.push(requests.into());
-            }
+            groups.extend(discovery_groups_for_occurrence(
+                &context,
+                &occurrence,
+                &importer_path,
+            )?);
         }
         groups.sort_by(|left: &Arc<[ImportDiscoveryRequest]>, right| left[0].cmp(&right[0]));
         Ok(Self {
@@ -647,109 +618,8 @@ impl ImportDiscoveryPlan {
         &self.groups
     }
 
-    pub(crate) fn groups_for_demand(
-        &self,
-        module: &ModuleId,
-        roots: &ImportDemandRoots,
-    ) -> Arc<[Arc<[ImportDiscoveryRequest]>]> {
-        let demanded = roots.occurrences.iter().collect::<BTreeSet<_>>();
-        self.groups
-            .iter()
-            .filter(|group| {
-                group[0].occurrence().importer() == module
-                    && demanded.contains(group[0].occurrence())
-            })
-            .cloned()
-            .collect::<Vec<_>>()
-            .into()
-    }
-
-    pub(crate) fn validate_ledger(&self, ledger: &ImportObservationLedger) -> CompileResult<()> {
-        let requests = self
-            .groups
-            .iter()
-            .flat_map(|group| group.iter())
-            .collect::<BTreeSet<_>>();
-        if ledger.iter().any(|observation| {
-            observation.request().context() != &self.context
-                || !requests.contains(observation.request())
-        }) {
-            return Err(invalid_input(
-                "observation ledger contains a request outside the current discovery plan and epoch",
-            ));
-        }
-        Ok(())
-    }
-
-    pub(crate) fn reduce_graph(
-        &self,
-        root: ModuleId,
-        ledger: &ImportObservationLedger,
-        accepted_reads: &[AcceptedReadManifestEntry],
-    ) -> CompileResult<crate::CanonicalImportGraph> {
-        self.validate_ledger(ledger)?;
-        let manifest = accepted_reads
-            .iter()
-            .map(|entry| (entry.metadata_identity(), entry))
-            .collect::<BTreeMap<_, _>>();
-        if manifest.len() != accepted_reads.len() {
-            return Err(invalid_input(
-                "accepted read manifest contains duplicate physical identities",
-            ));
-        }
-        let mut by_site: BTreeMap<&ImportOccurrenceKey, Vec<&Arc<[ImportDiscoveryRequest]>>> =
-            BTreeMap::new();
-        for group in self.groups.iter() {
-            by_site.entry(&group[0].occurrence).or_default().push(group);
-        }
-        let mut records = Vec::with_capacity(by_site.len());
-        for (site, groups) in by_site {
-            let winning = groups.iter().find_map(|group| {
-                let present = group
-                    .iter()
-                    .filter_map(|request| ledger.get(request))
-                    .filter_map(ImportObservation::accepted_source)
-                    .collect::<Vec<_>>();
-                (!present.is_empty()).then_some(present)
-            });
-            let module_for = |source: &AcceptedImportSource| -> CompileResult<ModuleId> {
-                let entry = manifest.get(&source.metadata_identity()).ok_or_else(|| {
-                    invalid_input(format!(
-                        "accepted observation for physical identity {:?} is absent from the accepted read manifest",
-                        source.metadata_identity()
-                    ))
-                })?;
-                if entry.metadata_identity() != source.metadata_identity()
-                    || entry.metadata_fingerprint() != source.metadata_fingerprint()
-                    || entry.content_fingerprint() != source.content_fingerprint()
-                {
-                    return Err(invalid_input(
-                        "accepted observation does not match its accepted read provenance",
-                    ));
-                }
-                Ok(entry.module().clone())
-            };
-            let resolution = match winning.as_deref() {
-                Some([source]) => crate::CanonicalImportResolution::Resolved(module_for(source)?),
-                Some([file, directory, ..]) => crate::CanonicalImportResolution::Ambiguous {
-                    file_module: module_for(file)?,
-                    directory_module: module_for(directory)?,
-                },
-                Some([]) => unreachable!(),
-                None => crate::CanonicalImportResolution::Missing,
-            };
-            records.push(crate::CanonicalImportRecord::new(
-                site.importer().clone(),
-                site.specifier(),
-                resolution,
-            ));
-        }
-        Ok(crate::CanonicalImportGraph::from_discovery_records(
-            root, records,
-        ))
-    }
-
     /// Return exactly the next operations allowed by candidate precedence.
+    #[cfg(test)]
     pub(crate) fn pending_requests(
         &self,
         ledger: &ImportObservationLedger,
@@ -794,6 +664,7 @@ impl ImportDiscoveryPlan {
         pending
     }
 
+    #[cfg(test)]
     pub fn failures<'a>(
         &'a self,
         ledger: &'a ImportObservationLedger,
@@ -846,122 +717,301 @@ impl ImportDiscoveryPlan {
         });
         accepted
     }
+}
 
-    /// Project this plan's parser-owned occurrences and physical observations
-    /// into the sole import diagnostic batch for a closed attempt.
-    ///
-    /// Shape errors precede discovery failures, which precede graph outcomes.
-    /// The ordered occurrence key keeps repeated source sites distinct even
-    /// though the durable graph deliberately collapses equivalent records.
-    pub(crate) fn diagnostics(
-        &self,
-        program: &ParsedProgram,
-        ledger: &ImportObservationLedger,
-    ) -> CompileErrors {
-        let mut errors = Self::shape_diagnostics(program);
-
-        let mut groups_by_site: BTreeMap<
-            &ImportOccurrenceKey,
-            Vec<&Arc<[ImportDiscoveryRequest]>>,
-        > = BTreeMap::new();
-        for group in self.groups.iter() {
-            groups_by_site
-                .entry(group[0].occurrence())
-                .or_default()
-                .push(group);
-        }
-        let mut failed_sites = BTreeSet::new();
-        for (site, groups) in &groups_by_site {
-            let file_id = program
-                .module(site.importer())
-                .expect("plan importer belongs to parsed program")
-                .file_id();
-            let span = rue_span::Span::with_file(file_id, site.source_offset(), site.source_end());
-            if let Some(failure) = groups
-                .iter()
-                .flat_map(|group| group.iter())
-                .filter_map(|request| ledger.get(request))
-                .find(|observation| observation.status().is_failure())
-            {
-                let candidate = failure.request().requested_path();
-                let message = match failure.status() {
-                    ImportObservationStatus::PresentUnreadable(reason) => {
-                        format!("could not read import candidate '{candidate}': {reason}")
-                    }
-                    ImportObservationStatus::DeniedLexical => format!(
-                        "import candidate '{candidate}' is not listed in the source manifest read policy"
-                    ),
-                    ImportObservationStatus::DeniedCanonical { canonical_path } => format!(
-                        "import candidate '{candidate}' resolves to '{canonical_path}', which is not listed in the source manifest read policy"
-                    ),
-                    ImportObservationStatus::InvalidPhysicalType { canonical_path } => format!(
-                        "import candidate '{candidate}' resolves to '{canonical_path}', which is not a regular source file"
-                    ),
-                    ImportObservationStatus::UnstableRead(reason) => format!(
-                        "import candidate '{candidate}' changed during its stable read transaction: {reason}"
-                    ),
-                    ImportObservationStatus::Cancelled => {
-                        format!("import discovery was cancelled while reading '{candidate}'")
-                    }
-                    ImportObservationStatus::Absent
-                    | ImportObservationStatus::PresentReadable { .. } => {
-                        unreachable!("only failure observations reach diagnostic projection")
-                    }
-                };
-                errors.push(CompileError::new(
-                    ErrorKind::InvalidCompilerInput(message),
-                    span,
-                ));
-                failed_sites.insert((*site).clone());
-            }
-        }
-
-        for (site, groups) in groups_by_site {
-            if failed_sites.contains(site) {
-                continue;
-            }
-            let file_id = program
-                .module(site.importer())
-                .expect("plan importer belongs to parsed program")
-                .file_id();
-            let span = rue_span::Span::with_file(file_id, site.source_offset(), site.source_end());
-            let winning = groups.iter().find_map(|group| {
-                let present = group
-                    .iter()
-                    .filter_map(|request| ledger.get(request))
-                    .filter_map(ImportObservation::accepted_source)
-                    .collect::<Vec<_>>();
-                (!present.is_empty()).then_some(present)
-            });
-            match winning.as_deref() {
-                Some([_]) => {}
-                Some([file, directory, ..]) => errors.push(CompileError::new(
-                    ErrorKind::AmbiguousModule(Box::new(AmbiguousModuleData {
-                        path: site.specifier().into(),
-                        file_module: file.requested_path().into(),
-                        dir_module: directory.requested_path().into(),
-                    })),
-                    span,
-                )),
-                Some([]) => unreachable!(),
-                None if site.specifier() == "std" => {
-                    errors.push(CompileError::new(ErrorKind::StdLibNotFound, span));
-                }
-                None => errors.push(CompileError::new(
-                    ErrorKind::ModuleNotFound {
-                        path: site.specifier().into(),
-                        candidates: groups
-                            .iter()
-                            .flat_map(|group| group.iter())
-                            .map(|request| request.requested_path().into())
-                            .collect(),
-                    },
-                    span,
-                )),
-            }
-        }
-        errors
+/// Compute candidate precedence for one exact indexed occurrence from captured
+/// invocation context and the importer's accepted-read provenance.
+pub(crate) fn discovery_groups_for_occurrence(
+    context: &ImportDiscoveryContext,
+    occurrence: &ImportOccurrenceKey,
+    importer_requested_path: &str,
+) -> CompileResult<Vec<Arc<[ImportDiscoveryRequest]>>> {
+    let root_dir = context.project_root().to_owned();
+    let importer_path = normalize_absolute(importer_requested_path)?;
+    let importer_dir = parent_dir(&importer_path);
+    let mut bases = vec![importer_dir];
+    if !bases.contains(&root_dir) {
+        bases.push(root_dir);
     }
+    let candidate_groups =
+        discovery_candidate_groups(occurrence.specifier(), &bases, context.std_root());
+    let normalized_specifier = normalize_path(occurrence.specifier());
+    candidate_groups
+        .into_iter()
+        .enumerate()
+        .map(|(group_index, candidates)| {
+            let group_index = u32::try_from(group_index)
+                .map_err(|_| invalid_input("import candidate group count exceeds u32::MAX"))?;
+            Ok(candidates
+                .into_iter()
+                .enumerate()
+                .map(|(position, candidate)| {
+                    let position =
+                        u32::try_from(position).expect("candidate group size is bounded by policy");
+                    ImportDiscoveryRequest {
+                        context: context.clone(),
+                        occurrence: occurrence.clone(),
+                        exact_specifier: Arc::from(occurrence.specifier()),
+                        normalized_specifier: Arc::from(normalized_specifier.as_str()),
+                        importer_anchor: Arc::from(importer_path.as_str()),
+                        root_anchor: Arc::from(context.project_root()),
+                        group: group_index,
+                        position,
+                        requested_path: Arc::from(normalize_path(&candidate)),
+                        role: candidate_role(occurrence.specifier(), group_index, position),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .into())
+        })
+        .collect()
+}
+
+pub(crate) fn validate_exact_import_ledger(
+    groups: &[Arc<[ImportDiscoveryRequest]>],
+    ledger: &ImportObservationLedger,
+) -> CompileResult<()> {
+    let requests = groups
+        .iter()
+        .flat_map(|group| group.iter())
+        .collect::<BTreeSet<_>>();
+    if ledger
+        .iter()
+        .any(|observation| !requests.contains(observation.request()))
+    {
+        return Err(invalid_input(
+            "observation ledger contains a request outside canonical exact-occurrence results",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn exact_import_pending_requests(
+    groups: &[Arc<[ImportDiscoveryRequest]>],
+    ledger: &ImportObservationLedger,
+) -> Vec<ImportDiscoveryRequest> {
+    let mut by_site: BTreeMap<&ImportOccurrenceKey, Vec<&Arc<[ImportDiscoveryRequest]>>> =
+        BTreeMap::new();
+    for group in groups {
+        by_site
+            .entry(group[0].occurrence())
+            .or_default()
+            .push(group);
+    }
+    let mut pending = Vec::new();
+    for groups in by_site.values() {
+        for group in groups {
+            let observations = group
+                .iter()
+                .map(|request| ledger.get(request))
+                .collect::<Vec<_>>();
+            if observations
+                .iter()
+                .any(|observation| observation.is_some_and(|value| value.status().is_failure()))
+            {
+                break;
+            }
+            let missing = group
+                .iter()
+                .zip(&observations)
+                .filter_map(|(request, observation)| {
+                    observation.is_none().then_some(request.clone())
+                })
+                .collect::<Vec<_>>();
+            if !missing.is_empty() {
+                pending.extend(missing);
+                break;
+            }
+            if observations.iter().any(|observation| {
+                observation.is_some_and(|value| value.accepted_source().is_some())
+            }) {
+                break;
+            }
+        }
+    }
+    pending
+}
+
+pub(crate) fn exact_import_has_failures(
+    groups: &[Arc<[ImportDiscoveryRequest]>],
+    ledger: &ImportObservationLedger,
+) -> bool {
+    groups.iter().flat_map(|group| group.iter()).any(|request| {
+        ledger
+            .get(request)
+            .is_some_and(|observation| observation.status().is_failure())
+    })
+}
+
+pub(crate) fn exact_import_diagnostics(
+    program: &ParsedProgram,
+    groups: &[Arc<[ImportDiscoveryRequest]>],
+    ledger: &ImportObservationLedger,
+) -> CompileErrors {
+    let mut errors = ImportDiscoveryPlan::shape_diagnostics(program);
+    let mut groups_by_site: BTreeMap<&ImportOccurrenceKey, Vec<&Arc<[ImportDiscoveryRequest]>>> =
+        BTreeMap::new();
+    for group in groups {
+        groups_by_site
+            .entry(group[0].occurrence())
+            .or_default()
+            .push(group);
+    }
+    let mut failed_sites = BTreeSet::new();
+    for (site, groups) in &groups_by_site {
+        let file_id = program
+            .module(site.importer())
+            .expect("indexed importer belongs to parsed program")
+            .file_id();
+        let span = rue_span::Span::with_file(file_id, site.source_offset(), site.source_end());
+        if let Some(failure) = groups
+            .iter()
+            .flat_map(|group| group.iter())
+            .filter_map(|request| ledger.get(request))
+            .find(|observation| observation.status().is_failure())
+        {
+            let candidate = failure.request().requested_path();
+            let message = match failure.status() {
+                ImportObservationStatus::PresentUnreadable(reason) => {
+                    format!("could not read import candidate '{candidate}': {reason}")
+                }
+                ImportObservationStatus::DeniedLexical => format!(
+                    "import candidate '{candidate}' is not listed in the source manifest read policy"
+                ),
+                ImportObservationStatus::DeniedCanonical { canonical_path } => format!(
+                    "import candidate '{candidate}' resolves to '{canonical_path}', which is not listed in the source manifest read policy"
+                ),
+                ImportObservationStatus::InvalidPhysicalType { canonical_path } => format!(
+                    "import candidate '{candidate}' resolves to '{canonical_path}', which is not a regular source file"
+                ),
+                ImportObservationStatus::UnstableRead(reason) => format!(
+                    "import candidate '{candidate}' changed during its stable read transaction: {reason}"
+                ),
+                ImportObservationStatus::Cancelled => {
+                    format!("import discovery was cancelled while reading '{candidate}'")
+                }
+                ImportObservationStatus::Absent
+                | ImportObservationStatus::PresentReadable { .. } => unreachable!(),
+            };
+            errors.push(CompileError::new(
+                ErrorKind::InvalidCompilerInput(message),
+                span,
+            ));
+            failed_sites.insert((*site).clone());
+        }
+    }
+    for (site, groups) in groups_by_site {
+        if failed_sites.contains(site) {
+            continue;
+        }
+        let file_id = program
+            .module(site.importer())
+            .expect("indexed importer belongs to parsed program")
+            .file_id();
+        let span = rue_span::Span::with_file(file_id, site.source_offset(), site.source_end());
+        let winning = groups.iter().find_map(|group| {
+            let present = group
+                .iter()
+                .filter_map(|request| ledger.get(request))
+                .filter_map(ImportObservation::accepted_source)
+                .collect::<Vec<_>>();
+            (!present.is_empty()).then_some(present)
+        });
+        match winning.as_deref() {
+            Some([_]) => {}
+            Some([file, directory, ..]) => errors.push(CompileError::new(
+                ErrorKind::AmbiguousModule(Box::new(AmbiguousModuleData {
+                    path: site.specifier().into(),
+                    file_module: file.requested_path().into(),
+                    dir_module: directory.requested_path().into(),
+                })),
+                span,
+            )),
+            Some([]) => unreachable!(),
+            None if site.specifier() == "std" => {
+                errors.push(CompileError::new(ErrorKind::StdLibNotFound, span));
+            }
+            None => errors.push(CompileError::new(
+                ErrorKind::ModuleNotFound {
+                    path: site.specifier().into(),
+                    candidates: groups
+                        .iter()
+                        .flat_map(|group| group.iter())
+                        .map(|request| request.requested_path().into())
+                        .collect(),
+                },
+                span,
+            )),
+        }
+    }
+    errors
+}
+
+pub(crate) fn reduce_exact_import_graph(
+    root: ModuleId,
+    groups: &[Arc<[ImportDiscoveryRequest]>],
+    ledger: &ImportObservationLedger,
+    accepted_reads: &[AcceptedReadManifestEntry],
+) -> CompileResult<crate::CanonicalImportGraph> {
+    validate_exact_import_ledger(groups, ledger)?;
+    let manifest = accepted_reads
+        .iter()
+        .map(|entry| (entry.metadata_identity(), entry))
+        .collect::<BTreeMap<_, _>>();
+    if manifest.len() != accepted_reads.len() {
+        return Err(invalid_input(
+            "accepted read manifest contains duplicate physical identities",
+        ));
+    }
+    let mut by_site: BTreeMap<&ImportOccurrenceKey, Vec<&Arc<[ImportDiscoveryRequest]>>> =
+        BTreeMap::new();
+    for group in groups {
+        by_site
+            .entry(group[0].occurrence())
+            .or_default()
+            .push(group);
+    }
+    let mut records = Vec::with_capacity(by_site.len());
+    for (site, groups) in by_site {
+        let winning = groups.iter().find_map(|group| {
+            let present = group
+                .iter()
+                .filter_map(|request| ledger.get(request))
+                .filter_map(ImportObservation::accepted_source)
+                .collect::<Vec<_>>();
+            (!present.is_empty()).then_some(present)
+        });
+        let module_for = |source: &AcceptedImportSource| -> CompileResult<ModuleId> {
+            let entry = manifest.get(&source.metadata_identity()).ok_or_else(|| {
+                invalid_input("accepted observation is absent from accepted read provenance")
+            })?;
+            if entry.metadata_fingerprint() != source.metadata_fingerprint()
+                || entry.content_fingerprint() != source.content_fingerprint()
+            {
+                return Err(invalid_input(
+                    "accepted observation does not match accepted read provenance",
+                ));
+            }
+            Ok(entry.module().clone())
+        };
+        let resolution = match winning.as_deref() {
+            Some([source]) => crate::CanonicalImportResolution::Resolved(module_for(source)?),
+            Some([file, directory, ..]) => crate::CanonicalImportResolution::Ambiguous {
+                file_module: module_for(file)?,
+                directory_module: module_for(directory)?,
+            },
+            Some([]) => unreachable!(),
+            None => crate::CanonicalImportResolution::Missing,
+        };
+        records.push(crate::CanonicalImportRecord::new(
+            site.importer().clone(),
+            site.specifier(),
+            resolution,
+        ));
+    }
+    Ok(crate::CanonicalImportGraph::from_discovery_records(
+        root, records,
+    ))
 }
 
 /// Compiler-owned durable identity assembly for a discovery epoch.

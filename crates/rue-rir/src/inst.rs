@@ -990,6 +990,42 @@ pub struct RirEditor {
     rir: Rir,
 }
 
+/// The destination ranges occupied by one RIR owner after a typed append.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RirAppendRange {
+    pub instructions: std::ops::Range<u32>,
+    pub extra: std::ops::Range<u32>,
+}
+
+fn remap_directives(
+    source: &Rir,
+    range: &RirDirectivesRange,
+    symbol: &mut impl FnMut(Spur) -> Spur,
+    span: &mut impl FnMut(Span) -> Span,
+) -> Vec<RirDirective> {
+    source
+        .directives(range)
+        .iter()
+        .map(|directive| RirDirective {
+            name: symbol(directive.name),
+            args: directive.args.values().map(&mut *symbol).collect(),
+            span: span(directive.span),
+        })
+        .collect()
+}
+
+fn remap_call_args(
+    args: RirSlice<'_, RirCallArg>,
+    remap_ref: impl Fn(InstRef) -> InstRef,
+) -> Vec<RirCallArg> {
+    args.values()
+        .map(|argument| RirCallArg {
+            value: remap_ref(argument.value),
+            mode: argument.mode,
+        })
+        .collect()
+}
+
 impl RirEditor {
     pub fn new() -> Self {
         Self::default()
@@ -1334,6 +1370,560 @@ impl RirEditor {
                 span,
             }))
         })
+    }
+
+    /// Append an immutable RIR owner while remapping its owner-local symbols.
+    ///
+    /// Payload descriptors never cross the owner boundary. Every variable
+    /// payload is decoded through its typed view and rebuilt by the matching
+    /// destination builder; instruction references are translated by the
+    /// destination instruction offset.
+    pub fn append_remapped(
+        &mut self,
+        source: &ValidatedRir,
+        symbol: impl FnMut(Spur) -> Spur,
+    ) -> Result<RirAppendRange, RirPayloadBuildError> {
+        self.append_remapped_with_spans(source, symbol, std::convert::identity)
+    }
+
+    /// Append an immutable RIR owner while remapping owner-local symbols and
+    /// rebinding every embedded source span into the destination file table.
+    pub fn append_remapped_with_spans(
+        &mut self,
+        source: &ValidatedRir,
+        mut symbol: impl FnMut(Spur) -> Spur,
+        mut remap_span: impl FnMut(Span) -> Span,
+    ) -> Result<RirAppendRange, RirPayloadBuildError> {
+        let instruction_start = u32::try_from(self.rir.instructions.len()).map_err(|_| {
+            RirPayloadBuildError::ResourceLimitExceeded {
+                family: "instructions",
+            }
+        })?;
+        let extra_start = u32::try_from(self.rir.extra.len()).map_err(|_| {
+            RirPayloadBuildError::ResourceLimitExceeded {
+                family: "payload words",
+            }
+        })?;
+        let source_instructions = u32::try_from(source.len()).map_err(|_| {
+            RirPayloadBuildError::ResourceLimitExceeded {
+                family: "instructions",
+            }
+        })?;
+        instruction_start.checked_add(source_instructions).ok_or(
+            RirPayloadBuildError::ResourceLimitExceeded {
+                family: "instructions",
+            },
+        )?;
+        let source_extra = u32::try_from(source.extra_len()).map_err(|_| {
+            RirPayloadBuildError::ResourceLimitExceeded {
+                family: "payload words",
+            }
+        })?;
+        extra_start.checked_add(source_extra).ok_or(
+            RirPayloadBuildError::ResourceLimitExceeded {
+                family: "payload words",
+            },
+        )?;
+        let remap_ref = |value: InstRef| {
+            InstRef::from_raw(
+                instruction_start
+                    .checked_add(value.as_u32())
+                    .expect("RIR append instruction capacity was preflighted"),
+            )
+        };
+        let result = (|| {
+            for (_, instruction) in source.iter() {
+                let span = remap_span(instruction.span);
+                let payload_free = |data| Inst { data, span };
+                match &instruction.data {
+                    InstData::IntConst(value) => {
+                        self.add_inst(payload_free(InstData::IntConst(*value)))
+                    }
+                    InstData::BoolConst(value) => {
+                        self.add_inst(payload_free(InstData::BoolConst(*value)))
+                    }
+                    InstData::StringConst(value) => {
+                        self.add_inst(payload_free(InstData::StringConst(symbol(*value))))
+                    }
+                    InstData::UnitConst => self.add_inst(payload_free(InstData::UnitConst)),
+                    InstData::Add { lhs, rhs } => self.add_inst(payload_free(InstData::Add {
+                        lhs: remap_ref(*lhs),
+                        rhs: remap_ref(*rhs),
+                    })),
+                    InstData::Sub { lhs, rhs } => self.add_inst(payload_free(InstData::Sub {
+                        lhs: remap_ref(*lhs),
+                        rhs: remap_ref(*rhs),
+                    })),
+                    InstData::Mul { lhs, rhs } => self.add_inst(payload_free(InstData::Mul {
+                        lhs: remap_ref(*lhs),
+                        rhs: remap_ref(*rhs),
+                    })),
+                    InstData::Div { lhs, rhs } => self.add_inst(payload_free(InstData::Div {
+                        lhs: remap_ref(*lhs),
+                        rhs: remap_ref(*rhs),
+                    })),
+                    InstData::Mod { lhs, rhs } => self.add_inst(payload_free(InstData::Mod {
+                        lhs: remap_ref(*lhs),
+                        rhs: remap_ref(*rhs),
+                    })),
+                    InstData::Eq { lhs, rhs } => self.add_inst(payload_free(InstData::Eq {
+                        lhs: remap_ref(*lhs),
+                        rhs: remap_ref(*rhs),
+                    })),
+                    InstData::Ne { lhs, rhs } => self.add_inst(payload_free(InstData::Ne {
+                        lhs: remap_ref(*lhs),
+                        rhs: remap_ref(*rhs),
+                    })),
+                    InstData::Lt { lhs, rhs } => self.add_inst(payload_free(InstData::Lt {
+                        lhs: remap_ref(*lhs),
+                        rhs: remap_ref(*rhs),
+                    })),
+                    InstData::Gt { lhs, rhs } => self.add_inst(payload_free(InstData::Gt {
+                        lhs: remap_ref(*lhs),
+                        rhs: remap_ref(*rhs),
+                    })),
+                    InstData::Le { lhs, rhs } => self.add_inst(payload_free(InstData::Le {
+                        lhs: remap_ref(*lhs),
+                        rhs: remap_ref(*rhs),
+                    })),
+                    InstData::Ge { lhs, rhs } => self.add_inst(payload_free(InstData::Ge {
+                        lhs: remap_ref(*lhs),
+                        rhs: remap_ref(*rhs),
+                    })),
+                    InstData::And { lhs, rhs } => self.add_inst(payload_free(InstData::And {
+                        lhs: remap_ref(*lhs),
+                        rhs: remap_ref(*rhs),
+                    })),
+                    InstData::Or { lhs, rhs } => self.add_inst(payload_free(InstData::Or {
+                        lhs: remap_ref(*lhs),
+                        rhs: remap_ref(*rhs),
+                    })),
+                    InstData::BitAnd { lhs, rhs } => {
+                        self.add_inst(payload_free(InstData::BitAnd {
+                            lhs: remap_ref(*lhs),
+                            rhs: remap_ref(*rhs),
+                        }))
+                    }
+                    InstData::BitOr { lhs, rhs } => self.add_inst(payload_free(InstData::BitOr {
+                        lhs: remap_ref(*lhs),
+                        rhs: remap_ref(*rhs),
+                    })),
+                    InstData::BitXor { lhs, rhs } => {
+                        self.add_inst(payload_free(InstData::BitXor {
+                            lhs: remap_ref(*lhs),
+                            rhs: remap_ref(*rhs),
+                        }))
+                    }
+                    InstData::Shl { lhs, rhs } => self.add_inst(payload_free(InstData::Shl {
+                        lhs: remap_ref(*lhs),
+                        rhs: remap_ref(*rhs),
+                    })),
+                    InstData::Shr { lhs, rhs } => self.add_inst(payload_free(InstData::Shr {
+                        lhs: remap_ref(*lhs),
+                        rhs: remap_ref(*rhs),
+                    })),
+                    InstData::Neg { operand } => self.add_inst(payload_free(InstData::Neg {
+                        operand: remap_ref(*operand),
+                    })),
+                    InstData::Not { operand } => self.add_inst(payload_free(InstData::Not {
+                        operand: remap_ref(*operand),
+                    })),
+                    InstData::BitNot { operand } => self.add_inst(payload_free(InstData::BitNot {
+                        operand: remap_ref(*operand),
+                    })),
+                    InstData::Try { operand } => self.add_inst(payload_free(InstData::Try {
+                        operand: remap_ref(*operand),
+                    })),
+                    InstData::Branch {
+                        cond,
+                        then_block,
+                        else_block,
+                    } => self.add_inst(payload_free(InstData::Branch {
+                        cond: remap_ref(*cond),
+                        then_block: remap_ref(*then_block),
+                        else_block: else_block.map(remap_ref),
+                    })),
+                    InstData::Loop { cond, body } => self.add_inst(payload_free(InstData::Loop {
+                        cond: remap_ref(*cond),
+                        body: remap_ref(*body),
+                    })),
+                    InstData::InfiniteLoop { body, iter_borrow } => {
+                        self.add_inst(payload_free(InstData::InfiniteLoop {
+                            body: remap_ref(*body),
+                            iter_borrow: iter_borrow.map(&mut symbol),
+                        }))
+                    }
+                    InstData::Match { scrutinee, arms } => {
+                        let arms = source
+                            .match_arms(arms)
+                            .iter()
+                            .map(|(pattern, body)| {
+                                let pattern = match pattern {
+                                    RirPatternView::Wildcard(span) => {
+                                        RirPattern::Wildcard(remap_span(span))
+                                    }
+                                    RirPatternView::Int {
+                                        value,
+                                        negative,
+                                        span,
+                                    } => RirPattern::Int {
+                                        value,
+                                        negative,
+                                        span: remap_span(span),
+                                    },
+                                    RirPatternView::Bool(value, span) => {
+                                        RirPattern::Bool(value, remap_span(span))
+                                    }
+                                    RirPatternView::Path {
+                                        module,
+                                        ctor_head,
+                                        type_name,
+                                        variant,
+                                        bindings,
+                                        span,
+                                    } => RirPattern::Path {
+                                        module: module.map(remap_ref),
+                                        ctor_head: ctor_head.map(remap_ref),
+                                        type_name: symbol(type_name),
+                                        variant: symbol(variant),
+                                        bindings: bindings.values().map(&mut symbol).collect(),
+                                        span: remap_span(span),
+                                    },
+                                };
+                                (pattern, remap_ref(body))
+                            })
+                            .collect::<Vec<_>>();
+                        self.add_match(remap_ref(*scrutinee), &arms, span)?
+                    }
+                    InstData::Break { value } => self.add_inst(payload_free(InstData::Break {
+                        value: value.map(remap_ref),
+                    })),
+                    InstData::Continue => self.add_inst(payload_free(InstData::Continue)),
+                    InstData::FnDecl {
+                        directives,
+                        is_pub,
+                        is_unchecked,
+                        name,
+                        params,
+                        return_type,
+                        body,
+                        has_self,
+                        self_mode,
+                        self_is_mut,
+                    } => {
+                        let directives =
+                            remap_directives(source, directives, &mut symbol, &mut remap_span);
+                        let params = source
+                            .params(params)
+                            .values()
+                            .map(|param| RirParam {
+                                name: symbol(param.name),
+                                ty: symbol(param.ty),
+                                span: remap_span(param.span),
+                                ..param
+                            })
+                            .collect::<Vec<_>>();
+                        self.add_fn_decl(
+                            &directives,
+                            *is_pub,
+                            *is_unchecked,
+                            symbol(*name),
+                            &params,
+                            symbol(*return_type),
+                            remap_ref(*body),
+                            *has_self,
+                            *self_mode,
+                            *self_is_mut,
+                            span,
+                        )?
+                    }
+                    InstData::ConstDecl {
+                        directives,
+                        is_pub,
+                        name,
+                        ty,
+                        init,
+                    } => {
+                        let directives =
+                            remap_directives(source, directives, &mut symbol, &mut remap_span);
+                        self.add_const_decl(
+                            &directives,
+                            *is_pub,
+                            symbol(*name),
+                            ty.map(&mut symbol),
+                            remap_ref(*init),
+                            span,
+                        )?
+                    }
+                    InstData::Call { name, args } => {
+                        let args = remap_call_args(source.call_args(args), remap_ref);
+                        self.add_call(symbol(*name), &args, span)?
+                    }
+                    InstData::Intrinsic { name, args } => {
+                        let args = source
+                            .intrinsic_args(args)
+                            .values()
+                            .map(remap_ref)
+                            .collect::<Vec<_>>();
+                        self.add_intrinsic(symbol(*name), &args, span)?
+                    }
+                    InstData::InternalIntrinsic { intrinsic, args } => {
+                        let args = source
+                            .internal_intrinsic_args(args)
+                            .values()
+                            .map(remap_ref)
+                            .collect::<Vec<_>>();
+                        self.add_internal_intrinsic(*intrinsic, &args, span)?
+                    }
+                    InstData::TypeIntrinsic { name, type_arg } => {
+                        self.add_inst(payload_free(InstData::TypeIntrinsic {
+                            name: symbol(*name),
+                            type_arg: symbol(*type_arg),
+                        }))
+                    }
+                    InstData::OffsetOf { type_arg, field } => {
+                        self.add_inst(payload_free(InstData::OffsetOf {
+                            type_arg: symbol(*type_arg),
+                            field: symbol(*field),
+                        }))
+                    }
+                    InstData::Ret(value) => {
+                        self.add_inst(payload_free(InstData::Ret(value.map(remap_ref))))
+                    }
+                    InstData::Block { instructions } => {
+                        let instructions = source
+                            .block_insts(instructions)
+                            .values()
+                            .map(remap_ref)
+                            .collect::<Vec<_>>();
+                        self.add_block(&instructions, span)?
+                    }
+                    InstData::Alloc {
+                        directives,
+                        name,
+                        is_mut,
+                        ty,
+                        init,
+                        iter_elem,
+                    } => {
+                        let directives =
+                            remap_directives(source, directives, &mut symbol, &mut remap_span);
+                        self.add_alloc(
+                            &directives,
+                            name.map(&mut symbol),
+                            *is_mut,
+                            ty.map(&mut symbol),
+                            remap_ref(*init),
+                            *iter_elem,
+                            span,
+                        )?
+                    }
+                    InstData::VarRef { name } => self.add_inst(payload_free(InstData::VarRef {
+                        name: symbol(*name),
+                    })),
+                    InstData::Assign { name, value } => {
+                        self.add_inst(payload_free(InstData::Assign {
+                            name: symbol(*name),
+                            value: remap_ref(*value),
+                        }))
+                    }
+                    InstData::StructDecl {
+                        directives,
+                        is_pub,
+                        is_linear,
+                        name,
+                        fields,
+                        methods,
+                    } => {
+                        let directives =
+                            remap_directives(source, directives, &mut symbol, &mut remap_span);
+                        let fields = source
+                            .struct_fields(fields)
+                            .values()
+                            .map(|(name, ty)| (symbol(name), symbol(ty)))
+                            .collect::<Vec<_>>();
+                        let methods = source
+                            .struct_methods(methods)
+                            .values()
+                            .map(remap_ref)
+                            .collect::<Vec<_>>();
+                        self.add_struct_decl(
+                            &directives,
+                            *is_pub,
+                            *is_linear,
+                            symbol(*name),
+                            &fields,
+                            &methods,
+                            span,
+                        )?
+                    }
+                    InstData::StructInit {
+                        module,
+                        ctor_head,
+                        type_name,
+                        fields,
+                        shorthand_span,
+                    } => {
+                        let fields = source
+                            .field_inits(fields)
+                            .values()
+                            .map(|(name, value)| (symbol(name), remap_ref(value)))
+                            .collect::<Vec<_>>();
+                        self.add_struct_init(
+                            module.map(remap_ref),
+                            ctor_head.map(remap_ref),
+                            symbol(*type_name),
+                            &fields,
+                            shorthand_span.map(&mut remap_span),
+                            span,
+                        )?
+                    }
+                    InstData::FieldGet { base, field } => {
+                        self.add_inst(payload_free(InstData::FieldGet {
+                            base: remap_ref(*base),
+                            field: symbol(*field),
+                        }))
+                    }
+                    InstData::FieldSet { base, field, value } => {
+                        self.add_inst(payload_free(InstData::FieldSet {
+                            base: remap_ref(*base),
+                            field: symbol(*field),
+                            value: remap_ref(*value),
+                        }))
+                    }
+                    InstData::EnumDecl {
+                        is_pub,
+                        name,
+                        variants: variant_range,
+                        payloads,
+                    } => {
+                        let variants = source
+                            .enum_variants(variant_range)
+                            .values()
+                            .map(&mut symbol)
+                            .collect::<Vec<_>>();
+                        let payloads = source
+                            .enum_payloads(payloads, variant_range)
+                            .map(|payload| payload.values().map(&mut symbol).collect())
+                            .collect::<Vec<Vec<_>>>();
+                        self.add_enum_decl(*is_pub, symbol(*name), &variants, &payloads, span)?
+                    }
+                    InstData::EnumVariant {
+                        module,
+                        type_name,
+                        variant,
+                    } => self.add_inst(payload_free(InstData::EnumVariant {
+                        module: module.map(remap_ref),
+                        type_name: symbol(*type_name),
+                        variant: symbol(*variant),
+                    })),
+                    InstData::ArrayInit { elements } => {
+                        let elements = source
+                            .array_elements(elements)
+                            .values()
+                            .map(remap_ref)
+                            .collect::<Vec<_>>();
+                        self.add_array_init(&elements, span)?
+                    }
+                    InstData::ArrayRepeat { value, count } => {
+                        self.add_inst(payload_free(InstData::ArrayRepeat {
+                            value: remap_ref(*value),
+                            count: match count {
+                                RepeatCount::Literal(value) => RepeatCount::Literal(*value),
+                                RepeatCount::Named(name) => RepeatCount::Named(symbol(*name)),
+                            },
+                        }))
+                    }
+                    InstData::IndexGet { base, index } => {
+                        self.add_inst(payload_free(InstData::IndexGet {
+                            base: remap_ref(*base),
+                            index: remap_ref(*index),
+                        }))
+                    }
+                    InstData::IndexSet { base, index, value } => {
+                        self.add_inst(payload_free(InstData::IndexSet {
+                            base: remap_ref(*base),
+                            index: remap_ref(*index),
+                            value: remap_ref(*value),
+                        }))
+                    }
+                    InstData::MethodCall {
+                        receiver,
+                        method,
+                        args,
+                    } => {
+                        let args = remap_call_args(source.call_args(args), remap_ref);
+                        self.add_method_call(remap_ref(*receiver), symbol(*method), &args, span)?
+                    }
+                    InstData::DropFnDecl { type_name, body } => {
+                        self.add_inst(payload_free(InstData::DropFnDecl {
+                            type_name: symbol(*type_name),
+                            body: remap_ref(*body),
+                        }))
+                    }
+                    InstData::Comptime { expr } => {
+                        self.add_inst(payload_free(InstData::Comptime {
+                            expr: remap_ref(*expr),
+                        }))
+                    }
+                    InstData::Checked { expr } => self.add_inst(payload_free(InstData::Checked {
+                        expr: remap_ref(*expr),
+                    })),
+                    InstData::TypeConst { type_name } => {
+                        self.add_inst(payload_free(InstData::TypeConst {
+                            type_name: symbol(*type_name),
+                        }))
+                    }
+                    InstData::AnonStructType { fields, methods } => {
+                        let fields = source
+                            .anon_struct_fields(fields)
+                            .values()
+                            .map(|(name, ty)| (symbol(name), symbol(ty)))
+                            .collect::<Vec<_>>();
+                        let methods = source
+                            .anon_struct_methods(methods)
+                            .values()
+                            .map(remap_ref)
+                            .collect::<Vec<_>>();
+                        self.add_anon_struct_type(&fields, &methods, span)?
+                    }
+                    InstData::AnonEnumType {
+                        variants: variant_range,
+                        payloads,
+                    } => {
+                        let variants = source
+                            .anon_enum_variants(variant_range)
+                            .values()
+                            .map(&mut symbol)
+                            .collect::<Vec<_>>();
+                        let payloads = source
+                            .anon_enum_payloads(payloads, variant_range)
+                            .map(|payload| payload.values().map(&mut symbol).collect())
+                            .collect::<Vec<Vec<_>>>();
+                        self.add_anon_enum_type(&variants, &payloads, span)?
+                    }
+                };
+            }
+            let instruction_end = u32::try_from(self.rir.instructions.len()).map_err(|_| {
+                RirPayloadBuildError::ResourceLimitExceeded {
+                    family: "instructions",
+                }
+            })?;
+            let extra_end = u32::try_from(self.rir.extra.len()).map_err(|_| {
+                RirPayloadBuildError::ResourceLimitExceeded {
+                    family: "payload words",
+                }
+            })?;
+            Ok(RirAppendRange {
+                instructions: instruction_start..instruction_end,
+                extra: extra_start..extra_end,
+            })
+        })();
+        if result.is_err() {
+            self.rir.instructions.truncate(instruction_start as usize);
+            self.rir.extra.truncate(extra_start as usize);
+        }
+        result
     }
 
     /// Atomically replace an instruction with a compiler-internal intrinsic.
@@ -4894,6 +5484,191 @@ mod typed_payload_tests {
                 .collect::<Vec<_>>(),
             [vec![b]]
         );
+    }
+
+    fn every_payload_family_validated_rir() -> (ValidatedRir, ThreadedRodeo) {
+        let interner = ThreadedRodeo::new();
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let mut editor = RirEditor::new();
+        let value = editor.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: span(),
+        });
+        let block = editor.add_block(&[value], span()).unwrap();
+        let directives = [RirDirective {
+            name: a,
+            args: vec![b],
+            span: span(),
+        }];
+        let function = editor
+            .add_fn_decl(
+                &directives,
+                true,
+                false,
+                a,
+                &[RirParam {
+                    name: a,
+                    ty: b,
+                    mode: RirParamMode::Borrow,
+                    is_comptime: false,
+                    span: span(),
+                }],
+                b,
+                block,
+                false,
+                RirParamMode::Normal,
+                false,
+                span(),
+            )
+            .unwrap();
+        editor
+            .add_match(
+                value,
+                &[(
+                    RirPattern::Path {
+                        module: Some(value),
+                        ctor_head: Some(value),
+                        type_name: a,
+                        variant: b,
+                        bindings: vec![a],
+                        span: span(),
+                    },
+                    value,
+                )],
+                span(),
+            )
+            .unwrap();
+        let arguments = [RirCallArg {
+            value,
+            mode: RirArgMode::Borrow,
+        }];
+        editor.add_call(a, &arguments, span()).unwrap();
+        editor.add_intrinsic(a, &[value], span()).unwrap();
+        editor
+            .add_internal_intrinsic(InternalIntrinsic::IterLen, &[value], span())
+            .unwrap();
+        editor
+            .add_struct_decl(&directives, true, false, a, &[(a, b)], &[function], span())
+            .unwrap();
+        editor
+            .add_struct_init(
+                Some(value),
+                Some(value),
+                a,
+                &[(a, value)],
+                Some(span()),
+                span(),
+            )
+            .unwrap();
+        editor
+            .add_enum_decl(true, a, &[a, b], &[vec![b], vec![]], span())
+            .unwrap();
+        editor.add_array_init(&[value, block], span()).unwrap();
+        editor
+            .add_anon_struct_type(&[(b, a)], &[function], span())
+            .unwrap();
+        editor.add_anon_enum_type(&[b], &[vec![a]], span()).unwrap();
+        let context = RirValidationContext {
+            symbol_count: interner.len(),
+            source_lengths: &[(FileId::new(7), 100)],
+        };
+        (ValidatedRir::finish(editor, &context).unwrap(), interner)
+    }
+
+    #[test]
+    fn append_remapped_covers_every_payload_family_at_nonzero_offsets() {
+        let (source, interner) = every_payload_family_validated_rir();
+        let a = interner.get("a").unwrap();
+        let b = interner.get("b").unwrap();
+        let mut destination = RirEditor::new();
+        let prefix = destination.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::with_file(FileId::new(9), 0, 1),
+        });
+        destination
+            .add_call(
+                a,
+                &[RirCallArg {
+                    value: prefix,
+                    mode: RirArgMode::Normal,
+                }],
+                span(),
+            )
+            .unwrap();
+        let instruction_offset = destination.len() as u32;
+        let payload_offset = destination.extra_len() as u32;
+        assert_ne!(instruction_offset, 0);
+        assert_ne!(payload_offset, 0);
+
+        let appended = destination
+            .append_remapped_with_spans(
+                &source,
+                |symbol| if symbol == a { b } else { a },
+                |source| Span::with_file(FileId::new(9), source.start + 10, source.end + 10),
+            )
+            .unwrap();
+        assert_eq!(appended.instructions.start, instruction_offset);
+        assert_eq!(appended.extra.start, payload_offset);
+        assert_eq!(appended.instructions.len(), source.len());
+        assert_eq!(appended.extra.len(), source.extra_len());
+
+        let context = RirValidationContext {
+            symbol_count: interner.len(),
+            source_lengths: &[(FileId::new(7), 100), (FileId::new(9), 1000)],
+        };
+        let destination = ValidatedRir::finish(destination, &context).unwrap();
+        assert!(
+            destination
+                .iter()
+                .skip(instruction_offset as usize)
+                .all(|(_, instruction)| instruction.span.file_id == FileId::new(9))
+        );
+        let appended_function = destination
+            .iter()
+            .skip(instruction_offset as usize)
+            .find_map(|(_, instruction)| match &instruction.data {
+                InstData::FnDecl {
+                    directives, params, ..
+                } => Some((directives, params)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            destination
+                .directives(appended_function.0)
+                .get(0)
+                .unwrap()
+                .name,
+            b
+        );
+        assert_eq!(
+            destination.params(appended_function.1).get(0).unwrap().span,
+            Span::with_file(FileId::new(9), 13, 19)
+        );
+        let appended_match = destination
+            .iter()
+            .skip(instruction_offset as usize)
+            .find_map(|(_, instruction)| match &instruction.data {
+                InstData::Match { arms, .. } => Some(arms),
+                _ => None,
+            })
+            .unwrap();
+        let (pattern, body) = destination.match_arms(appended_match).get(0).unwrap();
+        assert_eq!(body.as_u32(), instruction_offset);
+        match pattern {
+            RirPatternView::Path {
+                type_name,
+                bindings,
+                span,
+                ..
+            } => {
+                assert_eq!(type_name, b);
+                assert_eq!(bindings.to_vec(), [b]);
+                assert_eq!(span.file_id, FileId::new(9));
+            }
+            _ => panic!("expected remapped path pattern"),
+        }
     }
 
     #[test]

@@ -27,7 +27,7 @@
 use std::fmt;
 
 use lasso::{Key, Spur};
-use rue_span::Span;
+use rue_span::{FileId, Span};
 use smallvec::SmallVec;
 
 /// Type alias for a small vector of directives.
@@ -38,6 +38,20 @@ pub type Directives = SmallVec<[Directive; 1]>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ast {
     pub items: Vec<Item>,
+}
+
+impl Ast {
+    /// Rebind every source span in this syntax tree to a snapshot-local file.
+    ///
+    /// Parsed syntax can be retained by content identity while a later source
+    /// snapshot assigns that module a different [`FileId`]. Offsets remain
+    /// valid because the source identity is unchanged; only the snapshot-local
+    /// file component changes.
+    pub fn rebind_file_id(&mut self, file_id: FileId) {
+        for item in &mut self.items {
+            rebind_item(item, file_id);
+        }
+    }
 }
 
 /// A directive that modifies compiler behavior for the following item or statement.
@@ -1218,6 +1232,435 @@ impl Expr {
             Expr::TypeLit(type_lit) => type_lit.span,
             Expr::Error(span) => *span,
         }
+    }
+}
+
+fn rebind_span(span: &mut Span, file_id: FileId) {
+    span.file_id = file_id;
+}
+
+fn rebind_ident(ident: &mut Ident, file_id: FileId) {
+    rebind_span(&mut ident.span, file_id);
+}
+
+fn rebind_directives(directives: &mut Directives, file_id: FileId) {
+    for directive in directives {
+        rebind_ident(&mut directive.name, file_id);
+        for argument in &mut directive.args {
+            match argument {
+                DirectiveArg::Ident(ident) => rebind_ident(ident, file_id),
+            }
+        }
+        rebind_span(&mut directive.span, file_id);
+    }
+}
+
+fn rebind_item(item: &mut Item, file_id: FileId) {
+    match item {
+        Item::Function(function) => {
+            rebind_directives(&mut function.directives, file_id);
+            rebind_ident(&mut function.name, file_id);
+            for parameter in &mut function.params {
+                rebind_param(parameter, file_id);
+            }
+            if let Some(return_type) = &mut function.return_type {
+                rebind_type(return_type, file_id);
+            }
+            rebind_expr(&mut function.body, file_id);
+            rebind_span(&mut function.span, file_id);
+        }
+        Item::Struct(structure) => {
+            rebind_directives(&mut structure.directives, file_id);
+            rebind_ident(&mut structure.name, file_id);
+            for field in &mut structure.fields {
+                rebind_ident(&mut field.name, file_id);
+                rebind_type(&mut field.ty, file_id);
+                rebind_span(&mut field.span, file_id);
+            }
+            for method in &mut structure.methods {
+                rebind_method(method, file_id);
+            }
+            rebind_span(&mut structure.span, file_id);
+        }
+        Item::Enum(enumeration) => {
+            rebind_ident(&mut enumeration.name, file_id);
+            for variant in &mut enumeration.variants {
+                rebind_enum_variant(variant, file_id);
+            }
+            rebind_span(&mut enumeration.span, file_id);
+        }
+        Item::DropFn(drop_fn) => {
+            rebind_ident(&mut drop_fn.type_name, file_id);
+            rebind_self_param(&mut drop_fn.self_param, file_id);
+            rebind_expr(&mut drop_fn.body, file_id);
+            rebind_span(&mut drop_fn.span, file_id);
+        }
+        Item::Const(constant) => {
+            rebind_directives(&mut constant.directives, file_id);
+            rebind_ident(&mut constant.name, file_id);
+            if let Some(ty) = &mut constant.ty {
+                rebind_type(ty, file_id);
+            }
+            rebind_expr(&mut constant.init, file_id);
+            rebind_span(&mut constant.span, file_id);
+        }
+        Item::Error(span) => rebind_span(span, file_id),
+    }
+}
+
+fn rebind_method(method: &mut Method, file_id: FileId) {
+    rebind_directives(&mut method.directives, file_id);
+    rebind_ident(&mut method.name, file_id);
+    if let Some(receiver) = &mut method.receiver {
+        rebind_self_param(receiver, file_id);
+    }
+    for parameter in &mut method.params {
+        rebind_param(parameter, file_id);
+    }
+    if let Some(return_type) = &mut method.return_type {
+        rebind_type(return_type, file_id);
+    }
+    rebind_expr(&mut method.body, file_id);
+    rebind_span(&mut method.span, file_id);
+}
+
+fn rebind_self_param(parameter: &mut SelfParam, file_id: FileId) {
+    rebind_span(&mut parameter.span, file_id);
+}
+
+fn rebind_param(parameter: &mut Param, file_id: FileId) {
+    rebind_ident(&mut parameter.name, file_id);
+    rebind_type(&mut parameter.ty, file_id);
+    rebind_span(&mut parameter.span, file_id);
+}
+
+fn rebind_enum_variant(variant: &mut EnumVariant, file_id: FileId) {
+    rebind_ident(&mut variant.name, file_id);
+    for payload in &mut variant.payload {
+        rebind_type(payload, file_id);
+    }
+    rebind_span(&mut variant.span, file_id);
+}
+
+fn rebind_type(ty: &mut TypeExpr, file_id: FileId) {
+    match ty {
+        TypeExpr::Named(ident) => rebind_ident(ident, file_id),
+        TypeExpr::Qualified { segments, span } => {
+            for segment in segments {
+                rebind_ident(segment, file_id);
+            }
+            rebind_span(span, file_id);
+        }
+        TypeExpr::Unit(span) | TypeExpr::Never(span) => rebind_span(span, file_id),
+        TypeExpr::Array {
+            element,
+            length,
+            span,
+        } => {
+            rebind_type(element, file_id);
+            rebind_array_length(length, file_id);
+            rebind_span(span, file_id);
+        }
+        TypeExpr::Slice { element, span } => {
+            rebind_type(element, file_id);
+            rebind_span(span, file_id);
+        }
+        TypeExpr::AnonymousStruct {
+            fields,
+            methods,
+            span,
+        } => {
+            for field in fields {
+                rebind_ident(&mut field.name, file_id);
+                rebind_type(&mut field.ty, file_id);
+                rebind_span(&mut field.span, file_id);
+            }
+            for method in methods {
+                rebind_method(method, file_id);
+            }
+            rebind_span(span, file_id);
+        }
+        TypeExpr::AnonymousEnum { variants, span } => {
+            for variant in variants {
+                rebind_enum_variant(variant, file_id);
+            }
+            rebind_span(span, file_id);
+        }
+        TypeExpr::PointerConst { pointee, span } | TypeExpr::PointerMut { pointee, span } => {
+            rebind_type(pointee, file_id);
+            rebind_span(span, file_id);
+        }
+        TypeExpr::TypeCall { name, args, span } => {
+            rebind_ident(name, file_id);
+            for argument in args {
+                rebind_type(argument, file_id);
+            }
+            rebind_span(span, file_id);
+        }
+        TypeExpr::QualifiedTypeCall {
+            segments,
+            args,
+            span,
+        } => {
+            for segment in segments {
+                rebind_ident(segment, file_id);
+            }
+            for argument in args {
+                rebind_type(argument, file_id);
+            }
+            rebind_span(span, file_id);
+        }
+        TypeExpr::StrFixed { name, span, .. } => {
+            rebind_ident(name, file_id);
+            rebind_span(span, file_id);
+        }
+        TypeExpr::IntArg { span, .. } => rebind_span(span, file_id),
+    }
+}
+
+fn rebind_array_length(length: &mut ArrayLength, file_id: FileId) {
+    match length {
+        ArrayLength::Literal(_) => {}
+        ArrayLength::Named(ident) => rebind_ident(ident, file_id),
+        ArrayLength::Call { name, args } => {
+            rebind_ident(name, file_id);
+            for argument in args {
+                rebind_array_length(argument, file_id);
+            }
+        }
+    }
+}
+
+fn rebind_pattern(pattern: &mut Pattern, file_id: FileId) {
+    match pattern {
+        Pattern::Wildcard(span) => rebind_span(span, file_id),
+        Pattern::Int(literal) => rebind_span(&mut literal.span, file_id),
+        Pattern::NegInt(literal) => rebind_span(&mut literal.span, file_id),
+        Pattern::Bool(literal) => rebind_span(&mut literal.span, file_id),
+        Pattern::Path(path) => {
+            if let Some(base) = &mut path.base {
+                rebind_expr(base, file_id);
+            }
+            rebind_ident(&mut path.type_name, file_id);
+            if let Some(arguments) = &mut path.ctor_args {
+                for argument in arguments {
+                    rebind_call_arg(argument, file_id);
+                }
+            }
+            rebind_ident(&mut path.variant, file_id);
+            for binding in &mut path.bindings {
+                rebind_ident(binding, file_id);
+            }
+            rebind_span(&mut path.span, file_id);
+        }
+    }
+}
+
+fn rebind_call_arg(argument: &mut CallArg, file_id: FileId) {
+    rebind_expr(&mut argument.expr, file_id);
+    rebind_span(&mut argument.span, file_id);
+}
+
+fn rebind_block(block: &mut BlockExpr, file_id: FileId) {
+    for statement in &mut block.statements {
+        rebind_statement(statement, file_id);
+    }
+    rebind_expr(&mut block.expr, file_id);
+    rebind_span(&mut block.span, file_id);
+}
+
+fn rebind_expr(expr: &mut Expr, file_id: FileId) {
+    match expr {
+        Expr::Int(literal) => rebind_span(&mut literal.span, file_id),
+        Expr::String(literal) => rebind_span(&mut literal.span, file_id),
+        Expr::Bool(literal) => rebind_span(&mut literal.span, file_id),
+        Expr::Unit(literal) => rebind_span(&mut literal.span, file_id),
+        Expr::Ident(ident) => rebind_ident(ident, file_id),
+        Expr::Binary(binary) => {
+            rebind_expr(&mut binary.left, file_id);
+            rebind_expr(&mut binary.right, file_id);
+            rebind_span(&mut binary.span, file_id);
+        }
+        Expr::Unary(unary) => {
+            rebind_expr(&mut unary.operand, file_id);
+            rebind_span(&mut unary.span, file_id);
+        }
+        Expr::Paren(paren) => {
+            rebind_expr(&mut paren.inner, file_id);
+            rebind_span(&mut paren.span, file_id);
+        }
+        Expr::Block(block) => rebind_block(block, file_id),
+        Expr::If(if_expr) => {
+            rebind_expr(&mut if_expr.cond, file_id);
+            rebind_block(&mut if_expr.then_block, file_id);
+            if let Some(else_block) = &mut if_expr.else_block {
+                rebind_block(else_block, file_id);
+            }
+            rebind_span(&mut if_expr.span, file_id);
+        }
+        Expr::Match(match_expr) => {
+            rebind_expr(&mut match_expr.scrutinee, file_id);
+            for arm in &mut match_expr.arms {
+                rebind_pattern(&mut arm.pattern, file_id);
+                rebind_expr(&mut arm.body, file_id);
+                rebind_span(&mut arm.span, file_id);
+            }
+            rebind_span(&mut match_expr.span, file_id);
+        }
+        Expr::While(while_expr) => {
+            rebind_expr(&mut while_expr.cond, file_id);
+            rebind_block(&mut while_expr.body, file_id);
+            rebind_span(&mut while_expr.span, file_id);
+        }
+        Expr::Loop(loop_expr) => {
+            rebind_block(&mut loop_expr.body, file_id);
+            rebind_span(&mut loop_expr.span, file_id);
+        }
+        Expr::For(for_expr) => {
+            rebind_let_pattern(&mut for_expr.binder, file_id);
+            rebind_expr(&mut for_expr.iterable, file_id);
+            rebind_block(&mut for_expr.body, file_id);
+            rebind_span(&mut for_expr.span, file_id);
+        }
+        Expr::Call(call) => {
+            rebind_ident(&mut call.name, file_id);
+            for argument in &mut call.args {
+                rebind_call_arg(argument, file_id);
+            }
+            rebind_span(&mut call.span, file_id);
+        }
+        Expr::Break(break_expr) => {
+            if let Some(value) = &mut break_expr.value {
+                rebind_expr(value, file_id);
+            }
+            rebind_span(&mut break_expr.span, file_id);
+        }
+        Expr::Continue(continue_expr) => rebind_span(&mut continue_expr.span, file_id),
+        Expr::Return(return_expr) => {
+            if let Some(value) = &mut return_expr.value {
+                rebind_expr(value, file_id);
+            }
+            rebind_span(&mut return_expr.span, file_id);
+        }
+        Expr::StructLit(literal) => {
+            if let Some(base) = &mut literal.base {
+                rebind_expr(base, file_id);
+            }
+            rebind_ident(&mut literal.name, file_id);
+            if let Some(arguments) = &mut literal.ctor_args {
+                for argument in arguments {
+                    rebind_call_arg(argument, file_id);
+                }
+            }
+            for field in &mut literal.fields {
+                rebind_ident(&mut field.name, file_id);
+                rebind_expr(&mut field.value, file_id);
+                rebind_span(&mut field.span, file_id);
+            }
+            rebind_span(&mut literal.span, file_id);
+        }
+        Expr::Field(field) => {
+            rebind_expr(&mut field.base, file_id);
+            rebind_ident(&mut field.field, file_id);
+            rebind_span(&mut field.span, file_id);
+        }
+        Expr::MethodCall(call) => {
+            rebind_expr(&mut call.receiver, file_id);
+            rebind_ident(&mut call.method, file_id);
+            for argument in &mut call.args {
+                rebind_call_arg(argument, file_id);
+            }
+            rebind_span(&mut call.span, file_id);
+        }
+        Expr::Try(try_expr) => {
+            rebind_expr(&mut try_expr.operand, file_id);
+            rebind_span(&mut try_expr.span, file_id);
+        }
+        Expr::IntrinsicCall(call) => {
+            rebind_ident(&mut call.name, file_id);
+            for argument in &mut call.args {
+                match argument {
+                    IntrinsicArg::Expr(expr) => rebind_expr(expr, file_id),
+                    IntrinsicArg::Type(ty) => rebind_type(ty, file_id),
+                }
+            }
+            rebind_span(&mut call.span, file_id);
+        }
+        Expr::ArrayLit(array) => {
+            for element in &mut array.elements {
+                rebind_expr(element, file_id);
+            }
+            if let Some(repeat) = &mut array.repeat {
+                rebind_array_length(repeat, file_id);
+            }
+            rebind_span(&mut array.span, file_id);
+        }
+        Expr::Index(index) => {
+            rebind_expr(&mut index.base, file_id);
+            rebind_expr(&mut index.index, file_id);
+            rebind_span(&mut index.span, file_id);
+        }
+        Expr::Path(path) => {
+            if let Some(base) = &mut path.base {
+                rebind_expr(base, file_id);
+            }
+            rebind_ident(&mut path.type_name, file_id);
+            rebind_ident(&mut path.variant, file_id);
+            rebind_span(&mut path.span, file_id);
+        }
+        Expr::SelfExpr(self_expr) => rebind_span(&mut self_expr.span, file_id),
+        Expr::Comptime(block) => {
+            rebind_expr(&mut block.expr, file_id);
+            rebind_span(&mut block.span, file_id);
+        }
+        Expr::Checked(block) => {
+            rebind_expr(&mut block.expr, file_id);
+            rebind_span(&mut block.span, file_id);
+        }
+        Expr::TypeLit(literal) => {
+            rebind_type(&mut literal.type_expr, file_id);
+            rebind_span(&mut literal.span, file_id);
+        }
+        Expr::Error(span) => rebind_span(span, file_id),
+    }
+}
+
+fn rebind_let_pattern(pattern: &mut LetPattern, file_id: FileId) {
+    match pattern {
+        LetPattern::Ident(ident) => rebind_ident(ident, file_id),
+        LetPattern::Wildcard(span) => rebind_span(span, file_id),
+    }
+}
+
+fn rebind_statement(statement: &mut Statement, file_id: FileId) {
+    match statement {
+        Statement::Let(binding) => {
+            rebind_directives(&mut binding.directives, file_id);
+            rebind_let_pattern(&mut binding.pattern, file_id);
+            if let Some(ty) = &mut binding.ty {
+                rebind_type(ty, file_id);
+            }
+            rebind_expr(&mut binding.init, file_id);
+            rebind_span(&mut binding.span, file_id);
+        }
+        Statement::Assign(assignment) => {
+            match &mut assignment.target {
+                AssignTarget::Var(ident) => rebind_ident(ident, file_id),
+                AssignTarget::Field(field) => {
+                    rebind_expr(&mut field.base, file_id);
+                    rebind_ident(&mut field.field, file_id);
+                    rebind_span(&mut field.span, file_id);
+                }
+                AssignTarget::Index(index) => {
+                    rebind_expr(&mut index.base, file_id);
+                    rebind_expr(&mut index.index, file_id);
+                    rebind_span(&mut index.span, file_id);
+                }
+            }
+            rebind_expr(&mut assignment.value, file_id);
+            rebind_span(&mut assignment.span, file_id);
+        }
+        Statement::Expr(expr) => rebind_expr(expr, file_id),
     }
 }
 

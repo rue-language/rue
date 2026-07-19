@@ -109,7 +109,8 @@ impl SemanticSymbolUniverse {
             .admitted_modules
             .binary_search_by(|module| module.module_id().cmp(owner.module_id()))
             .map_err(|_| invalid_input("module view is absent from this semantic program"))?;
-        if !Arc::ptr_eq(&self.admitted_modules[admitted], owner.module()) {
+        let foreign = !Arc::ptr_eq(&self.admitted_modules[admitted], owner.module());
+        if foreign {
             return Err(invalid_input(
                 "module view belongs to a foreign parsed artifact",
             ));
@@ -332,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn universe_admits_only_the_exact_program_module_artifacts() {
+    fn universe_admission_uses_uniform_exact_module_owner_identity() {
         let make_snapshot = || snapshot(&[(1, "/main.rue", "main.rue", "fn main() {}")], 1);
         let admitted = parse_source_snapshot_modules(&make_snapshot()).unwrap();
         let independently_parsed = parse_source_snapshot_modules(&make_snapshot()).unwrap();
@@ -352,6 +353,21 @@ mod tests {
         assert_eq!(
             universe
                 .translate(&foreign_view, foreign_symbol)
+                .unwrap_err()
+                .to_string(),
+            "invalid compiler input: module view belongs to a foreign parsed artifact"
+        );
+
+        let edited = parse_source_snapshot_modules(&snapshot(
+            &[(1, "/main.rue", "main.rue", "fn changed() {}")],
+            1,
+        ))
+        .unwrap();
+        let edited_view = edited.ast_views().next().unwrap();
+        let edited_symbol = edited.modules()[0].definitions().candidates()[0].symbol();
+        assert_eq!(
+            universe
+                .translate(&edited_view, edited_symbol)
                 .unwrap_err()
                 .to_string(),
             "invalid compiler input: module view belongs to a foreign parsed artifact"

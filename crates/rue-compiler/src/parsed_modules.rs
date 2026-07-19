@@ -4,6 +4,7 @@
 //! universe, while [`ParsedProgram`] provides the sole parsed-program
 //! representation used by semantic compilation.
 
+#[cfg(test)]
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -203,7 +204,6 @@ struct ImportSiteCollector {
 #[derive(Debug)]
 struct ParsedSyntaxPayload {
     source: SourceId,
-    file_id: FileId,
     source_text: Arc<String>,
     token_count: usize,
     tokens: Arc<[rue_lexer::Token]>,
@@ -218,8 +218,12 @@ struct ParsedSyntaxPayload {
 #[derive(Debug)]
 pub struct ParsedModule {
     revision: ModuleRevision,
+    file_id: FileId,
     physical_path: Arc<str>,
     payload: Arc<ParsedSyntaxPayload>,
+    tokens: Arc<[rue_lexer::Token]>,
+    ast: Arc<Ast>,
+    definitions: ParsedDefinitionIndex,
     imports: Arc<[ImportDirective]>,
     invalid_imports: Arc<[ParsedInvalidImport]>,
 }
@@ -273,6 +277,28 @@ impl ParsedItemView {
 }
 
 impl ParsedModule {
+    #[cfg(test)]
+    pub(crate) fn with_test_foreign_ast_symbol(&self) -> Arc<Self> {
+        let mut ast = (*self.ast).clone();
+        let foreign = Spur::try_from_usize(self.payload.resolver.resolver.len() + 17)
+            .expect("test symbol ordinal remains representable");
+        let Some(Item::Function(function)) = ast.items.first_mut() else {
+            panic!("test fault requires a leading function")
+        };
+        function.name.name = foreign;
+        Arc::new(Self {
+            revision: self.revision.clone(),
+            file_id: self.file_id,
+            physical_path: self.physical_path.clone(),
+            payload: self.payload.clone(),
+            tokens: self.tokens.clone(),
+            ast: Arc::new(ast),
+            definitions: self.definitions.clone(),
+            imports: self.imports.clone(),
+            invalid_imports: self.invalid_imports.clone(),
+        })
+    }
+
     pub(crate) fn shares_resolver_with(&self, other: &Self) -> bool {
         Arc::ptr_eq(
             &self.payload.resolver.resolver,
@@ -298,7 +324,7 @@ impl ParsedModule {
         &self.revision.source
     }
     pub fn file_id(&self) -> FileId {
-        self.payload.file_id
+        self.file_id
     }
     pub fn physical_path(&self) -> &str {
         &self.physical_path
@@ -310,7 +336,7 @@ impl ParsedModule {
         self.payload.token_count
     }
     pub(crate) fn tokens(&self) -> &[rue_lexer::Token] {
-        &self.payload.tokens
+        &self.tokens
     }
     pub(crate) fn resolve_raw_symbol(&self, symbol: Spur) -> &str {
         self.payload.resolver.resolver.resolve(&symbol)
@@ -319,10 +345,10 @@ impl ParsedModule {
         self.payload.source_text.clone()
     }
     pub fn ast(&self) -> &Ast {
-        &self.payload.ast.ast
+        &self.ast
     }
     pub fn definitions(&self) -> &ParsedDefinitionIndex {
-        &self.payload.definitions
+        &self.definitions
     }
     pub fn imports(&self) -> &[ImportDirective] {
         &self.imports
@@ -530,6 +556,7 @@ pub struct ParseInvalidationSummary {
 }
 
 /// Result and structural work from one canonical parse-session update.
+#[cfg(test)]
 #[derive(Debug)]
 pub struct CanonicalParseUpdate {
     result: Result<Arc<ParsedProgram>, CompileErrors>,
@@ -537,6 +564,7 @@ pub struct CanonicalParseUpdate {
     invalidation: ParseInvalidationSummary,
 }
 
+#[cfg(test)]
 impl CanonicalParseUpdate {
     #[cfg(test)]
     pub(crate) fn result(&self) -> Result<&Arc<ParsedProgram>, &CompileErrors> {
@@ -557,30 +585,22 @@ impl CanonicalParseUpdate {
 }
 
 /// Parse one snapshot against an explicit family-owned successful baseline.
+#[cfg(test)]
 pub(crate) fn parse_canonical_snapshot(
     snapshot: &SourceSnapshot,
     baseline: Option<&ParsedProgram>,
 ) -> CanonicalParseUpdate {
-    parse_snapshot_in_order(snapshot, baseline, DiagnosticOrder::Canonical)
+    parse_snapshot_in_order(snapshot, baseline)
 }
 
-/// Parse one snapshot while preserving its presentation diagnostic order.
-pub(crate) fn parse_presentation_snapshot(
-    snapshot: &SourceSnapshot,
-    baseline: Option<&ParsedProgram>,
-) -> CanonicalParseUpdate {
-    parse_snapshot_in_order(snapshot, baseline, DiagnosticOrder::Snapshot)
-}
-
+#[cfg(test)]
 fn parse_snapshot_in_order(
     snapshot: &SourceSnapshot,
     baseline: Option<&ParsedProgram>,
-    diagnostic_order: DiagnosticOrder,
 ) -> CanonicalParseUpdate {
     record_parse_operation_entry();
     let invalidation = classify_invalidation(snapshot, baseline);
-    let outcome =
-        parse_source_snapshot_modules_reusing_with_work(snapshot, baseline, diagnostic_order);
+    let outcome = parse_source_snapshot_modules_reusing_with_work(snapshot, baseline);
     CanonicalParseUpdate {
         result: outcome.result.map(Arc::new),
         work: outcome.work,
@@ -590,6 +610,7 @@ fn parse_snapshot_in_order(
 
 /// Validate an externally produced exact-snapshot program without retaining it
 /// outside the typed parse family.
+#[cfg(test)]
 pub(crate) fn adopt_exact_parsed_program(
     snapshot: &SourceSnapshot,
     baseline: Option<&ParsedProgram>,
@@ -621,9 +642,6 @@ thread_local! {
 fn record_parse_operation_entry() {
     PARSE_OPERATION_ENTRIES.with(|entries| entries.set(entries.get() + 1));
 }
-
-#[cfg(not(test))]
-fn record_parse_operation_entry() {}
 
 #[cfg(test)]
 pub(crate) fn reset_parse_operation_entries() {
@@ -690,6 +708,7 @@ pub(crate) fn classify_invalidation(
     summary
 }
 
+#[cfg(test)]
 pub(crate) struct ParsedModulesOutcome {
     pub(crate) result: Result<ParsedProgram, CompileErrors>,
     pub(crate) work: ParsedModulesWork,
@@ -715,11 +734,7 @@ pub(crate) fn parse_source_snapshot_modules_reusing(
     snapshot: &SourceSnapshot,
     previous: Option<&ParsedProgram>,
 ) -> Result<(ParsedProgram, ParsedModulesWork), CompileErrors> {
-    let outcome = parse_source_snapshot_modules_reusing_with_work(
-        snapshot,
-        previous,
-        DiagnosticOrder::Canonical,
-    );
+    let outcome = parse_source_snapshot_modules_reusing_with_work(snapshot, previous);
     outcome.result.map(|program| (program, outcome.work))
 }
 
@@ -729,6 +744,14 @@ pub(crate) fn parse_source_snapshot_module_with_stats(
     snapshot: &SourceSnapshot,
     module: &ModuleId,
 ) -> Result<(Arc<ParsedModule>, SyntaxWork), CompileErrors> {
+    let (result, work) = parse_source_snapshot_module(snapshot, module);
+    result.map(|module| (module, work))
+}
+
+pub(crate) fn parse_source_snapshot_module(
+    snapshot: &SourceSnapshot,
+    module: &ModuleId,
+) -> (Result<Arc<ParsedModule>, CompileErrors>, SyntaxWork) {
     let file_id = snapshot
         .metadata()
         .file_ids()
@@ -737,9 +760,33 @@ pub(crate) fn parse_source_snapshot_module_with_stats(
             CompileErrors::from(invalid_input(format!(
                 "source snapshot contains no module {module}"
             )))
-        })?;
-    let (result, work) = parse_snapshot_file(snapshot, file_id);
-    result.map(|module| (module, work))
+        });
+    match file_id {
+        Ok(file_id) => parse_snapshot_file(snapshot, file_id),
+        Err(errors) => (Err(errors), SyntaxWork::default()),
+    }
+}
+
+pub(crate) fn rebind_parsed_module(
+    snapshot: &SourceSnapshot,
+    module: &Arc<ParsedModule>,
+) -> Arc<ParsedModule> {
+    let file_id = snapshot
+        .metadata()
+        .file_ids()
+        .find(|file_id| snapshot.module_id(*file_id) == Some(module.module_id()))
+        .expect("parsed module belongs to the projected source snapshot");
+    if module.file_id() == file_id
+        && module.physical_path()
+            == snapshot
+                .metadata()
+                .physical_path(file_id)
+                .expect("source metadata retains every physical path")
+    {
+        module.clone()
+    } else {
+        bind_payload(snapshot, file_id, module.payload.clone())
+    }
 }
 
 fn parse_snapshot_file(
@@ -764,30 +811,18 @@ fn parse_snapshot_file(
     (result, work)
 }
 
-#[derive(Clone, Copy)]
-enum DiagnosticOrder {
-    Canonical,
-    Snapshot,
-}
-
+#[cfg(test)]
 fn parse_source_snapshot_modules_reusing_with_work(
     snapshot: &SourceSnapshot,
     previous: Option<&ParsedProgram>,
-    diagnostic_order: DiagnosticOrder,
 ) -> ParsedModulesOutcome {
-    let mut file_ids = if matches!(diagnostic_order, DiagnosticOrder::Canonical) {
-        snapshot.metadata().file_ids().collect::<Vec<_>>()
-    } else {
-        snapshot.files().map(|source| source.file_id).collect()
-    };
-    if matches!(diagnostic_order, DiagnosticOrder::Canonical) {
-        file_ids.sort_by(|left, right| {
-            snapshot
-                .module_id(*left)
-                .unwrap()
-                .cmp(snapshot.module_id(*right).unwrap())
-        });
-    }
+    let mut file_ids = snapshot.metadata().file_ids().collect::<Vec<_>>();
+    file_ids.sort_by(|left, right| {
+        snapshot
+            .module_id(*left)
+            .unwrap()
+            .cmp(snapshot.module_id(*right).unwrap())
+    });
     let mut modules = Vec::with_capacity(file_ids.len());
     let mut errors = CompileErrors::new();
     let previous_by_file = previous
@@ -914,7 +949,6 @@ fn build_module_with_resolver(
         build_definition_index(file_id, &source_text, &provenanced_ast.ast, &resolver)?;
     let payload = Arc::new(ParsedSyntaxPayload {
         source,
-        file_id,
         source_text,
         token_count,
         tokens,
@@ -932,7 +966,6 @@ fn bind_payload(
     file_id: FileId,
     payload: Arc<ParsedSyntaxPayload>,
 ) -> Arc<ParsedModule> {
-    debug_assert_eq!(payload.file_id, file_id);
     debug_assert_eq!(snapshot.source_id(file_id), Some(&payload.source));
     let module = snapshot
         .module_id(file_id)
@@ -941,6 +974,46 @@ fn bind_payload(
     let revision = ModuleRevision {
         module: module.clone(),
         source: payload.source.clone(),
+    };
+    let remap_span = |span: Span| Span::with_file(file_id, span.start, span.end);
+    let payload_file_id = payload
+        .tokens
+        .first()
+        .expect("the lexer always emits EOF")
+        .span
+        .file_id;
+    let (tokens, ast) = if payload_file_id == file_id {
+        (payload.tokens.clone(), payload.ast.ast.clone())
+    } else {
+        let tokens = payload
+            .tokens
+            .iter()
+            .cloned()
+            .map(|mut token| {
+                token.span = remap_span(token.span);
+                token
+            })
+            .collect::<Vec<_>>()
+            .into();
+        let mut ast = (*payload.ast.ast).clone();
+        ast.rebind_file_id(file_id);
+        (tokens, Arc::new(ast))
+    };
+    let definitions = ParsedDefinitionIndex {
+        candidates: payload
+            .definitions
+            .candidates
+            .iter()
+            .cloned()
+            .map(|candidate| ParsedDefinitionCandidate {
+                name_span: remap_span(candidate.name_span),
+                declaration_span: remap_span(candidate.declaration_span),
+                ..candidate
+            })
+            .collect::<Vec<_>>()
+            .into(),
+        #[cfg(test)]
+        by_name: payload.definitions.by_name.clone(),
     };
     let imports = payload
         .import_sites
@@ -959,14 +1032,18 @@ fn bind_payload(
         .iter()
         .map(|site| ParsedInvalidImport {
             importer: module.clone(),
-            span: site.span,
+            span: remap_span(site.span),
             shape: site.shape.clone(),
         })
         .collect::<Vec<_>>();
     Arc::new(ParsedModule {
         revision,
+        file_id,
         physical_path: Arc::from(snapshot.metadata().physical_path(file_id).unwrap()),
         payload,
+        tokens,
+        ast,
+        definitions,
         imports: imports.into(),
         invalid_imports: invalid_imports.into(),
     })
@@ -1460,11 +1537,7 @@ mod tests {
             ],
             20,
         );
-        let outcome = parse_source_snapshot_modules_reusing_with_work(
-            &snapshot,
-            None,
-            DiagnosticOrder::Canonical,
-        );
+        let outcome = parse_source_snapshot_modules_reusing_with_work(&snapshot, None);
         assert_eq!(outcome.work.syntax.lexer_invocations, 2);
         assert_eq!(outcome.work.syntax.parser_invocations, 2);
         let program = outcome.result.unwrap();
@@ -1553,11 +1626,7 @@ mod tests {
             ],
             7,
         );
-        let outcome = parse_source_snapshot_modules_reusing_with_work(
-            &snapshot,
-            None,
-            DiagnosticOrder::Canonical,
-        );
+        let outcome = parse_source_snapshot_modules_reusing_with_work(&snapshot, None);
         let work = outcome.work;
         let first = outcome.result.unwrap();
         let modules = first.modules().to_vec();

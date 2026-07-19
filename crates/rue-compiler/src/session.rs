@@ -17,16 +17,13 @@ use crate::{
     SemanticInputDescriptor, SourceRevision, SourceSnapshot, StableDefinitionKey,
     StableDefinitionKind, StableDefinitionNamespace, StableOptLevel, StablePreviewFeatures,
     bound_definitions::bind_canonical_definitions_with_work,
-    canonical_lower::lower_canonical_rir_with_work,
-    canonical_merge::merge_parsed_modules_reusing_definitions,
+    canonical_lower::project_module_rirs_with_work,
+    canonical_merge::merge_parsed_modules_reusing_indexes,
     canonical_semantic::{
         analyze_prepared_canonical_program_reusing_declarations,
         analyze_prepared_canonical_program_with_durable_export, prepare_canonical_declarations,
     },
-    parsed_modules::{
-        ParsedProgram, adopt_exact_parsed_program, classify_invalidation, parse_canonical_snapshot,
-        parse_presentation_snapshot,
-    },
+    parsed_modules::{ParsedProgram, classify_invalidation},
     validate_canonical_import_graph,
 };
 
@@ -1726,9 +1723,9 @@ struct FrontendQueryDatabase {
     /// Canonical Phase 1 execution substrate. The legacy stores below are
     /// removed family-by-family as callers move through its selected-state shim.
     revisioned: crate::revisioned_query_database::RevisionedQueryDatabase,
-    // RUE-1024 DELETION GATE: Phase 3 must delete these whole-snapshot import
-    // plan/closure stores and their leaf stores after their remaining
-    // diagnostic and projection consumers query the granular runtime directly.
+    // RUE-1033 COMPATIBILITY: these selected-state plan/closure records retain
+    // legacy diagnostic attempts only. Syntax, name lookup, exact occurrence
+    // resolution, and module lowering are authoritative runtime families.
     import_plans: TypedQueryStore<ImportPlanQuery>,
     import_closures: TypedQueryStore<ImportClosureQuery>,
     import_diagnostics: TypedQueryStore<ImportDiagnosticQuery>,
@@ -1850,6 +1847,11 @@ struct DependencyManifestCacheEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParseQueryKey {
     source: ExactSourceInput,
+    /// Caller-owned source table order. This is presentation state rather than
+    /// module identity, but a selected parse record retains the exact snapshot
+    /// and diagnostic source table, so order changes must reproject the outer
+    /// record while granular module terminals remain reusable.
+    file_order: Arc<[crate::FileId]>,
     presentation: DiagnosticAttemptProvenance,
 }
 
@@ -1862,6 +1864,7 @@ impl ParseQueryKey {
 #[derive(Debug, Clone)]
 pub(crate) struct ParseQueryRecord {
     key: ParseQueryKey,
+    runtime_revision: rue_query::Revision,
     snapshot: SourceSnapshot,
     result: Result<Arc<ParsedProgram>, CompileErrors>,
     diagnostics: Arc<FrontendDiagnosticSnapshot>,
@@ -1911,6 +1914,11 @@ impl TypedQueryFamily for ParseQuery {
     fn record_is_consistent(record: &Self::Record) -> bool {
         record.snapshot.source_revision() == &record.key.source.revision
             && record.snapshot.metadata() == &record.key.source.metadata
+            && record
+                .snapshot
+                .files()
+                .map(|source| source.file_id)
+                .eq(record.key.file_order.iter().copied())
             && match &record.result {
                 Ok(program) => program.source_revision() == &record.key.source.revision,
                 Err(_) => true,
@@ -2530,7 +2538,7 @@ pub(crate) struct ExactSourceInput {
 }
 
 impl ExactSourceInput {
-    fn new(snapshot: &SourceSnapshot) -> Self {
+    pub(crate) fn new(snapshot: &SourceSnapshot) -> Self {
         Self {
             revision: snapshot.source_revision().clone(),
             metadata: snapshot.metadata().clone(),
@@ -3353,7 +3361,35 @@ impl CompilerSession {
             .as_ref()
             .expect("open discovery attempt retains its program")
             .clone();
-        if let Err(error) = plan.validate_ledger(&ledger) {
+        let roots = crate::ImportDemandRoots::whole_plan(&plan);
+        let exact_groups = match self.queries.revisioned.current_import_revision() {
+            Some(revision) => match self
+                .queries
+                .revisioned
+                .exact_import_groups(revision, &roots)
+            {
+                Ok(groups) => groups,
+                Err(error) => {
+                    let errors = CompileErrors::from(error);
+                    self.publish_failed_import_attempt(
+                        open,
+                        plan,
+                        ledger,
+                        ImportDiscoveryRevisionStatus::ClosedAttempted,
+                        None,
+                        &errors,
+                    );
+                    return Err(errors);
+                }
+            },
+            // RUE-1033 LEGACY EMBEDDER GATE: callers that bypass the canonical
+            // begin/frontier/publish protocol retain their historical plan
+            // groups until that entire public boundary is removed together.
+            None => plan.groups().to_vec(),
+        };
+        if let Err(error) =
+            crate::import_discovery::validate_exact_import_ledger(&exact_groups, &ledger)
+        {
             let errors = CompileErrors::from(error);
             self.publish_failed_import_attempt(
                 open,
@@ -3365,7 +3401,9 @@ impl CompilerSession {
             );
             return Err(errors);
         }
-        if !plan.pending_requests(&ledger).is_empty() {
+        if !crate::import_discovery::exact_import_pending_requests(&exact_groups, &ledger)
+            .is_empty()
+        {
             let errors =
                 CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
                     "import discovery ledger is incomplete; the attempted revision cannot close"
@@ -3381,8 +3419,9 @@ impl CompilerSession {
             );
             return Err(errors);
         }
-        let diagnostics = plan.diagnostics(&program, &ledger);
-        if plan.failures(&ledger).next().is_some() {
+        let diagnostics =
+            crate::import_discovery::exact_import_diagnostics(&program, &exact_groups, &ledger);
+        if crate::import_discovery::exact_import_has_failures(&exact_groups, &ledger) {
             self.publish_failed_import_attempt(
                 open,
                 plan,
@@ -3424,8 +3463,12 @@ impl CompilerSession {
             resolution,
             std_dir: open.context.std_root().map(Arc::from),
         };
-        let reduced = match plan.reduce_graph(program.root().clone(), &ledger, &open.accepted_reads)
-        {
+        let reduced = match crate::import_discovery::reduce_exact_import_graph(
+            program.root().clone(),
+            &exact_groups,
+            &ledger,
+            &open.accepted_reads,
+        ) {
             Ok(graph) => graph,
             Err(error) => {
                 let errors = CompileErrors::from(error);
@@ -3797,9 +3840,7 @@ impl CompilerSession {
         }
         self.select_diagnostic_presentation(None);
         let provenance = self.syntax_diagnostic_provenance();
-        self.run_parse_update(snapshot, provenance, |baseline| {
-            parse_canonical_snapshot(snapshot, baseline)
-        })
+        self.run_parse_update(snapshot, provenance)
     }
 
     /// Publish a snapshot while retaining its caller-selected presentation order.
@@ -3822,16 +3863,14 @@ impl CompilerSession {
                 .collect(),
         ));
         let provenance = self.syntax_diagnostic_provenance();
-        self.run_parse_update(snapshot, provenance, |baseline| {
-            parse_presentation_snapshot(snapshot, baseline)
-        })
+        self.run_parse_update(snapshot, provenance)
     }
 
     fn adopt_discovery_program_for_presentation(
         &mut self,
         snapshot: &SourceSnapshot,
-        program: Arc<ParsedProgram>,
-        work: ParsedModulesWork,
+        _program: Arc<ParsedProgram>,
+        _work: ParsedModulesWork,
     ) -> CompilerSessionUpdate {
         #[cfg(test)]
         {
@@ -3844,9 +3883,7 @@ impl CompilerSession {
                 .collect(),
         ));
         let provenance = self.syntax_diagnostic_provenance();
-        self.run_parse_update(snapshot, provenance, |baseline| {
-            adopt_exact_parsed_program(snapshot, baseline, program, work)
-        })
+        self.run_parse_update(snapshot, provenance)
     }
 
     fn parse_baseline(&self) -> Option<Arc<ParsedProgram>> {
@@ -3880,7 +3917,6 @@ impl CompilerSession {
         snapshot: &SourceSnapshot,
         presentation: DiagnosticAttemptProvenance,
         attempt_id: AttemptId,
-        compute: impl FnOnce(Option<&ParsedProgram>) -> crate::CanonicalParseUpdate,
     ) -> (
         ParseQueryRecord,
         Arc<dyn AttemptView>,
@@ -3891,9 +3927,28 @@ impl CompilerSession {
         let source = ExactSourceInput::new(snapshot);
         let key = ParseQueryKey {
             source: source.clone(),
-            presentation,
+            file_order: snapshot
+                .files()
+                .map(|source| source.file_id)
+                .collect::<Vec<_>>()
+                .into(),
+            presentation: presentation.clone(),
         };
-        let revision = self.queries.revisioned.source_revision(&source);
+        let revision = self.queries.revisioned.source_revision(&source, snapshot);
+        let demanded_modules = match &presentation {
+            DiagnosticAttemptProvenance::Canonical => snapshot
+                .source_revision()
+                .modules()
+                .iter()
+                .map(|source| source.module.clone())
+                .collect::<Vec<_>>(),
+            DiagnosticAttemptProvenance::Presentation(order) => order.to_vec(),
+        };
+        let (modular_result, modular_work) = self.queries.revisioned.parse_program(
+            revision,
+            snapshot.source_revision().root(),
+            demanded_modules,
+        );
         let prepared = self.queries.revisioned.parse.prepare(key.clone());
         let baseline = self.parse_baseline();
         let attempt = prepared.execute(revision, attempt_id, |context| {
@@ -3901,10 +3956,9 @@ impl CompilerSession {
                 crate::revisioned_query_database::RevisionedQueryDatabase::SOURCE_INPUT,
                 "current",
             ))?;
-            let update = compute(baseline.as_deref());
-            let work = update.work();
-            let invalidation = update.invalidation().clone();
-            let result = update.into_result();
+            let work = modular_work;
+            let invalidation = classify_invalidation(snapshot, baseline.as_deref());
+            let result = modular_result;
             // Freeze diagnostics privately with the query output. Session
             // selection and metrics happen only after atomic publication.
             let diagnostics = Arc::new(FrontendDiagnosticSnapshot {
@@ -3919,6 +3973,7 @@ impl CompilerSession {
             });
             Ok(ParseQueryRecord {
                 key,
+                runtime_revision: revision,
                 snapshot: snapshot.clone(),
                 result,
                 diagnostics,
@@ -3978,9 +4033,7 @@ impl CompilerSession {
         let presentation = DiagnosticAttemptProvenance::Presentation(order.into());
         let attempt_id = guard.id;
         let (record, view, execution, work, _invalidation) =
-            self.execute_parse_query(snapshot, presentation, attempt_id, |baseline| {
-                parse_presentation_snapshot(snapshot, baseline)
-            });
+            self.execute_parse_query(snapshot, presentation, attempt_id);
         guard.started();
         let result = record.result.clone();
         guard.attach_diagnostics(record.diagnostics.clone());
@@ -4123,12 +4176,11 @@ impl CompilerSession {
         &mut self,
         snapshot: &SourceSnapshot,
         presentation: DiagnosticAttemptProvenance,
-        compute: impl FnOnce(Option<&ParsedProgram>) -> crate::CanonicalParseUpdate,
     ) -> CompilerSessionUpdate {
         let mut guard = self.metrics.begin_unprojected("parse");
         let attempt_id = guard.id;
         let (record, view, execution, parse_work, invalidation) =
-            self.execute_parse_query(snapshot, presentation, attempt_id, compute);
+            self.execute_parse_query(snapshot, presentation, attempt_id);
         guard.started();
         self.metrics.update(parse_work, invalidation.clone());
         let result = record.result.clone();
@@ -4151,6 +4203,7 @@ impl CompilerSession {
                 if exact {
                     let changed = self.queries.publish_source(ExactSourceInput::new(snapshot));
                     debug_assert!(!changed);
+                    self.published_snapshot = Some(snapshot.clone());
                     CompilerSessionUpdate {
                         result: Ok(self.published.as_ref().unwrap().clone()),
                         work: parse_work,
@@ -4430,6 +4483,17 @@ impl CompilerSession {
         }
         *execution = QueryAttemptExecution::Computed;
         guard.started();
+        let runtime_revision = self
+            .queries
+            .revisioned
+            .parse
+            .last_good_record()
+            .expect("merge has a successful parse terminal")
+            .runtime_revision;
+        let projected_indexes = self
+            .queries
+            .revisioned
+            .projected_module_indexes(runtime_revision, &parsed);
         // Freeze the traversal work before the fallible duplicate/definition
         // checks so deterministic merge failures retain the work already done.
         *attempt_work = Some(CanonicalMergeWork {
@@ -4439,25 +4503,24 @@ impl CompilerSession {
                 .iter()
                 .map(|module| module.ast().items.len())
                 .sum(),
-            candidates_visited: parsed
-                .modules()
-                .iter()
-                .map(|module| module.definitions().candidates().len())
-                .sum(),
+            candidates_visited: projected_indexes.as_ref().map_or(0, |indexes| {
+                indexes.iter().map(|index| index.definitions.len()).sum()
+            }),
             ..CanonicalMergeWork::default()
         });
         guard.accrue(QueryStructuralWork::Merge(
             attempt_work.expect("merge prefix just installed"),
         ));
-        let merged = if let Some(order) = &self.batch_diagnostic_order {
-            crate::canonical_merge::merge_parsed_modules_for_batch(&parsed, order)
-        } else {
-            merge_parsed_modules_reusing_definitions(
-                &parsed,
-                self.definition_shard_baseline.as_ref(),
-            )
-        }
-        .map(Arc::new);
+        let merged = projected_indexes
+            .and_then(|indexes| {
+                merge_parsed_modules_reusing_indexes(
+                    &parsed,
+                    &indexes,
+                    self.definition_shard_baseline.as_ref(),
+                    self.batch_diagnostic_order.as_deref(),
+                )
+            })
+            .map(Arc::new);
         if self.cancel_merge_at_commit_boundary() {
             guard.request_cancel();
             return Err(CompileErrors::from(CompileError::without_span(
@@ -4585,17 +4648,41 @@ impl CompilerSession {
             Ok(merged) => {
                 *execution = QueryAttemptExecution::Computed;
                 guard.started();
-                match lower_canonical_rir_with_work(merged) {
-                    Ok(rir) => {
-                        let rir = Arc::new(rir);
-                        *attempt_work = Some(rir.work());
-                        guard.accrue(QueryStructuralWork::Rir(rir.work()));
-                        Ok(rir)
+                let revision = self
+                    .queries
+                    .revisioned
+                    .parse
+                    .last_good_record()
+                    .expect("published syntax has a successful parse terminal")
+                    .runtime_revision;
+                let module_ids = merged
+                    .ast()
+                    .modules()
+                    .iter()
+                    .map(|module| module.module_id().clone())
+                    .collect::<Vec<_>>();
+                let (module_rirs, query_work) =
+                    self.queries.revisioned.module_rirs(revision, module_ids);
+                match module_rirs {
+                    Ok(modules) => {
+                        match project_module_rirs_with_work(merged, &modules, query_work) {
+                            Ok(rir) => {
+                                let rir = Arc::new(rir);
+                                *attempt_work = Some(rir.work());
+                                guard.accrue(QueryStructuralWork::Rir(rir.work()));
+                                Ok(rir)
+                            }
+                            Err((error, work)) => {
+                                *attempt_work = Some(work);
+                                guard.accrue(QueryStructuralWork::Rir(work));
+                                Err(CompileErrors::from(error))
+                            }
+                        }
                     }
-                    Err((error, work)) => {
-                        *attempt_work = Some(work);
-                        guard.accrue(QueryStructuralWork::Rir(work));
-                        Err(CompileErrors::from(error))
+                    Err(errors) => {
+                        *attempt_work = Some(query_work);
+                        guard.accrue(QueryStructuralWork::Rir(query_work));
+                        Err(errors)
                     }
                 }
             }
@@ -8347,16 +8434,29 @@ mod tests {
     };
 
     #[test]
-    fn phase_two_import_compatibility_has_an_exact_phase_three_deletion_gate() {
+    fn phase_three_module_queries_close_the_exact_import_deletion_gate() {
         let production = include_str!("session.rs")
             .split("\n#[cfg(test)]\nmod tests {")
             .next()
             .unwrap();
-        let gate = "RUE-1024 DELETION GATE: Phase 3 must delete these whole-snapshot import";
-        assert_eq!(production.matches(gate).count(), 1);
+        assert!(!production.contains("RUE-1024 DELETION GATE"));
         let discovery = include_str!("import_discovery.rs");
         assert!(!discovery.contains("pub fn pending_requests("));
         let revisioned = include_str!("revisioned_query_database.rs");
+        for family in [
+            "compiler.parse-module",
+            "compiler.module-index",
+            "compiler.lookup-name",
+            "compiler.resolve-import",
+            "compiler.module-rir",
+        ] {
+            assert!(
+                revisioned.contains(family),
+                "missing canonical family {family}"
+            );
+        }
+        assert!(!revisioned.contains("ImportModuleDemand"));
+        assert!(!revisioned.contains("compiler.import-module-frontier"));
         assert_eq!(
             revisioned
                 .matches("RUE-1026 DELETION GATE: this selected-revision compatibility")
@@ -8366,21 +8466,10 @@ mod tests {
         let unstable = include_str!("unstable.rs");
         assert_eq!(
             unstable
-                .matches("Phase-2 full-plan compatibility adapter. RUE-1024/RUE-1026")
+                .matches("Full-plan host compatibility adapter. RUE-1026")
                 .count(),
             1
         );
-        for transitional_authority in [
-            "import_plans: TypedQueryStore<ImportPlanQuery>",
-            "import_closures: TypedQueryStore<ImportClosureQuery>",
-            "import_plan_inputs: crate::query_graph::TypedLeafStore<ImportPlanQueryKey>",
-            "import_closure_inputs: crate::query_graph::TypedLeafStore<ImportClosureQueryKey>",
-        ] {
-            assert!(
-                production.contains(transitional_authority),
-                "deletion gate inventory drifted: {transitional_authority}"
-            );
-        }
     }
 
     #[test]
@@ -10103,14 +10192,82 @@ mod tests {
         session.canonical_rir().unwrap();
         let ids = session.update(&reassigned);
         assert!(ids.downstream_invalidated());
-        assert_eq!(ids.work().modules_reparsed, 2);
+        assert_eq!(ids.work().modules_reparsed, 0);
+        assert_eq!(ids.work().modules_rebound, 2);
         ids.into_result().unwrap();
         session.canonical_rir().unwrap();
         let rename = session.update(&renamed);
         assert!(rename.downstream_invalidated());
         assert_eq!(rename.invalidation().added.len(), 1);
         assert_eq!(rename.invalidation().removed.len(), 1);
-        assert_eq!(rename.work().modules_rebound, 1);
+        // ParseModule is keyed by stable logical module identity. A logical
+        // rename is a removed leaf plus a new demanded leaf, so its syntax is
+        // recomputed even when the source bytes happen to match.
+        assert_eq!(rename.work().modules_reparsed, 1);
+    }
+
+    #[test]
+    fn source_table_reorder_reprojects_parse_record_without_recomputing_modules() {
+        let first = snapshot(
+            &[
+                (1, "/a.rue", "a.rue", "fn a() -> i32 { 1 }"),
+                (2, "/b.rue", "b.rue", "fn b() -> i32 { 2 }"),
+            ],
+            1,
+        );
+        let reordered = snapshot(
+            &[
+                (2, "/b.rue", "b.rue", "fn b() -> i32 { 2 }"),
+                (1, "/a.rue", "a.rue", "fn a() -> i32 { 1 }"),
+            ],
+            1,
+        );
+        assert_eq!(first.source_revision(), reordered.source_revision());
+        assert_eq!(first.metadata(), reordered.metadata());
+
+        let mut session = CompilerSession::new();
+        let initial_update = session.update(&first);
+        let initial_diagnostics = initial_update.diagnostics().clone();
+        initial_update.into_result().unwrap();
+        let initial_program = session.published.as_ref().unwrap().clone();
+        let initial_merge = session.merge().unwrap();
+        let initial_rir = session.rir().unwrap();
+
+        let update = session.update(&reordered);
+        assert_eq!(update.work().modules_reparsed, 0);
+        assert_eq!(update.work().modules_reused, 2);
+        assert!(!update.downstream_invalidated());
+        update.result().as_ref().unwrap();
+        let current_program = session.published.as_ref().unwrap();
+        assert!(Arc::ptr_eq(&initial_program, current_program));
+        assert!(!Arc::ptr_eq(&initial_diagnostics, update.diagnostics()));
+        assert_eq!(
+            update
+                .diagnostics()
+                .source()
+                .files()
+                .map(|source| source.file_id)
+                .collect::<Vec<_>>(),
+            [FileId::new(2), FileId::new(1)]
+        );
+        assert_eq!(
+            current_program
+                .modules()
+                .iter()
+                .map(|module| (module.module_id().as_str(), module.file_id()))
+                .collect::<Vec<_>>(),
+            [("a.rue", FileId::new(1)), ("b.rue", FileId::new(2))]
+        );
+        assert!(Arc::ptr_eq(&initial_merge, &session.merge().unwrap()));
+        let current_rir = session.canonical_rir().unwrap();
+        assert!(Arc::ptr_eq(initial_rir.owner(), &current_rir));
+        assert!(initial_rir.owner().structurally_eq(&current_rir));
+        assert!(
+            current_rir
+                .rir()
+                .iter()
+                .all(|(_, instruction)| { matches!(instruction.span.file_id.index(), 1 | 2) })
+        );
     }
 
     #[test]
