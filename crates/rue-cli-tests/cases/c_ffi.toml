@@ -94,32 +94,118 @@ compile_fail = true
 error_contains = ["foreign function", "checked"]
 
 [[case]]
-name = "extern_unsupported_signature_type_rejected"
-description = "A P1-unsupported type (i32) in an extern signature gets a clear not-yet diagnostic."
+name = "extern_narrow_scalar_signature_accepted"
+description = "The full integer scalar set + bool are now accepted in extern signatures (P2, RUE-1056)."
 files = [{ path = "main.rue", source = """
 extern "C" {
-    fn f(x: i32) -> i32;
+    fn a(x: i8) -> i8;
+    fn b(x: u8) -> u8;
+    fn c(x: i16) -> i16;
+    fn d(x: u16) -> u16;
+    fn e(x: i32) -> i32;
+    fn f(x: u32) -> u32;
+    fn g(x: bool) -> bool;
+    fn h(x: i64, y: ptr const u8) -> u64;
 }
 
 fn main() -> i32 { 0 }
 """ }]
 args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
-compile_fail = true
-error_contains = ["i32", "not yet supported", "ADR-0064"]
+exit_code = 0
+
+# --- P2 narrow-scalar round-trips, execution-verified (both backends) --------
+# The archive's echo/normalizer members return their argument in the low bits of
+# the result register with the bits above 32 deliberately dirtied, so only a
+# caller that applies the target-C narrow-integer extension reads the value back
+# correctly. Target-pinned like cli.abi_conformance; the native host executes.
 
 [[case]]
-name = "extern_unsupported_bool_return_rejected"
-description = "`bool` is not in the P1 extern type set (narrow scalar boundary is a later phase)."
+name = "x86_64_linux_extern_scalar_roundtrips"
+description = "Narrow-scalar C round-trips (i32 sign, u16/u32 echo, _Bool normalize) on x86-64."
 files = [{ path = "main.rue", source = """
 extern "C" {
-    fn ready() -> bool;
+    fn ffi_i32_echo(x: i32) -> i32;
+    fn ffi_u16_echo(x: u16) -> u16;
+    fn ffi_u32_echo(x: u32) -> u32;
+    fn ffi_bool_norm(x: i32) -> bool;
 }
 
-fn main() -> i32 { 0 }
+fn main() -> i32 {
+    @dbg(checked { ffi_i32_echo(-7) });
+    @dbg(checked { ffi_u16_echo(40000) });
+    @dbg(checked { ffi_u32_echo(4000000000) });
+    @dbg(checked { ffi_bool_norm(0) });
+    @dbg(checked { ffi_bool_norm(5) });
+    0
+}
 """ }]
-args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
-compile_fail = true
-error_contains = ["bool", "not yet supported"]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "x86-64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = "-7\n40000\n4000000000\nfalse\ntrue\n"
+exit_code = 0
+
+[[case]]
+name = "aarch64_linux_extern_scalar_roundtrips"
+description = "Narrow-scalar C round-trips (i32 sign, u16/u32 echo, _Bool normalize) on AArch64."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn ffi_i32_echo(x: i32) -> i32;
+    fn ffi_u16_echo(x: u16) -> u16;
+    fn ffi_u32_echo(x: u32) -> u32;
+    fn ffi_bool_norm(x: i32) -> bool;
+}
+
+fn main() -> i32 {
+    @dbg(checked { ffi_i32_echo(-7) });
+    @dbg(checked { ffi_u16_echo(40000) });
+    @dbg(checked { ffi_u32_echo(4000000000) });
+    @dbg(checked { ffi_bool_norm(0) });
+    @dbg(checked { ffi_bool_norm(5) });
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "aarch64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = "-7\n40000\n4000000000\nfalse\ntrue\n"
+exit_code = 0
+
+# --- std.c aliases now pass through the widened scalar set (P2) ---------------
+# c_int (i32), c_short (i16), c_ushort (u16), c_bool (bool) are transparent
+# aliases; once the scalar set widened they are usable directly in an extern
+# signature and round-trip through the same archive members.
+
+[[case]]
+name = "x86_64_linux_extern_std_c_aliases_roundtrip"
+description = "std.c aliases (c_int/c_short/c_ushort/c_bool) pass through an extern signature and round-trip on x86-64."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+extern "C" {
+    fn ffi_i32_echo(x: std.c.c_int) -> std.c.c_int;
+    fn ffi_i16_echo(x: std.c.c_short) -> std.c.c_short;
+    fn ffi_u16_echo(x: std.c.c_ushort) -> std.c.c_ushort;
+    fn ffi_bool_norm(x: std.c.c_int) -> std.c.c_bool;
+}
+
+fn main() -> i32 {
+    @dbg(checked { ffi_i32_echo(-9) });
+    @dbg(checked { ffi_i16_echo(-300) });
+    @dbg(checked { ffi_u16_echo(50000) });
+    @dbg(checked { ffi_bool_norm(0) });
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "x86-64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = "-9\n-300\n50000\nfalse\n"
+exit_code = 0
 
 [[case]]
 name = "extern_unsupported_abi_rejected"

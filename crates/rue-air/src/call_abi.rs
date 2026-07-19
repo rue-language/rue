@@ -35,9 +35,9 @@ use crate::{FrozenTypeInternPool, Type, TypeKind};
 
 /// Which calling convention governs a boundary.
 ///
-/// The seam ADR-0052 requires so the future guaranteed target C classifier
-/// extends this authority instead of adding a peer path. Only the native
-/// convention is implemented today.
+/// The seam ADR-0052 requires so the guaranteed target-C classifier extends this
+/// authority instead of adding a peer path. ADR-0064 P2 (RUE-1056) fills the
+/// second variant with [`TargetCCallAbi`] for scalars and pointers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallAbi {
     /// The preserved native Rue convention (RUE-106): a by-value aggregate is
@@ -46,6 +46,12 @@ pub enum CallAbi {
     /// `inout` / `borrow` argument is one pointer slot; a by-value argument
     /// occupies one slot per leaf.
     Native,
+    /// The guaranteed target-C convention (ADR-0064): SysV AMD64 or AAPCS64 per
+    /// the target flavor. In P2 it governs scalar and pointer crossings at an
+    /// `extern "C"` boundary — one integer register per scalar, with the psABI's
+    /// narrow-integer extension and the 1-byte `_Bool` 0/1 contract. See
+    /// [`TargetCCallAbi`].
+    TargetC(TargetCAbiFlavor),
 }
 
 /// How a by-value return value crosses the call boundary.
@@ -337,6 +343,208 @@ pub fn is_slot_identical_layout(type_pool: &FrozenTypeInternPool, ty: Type) -> b
     }
 }
 
+// ============================================================================
+// The guaranteed target-C classifier (ADR-0064 P2, RUE-1056)
+// ============================================================================
+
+/// Which platform psABI a [`CallAbi::TargetC`] boundary follows. The flavor is
+/// selected from the compilation target's architecture: x86-64 uses SysV AMD64,
+/// AArch64 uses AAPCS64. The two agree on the scalar operations P2 needs (one
+/// integer register per scalar, narrow values extended to their canonical form),
+/// and differ only in the details documented on the flavor's methods — details
+/// P3/P4 will exercise (byval stack area, sret register + echo).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetCAbiFlavor {
+    /// System V AMD64 psABI (x86-64 Linux/BSD/macOS).
+    SysVAmd64,
+    /// The ARM 64-bit Procedure Call Standard (AArch64 Linux/macOS).
+    Aapcs64,
+}
+
+/// How a narrow scalar is extended to fill its 64-bit integer register at a
+/// target-C boundary (ADR-0064 P2). "Narrow" means any value smaller than the
+/// register: the sub-64-bit integers and `bool`. The extension is the same
+/// operation whether it is applied by the caller before an argument crosses or
+/// by the caller after a return crosses — see [`TargetCCallAbi`] for *who*
+/// applies it under each psABI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScalarAbiExtension {
+    /// The value already fills its 64-bit register (`i64`/`u64`/pointer): no
+    /// extension instruction is emitted.
+    None,
+    /// Sign-extend the low `from_bits` to 64 (a signed narrow integer:
+    /// `i8`/`i16`/`i32`).
+    Signed {
+        /// The declared width of the value, in bits (8, 16, or 32).
+        from_bits: u32,
+    },
+    /// Zero-extend the low `from_bits` to 64 (an unsigned narrow integer
+    /// `u8`/`u16`/`u32`, or `bool` as the 1-byte `_Bool` whose byte is 0/1 by
+    /// contract, `from_bits == 8`).
+    Unsigned {
+        /// The declared width of the value, in bits (8, 16, or 32).
+        from_bits: u32,
+    },
+}
+
+impl ScalarAbiExtension {
+    /// Whether this extension emits no instruction (the value is already
+    /// register-width canonical).
+    pub const fn is_noop(self) -> bool {
+        matches!(self, Self::None)
+    }
+}
+
+/// The guaranteed target-C call-ABI classifier: the [`CallAbi::TargetC`]
+/// implementation for scalars and pointers (ADR-0064 P2, RUE-1056).
+///
+/// This is the single authority both backends' `extern "C"` call lowering and
+/// the oracle consult, so no backend makes a local target-C ABI decision. In P2
+/// its scope is register-only scalar crossings; P3 extends the same authority
+/// with eightbyte aggregate classification and byval stack arguments, and P5
+/// with the SSE/FP register class once RUE-714 lands floats.
+///
+/// ## What P2 fixes, and why scalars need only the return re-extension
+///
+/// Every supported scalar (`c_passable_by_value`: the full integer set, `bool`,
+/// pointers) occupies exactly one general-purpose integer register — the first
+/// six on SysV (`rdi, rsi, rdx, rcx, r8, r9`), the first eight on AAPCS64
+/// (`x0..x7`) — and P2 stays within that budget (no stack arguments). Rue's
+/// internal scalar invariant already keeps a narrow value canonically extended
+/// in its 64-bit vreg (signed values sign-extended, unsigned/`bool`
+/// zero-extended), which is a *stronger* guarantee than either psABI asks of an
+/// argument, so **argument passing needs no boundary instruction**. The one
+/// direction that does is the **return**: a C callee leaves the bits above the
+/// result's declared width unspecified (SysV) — or extended only to 32 bits
+/// (AAPCS64) — so the caller must re-extend the returned scalar to Rue's
+/// canonical 64-bit form. [`Self::scalar_return_extension`] names that
+/// operation; applying it at the boundary is what preserves the program-wide
+/// scalar invariant across a foreign call.
+///
+/// ## Narrow-integer extension: who extends
+///
+/// - **SysV AMD64.** Arguments narrower than the register have unspecified high
+///   bits; a callee that needs a wider value re-extends. Rue over-satisfies the
+///   argument rule by always passing a canonically extended value. For a return,
+///   the bits above the type width are callee-visible garbage, so the **caller
+///   re-extends** (this classifier's return extension).
+/// - **AAPCS64.** A callee is required to extend a narrow return value to 32
+///   bits, but bits 32..63 stay unspecified, so re-extending from the value's
+///   *own* declared width is still correct (bits already agree up to 32). The
+///   caller therefore applies the same [`ScalarAbiExtension`].
+///
+/// ## `_Bool`
+///
+/// C `_Bool` is one byte whose only valid values are 0 and 1. Passing Rue's
+/// `bool` (a 0/1 word) satisfies that directly; a `_Bool` return is
+/// zero-extended from its low byte, materializing exactly 0/1
+/// ([`ScalarAbiExtension::Unsigned`] `{ from_bits: 8 }`).
+#[derive(Debug, Clone, Copy)]
+pub struct TargetCCallAbi {
+    flavor: TargetCAbiFlavor,
+}
+
+impl TargetCCallAbi {
+    /// Build the classifier for a given psABI flavor.
+    pub const fn new(flavor: TargetCAbiFlavor) -> Self {
+        Self { flavor }
+    }
+
+    /// The SysV AMD64 classifier (x86-64).
+    pub const fn sysv_amd64() -> Self {
+        Self::new(TargetCAbiFlavor::SysVAmd64)
+    }
+
+    /// The AAPCS64 classifier (AArch64).
+    pub const fn aapcs64() -> Self {
+        Self::new(TargetCAbiFlavor::Aapcs64)
+    }
+
+    /// The convention this classifier implements.
+    pub const fn abi(&self) -> CallAbi {
+        CallAbi::TargetC(self.flavor)
+    }
+
+    /// The psABI flavor this classifier follows.
+    pub const fn flavor(&self) -> TargetCAbiFlavor {
+        self.flavor
+    }
+
+    /// The number of general-purpose integer registers used for arguments
+    /// before the byval stack area (P3) begins: 6 on SysV (`rdi..r9`), 8 on
+    /// AAPCS64 (`x0..x7`). P2 stays within this budget.
+    pub const fn int_arg_register_budget(&self) -> u32 {
+        match self.flavor {
+            TargetCAbiFlavor::SysVAmd64 => 6,
+            TargetCAbiFlavor::Aapcs64 => 8,
+        }
+    }
+
+    /// Whether the callee echoes the hidden sret pointer back in the primary
+    /// return register: SysV requires `rax` to hold the sret pointer on return;
+    /// AAPCS64 uses the dedicated indirect-result register `x8`, which is **not**
+    /// echoed. Documented here for the P3/P4 aggregate/export work; scalars in P2
+    /// never take an sret path.
+    pub const fn sret_pointer_echoed_in_result_register(&self) -> bool {
+        match self.flavor {
+            TargetCAbiFlavor::SysVAmd64 => true,
+            TargetCAbiFlavor::Aapcs64 => false,
+        }
+    }
+
+    /// The stack alignment required at a `call` instruction on this psABI: 16
+    /// bytes on both SysV AMD64 and AAPCS64.
+    pub const fn call_stack_alignment(&self) -> u32 {
+        16
+    }
+
+    /// The extension a scalar *return* value needs to become Rue's canonical
+    /// 64-bit form after crossing back from C. `None` for register-width scalars
+    /// (`i64`/`u64`/pointer); a sign/zero extension for a narrow integer; a
+    /// zero-extend-from-8 for `bool`/`_Bool`.
+    ///
+    /// The argument-side extension is the same operation
+    /// ([`Self::scalar_arg_extension`]); the two are separated only so the
+    /// "who extends" documentation can differ per direction.
+    pub fn scalar_return_extension(&self, ty: Type) -> ScalarAbiExtension {
+        Self::canonical_extension(ty)
+    }
+
+    /// The extension a scalar *argument* value must already carry when it
+    /// crosses into C. Identical to [`Self::scalar_return_extension`]; Rue's
+    /// internal scalar invariant already satisfies it, so the caller emits no
+    /// extra instruction for arguments in P2.
+    pub fn scalar_arg_extension(&self, ty: Type) -> ScalarAbiExtension {
+        Self::canonical_extension(ty)
+    }
+
+    /// The canonical 64-bit extension for a supported target-C scalar. Shared by
+    /// both directions; both psABIs agree on the operation.
+    fn canonical_extension(ty: Type) -> ScalarAbiExtension {
+        match ty.kind() {
+            TypeKind::I8 => ScalarAbiExtension::Signed { from_bits: 8 },
+            TypeKind::I16 => ScalarAbiExtension::Signed { from_bits: 16 },
+            TypeKind::I32 => ScalarAbiExtension::Signed { from_bits: 32 },
+            TypeKind::U8 => ScalarAbiExtension::Unsigned { from_bits: 8 },
+            TypeKind::U16 => ScalarAbiExtension::Unsigned { from_bits: 16 },
+            TypeKind::U32 => ScalarAbiExtension::Unsigned { from_bits: 32 },
+            // The 1-byte `_Bool` with the 0/1 contract: zero-extend its byte.
+            TypeKind::Bool => ScalarAbiExtension::Unsigned { from_bits: 8 },
+            // Register-width scalars and pointers already fill the register.
+            TypeKind::I64
+            | TypeKind::U64
+            | TypeKind::PtrConst(_)
+            | TypeKind::PtrMut(_)
+            | TypeKind::Error => ScalarAbiExtension::None,
+            other => panic!(
+                "TargetCCallAbi scalar classification called on non-scalar type {other:?}; \
+                 aggregates (P3) and unsupported types are gated by c_passable_by_value \
+                 before lowering"
+            ),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,6 +552,89 @@ mod tests {
     // Behavioral coverage that exercises the classifier against a real type
     // pool lives with the backend ABI/oracle suites (which own program
     // fixtures); these unit checks pin the pure classification algebra.
+
+    #[test]
+    fn target_c_scalar_return_extension_table() {
+        let sysv = TargetCCallAbi::sysv_amd64();
+        assert_eq!(
+            sysv.scalar_return_extension(Type::I8),
+            ScalarAbiExtension::Signed { from_bits: 8 }
+        );
+        assert_eq!(
+            sysv.scalar_return_extension(Type::U8),
+            ScalarAbiExtension::Unsigned { from_bits: 8 }
+        );
+        assert_eq!(
+            sysv.scalar_return_extension(Type::I16),
+            ScalarAbiExtension::Signed { from_bits: 16 }
+        );
+        assert_eq!(
+            sysv.scalar_return_extension(Type::U16),
+            ScalarAbiExtension::Unsigned { from_bits: 16 }
+        );
+        assert_eq!(
+            sysv.scalar_return_extension(Type::I32),
+            ScalarAbiExtension::Signed { from_bits: 32 }
+        );
+        assert_eq!(
+            sysv.scalar_return_extension(Type::U32),
+            ScalarAbiExtension::Unsigned { from_bits: 32 }
+        );
+        // The 1-byte `_Bool` 0/1 contract: zero-extend from its byte.
+        assert_eq!(
+            sysv.scalar_return_extension(Type::BOOL),
+            ScalarAbiExtension::Unsigned { from_bits: 8 }
+        );
+        // Register-width scalars need no extension.
+        assert!(sysv.scalar_return_extension(Type::I64).is_noop());
+        assert!(sysv.scalar_return_extension(Type::U64).is_noop());
+    }
+
+    #[test]
+    fn both_flavors_agree_on_the_scalar_extension_operation() {
+        // The narrow-integer extension is the same operation on both psABIs; the
+        // flavors differ only in documented "who extends" / sret-echo details.
+        let sysv = TargetCCallAbi::sysv_amd64();
+        let aapcs = TargetCCallAbi::aapcs64();
+        for ty in [
+            Type::I8,
+            Type::U8,
+            Type::I16,
+            Type::U16,
+            Type::I32,
+            Type::U32,
+            Type::I64,
+            Type::U64,
+            Type::BOOL,
+        ] {
+            assert_eq!(
+                sysv.scalar_return_extension(ty),
+                aapcs.scalar_return_extension(ty),
+                "flavors must agree on the extension for {ty:?}"
+            );
+            assert_eq!(
+                sysv.scalar_arg_extension(ty),
+                sysv.scalar_return_extension(ty),
+                "arg and return extension are the same operation for {ty:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn flavor_specific_register_and_sret_echo_facts() {
+        let sysv = TargetCCallAbi::sysv_amd64();
+        let aapcs = TargetCCallAbi::aapcs64();
+        assert_eq!(sysv.int_arg_register_budget(), 6);
+        assert_eq!(aapcs.int_arg_register_budget(), 8);
+        // SysV echoes the sret pointer in rax; AAPCS64's x8 is not echoed.
+        assert!(sysv.sret_pointer_echoed_in_result_register());
+        assert!(!aapcs.sret_pointer_echoed_in_result_register());
+        // 16-byte call alignment on both.
+        assert_eq!(sysv.call_stack_alignment(), 16);
+        assert_eq!(aapcs.call_stack_alignment(), 16);
+        assert_eq!(sysv.abi(), CallAbi::TargetC(TargetCAbiFlavor::SysVAmd64));
+        assert_eq!(aapcs.abi(), CallAbi::TargetC(TargetCAbiFlavor::Aapcs64));
+    }
 
     #[test]
     fn return_class_slot_count_and_sret_predicate_agree() {

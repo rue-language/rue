@@ -1218,11 +1218,11 @@ impl<'a> Sema<'a> {
     ///
     /// ## Diagnostic layering
     ///
-    /// P1 restricts the by-value type set to `i64`/`u64`/pointers — the types
-    /// whose native and target-C representations coincide in registers — and
-    /// P2/P3 widen it. Amendment 1 adds the marker/array rules *on top*, so the
-    /// gate is already in place when the type set widens. The order below picks
-    /// the most specific, forward-looking diagnostic:
+    /// P2 (RUE-1056) widens the by-value scalar set to every integer width plus
+    /// `bool` and pointers via the `c_passable_by_value` predicate; aggregates
+    /// stay phase-gated until P3. Amendment 1 adds the marker/array rules *on
+    /// top*, so the gate is already in place. The order below picks the most
+    /// specific, forward-looking diagnostic:
     ///
     /// 1. A **fixed array** as a direct parameter/return is the array-decay
     ///    rejection (`ExternArrayByValue`) — C has no by-value array parameter;

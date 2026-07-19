@@ -902,7 +902,56 @@ impl<'a> CfgLower<'a> {
                 imm: 0,
             });
         }
+        // Target-C boundary (ADR-0064 P2): re-extend a foreign scalar return to
+        // Rue's canonical 64-bit form. A C callee leaves the bits above the
+        // return's declared width unspecified, so the caller extends per the
+        // shared classifier's rule.
+        if let Some(ext) = plan.foreign_return_extension {
+            self.emit_c_return_extension(primary, ext);
+        }
         crate::value_plan::MaterializedValue { primary, slots }
+    }
+
+    /// Extend a foreign scalar return (in `vreg`) to its canonical 64-bit form
+    /// per the target-C classifier (ADR-0064 P2). The narrow value occupies the
+    /// low bits of `x0` with unspecified high bits; this restores the sign/zero
+    /// extension Rue's scalar invariant relies on.
+    fn emit_c_return_extension(&mut self, vreg: VReg, ext: rue_air::ScalarAbiExtension) {
+        use rue_air::ScalarAbiExtension;
+        let dst = Operand::Virtual(vreg);
+        let src = Operand::Virtual(vreg);
+        match ext {
+            ScalarAbiExtension::None => {}
+            ScalarAbiExtension::Signed { from_bits: 8 } => {
+                self.mir.push(Aarch64Inst::Sxtb { dst, src })
+            }
+            ScalarAbiExtension::Signed { from_bits: 16 } => {
+                self.mir.push(Aarch64Inst::Sxth { dst, src })
+            }
+            ScalarAbiExtension::Signed { from_bits: 32 } => {
+                self.mir.push(Aarch64Inst::Sxtw { dst, src })
+            }
+            ScalarAbiExtension::Unsigned { from_bits: 8 } => {
+                self.mir.push(Aarch64Inst::Uxtb { dst, src })
+            }
+            ScalarAbiExtension::Unsigned { from_bits: 16 } => {
+                self.mir.push(Aarch64Inst::Uxth { dst, src })
+            }
+            ScalarAbiExtension::Unsigned { from_bits: 32 } => {
+                // AAPCS64 has no single `uxtw` instruction; a 64-bit left/right
+                // logical-shift pair zero-extends the low 32 bits.
+                self.mir.push(Aarch64Inst::LslImm { dst, src, imm: 32 });
+                self.mir.push(Aarch64Inst::Lsr64Imm {
+                    dst,
+                    src: dst,
+                    imm: 32,
+                });
+            }
+            ScalarAbiExtension::Signed { from_bits }
+            | ScalarAbiExtension::Unsigned { from_bits } => {
+                panic!("unexpected target-C scalar extension width {from_bits}")
+            }
+        }
     }
 
     fn lower_residual_value(
@@ -2887,6 +2936,12 @@ impl crate::value_plan::ValueLowerAdapter for CfgLower<'_> {
     }
     fn resolve_named_symbol(&self, symbol: &str) -> String {
         self.symbols.resolve(symbol)
+    }
+    fn is_foreign_symbol(&self, machine_symbol: &str) -> bool {
+        self.symbols.is_foreign(machine_symbol)
+    }
+    fn target_c_flavor(&self) -> rue_air::TargetCAbiFlavor {
+        rue_air::TargetCAbiFlavor::Aapcs64
     }
     fn call_arg_register_budget(&self) -> usize {
         ARG_REGS.len()

@@ -68,8 +68,8 @@ pub enum FfiRejectReason {
     /// A type with no C representation at all (unit, never, module, comptime,
     /// slice-shaped, …).
     UnsupportedType,
-    /// A type that is not in the register-only by-value set the current phase
-    /// (P1.5) implements — the [`c_passable_by_value`] seam P2/P3 widen.
+    /// A type that is not in the by-value set the current phase (P2) implements
+    /// — the [`c_passable_by_value`] seam P3 widens to aggregates.
     NotRegisterPassable,
 }
 
@@ -96,7 +96,7 @@ impl FfiRejectReason {
             FfiRejectReason::UnsupportedType => "this type has no C representation in v0",
             FfiRejectReason::NotRegisterPassable => {
                 "this type is not yet passable by value across a C boundary (only \
-                 `i64`, `u64`, and pointers are, until a later FFI phase)"
+                 integer and pointer scalars are; aggregates await a later FFI phase)"
             }
         }
     }
@@ -302,14 +302,32 @@ fn check_c_ffi_safe<P: FfiTypePool>(
 
 /// Predicate 3: can `ty` cross a C boundary *by value* in the current phase?
 ///
-/// This is the classifier seam. P1.5 delegates to the P1 register-only
-/// restriction — `i64`, `u64`, and raw pointers, the types whose native and
-/// target-C representations coincide in registers. P2 (eightbyte classification,
-/// register packing, `_Bool`/narrow-int extension) and P3 (aggregates, byval
-/// stack args) widen this without touching the other two predicates.
+/// This is the classifier seam, kept in lock-step with the
+/// [`TargetCCallAbi`](crate::call_abi::TargetCCallAbi) scalar classifier that
+/// lowers each crossing. P2 (RUE-1056) widens it from the P1 register-only set
+/// (`i64`/`u64`/pointers) to the **full integer scalar set** — every signed and
+/// unsigned integer width (`i8`/`u8`/`i16`/`u16`/`i32`/`u32`/`i64`/`u64`),
+/// `bool` as the 1-byte `_Bool` with the 0/1 contract, and raw pointers. These
+/// are exactly the scalars the target-C classifier assigns to a single integer
+/// register with a defined narrow-integer extension at the boundary
+/// ([`ScalarAbiExtension`](crate::call_abi::ScalarAbiExtension)).
+///
+/// Aggregates (eightbyte classification, register packing, byval stack args)
+/// stay rejected until P3; floating-point scalars are unreachable until RUE-714
+/// adds the type (P5). Neither widening touches the other two predicates.
 pub fn c_passable_by_value<P: FfiTypePool>(_pool: &P, ty: Type) -> Result<(), FfiPredicateFailure> {
     match ty.kind() {
-        TypeKind::I64 | TypeKind::U64 | TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => Ok(()),
+        TypeKind::I8
+        | TypeKind::U8
+        | TypeKind::I16
+        | TypeKind::U16
+        | TypeKind::I32
+        | TypeKind::U32
+        | TypeKind::I64
+        | TypeKind::U64
+        | TypeKind::Bool
+        | TypeKind::PtrConst(_)
+        | TypeKind::PtrMut(_) => Ok(()),
         _ => Err(FfiPredicateFailure::new(
             FfiPredicate::CPassableByValue,
             &[],
@@ -407,12 +425,36 @@ mod tests {
             assert!(has_c_layout(&pool, ty), "{ty:?} should have C layout");
             assert!(c_ffi_safe(&pool, ty).is_ok(), "{ty:?} should be FFI-safe");
         }
-        // Only the register-set is passable by value in this phase.
-        assert!(c_passable_by_value(&pool, Type::I64).is_ok());
-        assert!(c_passable_by_value(&pool, Type::U64).is_ok());
-        assert!(c_passable_by_value(&pool, ptr()).is_ok());
-        // Narrow scalars are not yet passable by value (the P2/P3 seam).
-        let fail = c_passable_by_value(&pool, Type::I32).unwrap_err();
+        // P2 (RUE-1056) widens by-value passing to the full integer scalar set
+        // plus `bool` and pointers.
+        for ty in [
+            Type::I8,
+            Type::U8,
+            Type::I16,
+            Type::U16,
+            Type::I32,
+            Type::U32,
+            Type::I64,
+            Type::U64,
+            Type::BOOL,
+            ptr(),
+        ] {
+            assert!(
+                c_passable_by_value(&pool, ty).is_ok(),
+                "{ty:?} should be passable by value in P2"
+            );
+        }
+        // Aggregates are still not passable by value (the P3 seam).
+        let mut agg_pool = MockPool::default();
+        let agg = agg_pool.add_struct(
+            9,
+            MockStruct {
+                repr_c: true,
+                fields: vec![field("x", Type::I64)],
+                ..Default::default()
+            },
+        );
+        let fail = c_passable_by_value(&agg_pool, agg).unwrap_err();
         assert_eq!(fail.predicate, FfiPredicate::CPassableByValue);
         assert_eq!(fail.reason, FfiRejectReason::NotRegisterPassable);
     }
