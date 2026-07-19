@@ -659,6 +659,33 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::Allocate),
         &[],
     ),
+    // ADR-0052 phase 5.12 (RUE-1037): the heterogeneous-enum tag-dispatch heap
+    // round-trips reach memory through `@alloc`, outside the oracle model (same
+    // gap as the enum/struct heap cases above).
+    Entry::new(
+        "cli.aggregate_layout",
+        "compact_heterogeneous_enum_heap_overwrite_no_residue",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
+    Entry::new(
+        "cli.aggregate_layout",
+        "compact_enum_overlapping_union_roundtrip",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
+    Entry::new(
+        "cli.aggregate_layout_std_sweep",
+        "overlapping_union_enum_roundtrips_via_dispatch",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
+    Entry::new(
+        "cli.aggregate_layout_std_sweep",
+        "std_net_result_sockaddr_networkerror_mirror_under_gate",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
     // RUE-1014: the real-std json/priority-queue cases under the gate reach memory
     // through the std allocators (`@alloc_bytes` in StrBuf, `@int_to_ptr` in
     // ArrayBuf.new()), outside the oracle model.

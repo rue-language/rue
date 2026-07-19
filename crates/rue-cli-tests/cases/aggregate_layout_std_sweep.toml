@@ -332,25 +332,94 @@ fn main() -> i32 {
 stdout = "1\n10\n2\n20\n3\n30\n5\n50\n"
 exit_code = 0
 
-# Refusal sentinel: an enum whose per-variant payloads genuinely overlap (no
-# single variant-independent image) must still fail LOUDLY, never miscompile. If
-# a future change lifts this, the sentinel flips to a hard failure and forces a
-# deliberate update. `A(u16, u16)` versus `B(u32)`: leaf 0 merges to a 4-byte
-# slot at the payload start, but `A`'s leaf 1 sits at payload+2, overlapping it.
+# RUE-1037: an enum whose per-variant payloads overlap at narrow widths
+# (`A(u16, u16)` at payload+0/+2 versus `B(u32)` at payload+0) now marshals
+# through a per-variant tag dispatch — each variant's own narrow leaves are
+# stored/loaded, and the full-extent zero on a store leaves no residue. Both
+# variants round-trip through the heap.
 [[case]]
-name = "overlapping_union_enum_still_refuses"
-description = "An enum whose per-variant payloads overlap has no variant-independent image and is still refused under the gate, not miscompiled (RUE-1014 boundary)."
+name = "overlapping_union_enum_roundtrips_via_dispatch"
+description = "An enum with overlapping narrow payload positions (u16,u16 vs u32) round-trips through a heap pointer via per-variant tag dispatch (RUE-1037)."
+differential_opt = true
 args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Ov { A(u16, u16), B(u32) }
 fn make(v: bool) -> Ov { if v { Ov.A(1, 2) } else { Ov.B(3) } }
 fn main() -> i32 {
-    match make(true) {
-        Ov.A(a, b) => { let s: i32 = @intCast(a) + @intCast(b); @dbg(s); },
-        Ov.B(c) => { let s: i32 = @intCast(c); @dbg(s); }
+    let r = checked {
+        let p: ptr mut Ov = @alloc(1);
+        @ptr_write(p, make(true));
+        let a: Ov = @ptr_read(p);
+        @ptr_write(p, make(false));
+        let b: Ov = @ptr_read(p);
+        @free(p, 1);
+        let av: i32 = match a { Ov.A(x, y) => @intCast(x) + @intCast(y), Ov.B(c) => @intCast(c) };
+        let bv: i32 = match b { Ov.A(x, y) => @intCast(x) + @intCast(y), Ov.B(c) => @intCast(c) };
+        av * 10 + bv
     };
+    @dbg(r);
     0
 }
 """ }]
-compile_fail = true
-error_contains = ["aggregate_layout", "not yet implemented"]
+stdout = "33\n"
+exit_code = 0
+
+# RUE-1037 SUCCESS GATE: a faithful mirror of std.net's Result(SockAddr,
+# NetworkError) return surface (TcpListener.local_addr) — the exact heterogeneous
+# shape that blocked the compact-layout default. Ok(SockAddr{ IpAddr enum, u16 })
+# and Err(NetworkError enum with an Other(i64) payload) have DISAGREEING payload
+# layouts, so the enum is marshalled by per-variant tag dispatch. Exercised as an
+# sret return, a by-value argument, a heap @ptr_write/@ptr_read round-trip, and a
+# nested-match on both variants. 8208 (Ok) + 111 (Err) + 8208 (heap Ok) = 16527.
+[[case]]
+name = "std_net_result_sockaddr_networkerror_mirror_under_gate"
+description = "A faithful mirror of std.net Result(SockAddr, NetworkError) — the heterogeneous enum blocking the compact default — round-trips by value, by argument, and through the heap under the gate via per-variant tag dispatch (RUE-1037)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct Ipv4Addr { a: u8, b: u8, c: u8, d: u8 }
+enum IpAddr { V4(Ipv4Addr) }
+struct SockAddr { ip: IpAddr, port: u16 }
+enum NetworkError {
+    Unsupported, PermissionDenied, AddressInUse, AddressNotAvailable,
+    ConnectionRefused, ConnectionReset, ConnectionAborted, NotConnected,
+    TimedOut, Interrupted, WouldBlock, InvalidInput, Other(i64),
+}
+enum NetResult { Ok(SockAddr), Err(NetworkError) }
+fn local_addr_ok() -> NetResult {
+    NetResult.Ok(SockAddr { ip: IpAddr.V4(Ipv4Addr { a: 127, b: 0, c: 0, d: 1 }), port: 8080 })
+}
+fn local_addr_err() -> NetResult { NetResult.Err(NetworkError.Other(111)) }
+fn octet_sum(ip: IpAddr) -> i64 {
+    match ip { IpAddr.V4(v4) => @intCast(v4.a) + @intCast(v4.b) + @intCast(v4.c) + @intCast(v4.d), }
+}
+fn err_code(e: NetworkError) -> i64 {
+    match e {
+        NetworkError.ConnectionRefused => 0 - 1,
+        NetworkError.Other(code) => code,
+        _ => 0 - 2,
+    }
+}
+fn classify(r: NetResult) -> i64 {
+    match r {
+        NetResult.Ok(sa) => octet_sum(sa.ip) + @intCast(sa.port),
+        NetResult.Err(e) => err_code(e),
+    }
+}
+fn main() -> i32 {
+    let s1 = classify(local_addr_ok());
+    let s2 = classify(local_addr_err());
+    let s3 = checked {
+        let p: ptr mut NetResult = @alloc(1);
+        @ptr_write(p, local_addr_ok());
+        let back: NetResult = @ptr_read(p);
+        @free(p, 1);
+        classify(back)
+    };
+    let total: i32 = @intCast(s1 + s2 + s3);
+    @dbg(total);
+    0
+}
+""" }]
+stdout = "16527\n"
+exit_code = 0
