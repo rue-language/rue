@@ -14,6 +14,10 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("canonical_merge", include_str!("canonical_merge.rs")),
     ("canonical_semantic", include_str!("canonical_semantic.rs")),
     (
+        "declaration_candidate",
+        include_str!("declaration_candidate.rs"),
+    ),
+    (
         "definition_snapshot",
         include_str!("definition_snapshot.rs"),
     ),
@@ -1503,6 +1507,157 @@ fn revisioned_parse_family_has_no_peer_legacy_authority() {
     assert!(session.contains(".source_revision(&source, snapshot)"));
     assert!(session.contains("revisioned.select_parse(&attempt)"));
     assert!(runtime.contains("parse: RevisionedFamily<super::session::ParseQuery>"));
+}
+
+#[test]
+fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority() {
+    let before_tests = |source: &'static str| {
+        let marker = "\n#[cfg(test)]\nmod ";
+        source
+            .rmatch_indices(marker)
+            .find_map(|(index, _)| {
+                let declaration = source[index + marker.len()..].lines().next().unwrap();
+                declaration.ends_with('{').then_some(&source[..index])
+            })
+            .unwrap_or(source)
+    };
+    let production = PRODUCTION_MODULES
+        .iter()
+        .map(|(name, source)| (*name, before_tests(source)))
+        .collect::<Vec<_>>();
+    let module = |wanted: &str| {
+        production
+            .iter()
+            .find_map(|(name, source)| (*name == wanted).then_some(*source))
+            .unwrap()
+    };
+    let session = module("session");
+    let canonical = before_tests(include_str!("canonical_semantic.rs"));
+    let parsed = module("parsed_modules");
+    let runtime = module("revisioned_query_database");
+
+    for (name, source) in &production {
+        for retired in [
+            ".predeclare_declaration_shells()",
+            ".bind_declarations()",
+            ".analyze_all()",
+            ".definitions().declarations()",
+            ".candidate.fact()",
+            "legacy_declaration_shell",
+            "fallback_declaration_shell",
+            "declaration_shell_cache",
+            "warm_declaration_shell",
+            "eager_declaration_shell",
+        ] {
+            assert!(
+                !source.contains(retired),
+                "compiler production module {name} bypassed keyed shell authority through {retired}"
+            );
+        }
+        if !matches!(*name, "parsed_modules" | "revisioned_query_database") {
+            for evaluator_only in [
+                ".evaluate_declaration_shell(",
+                ".declaration_capabilities()",
+                "project_semantic_shell(",
+            ] {
+                assert!(
+                    !source.contains(evaluator_only),
+                    "raw declaration evaluator/importer escaped into {name}: {evaluator_only}"
+                );
+            }
+        }
+    }
+    assert!(canonical.contains("predeclare_imported_declaration_shells"));
+    assert!(!canonical.contains("fn analyze_canonical_program("));
+    assert_eq!(runtime.matches(".evaluate_declaration_shell(").count(), 1);
+    assert_eq!(parsed.matches("fn evaluate_declaration_shell(").count(), 1);
+    assert!(!runtime.contains("Vec::remove"));
+
+    let occurrence = runtime
+        .split("struct DeclarationOccurrenceIndex {")
+        .nth(1)
+        .and_then(|tail| tail.split("enum DeclarationOccurrenceIndexValue").next())
+        .unwrap();
+    for forbidden in ["DeclarationShellFact", "CompileErrors", "Span", "FileId"] {
+        assert!(
+            !occurrence.contains(forbidden),
+            "occurrence terminal regained shell/parser payload: {forbidden}"
+        );
+    }
+    let terminal_algebra = runtime
+        .split("enum DeclarationOccurrenceIndexValue")
+        .nth(1)
+        .and_then(|tail| tail.split("struct DeclarationShellQueryKey").next())
+        .unwrap();
+    assert!(!terminal_algebra.contains("CompileErrors"));
+    let shell_terminal = runtime
+        .split("enum DeclarationShellQueryValue")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("pub(crate) enum DeclarationShellBatchFailure")
+                .next()
+        })
+        .unwrap();
+    for forbidden in [
+        "CompileErrors",
+        "Span",
+        "FileId",
+        "InstRef",
+        "Rir",
+        "SemanticDefinitionToken",
+        "SemanticModuleToken",
+    ] {
+        assert!(
+            !shell_terminal.contains(forbidden),
+            "shell terminal regained positioned/live semantic payload: {forbidden}"
+        );
+    }
+    let failure_algebra = module("declaration_candidate")
+        .split("pub(crate) enum DeclarationOccurrenceFailure")
+        .nth(1)
+        .and_then(|tail| tail.split("impl DeclarationCandidateKey").next())
+        .unwrap();
+    for forbidden in [
+        "CompileErrors",
+        "Span",
+        "FileId",
+        "InstRef",
+        "Rir",
+        "SemanticDefinitionToken",
+        "SemanticModuleToken",
+    ] {
+        assert!(
+            !failure_algebra.contains(forbidden),
+            "declaration failure algebra regained position/live identity: {forbidden}"
+        );
+    }
+    assert_eq!(
+        canonical
+            .matches("predeclare_imported_declaration_shells")
+            .count(),
+        2,
+        "only canonical preparation and durable fallback may import query-owned shells"
+    );
+    for (name, source) in &production {
+        if *name == "canonical_semantic" {
+            continue;
+        }
+        let production_source = if *name == "bound_definitions" {
+            source
+                .split(
+                    "\n#[cfg(test)]\npub(crate) fn compare_canonical_durable_declaration_install",
+                )
+                .next()
+                .unwrap()
+        } else {
+            source
+        };
+        assert!(
+            !production_source.contains("predeclare_imported_declaration_shells"),
+            "compiler production module {name} gained a peer shell importer"
+        );
+    }
+    assert!(!session.contains("DeclarationShellFact"));
 }
 
 #[test]

@@ -16,11 +16,10 @@ use crate::{
     ErrorKind, ModuleResolutionInputs, ParseInvalidationSummary, ParsedModulesWork,
     SemanticInputDescriptor, SourceRevision, SourceSnapshot, StableDefinitionKey,
     StableDefinitionKind, StableDefinitionNamespace, StableOptLevel, StablePreviewFeatures,
-    bound_definitions::bind_canonical_definitions_with_work,
     canonical_lower::project_module_rirs_with_work,
     canonical_merge::merge_parsed_modules_reusing_indexes,
     canonical_semantic::{
-        analyze_prepared_canonical_program_reusing_declarations,
+        CanonicalSemanticFailure, analyze_prepared_canonical_program_reusing_declarations,
         analyze_prepared_canonical_program_with_durable_export, prepare_canonical_declarations,
     },
     parsed_modules::{ParsedProgram, classify_invalidation},
@@ -1703,7 +1702,9 @@ pub struct CompilerSession {
     #[cfg(test)]
     cancel_merge_before_commit: bool,
     #[cfg(test)]
-    cancel_semantic_after_first_mutation: bool,
+    cancel_semantic_after_dependency: bool,
+    #[cfg(test)]
+    cancel_semantic_before_publication: bool,
     published: Option<Arc<ParsedProgram>>,
     published_snapshot: Option<SourceSnapshot>,
     batch_diagnostic_order: Option<Vec<crate::ModuleId>>,
@@ -1716,6 +1717,18 @@ pub struct CompilerSession {
     last_successful_body_cache: Option<DurableOrdinaryBodyCache>,
     #[cfg(test)]
     last_successful_cfg_cache: Option<Arc<[crate::queries::DurableCfgArtifact]>>,
+}
+
+#[derive(Debug)]
+enum SemanticRequestControl {
+    Compile(CompileErrors),
+    Abort(rue_query::QueryAbort),
+}
+
+impl From<CompileErrors> for SemanticRequestControl {
+    fn from(errors: CompileErrors) -> Self {
+        Self::Compile(errors)
+    }
 }
 
 /// The single typed frontend query database owned by `CompilerSession`.
@@ -1874,6 +1887,12 @@ pub(crate) struct ParseQueryRecord {
     diagnostics: Arc<FrontendDiagnosticSnapshot>,
     work: ParsedModulesWork,
     invalidation: ParseInvalidationSummary,
+}
+
+impl ParseQueryRecord {
+    pub(crate) fn runtime_revision(&self) -> rue_query::Revision {
+        self.runtime_revision
+    }
 }
 
 #[derive(Debug)]
@@ -2552,9 +2571,9 @@ impl ExactSourceInput {
 
 fn compute_stable_definitions(
     merged: &CanonicalMergedProgram,
-    rir: &CanonicalRirOutput,
     options: &CompileOptions,
     imports: &CanonicalImportGraph,
+    semantic: &CanonicalSemanticOutput,
 ) -> DefinitionComputation {
     let provenance = DefinitionQueryKey {
         input: SemanticInputDescriptor::new(
@@ -2564,26 +2583,18 @@ fn compute_stable_definitions(
         ),
         imports: imports.clone(),
     };
-    let query = bind_canonical_definitions_with_work(
-        merged,
-        rir,
-        options.preview_features.clone(),
-        options.target,
-        imports,
-    );
-    let (result, binding, manifest, issuance) = match query {
-        Ok((definitions, binding)) => {
-            let manifest = definitions.manifest_work();
-            let issuance = definitions.work();
-            (Ok(Arc::new(definitions)), binding, manifest, issuance)
-        }
-        Err(errors) => (
-            Err(errors),
-            DeclarationBindingWork::default(),
-            SemanticBindingManifestWork::default(),
-            BoundDefinitionWork::default(),
-        ),
-    };
+    // A semantic terminal normally belongs to this exact source descriptor.
+    // Re-stamp the projection at this query boundary so typed fault injection
+    // remains a detectable stale value rather than publishing an internally
+    // inconsistent definition terminal.
+    let definitions = semantic
+        .body_owner_issuer()
+        .projected_for_source_revision(merged.ast().source_revision());
+    let work = semantic.work();
+    let binding = work.binding;
+    let manifest = work.manifest;
+    let issuance = definitions.work();
+    let result = Ok(Arc::new(definitions));
     DefinitionComputation {
         output: DefinitionQueryOutput { provenance, result },
         binding,
@@ -4756,6 +4767,22 @@ impl CompilerSession {
         &mut self,
         options: &CompileOptions,
     ) -> Result<Arc<CanonicalSemanticOutput>, CompileErrors> {
+        match self
+            .canonical_semantic_with_cancellation(options, rue_query::CancellationToken::new())
+        {
+            Ok(output) => Ok(output),
+            Err(SemanticRequestControl::Compile(errors)) => Err(errors),
+            Err(SemanticRequestControl::Abort(abort)) => {
+                panic!("uncanceled semantic request aborted: {abort:?}")
+            }
+        }
+    }
+
+    fn canonical_semantic_with_cancellation(
+        &mut self,
+        options: &CompileOptions,
+        cancellation: rue_query::CancellationToken,
+    ) -> Result<Arc<CanonicalSemanticOutput>, SemanticRequestControl> {
         let mut guard = self.metrics.begin::<SemanticQuery>();
         let attempt_id = guard.id;
         let mut execution = QueryAttemptExecution::Rejected;
@@ -4764,6 +4791,7 @@ impl CompilerSession {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.semantic_attempt(
                 options,
+                &cancellation,
                 attempt_id,
                 &mut guard,
                 &mut execution,
@@ -4775,27 +4803,27 @@ impl CompilerSession {
             Ok(result) => result,
             Err(payload) => self.resume_canceled_query(&mut guard, payload),
         };
+        if matches!(result, Err(SemanticRequestControl::Abort(_))) {
+            guard.request_cancel();
+        }
         let structural = attempt_record
             .clone()
             .map(Box::new)
             .map(QueryStructuralWork::Semantic)
             .unwrap_or(QueryStructuralWork::None);
         if guard.cancel_requested {
-            let key = self
-                .queries
-                .semantic
-                .computing_key()
-                .expect("canceled semantic query retains its computing key");
-            let attempt = self.queries.semantic.record_aborted_attempt(
-                &mut self.queries.graph,
-                key,
-                attempt_id.0,
-                AbortedQueryReason::Canceled,
-                structural.clone(),
-                guard.dependencies.clone(),
-                guard.diagnostics.clone(),
-            );
-            guard.bind(attempt);
+            if let Some(key) = self.queries.semantic.computing_key() {
+                let attempt = self.queries.semantic.record_aborted_attempt(
+                    &mut self.queries.graph,
+                    key,
+                    attempt_id.0,
+                    AbortedQueryReason::Canceled,
+                    structural.clone(),
+                    guard.dependencies.clone(),
+                    guard.diagnostics.clone(),
+                );
+                guard.bind(attempt);
+            }
         }
         guard.finish(execution, origin, &result, structural);
         self.metrics.publish_semantic(self.queries.semantic.len());
@@ -4806,16 +4834,27 @@ impl CompilerSession {
     fn semantic_attempt(
         &mut self,
         options: &CompileOptions,
+        cancellation: &rue_query::CancellationToken,
         attempt_id: AttemptId,
         guard: &mut QueryComputationGuard,
         execution: &mut QueryAttemptExecution,
         origin: &mut Option<AttemptId>,
         attempt_record: &mut Option<SemanticQueryRecord>,
-    ) -> Result<Arc<CanonicalSemanticOutput>, CompileErrors> {
+    ) -> Result<Arc<CanonicalSemanticOutput>, SemanticRequestControl> {
+        if cancellation.is_canceled() {
+            return Err(SemanticRequestControl::Abort(
+                rue_query::QueryAbort::Canceled,
+            ));
+        }
         self.require_successful_import_diagnostics()?;
         let imports = self.accepted_semantic_import_graph()?;
         self.queries.publish_import_graph(imports.clone());
         self.queries.publish_request_inputs(options);
+        if cancellation.is_canceled() {
+            return Err(SemanticRequestControl::Abort(
+                rue_query::QueryAbort::Canceled,
+            ));
+        }
         let source = self
             .published_snapshot
             .clone()
@@ -4856,7 +4895,12 @@ impl CompilerSession {
                 self.durable_declaration_cache = entry.durable_declaration_cache.clone();
             }
             self.reuse_diagnostics(entry.diagnostics.clone());
-            return result;
+            if cancellation.is_canceled() {
+                return Err(SemanticRequestControl::Abort(
+                    rue_query::QueryAbort::Canceled,
+                ));
+            }
+            return result.map_err(SemanticRequestControl::Compile);
         }
         let durable_baseline = self.queries.semantic.last_good_record().cloned();
         let previous_body_cache = durable_baseline
@@ -4885,7 +4929,13 @@ impl CompilerSession {
             .clone()
             .unwrap_or(previous_cfg_cache);
 
-        let rir = match self.canonical_rir() {
+        let rir_result = self.canonical_rir();
+        if cancellation.is_canceled() {
+            return Err(SemanticRequestControl::Abort(
+                rue_query::QueryAbort::Canceled,
+            ));
+        }
+        let rir = match rir_result {
             Ok(rir) => rir,
             Err(errors) => {
                 let record = SemanticQueryRecord {
@@ -4936,7 +4986,7 @@ impl CompilerSession {
                 self.diagnostics.select(handle.as_view());
                 guard.bind(handle.as_view());
                 self.refresh_retention_metrics();
-                return Err(errors);
+                return Err(SemanticRequestControl::Compile(errors));
             }
         };
         let merged = self
@@ -4945,22 +4995,71 @@ impl CompilerSession {
             .selected_record(&self.queries.graph)
             .and_then(|entry| entry.merged.clone())
             .expect("successful RIR terminal retains its exact merge input");
+        #[cfg(test)]
+        if std::mem::take(&mut self.cancel_semantic_after_dependency) {
+            cancellation.cancel();
+        }
+        if cancellation.is_canceled() {
+            return Err(SemanticRequestControl::Abort(
+                rue_query::QueryAbort::Canceled,
+            ));
+        }
         *execution = QueryAttemptExecution::Computed;
         guard.started();
-        let mut prepared = prepare_canonical_declarations(&merged, &rir, options, &imports);
+        let runtime_revision = self
+            .queries
+            .revisioned
+            .current_parse_revision()
+            .expect("semantic preparation observes the selected parse revision");
+        let query_shells = self.queries.revisioned.projected_declaration_shells(
+            runtime_revision,
+            merged.ast(),
+            cancellation.clone(),
+        );
+        let (mut prepared, query_shells) = match query_shells {
+            Ok(query_shells) => (
+                prepare_canonical_declarations(&merged, &rir, options, &imports, &query_shells),
+                Some(query_shells),
+            ),
+            Err(crate::revisioned_query_database::DeclarationShellBatchFailure::Query(abort)) => {
+                return Err(SemanticRequestControl::Abort(abort));
+            }
+            Err(crate::revisioned_query_database::DeclarationShellBatchFailure::Stable(
+                failure,
+            )) => (
+                Err(CanonicalSemanticFailure::declaration(
+                    declaration_shell_failure_diagnostics(merged.ast(), &failure),
+                    CanonicalSemanticWork::default(),
+                )),
+                None,
+            ),
+        };
         let current_fingerprints: Result<Vec<StableDefinitionInputFingerprint>, CompileErrors> =
             match &prepared {
-                Ok(definitions) => definitions
-                    .definitions()
-                    .definitions()
-                    .iter()
-                    .map(|record| {
-                        stable_definition_input_fingerprint(
+                Ok(definitions) => (|| {
+                    let mut fingerprints = definitions
+                        .definitions()
+                        .definitions()
+                        .iter()
+                        .map(|record| {
+                            stable_definition_input_fingerprint(
+                                merged.definitions().source_snapshot(),
+                                record,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    if let (Some(cache), Some(query_shells)) =
+                        (&previous_declaration_cache, query_shells.as_deref())
+                    {
+                        fingerprints.extend(stable_const_candidate_input_fingerprints(
                             merged.definitions().source_snapshot(),
-                            record,
-                        )
-                    })
-                    .collect(),
+                            merged.ast(),
+                            query_shells,
+                            &cache.fingerprints,
+                        )?);
+                    }
+                    Ok(fingerprints)
+                })(),
                 Err(failure) => Err(failure.errors.clone()),
             };
         let mut durable_body_work = crate::DurableBodyWork::default();
@@ -5137,6 +5236,15 @@ impl CompilerSession {
                 })
             }
         });
+        #[cfg(test)]
+        if std::mem::take(&mut self.cancel_semantic_before_publication) {
+            cancellation.cancel();
+        }
+        if cancellation.is_canceled() {
+            return Err(SemanticRequestControl::Abort(
+                rue_query::QueryAbort::Canceled,
+            ));
+        }
         let failure = analysis.as_ref().err().map(|failure| failure.failure);
         let semantic_work = analysis
             .as_ref()
@@ -5156,15 +5264,6 @@ impl CompilerSession {
         let mut published_cfg_cache = None;
         if let Ok(output) = &result {
             published_cfg_cache = Some(output.durable_cfgs().clone());
-            #[cfg(test)]
-            if std::mem::take(&mut self.cancel_semantic_after_first_mutation) {
-                guard.request_cancel();
-                return Err(CompileErrors::from(CompileError::without_span(
-                    ErrorKind::InvalidCompilerInput(
-                        "semantic query canceled after first publication mutation".into(),
-                    ),
-                )));
-            }
             debug_assert_eq!(output.input(), &input);
             debug_assert_eq!(semantic_work.binding.bind_invocations, 1);
             debug_assert_eq!(semantic_work.manifest.build_invocations, 1);
@@ -5176,17 +5275,11 @@ impl CompilerSession {
             // and merely advance its exact provenance below.
             if reuse.ordinary_declaration_resolutions_skipped == 0 {
                 if let Some((definitions, semantics)) = cold_durable {
-                    if let Ok(fingerprints) = definitions
-                        .definitions()
-                        .iter()
-                        .map(|record| {
-                            stable_definition_input_fingerprint(
-                                merged.definitions().source_snapshot(),
-                                record,
-                            )
-                        })
-                        .collect::<Result<Vec<_>, _>>()
-                    {
+                    if let Ok(fingerprints) = stable_definition_input_fingerprints(
+                        merged.definitions().source_snapshot(),
+                        definitions.definitions(),
+                        query_shells.as_deref().unwrap_or(&[]),
+                    ) {
                         published_declaration_cache = Some(DurableDeclarationCache {
                             schema_version: crate::DURABLE_SEMANTIC_SCHEMA_VERSION,
                             root: merged.ast().root().clone(),
@@ -5303,15 +5396,14 @@ impl CompilerSession {
         self.diagnostics.select(handle.as_view());
         guard.bind(handle.as_view());
         self.refresh_retention_metrics();
-        result
+        result.map_err(SemanticRequestControl::Compile)
     }
 
     /// Issue stable definition IDs on demand for the current semantic input.
     ///
-    /// Ordinary analysis consumes `BoundSema` without building its optional
-    /// manifest. Retaining that mutable, RIR-borrowing value would duplicate
-    /// substantial semantic state, so this query performs one explicit second
-    /// declaration bind after reusing a successful ordinary body analysis.
+    /// The authoritative semantic terminal already owns the final,
+    /// post-classification definition universe. This projection never starts a
+    /// peer declaration bind or reconstructs stable IDs from shells.
     pub(crate) fn stable_definitions(
         &mut self,
         options: &CompileOptions,
@@ -5428,91 +5520,66 @@ impl CompilerSession {
             .and_then(|entry| entry.merged.clone())
             .expect("successful RIR terminal retains its exact merge input");
 
-        // Body validity is independent of opt/linker. Reuse any ordinary
-        // semantic result with the same binding inputs before doing ID work.
         let semantic_binding_key = SemanticBindingLookupKey {
             input: input.clone(),
             imports: imports.clone(),
         };
-        let semantic_terminal = self
+        let cached_semantic = self
             .queries
             .semantic
             .get_secondary_with_handle(&semantic_binding_key)
-            .map(|(entry, handle)| (handle, entry.result.clone()));
-        if let Some((handle, validation)) = semantic_terminal
-            && handle.is_valid(&mut self.queries.graph)
-        {
-            if let Err(errors) = validation {
-                let record = DefinitionQueryRecord {
-                    input: input.clone(),
-                    binding: DeclarationBindingWork::default(),
-                    manifest: SemanticBindingManifestWork::default(),
-                    issuance: BoundDefinitionWork::default(),
-                    failed: true,
-                };
-                guard.accrue(QueryStructuralWork::Definition(Box::new(record.clone())));
-                *attempt_record = Some(record);
-                let terminal = self
-                    .queries
-                    .definitions
-                    .publish_selected_attempt(
-                        &mut self.queries.graph,
-                        DefinitionCacheEntry {
-                            key: key.clone(),
-                            output: DefinitionQueryOutput {
-                                provenance: key,
-                                result: Err(errors.clone()),
+            .and_then(|(entry, handle)| {
+                handle
+                    .is_valid(&mut self.queries.graph)
+                    .then(|| entry.result.clone())
+            })
+            .and_then(Result::ok);
+        let semantic = match cached_semantic {
+            Some(semantic) => semantic,
+            None => match self.canonical_semantic(options) {
+                Ok(semantic) => semantic,
+                Err(errors) => {
+                    let dependency = self
+                        .queries
+                        .semantic
+                        .selected_handle(&self.queries.graph)
+                        .expect("definition rejection observes a deterministic semantic failure")
+                        .observed();
+                    let record = DefinitionQueryRecord {
+                        input: input.clone(),
+                        binding: DeclarationBindingWork::default(),
+                        manifest: SemanticBindingManifestWork::default(),
+                        issuance: BoundDefinitionWork::default(),
+                        failed: true,
+                    };
+                    guard.accrue(QueryStructuralWork::Definition(Box::new(record.clone())));
+                    *attempt_record = Some(record);
+                    let handle = self
+                        .queries
+                        .definitions
+                        .publish_selected_attempt(
+                            &mut self.queries.graph,
+                            DefinitionCacheEntry {
+                                key: key.clone(),
+                                output: DefinitionQueryOutput {
+                                    provenance: key,
+                                    result: Err(errors.clone()),
+                                },
                             },
-                        },
-                        [handle.observed()],
-                        guard.structural(),
-                        *execution,
-                    )
-                    .unwrap_or_else(query_control_error);
-                guard.bind(terminal.as_view());
-                self.refresh_retention_metrics();
-                return Err(errors);
-            }
-        } else if let Err(errors) = self.canonical_semantic(options) {
-            let dependency = self
-                .queries
-                .semantic
-                .selected_handle(&self.queries.graph)
-                .expect("definition rejection observes a deterministic semantic failure")
-                .observed();
-            let record = DefinitionQueryRecord {
-                input: input.clone(),
-                binding: DeclarationBindingWork::default(),
-                manifest: SemanticBindingManifestWork::default(),
-                issuance: BoundDefinitionWork::default(),
-                failed: true,
-            };
-            guard.accrue(QueryStructuralWork::Definition(Box::new(record.clone())));
-            *attempt_record = Some(record);
-            let handle = self
-                .queries
-                .definitions
-                .publish_selected_attempt(
-                    &mut self.queries.graph,
-                    DefinitionCacheEntry {
-                        key: key.clone(),
-                        output: DefinitionQueryOutput {
-                            provenance: key,
-                            result: Err(errors.clone()),
-                        },
-                    },
-                    [dependency],
-                    guard.structural(),
-                    *execution,
-                )
-                .unwrap_or_else(query_control_error);
-            guard.bind(handle.as_view());
-            self.refresh_retention_metrics();
-            return Err(errors);
-        }
+                            [dependency],
+                            guard.structural(),
+                            *execution,
+                        )
+                        .unwrap_or_else(query_control_error);
+                    guard.bind(handle.as_view());
+                    self.refresh_retention_metrics();
+                    return Err(errors);
+                }
+            },
+        };
         *execution = QueryAttemptExecution::Computed;
         guard.started();
-        let computation = compute_stable_definitions(&merged, &rir, options, &imports);
+        let computation = compute_stable_definitions(&merged, options, &imports, &semantic);
         let result = computation.output.result.clone();
         let record = DefinitionQueryRecord {
             input,
@@ -6898,9 +6965,49 @@ const DEFINITION_DECLARATION_DOMAIN_V2: &[u8] = b"rue.definition.declaration\0v2
 const DEFINITION_SIGNATURE_DOMAIN_V2: &[u8] = b"rue.definition.signature\0v2\0sha256\0";
 const DEFINITION_BODY_DOMAIN_V2: &[u8] = b"rue.definition.body-or-initializer\0v2\0sha256\0";
 
+fn declaration_shell_failure_diagnostics(
+    program: &crate::canonical_merge::CanonicalMergedAst,
+    failure: &crate::declaration_candidate::DeclarationShellFailure,
+) -> CompileErrors {
+    use crate::declaration_candidate::DeclarationShellFailure as F;
+    let key = match failure {
+        F::Absent(key) | F::Ambiguous(key) | F::ParserCapabilityMismatch(key) => Some(key),
+        F::OccurrencesUnavailable(_) => None,
+    };
+    let span = key.and_then(|key| {
+        program
+            .modules()
+            .iter()
+            .find(|module| module.module_id() == &key.module)
+            .and_then(|module| module.definitions().declaration_locator(key))
+            .map(|locator| locator.declaration_span)
+    });
+    let kind = ErrorKind::InternalError(format!(
+        "query-owned declaration shell failed stable validation: {failure:?}"
+    ));
+    CompileErrors::from(match span {
+        Some(span) => CompileError::new(kind, span),
+        None => CompileError::without_span(kind),
+    })
+}
+
 pub(crate) fn stable_definition_input_fingerprint(
     snapshot: &SourceSnapshot,
     record: &crate::BoundDefinitionRecord,
+) -> Result<StableDefinitionInputFingerprint, CompileErrors> {
+    stable_definition_input_fingerprint_parts(
+        snapshot,
+        record.stable_key(),
+        record.visibility(),
+        record.input_partition(),
+    )
+}
+
+fn stable_definition_input_fingerprint_parts(
+    snapshot: &SourceSnapshot,
+    key: &StableDefinitionKey,
+    visibility: Option<rue_parser::ast::Visibility>,
+    partition: crate::bound_definitions::BoundDefinitionInputPartition,
 ) -> Result<StableDefinitionInputFingerprint, CompileErrors> {
     let source_fragment = |span: Span| -> Result<&str, CompileErrors> {
         let source = snapshot.source_text(span.file_id).ok_or_else(|| {
@@ -6922,13 +7029,13 @@ pub(crate) fn stable_definition_input_fingerprint(
     };
 
     let mut declaration = FramedDefinitionHasher::new(DEFINITION_DECLARATION_DOMAIN_V2);
-    hash_stable_definition_key(&mut declaration, record.stable_key());
-    declaration.frame(&[match record.visibility() {
+    hash_stable_definition_key(&mut declaration, key);
+    declaration.frame(&[match visibility {
         None => 0,
         Some(rue_parser::ast::Visibility::Private) => 1,
         Some(rue_parser::ast::Visibility::Public) => 2,
     }]);
-    let (signature_spans, payload_span, precision) = match record.input_partition() {
+    let (signature_spans, payload_span, precision) = match partition {
         crate::bound_definitions::BoundDefinitionInputPartition::Body { signature, body } => (
             vec![signature],
             Some(body),
@@ -6961,12 +7068,131 @@ pub(crate) fn stable_definition_input_fingerprint(
         .transpose()?;
     Ok(StableDefinitionInputFingerprint {
         schema_version: DEFINITION_FINGERPRINT_SCHEMA_V2,
-        key: record.stable_key().clone(),
+        key: key.clone(),
         declaration: declaration.finish(),
         signature: signature.finish(),
         body_or_initializer,
         precision,
     })
+}
+
+fn stable_const_candidate_input_fingerprints(
+    snapshot: &SourceSnapshot,
+    merged: &crate::canonical_merge::CanonicalMergedAst,
+    shells: &[rue_air::SemanticDeclarationShell],
+    previous: &[StableDefinitionInputFingerprint],
+) -> Result<Vec<StableDefinitionInputFingerprint>, CompileErrors> {
+    type Input<'a> = (&'a rue_air::SemanticDeclarationShell, Span);
+    let mut shell_by_name = BTreeMap::new();
+    for shell in shells.iter().filter(|shell| {
+        shell.identity.kind == StableDefinitionKind::ValueConst && shell.identity.owner.is_none()
+    }) {
+        let key = (
+            shell.identity.module_path.clone(),
+            shell.identity.name.clone(),
+        );
+        if shell_by_name.insert(key.clone(), Some(shell)).is_some() {
+            shell_by_name.insert(key, None);
+        }
+    }
+
+    let mut inputs = BTreeMap::<(crate::ModuleId, Arc<str>), Option<Input<'_>>>::new();
+    for module in merged.modules() {
+        for item in &module.ast().items {
+            let rue_parser::ast::Item::Const(value) = item else {
+                continue;
+            };
+            let name: Arc<str> = Arc::from(module.resolve_raw_symbol(value.name.name));
+            let Some(Some(shell)) =
+                shell_by_name.get(&(Arc::from(module.module_id().as_str()), name.clone()))
+            else {
+                continue;
+            };
+            let key = (module.module_id().clone(), name);
+            let input =
+                (value.span == shell.declaration_span).then_some((*shell, value.init.span()));
+            if inputs.insert(key.clone(), input).is_some() {
+                inputs.insert(key, None);
+            }
+        }
+    }
+
+    let mut fingerprints = Vec::new();
+    for previous in previous
+        .iter()
+        .filter(|fingerprint| fingerprint.key.kind() == StableDefinitionKind::ModuleBinding)
+    {
+        let lookup = (
+            previous.key.module().clone(),
+            Arc::from(previous.key.name()),
+        );
+        let Some(Some((shell, initializer))) = inputs.get(&lookup).copied() else {
+            continue;
+        };
+        let declaration = shell.declaration_span;
+        if initializer.file_id != declaration.file_id
+            || initializer.start < declaration.start
+            || initializer.end > declaration.end
+            || initializer.start >= initializer.end
+        {
+            return Err(invalid_dependency_manifest(
+                "const-candidate fingerprint has an invalid initializer locator",
+            ));
+        }
+        let signature = Span::with_file(declaration.file_id, declaration.start, initializer.start);
+        let mut fingerprint = stable_definition_input_fingerprint_parts(
+            snapshot,
+            &previous.key,
+            Some(if shell.is_public {
+                rue_parser::ast::Visibility::Public
+            } else {
+                rue_parser::ast::Visibility::Private
+            }),
+            crate::bound_definitions::BoundDefinitionInputPartition::Initializer {
+                signature,
+                initializer,
+            },
+        )?;
+        fingerprint.signature = StableDefinitionFingerprint(shell.signature_fingerprint);
+        fingerprints.push(fingerprint);
+    }
+    Ok(fingerprints)
+}
+
+fn stable_definition_input_fingerprints(
+    snapshot: &SourceSnapshot,
+    records: &[crate::BoundDefinitionRecord],
+    shells: &[rue_air::SemanticDeclarationShell],
+) -> Result<Vec<StableDefinitionInputFingerprint>, CompileErrors> {
+    let const_signatures = shells
+        .iter()
+        .filter(|shell| shell.identity.kind == StableDefinitionKind::ValueConst)
+        .map(|shell| {
+            (
+                (
+                    shell.identity.module_path.clone(),
+                    shell.identity.name.clone(),
+                ),
+                shell.signature_fingerprint,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    records
+        .iter()
+        .map(|record| {
+            let mut fingerprint = stable_definition_input_fingerprint(snapshot, record)?;
+            if matches!(
+                record.stable_key().kind(),
+                StableDefinitionKind::ValueConst | StableDefinitionKind::ModuleBinding
+            ) && let Some(signature) = const_signatures.get(&(
+                Arc::from(record.stable_key().module().as_str()),
+                Arc::from(record.stable_key().name()),
+            )) {
+                fingerprint.signature = StableDefinitionFingerprint(*signature);
+            }
+            Ok(fingerprint)
+        })
+        .collect()
 }
 
 fn declaration_surfaces_match(
@@ -8427,9 +8653,13 @@ impl CompilerSession {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::Arc};
+    use std::{
+        collections::{HashMap, HashSet},
+        sync::Arc,
+    };
 
     use rue_span::FileId;
+    use sha2::{Digest, Sha256};
 
     use super::*;
     use crate::{
@@ -8672,6 +8902,41 @@ mod tests {
     }
 
     #[test]
+    fn semantic_cancellation_is_control_flow_before_work_and_after_dependencies() {
+        let source = base();
+        let options = CompileOptions::default();
+
+        let mut prework = CompilerSession::new();
+        prework.update(&source).into_result().unwrap();
+        let canceled = rue_query::CancellationToken::new();
+        canceled.cancel();
+        assert!(matches!(
+            prework.canonical_semantic_with_cancellation(&options, canceled),
+            Err(SemanticRequestControl::Abort(
+                rue_query::QueryAbort::Canceled
+            ))
+        ));
+        assert_eq!(prework.queries.semantic.len(), 0);
+        prework.canonical_semantic(&options).unwrap();
+
+        let mut after_dependency = CompilerSession::new();
+        after_dependency.update(&source).into_result().unwrap();
+        after_dependency.cancel_semantic_after_dependency = true;
+        assert!(matches!(
+            after_dependency.canonical_semantic_with_cancellation(
+                &options,
+                rue_query::CancellationToken::new(),
+            ),
+            Err(SemanticRequestControl::Abort(
+                rue_query::QueryAbort::Canceled
+            ))
+        ));
+        assert_eq!(after_dependency.queries.semantic.len(), 0);
+        assert_eq!(after_dependency.queries.rir.len(), 1);
+        after_dependency.canonical_semantic(&options).unwrap();
+    }
+
+    #[test]
     fn semantic_cancellation_preserves_completed_dependencies_and_last_good() {
         let mut session = CompilerSession::new();
         session.update(&base()).into_result().unwrap();
@@ -8704,8 +8969,14 @@ mod tests {
 
         let mut variant = default.clone();
         variant.opt_level = OptLevel::O1;
-        session.cancel_semantic_after_first_mutation = true;
-        assert!(session.canonical_semantic(&variant).is_err());
+        session.cancel_semantic_before_publication = true;
+        let cancellation = rue_query::CancellationToken::new();
+        assert!(matches!(
+            session.canonical_semantic_with_cancellation(&variant, cancellation),
+            Err(SemanticRequestControl::Abort(
+                rue_query::QueryAbort::Canceled
+            ))
+        ));
         assert_eq!(session.queries.semantic.len(), 1);
         assert!(!Arc::ptr_eq(
             session.latest_diagnostics().unwrap(),
@@ -8758,10 +9029,7 @@ mod tests {
             canceled.attempt.outcome(),
             crate::typed_query_store::AttemptOutcomeKind::Aborted(AbortedQueryReason::Canceled)
         );
-        assert!(matches!(
-            canceled.attempt.work(),
-            QueryStructuralWork::Semantic(_)
-        ));
+        assert!(matches!(canceled.attempt.work(), QueryStructuralWork::None));
 
         let recomputed = session.canonical_semantic(&variant).unwrap();
         assert_eq!(session.queries.semantic.len(), 2);
@@ -8807,6 +9075,164 @@ mod tests {
             session.adopt_test_import_graph(graph);
         }
         work
+    }
+
+    fn legacy_air_declaration_shell_oracle(
+        merged: &CanonicalMergedProgram,
+        rir: &CanonicalRirOutput,
+        preview_features: PreviewFeatures,
+    ) -> Result<Vec<rue_air::SemanticDeclarationShell>, CompileErrors> {
+        let shells = rue_air::Sema::new_synthetic(
+            rir.rir(),
+            rir.semantic_symbols().interner(),
+            preview_features,
+        )
+        .predeclare_declaration_shells()?
+        .declaration_shells()
+        .cloned()
+        .collect::<Vec<_>>();
+        let modules = merged
+            .ast()
+            .modules()
+            .iter()
+            .map(|module| (module.file_id(), module.module_id().clone()))
+            .collect::<HashMap<_, _>>();
+        let mut shells = shells
+            .into_iter()
+            .map(|mut shell| {
+                let module = &modules[&shell.declaration_span.file_id];
+                shell.identity.module_path = Arc::from(module.as_str());
+                shell.identity.is_trusted_standard_library = module.is_trusted_standard_library();
+                shell.signature_fingerprint = [0; 32];
+                shell
+            })
+            .collect::<Vec<_>>();
+        sort_shell_comparison_algebra(&mut shells);
+        Ok(shells)
+    }
+
+    fn sort_shell_comparison_algebra(shells: &mut [rue_air::SemanticDeclarationShell]) {
+        let mut spans_by_file = HashMap::<FileId, Vec<rue_span::Span>>::new();
+        for shell in shells.iter() {
+            spans_by_file
+                .entry(shell.declaration_span.file_id)
+                .or_default()
+                .push(shell.declaration_span);
+        }
+        let mut normalized_source_order = HashMap::new();
+        for spans in spans_by_file.values_mut() {
+            spans.sort_by_key(|span| (span.start, span.end));
+            spans.dedup();
+            for (source_order, span) in spans.iter().enumerate() {
+                normalized_source_order.insert(*span, source_order as u32);
+            }
+        }
+        for shell in shells.iter_mut() {
+            shell.source_order = normalized_source_order[&shell.declaration_span];
+        }
+        shells.sort_by(|left, right| {
+            let category = |shell: &rue_air::SemanticDeclarationShell| {
+                u8::from(shell.identity.namespace != rue_air::StableDefinitionNamespace::Type)
+            };
+            category(left)
+                .cmp(&category(right))
+                .then(left.identity.cmp(&right.identity))
+        });
+    }
+
+    fn independently_expected_signature_fingerprints(
+        merged: &CanonicalMergedProgram,
+    ) -> HashMap<rue_span::Span, [u8; 32]> {
+        fn prefix(declaration: rue_span::Span, payload: rue_span::Span) -> rue_span::Span {
+            rue_span::Span::with_file(declaration.file_id, declaration.start, payload.start)
+        }
+        fn fingerprint(
+            module: &crate::parsed_modules::ParsedModule,
+            spans: &[rue_span::Span],
+        ) -> [u8; 32] {
+            let mut hasher = Sha256::new();
+            for span in spans {
+                for token in module.tokens().iter().filter(|token| {
+                    token.span.start >= span.start
+                        && token.span.end <= span.end
+                        && !matches!(token.kind, rue_lexer::TokenKind::Eof)
+                }) {
+                    let value = match token.kind {
+                        rue_lexer::TokenKind::Ident(symbol) => {
+                            format!("ident:{}", module.resolve_raw_symbol(symbol))
+                        }
+                        rue_lexer::TokenKind::String(symbol) => {
+                            format!("string:{}", module.resolve_raw_symbol(symbol))
+                        }
+                        rue_lexer::TokenKind::Int(value) => format!("int:{value}"),
+                        kind => kind.name().to_owned(),
+                    };
+                    hasher.update((value.len() as u64).to_le_bytes());
+                    hasher.update(value.as_bytes());
+                }
+                hasher.update(0_u64.to_le_bytes());
+            }
+            hasher.finalize().into()
+        }
+
+        let mut expected = HashMap::new();
+        for module in merged.ast().modules() {
+            for item in &module.ast().items {
+                match item {
+                    rue_parser::Item::Function(value) => {
+                        expected.insert(
+                            value.span,
+                            fingerprint(module, &[prefix(value.span, value.body.span())]),
+                        );
+                    }
+                    rue_parser::Item::Struct(value) => {
+                        let mut spans = Vec::with_capacity(value.methods.len() + 1);
+                        let mut cursor = value.span.start;
+                        for method in &value.methods {
+                            let body = method.body.span();
+                            spans.push(rue_span::Span::with_file(
+                                value.span.file_id,
+                                cursor,
+                                body.start,
+                            ));
+                            cursor = body.end;
+                            expected.insert(
+                                method.span,
+                                fingerprint(module, &[prefix(method.span, body)]),
+                            );
+                        }
+                        spans.push(rue_span::Span::with_file(
+                            value.span.file_id,
+                            cursor,
+                            value.span.end,
+                        ));
+                        expected.insert(value.span, fingerprint(module, &spans));
+                    }
+                    rue_parser::Item::Enum(value) => {
+                        expected.insert(value.span, fingerprint(module, &[value.span]));
+                    }
+                    rue_parser::Item::Const(value) => {
+                        expected.insert(
+                            value.span,
+                            fingerprint(module, &[prefix(value.span, value.init.span())]),
+                        );
+                    }
+                    rue_parser::Item::DropFn(value) => {
+                        expected.insert(
+                            value.span,
+                            fingerprint(module, &[prefix(value.span, value.body.span())]),
+                        );
+                    }
+                    rue_parser::Item::Extern(value) => {
+                        for function in &value.fns {
+                            expected.insert(function.span, fingerprint(module, &[function.span]));
+                        }
+                    }
+                    rue_parser::Item::Error(_) => {}
+                }
+            }
+        }
+        expected
     }
 
     fn function_modules(count: usize, edited: Option<usize>) -> SourceSnapshot {
@@ -8963,7 +9389,12 @@ mod tests {
 
         publish_with_test_imports(&mut session, &relocated_edit);
         let reused = session.canonical_semantic(&options).unwrap();
-        assert_eq!(reused.work().binding.declaration_resolution_invocations, 0);
+        assert_eq!(
+            reused.work().binding.declaration_resolution_invocations,
+            0,
+            "{:#?}",
+            reused.work()
+        );
         assert_eq!(reused.work().binding.durable_payloads_installed, 3);
         assert_eq!(reused.work().declaration_reuse.durable_records_reused, 3);
         assert_eq!(
@@ -9025,7 +9456,12 @@ mod tests {
         );
         assert_eq!(fallback.work().binding.durable_install_invocations, 0);
         assert_eq!(fallback.work().binding.durable_payloads_installed, 0);
-        assert_eq!(fallback.work().declaration_reuse.fallbacks, 1);
+        assert_eq!(
+            fallback.work().declaration_reuse.fallbacks,
+            1,
+            "{:#?}",
+            fallback.work()
+        );
         assert_eq!(fallback.work().declaration_reuse.fallback_epochs_started, 0);
 
         let mut fresh = CompilerSession::new();
@@ -10987,7 +11423,7 @@ mod tests {
     }
 
     #[test]
-    fn stable_definitions_are_lazy_reused_and_make_two_bind_boundary_explicit() {
+    fn stable_definitions_are_lazy_reused_semantic_projections() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<BoundDefinitionSet>();
 
@@ -11029,6 +11465,254 @@ mod tests {
         std::thread::spawn(move || assert!(!published.definitions().is_empty()))
             .join()
             .unwrap();
+    }
+
+    #[test]
+    fn file_const_anonymous_types_use_epoch_local_comptime_producers() {
+        for source in [
+            r#"
+const T: type = struct { value: i32 };
+fn main() -> i32 {
+    let value: T = T { value: 42 };
+    value.value
+}
+"#,
+            r#"
+const T: type = enum { A, B(i32) };
+fn main() -> i32 { 0 }
+"#,
+        ] {
+            let source = snapshot(&[(7, "/p/main.rue", "main.rue", source)], 7);
+            let mut session = CompilerSession::new();
+            session.update(&source).into_result().unwrap();
+            session
+                .canonical_semantic(&CompileOptions::default())
+                .unwrap();
+            let definitions = session
+                .stable_definitions(&CompileOptions::default())
+                .unwrap();
+            assert!(definitions.definitions().iter().any(|record| {
+                record.stable_key().kind() == StableDefinitionKind::ValueConst
+                    && record.stable_key().name() == "T"
+            }));
+        }
+    }
+
+    #[test]
+    fn query_owned_declaration_shells_match_independent_air_and_token_oracles() {
+        let source = snapshot(
+            &[(
+                7,
+                "/p/main.rue",
+                "main.rue",
+                r#"
+pub struct Box {
+    fn get(mut self, comptime T: type) -> i32 { 0 }
+    fn inspect(borrow self) -> i32 { 1 }
+    fn make() -> Box { Box {} }
+}
+enum Choice { A, B(i32) }
+const selected = 1;
+const alias = selected;
+drop fn Box(self) {}
+unchecked fn main(value: i32) -> i32 { value }
+extern "C" { fn getpid() -> i32; }
+"#,
+            )],
+            7,
+        );
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let imports = session.accepted_semantic_import_graph().unwrap();
+        let rir = session.canonical_rir().unwrap();
+        let merged = session
+            .queries
+            .rir
+            .selected_record(&session.queries.graph)
+            .and_then(|entry| entry.merged.clone())
+            .unwrap();
+        let revision = session.queries.revisioned.current_parse_revision().unwrap();
+        let query_shells = session
+            .queries
+            .revisioned
+            .projected_declaration_shells(
+                revision,
+                merged.ast(),
+                rue_query::CancellationToken::new(),
+            )
+            .unwrap();
+
+        let legacy =
+            legacy_air_declaration_shell_oracle(&merged, &rir, options.preview_features.clone())
+                .unwrap();
+        let expected_fingerprints = independently_expected_signature_fingerprints(&merged);
+        for shell in &query_shells {
+            assert_eq!(
+                shell.signature_fingerprint, expected_fingerprints[&shell.declaration_span],
+                "query fingerprint differs from independent AST/token partition"
+            );
+        }
+        let mut comparable_query_shells = query_shells.clone();
+        for shell in &mut comparable_query_shells {
+            shell.signature_fingerprint = [0; 32];
+        }
+        sort_shell_comparison_algebra(&mut comparable_query_shells);
+        assert_eq!(legacy, comparable_query_shells);
+
+        let mut foreign_locator = query_shells;
+        let first = &mut foreign_locator[0];
+        first.declaration_span.start += 1;
+        let locator_error = crate::bound_definitions::configure_canonical_sema(
+            &merged,
+            &rir,
+            options.preview_features,
+            options.target,
+            &imports,
+        )
+        .unwrap()
+        .predeclare_imported_declaration_shells(&foreign_locator)
+        .err()
+        .unwrap();
+        assert!(matches!(
+            locator_error.first().map(|error| &error.kind),
+            Some(ErrorKind::InternalError(message))
+                if message.contains("current RIR locator")
+        ));
+    }
+
+    #[test]
+    fn declaration_shell_oracles_cover_import_alias_trusted_and_multimodule_inputs() {
+        let root = FileId::new(1);
+        let standard = FileId::new(2);
+        let metadata = SourceMetadata::new_with_trusted_standard_library(
+            root,
+            HashMap::from([
+                (root, "/project/main.rue".to_owned()),
+                (standard, "/project/std/lib.rue".to_owned()),
+            ]),
+            HashMap::from([
+                (root, "main.rue".to_owned()),
+                (standard, "\0rue-std/lib.rue".to_owned()),
+            ]),
+            HashSet::from([standard]),
+        )
+        .unwrap();
+        let source = SourceSnapshot::new(
+            metadata,
+            vec![
+                (
+                    root,
+                    Arc::new(
+                        r#"
+pub const direct = @import("std/lib.rue");
+pub const alias = direct;
+fn main() -> i32 { 0 }
+"#
+                        .to_owned(),
+                    ),
+                ),
+                (
+                    standard,
+                    Arc::new("pub struct Library {} pub const value: i32 = 1;".to_owned()),
+                ),
+            ],
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        publish_with_test_imports(&mut session, &source);
+        let rir = session.canonical_rir().unwrap();
+        let merged = session
+            .queries
+            .rir
+            .selected_record(&session.queries.graph)
+            .and_then(|entry| entry.merged.clone())
+            .unwrap();
+        let revision = session.queries.revisioned.current_parse_revision().unwrap();
+        let query = session
+            .queries
+            .revisioned
+            .projected_declaration_shells(
+                revision,
+                merged.ast(),
+                rue_query::CancellationToken::new(),
+            )
+            .unwrap();
+        let legacy =
+            legacy_air_declaration_shell_oracle(&merged, &rir, options.preview_features.clone())
+                .unwrap();
+        let expected_fingerprints = independently_expected_signature_fingerprints(&merged);
+        let mut comparable = query.clone();
+        for shell in &mut comparable {
+            assert_eq!(
+                shell.signature_fingerprint,
+                expected_fingerprints[&shell.declaration_span]
+            );
+            shell.signature_fingerprint = [0; 32];
+        }
+        sort_shell_comparison_algebra(&mut comparable);
+        assert_eq!(legacy, comparable);
+        assert!(
+            query
+                .iter()
+                .any(|shell| shell.identity.is_trusted_standard_library)
+        );
+        session.canonical_semantic(&options).unwrap();
+        let definitions = session.stable_definitions(&options).unwrap();
+        for name in ["direct", "alias"] {
+            let record = definitions
+                .definitions()
+                .iter()
+                .find(|record| {
+                    record.stable_key().module().as_str() == "main.rue"
+                        && record.stable_key().name() == name
+                        && record.stable_key().kind() == StableDefinitionKind::ModuleBinding
+                })
+                .unwrap_or_else(|| panic!("missing public module-binding definition for {name}"));
+            assert_eq!(
+                record.visibility(),
+                Some(rue_parser::ast::Visibility::Public)
+            );
+        }
+    }
+
+    #[test]
+    fn query_and_retired_air_paths_reject_the_same_declaration_failures() {
+        for text in [
+            "const value: i32 = 1; const value: i32 = 2; fn main() {}",
+            "struct Value {} drop fn Value(self) {} drop fn Value(self) {} fn main() {}",
+            "drop fn Missing(self) {} fn main() {}",
+        ] {
+            let source = snapshot(&[(1, "/main.rue", "main.rue", text)], 1);
+            let parsed = crate::parsed_modules::parse_source_snapshot_modules(&source).unwrap();
+            let merged = crate::merge_parsed_modules(&parsed).unwrap();
+            let rir = crate::lower_canonical_rir(&merged).unwrap();
+            let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+            let retired = match rue_air::Sema::new_synthetic(
+                rir.rir(),
+                rir.semantic_symbols().interner(),
+                PreviewFeatures::new(),
+            )
+            .bind_declarations()
+            {
+                Err(errors) => errors,
+                Ok(_) => panic!("retired AIR path unexpectedly accepted failure fixture"),
+            };
+            let query = match crate::canonical_semantic::bind_query_owned_declarations_for_test(
+                &merged,
+                &rir,
+                PreviewFeatures::new(),
+                Target::default(),
+                &imports,
+            ) {
+                Err(errors) => errors,
+                Ok(_) => panic!("query path unexpectedly accepted failure fixture"),
+            };
+            let messages =
+                |errors: CompileErrors| errors.iter().map(ToString::to_string).collect::<Vec<_>>();
+            assert_eq!(messages(retired), messages(query));
+        }
     }
 
     #[test]

@@ -89,6 +89,17 @@ use crate::intern_pool::TypeInternPool;
 use crate::param_arena::ParamArena;
 use crate::types::{EnumId, StructId, Type};
 
+/// Epoch-local authorization for evaluating one parser-owned const candidate.
+/// The wrapper deliberately has no stable-definition export conversion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct EpochLocalConstCandidateToken(crate::SemanticDefinitionToken);
+
+#[derive(Debug, Clone)]
+pub(crate) struct EpochLocalConstCandidateEndpoint {
+    file: u32,
+    name: String,
+}
+
 /// The source declaration namespace while declaration binding is in progress.
 ///
 /// This wrapper is the only namespace state that implements `DerefMut`; after
@@ -223,6 +234,9 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     pub(crate) interner: &'a ThreadedRodeo,
     /// Request-local declaration candidates for this exact RIR arena.
     declaration_index: declaration_index::RirDeclarationIndex,
+    /// Raw RIR declaration discovery is confined to synthetic component-test
+    /// epochs. Canonical compiler epochs must import query-owned shells.
+    synthetic_declaration_discovery: bool,
     /// Function table: maps internal function name symbols to their info.
     ///
     /// The internal key is normally the source name, but functions with the
@@ -282,6 +296,9 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     >,
     pub(crate) stable_definition_endpoints:
         HashMap<crate::SemanticDefinitionToken, crate::SemanticDefinitionEndpoint>,
+    pub(crate) const_candidate_tokens: HashMap<(u32, String), EpochLocalConstCandidateToken>,
+    pub(crate) const_candidate_endpoints:
+        HashMap<EpochLocalConstCandidateToken, EpochLocalConstCandidateEndpoint>,
     pub(crate) stable_module_tokens: HashMap<FileId, crate::SemanticModuleToken>,
     pub(crate) stable_module_endpoints:
         HashMap<crate::SemanticModuleToken, crate::SemanticModuleEndpoint>,
@@ -421,6 +438,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             rir,
             interner,
             declaration_index,
+            synthetic_declaration_discovery,
             anonymous_methods,
             named_callable_methods_by_symbol,
             anonymous_callable_methods_by_symbol,
@@ -441,6 +459,8 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             reusable_specialized_bodies,
             stable_definition_tokens,
             stable_definition_endpoints,
+            const_candidate_tokens,
+            const_candidate_endpoints,
             stable_module_tokens,
             stable_module_endpoints,
             body_dependency_observer,
@@ -489,6 +509,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             rir,
             interner,
             declaration_index,
+            synthetic_declaration_discovery,
             anonymous_methods,
             named_callable_methods_by_symbol,
             anonymous_callable_methods_by_symbol,
@@ -509,6 +530,8 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             reusable_specialized_bodies,
             stable_definition_tokens,
             stable_definition_endpoints,
+            const_candidate_tokens,
+            const_candidate_endpoints,
             stable_module_tokens,
             stable_module_endpoints,
             body_dependency_observer,
@@ -921,14 +944,16 @@ impl<'a> Sema<'a> {
         interner: &'a ThreadedRodeo,
         preview_features: PreviewFeatures,
     ) -> Self {
-        Self::new_for_target(
+        let mut sema = Self::new_for_target(
             rir,
             interner,
             preview_features,
             SemaMetadata::synthetic_for_rir(rir),
             Target::host()
                 .expect("Rue cannot choose a default sema target on this unsupported host"),
-        )
+        );
+        sema.synthetic_declaration_discovery = true;
+        sema
     }
 
     /// Create a new semantic analyzer for an explicit compilation target.
@@ -951,6 +976,7 @@ impl<'a> Sema<'a> {
             rir,
             interner,
             declaration_index: declaration_index::RirDeclarationIndex::new(rir),
+            synthetic_declaration_discovery: false,
             anonymous_methods: HashMap::new(),
             named_callable_methods_by_symbol: HashMap::new(),
             anonymous_callable_methods_by_symbol: HashMap::new(),
@@ -971,6 +997,8 @@ impl<'a> Sema<'a> {
             reusable_specialized_bodies: Vec::new(),
             stable_definition_tokens: HashMap::new(),
             stable_definition_endpoints: HashMap::new(),
+            const_candidate_tokens: HashMap::new(),
+            const_candidate_endpoints: HashMap::new(),
             stable_module_tokens: HashMap::new(),
             stable_module_endpoints: HashMap::new(),
             body_dependency_observer: None,
@@ -1047,6 +1075,10 @@ impl<'a> Sema<'a> {
     /// executes both sides of the boundary and therefore preserves historical
     /// ordering and failure behavior.
     pub fn predeclare_declaration_shells(mut self) -> MultiErrorResult<DeclarationShells<'a>> {
+        assert!(
+            self.synthetic_declaration_discovery,
+            "canonical compiler epochs must import query-owned declaration shells"
+        );
         let mut binding_work =
             DeclarationBindingWork::from_inputs(self.rir.len(), self.declaration_index.work());
         // Phase 0: Inject built-in types (String, etc.) before user code.
@@ -1063,6 +1095,34 @@ impl<'a> Sema<'a> {
         // current-revision syntax metadata before resolving semantic payloads.
         // This does not evaluate constants or resolve any signature.
         let (pending_payloads, pending_nominals) = self.predeclare_callable_value_shells();
+        binding_work.callable_value_predeclaration_invocations += 1;
+        binding_work.callable_value_shells_predeclared = pending_payloads.len();
+        binding_work.indexed_declaration_records_visited =
+            pending_payloads.len() + pending_nominals.len();
+        Ok(DeclarationShells {
+            sema: self,
+            binding_work,
+            pending_payloads,
+            pending_nominals,
+        })
+    }
+
+    /// Import query-owned, position-free declaration shells and attach them to
+    /// this epoch's private RIR locators. The importer never rediscovers a
+    /// missing shell and fails closed on every mismatch.
+    pub fn predeclare_imported_declaration_shells(
+        mut self,
+        imported: &[SemanticDeclarationShell],
+    ) -> MultiErrorResult<DeclarationShells<'a>> {
+        let mut binding_work =
+            DeclarationBindingWork::from_inputs(self.rir.len(), self.declaration_index.work());
+        self.inject_builtin_types();
+        binding_work.namespace_setup_invocations += 1;
+        self.register_type_names().map_err(CompileErrors::from)?;
+        binding_work.nominal_type_predeclaration_invocations += 1;
+        let (pending_payloads, pending_nominals) = self
+            .attach_imported_declaration_shells(imported)
+            .map_err(CompileErrors::from)?;
         binding_work.callable_value_predeclaration_invocations += 1;
         binding_work.callable_value_shells_predeclared = pending_payloads.len();
         binding_work.indexed_declaration_records_visited =

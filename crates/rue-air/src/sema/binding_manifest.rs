@@ -6,7 +6,7 @@ use std::{
 };
 
 use lasso::Spur;
-use rue_error::{CompileErrors, MultiErrorResult};
+use rue_error::{CompileError, CompileErrors, CompileResult, ErrorKind, MultiErrorResult};
 use rue_rir::{InstData, InstRef, RirParamMode};
 use rue_span::{FileId, Span};
 
@@ -222,11 +222,16 @@ pub struct SemanticDeclarationShell {
     pub parameter_comptime: Arc<[bool]>,
     pub source_order: u32,
     pub has_self: bool,
+    pub receiver_mode: Option<RirParamMode>,
+    pub receiver_is_mut: bool,
     pub is_generic: bool,
     pub is_public: bool,
     pub is_unchecked: bool,
     /// Whether this is a foreign `extern "C"` declaration (ADR-0064 C FFI).
     pub is_extern: bool,
+    /// Parser/token-algebra signature identity. Current positions and payloads
+    /// never participate.
+    pub signature_fingerprint: [u8; 32],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -341,6 +346,10 @@ impl<'a> DeclarationShells<'a> {
     ) -> Result<Self, crate::SemanticStableResolutionFailure> {
         let expected_definitions = self
             .declaration_shells()
+            // Const shells are presemantic candidates, not stable definition
+            // identities. They receive endpoints only after initializer
+            // evaluation classifies ValueConst versus ModuleBinding.
+            .filter(|shell| shell.identity.kind != StableDefinitionKind::ValueConst)
             .map(|shell| {
                 (
                     shell.declaration_span.file_id.index(),
@@ -358,6 +367,7 @@ impl<'a> DeclarationShells<'a> {
             &expected_definitions,
             &expected_modules,
         )?;
+        install_const_candidate_endpoints(&mut self.sema, &self.pending_payloads)?;
         Ok(self)
     }
 
@@ -834,6 +844,74 @@ impl<'a> DeclarationShells<'a> {
     }
 }
 
+fn install_const_candidate_endpoints<D: super::DeclarationPhase>(
+    sema: &mut super::Sema<'_, D>,
+    pending: &[PendingDeclarationPayload],
+) -> Result<(), crate::SemanticStableResolutionFailure> {
+    let issuer = sema
+        .stable_definition_endpoints
+        .keys()
+        .next()
+        .map(|token| token.issuer())
+        .or_else(|| {
+            sema.stable_module_endpoints
+                .keys()
+                .next()
+                .map(|token| token.issuer())
+        })
+        .ok_or(crate::SemanticStableResolutionFailure::Missing)?;
+    let mut next_slot = sema
+        .stable_definition_endpoints
+        .keys()
+        .map(|token| token.slot())
+        .max()
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or(crate::SemanticStableResolutionFailure::Ambiguous)?;
+    let mut tokens = HashMap::new();
+    let mut endpoints = HashMap::new();
+    let mut multiplicity = HashMap::new();
+    for candidate in pending
+        .iter()
+        .filter(|candidate| matches!(candidate.source, DeclarationPayloadSource::Const { .. }))
+    {
+        *multiplicity
+            .entry((
+                candidate.shell.declaration_span.file_id.index(),
+                candidate.shell.identity.name.to_string(),
+            ))
+            .or_insert(0_u32) += 1;
+    }
+    for candidate in pending
+        .iter()
+        .filter(|candidate| matches!(candidate.source, DeclarationPayloadSource::Const { .. }))
+    {
+        let key = (
+            candidate.shell.declaration_span.file_id.index(),
+            candidate.shell.identity.name.to_string(),
+        );
+        if multiplicity.get(&key).copied() != Some(1) {
+            continue;
+        }
+        let token = super::EpochLocalConstCandidateToken(crate::SemanticDefinitionToken::new(
+            issuer, next_slot,
+        ));
+        next_slot = next_slot
+            .checked_add(1)
+            .ok_or(crate::SemanticStableResolutionFailure::Ambiguous)?;
+        let endpoint = super::EpochLocalConstCandidateEndpoint {
+            file: key.0,
+            name: key.1.clone(),
+        };
+        if tokens.insert(key, token).is_some() || endpoints.insert(token, endpoint).is_some() {
+            return Err(crate::SemanticStableResolutionFailure::Ambiguous);
+        }
+    }
+    sema.const_candidate_tokens = tokens;
+    sema.const_candidate_endpoints = endpoints;
+    Ok(())
+}
+
 impl Sema<'_> {
     fn import_export_type(
         &self,
@@ -1055,6 +1133,10 @@ fn install_stable_identity_endpoints<D: super::DeclarationPhase>(
                 crate::SemanticDefinitionToken,
                 crate::SemanticDefinitionEndpoint,
             >,
+            old_const_candidates: &HashMap<
+                super::EpochLocalConstCandidateToken,
+                super::EpochLocalConstCandidateEndpoint,
+            >,
             new_definitions: &HashMap<
                 (u32, String, Option<String>, StableDefinitionKind),
                 crate::SemanticDefinitionToken,
@@ -1067,15 +1149,26 @@ fn install_stable_identity_endpoints<D: super::DeclarationPhase>(
         > {
             key.try_map_identities(
                 &|token| {
-                    let endpoint = old_definitions
-                        .get(token)
+                    if let Some(endpoint) = old_definitions.get(token) {
+                        return new_definitions
+                            .get(&(
+                                endpoint.file,
+                                endpoint.name.to_string(),
+                                endpoint.owner.as_deref().map(str::to_owned),
+                                endpoint.kind,
+                            ))
+                            .copied()
+                            .ok_or(crate::SemanticStableResolutionFailure::Missing);
+                    }
+                    let endpoint = old_const_candidates
+                        .get(&super::EpochLocalConstCandidateToken(*token))
                         .ok_or(crate::SemanticStableResolutionFailure::ForeignIssuer)?;
                     new_definitions
                         .get(&(
                             endpoint.file,
-                            endpoint.name.to_string(),
-                            endpoint.owner.as_deref().map(str::to_owned),
-                            endpoint.kind,
+                            endpoint.name.clone(),
+                            None,
+                            StableDefinitionKind::ValueConst,
                         ))
                         .copied()
                         .ok_or(crate::SemanticStableResolutionFailure::Missing)
@@ -1093,11 +1186,13 @@ fn install_stable_identity_endpoints<D: super::DeclarationPhase>(
         }
 
         let old_definition_endpoints = sema.stable_definition_endpoints.clone();
+        let old_const_candidate_endpoints = sema.const_candidate_endpoints.clone();
         let old_module_endpoints = sema.stable_module_endpoints.clone();
         let remap = |key| {
             remap_key(
                 key,
                 &old_definition_endpoints,
+                &old_const_candidate_endpoints,
                 &definition_tokens,
                 &old_module_endpoints,
                 &module_tokens,
@@ -1138,6 +1233,8 @@ fn install_stable_identity_endpoints<D: super::DeclarationPhase>(
     }
     sema.stable_definition_tokens = definition_tokens;
     sema.stable_definition_endpoints = definition_endpoints;
+    sema.const_candidate_tokens.clear();
+    sema.const_candidate_endpoints.clear();
     sema.stable_module_tokens = module_tokens;
     sema.stable_module_endpoints = module_endpoints;
     Ok(())
@@ -1425,6 +1522,180 @@ impl<'a> BoundSema<'a> {
 }
 
 impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
+    pub(super) fn attach_imported_declaration_shells(
+        &self,
+        imported: &[SemanticDeclarationShell],
+    ) -> CompileResult<(Vec<PendingDeclarationPayload>, Vec<PendingNominalPayload>)> {
+        let mut remaining = HashMap::with_capacity(imported.len());
+        for shell in imported {
+            if remaining.insert(shell.declaration_span, shell).is_some() {
+                return Err(CompileError::new(
+                    ErrorKind::InternalError(
+                        "query-owned declaration shells have an ambiguous current locator".into(),
+                    ),
+                    shell.declaration_span,
+                ));
+            }
+        }
+        let mut pending = Vec::new();
+        let mut nominals = Vec::new();
+        for candidate in self.declaration_index.shell_declarations() {
+            let inst_ref = candidate.declaration;
+            let inst = self.rir.get(inst_ref);
+            let Some(imported_shell) = remaining.remove(&inst.span) else {
+                return Err(CompileError::new(
+                    ErrorKind::InternalError(
+                        "query-owned declaration shell has no current RIR locator".into(),
+                    ),
+                    inst.span,
+                ));
+            };
+            let mut shell = imported_shell.clone();
+            shell.source_order = candidate.source_order;
+            let expected_module = self
+                .get_symbol_path(inst.span.file_id)
+                .map(crate::path_norm::normalize_module_path)
+                .unwrap_or_else(|| format!("file{}", inst.span.file_id.index()));
+            if shell.identity.module_path.as_ref() != expected_module
+                || shell.identity.is_trusted_standard_library
+                    != self
+                        .trusted_standard_library_files
+                        .contains(&inst.span.file_id)
+            {
+                return Err(CompileError::new(
+                    ErrorKind::InternalError(
+                        "query-owned declaration shell has foreign module identity".into(),
+                    ),
+                    inst.span,
+                ));
+            }
+            let source = match &inst.data {
+                InstData::StructDecl { name, is_pub, .. }
+                | InstData::EnumDecl { name, is_pub, .. } => {
+                    let kind = if matches!(inst.data, InstData::StructDecl { .. }) {
+                        StableDefinitionKind::Struct
+                    } else {
+                        StableDefinitionKind::Enum
+                    };
+                    validate_imported_shell(
+                        self,
+                        &shell,
+                        *name,
+                        None,
+                        kind,
+                        *is_pub,
+                        &[],
+                        false,
+                        RirParamMode::Normal,
+                        false,
+                        false,
+                        false,
+                    )?;
+                    nominals.push(PendingNominalPayload {
+                        shell,
+                        declaration: inst_ref,
+                    });
+                    continue;
+                }
+                InstData::FnDecl {
+                    is_pub,
+                    is_unchecked,
+                    is_extern,
+                    name,
+                    params,
+                    body,
+                    has_self,
+                    self_mode,
+                    self_is_mut,
+                    ..
+                } if !self.declaration_index.is_anonymous_method(inst_ref) => {
+                    let owner = candidate.named_method_owner;
+                    let kind = match (owner, *has_self) {
+                        (Some(_), true) => StableDefinitionKind::Method,
+                        (Some(_), false) => StableDefinitionKind::AssociatedFunction,
+                        (None, _) => StableDefinitionKind::Function,
+                    };
+                    let params = self.rir.params(params).to_vec();
+                    validate_imported_shell(
+                        self,
+                        &shell,
+                        *name,
+                        owner,
+                        kind,
+                        *is_pub,
+                        &params,
+                        *has_self,
+                        *self_mode,
+                        *self_is_mut,
+                        *is_unchecked,
+                        *is_extern,
+                    )?;
+                    DeclarationPayloadSource::Callable { body: *body }
+                }
+                InstData::ConstDecl {
+                    is_pub, name, init, ..
+                } => {
+                    validate_imported_shell(
+                        self,
+                        &shell,
+                        *name,
+                        None,
+                        StableDefinitionKind::ValueConst,
+                        *is_pub,
+                        &[],
+                        false,
+                        RirParamMode::Normal,
+                        false,
+                        false,
+                        false,
+                    )?;
+                    DeclarationPayloadSource::Const { initializer: *init }
+                }
+                InstData::DropFnDecl { type_name, body } => {
+                    validate_imported_shell(
+                        self,
+                        &shell,
+                        *type_name,
+                        Some(*type_name),
+                        StableDefinitionKind::Destructor,
+                        false,
+                        &[],
+                        true,
+                        RirParamMode::Normal,
+                        false,
+                        false,
+                        false,
+                    )?;
+                    DeclarationPayloadSource::Destructor { body: *body }
+                }
+                _ => {
+                    return Err(CompileError::new(
+                        ErrorKind::InternalError(
+                            "query-owned shell selected an unsupported RIR declaration".into(),
+                        ),
+                        inst.span,
+                    ));
+                }
+            };
+            pending.push(PendingDeclarationPayload {
+                shell,
+                declaration: inst_ref,
+                source,
+            });
+        }
+        if let Some(unmatched) = remaining.values().next() {
+            return Err(CompileError::new(
+                ErrorKind::InternalError(
+                    "query-owned declaration shell has no indexed RIR declaration".into(),
+                ),
+                unmatched.declaration_span,
+            ));
+        }
+        pending.sort_by(|left, right| left.shell.identity.cmp(&right.shell.identity));
+        nominals.sort_by(|left, right| left.shell.identity.cmp(&right.shell.identity));
+        Ok((pending, nominals))
+    }
+
     pub(super) fn predeclare_callable_value_shells(
         &self,
     ) -> (Vec<PendingDeclarationPayload>, Vec<PendingNominalPayload>) {
@@ -1467,10 +1738,13 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                         parameter_comptime: Arc::from([]),
                         source_order,
                         has_self: false,
+                        receiver_mode: None,
+                        receiver_is_mut: false,
                         is_generic: false,
                         is_public: *is_pub,
                         is_unchecked: false,
                         is_extern: false,
+                        signature_fingerprint: [0; 32],
                     },
                     declaration: inst_ref,
                 });
@@ -1481,6 +1755,8 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                 parameter_modes,
                 parameter_comptime,
                 has_self,
+                receiver_mode,
+                receiver_is_mut,
                 is_generic,
                 is_public,
                 is_unchecked,
@@ -1495,6 +1771,8 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                     params,
                     body,
                     has_self,
+                    self_mode,
+                    self_is_mut,
                     ..
                 } if !self.declaration_index.is_anonymous_method(inst_ref) => {
                     let owner = candidate.named_method_owner;
@@ -1533,6 +1811,8 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                         modes,
                         comptime.clone(),
                         *has_self,
+                        has_self.then_some(*self_mode),
+                        *self_is_mut,
                         comptime.into_iter().any(|value| value),
                         *is_pub,
                         *is_unchecked,
@@ -1560,6 +1840,8 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                     Vec::new(),
                     Vec::new(),
                     false,
+                    None,
+                    false,
                     false,
                     *is_pub,
                     false,
@@ -1581,6 +1863,8 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                     Vec::new(),
                     Vec::new(),
                     true,
+                    Some(RirParamMode::Normal),
+                    false,
                     false,
                     false,
                     false,
@@ -1598,10 +1882,13 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                     parameter_comptime: parameter_comptime.into(),
                     source_order,
                     has_self,
+                    receiver_mode,
+                    receiver_is_mut,
                     is_generic,
                     is_public,
                     is_unchecked,
                     is_extern,
+                    signature_fingerprint: [0; 32],
                 },
                 declaration: inst_ref,
                 source,
@@ -1611,7 +1898,57 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
         nominals.sort_by(|left, right| left.shell.identity.cmp(&right.shell.identity));
         (pending, nominals)
     }
+}
 
+fn validate_imported_shell<D: super::DeclarationPhase>(
+    sema: &Sema<'_, D>,
+    shell: &SemanticDeclarationShell,
+    name: Spur,
+    owner: Option<Spur>,
+    kind: StableDefinitionKind,
+    is_public: bool,
+    params: &[rue_rir::RirParam],
+    has_self: bool,
+    receiver_mode: RirParamMode,
+    receiver_is_mut: bool,
+    is_unchecked: bool,
+    is_extern: bool,
+) -> CompileResult<()> {
+    let expected_name = sema.interner.resolve(&name);
+    let expected_owner = owner.map(|owner| sema.interner.resolve(&owner));
+    let expected_generic = params.iter().any(|parameter| parameter.is_comptime);
+    let parameter_shape_matches = shell.parameter_names.len() == params.len()
+        && shell.parameter_modes.len() == params.len()
+        && shell.parameter_comptime.len() == params.len()
+        && params.iter().enumerate().all(|(index, parameter)| {
+            shell.parameter_names[index].as_ref() == sema.interner.resolve(&parameter.name)
+                && shell.parameter_modes[index] == parameter.mode
+                && shell.parameter_comptime[index] == parameter.is_comptime
+        });
+    if shell.identity.namespace != kind.namespace()
+        || shell.identity.kind != kind
+        || shell.identity.name.as_ref() != expected_name
+        || shell.identity.owner.as_deref() != expected_owner
+        || shell.is_public != is_public
+        || shell.has_self != has_self
+        || shell.receiver_mode != has_self.then_some(receiver_mode)
+        || shell.receiver_is_mut != receiver_is_mut
+        || shell.is_generic != expected_generic
+        || shell.is_unchecked != is_unchecked
+        || shell.is_extern != is_extern
+        || !parameter_shape_matches
+    {
+        return Err(CompileError::new(
+            ErrorKind::InternalError(
+                "query-owned declaration shell does not match its current RIR declaration".into(),
+            ),
+            shell.declaration_span,
+        ));
+    }
+    Ok(())
+}
+
+impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
     fn export_type(
         &self,
         ty: Type,

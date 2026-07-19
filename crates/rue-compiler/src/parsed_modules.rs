@@ -10,7 +10,6 @@ use std::sync::Arc;
 
 #[cfg(test)]
 use std::cell::Cell;
-#[cfg(test)]
 use std::collections::BTreeMap;
 
 #[cfg(test)]
@@ -21,11 +20,17 @@ use rue_parser::{
     AssignTarget, Ast, Expr, IntrinsicArg, Item, Pattern, Statement, TypeExpr, ast::Visibility,
 };
 use rue_span::{FileId, Span};
+use sha2::{Digest, Sha256};
 
 use crate::definition_snapshot::{definition_parts, validate_span};
 use crate::{
     DefinitionKind, DefinitionNamespace, ImportDirective, ImportDirectives, ModuleId,
     ModuleRevision, SourceId, SourceRevision, SourceSnapshot, SyntaxWork,
+    declaration_candidate::{
+        DeclarationCandidateCategory, DeclarationCandidateKey, DeclarationCandidateOwner,
+        DeclarationOccurrenceCapability, DeclarationParameterHeader, DeclarationParameterMode,
+        DeclarationShellFact, DeclarationShellFailure,
+    },
 };
 
 #[derive(Debug)]
@@ -143,6 +148,9 @@ impl ParsedDefinitionCandidate {
 #[derive(Debug, Clone)]
 pub struct ParsedDefinitionIndex {
     candidates: Arc<[ParsedDefinitionCandidate]>,
+    declarations: Arc<[ParsedDeclarationCandidate]>,
+    declaration_by_key: BTreeMap<DeclarationCandidateKey, usize>,
+    declaration_capabilities: Arc<[DeclarationOccurrenceCapability]>,
     #[cfg(test)]
     by_name: BTreeMap<(DefinitionNamespace, Arc<str>), Arc<[ParsedDefinitionOccurrence]>>,
 }
@@ -150,6 +158,42 @@ pub struct ParsedDefinitionIndex {
 impl ParsedDefinitionIndex {
     pub fn candidates(&self) -> &[ParsedDefinitionCandidate] {
         &self.candidates
+    }
+
+    pub(crate) fn declaration_capabilities(&self) -> &[DeclarationOccurrenceCapability] {
+        &self.declaration_capabilities
+    }
+
+    pub(crate) fn evaluate_declaration_shell(
+        &self,
+        key: &DeclarationCandidateKey,
+    ) -> Result<DeclarationShellFact, DeclarationShellFailure> {
+        let Some(index) = self.declaration_by_key.get(key).copied() else {
+            return Err(DeclarationShellFailure::Absent(key.clone()));
+        };
+        let candidate = self
+            .declarations
+            .get(index)
+            .ok_or_else(|| DeclarationShellFailure::ParserCapabilityMismatch(key.clone()))?;
+        if candidate.fact.key != *key {
+            return Err(DeclarationShellFailure::ParserCapabilityMismatch(
+                key.clone(),
+            ));
+        }
+        Ok(candidate.fact.clone())
+    }
+
+    pub(crate) fn declaration_locator(
+        &self,
+        key: &DeclarationCandidateKey,
+    ) -> Option<ParsedDeclarationLocator> {
+        let index = self.declaration_by_key.get(key).copied()?;
+        let candidate = self.declarations.get(index)?;
+        let source_order = u32::try_from(index).ok()?;
+        (candidate.fact.key == *key).then_some(ParsedDeclarationLocator {
+            declaration_span: candidate.declaration_span,
+            source_order,
+        })
     }
 
     #[cfg(test)]
@@ -164,6 +208,19 @@ impl ParsedDefinitionIndex {
             .flat_map(|occurrences| occurrences.iter())
             .map(|occurrence| &self.candidates[occurrence.index()])
     }
+}
+
+/// One canonical source occurrence paired with its current locator.
+#[derive(Debug, Clone)]
+pub(crate) struct ParsedDeclarationCandidate {
+    fact: DeclarationShellFact,
+    declaration_span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ParsedDeclarationLocator {
+    pub(crate) declaration_span: Span,
+    pub(crate) source_order: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -945,8 +1002,14 @@ fn build_module_with_resolver(
         source: source.clone(),
     };
     validate_pair(&provenanced_ast, &resolver, &revision)?;
-    let definitions =
-        build_definition_index(file_id, &source_text, &provenanced_ast.ast, &resolver)?;
+    let definitions = build_definition_index(
+        revision.module.clone(),
+        file_id,
+        &source_text,
+        &tokens,
+        &provenanced_ast.ast,
+        &resolver,
+    )?;
     let payload = Arc::new(ParsedSyntaxPayload {
         source,
         source_text,
@@ -1012,6 +1075,19 @@ fn bind_payload(
             })
             .collect::<Vec<_>>()
             .into(),
+        declarations: payload
+            .definitions
+            .declarations
+            .iter()
+            .cloned()
+            .map(|candidate| ParsedDeclarationCandidate {
+                declaration_span: remap_span(candidate.declaration_span),
+                ..candidate
+            })
+            .collect::<Vec<_>>()
+            .into(),
+        declaration_by_key: payload.definitions.declaration_by_key.clone(),
+        declaration_capabilities: payload.definitions.declaration_capabilities.clone(),
         #[cfg(test)]
         by_name: payload.definitions.by_name.clone(),
     };
@@ -1388,12 +1464,41 @@ fn validate_pair(
 }
 
 fn build_definition_index(
+    module: ModuleId,
     file_id: FileId,
     source_text: &str,
+    tokens: &[rue_lexer::Token],
     ast: &Ast,
     resolver: &FrozenSymbolResolver,
 ) -> CompileResult<ParsedDefinitionIndex> {
     let mut pending = Vec::new();
+    let mut pending_declarations = Vec::<(DeclarationShellFact, Span)>::new();
+    let resolve_name = |ident: rue_parser::Ident| -> CompileResult<Arc<str>> {
+        let symbol = resolver.symbol(ident.name)?;
+        Ok(Arc::from(resolver.resolve(&symbol)?))
+    };
+    let parameters =
+        |params: &[rue_parser::Param]| -> CompileResult<Arc<[DeclarationParameterHeader]>> {
+            params
+                .iter()
+                .map(|param| {
+                    let (mode, is_comptime) = candidate_parameter_mode(param.mode);
+                    Ok(DeclarationParameterHeader {
+                        name: resolve_name(param.name)?,
+                        mode,
+                        is_comptime,
+                    })
+                })
+                .collect::<CompileResult<Vec<_>>>()
+                .map(Into::into)
+        };
+    // The semantic declaration layer treats every comptime parameter as a
+    // generic specialization input, not only `comptime T: type` parameters.
+    let is_generic = |params: &[rue_parser::Param]| -> CompileResult<bool> {
+        Ok(params
+            .iter()
+            .any(|parameter| parameter.mode == rue_parser::ast::ParamMode::Comptime))
+    };
     for item in &ast.items {
         // A foreign `extern "C"` block expands into one module-item definition
         // per member `fn` (ADR-0064 C FFI); every other item is a single
@@ -1430,6 +1535,178 @@ fn build_definition_index(
             let symbol = resolver.symbol(parts.name.name)?;
             let name: Arc<str> = Arc::from(resolver.resolve(&symbol)?);
             pending.push((parts, symbol, name));
+        }
+
+        let mut push = |category,
+                        name: Arc<str>,
+                        owner: Option<DeclarationCandidateOwner>,
+                        is_public,
+                        parameters,
+                        receiver,
+                        receiver_is_mut,
+                        is_generic,
+                        is_unchecked,
+                        is_extern,
+                        declaration_span,
+                        signature_spans: Vec<Span>|
+         -> CompileResult<()> {
+            let signature_fingerprint = declaration_signature_fingerprint(
+                file_id,
+                source_text,
+                tokens,
+                resolver,
+                &signature_spans,
+            )?;
+            pending_declarations.push((
+                DeclarationShellFact {
+                    key: DeclarationCandidateKey {
+                        module: module.clone(),
+                        category,
+                        name,
+                        owner,
+                        duplicate_discriminator: 0,
+                    },
+                    is_public,
+                    parameters,
+                    receiver,
+                    receiver_is_mut,
+                    is_generic,
+                    is_unchecked,
+                    is_extern,
+                    signature_fingerprint,
+                },
+                declaration_span,
+            ));
+            Ok(())
+        };
+
+        match item {
+            Item::Function(function) => push(
+                DeclarationCandidateCategory::Function,
+                resolve_name(function.name)?,
+                None,
+                function.visibility == Visibility::Public,
+                parameters(&function.params)?,
+                None,
+                false,
+                is_generic(&function.params)?,
+                function.is_unchecked,
+                false,
+                function.span,
+                vec![signature_prefix(function.span, function.body.span())?],
+            )?,
+            Item::Struct(structure) => {
+                let owner_name = resolve_name(structure.name)?;
+                push(
+                    DeclarationCandidateCategory::Struct,
+                    owner_name.clone(),
+                    None,
+                    structure.visibility == Visibility::Public,
+                    Arc::from([]),
+                    None,
+                    false,
+                    false,
+                    false,
+                    false,
+                    structure.span,
+                    signature_fragments_excluding_method_bodies(structure)?,
+                )?;
+                let owner = DeclarationCandidateOwner {
+                    category: DeclarationCandidateCategory::Struct,
+                    name: owner_name,
+                };
+                for method in &structure.methods {
+                    let receiver = method
+                        .receiver
+                        .as_ref()
+                        .map(|receiver| candidate_parameter_mode(receiver.mode).0);
+                    push(
+                        if receiver.is_some() {
+                            DeclarationCandidateCategory::Method
+                        } else {
+                            DeclarationCandidateCategory::AssociatedFunction
+                        },
+                        resolve_name(method.name)?,
+                        Some(owner.clone()),
+                        false,
+                        parameters(&method.params)?,
+                        receiver,
+                        method
+                            .receiver
+                            .as_ref()
+                            .is_some_and(|receiver| receiver.is_mut),
+                        is_generic(&method.params)?,
+                        false,
+                        false,
+                        method.span,
+                        vec![signature_prefix(method.span, method.body.span())?],
+                    )?;
+                }
+            }
+            Item::Enum(value) => push(
+                DeclarationCandidateCategory::Enum,
+                resolve_name(value.name)?,
+                None,
+                value.visibility == Visibility::Public,
+                Arc::from([]),
+                None,
+                false,
+                false,
+                false,
+                false,
+                value.span,
+                vec![value.span],
+            )?,
+            Item::Const(value) => push(
+                DeclarationCandidateCategory::ConstCandidate,
+                resolve_name(value.name)?,
+                None,
+                value.visibility == Visibility::Public,
+                Arc::from([]),
+                None,
+                false,
+                false,
+                false,
+                false,
+                value.span,
+                vec![signature_prefix(value.span, value.init.span())?],
+            )?,
+            Item::DropFn(value) => push(
+                DeclarationCandidateCategory::Destructor,
+                resolve_name(value.type_name)?,
+                Some(DeclarationCandidateOwner {
+                    category: DeclarationCandidateCategory::Struct,
+                    name: resolve_name(value.type_name)?,
+                }),
+                false,
+                Arc::from([]),
+                Some(DeclarationParameterMode::Value),
+                false,
+                false,
+                false,
+                false,
+                value.span,
+                vec![signature_prefix(value.span, value.body.span())?],
+            )?,
+            Item::Extern(block) => {
+                for function in &block.fns {
+                    push(
+                        DeclarationCandidateCategory::ExternFunction,
+                        resolve_name(function.name)?,
+                        None,
+                        false,
+                        parameters(&function.params)?,
+                        None,
+                        false,
+                        is_generic(&function.params)?,
+                        false,
+                        true,
+                        function.span,
+                        vec![function.span],
+                    )?;
+                }
+            }
+            Item::Error(_) => {}
         }
     }
     pending.sort_by(|(left, _, left_name), (right, _, right_name)| {
@@ -1482,11 +1759,150 @@ fn build_definition_index(
         .into_iter()
         .map(|(key, value)| (key, value.into()))
         .collect();
+    pending_declarations.sort_by(|left, right| {
+        left.1
+            .start
+            .cmp(&right.1.start)
+            .then(left.1.end.cmp(&right.1.end))
+            .then(left.0.key.category.cmp(&right.0.key.category))
+            .then(left.0.key.name.cmp(&right.0.key.name))
+    });
+    let mut duplicate_counts = BTreeMap::new();
+    let declarations = pending_declarations
+        .into_iter()
+        .map(|(mut fact, declaration_span)| {
+            let duplicate = duplicate_counts
+                .entry((
+                    fact.key.category,
+                    fact.key.name.clone(),
+                    fact.key.owner.clone(),
+                ))
+                .or_insert(0_u32);
+            fact.key.duplicate_discriminator = *duplicate;
+            *duplicate = duplicate
+                .checked_add(1)
+                .ok_or_else(|| invalid_input("declaration duplicate discriminator exceeds u32"))?;
+            Ok(ParsedDeclarationCandidate {
+                fact,
+                declaration_span,
+            })
+        })
+        .collect::<CompileResult<Vec<_>>>()?;
+    let mut declaration_by_key = BTreeMap::new();
+    let mut declaration_capabilities = Vec::with_capacity(declarations.len());
+    for (index, candidate) in declarations.iter().enumerate() {
+        let key = candidate.fact.key.clone();
+        let duplicate_multiplicity = *duplicate_counts
+            .get(&(key.category, key.name.clone(), key.owner.clone()))
+            .expect("every declaration contributes to its duplicate count");
+        if declaration_by_key.insert(key.clone(), index).is_some() {
+            declaration_capabilities.push(DeclarationOccurrenceCapability::Ambiguous {
+                key,
+                multiplicity: 2,
+            });
+        } else {
+            declaration_capabilities.push(DeclarationOccurrenceCapability::Exact {
+                key,
+                duplicate_multiplicity,
+            });
+        }
+    }
+    declaration_capabilities.sort_by(|left, right| left.key().cmp(right.key()));
     Ok(ParsedDefinitionIndex {
         candidates: candidates.into(),
+        declarations: declarations.into(),
+        declaration_by_key,
+        declaration_capabilities: declaration_capabilities.into(),
         #[cfg(test)]
         by_name,
     })
+}
+
+fn candidate_parameter_mode(mode: rue_parser::ast::ParamMode) -> (DeclarationParameterMode, bool) {
+    match mode {
+        rue_parser::ast::ParamMode::Normal => (DeclarationParameterMode::Value, false),
+        rue_parser::ast::ParamMode::Borrow => (DeclarationParameterMode::Borrow, false),
+        rue_parser::ast::ParamMode::Inout => (DeclarationParameterMode::Inout, false),
+        rue_parser::ast::ParamMode::Comptime => (DeclarationParameterMode::Value, true),
+    }
+}
+
+fn signature_prefix(declaration: Span, payload: Span) -> CompileResult<Span> {
+    if declaration.file_id != payload.file_id
+        || payload.start < declaration.start
+        || payload.end > declaration.end
+        || payload.start >= payload.end
+    {
+        return Err(invalid_input(
+            "declaration payload is not contained by its declaration",
+        ));
+    }
+    Ok(Span::with_file(
+        declaration.file_id,
+        declaration.start,
+        payload.start,
+    ))
+}
+
+fn signature_fragments_excluding_method_bodies(
+    structure: &rue_parser::ast::StructDecl,
+) -> CompileResult<Vec<Span>> {
+    let mut fragments = Vec::with_capacity(structure.methods.len() + 1);
+    let mut cursor = structure.span.start;
+    for method in &structure.methods {
+        let body = method.body.span();
+        if body.file_id != structure.span.file_id
+            || body.start < cursor
+            || body.end > structure.span.end
+            || body.start >= body.end
+        {
+            return Err(invalid_input(
+                "struct method body is not ordered within its declaration",
+            ));
+        }
+        fragments.push(Span::with_file(structure.span.file_id, cursor, body.start));
+        cursor = body.end;
+    }
+    fragments.push(Span::with_file(
+        structure.span.file_id,
+        cursor,
+        structure.span.end,
+    ));
+    Ok(fragments)
+}
+
+fn declaration_signature_fingerprint(
+    file_id: FileId,
+    source_text: &str,
+    tokens: &[rue_lexer::Token],
+    resolver: &FrozenSymbolResolver,
+    spans: &[Span],
+) -> CompileResult<[u8; 32]> {
+    let mut hasher = Sha256::new();
+    for span in spans {
+        validate_span("declaration signature", *span, file_id, source_text)?;
+        for token in tokens.iter().filter(|token| {
+            token.span.file_id == file_id
+                && token.span.start >= span.start
+                && token.span.end <= span.end
+                && !matches!(token.kind, rue_lexer::TokenKind::Eof)
+        }) {
+            let value = match token.kind {
+                rue_lexer::TokenKind::Ident(spur) => {
+                    format!("ident:{}", resolver.resolver.resolve(&spur))
+                }
+                rue_lexer::TokenKind::String(spur) => {
+                    format!("string:{}", resolver.resolver.resolve(&spur))
+                }
+                rue_lexer::TokenKind::Int(value) => format!("int:{value}"),
+                kind => kind.name().to_owned(),
+            };
+            hasher.update((value.len() as u64).to_le_bytes());
+            hasher.update(value.as_bytes());
+        }
+        hasher.update(0_u64.to_le_bytes());
+    }
+    Ok(hasher.finalize().into())
 }
 
 fn invalid_input(message: impl Into<String>) -> CompileError {
@@ -1504,6 +1920,100 @@ mod tests {
     use crate::{
         ModuleResolutionInput, ModuleResolutionInputs, SemanticInputDescriptor, SourceMetadata,
     };
+
+    fn declaration_facts(source: &str) -> Vec<DeclarationShellFact> {
+        let snapshot = snapshot(&[(1, "/main.rue", "main.rue", source)], 1);
+        let parsed = parse_source_snapshot_modules(&snapshot).unwrap();
+        parsed.modules()[0]
+            .definitions()
+            .declaration_capabilities()
+            .iter()
+            .map(|capability| {
+                parsed.modules()[0]
+                    .definitions()
+                    .evaluate_declaration_shell(capability.key())
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn declaration_candidates_cover_every_named_syntax_family_and_duplicates() {
+        use DeclarationCandidateCategory as C;
+        let facts = declaration_facts(
+            r#"
+pub struct Box {
+    fn get(borrow self, comptime T: type) -> i32 { 0 }
+    fn make() -> Box { Box {} }
+}
+enum Choice { A, B(i32) }
+const selected = 1;
+drop fn Box(self) {}
+unchecked fn run(value: i32) -> i32 { value }
+extern "C" { fn getpid() -> i32; }
+fn duplicate() {}
+fn duplicate() {}
+fn type_factory() -> type { struct { fn hidden(self) {} } }
+"#,
+        );
+        let categories = facts
+            .iter()
+            .map(|fact| fact.key.category)
+            .collect::<Vec<_>>();
+        for expected in [
+            C::Struct,
+            C::Method,
+            C::AssociatedFunction,
+            C::Enum,
+            C::ConstCandidate,
+            C::Destructor,
+            C::Function,
+            C::ExternFunction,
+        ] {
+            assert!(categories.contains(&expected), "missing {expected:?}");
+        }
+        let duplicates = facts
+            .iter()
+            .filter(|fact| fact.key.name.as_ref() == "duplicate")
+            .map(|fact| fact.key.duplicate_discriminator)
+            .collect::<Vec<_>>();
+        assert_eq!(duplicates, vec![0, 1]);
+        assert!(facts.iter().all(|fact| fact.key.name.as_ref() != "hidden"));
+        let method = facts
+            .iter()
+            .find(|fact| fact.key.category == C::Method)
+            .unwrap();
+        assert_eq!(method.key.owner.as_ref().unwrap().name.as_ref(), "Box");
+        assert_eq!(method.parameters.len(), 1);
+        assert!(method.parameters[0].is_comptime);
+        assert_eq!(method.receiver, Some(DeclarationParameterMode::Borrow));
+    }
+
+    #[test]
+    fn declaration_shell_facts_ignore_payloads_whitespace_and_const_classification() {
+        let value = declaration_facts(
+            "struct Box { fn get(self) -> i32 { 1 } } const item = 1; fn main() { }",
+        );
+        let module = declaration_facts(
+            "// leading relocation\n  struct Box { fn // between signature tokens\n get(self) -> i32 { 999 } }\n\n const item = @import(\"x.rue\"); // payload boundary\n fn main() { let x = 2; }",
+        );
+        assert_eq!(value, module);
+
+        let edited = declaration_facts(
+            "struct Box { fn get(borrow self) -> i32 { 1 } } const item = 1; fn main() { }",
+        );
+        assert_ne!(value, edited);
+
+        let mutable = declaration_facts(
+            "struct Box { fn get(mut self) -> i32 { 1 } } const item = 1; fn main() { }",
+        );
+        let method = mutable
+            .iter()
+            .find(|fact| fact.key.category == DeclarationCandidateCategory::Method)
+            .unwrap();
+        assert_eq!(method.receiver, Some(DeclarationParameterMode::Value));
+        assert!(method.receiver_is_mut);
+    }
 
     fn snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
         let physical = entries

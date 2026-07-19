@@ -7,9 +7,11 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+#[cfg(test)]
+use rue_air::DeclarationBindingWork;
 use rue_air::{
-    CanonicalImportView, DeclarationBindingWork, Sema, SemanticBinding,
-    SemanticBindingManifestWork, SemanticDeclarationShell,
+    CanonicalImportView, Sema, SemanticBinding, SemanticBindingManifestWork,
+    SemanticDeclarationShell,
 };
 use rue_error::{CompileError, CompileErrors, CompileResult, ErrorKind, MultiErrorResult};
 use rue_parser::ast::{Item, Visibility};
@@ -303,6 +305,12 @@ fn reject_duplicate_stable_definitions(
 }
 
 impl BoundDefinitionSet {
+    pub(crate) fn projected_for_source_revision(&self, revision: &SourceRevision) -> Self {
+        let mut projected = self.clone();
+        projected.source_revision = revision.clone();
+        projected
+    }
+
     pub(crate) fn structurally_eq(&self, other: &Self) -> bool {
         self.source_revision == other.source_revision
             && self.manifest_work == other.manifest_work
@@ -326,6 +334,7 @@ impl BoundDefinitionSet {
     pub fn definitions(&self) -> &[BoundDefinitionRecord] {
         &self.definitions
     }
+    #[cfg(test)]
     pub fn manifest_work(&self) -> SemanticBindingManifestWork {
         self.manifest_work
     }
@@ -577,8 +586,13 @@ pub(crate) fn bind_canonical_declaration_semantics(
     rue_air::SemanticDeclarationExportWork,
 )> {
     let imports = test_fixture_import_graph(merged)?;
-    let sema = configure_canonical_sema(merged, rir, preview_features, target, &imports)?;
-    let bound = sema.bind_declarations()?;
+    let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
+        merged,
+        rir,
+        preview_features,
+        target,
+        &imports,
+    )?;
     let manifest = bound.binding_manifest();
     let definitions = issue_bound_definitions(
         merged,
@@ -626,9 +640,13 @@ pub(crate) fn compare_canonical_durable_declaration_install(
     target: Target,
 ) -> MultiErrorResult<(crate::DurableSemanticProjectionWork, DeclarationBindingWork)> {
     let imports = test_fixture_import_graph(merged)?;
-    let ordinary =
-        configure_canonical_sema(merged, rir, preview_features.clone(), target, &imports)?
-            .bind_declarations()?;
+    let ordinary = crate::canonical_semantic::bind_query_owned_declarations_for_test(
+        merged,
+        rir,
+        preview_features.clone(),
+        target,
+        &imports,
+    )?;
     let manifest = ordinary.binding_manifest();
     let definitions = issue_bound_definitions(
         merged,
@@ -651,9 +669,23 @@ pub(crate) fn compare_canonical_durable_declaration_install(
                 "ordinary durable semantic conversion failed: {failure:?}"
             )))
         })?;
+    let query_shells =
+        crate::revisioned_query_database::projected_declaration_shells_for_test(merged)?;
     let shells = configure_canonical_sema(merged, rir, preview_features, target, &imports)?
-        .predeclare_declaration_shells()?;
+        .predeclare_imported_declaration_shells(&query_shells)?;
     let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
+    let provisional = issue_shell_definitions(merged, rir.source_revision(), &shell_records)
+        .map_err(CompileErrors::from)?;
+    let shells = shells
+        .install_stable_identity_endpoints(
+            &provisional.semantic_definition_endpoints(),
+            &provisional.semantic_module_endpoints(merged),
+        )
+        .map_err(|failure| {
+            CompileErrors::from(invalid(format!(
+                "comparison stable endpoint install failed: {failure:?}"
+            )))
+        })?;
     let (projected, projection_work) = crate::project_durable_declaration_semantics(
         merged,
         &definitions,
@@ -739,6 +771,7 @@ pub(crate) fn compare_canonical_durable_declaration_install(
     Ok((projection_work, binding_work))
 }
 
+#[cfg(test)]
 pub(crate) fn bind_canonical_definitions_with_work(
     merged: &CanonicalMergedProgram,
     rir: &CanonicalRirOutput,
@@ -746,8 +779,13 @@ pub(crate) fn bind_canonical_definitions_with_work(
     target: Target,
     imports: &crate::CanonicalImportGraph,
 ) -> MultiErrorResult<(BoundDefinitionSet, DeclarationBindingWork)> {
-    let sema = configure_canonical_sema(merged, rir, preview_features, target, imports)?;
-    let bound = sema.bind_declarations()?;
+    let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
+        merged,
+        rir,
+        preview_features,
+        target,
+        imports,
+    )?;
     let binding_work = bound.binding_work();
     let manifest = bound.binding_manifest();
     let definitions = issue_bound_definitions(
@@ -971,6 +1009,10 @@ pub(crate) fn issue_shell_definitions(
 ) -> Result<BoundDefinitionSet, CompileError> {
     let bindings = shells
         .iter()
+        // A syntax shell can only prove that a source `const` is a candidate.
+        // Its final stable kind may be ValueConst or ModuleBinding after
+        // initializer evaluation, so no provisional stable ID is issued.
+        .filter(|shell| shell.identity.kind != StableDefinitionKind::ValueConst)
         .map(|shell| SemanticBinding {
             file_id: shell.declaration_span.file_id,
             declaration_span: shell.declaration_span,
@@ -1281,15 +1323,13 @@ mod tests {
         let rir = lower_canonical_rir(&merged).unwrap();
         let current_definitions = bind(&relocated);
         let imports = test_fixture_import_graph(&merged).unwrap();
-        let shells = configure_canonical_sema(
+        let shells = crate::canonical_semantic::query_owned_declaration_shells_for_test(
             &merged,
             &rir,
             PreviewFeatures::new(),
             Target::default(),
             &imports,
         )
-        .unwrap()
-        .predeclare_declaration_shells()
         .unwrap();
         let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
         let (projected, work) = crate::project_durable_declaration_semantics(
@@ -1331,15 +1371,13 @@ mod tests {
         let merged = merge_parsed_modules(&parsed).unwrap();
         let rir = lower_canonical_rir(&merged).unwrap();
         let imports = test_fixture_import_graph(&merged).unwrap();
-        let shells = configure_canonical_sema(
+        let shells = crate::canonical_semantic::query_owned_declaration_shells_for_test(
             &merged,
             &rir,
             PreviewFeatures::new(),
             Target::default(),
             &imports,
         )
-        .unwrap()
-        .predeclare_declaration_shells()
         .unwrap();
         let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
         let (projected, projection) = crate::project_durable_declaration_semantics(
@@ -1366,15 +1404,13 @@ mod tests {
         let merged = merge_parsed_modules(&parsed).unwrap();
         let rir = lower_canonical_rir(&merged).unwrap();
         let imports = test_fixture_import_graph(&merged).unwrap();
-        let shells = configure_canonical_sema(
+        let shells = crate::canonical_semantic::query_owned_declaration_shells_for_test(
             &merged,
             &rir,
             PreviewFeatures::new(),
             Target::default(),
             &imports,
         )
-        .unwrap()
-        .predeclare_declaration_shells()
         .unwrap();
         let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
         let duplicated = durable
@@ -1431,15 +1467,13 @@ mod tests {
         );
         // The failed candidate was consumed; a fresh ordinary epoch remains valid.
         let imports = test_fixture_import_graph(&merged).unwrap();
-        configure_canonical_sema(
+        crate::canonical_semantic::bind_query_owned_declarations_for_test(
             &merged,
             &rir,
             PreviewFeatures::new(),
             Target::default(),
             &imports,
         )
-        .unwrap()
-        .bind_declarations()
         .unwrap()
         .analyze_all_bodies()
         .unwrap();

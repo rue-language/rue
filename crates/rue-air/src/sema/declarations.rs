@@ -2168,27 +2168,43 @@ impl<'a> Sema<'a> {
         let mut resolved_types: HashMap<InstRef, Type> = HashMap::new();
         self.infer_const_init_types(init, file_id, declared_ty, &mut resolved_types)?;
 
-        let canonical_identity = self
-            .named_const_dependency_source
-            .as_ref()
-            .map(|(file, name)| {
-                self.canonical_definition_producer(
-                    *file,
-                    name,
-                    None,
-                    crate::StableDefinitionKind::ValueConst,
-                )
-                .map(|producer| (producer, crate::CanonicalArguments::default()))
-                .map_err(|failure| {
-                    CompileError::new(
-                        ErrorKind::InternalError(format!(
-                            "failed to issue canonical const producer: {failure:?}"
-                        )),
-                        span,
-                    )
-                })
-            })
-            .transpose()?;
+        let canonical_identity = match self.named_const_dependency_source.as_ref() {
+            Some((file, name)) => {
+                // Query-owned const shells are candidates until initializer
+                // evaluation classifies ValueConst versus ModuleBinding. Use
+                // that exact candidate channel before consulting the final
+                // stable universe: a same-named function or type is a source
+                // collision, not evidence that the const has the wrong kind.
+                let producer = match self.epoch_local_const_candidate_producer(*file, name) {
+                    Ok(producer) => producer.into_comptime_producer(),
+                    Err(crate::SemanticBodyExportFailure::MissingStableIdentity) => self
+                        .canonical_definition_producer(
+                            *file,
+                            name,
+                            None,
+                            crate::StableDefinitionKind::ValueConst,
+                        )
+                        .map_err(|failure| {
+                            CompileError::new(
+                                ErrorKind::InternalError(format!(
+                                    "failed to issue canonical const producer: {failure:?}"
+                                )),
+                                span,
+                            )
+                        })?,
+                    Err(failure) => {
+                        return Err(CompileError::new(
+                            ErrorKind::InternalError(format!(
+                                "failed to issue epoch-local const candidate producer: {failure:?}"
+                            )),
+                            span,
+                        ));
+                    }
+                };
+                Some((producer, crate::CanonicalArguments::default()))
+            }
+            None => None,
+        };
         let mut env = super::comptime_eval::ComptimeEnv::for_const_init(
             &resolved_types,
             &const_module_members,
