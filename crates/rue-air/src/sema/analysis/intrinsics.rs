@@ -441,6 +441,8 @@ impl<'a> BodySema<'a> {
             self.analyze_target_arch_intrinsic(air, &args, span)
         } else if name == known.target_os {
             self.analyze_target_os_intrinsic(air, &args, span)
+        } else if name == known.target_data_model {
+            self.analyze_target_data_model_intrinsic(air, &args, span)
         } else {
             Err(CompileError::new(
                 ErrorKind::UnknownIntrinsic(self.interner.resolve(&name).to_string()),

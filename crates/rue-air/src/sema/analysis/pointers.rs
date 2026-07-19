@@ -1178,4 +1178,49 @@ impl<'a> BodySema<'a> {
         let air_ref = air.add_enum_variant(os_enum_id, variant_index, &[], result_type, span)?;
         Ok(AnalysisResult::new(air_ref, result_type))
     }
+
+    /// Analyze @target_data_model() intrinsic - returns the target C data model.
+    ///
+    /// This intrinsic takes no arguments and returns a DataModel enum value
+    /// (Ilp32, Lp64, or Llp64) describing the widths the target's platform
+    /// psABI assigns to C `int`, `long`, and pointers (ADR-0064 Amendment 1).
+    /// Architecture alone does not fix the data model, so this is a distinct
+    /// target fact.
+    pub(super) fn analyze_target_data_model_intrinsic(
+        &self,
+        air: &mut Air,
+        args: &[RirCallArg],
+        span: Span,
+    ) -> CompileResult<AnalysisResult> {
+        // Validate: no arguments
+        if !args.is_empty() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "target_data_model".to_string(),
+                    expected: 0,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let data_model_enum_id = self
+            .builtin_data_model_id
+            .expect("DataModel enum not injected - internal compiler error");
+
+        // Determine variant index from the requested compilation target, not
+        // the host running the compiler. Cross-target `--emit` must specialize
+        // target intrinsics for the emitted target (RUE-417). Variant order
+        // matches `rue_target::DataModel`.
+        let variant_index = match self.target.data_model() {
+            DataModel::Ilp32 => 0,
+            DataModel::Lp64 => 1,
+            DataModel::Llp64 => 2,
+        };
+
+        let result_type = Type::new_enum(data_model_enum_id);
+        let air_ref =
+            air.add_enum_variant(data_model_enum_id, variant_index, &[], result_type, span)?;
+        Ok(AnalysisResult::new(air_ref, result_type))
+    }
 }

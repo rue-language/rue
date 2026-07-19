@@ -103,10 +103,11 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     }
 
     pub(crate) fn resolve_builtin_enum_name(&self, name: Spur) -> Option<EnumId> {
-        self.builtin_enums
-            .get(&name)
-            .copied()
-            .filter(|id| Some(*id) == self.builtin_arch_id || Some(*id) == self.builtin_os_id)
+        self.builtin_enums.get(&name).copied().filter(|id| {
+            Some(*id) == self.builtin_arch_id
+                || Some(*id) == self.builtin_os_id
+                || Some(*id) == self.builtin_data_model_id
+        })
     }
 
     /// Build an `InferenceContext` from the collected type information.
