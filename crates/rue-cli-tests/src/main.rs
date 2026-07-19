@@ -143,6 +143,31 @@ struct ExampleExpectation {
     stdin: Option<&'static str>,
 }
 
+/// Execution-time overrides for unusually large example binaries.
+///
+/// Compilation deliberately keeps the ordinary 10-second smoke budget. A
+/// large program can still need more wall time merely to start while the CLI
+/// harness is compiling and running its large corpus in parallel, so only the
+/// produced program receives this narrowly scoped allowance.
+struct ExampleRunTimeout {
+    path: &'static str,
+    timeout_ms: u64,
+}
+
+const EXAMPLE_RUN_TIMEOUTS: &[ExampleRunTimeout] = &[ExampleRunTimeout {
+    path: "lattice/main.rue",
+    timeout_ms: 30_000,
+}];
+
+fn example_run_timeout(relative_path: &str) -> Duration {
+    Duration::from_millis(
+        EXAMPLE_RUN_TIMEOUTS
+            .iter()
+            .find(|override_| override_.path == relative_path)
+            .map_or(DEFAULT_TIMEOUT_MS, |override_| override_.timeout_ms),
+    )
+}
+
 const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
     // The 2026-07-11 ambitious-dogfood programs: each is a self-checking
     // program that returns 42 exactly when every internal @assert passes.
@@ -192,6 +217,15 @@ const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
         path: "linear_pool.rue",
         exit_code: 42,
         stdout: "",
+        stdin: None,
+    },
+    // Lattice is the largest maintained Rue application. Its automatic smoke
+    // invocation stays intentionally lightweight; the explicit CLI cases run
+    // the demo and complete stress paths with their own assertions.
+    ExampleExpectation {
+        path: "lattice/main.rue",
+        exit_code: 0,
+        stdout: "usage: lattice [demo | run FILE | selftest | stress1 | stress2 | stress4 | benchmark | help]\nLattice compiles a workflow DSL, validates its graph, and simulates execution.\n",
         stdin: None,
     },
     ExampleExpectation {
@@ -1529,6 +1563,7 @@ fn run_example(
     expectation: Option<&ExampleExpectation>,
     rue_binary: &Path,
     real_std: &Path,
+    run_timeout: Duration,
 ) -> TestResult {
     let temp_dir = tempfile::tempdir()
         .map_err(|e| TestFailure::fatal(format!("failed to create temp dir: {}", e)))?;
@@ -1564,11 +1599,7 @@ fn run_example(
 
     let mut run_cmd = Command::new(&program);
     run_cmd.current_dir(dir);
-    let run_output = run_with_timeout(
-        run_cmd,
-        Duration::from_millis(DEFAULT_TIMEOUT_MS),
-        expectation.and_then(|exp| exp.stdin),
-    )?;
+    let run_output = run_with_timeout(run_cmd, run_timeout, expectation.and_then(|exp| exp.stdin))?;
     let run_stdout = String::from_utf8_lossy(&run_output.stdout).to_string();
     let run_stderr = String::from_utf8_lossy(&run_output.stderr).to_string();
 
@@ -1686,10 +1717,12 @@ fn example_trials(rue_binary: &Path, real_std: &Path) -> Vec<Trial> {
         let real_std = real_std.to_path_buf();
         let test_name = example_test_name(&relative_path);
         trials.push(Trial::test(test_name, move |_ctx| {
+            let run_timeout = example_run_timeout(&relative_path);
             let expectation = EXAMPLE_EXPECTATIONS
                 .iter()
                 .find(|e| e.path == relative_path);
-            run_example(&path, expectation, &rue_binary, &real_std).map_err(RunError::fail)
+            run_example(&path, expectation, &rue_binary, &real_std, run_timeout)
+                .map_err(RunError::fail)
         }));
     }
     trials
@@ -1781,6 +1814,18 @@ mod tests {
         assert!(
             !welcome.stdout.is_empty(),
             "the onboarding example must print recognizable output (RUE-517)"
+        );
+    }
+
+    #[test]
+    fn heavyweight_example_run_timeout_is_narrowly_scoped() {
+        assert_eq!(
+            example_run_timeout("lattice/main.rue"),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            example_run_timeout("welcome.rue"),
+            Duration::from_millis(DEFAULT_TIMEOUT_MS)
         );
     }
 
