@@ -1,0 +1,102 @@
+# RUE-1036: 13K-line workflow compiler, graph analyzer, and scheduler in Rue.
+[section]
+id = "cli.examples_lattice"
+name = "Lattice workflow compiler and scheduler written in Rue"
+description = "exercise parsing, validation, graph algorithms, scheduling, replay, operational analytics, reporting, selftests, and generated scaling workloads"
+
+[[case]]
+name = "lattice_runs_built_in_demo"
+description = "the explicit demo command exercises the same full pipeline without making the generic no-argument example smoke path expensive"
+source_path = "examples/lattice/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_args = ["demo"]
+timeout_ms = 30000
+exit_code = 0
+stdout_contains = ["workflow=demo", "tasks=5", "makespan=22", "analysis_passes=48", "replay_ok=true"]
+
+[[case]]
+name = "lattice_compiles_and_schedules_workflow"
+description = "the file path parses a real workflow, recovers a failed attempt, and produces the stable schedule summary"
+source_path = "examples/lattice/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "release.lattice", source = """
+workflow release;
+pool local slots 2 cpu 4 memory 8;
+pool large slots 1 cpu 8 memory 16;
+task fetch pool local duration 2 cpu 1 memory 1 priority 20 retries 1 cache true fail 0;
+task parse pool local duration 3 cpu 1 memory 2 priority 18 retries 1 cache false fail 0;
+task compile pool large duration 5 cpu 4 memory 8 priority 16 retries 2 cache true fail 1;
+task test pool local duration 4 cpu 2 memory 3 priority 14 retries 1 cache false fail 0;
+task package pool local duration 2 cpu 1 memory 1 priority 10 retries 0 cache true fail 0;
+after parse fetch;
+after compile parse;
+after test compile;
+after package test;
+""" }]
+program_args = ["run", "release.lattice"]
+timeout_ms = 30000
+exit_code = 0
+stdout_contains = ["workflow=release", "tasks=5", "edges=4", "makespan=22", "succeeded=5", "failed=0", "retries=1", "analysis_passes=48", "replay_ok=true"]
+
+[[case]]
+name = "lattice_rejects_dependency_cycle"
+description = "topological sorting and the independent closure oracle agree that a cycle is invalid"
+source_path = "examples/lattice/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "cycle.lattice", source = """
+workflow cycle;
+pool local slots 1 cpu 2 memory 4;
+task first pool local duration 1 cpu 1 memory 1 priority 2 retries 0 cache false fail 0;
+task second pool local duration 1 cpu 1 memory 1 priority 1 retries 0 cache false fail 0;
+after second first;
+after first second;
+""" }]
+program_args = ["run", "cycle.lattice"]
+timeout_ms = 30000
+exit_code = 1
+stdout_contains = ["lattice[cycle] cycle: dependency graph contains a cycle"]
+
+[[case]]
+name = "lattice_rejects_resource_overcommit"
+description = "semantic validation prevents a task from exceeding its assigned pool"
+source_path = "examples/lattice/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "overcommit.lattice", source = """
+workflow overcommit;
+pool tiny slots 1 cpu 1 memory 2;
+task impossible pool tiny duration 3 cpu 2 memory 4 priority 1 retries 0 cache false fail 0;
+""" }]
+program_args = ["run", "overcommit.lattice"]
+timeout_ms = 30000
+exit_code = 1
+stdout_contains = ["lattice[resource] impossible: task cpu exceeds pool capacity", "lattice[resource] impossible: task memory exceeds pool capacity"]
+
+[[case]]
+name = "lattice_runs_cross_oracle_selftest"
+description = "generated workflows agree across topology, closure, timing, reduction, dominance, schedule, replay, and resource implementations"
+source_path = "examples/lattice/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_args = ["selftest"]
+timeout_ms = 30000
+exit_code = 0
+stdout_contains = ["selftest checks=92 failures=0", "workflows=4 tasks=104", "incomplete=0", "warnings=0", "valid=true"]
+
+[[case]]
+name = "lattice_runs_complete_scaling_tier"
+description = "stress mode executes every graph, schedule, insight, lint, policy, forecast, query, replay, and report path twice"
+source_path = "examples/lattice/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_args = ["stress1"]
+timeout_ms = 30000
+exit_code = 0
+stdout_contains = ["stress scale=1 tasks=24 pools=3", "analysis_passes=48", "insight_checks=13 insight_failures=0", "report_documents=32", "report_failures=0", "replay_mismatches=0", "resource_violations=0", "deterministic=true valid=true"]
+
+[[case]]
+name = "lattice_prints_reference"
+description = "help documents file execution, invariant, stress, and benchmark modes"
+source_path = "examples/lattice/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_args = ["help"]
+timeout_ms = 30000
+exit_code = 0
+stdout_contains = ["usage: lattice", "demo", "run FILE", "selftest", "stress1", "stress2", "stress4", "benchmark"]

@@ -8603,11 +8603,12 @@ mod tests {
     /// semantic store — so the variants force one eviction in every terminal
     /// family under test.
     ///
-    /// With fewer preview features than the bits the mask spans, one target is
-    /// not enough distinct keys (`2^feature_bits < LIMIT + 1`), so the target
-    /// list carries the overflow. Each `feature_bits`-wide block of masks maps
-    /// to one target, and the assertion holds that the mask range spans no more
-    /// blocks than there are targets.
+    /// With `2` preview features the mask spans four subsets, and three targets
+    /// carry them to `4 * 3 = 12` distinct keys, exactly `LIMIT + 1`. The
+    /// assertion guards that the mask range spans no more `feature_bits`-wide
+    /// blocks than there are targets; if a future feature-count drop breaks it,
+    /// `QUERY_TERMINAL_RETENTION_LIMIT` must fall so `LIMIT + 1` still fits the
+    /// available `(preview_features, target)` key space.
     fn retention_variants() -> Vec<CompileOptions> {
         let feature_bits = PreviewFeature::all().len();
         let targets = Target::all();

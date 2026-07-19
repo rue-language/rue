@@ -95,9 +95,9 @@ fn create_struct_drop_glue_function(
     struct_id: rue_air::StructId,
     type_pool: &FrozenTypeInternPool,
 ) -> CompileResult<AnalyzedFunction> {
-    // File-qualified when the struct name spans files (RUE-571) — must match
-    // the call side in both codegen backends' cfg_lower.
-    let fn_name = format!("__rue_drop_{}", type_pool.struct_symbol_name(struct_id));
+    // Derived by the shared authority so glue synthesis and the backends'
+    // lowering agree; file-qualified when the struct name spans files (RUE-571).
+    let fn_name = rue_air::drop_glue_names::struct_drop_glue_name(struct_id, type_pool);
     let span = Span::new(0, 0); // Synthetic span
 
     // Create AIR for the drop glue function
@@ -384,67 +384,11 @@ fn create_enum_drop_glue_function(
     })
 }
 
-/// Generate the drop glue function name for a payload-carrying enum type.
-///
-/// Types share a namespace, so the enum's own name cannot collide with a
-/// struct's `__rue_drop_<name>` glue.
-pub fn enum_drop_glue_name(enum_id: EnumId, type_pool: &FrozenTypeInternPool) -> String {
-    // File-qualified when the enum name spans files (RUE-571).
-    format!("__rue_drop_{}", type_pool.enum_symbol_name(enum_id))
-}
-
-/// Generate the drop glue function name for an array type.
-///
-/// The name encodes the element type and length, e.g., `__rue_drop_array_String_3`
-pub fn array_drop_glue_name(
-    array_id: rue_air::ArrayTypeId,
-    type_pool: &FrozenTypeInternPool,
-) -> String {
-    let (element_type, length) = type_pool.array_def(array_id);
-    let element_type_name = type_name(element_type, type_pool);
-    format!("__rue_drop_array_{}_{}", element_type_name, length)
-}
-
-/// Get a name for a type (used for generating drop glue function names).
-fn type_name(ty: Type, type_pool: &FrozenTypeInternPool) -> String {
-    match ty.kind() {
-        TypeKind::I8 => "i8".to_string(),
-        TypeKind::I16 => "i16".to_string(),
-        TypeKind::I32 => "i32".to_string(),
-        TypeKind::I64 => "i64".to_string(),
-        TypeKind::U8 => "u8".to_string(),
-        TypeKind::U16 => "u16".to_string(),
-        TypeKind::U32 => "u32".to_string(),
-        TypeKind::U64 => "u64".to_string(),
-        TypeKind::Bool => "bool".to_string(),
-        TypeKind::Unit => "unit".to_string(),
-        TypeKind::Never => "never".to_string(),
-        TypeKind::Error => "error".to_string(),
-        // ComptimeType only exists at compile time
-        TypeKind::ComptimeType => "comptime_type".to_string(),
-        TypeKind::Enum(enum_id) => type_pool.enum_symbol_name(enum_id),
-        // Struct types include builtin types like String. File-qualified
-        // when the struct name spans files (RUE-571), so arrays of two
-        // same-named element types get distinct glue.
-        TypeKind::Struct(struct_id) => type_pool.struct_symbol_name(struct_id),
-        TypeKind::Array(array_id) => {
-            let (element_type, length) = type_pool.array_def(array_id);
-            let elem_name = type_name(element_type, type_pool);
-            format!("array_{}_{}", elem_name, length)
-        }
-        // Module types should never reach drop glue (compile-time only)
-        TypeKind::Module(_) => "module".to_string(),
-        // Pointer types
-        TypeKind::PtrConst(ptr_id) => {
-            let pointee = type_pool.ptr_const_def(ptr_id);
-            format!("ptr_const_{}", type_name(pointee, type_pool))
-        }
-        TypeKind::PtrMut(ptr_id) => {
-            let pointee = type_pool.ptr_mut_def(ptr_id);
-            format!("ptr_mut_{}", type_name(pointee, type_pool))
-        }
-    }
-}
+// Drop-glue symbol names are derived by the single authority in
+// `rue_air::drop_glue_names` so glue synthesis here and the backends' lowering
+// cannot spell them differently (RUE-796). Re-exported for the existing
+// `rue_compiler::drop_glue::{enum,array}_drop_glue_name` call sites.
+pub use rue_air::drop_glue_names::{array_drop_glue_name, enum_drop_glue_name};
 
 #[cfg(test)]
 mod tests {

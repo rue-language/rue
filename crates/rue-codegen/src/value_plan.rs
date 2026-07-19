@@ -336,6 +336,14 @@ pub struct IntrinsicPlan {
     /// `None` for every other operation and gate-off, so the existing
     /// slot-shaped path is unchanged.
     pub physical_slots: Option<Vec<crate::types::PhysicalEnumSlot>>,
+    /// For a typed `@ptr_read`/`@ptr_write` of a HETEROGENEOUS compact aggregate
+    /// pointee (an enum whose per-variant payload layouts disagree, or an
+    /// aggregate containing one) under the compact layout, the tag-dispatched
+    /// image marshalled across the pointer (ADR-0052 phase 5.12, RUE-1037). Set
+    /// only when [`Self::physical_slots`] is `None` because no single
+    /// variant-independent map exists; `None` for every variant-independent
+    /// pointee and gate-off, so the existing paths are unchanged.
+    pub dispatch_image: Option<crate::types::DispatchImage>,
     /// For a typed `@ptr_write` of a compact aggregate pointee, the byte ranges
     /// of its memory image that hold padding (ADR-0052 ruling 5). The backend
     /// zeros these before the field stores so the image is deterministically
@@ -861,7 +869,10 @@ fn drop_plan<A: ValueLowerAdapter>(
                     offset += count;
                 }
                 actions.push(DropAction {
-                    symbol: format!("__rue_drop_{}", ctx.type_pool.struct_symbol_name(struct_id)),
+                    symbol: rue_air::drop_glue_names::struct_drop_glue_name(
+                        struct_id,
+                        ctx.type_pool,
+                    ),
                     slots: glue_slots,
                 });
             }
@@ -874,7 +885,7 @@ fn drop_plan<A: ValueLowerAdapter>(
                 }
             }
             actions.push(DropAction {
-                symbol: crate::types::array_drop_glue_name(array_id, ctx.type_pool),
+                symbol: rue_air::drop_glue_names::array_drop_glue_name(array_id, ctx.type_pool),
                 slots,
             });
         }
@@ -886,7 +897,7 @@ fn drop_plan<A: ValueLowerAdapter>(
             // active payload fields back out of that reversed area (RUE-998).
             slots.reverse();
             actions.push(DropAction {
-                symbol: format!("__rue_drop_{}", ctx.type_pool.enum_symbol_name(enum_id)),
+                symbol: rue_air::drop_glue_names::enum_drop_glue_name(enum_id, ctx.type_pool),
                 slots,
             });
         }
@@ -1087,7 +1098,9 @@ fn residual_plan<A: ValueLowerAdapter>(
                 })
                 .collect(),
             total_slots: ctx.type_slot_count(ctx.cfg.get_inst(value).ty),
-            zero_unused_payload: ctx.type_pool.compact_layout(),
+            // ADR-0052 ruling 5: the compact image zeroes padding and unused
+            // payload bytes deterministically on construction.
+            zero_unused_payload: true,
         },
         ResidualInput::EnumPayloadGet {
             base,
@@ -1427,6 +1440,7 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     crate::call_plan::CallTarget::rue(symbol),
                     inputs.return_plan,
                     inputs.compact_return_image.clone(),
+                    inputs.compact_return_dispatch.clone(),
                     &inputs.args,
                     adapter.call_arg_register_budget(),
                     adapter,
@@ -1641,14 +1655,12 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                         ctx.type_pool,
                         ctx.cfg.get_inst(args[1]).ty,
                     ),
-                    // Under the compact layout (`aggregate_layout`) the raw-byte
-                    // family folds into the ordinary typed `ptr u8` path: a byte
-                    // access is exactly the one-byte narrow scalar access
-                    // (RUE-989) that `@ptr_read`/`@ptr_write` of a `u8` pointee
-                    // take, so `@byte_read`/`@byte_write` reuse that single
-                    // emission path (ADR-0052 phase 7, RUE-978). Keying on
-                    // `Type::U8` makes the gate the sole switch: gate-off this is
-                    // `None`, preserving the bespoke byte load/store byte-for-byte.
+                    // Under the compact layout the raw-byte family folds into the
+                    // ordinary typed `ptr u8` path: a byte access is exactly the
+                    // one-byte narrow scalar access (RUE-989) that
+                    // `@ptr_read`/`@ptr_write` of a `u8` pointee take, so
+                    // `@byte_read`/`@byte_write` reuse that single emission path
+                    // (ADR-0052 phase 7, RUE-978).
                     IntrinsicOperation::ByteRead | IntrinsicOperation::ByteWrite => {
                         crate::types::narrow_scalar_access(ctx.type_pool, Type::U8)
                     }
@@ -1670,6 +1682,23 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     ),
                     _ => None,
                 };
+                // A heterogeneous compact aggregate pointee (no variant-independent
+                // map) marshals through the pointer with a per-variant tag dispatch
+                // (RUE-1037). Only when the single map above is `None`.
+                let dispatch_image = if physical_slots.is_some() {
+                    None
+                } else {
+                    match operation {
+                        IntrinsicOperation::PtrRead => {
+                            crate::types::aggregate_dispatch_image(ctx.type_pool, inst.ty)
+                        }
+                        IntrinsicOperation::PtrWrite => crate::types::aggregate_dispatch_image(
+                            ctx.type_pool,
+                            ctx.cfg.get_inst(args[1]).ty,
+                        ),
+                        _ => None,
+                    }
+                };
                 // A compact enum `@ptr_write` initializes the whole image, so the
                 // pointee's padding is zeroed before the field stores (ADR-0052
                 // ruling 5). Only the write needs it; the read never stores.
@@ -1688,6 +1717,7 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     scale,
                     narrow_access,
                     physical_slots,
+                    dispatch_image,
                     image_padding,
                 });
                 cache_result(adapter, value, result);
@@ -2205,6 +2235,29 @@ pub(crate) fn indirect_value_params(
             let ty = param.ty?;
             let map = crate::types::aggregate_physical_slot_map(ctx.type_pool, ty)?;
             Some((ctx.num_locals + param.start_slot, map))
+        })
+        .collect()
+}
+
+/// Callee-side by-value indirect aggregate parameters whose compact image is
+/// HETEROGENEOUS (no single variant-independent map, RUE-1037): the frame base
+/// slot and the tag-dispatched image to unmarshal from the homed pointer. The
+/// complement of [`indirect_value_params`] (which handles the single-map case),
+/// so between them every by-value indirect aggregate parameter is unmarshalled.
+pub(crate) fn indirect_value_params_dispatch(
+    ctx: &CfgLowerContext<'_>,
+) -> Vec<(u32, crate::types::DispatchImage)> {
+    ctx.cfg
+        .source_param_abi()
+        .iter()
+        .filter(|param| param.is_by_value_indirect())
+        .filter_map(|param| {
+            let ty = param.ty?;
+            if crate::types::aggregate_physical_slot_map(ctx.type_pool, ty).is_some() {
+                return None;
+            }
+            let image = crate::types::aggregate_dispatch_image(ctx.type_pool, ty)?;
+            Some((ctx.num_locals + param.start_slot, image))
         })
         .collect()
 }

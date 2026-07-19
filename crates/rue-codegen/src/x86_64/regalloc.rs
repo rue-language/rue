@@ -728,48 +728,6 @@ impl RegAlloc {
                 });
             }
 
-            X86Inst::Movzx8RMIndexed { dst, base, offset } => {
-                let base_reg = Self::load_operand(context, mir, Operand::Virtual(base), Reg::Rax)?;
-                let base_phys = base_reg.as_physical();
-                match Self::get_allocation(context, dst) {
-                    Some(Allocation::Register(reg)) => mir.push(X86Inst::Movzx8RM {
-                        dst: Operand::Physical(reg),
-                        base: base_phys,
-                        offset,
-                    }),
-                    Some(Allocation::Spill(spill_off)) => {
-                        mir.push(X86Inst::Movzx8RM {
-                            dst: Operand::Physical(Reg::Rdx),
-                            base: base_phys,
-                            offset,
-                        });
-                        mir.push_after(X86Inst::MovMR {
-                            base: Reg::Rbp,
-                            offset: spill_off,
-                            src: Operand::Physical(Reg::Rdx),
-                        });
-                    }
-                    Some(Allocation::Rematerialize(_)) => {
-                        unreachable!("destination cannot be rematerializable")
-                    }
-                    None => mir.push(X86Inst::Movzx8RM {
-                        dst,
-                        base: base_phys,
-                        offset,
-                    }),
-                }
-            }
-
-            X86Inst::MovMR8Indexed { base, offset, src } => {
-                let src_op = Self::load_operand(context, mir, src, Reg::Rdx)?;
-                let base_reg = Self::load_operand(context, mir, Operand::Virtual(base), Reg::Rax)?;
-                mir.push(X86Inst::MovMR8 {
-                    base: base_reg.as_physical(),
-                    offset,
-                    src: src_op,
-                });
-            }
-
             X86Inst::NarrowLoadIndexed {
                 dst,
                 base,

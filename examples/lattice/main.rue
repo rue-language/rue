@@ -1,0 +1,116 @@
+// lattice — workflow language, graph analyzer, and deterministic scheduler.
+const std = @import("std");
+const diagnostics = @import("diagnostics.rue");
+const lexer = @import("lexer.rue");
+const parser = @import("parser.rue");
+const report = @import("report.rue");
+const schedule = @import("schedule.rue");
+const selftest = @import("selftest.rue");
+const stress = @import("stress.rue");
+const validate = @import("validate.rue");
+const workload = @import("workload.rue");
+const StrBuf = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+const OptStr = std.option.Option(StrBuf);
+const OptBytes = std.option.Option(Bytes);
+const FileRes = std.result.Result(std.fs.File, std.fs.FileError);
+const ReadRes = std.result.Result(u64, std.fs.FileError);
+
+fn same(borrow value: StrBuf, expected: StrBuf) -> bool {
+    StrBuf.equals_borrowed(borrow value, borrow expected)
+}
+
+fn read_file(borrow path: StrBuf) -> OptBytes {
+    let O = OptBytes;
+    let mut data = Bytes.new();
+    let mut file = match std.fs.File.open(borrow path) {
+        FileRes.Ok(value) => value,
+        FileRes.Err(error) => { return O.None; },
+    };
+    loop {
+        data.reserve(65536);
+        let count = match file.read(inout data) {
+            ReadRes.Ok(value) => value,
+            ReadRes.Err(error) => { return O.None; },
+        };
+        if count == 0 { break; }
+    }
+    let _ = file.close();
+    O.Some(data)
+}
+
+fn demo() -> StrBuf {
+    let mut source = StrBuf.new();
+    source.push_str("workflow demo;\n");
+    source.push_str("pool local slots 2 cpu 4 memory 8;\n");
+    source.push_str("pool large slots 1 cpu 8 memory 16;\n");
+    source.push_str("task fetch pool local duration 2 cpu 1 memory 1 priority 20 retries 1 cache true fail 0;\n");
+    source.push_str("task parse pool local duration 3 cpu 1 memory 2 priority 18 retries 1 cache false fail 0;\n");
+    source.push_str("task compile pool large duration 5 cpu 4 memory 8 priority 16 retries 2 cache true fail 1;\n");
+    source.push_str("task test pool local duration 4 cpu 2 memory 3 priority 14 retries 1 cache false fail 0;\n");
+    source.push_str("task package pool local duration 2 cpu 1 memory 1 priority 10 retries 0 cache true fail 0;\n");
+    source.push_str("after parse fetch;\n");
+    source.push_str("after compile parse;\n");
+    source.push_str("after test compile;\n");
+    source.push_str("after package test;\n");
+    source
+}
+
+fn execute(source: Bytes) -> i32 {
+    let scanned = lexer.scan(source);
+    if scanned.errors.len() > 0 { print(scanned.errors); return 1; }
+    let parsed = parser.parse(scanned.tokens, scanned.strings);
+    if parsed.errors.len() > 0 { print(parsed.errors); return 1; }
+    let mut workflow = parsed.workflow;
+    validate.workflow(inout workflow);
+    if workflow.diagnostics.len() > 0 { print(diagnostics.render(borrow workflow)); return 1; }
+    let run = schedule.run(borrow workflow, 17);
+    print(report.summary(borrow workflow, borrow run));
+    if run.failed == 0 { 0 } else { 1 }
+}
+
+fn help() -> StrBuf {
+    let mut out = StrBuf.new();
+    out.push_str("usage: lattice [demo | run FILE | selftest | stress1 | stress2 | stress4 | benchmark | help]\n");
+    out.push_str("Lattice compiles a workflow DSL, validates its graph, and simulates execution.\n");
+    out
+}
+
+fn main() -> i32 {
+    let command = match std.env.arg(1) {
+        OptStr.Some(value) => value,
+        OptStr.None => { print(help()); return 0; },
+    };
+    if same(borrow command, "demo") { return execute(demo().to_bytes()); }
+    if same(borrow command, "selftest") {
+        let result = selftest.run();
+        print(selftest.render(borrow result));
+        return if result.failures == 0 { 0 } else { 1 };
+    }
+    if same(borrow command, "stress1") || same(borrow command, "stress2") || same(borrow command, "stress4") {
+        let scale: u64 = if same(borrow command, "stress1") { 1 }
+            else if same(borrow command, "stress2") { 2 } else { 4 };
+        let result = stress.run(stress.tier(scale));
+        print(stress.render(borrow result));
+        return if result.valid { 0 } else { 1 };
+    }
+    if same(borrow command, "benchmark") {
+        let result = workload.run();
+        print(workload.render(borrow result));
+        return if result.valid { 0 } else { 1 };
+    }
+    if same(borrow command, "help") || same(borrow command, "--help") {
+        print(help()); return 0;
+    }
+    if same(borrow command, "run") {
+        return match std.env.arg(2) {
+            OptStr.Some(path) => match read_file(borrow path) {
+                OptBytes.Some(bytes) => execute(bytes),
+                OptBytes.None => { println("lattice[filesystem]: cannot read workflow"); 2 },
+            },
+            OptStr.None => { println("lattice: run requires a workflow path"); 2 },
+        };
+    }
+    println("lattice: unknown command; run `lattice help`");
+    2
+}

@@ -18,7 +18,14 @@ use crate::session::{AttemptId, QueryStructuralWork};
 /// Records survive source publication changes. Their declared dependency
 /// edges decide whether they remain reusable; the bound prevents old source
 /// and option variants from creating unbounded session-owned history.
-pub(crate) const QUERY_TERMINAL_RETENTION_LIMIT: usize = 16;
+///
+/// `LIMIT + 1` must not exceed the number of distinct
+/// `(preview_features, target)` query keys the eviction tests can enumerate with
+/// two preview features and three targets (`2^2 * 3 = 12`). Stabilizing a
+/// preview feature shrinks that key space, so the retention bound tracks it
+/// (RUE-987 took it from `16` to `10` when `aggregate_layout` retired); see
+/// `session::tests::retention_variants`.
+pub(crate) const QUERY_TERMINAL_RETENTION_LIMIT: usize = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TerminalKind {

@@ -65,15 +65,11 @@ impl Entry {
 ///
 /// Entries are generated from unknown-gap diagnostics emitted by the real
 /// production classifier, then reviewed into this typed list. Dynamic
-/// `Unsupported::detail` text is intentionally absent from the policy key.
-///
-/// Clusters marked `slot-model-default` cover corpus cases that pin the current
-/// default eight-byte slot layout (byte offsets, per-slot sizes, aggregate
-/// widths). The gap *reasons* here are layout-independent (they are unmodeled
-/// raw-pointer / `@field_ptr` intrinsics), but the cases' expected values move
-/// when the ratified compact layout (ADR-0052, `aggregate_layout`) becomes the
-/// default, so the stabilization sweep (RUE-987) greps `slot-model-default` to
-/// enumerate every ledger entry it must re-verify after the flip.
+/// `Unsupported::detail` text is intentionally absent from the policy key. The
+/// gap *reasons* are layout-independent (unmodeled raw-pointer / `@field_ptr`
+/// intrinsics), so the compact layout (ADR-0052, RUE-987) becoming the default
+/// left this inventory's reasons unchanged; only the corpus cases' observed
+/// values moved, which the RUE-987 sweep re-verified.
 const ENTRIES: &[Entry] = &[
     Entry::new(
         "array_literal_string",
@@ -105,69 +101,60 @@ const ENTRIES: &[Entry] = &[
         implementation_defined(ImplementationDefinedKind::StringCapacityValue),
         &[],
     ),
-    // slot-model-default: the aggregate ABI matrix pins per-slot byte layout.
     Entry::new(
         "cli.aggregate_abi_matrix",
         "aos_ptr_rw",
-        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
         &[],
     ),
     Entry::new(
         "cli.aggregate_abi_matrix",
         "arr_ptr_rw",
-        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
         &[],
     ),
     Entry::new(
         "cli.aggregate_abi_matrix",
         "enum_ptr_rw",
-        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
         &[],
     ),
     Entry::new(
         "cli.aggregate_abi_matrix",
         "nest_ptr_rw",
-        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
         &[],
     ),
     Entry::new(
         "cli.aggregate_abi_matrix",
         "s1_ptr_rw",
-        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
         &[],
     ),
     Entry::new(
         "cli.aggregate_abi_matrix",
         "s2_ptr_rw",
-        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
         &[],
     ),
     Entry::new(
         "cli.aggregate_abi_matrix",
         "s3_ptr_rw",
-        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
         &[],
     ),
     Entry::new(
         "cli.aggregate_abi_matrix",
         "s8_ptr_rw",
-        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
         &[],
     ),
-    // slot-model-default: ascending-layout cases assert "slot k at base + k*8".
     Entry::new(
         "cli.aggregate_ascending_layout",
         "heap_multislot_roundtrip_no_clobber",
         intrinsic(UnsupportedIntrinsicKind::Allocate),
         &[],
     ),
-    Entry::new(
-        "cli.aggregate_ascending_layout",
-        "stack_raw_ptr_roundtrip",
-        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
-        &[],
-    ),
-    // slot-model-default: aggregate_slots pins per-slot 8-byte field layout.
     Entry::new(
         "cli.aggregate_slots",
         "dbg_string_from_field",
@@ -510,8 +497,6 @@ const ENTRIES: &[Entry] = &[
         semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
-    // slot-model-default: offset_of_field_ptr pins @offset_of byte values
-    // (0/8/16/24) and their @field_ptr agreement.
     Entry::new(
         "cli.offset_of_field_ptr",
         "field_ptr_on_param_struct",
@@ -539,17 +524,9 @@ const ENTRIES: &[Entry] = &[
     // ADR-0052 phase 3 (RUE-974): the compact-layout CLI cases reach a field
     // through `@field_ptr`, which the oracle model does not model (same gap as
     // the `offset_of_field_ptr` cases above).
-    // slot-model-default: aggregate_layout contrasts the default slot layout
-    // with the compact preview, so its expected values track the flip.
     Entry::new(
         "cli.aggregate_layout",
         "compact_slot_identical_field_ptr_roundtrip",
-        intrinsic(UnsupportedIntrinsicKind::FieldPointer),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_layout",
-        "narrow_program_unchanged_without_the_preview",
         intrinsic(UnsupportedIntrinsicKind::FieldPointer),
         &[],
     ),
@@ -659,38 +636,53 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::Allocate),
         &[],
     ),
-    // RUE-1014: the real-std json/priority-queue cases under the gate reach memory
-    // through the std allocators (`@alloc_bytes` in StrBuf, `@int_to_ptr` in
-    // ArrayBuf.new()), outside the oracle model.
+    // ADR-0052 phase 5.12 (RUE-1037): the heterogeneous-enum tag-dispatch heap
+    // round-trips reach memory through `@alloc`, outside the oracle model (same
+    // gap as the enum/struct heap cases above).
+    Entry::new(
+        "cli.aggregate_layout",
+        "compact_heterogeneous_enum_heap_overwrite_no_residue",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
+    Entry::new(
+        "cli.aggregate_layout",
+        "compact_enum_overlapping_union_roundtrip",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
     Entry::new(
         "cli.aggregate_layout_std_sweep",
-        "std_json_parse_variant_under_gate",
+        "overlapping_union_enum_roundtrips_via_dispatch",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
+    Entry::new(
+        "cli.aggregate_layout_std_sweep",
+        "std_net_result_sockaddr_networkerror_mirror",
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        &[],
+    ),
+    // RUE-1014: the real-std json/priority-queue cases reach memory through the
+    // std allocators (`@alloc_bytes` in StrBuf, `@int_to_ptr` in ArrayBuf.new()),
+    // outside the oracle model.
+    Entry::new(
+        "cli.aggregate_layout_std_sweep",
+        "std_json_parse_variant",
         intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
         &[],
     ),
     Entry::new(
         "cli.aggregate_layout_std_sweep",
-        "std_priority_queue_option_pair_under_gate",
+        "std_priority_queue_option_pair",
         intrinsic(UnsupportedIntrinsicKind::IntToPointer),
         &[],
     ),
-    // ADR-0052 phase 7 (RUE-978): the de-gate readiness differential cases
-    // allocate through @alloc_bytes, which the oracle model does not model.
-    Entry::new(
-        "cli.raw_bytes_degate_readiness",
-        "byte_family_roundtrip_aggregate_layout",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
+    // RUE-978: the byte-surface behavior cases allocate through @alloc_bytes,
+    // which the oracle model does not model.
     Entry::new(
         "cli.raw_bytes_degate_readiness",
         "byte_family_roundtrip_plain",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
-        "cli.raw_bytes_degate_readiness",
-        "packed_subrange_copy_aggregate_layout",
         intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
         &[],
     ),
@@ -865,13 +857,13 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.ptr_read_write_aggregate",
         "ptr_read_two_field_struct",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
         &[],
     ),
     Entry::new(
         "cli.ptr_read_write_aggregate",
         "ptr_read_write_nested_struct",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
         &[],
     ),
     Entry::new(
@@ -883,7 +875,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.ptr_read_write_aggregate",
         "ptr_write_two_field_struct",
-        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
+        intrinsic(UnsupportedIntrinsicKind::Allocate),
         &[],
     ),
     Entry::new(
@@ -979,12 +971,6 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.slices",
         "slice_param_sum_len_index",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.slices",
-        "slice_param_u8_element",
         intrinsic(UnsupportedIntrinsicKind::RawAddress),
         &[],
     ),

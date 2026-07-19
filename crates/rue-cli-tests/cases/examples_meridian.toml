@@ -1,0 +1,84 @@
+# RUE-1041: 36K-line relational database and query engine in Rue.
+[section]
+id = "cli.examples_meridian"
+name = "Meridian relational database and query engine written in Rue"
+description = "exercise parsing, validation, catalogs, planning, optimization, execution, transactions, recovery, replication, analysis, reporting, and generated scaling workloads"
+
+[[case]]
+name = "meridian_runs_built_in_demo"
+description = "the built-in database runs through planning and execution while the generic no-argument smoke path only prints help"
+source_path = "examples/meridian/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_args = ["demo"]
+timeout_ms = 60000
+exit_code = 0
+stdout_contains = ["database=meridian", "tables=3", "queries=2", "plan_nodes=7", "result_rows=6", "used_index=true", "plan_valid=true", "result_valid=true"]
+
+[[case]]
+name = "meridian_parses_plans_and_executes_workload"
+description = "a SQL-like file exercises schemas, rows, indexes, a rolled-back transaction, filtering, grouping, ordering, and limits"
+source_path = "examples/meridian/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "query.sql", source = """
+CREATE TABLE users 3;
+COLUMN users id INT REQUIRED UNIQUE;
+COLUMN users team INT REQUIRED;
+COLUMN users score INT REQUIRED;
+INSERT users 1 7 82;
+INSERT users 2 7 91;
+INSERT users 3 8 72;
+CREATE INDEX users_score users score;
+BEGIN 7;
+ROLLBACK 7;
+SELECT users FILTER score 80 GROUP team ORDER score LIMIT 10;
+""" }]
+program_args = ["run", "query.sql"]
+timeout_ms = 60000
+exit_code = 0
+stdout_contains = ["tables=1", "stored_rows=3", "indexes=1", "transactions=1", "query_table=users", "result_rows=2", "sum=173", "used_index=true", "plan_valid=true", "result_valid=true"]
+
+[[case]]
+name = "meridian_rejects_incomplete_schema"
+description = "catalog validation compares the declared and actual column counts"
+source_path = "examples/meridian/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "schema.sql", source = """
+CREATE TABLE users 2;
+COLUMN users id INT REQUIRED;
+SELECT users;
+""" }]
+program_args = ["run", "schema.sql"]
+timeout_ms = 60000
+exit_code = 1
+stdout_contains = ["meridian[schema] users: declared column count does not match COLUMN statements"]
+
+[[case]]
+name = "meridian_rejects_unknown_query_table"
+description = "query binding refuses a SELECT whose source is absent from the catalog"
+source_path = "examples/meridian/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "unknown.sql", source = "SELECT missing;\n" }]
+program_args = ["run", "unknown.sql"]
+timeout_ms = 60000
+exit_code = 1
+stdout_contains = ["meridian[query] missing: SELECT references unknown table"]
+
+[[case]]
+name = "meridian_runs_cross_oracle_selftest"
+description = "catalog, query, transaction, recovery, replication, analysis, optimizer, renderer, and row-oracle invariants agree"
+source_path = "examples/meridian/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_args = ["selftest"]
+timeout_ms = 60000
+exit_code = 0
+stdout_contains = ["selftest checks=24", "failures=0", "analysis_passes=112", "optimizer_rules=72", "optimizer_evaluations=144", "report_documents=44", "recovery_redone=2", "recovery_undone=1", "valid=true"]
+
+[[case]]
+name = "meridian_runs_complete_scaling_tier"
+description = "stress mode executes every maintained analysis, optimizer, renderer, and independent execution oracle twice"
+source_path = "examples/meridian/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_args = ["stress1"]
+timeout_ms = 120000
+exit_code = 0
+stdout_contains = ["stress scale=1", "tables=3", "rows=46", "analysis_passes=112", "optimizer_evaluations=144", "report_documents=44", "oracle_mismatches=0", "deterministic_mismatches=0", "valid=true"]

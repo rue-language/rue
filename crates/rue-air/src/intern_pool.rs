@@ -32,7 +32,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 use lasso::Spur;
 use rue_span::FileId;
 
-use crate::layout::{Layout, LayoutKind, PaddingRange, SLOT_BYTES};
+use crate::layout::{Layout, LayoutKind, PaddingRange};
 use crate::path_norm::{mangle_symbol_component, normalize_module_path};
 use crate::type_encoding;
 use crate::types::{
@@ -346,18 +346,6 @@ struct TypeInternPoolInner {
 
     /// Reverse index enforcing one canonical nominal for each language item.
     lang_item_structs: HashMap<LangItem, StructId>,
-
-    /// Whether the compact native physical layout (ADR-0052, the
-    /// `aggregate_layout` preview) is active for this compilation. Set once by
-    /// semantic construction from the compilation's preview features; it
-    /// therefore participates in every cache identity that already keys on
-    /// preview features. When `false` the layout authority reports today's
-    /// flattened eight-byte slot model byte-for-byte; when `true` it reports
-    /// natural scalar widths/alignments, declaration-order struct fields with
-    /// padding, ascending array stride, and tagged-enum layout. The slot
-    /// decomposition [`Self::abi_slot_count`] is unaffected either way — it is
-    /// the internal value representation, not the physical layout.
-    compact_layout: bool,
 }
 
 fn checked_pool_index(index: usize) -> Option<u32> {
@@ -981,87 +969,49 @@ impl TypeInternPoolInner {
         }
     }
 
-    /// Byte size of `ty` under the canonical layout. Zero-sized types are zero
-    /// bytes. Under the slot model this is the slot count times [`SLOT_BYTES`];
-    /// under the compact model (ADR-0052) it is the natural size including tail
-    /// padding.
-    fn layout_size(&self, ty: Type) -> u64 {
-        if self.compact_layout {
-            self.compact_size_align(ty).0
-        } else {
-            u64::from(self.abi_slot_count(ty)) * SLOT_BYTES
-        }
-    }
-
-    /// Byte offset of the field at `field_index` within `struct_id`: the summed
-    /// sizes of every preceding field (slot model) or the field placement
-    /// respecting alignment and interior padding (compact model). Shared by
+    /// Byte offset of the field at `field_index` within `struct_id`: the field
+    /// placement respecting natural alignment and interior padding. Shared by
     /// `@offset_of` and the layout authority so `@offset_of` and physical field
-    /// addressing agree by construction. Note that under the compact model this
-    /// physical byte offset is deliberately *not* the codegen slot offset
-    /// (`struct_field_slot_offset`), which stays a slot-count index into the
-    /// internal value representation (ADR-0052's three-representation split).
+    /// addressing agree by construction. This physical byte offset is
+    /// deliberately *not* the codegen slot offset (`struct_field_slot_offset`),
+    /// which stays a slot-count index into the internal value representation
+    /// (ADR-0052's three-representation split).
     fn struct_field_offset(&self, struct_id: StructId, field_index: u32) -> u64 {
-        if self.compact_layout {
-            return self
-                .compact_struct_layout(struct_id)
-                .field_offsets
-                .get(field_index as usize)
-                .copied()
-                .unwrap_or(0);
-        }
-        let fields = &self.struct_def(struct_id).fields;
-        let mut offset = 0u64;
-        for field in fields.iter().take(field_index as usize) {
-            offset = offset.saturating_add(self.layout_size(field.ty));
-        }
-        offset
+        self.compact_struct_layout(struct_id)
+            .field_offsets
+            .get(field_index as usize)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Byte offset of payload field `field_index` of `variant_index` within
-    /// `enum_id`. Under the slot model the discriminant occupies the first slot,
-    /// so every payload begins one [`SLOT_BYTES`] slot in and each preceding
-    /// payload field contributes its layout size. Under the compact model the
-    /// payload begins at the tag-plus-alignment offset and preceding fields are
-    /// placed with natural alignment. This mirrors [`Self::layout`]'s
-    /// [`LayoutKind::Enum`] `variants`. Like `struct_field_offset`, the compact
-    /// value here is the physical byte offset, distinct from codegen's slot
-    /// offset into the value representation.
+    /// `enum_id`. The payload begins at the tag-plus-alignment offset and
+    /// preceding fields are placed with natural alignment. This mirrors
+    /// [`Self::layout`]'s [`LayoutKind::Enum`] `variants`. Like
+    /// `struct_field_offset`, this physical byte offset is distinct from
+    /// codegen's slot offset into the value representation.
     fn enum_payload_field_offset(
         &self,
         enum_id: EnumId,
         variant_index: u32,
         field_index: u32,
     ) -> u64 {
-        if self.compact_layout {
-            let enum_layout = self.compact_enum_layout(enum_id);
-            return enum_layout
-                .variants
-                .get(variant_index as usize)
-                .and_then(|fields| fields.get(field_index as usize))
-                .copied()
-                .unwrap_or(enum_layout.payload_offset);
-        }
-        let def = self.enum_def(enum_id);
-        let mut offset = SLOT_BYTES;
-        for &field_ty in def
-            .variant_payload(variant_index as usize)
-            .iter()
-            .take(field_index as usize)
-        {
-            offset = offset.saturating_add(self.layout_size(field_ty));
-        }
-        offset
+        let enum_layout = self.compact_enum_layout(enum_id);
+        enum_layout
+            .variants
+            .get(variant_index as usize)
+            .and_then(|fields| fields.get(field_index as usize))
+            .copied()
+            .unwrap_or(enum_layout.payload_offset)
     }
 
     /// Slot-count offset of struct field `field_index`: the summed
     /// [`Self::abi_slot_count`] of every preceding field. This is the *internal
-    /// value decomposition* offset (ADR-0052 representation 2), deliberately
-    /// independent of the compact-layout flag: code generation's stack/register
-    /// slot model stays slot-based (RUE-975) even when the physical layout
-    /// authority reports compact byte offsets. Under the slot model it equals
-    /// [`Self::struct_field_offset`]` / SLOT_BYTES`; under the compact model the
-    /// two intentionally diverge.
+    /// value decomposition* offset (ADR-0052 representation 2): code
+    /// generation's stack/register slot model stays slot-based (RUE-975) even
+    /// though the physical layout authority reports compact byte offsets, so
+    /// this slot index and [`Self::struct_field_offset`]'s compact byte offset
+    /// intentionally diverge.
     fn struct_field_slot_offset(&self, struct_id: StructId, field_index: u32) -> u32 {
         let fields = &self.struct_def(struct_id).fields;
         let mut slots = 0u32;
@@ -1093,80 +1043,13 @@ impl TypeInternPoolInner {
         slots
     }
 
-    /// Compute the canonical physical [`Layout`] of `ty`.
+    /// Compute the canonical physical [`Layout`] of `ty` (ADR-0052).
     ///
-    /// Under the slot model `size == stride == abi_slot_count * SLOT_BYTES`,
-    /// alignment is `SLOT_BYTES` (or `1` for a zero-sized type), and `kind`
-    /// records slot-derived field/element/payload offsets. Under the compact
-    /// model (ADR-0052) `size` includes tail padding, `stride == size`,
-    /// alignment is the natural alignment, and `kind` records the compact field
-    /// offsets, element stride, tag width, and payload placement.
+    /// `size` includes tail padding, `stride == size`, alignment is the natural
+    /// alignment, and `kind` records the compact field offsets, element stride,
+    /// tag width, and payload placement.
     fn layout(&self, ty: Type) -> Layout {
-        if self.compact_layout {
-            return self.compact_layout_of(ty);
-        }
-        let size = self.layout_size(ty);
-        let alignment = if size == 0 { 1 } else { SLOT_BYTES };
-        let stride = size;
-        let kind = match ty.kind() {
-            TypeKind::Struct(id) => {
-                let fields = &self.struct_def(id).fields;
-                let mut field_offsets = Vec::with_capacity(fields.len());
-                let mut offset = 0u64;
-                for field in fields {
-                    field_offsets.push(offset);
-                    offset = offset.saturating_add(self.layout_size(field.ty));
-                }
-                LayoutKind::Struct {
-                    field_offsets,
-                    // The packed slot model has no interior or tail padding.
-                    padding_ranges: Vec::new(),
-                }
-            }
-            TypeKind::Array(id) => {
-                let (element, count) = self.array_def(id);
-                LayoutKind::Array {
-                    element: Box::new(self.layout(element)),
-                    count,
-                }
-            }
-            TypeKind::Enum(id) => {
-                let def = self.enum_def(id);
-                // The discriminant occupies slot 0; every variant's payload
-                // begins at slot 1.
-                let payload_offset = SLOT_BYTES;
-                let variants = (0..def.variant_count())
-                    .map(|variant| {
-                        let mut offset = payload_offset;
-                        def.variant_payload(variant)
-                            .iter()
-                            .map(|&field_ty| {
-                                let field_offset = offset;
-                                offset = offset.saturating_add(self.layout_size(field_ty));
-                                field_offset
-                            })
-                            .collect()
-                    })
-                    .collect();
-                LayoutKind::Enum {
-                    tag: Box::new(Layout {
-                        size: SLOT_BYTES,
-                        alignment: SLOT_BYTES,
-                        stride: SLOT_BYTES,
-                        kind: LayoutKind::Scalar,
-                    }),
-                    payload_offset,
-                    variants,
-                }
-            }
-            _ => LayoutKind::Scalar,
-        };
-        Layout {
-            size,
-            alignment,
-            stride,
-            kind,
-        }
+        self.compact_layout_of(ty)
     }
 
     // ----- Compact native layout (ADR-0052 "Resolved at acceptance") -----
@@ -1355,13 +1238,8 @@ impl TypeInternPoolInner {
     /// construction) requires cleared wherever a compact image is materialized,
     /// and the complement of the value-decomposition slots the codegen image map
     /// writes — so zeroing these ranges and then storing the fields
-    /// deterministically initializes every byte of the image. Empty under the
-    /// slot model (no padding exists), so a gate-off build derives no ranges and
-    /// emits no zeroing.
+    /// deterministically initializes every byte of the image.
     fn compact_image_padding_ranges(&self, ty: Type) -> Vec<PaddingRange> {
-        if !self.compact_layout {
-            return Vec::new();
-        }
         let (size, _) = self.compact_size_align(ty);
         if size == 0 {
             return Vec::new();
@@ -1559,7 +1437,6 @@ impl TypeInternPool {
                 symbol_paths: HashMap::new(),
                 struct_lang_items: HashMap::new(),
                 lang_item_structs: HashMap::new(),
-                compact_layout: false,
             }),
         }
     }
@@ -1603,27 +1480,6 @@ impl TypeInternPool {
             .symbol_paths = symbol_paths;
     }
 
-    /// Select the physical layout model for this compilation (ADR-0052).
-    ///
-    /// Semantic construction calls this once, before any type is interned, with
-    /// whether the `aggregate_layout` preview feature is enabled. The choice is
-    /// carried through [`Self::freeze`] into the backend-facing pool so the
-    /// layout authority reports one consistent model for the whole compilation.
-    pub(crate) fn set_compact_layout(&self, compact_layout: bool) {
-        self.inner
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .compact_layout = compact_layout;
-    }
-
-    /// Whether the compact native layout (ADR-0052) is active for this pool.
-    pub fn compact_layout(&self) -> bool {
-        self.inner
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .compact_layout
-    }
-
     /// Apply a type-pool mutation atomically through an isolated snapshot.
     ///
     /// The live write lock remains held while `operation` works on the
@@ -1656,11 +1512,11 @@ impl TypeInternPool {
     /// Return the flattened runtime ABI width of `ty` in eight-byte slots.
     ///
     /// This is the canonical slot decomposition shared by sema, CFG temporary
-    /// allocation, and code generation. The physical byte layout that observes
-    /// or addresses memory is derived from it by [`Self::layout`], which scales
-    /// this count by [`SLOT_BYTES`]. Aggregate arithmetic saturates; sema
-    /// rejects layouts that exceed the representable slot range before they
-    /// can be materialized.
+    /// allocation, and code generation (ADR-0052 representation 2, the internal
+    /// value model). It is distinct from the compact physical byte layout that
+    /// observes or addresses memory, which [`Self::layout`] reports. Aggregate
+    /// arithmetic saturates; sema rejects layouts that exceed the representable
+    /// slot range before they can be materialized.
     pub fn abi_slot_count(&self, ty: Type) -> u32 {
         self.try_abi_slot_count(ty)
             .expect("layout requires a complete, non-recovery type graph")
@@ -2752,20 +2608,11 @@ impl FrozenTypeInternPool {
         self.inner.abi_slot_count(ty)
     }
 
-    /// Whether the compact native layout (ADR-0052) is active for this pool.
-    ///
-    /// Code generation consults this to keep the internal slot/value/stack
-    /// model coherent while the compact-memory backends are staged: physical
-    /// pointer/heap addressing that would diverge from the slot model is
-    /// refused with a clear diagnostic rather than silently miscompiled
-    /// (RUE-975/RUE-976).
-    pub fn compact_layout(&self) -> bool {
-        self.inner.compact_layout
-    }
-
     /// Canonical physical [`Layout`] of `ty`: the one authority code generation
     /// consumes for byte size, alignment, stride, and field/element/payload
-    /// offsets. Derived from [`Self::abi_slot_count`] scaled by [`SLOT_BYTES`].
+    /// offsets. Reports the compact native layout (ADR-0052): natural scalar
+    /// widths and alignments, declaration-order struct fields with padding,
+    /// ascending array stride, and smallest-sufficient enum tags.
     pub fn layout(&self, ty: Type) -> Layout {
         self.validate_complete_type(ty)
             .expect("backend layout requires a complete, non-recovery type graph");
@@ -2776,8 +2623,8 @@ impl FrozenTypeInternPool {
     /// than a leaf field (ADR-0052 ruling 5). Code generation zeros exactly these
     /// ranges wherever it materializes a compact image — heap enum stores, sret
     /// buffers, and by-value argument buffers — so the padding is deterministically
-    /// zero on construction. Always empty with the compact layout off, keeping
-    /// gate-off code byte-identical.
+    /// zero on construction. Empty for a type with no interior or tail padding
+    /// (all-eight-byte-leaf aggregates and scalars).
     pub fn compact_image_padding_ranges(&self, ty: Type) -> Vec<PaddingRange> {
         self.validate_complete_type(ty)
             .expect("backend layout requires a complete, non-recovery type graph");
@@ -3061,7 +2908,6 @@ impl Clone for TypeInternPool {
                 symbol_paths: inner.symbol_paths.clone(),
                 struct_lang_items: inner.struct_lang_items.clone(),
                 lang_item_structs: inner.lang_item_structs.clone(),
-                compact_layout: inner.compact_layout,
             }),
         }
     }
@@ -4334,78 +4180,7 @@ mod tests {
     // Canonical layout authority (ADR-0052)
     // ========================================================================
 
-    use crate::layout::{LayoutKind, SLOT_BYTES};
-
-    #[test]
-    fn layout_scalars_and_pointers_are_one_slot() {
-        let pool = TypeInternPool::new();
-        let ptr = Type::new_ptr_const(pool.intern_ptr_const_from_type(Type::I32));
-        let frozen = pool.freeze();
-        for ty in [Type::I8, Type::I32, Type::I64, Type::U8, Type::BOOL, ptr] {
-            let layout = frozen.layout(ty);
-            assert_eq!(layout.size, SLOT_BYTES, "{ty:?} size");
-            assert_eq!(layout.alignment, SLOT_BYTES, "{ty:?} align");
-            assert_eq!(layout.stride, layout.size, "{ty:?} stride == size");
-            assert_eq!(layout.kind, LayoutKind::Scalar, "{ty:?} kind");
-        }
-    }
-
-    #[test]
-    fn layout_zero_sized_types_have_unit_alignment_and_zero_stride() {
-        let pool = TypeInternPool::new();
-        let empty_array = Type::new_array(pool.intern_array_from_type(Type::I32, 0));
-        let frozen = pool.freeze();
-        for ty in [Type::UNIT, Type::NEVER, empty_array] {
-            let layout = frozen.layout(ty);
-            assert_eq!(layout.size, 0, "{ty:?} size");
-            assert_eq!(layout.alignment, 1, "{ty:?} align");
-            assert_eq!(layout.stride, 0, "{ty:?} stride");
-        }
-    }
-
-    #[test]
-    fn layout_struct_reports_declaration_order_field_offsets() {
-        let pool = TypeInternPool::new();
-        let interner = ThreadedRodeo::default();
-        let (id, _) = pool.register_struct(
-            interner.get_or_intern("Point"),
-            struct_def(
-                "Point",
-                vec![
-                    StructField {
-                        name: "x".into(),
-                        ty: Type::I32,
-                    },
-                    StructField {
-                        name: "y".into(),
-                        ty: Type::I64,
-                    },
-                ],
-            ),
-        );
-        let struct_ty = Type::new_struct(id);
-        let frozen = pool.freeze();
-
-        let layout = frozen.layout(struct_ty);
-        assert_eq!(layout.size, 2 * SLOT_BYTES);
-        assert_eq!(layout.alignment, SLOT_BYTES);
-        match &layout.kind {
-            LayoutKind::Struct {
-                field_offsets,
-                padding_ranges,
-            } => {
-                assert_eq!(field_offsets, &[0, SLOT_BYTES]);
-                assert!(
-                    padding_ranges.is_empty(),
-                    "packed slot model has no padding"
-                );
-            }
-            other => panic!("expected struct layout, got {other:?}"),
-        }
-        // The dedicated field-offset query agrees with the layout's kind.
-        assert_eq!(frozen.struct_field_offset(id, 0), 0);
-        assert_eq!(frozen.struct_field_offset(id, 1), SLOT_BYTES);
-    }
+    use crate::layout::LayoutKind;
 
     #[test]
     fn layout_empty_struct_is_zero_sized() {
@@ -4420,98 +4195,8 @@ mod tests {
     }
 
     #[test]
-    fn layout_array_strides_by_element_size() {
-        let pool = TypeInternPool::new();
-        let array_ty = pool.try_intern_array(Type::I32, 3).unwrap();
-        let frozen = pool.freeze();
-        let layout = frozen.layout(array_ty);
-        assert_eq!(layout.size, 3 * SLOT_BYTES);
-        assert_eq!(layout.stride, 3 * SLOT_BYTES);
-        match layout.kind {
-            LayoutKind::Array { element, count } => {
-                assert_eq!(count, 3);
-                assert_eq!(element.size, SLOT_BYTES);
-                assert_eq!(
-                    element.stride, SLOT_BYTES,
-                    "indexing strides by element size"
-                );
-            }
-            other => panic!("expected array layout, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn layout_enum_places_payload_after_the_discriminant() {
-        let pool = TypeInternPool::new();
-        let interner = ThreadedRodeo::default();
-        let def = EnumDef {
-            name: "Shape".to_string(),
-            variants: vec!["Pair".to_string(), "One".to_string()],
-            variant_payloads: vec![vec![Type::I32, Type::I64], vec![Type::I32]],
-            is_pub: false,
-            file_id: FileId::DEFAULT,
-        };
-        let (id, _) = pool.register_enum(interner.get_or_intern("Shape"), def);
-        let enum_ty = Type::new_enum(id);
-        let frozen = pool.freeze();
-
-        let layout = frozen.layout(enum_ty);
-        // One tag slot plus the largest payload (two slots).
-        assert_eq!(layout.size, 3 * SLOT_BYTES);
-        match layout.kind {
-            LayoutKind::Enum {
-                tag,
-                payload_offset,
-                variants,
-            } => {
-                assert_eq!(tag.size, SLOT_BYTES);
-                assert_eq!(payload_offset, SLOT_BYTES);
-                assert_eq!(
-                    variants,
-                    vec![vec![SLOT_BYTES, 2 * SLOT_BYTES], vec![SLOT_BYTES]]
-                );
-            }
-            other => panic!("expected enum layout, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn layout_size_agrees_with_slot_count_across_the_pool() {
-        let pool = TypeInternPool::new();
-        let interner = ThreadedRodeo::default();
-        let (id, _) = pool.register_struct(
-            interner.get_or_intern("Mixed"),
-            struct_def(
-                "Mixed",
-                vec![
-                    StructField {
-                        name: "a".into(),
-                        ty: Type::I32,
-                    },
-                    StructField {
-                        name: "b".into(),
-                        ty: Type::BOOL,
-                    },
-                ],
-            ),
-        );
-        let _ = pool.try_intern_array(Type::new_struct(id), 4).unwrap();
-        let frozen = pool.freeze();
-        for ty in frozen.all_types() {
-            assert_eq!(
-                frozen.layout(ty).size,
-                u64::from(frozen.abi_slot_count(ty)) * SLOT_BYTES,
-                "layout size must equal abi_slot_count * SLOT_BYTES for {ty:?}"
-            );
-        }
-    }
-
-    // ----- Compact native layout (ADR-0052 `aggregate_layout`) -----
-
-    #[test]
     fn compact_layout_reports_natural_scalar_widths_and_alignments() {
         let pool = TypeInternPool::new();
-        pool.set_compact_layout(true);
         let ptr = Type::new_ptr_const(pool.intern_ptr_const_from_type(Type::I32));
         let frozen = pool.freeze();
         for (ty, size, align) in [
@@ -4537,7 +4222,6 @@ mod tests {
     #[test]
     fn compact_layout_zero_sized_types_are_size_zero_align_one_stride_zero() {
         let pool = TypeInternPool::new();
-        pool.set_compact_layout(true);
         let empty_array = Type::new_array(pool.intern_array_from_type(Type::I32, 0));
         let frozen = pool.freeze();
         for ty in [Type::UNIT, Type::NEVER, empty_array] {
@@ -4553,7 +4237,6 @@ mod tests {
         // Padded { a: u8, b: i32, c: u8 }: a@0, pad[1,4), b@4, c@8, tail pad
         // [9,12). size 12, align 4.
         let pool = TypeInternPool::new();
-        pool.set_compact_layout(true);
         let interner = ThreadedRodeo::default();
         let (id, _) = pool.register_struct(
             interner.get_or_intern("Padded"),
@@ -4608,7 +4291,6 @@ mod tests {
     fn compact_image_padding_ranges_cover_struct_interior_and_tail_gaps() {
         // Padded { a: u8, b: i32, c: u8 }: a@0, pad[1,4), b@4, c@8, tail[9,12).
         let pool = TypeInternPool::new();
-        pool.set_compact_layout(true);
         let interner = ThreadedRodeo::default();
         let (id, _) = pool.register_struct(
             interner.get_or_intern("Padded"),
@@ -4646,7 +4328,6 @@ mod tests {
         // packs u8@0,i32@4 => u8 abs@4, i32 abs@8; size = align_up(4+8,4) = 12.
         // Padding: tag-to-payload [1,4) and the gap [5,8) after the u8 field.
         let pool = TypeInternPool::new();
-        pool.set_compact_layout(true);
         let interner = ThreadedRodeo::default();
         let def = EnumDef {
             name: "Wide".to_string(),
@@ -4667,40 +4348,9 @@ mod tests {
     }
 
     #[test]
-    fn compact_image_padding_ranges_are_empty_without_the_gate() {
-        // The slot model has no padding, so a gate-off pool derives no ranges —
-        // the property that keeps gate-off code byte-identical.
-        let pool = TypeInternPool::new();
-        let interner = ThreadedRodeo::default();
-        let (id, _) = pool.register_struct(
-            interner.get_or_intern("Padded"),
-            struct_def(
-                "Padded",
-                vec![
-                    StructField {
-                        name: "a".into(),
-                        ty: Type::U8,
-                    },
-                    StructField {
-                        name: "b".into(),
-                        ty: Type::I32,
-                    },
-                ],
-            ),
-        );
-        let frozen = pool.freeze();
-        assert!(
-            frozen
-                .compact_image_padding_ranges(Type::new_struct(id))
-                .is_empty()
-        );
-    }
-
-    #[test]
     fn compact_image_padding_ranges_empty_for_packed_all_i64_struct() {
         // An all-eight-byte-leaf struct is slot-identical: no padding to zero.
         let pool = TypeInternPool::new();
-        pool.set_compact_layout(true);
         let interner = ThreadedRodeo::default();
         let (id, _) = pool.register_struct(
             interner.get_or_intern("Packed"),
@@ -4729,7 +4379,6 @@ mod tests {
     #[test]
     fn compact_layout_array_strides_by_compact_element_size() {
         let pool = TypeInternPool::new();
-        pool.set_compact_layout(true);
         let array_ty = pool.try_intern_array(Type::I32, 3).unwrap();
         let frozen = pool.freeze();
         let layout = frozen.layout(array_ty);
@@ -4751,7 +4400,6 @@ mod tests {
         // (the i64), so payload_offset 8. Largest payload packs i32@0,i64@8 =>
         // 16 bytes; size = align_up(8 + 16, 8) = 24.
         let pool = TypeInternPool::new();
-        pool.set_compact_layout(true);
         let interner = ThreadedRodeo::default();
         let def = EnumDef {
             name: "Shape".to_string(),
@@ -4777,22 +4425,6 @@ mod tests {
                 assert_eq!(variants, vec![vec![8, 16], vec![8]]);
             }
             other => panic!("expected enum layout, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn compact_layout_off_is_byte_for_byte_the_slot_model() {
-        // The default pool (flag off) must report exactly the slot values.
-        let pool = TypeInternPool::new();
-        let frozen = pool.freeze();
-        for (ty, size) in [
-            (Type::I8, SLOT_BYTES),
-            (Type::I32, SLOT_BYTES),
-            (Type::U64, SLOT_BYTES),
-        ] {
-            let layout = frozen.layout(ty);
-            assert_eq!(layout.size, size);
-            assert_eq!(layout.alignment, SLOT_BYTES);
         }
     }
 }

@@ -41,16 +41,23 @@ Syscall numbers and conventions differ between operating systems. Linux x86-64 s
 
 ```rue
 fn main() -> i32 {
-    let msg: [u8; 3] = [72, 73, 10]; // "HI\n"
     let write_num: u64 = 1;          // Linux x86-64: write
     let fd: u64 = 1;                 // stdout
     let exit_num: u64 = 231;         // Linux x86-64: exit_group
     let code: u64 = 0;
     checked {
+        // A syscall buffer must be a contiguous byte image; allocate it on the
+        // heap (@alloc storage is the compact image) rather than an @raw of a
+        // frame-resident byte array, whose storage is slot-shaped (§3.6, ADR-0040).
+        let msg: ptr mut u8 = @alloc(3); // "HI\n"
+        @ptr_write(msg, 72);
+        @ptr_write(@ptr_offset(msg, 1), 73);
+        @ptr_write(@ptr_offset(msg, 2), 10);
         // write(fd=1, buf, len)
-        let msg_ptr: u64 = @ptr_to_int(@raw(msg[0]));
+        let msg_ptr: u64 = @ptr_to_int(msg);
         let msg_len: u64 = 3;
         let result = @syscall(write_num, fd, msg_ptr, msg_len);
+        @free(msg, 3);
 
         // exit_group(code)
         @syscall(exit_num, code);
@@ -78,12 +85,16 @@ bounds of the pointed-to allocation is undefined behavior (see ADR-0028).
 
 ```rue
 fn main() -> i32 {
-    let arr: [i32; 3] = [10, 20, 30];
-    checked {
-        let base: ptr const i32 = @raw(arr[0]);
+    // A slot-identical element type (i64: one eight-byte slot per element) so a
+    // raw pointer into the frame-resident array is supported; a non-slot-identical
+    // frame array (e.g. [i32; 3]) is refused under the compact layout (§3.6, M2).
+    let arr: [i64; 3] = [10, 20, 30];
+    let v: i64 = checked {
+        let base: ptr const i64 = @raw(arr[0]);
         // base points at element 0; +1 advances to element 1 (value 20).
         @ptr_read(@ptr_offset(base, 1))
-    }
+    };
+    @intCast(v)
 }
 ```
 

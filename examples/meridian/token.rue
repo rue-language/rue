@@ -1,0 +1,40 @@
+// POD tokens for Meridian's compact SQL-like language.
+const std = @import("std");
+
+pub const EOF: u64 = 0;
+pub const ERROR: u64 = 1;
+pub const IDENT: u64 = 2;
+pub const INT: u64 = 3;
+pub const CREATE: u64 = 10;
+pub const TABLE: u64 = 11;
+pub const COLUMN: u64 = 12;
+pub const INSERT: u64 = 13;
+pub const SELECT: u64 = 14;
+pub const INDEX: u64 = 15;
+pub const BEGIN: u64 = 16;
+pub const COMMIT: u64 = 17;
+pub const ROLLBACK: u64 = 18;
+pub const FILTER: u64 = 19;
+pub const JOIN: u64 = 20;
+pub const ON: u64 = 21;
+pub const GROUP: u64 = 22;
+pub const ORDER: u64 = 23;
+pub const LIMIT: u64 = 24;
+pub const INT_TYPE: u64 = 25;
+pub const TEXT_TYPE: u64 = 26;
+pub const REQUIRED: u64 = 27;
+pub const UNIQUE: u64 = 28;
+pub const SEMI: u64 = 40;
+
+pub struct Token {
+    kind: u64,
+    start: u64,
+    end: u64,
+    value: u64,
+}
+
+pub const Tokens = std.arraybuf.ArrayBuf(Token);
+
+pub fn empty() -> Token {
+    Token { kind: EOF, start: 0, end: 0, value: 0 }
+}

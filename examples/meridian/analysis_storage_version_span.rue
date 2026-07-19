@@ -1,0 +1,174 @@
+// Meridian analysis pass: storage version span.
+// Walks catalog, storage, queries, transactions, WAL, replicas, and table/index
+// pairs so this maintained pass exercises the complete database state.
+const std = @import("std");
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn TAG() -> u64 { 5022 }
+pub fn MODE() -> u64 { 22 }
+
+fn table_projection(borrow database: model.Database, index: u64) -> u64 {
+    let table = database.tables.get_or(index, model.empty_table());
+    let base = if MODE() % 8 == 0 { table.row_count * (table.column_count + 1) }
+        else if MODE() % 8 == 1 { model.table_cells(borrow database, index) }
+        else if MODE() % 8 == 2 { table.row_count + table.version }
+        else if MODE() % 8 == 3 { database.strings.hash(table.name) % 1009 }
+        else if MODE() % 8 == 4 { table.first_column + table.column_count }
+        else if MODE() % 8 == 5 { table.row_count * table.row_count }
+        else if MODE() % 8 == 6 { table.column_count * 17 }
+        else { model.table_rows(borrow database, index, database.version) };
+    base + MODE()
+}
+
+fn column_projection(borrow database: model.Database, index: u64) -> u64 {
+    let column = database.columns.get_or(index, model.empty_column());
+    let flags = (if column.nullable { 1 } else { 3 }) +
+        (if column.unique { 5 } else { 0 });
+    database.strings.hash(column.name) % 257 + column.ordinal * (MODE() + 1) +
+        column.kind * 11 + flags
+}
+
+fn row_projection(borrow database: model.Database, index: u64) -> u64 {
+    let row = database.rows.get_or(index, model.empty_row());
+    let first = if row.cell_count == 0 { 0 }
+        else { model.cell_number(borrow database, index,
+            database.tables.get_or(row.table, model.empty_table()).first_column) };
+    first + row.cell_count * (MODE() + 1) + row.version_created +
+        if row.committed { 7 } else { 0 }
+}
+
+fn cell_projection(borrow database: model.Database, index: u64) -> u64 {
+    let cell = database.cells.get_or(index, model.empty_cell());
+    let payload = if cell.is_text { database.strings.hash(cell.text) % 4093 }
+        else { cell.number };
+    payload + cell.column * (MODE() + 3) + if cell.is_null { 0 } else { 1 }
+}
+
+fn query_projection(borrow database: model.Database, index: u64) -> u64 {
+    let query = database.queries.get_or(index, model.empty_query());
+    let optional = (if query.filter_column != model.NONE() { 3 } else { 0 }) +
+        (if query.join_table != model.NONE() { 5 } else { 0 }) +
+        (if query.group_column != model.NONE() { 7 } else { 0 }) +
+        (if query.order_column != model.NONE() { 11 } else { 0 });
+    model.table_rows(borrow database, query.table, database.version) + optional + MODE()
+}
+
+fn transaction_projection(borrow database: model.Database, index: u64) -> u64 {
+    let item = database.transactions.get_or(index, model.empty_transaction());
+    item.id + item.snapshot * 3 + item.state * 5 + item.reads + item.writes * (MODE() + 1)
+}
+
+fn wal_projection(borrow database: model.Database, index: u64) -> u64 {
+    let item = database.wal.get_or(index, model.empty_wal());
+    item.lsn + item.transaction * 3 + item.kind * 7 +
+        if item.committed { item.after + MODE() } else { item.before }
+}
+
+fn replica_projection(borrow database: model.Database, index: u64) -> u64 {
+    let item = database.replicas.get_or(index, model.empty_replica());
+    item.applied_lsn + item.lag * (MODE() + 1) +
+        if item.healthy { 13 } else { 29 }
+}
+
+fn observe_catalog(inout out: metric.Metric, borrow database: model.Database) {
+    let mut i: u64 = 0;
+    while i < database.tables.len() {
+        metric.observe(inout out, table_projection(borrow database, i), i + MODE());
+        i = i + 1;
+    }
+    i = 0;
+    while i < database.columns.len() {
+        metric.observe(inout out, column_projection(borrow database, i), i + 1);
+        i = i + 1;
+    }
+    i = 0;
+    while i < database.indexes.len() {
+        let item = database.indexes.get_or(i, model.empty_index());
+        metric.observe(inout out, item.entries + item.column + MODE(), if item.unique { 5 } else { 2 });
+        metric.warn(inout out, item.table >= database.tables.len());
+        i = i + 1;
+    }
+}
+
+fn observe_storage(inout out: metric.Metric, borrow database: model.Database) {
+    let mut i: u64 = 0;
+    while i < database.rows.len() {
+        metric.observe(inout out, row_projection(borrow database, i), (i % 7) + 1);
+        metric.warn(inout out, database.rows.get_or(i, model.empty_row()).table >= database.tables.len());
+        i = i + 1;
+    }
+    i = 0;
+    while i < database.cells.len() {
+        metric.observe(inout out, cell_projection(borrow database, i), (i % 11) + 1);
+        i = i + 1;
+    }
+}
+
+fn observe_operations(inout out: metric.Metric, borrow database: model.Database) {
+    let mut i: u64 = 0;
+    while i < database.queries.len() {
+        metric.observe(inout out, query_projection(borrow database, i), i + 1);
+        i = i + 1;
+    }
+    i = 0;
+    while i < database.transactions.len() {
+        metric.observe(inout out, transaction_projection(borrow database, i), i + 2);
+        i = i + 1;
+    }
+    i = 0;
+    while i < database.wal.len() {
+        metric.observe(inout out, wal_projection(borrow database, i), i + 3);
+        i = i + 1;
+    }
+    i = 0;
+    while i < database.replicas.len() {
+        metric.observe(inout out, replica_projection(borrow database, i), i + 4);
+        i = i + 1;
+    }
+}
+
+fn observe_pairs(inout out: metric.Metric, borrow database: model.Database) {
+    let mut t: u64 = 0;
+    while t < database.tables.len() {
+        let mut x: u64 = 0;
+        while x < database.indexes.len() {
+            let index = database.indexes.get_or(x, model.empty_index());
+            if index.table == t {
+                let table = database.tables.get_or(t, model.empty_table());
+                metric.observe(inout out,
+                    (table.row_count + 1) * (index.entries + 1) + MODE(), t + x + 1);
+            }
+            x = x + 1;
+        }
+        t = t + 1;
+    }
+}
+
+pub fn analyze(borrow database: model.Database) -> metric.Metric {
+    let mut out = metric.new(TAG());
+    observe_catalog(inout out, borrow database);
+    observe_storage(inout out, borrow database);
+    observe_operations(inout out, borrow database);
+    observe_pairs(inout out, borrow database);
+    metric.warn(inout out, database.tables.len() == 0 || database.queries.len() == 0);
+    metric.finish(inout out);
+    out
+}
+
+pub fn verify(borrow database: model.Database, borrow value: metric.Metric) -> bool {
+    let floor = database.tables.len() + database.columns.len() +
+        database.rows.len() + database.cells.len() + database.indexes.len() +
+        database.queries.len() + database.transactions.len() +
+        database.wal.len() + database.replicas.len();
+    value.tag == TAG() && value.observations >= floor && metric.valid(borrow value)
+}
+
+pub fn render(borrow database: model.Database) -> StrBuf {
+    let value = analyze(borrow database);
+    let mut out = metric.render("storage_version_span", borrow value);
+    text.bool_line(inout out, "verified=", verify(borrow database, borrow value));
+    out
+}

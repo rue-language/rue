@@ -181,6 +181,11 @@ pub struct CallPlan {
     /// `None` for a slot-identical sret return (read back one slot per eight
     /// bytes, unchanged) and for every non-sret return.
     pub compact_return_image: Option<Vec<crate::types::PhysicalEnumSlot>>,
+    /// For a HETEROGENEOUS compact aggregate returned via sret (no single
+    /// variant-independent map, RUE-1037), the tag-dispatched image the callee
+    /// writes and the caller reads back. Set only when [`Self::compact_return_image`]
+    /// is `None` because the return has no single map; `None` otherwise.
+    pub compact_return_dispatch: Option<crate::types::DispatchImage>,
     /// Result vreg reserved by the shared dispatcher before argument leaves
     /// materialize, preserving the canonical event allocation order.
     pub result: Option<VReg>,
@@ -220,6 +225,16 @@ pub enum CallArgInput {
         padding: Vec<rue_air::layout::PaddingRange>,
         storage_bytes: u32,
     },
+    /// A by-value HETEROGENEOUS compact aggregate argument the classifier forces
+    /// indirect (RUE-1037): the caller writes its tag-dispatched compact `image`
+    /// into a caller-owned buffer and passes one pointer, exactly like
+    /// [`Self::IndirectValue`] but with a per-variant tag dispatch instead of a
+    /// single variant-independent map.
+    IndirectValueDispatch {
+        value: rue_cfg::CfgValue,
+        image: crate::types::DispatchImage,
+        storage_bytes: u32,
+    },
     ByRef {
         mode: ByRefMode,
         address: crate::value_plan::ByRefAddressPlan,
@@ -235,6 +250,9 @@ pub struct CallInputs {
     /// aggregate returned via sret under `aggregate_layout` (RUE-1004). See
     /// [`CallPlan::compact_return_image`].
     pub compact_return_image: Option<Vec<crate::types::PhysicalEnumSlot>>,
+    /// The tag-dispatched sret image for a heterogeneous compact aggregate return
+    /// (RUE-1037). See [`CallPlan::compact_return_dispatch`].
+    pub compact_return_dispatch: Option<crate::types::DispatchImage>,
 }
 
 impl CallInputs {
@@ -268,17 +286,27 @@ impl CallInputs {
                         ArgClass::Indirect
                     )
                 {
-                    let image = types::aggregate_physical_slot_map(type_pool, arg_ty).expect(
-                        "a by-value indirect compact aggregate argument must have a \
-                         variant-independent memory image (guaranteed by the refusal scan)",
-                    );
-                    let padding = type_pool.compact_image_padding_ranges(arg_ty);
                     let storage_bytes =
                         align_up(types::type_size_bytes(type_pool, arg_ty) as u32, 16);
-                    return CallArgInput::IndirectValue {
+                    // A heterogeneous compact aggregate has no single map; it
+                    // marshals its buffer with a per-variant tag dispatch (RUE-1037).
+                    if let Some(image) = types::aggregate_physical_slot_map(type_pool, arg_ty) {
+                        let padding = type_pool.compact_image_padding_ranges(arg_ty);
+                        return CallArgInput::IndirectValue {
+                            value: arg.value,
+                            image,
+                            padding,
+                            storage_bytes,
+                        };
+                    }
+                    let image = types::aggregate_dispatch_image(type_pool, arg_ty).expect(
+                        "a by-value indirect compact aggregate argument must have a \
+                         variant-independent or tag-dispatched memory image (guaranteed by \
+                         the refusal scan)",
+                    );
+                    return CallArgInput::IndirectValueDispatch {
                         value: arg.value,
                         image,
-                        padding,
                         storage_bytes,
                     };
                 }
@@ -300,10 +328,18 @@ impl CallInputs {
         } else {
             None
         };
+        // A heterogeneous compact aggregate return (no single map) marshals its
+        // sret image with a per-variant tag dispatch (RUE-1037).
+        let compact_return_dispatch = if return_plan.uses_sret() && compact_return_image.is_none() {
+            types::aggregate_dispatch_image(type_pool, return_ty)
+        } else {
+            None
+        };
         Self {
             args,
             return_plan,
             compact_return_image,
+            compact_return_dispatch,
         }
     }
 }
@@ -357,6 +393,15 @@ pub trait CallMaterializer {
         padding: &[rue_air::layout::PaddingRange],
         storage_bytes: u32,
     ) -> VReg;
+    /// Tag-dispatched counterpart of [`Self::materialize_indirect_value_arg`] for
+    /// a heterogeneous compact aggregate argument (RUE-1037): reserve the buffer,
+    /// write the tag-dispatched compact `image`, and return the pointer.
+    fn materialize_indirect_value_arg_dispatch(
+        &mut self,
+        value: rue_cfg::CfgValue,
+        image: &crate::types::DispatchImage,
+        storage_bytes: u32,
+    ) -> VReg;
 }
 
 impl CallPlan {
@@ -377,6 +422,7 @@ impl CallPlan {
             target,
             return_plan,
             None,
+            None,
             args,
             arg_reg_budget,
             materializer,
@@ -388,6 +434,7 @@ impl CallPlan {
         target: CallTarget,
         return_plan: ReturnPlan,
         compact_return_image: Option<Vec<crate::types::PhysicalEnumSlot>>,
+        compact_return_dispatch: Option<crate::types::DispatchImage>,
         args: &[CallArgInput],
         arg_reg_budget: usize,
         materializer: &mut M,
@@ -441,6 +488,21 @@ impl CallPlan {
                     );
                     (UserArgMode::Value, vec![pointer])
                 }
+                CallArgInput::IndirectValueDispatch {
+                    value,
+                    image,
+                    storage_bytes,
+                } => {
+                    // As IndirectValue, but the buffer is written with a per-variant
+                    // tag dispatch (RUE-1037).
+                    caller_indirect_bytes += *storage_bytes;
+                    let pointer = materializer.materialize_indirect_value_arg_dispatch(
+                        *value,
+                        image,
+                        *storage_bytes,
+                    );
+                    (UserArgMode::Value, vec![pointer])
+                }
                 CallArgInput::Value {
                     value,
                     slot_count,
@@ -482,6 +544,7 @@ impl CallPlan {
             abi_slots,
             return_plan,
             compact_return_image,
+            compact_return_dispatch,
             result,
             stack_slot_count,
             stack_bytes,
@@ -504,6 +567,7 @@ impl CallPlan {
             abi_slots: slots.to_vec(),
             return_plan: ReturnPlan::ZeroSized,
             compact_return_image: None,
+            compact_return_dispatch: None,
             result: None,
             stack_slot_count,
             stack_bytes: align_up((stack_slot_count * 8) as u32, 16),
@@ -565,6 +629,15 @@ mod tests {
             _storage_bytes: u32,
         ) -> VReg {
             VReg::new(50)
+        }
+
+        fn materialize_indirect_value_arg_dispatch(
+            &mut self,
+            _value: rue_cfg::CfgValue,
+            _image: &crate::types::DispatchImage,
+            _storage_bytes: u32,
+        ) -> VReg {
+            VReg::new(51)
         }
     }
 
@@ -653,6 +726,7 @@ mod tests {
             abi_slots: slots.clone(),
             return_plan: ReturnPlan::ZeroSized,
             compact_return_image: None,
+            compact_return_dispatch: None,
             result: None,
             stack_slot_count: 0,
             stack_bytes: 0,

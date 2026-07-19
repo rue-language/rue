@@ -1,0 +1,598 @@
+// Executes every Meridian analysis pass twice and checks deterministic invariants.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+const analysis_catalog_table_density = @import("analysis_catalog_table_density.rue");
+const analysis_catalog_column_width = @import("analysis_catalog_column_width.rue");
+const analysis_catalog_index_coverage = @import("analysis_catalog_index_coverage.rue");
+const analysis_catalog_unique_ratio = @import("analysis_catalog_unique_ratio.rue");
+const analysis_catalog_nullable_ratio = @import("analysis_catalog_nullable_ratio.rue");
+const analysis_catalog_name_entropy = @import("analysis_catalog_name_entropy.rue");
+const analysis_catalog_schema_fanout = @import("analysis_catalog_schema_fanout.rue");
+const analysis_catalog_version_skew = @import("analysis_catalog_version_skew.rue");
+const analysis_catalog_key_selectivity = @import("analysis_catalog_key_selectivity.rue");
+const analysis_catalog_reference_pressure = @import("analysis_catalog_reference_pressure.rue");
+const analysis_catalog_type_balance = @import("analysis_catalog_type_balance.rue");
+const analysis_catalog_ordinal_spread = @import("analysis_catalog_ordinal_spread.rue");
+const analysis_catalog_row_capacity = @import("analysis_catalog_row_capacity.rue");
+const analysis_catalog_index_fanout = @import("analysis_catalog_index_fanout.rue");
+const analysis_catalog_constraint_surface = @import("analysis_catalog_constraint_surface.rue");
+const analysis_catalog_metadata_locality = @import("analysis_catalog_metadata_locality.rue");
+const analysis_storage_row_density = @import("analysis_storage_row_density.rue");
+const analysis_storage_cell_density = @import("analysis_storage_cell_density.rue");
+const analysis_storage_page_fill = @import("analysis_storage_page_fill.rue");
+const analysis_storage_visibility = @import("analysis_storage_visibility.rue");
+const analysis_storage_tombstone_ratio = @import("analysis_storage_tombstone_ratio.rue");
+const analysis_storage_version_span = @import("analysis_storage_version_span.rue");
+const analysis_storage_payload_width = @import("analysis_storage_payload_width.rue");
+const analysis_storage_null_fraction = @import("analysis_storage_null_fraction.rue");
+const analysis_storage_hot_row_pressure = @import("analysis_storage_hot_row_pressure.rue");
+const analysis_storage_cold_row_pressure = @import("analysis_storage_cold_row_pressure.rue");
+const analysis_storage_table_clustering = @import("analysis_storage_table_clustering.rue");
+const analysis_storage_cell_locality = @import("analysis_storage_cell_locality.rue");
+const analysis_storage_scan_amplification = @import("analysis_storage_scan_amplification.rue");
+const analysis_storage_write_amplification = @import("analysis_storage_write_amplification.rue");
+const analysis_storage_fragmentation = @import("analysis_storage_fragmentation.rue");
+const analysis_storage_compaction_gain = @import("analysis_storage_compaction_gain.rue");
+const analysis_query_filter_selectivity = @import("analysis_query_filter_selectivity.rue");
+const analysis_query_join_selectivity = @import("analysis_query_join_selectivity.rue");
+const analysis_query_group_cardinality = @import("analysis_query_group_cardinality.rue");
+const analysis_query_order_cost = @import("analysis_query_order_cost.rue");
+const analysis_query_limit_pressure = @import("analysis_query_limit_pressure.rue");
+const analysis_query_index_opportunity = @import("analysis_query_index_opportunity.rue");
+const analysis_query_scan_cost = @import("analysis_query_scan_cost.rue");
+const analysis_query_plan_depth = @import("analysis_query_plan_depth.rue");
+const analysis_query_plan_width = @import("analysis_query_plan_width.rue");
+const analysis_query_predicate_complexity = @import("analysis_query_predicate_complexity.rue");
+const analysis_query_join_fanout = @import("analysis_query_join_fanout.rue");
+const analysis_query_result_density = @import("analysis_query_result_density.rue");
+const analysis_query_estimate_error = @import("analysis_query_estimate_error.rue");
+const analysis_query_cacheability = @import("analysis_query_cacheability.rue");
+const analysis_query_parallelism = @import("analysis_query_parallelism.rue");
+const analysis_query_spill_risk = @import("analysis_query_spill_risk.rue");
+const analysis_transaction_read_write_ratio = @import("analysis_transaction_read_write_ratio.rue");
+const analysis_transaction_commit_ratio = @import("analysis_transaction_commit_ratio.rue");
+const analysis_transaction_rollback_ratio = @import("analysis_transaction_rollback_ratio.rue");
+const analysis_transaction_snapshot_age = @import("analysis_transaction_snapshot_age.rue");
+const analysis_transaction_conflict_surface = @import("analysis_transaction_conflict_surface.rue");
+const analysis_transaction_lock_pressure = @import("analysis_transaction_lock_pressure.rue");
+const analysis_transaction_deadlock_risk = @import("analysis_transaction_deadlock_risk.rue");
+const analysis_transaction_retry_cost = @import("analysis_transaction_retry_cost.rue");
+const analysis_transaction_write_set_size = @import("analysis_transaction_write_set_size.rue");
+const analysis_transaction_read_set_size = @import("analysis_transaction_read_set_size.rue");
+const analysis_transaction_version_churn = @import("analysis_transaction_version_churn.rue");
+const analysis_transaction_isolation_gap = @import("analysis_transaction_isolation_gap.rue");
+const analysis_transaction_long_runner = @import("analysis_transaction_long_runner.rue");
+const analysis_transaction_batch_efficiency = @import("analysis_transaction_batch_efficiency.rue");
+const analysis_transaction_abort_cost = @import("analysis_transaction_abort_cost.rue");
+const analysis_transaction_durability_gap = @import("analysis_transaction_durability_gap.rue");
+const analysis_wal_record_density = @import("analysis_wal_record_density.rue");
+const analysis_wal_commit_coverage = @import("analysis_wal_commit_coverage.rue");
+const analysis_wal_undo_pressure = @import("analysis_wal_undo_pressure.rue");
+const analysis_wal_redo_pressure = @import("analysis_wal_redo_pressure.rue");
+const analysis_wal_lsn_continuity = @import("analysis_wal_lsn_continuity.rue");
+const analysis_wal_checkpoint_distance = @import("analysis_wal_checkpoint_distance.rue");
+const analysis_wal_payload_delta = @import("analysis_wal_payload_delta.rue");
+const analysis_wal_transaction_fanout = @import("analysis_wal_transaction_fanout.rue");
+const analysis_wal_table_hotspot = @import("analysis_wal_table_hotspot.rue");
+const analysis_wal_row_hotspot = @import("analysis_wal_row_hotspot.rue");
+const analysis_wal_flush_pressure = @import("analysis_wal_flush_pressure.rue");
+const analysis_wal_group_commit_gain = @import("analysis_wal_group_commit_gain.rue");
+const analysis_wal_recovery_span = @import("analysis_wal_recovery_span.rue");
+const analysis_wal_retention_cost = @import("analysis_wal_retention_cost.rue");
+const analysis_wal_replication_volume = @import("analysis_wal_replication_volume.rue");
+const analysis_wal_integrity = @import("analysis_wal_integrity.rue");
+const analysis_replication_lag = @import("analysis_replication_lag.rue");
+const analysis_replication_health = @import("analysis_replication_health.rue");
+const analysis_replication_quorum = @import("analysis_replication_quorum.rue");
+const analysis_replication_failover_readiness = @import("analysis_replication_failover_readiness.rue");
+const analysis_replication_apply_rate = @import("analysis_replication_apply_rate.rue");
+const analysis_replication_log_gap = @import("analysis_replication_log_gap.rue");
+const analysis_replication_primary_pressure = @import("analysis_replication_primary_pressure.rue");
+const analysis_replication_follower_skew = @import("analysis_replication_follower_skew.rue");
+const analysis_replication_durability_window = @import("analysis_replication_durability_window.rue");
+const analysis_replication_read_scaling = @import("analysis_replication_read_scaling.rue");
+const analysis_replication_write_amplification = @import("analysis_replication_write_amplification.rue");
+const analysis_replication_catchup_cost = @import("analysis_replication_catchup_cost.rue");
+const analysis_replication_partition_risk = @import("analysis_replication_partition_risk.rue");
+const analysis_replication_consistency_gap = @import("analysis_replication_consistency_gap.rue");
+const analysis_replication_snapshot_distance = @import("analysis_replication_snapshot_distance.rue");
+const analysis_replication_topology_balance = @import("analysis_replication_topology_balance.rue");
+const analysis_workload_read_intensity = @import("analysis_workload_read_intensity.rue");
+const analysis_workload_write_intensity = @import("analysis_workload_write_intensity.rue");
+const analysis_workload_join_intensity = @import("analysis_workload_join_intensity.rue");
+const analysis_workload_aggregate_intensity = @import("analysis_workload_aggregate_intensity.rue");
+const analysis_workload_sort_intensity = @import("analysis_workload_sort_intensity.rue");
+const analysis_workload_index_hit_rate = @import("analysis_workload_index_hit_rate.rue");
+const analysis_workload_table_skew = @import("analysis_workload_table_skew.rue");
+const analysis_workload_key_skew = @import("analysis_workload_key_skew.rue");
+const analysis_workload_row_growth = @import("analysis_workload_row_growth.rue");
+const analysis_workload_version_growth = @import("analysis_workload_version_growth.rue");
+const analysis_workload_memory_proxy = @import("analysis_workload_memory_proxy.rue");
+const analysis_workload_cpu_proxy = @import("analysis_workload_cpu_proxy.rue");
+const analysis_workload_io_proxy = @import("analysis_workload_io_proxy.rue");
+const analysis_workload_cache_pressure = @import("analysis_workload_cache_pressure.rue");
+const analysis_workload_concurrency = @import("analysis_workload_concurrency.rue");
+const analysis_workload_tail_latency = @import("analysis_workload_tail_latency.rue");
+
+pub struct Result {
+    passes: u64,
+    failures: u64,
+    observations: u64,
+    warnings: u64,
+    digest: u64,
+    deterministic: bool,
+    valid: bool,
+}
+
+fn empty() -> Result {
+    Result { passes: 0, failures: 0, observations: 0, warnings: 0,
+        digest: 14695981039346656037, deterministic: true, valid: false }
+}
+
+fn include(inout out: Result, borrow first: metric.Metric, borrow second: metric.Metric, verified: bool) {
+    out.passes = out.passes + 1;
+    out.observations = out.observations + first.observations;
+    out.warnings = out.warnings + first.warnings;
+    out.digest = metric.mix(out.digest, first.tag);
+    out.digest = metric.mix(out.digest, first.digest);
+    if !verified || !metric.valid(borrow first) { out.failures = out.failures + 1; }
+    if first.digest != second.digest || first.observations != second.observations ||
+        first.warnings != second.warnings {
+        out.deterministic = false;
+        out.failures = out.failures + 1;
+    }
+}
+
+pub fn run(borrow database: model.Database) -> Result {
+    let mut out = empty();
+    let catalog_table_density_a = analysis_catalog_table_density.analyze(borrow database);
+    let catalog_table_density_b = analysis_catalog_table_density.analyze(borrow database);
+    include(inout out, borrow catalog_table_density_a, borrow catalog_table_density_b,
+        analysis_catalog_table_density.verify(borrow database, borrow catalog_table_density_a));
+    let catalog_column_width_a = analysis_catalog_column_width.analyze(borrow database);
+    let catalog_column_width_b = analysis_catalog_column_width.analyze(borrow database);
+    include(inout out, borrow catalog_column_width_a, borrow catalog_column_width_b,
+        analysis_catalog_column_width.verify(borrow database, borrow catalog_column_width_a));
+    let catalog_index_coverage_a = analysis_catalog_index_coverage.analyze(borrow database);
+    let catalog_index_coverage_b = analysis_catalog_index_coverage.analyze(borrow database);
+    include(inout out, borrow catalog_index_coverage_a, borrow catalog_index_coverage_b,
+        analysis_catalog_index_coverage.verify(borrow database, borrow catalog_index_coverage_a));
+    let catalog_unique_ratio_a = analysis_catalog_unique_ratio.analyze(borrow database);
+    let catalog_unique_ratio_b = analysis_catalog_unique_ratio.analyze(borrow database);
+    include(inout out, borrow catalog_unique_ratio_a, borrow catalog_unique_ratio_b,
+        analysis_catalog_unique_ratio.verify(borrow database, borrow catalog_unique_ratio_a));
+    let catalog_nullable_ratio_a = analysis_catalog_nullable_ratio.analyze(borrow database);
+    let catalog_nullable_ratio_b = analysis_catalog_nullable_ratio.analyze(borrow database);
+    include(inout out, borrow catalog_nullable_ratio_a, borrow catalog_nullable_ratio_b,
+        analysis_catalog_nullable_ratio.verify(borrow database, borrow catalog_nullable_ratio_a));
+    let catalog_name_entropy_a = analysis_catalog_name_entropy.analyze(borrow database);
+    let catalog_name_entropy_b = analysis_catalog_name_entropy.analyze(borrow database);
+    include(inout out, borrow catalog_name_entropy_a, borrow catalog_name_entropy_b,
+        analysis_catalog_name_entropy.verify(borrow database, borrow catalog_name_entropy_a));
+    let catalog_schema_fanout_a = analysis_catalog_schema_fanout.analyze(borrow database);
+    let catalog_schema_fanout_b = analysis_catalog_schema_fanout.analyze(borrow database);
+    include(inout out, borrow catalog_schema_fanout_a, borrow catalog_schema_fanout_b,
+        analysis_catalog_schema_fanout.verify(borrow database, borrow catalog_schema_fanout_a));
+    let catalog_version_skew_a = analysis_catalog_version_skew.analyze(borrow database);
+    let catalog_version_skew_b = analysis_catalog_version_skew.analyze(borrow database);
+    include(inout out, borrow catalog_version_skew_a, borrow catalog_version_skew_b,
+        analysis_catalog_version_skew.verify(borrow database, borrow catalog_version_skew_a));
+    let catalog_key_selectivity_a = analysis_catalog_key_selectivity.analyze(borrow database);
+    let catalog_key_selectivity_b = analysis_catalog_key_selectivity.analyze(borrow database);
+    include(inout out, borrow catalog_key_selectivity_a, borrow catalog_key_selectivity_b,
+        analysis_catalog_key_selectivity.verify(borrow database, borrow catalog_key_selectivity_a));
+    let catalog_reference_pressure_a = analysis_catalog_reference_pressure.analyze(borrow database);
+    let catalog_reference_pressure_b = analysis_catalog_reference_pressure.analyze(borrow database);
+    include(inout out, borrow catalog_reference_pressure_a, borrow catalog_reference_pressure_b,
+        analysis_catalog_reference_pressure.verify(borrow database, borrow catalog_reference_pressure_a));
+    let catalog_type_balance_a = analysis_catalog_type_balance.analyze(borrow database);
+    let catalog_type_balance_b = analysis_catalog_type_balance.analyze(borrow database);
+    include(inout out, borrow catalog_type_balance_a, borrow catalog_type_balance_b,
+        analysis_catalog_type_balance.verify(borrow database, borrow catalog_type_balance_a));
+    let catalog_ordinal_spread_a = analysis_catalog_ordinal_spread.analyze(borrow database);
+    let catalog_ordinal_spread_b = analysis_catalog_ordinal_spread.analyze(borrow database);
+    include(inout out, borrow catalog_ordinal_spread_a, borrow catalog_ordinal_spread_b,
+        analysis_catalog_ordinal_spread.verify(borrow database, borrow catalog_ordinal_spread_a));
+    let catalog_row_capacity_a = analysis_catalog_row_capacity.analyze(borrow database);
+    let catalog_row_capacity_b = analysis_catalog_row_capacity.analyze(borrow database);
+    include(inout out, borrow catalog_row_capacity_a, borrow catalog_row_capacity_b,
+        analysis_catalog_row_capacity.verify(borrow database, borrow catalog_row_capacity_a));
+    let catalog_index_fanout_a = analysis_catalog_index_fanout.analyze(borrow database);
+    let catalog_index_fanout_b = analysis_catalog_index_fanout.analyze(borrow database);
+    include(inout out, borrow catalog_index_fanout_a, borrow catalog_index_fanout_b,
+        analysis_catalog_index_fanout.verify(borrow database, borrow catalog_index_fanout_a));
+    let catalog_constraint_surface_a = analysis_catalog_constraint_surface.analyze(borrow database);
+    let catalog_constraint_surface_b = analysis_catalog_constraint_surface.analyze(borrow database);
+    include(inout out, borrow catalog_constraint_surface_a, borrow catalog_constraint_surface_b,
+        analysis_catalog_constraint_surface.verify(borrow database, borrow catalog_constraint_surface_a));
+    let catalog_metadata_locality_a = analysis_catalog_metadata_locality.analyze(borrow database);
+    let catalog_metadata_locality_b = analysis_catalog_metadata_locality.analyze(borrow database);
+    include(inout out, borrow catalog_metadata_locality_a, borrow catalog_metadata_locality_b,
+        analysis_catalog_metadata_locality.verify(borrow database, borrow catalog_metadata_locality_a));
+    let storage_row_density_a = analysis_storage_row_density.analyze(borrow database);
+    let storage_row_density_b = analysis_storage_row_density.analyze(borrow database);
+    include(inout out, borrow storage_row_density_a, borrow storage_row_density_b,
+        analysis_storage_row_density.verify(borrow database, borrow storage_row_density_a));
+    let storage_cell_density_a = analysis_storage_cell_density.analyze(borrow database);
+    let storage_cell_density_b = analysis_storage_cell_density.analyze(borrow database);
+    include(inout out, borrow storage_cell_density_a, borrow storage_cell_density_b,
+        analysis_storage_cell_density.verify(borrow database, borrow storage_cell_density_a));
+    let storage_page_fill_a = analysis_storage_page_fill.analyze(borrow database);
+    let storage_page_fill_b = analysis_storage_page_fill.analyze(borrow database);
+    include(inout out, borrow storage_page_fill_a, borrow storage_page_fill_b,
+        analysis_storage_page_fill.verify(borrow database, borrow storage_page_fill_a));
+    let storage_visibility_a = analysis_storage_visibility.analyze(borrow database);
+    let storage_visibility_b = analysis_storage_visibility.analyze(borrow database);
+    include(inout out, borrow storage_visibility_a, borrow storage_visibility_b,
+        analysis_storage_visibility.verify(borrow database, borrow storage_visibility_a));
+    let storage_tombstone_ratio_a = analysis_storage_tombstone_ratio.analyze(borrow database);
+    let storage_tombstone_ratio_b = analysis_storage_tombstone_ratio.analyze(borrow database);
+    include(inout out, borrow storage_tombstone_ratio_a, borrow storage_tombstone_ratio_b,
+        analysis_storage_tombstone_ratio.verify(borrow database, borrow storage_tombstone_ratio_a));
+    let storage_version_span_a = analysis_storage_version_span.analyze(borrow database);
+    let storage_version_span_b = analysis_storage_version_span.analyze(borrow database);
+    include(inout out, borrow storage_version_span_a, borrow storage_version_span_b,
+        analysis_storage_version_span.verify(borrow database, borrow storage_version_span_a));
+    let storage_payload_width_a = analysis_storage_payload_width.analyze(borrow database);
+    let storage_payload_width_b = analysis_storage_payload_width.analyze(borrow database);
+    include(inout out, borrow storage_payload_width_a, borrow storage_payload_width_b,
+        analysis_storage_payload_width.verify(borrow database, borrow storage_payload_width_a));
+    let storage_null_fraction_a = analysis_storage_null_fraction.analyze(borrow database);
+    let storage_null_fraction_b = analysis_storage_null_fraction.analyze(borrow database);
+    include(inout out, borrow storage_null_fraction_a, borrow storage_null_fraction_b,
+        analysis_storage_null_fraction.verify(borrow database, borrow storage_null_fraction_a));
+    let storage_hot_row_pressure_a = analysis_storage_hot_row_pressure.analyze(borrow database);
+    let storage_hot_row_pressure_b = analysis_storage_hot_row_pressure.analyze(borrow database);
+    include(inout out, borrow storage_hot_row_pressure_a, borrow storage_hot_row_pressure_b,
+        analysis_storage_hot_row_pressure.verify(borrow database, borrow storage_hot_row_pressure_a));
+    let storage_cold_row_pressure_a = analysis_storage_cold_row_pressure.analyze(borrow database);
+    let storage_cold_row_pressure_b = analysis_storage_cold_row_pressure.analyze(borrow database);
+    include(inout out, borrow storage_cold_row_pressure_a, borrow storage_cold_row_pressure_b,
+        analysis_storage_cold_row_pressure.verify(borrow database, borrow storage_cold_row_pressure_a));
+    let storage_table_clustering_a = analysis_storage_table_clustering.analyze(borrow database);
+    let storage_table_clustering_b = analysis_storage_table_clustering.analyze(borrow database);
+    include(inout out, borrow storage_table_clustering_a, borrow storage_table_clustering_b,
+        analysis_storage_table_clustering.verify(borrow database, borrow storage_table_clustering_a));
+    let storage_cell_locality_a = analysis_storage_cell_locality.analyze(borrow database);
+    let storage_cell_locality_b = analysis_storage_cell_locality.analyze(borrow database);
+    include(inout out, borrow storage_cell_locality_a, borrow storage_cell_locality_b,
+        analysis_storage_cell_locality.verify(borrow database, borrow storage_cell_locality_a));
+    let storage_scan_amplification_a = analysis_storage_scan_amplification.analyze(borrow database);
+    let storage_scan_amplification_b = analysis_storage_scan_amplification.analyze(borrow database);
+    include(inout out, borrow storage_scan_amplification_a, borrow storage_scan_amplification_b,
+        analysis_storage_scan_amplification.verify(borrow database, borrow storage_scan_amplification_a));
+    let storage_write_amplification_a = analysis_storage_write_amplification.analyze(borrow database);
+    let storage_write_amplification_b = analysis_storage_write_amplification.analyze(borrow database);
+    include(inout out, borrow storage_write_amplification_a, borrow storage_write_amplification_b,
+        analysis_storage_write_amplification.verify(borrow database, borrow storage_write_amplification_a));
+    let storage_fragmentation_a = analysis_storage_fragmentation.analyze(borrow database);
+    let storage_fragmentation_b = analysis_storage_fragmentation.analyze(borrow database);
+    include(inout out, borrow storage_fragmentation_a, borrow storage_fragmentation_b,
+        analysis_storage_fragmentation.verify(borrow database, borrow storage_fragmentation_a));
+    let storage_compaction_gain_a = analysis_storage_compaction_gain.analyze(borrow database);
+    let storage_compaction_gain_b = analysis_storage_compaction_gain.analyze(borrow database);
+    include(inout out, borrow storage_compaction_gain_a, borrow storage_compaction_gain_b,
+        analysis_storage_compaction_gain.verify(borrow database, borrow storage_compaction_gain_a));
+    let query_filter_selectivity_a = analysis_query_filter_selectivity.analyze(borrow database);
+    let query_filter_selectivity_b = analysis_query_filter_selectivity.analyze(borrow database);
+    include(inout out, borrow query_filter_selectivity_a, borrow query_filter_selectivity_b,
+        analysis_query_filter_selectivity.verify(borrow database, borrow query_filter_selectivity_a));
+    let query_join_selectivity_a = analysis_query_join_selectivity.analyze(borrow database);
+    let query_join_selectivity_b = analysis_query_join_selectivity.analyze(borrow database);
+    include(inout out, borrow query_join_selectivity_a, borrow query_join_selectivity_b,
+        analysis_query_join_selectivity.verify(borrow database, borrow query_join_selectivity_a));
+    let query_group_cardinality_a = analysis_query_group_cardinality.analyze(borrow database);
+    let query_group_cardinality_b = analysis_query_group_cardinality.analyze(borrow database);
+    include(inout out, borrow query_group_cardinality_a, borrow query_group_cardinality_b,
+        analysis_query_group_cardinality.verify(borrow database, borrow query_group_cardinality_a));
+    let query_order_cost_a = analysis_query_order_cost.analyze(borrow database);
+    let query_order_cost_b = analysis_query_order_cost.analyze(borrow database);
+    include(inout out, borrow query_order_cost_a, borrow query_order_cost_b,
+        analysis_query_order_cost.verify(borrow database, borrow query_order_cost_a));
+    let query_limit_pressure_a = analysis_query_limit_pressure.analyze(borrow database);
+    let query_limit_pressure_b = analysis_query_limit_pressure.analyze(borrow database);
+    include(inout out, borrow query_limit_pressure_a, borrow query_limit_pressure_b,
+        analysis_query_limit_pressure.verify(borrow database, borrow query_limit_pressure_a));
+    let query_index_opportunity_a = analysis_query_index_opportunity.analyze(borrow database);
+    let query_index_opportunity_b = analysis_query_index_opportunity.analyze(borrow database);
+    include(inout out, borrow query_index_opportunity_a, borrow query_index_opportunity_b,
+        analysis_query_index_opportunity.verify(borrow database, borrow query_index_opportunity_a));
+    let query_scan_cost_a = analysis_query_scan_cost.analyze(borrow database);
+    let query_scan_cost_b = analysis_query_scan_cost.analyze(borrow database);
+    include(inout out, borrow query_scan_cost_a, borrow query_scan_cost_b,
+        analysis_query_scan_cost.verify(borrow database, borrow query_scan_cost_a));
+    let query_plan_depth_a = analysis_query_plan_depth.analyze(borrow database);
+    let query_plan_depth_b = analysis_query_plan_depth.analyze(borrow database);
+    include(inout out, borrow query_plan_depth_a, borrow query_plan_depth_b,
+        analysis_query_plan_depth.verify(borrow database, borrow query_plan_depth_a));
+    let query_plan_width_a = analysis_query_plan_width.analyze(borrow database);
+    let query_plan_width_b = analysis_query_plan_width.analyze(borrow database);
+    include(inout out, borrow query_plan_width_a, borrow query_plan_width_b,
+        analysis_query_plan_width.verify(borrow database, borrow query_plan_width_a));
+    let query_predicate_complexity_a = analysis_query_predicate_complexity.analyze(borrow database);
+    let query_predicate_complexity_b = analysis_query_predicate_complexity.analyze(borrow database);
+    include(inout out, borrow query_predicate_complexity_a, borrow query_predicate_complexity_b,
+        analysis_query_predicate_complexity.verify(borrow database, borrow query_predicate_complexity_a));
+    let query_join_fanout_a = analysis_query_join_fanout.analyze(borrow database);
+    let query_join_fanout_b = analysis_query_join_fanout.analyze(borrow database);
+    include(inout out, borrow query_join_fanout_a, borrow query_join_fanout_b,
+        analysis_query_join_fanout.verify(borrow database, borrow query_join_fanout_a));
+    let query_result_density_a = analysis_query_result_density.analyze(borrow database);
+    let query_result_density_b = analysis_query_result_density.analyze(borrow database);
+    include(inout out, borrow query_result_density_a, borrow query_result_density_b,
+        analysis_query_result_density.verify(borrow database, borrow query_result_density_a));
+    let query_estimate_error_a = analysis_query_estimate_error.analyze(borrow database);
+    let query_estimate_error_b = analysis_query_estimate_error.analyze(borrow database);
+    include(inout out, borrow query_estimate_error_a, borrow query_estimate_error_b,
+        analysis_query_estimate_error.verify(borrow database, borrow query_estimate_error_a));
+    let query_cacheability_a = analysis_query_cacheability.analyze(borrow database);
+    let query_cacheability_b = analysis_query_cacheability.analyze(borrow database);
+    include(inout out, borrow query_cacheability_a, borrow query_cacheability_b,
+        analysis_query_cacheability.verify(borrow database, borrow query_cacheability_a));
+    let query_parallelism_a = analysis_query_parallelism.analyze(borrow database);
+    let query_parallelism_b = analysis_query_parallelism.analyze(borrow database);
+    include(inout out, borrow query_parallelism_a, borrow query_parallelism_b,
+        analysis_query_parallelism.verify(borrow database, borrow query_parallelism_a));
+    let query_spill_risk_a = analysis_query_spill_risk.analyze(borrow database);
+    let query_spill_risk_b = analysis_query_spill_risk.analyze(borrow database);
+    include(inout out, borrow query_spill_risk_a, borrow query_spill_risk_b,
+        analysis_query_spill_risk.verify(borrow database, borrow query_spill_risk_a));
+    let transaction_read_write_ratio_a = analysis_transaction_read_write_ratio.analyze(borrow database);
+    let transaction_read_write_ratio_b = analysis_transaction_read_write_ratio.analyze(borrow database);
+    include(inout out, borrow transaction_read_write_ratio_a, borrow transaction_read_write_ratio_b,
+        analysis_transaction_read_write_ratio.verify(borrow database, borrow transaction_read_write_ratio_a));
+    let transaction_commit_ratio_a = analysis_transaction_commit_ratio.analyze(borrow database);
+    let transaction_commit_ratio_b = analysis_transaction_commit_ratio.analyze(borrow database);
+    include(inout out, borrow transaction_commit_ratio_a, borrow transaction_commit_ratio_b,
+        analysis_transaction_commit_ratio.verify(borrow database, borrow transaction_commit_ratio_a));
+    let transaction_rollback_ratio_a = analysis_transaction_rollback_ratio.analyze(borrow database);
+    let transaction_rollback_ratio_b = analysis_transaction_rollback_ratio.analyze(borrow database);
+    include(inout out, borrow transaction_rollback_ratio_a, borrow transaction_rollback_ratio_b,
+        analysis_transaction_rollback_ratio.verify(borrow database, borrow transaction_rollback_ratio_a));
+    let transaction_snapshot_age_a = analysis_transaction_snapshot_age.analyze(borrow database);
+    let transaction_snapshot_age_b = analysis_transaction_snapshot_age.analyze(borrow database);
+    include(inout out, borrow transaction_snapshot_age_a, borrow transaction_snapshot_age_b,
+        analysis_transaction_snapshot_age.verify(borrow database, borrow transaction_snapshot_age_a));
+    let transaction_conflict_surface_a = analysis_transaction_conflict_surface.analyze(borrow database);
+    let transaction_conflict_surface_b = analysis_transaction_conflict_surface.analyze(borrow database);
+    include(inout out, borrow transaction_conflict_surface_a, borrow transaction_conflict_surface_b,
+        analysis_transaction_conflict_surface.verify(borrow database, borrow transaction_conflict_surface_a));
+    let transaction_lock_pressure_a = analysis_transaction_lock_pressure.analyze(borrow database);
+    let transaction_lock_pressure_b = analysis_transaction_lock_pressure.analyze(borrow database);
+    include(inout out, borrow transaction_lock_pressure_a, borrow transaction_lock_pressure_b,
+        analysis_transaction_lock_pressure.verify(borrow database, borrow transaction_lock_pressure_a));
+    let transaction_deadlock_risk_a = analysis_transaction_deadlock_risk.analyze(borrow database);
+    let transaction_deadlock_risk_b = analysis_transaction_deadlock_risk.analyze(borrow database);
+    include(inout out, borrow transaction_deadlock_risk_a, borrow transaction_deadlock_risk_b,
+        analysis_transaction_deadlock_risk.verify(borrow database, borrow transaction_deadlock_risk_a));
+    let transaction_retry_cost_a = analysis_transaction_retry_cost.analyze(borrow database);
+    let transaction_retry_cost_b = analysis_transaction_retry_cost.analyze(borrow database);
+    include(inout out, borrow transaction_retry_cost_a, borrow transaction_retry_cost_b,
+        analysis_transaction_retry_cost.verify(borrow database, borrow transaction_retry_cost_a));
+    let transaction_write_set_size_a = analysis_transaction_write_set_size.analyze(borrow database);
+    let transaction_write_set_size_b = analysis_transaction_write_set_size.analyze(borrow database);
+    include(inout out, borrow transaction_write_set_size_a, borrow transaction_write_set_size_b,
+        analysis_transaction_write_set_size.verify(borrow database, borrow transaction_write_set_size_a));
+    let transaction_read_set_size_a = analysis_transaction_read_set_size.analyze(borrow database);
+    let transaction_read_set_size_b = analysis_transaction_read_set_size.analyze(borrow database);
+    include(inout out, borrow transaction_read_set_size_a, borrow transaction_read_set_size_b,
+        analysis_transaction_read_set_size.verify(borrow database, borrow transaction_read_set_size_a));
+    let transaction_version_churn_a = analysis_transaction_version_churn.analyze(borrow database);
+    let transaction_version_churn_b = analysis_transaction_version_churn.analyze(borrow database);
+    include(inout out, borrow transaction_version_churn_a, borrow transaction_version_churn_b,
+        analysis_transaction_version_churn.verify(borrow database, borrow transaction_version_churn_a));
+    let transaction_isolation_gap_a = analysis_transaction_isolation_gap.analyze(borrow database);
+    let transaction_isolation_gap_b = analysis_transaction_isolation_gap.analyze(borrow database);
+    include(inout out, borrow transaction_isolation_gap_a, borrow transaction_isolation_gap_b,
+        analysis_transaction_isolation_gap.verify(borrow database, borrow transaction_isolation_gap_a));
+    let transaction_long_runner_a = analysis_transaction_long_runner.analyze(borrow database);
+    let transaction_long_runner_b = analysis_transaction_long_runner.analyze(borrow database);
+    include(inout out, borrow transaction_long_runner_a, borrow transaction_long_runner_b,
+        analysis_transaction_long_runner.verify(borrow database, borrow transaction_long_runner_a));
+    let transaction_batch_efficiency_a = analysis_transaction_batch_efficiency.analyze(borrow database);
+    let transaction_batch_efficiency_b = analysis_transaction_batch_efficiency.analyze(borrow database);
+    include(inout out, borrow transaction_batch_efficiency_a, borrow transaction_batch_efficiency_b,
+        analysis_transaction_batch_efficiency.verify(borrow database, borrow transaction_batch_efficiency_a));
+    let transaction_abort_cost_a = analysis_transaction_abort_cost.analyze(borrow database);
+    let transaction_abort_cost_b = analysis_transaction_abort_cost.analyze(borrow database);
+    include(inout out, borrow transaction_abort_cost_a, borrow transaction_abort_cost_b,
+        analysis_transaction_abort_cost.verify(borrow database, borrow transaction_abort_cost_a));
+    let transaction_durability_gap_a = analysis_transaction_durability_gap.analyze(borrow database);
+    let transaction_durability_gap_b = analysis_transaction_durability_gap.analyze(borrow database);
+    include(inout out, borrow transaction_durability_gap_a, borrow transaction_durability_gap_b,
+        analysis_transaction_durability_gap.verify(borrow database, borrow transaction_durability_gap_a));
+    let wal_record_density_a = analysis_wal_record_density.analyze(borrow database);
+    let wal_record_density_b = analysis_wal_record_density.analyze(borrow database);
+    include(inout out, borrow wal_record_density_a, borrow wal_record_density_b,
+        analysis_wal_record_density.verify(borrow database, borrow wal_record_density_a));
+    let wal_commit_coverage_a = analysis_wal_commit_coverage.analyze(borrow database);
+    let wal_commit_coverage_b = analysis_wal_commit_coverage.analyze(borrow database);
+    include(inout out, borrow wal_commit_coverage_a, borrow wal_commit_coverage_b,
+        analysis_wal_commit_coverage.verify(borrow database, borrow wal_commit_coverage_a));
+    let wal_undo_pressure_a = analysis_wal_undo_pressure.analyze(borrow database);
+    let wal_undo_pressure_b = analysis_wal_undo_pressure.analyze(borrow database);
+    include(inout out, borrow wal_undo_pressure_a, borrow wal_undo_pressure_b,
+        analysis_wal_undo_pressure.verify(borrow database, borrow wal_undo_pressure_a));
+    let wal_redo_pressure_a = analysis_wal_redo_pressure.analyze(borrow database);
+    let wal_redo_pressure_b = analysis_wal_redo_pressure.analyze(borrow database);
+    include(inout out, borrow wal_redo_pressure_a, borrow wal_redo_pressure_b,
+        analysis_wal_redo_pressure.verify(borrow database, borrow wal_redo_pressure_a));
+    let wal_lsn_continuity_a = analysis_wal_lsn_continuity.analyze(borrow database);
+    let wal_lsn_continuity_b = analysis_wal_lsn_continuity.analyze(borrow database);
+    include(inout out, borrow wal_lsn_continuity_a, borrow wal_lsn_continuity_b,
+        analysis_wal_lsn_continuity.verify(borrow database, borrow wal_lsn_continuity_a));
+    let wal_checkpoint_distance_a = analysis_wal_checkpoint_distance.analyze(borrow database);
+    let wal_checkpoint_distance_b = analysis_wal_checkpoint_distance.analyze(borrow database);
+    include(inout out, borrow wal_checkpoint_distance_a, borrow wal_checkpoint_distance_b,
+        analysis_wal_checkpoint_distance.verify(borrow database, borrow wal_checkpoint_distance_a));
+    let wal_payload_delta_a = analysis_wal_payload_delta.analyze(borrow database);
+    let wal_payload_delta_b = analysis_wal_payload_delta.analyze(borrow database);
+    include(inout out, borrow wal_payload_delta_a, borrow wal_payload_delta_b,
+        analysis_wal_payload_delta.verify(borrow database, borrow wal_payload_delta_a));
+    let wal_transaction_fanout_a = analysis_wal_transaction_fanout.analyze(borrow database);
+    let wal_transaction_fanout_b = analysis_wal_transaction_fanout.analyze(borrow database);
+    include(inout out, borrow wal_transaction_fanout_a, borrow wal_transaction_fanout_b,
+        analysis_wal_transaction_fanout.verify(borrow database, borrow wal_transaction_fanout_a));
+    let wal_table_hotspot_a = analysis_wal_table_hotspot.analyze(borrow database);
+    let wal_table_hotspot_b = analysis_wal_table_hotspot.analyze(borrow database);
+    include(inout out, borrow wal_table_hotspot_a, borrow wal_table_hotspot_b,
+        analysis_wal_table_hotspot.verify(borrow database, borrow wal_table_hotspot_a));
+    let wal_row_hotspot_a = analysis_wal_row_hotspot.analyze(borrow database);
+    let wal_row_hotspot_b = analysis_wal_row_hotspot.analyze(borrow database);
+    include(inout out, borrow wal_row_hotspot_a, borrow wal_row_hotspot_b,
+        analysis_wal_row_hotspot.verify(borrow database, borrow wal_row_hotspot_a));
+    let wal_flush_pressure_a = analysis_wal_flush_pressure.analyze(borrow database);
+    let wal_flush_pressure_b = analysis_wal_flush_pressure.analyze(borrow database);
+    include(inout out, borrow wal_flush_pressure_a, borrow wal_flush_pressure_b,
+        analysis_wal_flush_pressure.verify(borrow database, borrow wal_flush_pressure_a));
+    let wal_group_commit_gain_a = analysis_wal_group_commit_gain.analyze(borrow database);
+    let wal_group_commit_gain_b = analysis_wal_group_commit_gain.analyze(borrow database);
+    include(inout out, borrow wal_group_commit_gain_a, borrow wal_group_commit_gain_b,
+        analysis_wal_group_commit_gain.verify(borrow database, borrow wal_group_commit_gain_a));
+    let wal_recovery_span_a = analysis_wal_recovery_span.analyze(borrow database);
+    let wal_recovery_span_b = analysis_wal_recovery_span.analyze(borrow database);
+    include(inout out, borrow wal_recovery_span_a, borrow wal_recovery_span_b,
+        analysis_wal_recovery_span.verify(borrow database, borrow wal_recovery_span_a));
+    let wal_retention_cost_a = analysis_wal_retention_cost.analyze(borrow database);
+    let wal_retention_cost_b = analysis_wal_retention_cost.analyze(borrow database);
+    include(inout out, borrow wal_retention_cost_a, borrow wal_retention_cost_b,
+        analysis_wal_retention_cost.verify(borrow database, borrow wal_retention_cost_a));
+    let wal_replication_volume_a = analysis_wal_replication_volume.analyze(borrow database);
+    let wal_replication_volume_b = analysis_wal_replication_volume.analyze(borrow database);
+    include(inout out, borrow wal_replication_volume_a, borrow wal_replication_volume_b,
+        analysis_wal_replication_volume.verify(borrow database, borrow wal_replication_volume_a));
+    let wal_integrity_a = analysis_wal_integrity.analyze(borrow database);
+    let wal_integrity_b = analysis_wal_integrity.analyze(borrow database);
+    include(inout out, borrow wal_integrity_a, borrow wal_integrity_b,
+        analysis_wal_integrity.verify(borrow database, borrow wal_integrity_a));
+    let replication_lag_a = analysis_replication_lag.analyze(borrow database);
+    let replication_lag_b = analysis_replication_lag.analyze(borrow database);
+    include(inout out, borrow replication_lag_a, borrow replication_lag_b,
+        analysis_replication_lag.verify(borrow database, borrow replication_lag_a));
+    let replication_health_a = analysis_replication_health.analyze(borrow database);
+    let replication_health_b = analysis_replication_health.analyze(borrow database);
+    include(inout out, borrow replication_health_a, borrow replication_health_b,
+        analysis_replication_health.verify(borrow database, borrow replication_health_a));
+    let replication_quorum_a = analysis_replication_quorum.analyze(borrow database);
+    let replication_quorum_b = analysis_replication_quorum.analyze(borrow database);
+    include(inout out, borrow replication_quorum_a, borrow replication_quorum_b,
+        analysis_replication_quorum.verify(borrow database, borrow replication_quorum_a));
+    let replication_failover_readiness_a = analysis_replication_failover_readiness.analyze(borrow database);
+    let replication_failover_readiness_b = analysis_replication_failover_readiness.analyze(borrow database);
+    include(inout out, borrow replication_failover_readiness_a, borrow replication_failover_readiness_b,
+        analysis_replication_failover_readiness.verify(borrow database, borrow replication_failover_readiness_a));
+    let replication_apply_rate_a = analysis_replication_apply_rate.analyze(borrow database);
+    let replication_apply_rate_b = analysis_replication_apply_rate.analyze(borrow database);
+    include(inout out, borrow replication_apply_rate_a, borrow replication_apply_rate_b,
+        analysis_replication_apply_rate.verify(borrow database, borrow replication_apply_rate_a));
+    let replication_log_gap_a = analysis_replication_log_gap.analyze(borrow database);
+    let replication_log_gap_b = analysis_replication_log_gap.analyze(borrow database);
+    include(inout out, borrow replication_log_gap_a, borrow replication_log_gap_b,
+        analysis_replication_log_gap.verify(borrow database, borrow replication_log_gap_a));
+    let replication_primary_pressure_a = analysis_replication_primary_pressure.analyze(borrow database);
+    let replication_primary_pressure_b = analysis_replication_primary_pressure.analyze(borrow database);
+    include(inout out, borrow replication_primary_pressure_a, borrow replication_primary_pressure_b,
+        analysis_replication_primary_pressure.verify(borrow database, borrow replication_primary_pressure_a));
+    let replication_follower_skew_a = analysis_replication_follower_skew.analyze(borrow database);
+    let replication_follower_skew_b = analysis_replication_follower_skew.analyze(borrow database);
+    include(inout out, borrow replication_follower_skew_a, borrow replication_follower_skew_b,
+        analysis_replication_follower_skew.verify(borrow database, borrow replication_follower_skew_a));
+    let replication_durability_window_a = analysis_replication_durability_window.analyze(borrow database);
+    let replication_durability_window_b = analysis_replication_durability_window.analyze(borrow database);
+    include(inout out, borrow replication_durability_window_a, borrow replication_durability_window_b,
+        analysis_replication_durability_window.verify(borrow database, borrow replication_durability_window_a));
+    let replication_read_scaling_a = analysis_replication_read_scaling.analyze(borrow database);
+    let replication_read_scaling_b = analysis_replication_read_scaling.analyze(borrow database);
+    include(inout out, borrow replication_read_scaling_a, borrow replication_read_scaling_b,
+        analysis_replication_read_scaling.verify(borrow database, borrow replication_read_scaling_a));
+    let replication_write_amplification_a = analysis_replication_write_amplification.analyze(borrow database);
+    let replication_write_amplification_b = analysis_replication_write_amplification.analyze(borrow database);
+    include(inout out, borrow replication_write_amplification_a, borrow replication_write_amplification_b,
+        analysis_replication_write_amplification.verify(borrow database, borrow replication_write_amplification_a));
+    let replication_catchup_cost_a = analysis_replication_catchup_cost.analyze(borrow database);
+    let replication_catchup_cost_b = analysis_replication_catchup_cost.analyze(borrow database);
+    include(inout out, borrow replication_catchup_cost_a, borrow replication_catchup_cost_b,
+        analysis_replication_catchup_cost.verify(borrow database, borrow replication_catchup_cost_a));
+    let replication_partition_risk_a = analysis_replication_partition_risk.analyze(borrow database);
+    let replication_partition_risk_b = analysis_replication_partition_risk.analyze(borrow database);
+    include(inout out, borrow replication_partition_risk_a, borrow replication_partition_risk_b,
+        analysis_replication_partition_risk.verify(borrow database, borrow replication_partition_risk_a));
+    let replication_consistency_gap_a = analysis_replication_consistency_gap.analyze(borrow database);
+    let replication_consistency_gap_b = analysis_replication_consistency_gap.analyze(borrow database);
+    include(inout out, borrow replication_consistency_gap_a, borrow replication_consistency_gap_b,
+        analysis_replication_consistency_gap.verify(borrow database, borrow replication_consistency_gap_a));
+    let replication_snapshot_distance_a = analysis_replication_snapshot_distance.analyze(borrow database);
+    let replication_snapshot_distance_b = analysis_replication_snapshot_distance.analyze(borrow database);
+    include(inout out, borrow replication_snapshot_distance_a, borrow replication_snapshot_distance_b,
+        analysis_replication_snapshot_distance.verify(borrow database, borrow replication_snapshot_distance_a));
+    let replication_topology_balance_a = analysis_replication_topology_balance.analyze(borrow database);
+    let replication_topology_balance_b = analysis_replication_topology_balance.analyze(borrow database);
+    include(inout out, borrow replication_topology_balance_a, borrow replication_topology_balance_b,
+        analysis_replication_topology_balance.verify(borrow database, borrow replication_topology_balance_a));
+    let workload_read_intensity_a = analysis_workload_read_intensity.analyze(borrow database);
+    let workload_read_intensity_b = analysis_workload_read_intensity.analyze(borrow database);
+    include(inout out, borrow workload_read_intensity_a, borrow workload_read_intensity_b,
+        analysis_workload_read_intensity.verify(borrow database, borrow workload_read_intensity_a));
+    let workload_write_intensity_a = analysis_workload_write_intensity.analyze(borrow database);
+    let workload_write_intensity_b = analysis_workload_write_intensity.analyze(borrow database);
+    include(inout out, borrow workload_write_intensity_a, borrow workload_write_intensity_b,
+        analysis_workload_write_intensity.verify(borrow database, borrow workload_write_intensity_a));
+    let workload_join_intensity_a = analysis_workload_join_intensity.analyze(borrow database);
+    let workload_join_intensity_b = analysis_workload_join_intensity.analyze(borrow database);
+    include(inout out, borrow workload_join_intensity_a, borrow workload_join_intensity_b,
+        analysis_workload_join_intensity.verify(borrow database, borrow workload_join_intensity_a));
+    let workload_aggregate_intensity_a = analysis_workload_aggregate_intensity.analyze(borrow database);
+    let workload_aggregate_intensity_b = analysis_workload_aggregate_intensity.analyze(borrow database);
+    include(inout out, borrow workload_aggregate_intensity_a, borrow workload_aggregate_intensity_b,
+        analysis_workload_aggregate_intensity.verify(borrow database, borrow workload_aggregate_intensity_a));
+    let workload_sort_intensity_a = analysis_workload_sort_intensity.analyze(borrow database);
+    let workload_sort_intensity_b = analysis_workload_sort_intensity.analyze(borrow database);
+    include(inout out, borrow workload_sort_intensity_a, borrow workload_sort_intensity_b,
+        analysis_workload_sort_intensity.verify(borrow database, borrow workload_sort_intensity_a));
+    let workload_index_hit_rate_a = analysis_workload_index_hit_rate.analyze(borrow database);
+    let workload_index_hit_rate_b = analysis_workload_index_hit_rate.analyze(borrow database);
+    include(inout out, borrow workload_index_hit_rate_a, borrow workload_index_hit_rate_b,
+        analysis_workload_index_hit_rate.verify(borrow database, borrow workload_index_hit_rate_a));
+    let workload_table_skew_a = analysis_workload_table_skew.analyze(borrow database);
+    let workload_table_skew_b = analysis_workload_table_skew.analyze(borrow database);
+    include(inout out, borrow workload_table_skew_a, borrow workload_table_skew_b,
+        analysis_workload_table_skew.verify(borrow database, borrow workload_table_skew_a));
+    let workload_key_skew_a = analysis_workload_key_skew.analyze(borrow database);
+    let workload_key_skew_b = analysis_workload_key_skew.analyze(borrow database);
+    include(inout out, borrow workload_key_skew_a, borrow workload_key_skew_b,
+        analysis_workload_key_skew.verify(borrow database, borrow workload_key_skew_a));
+    let workload_row_growth_a = analysis_workload_row_growth.analyze(borrow database);
+    let workload_row_growth_b = analysis_workload_row_growth.analyze(borrow database);
+    include(inout out, borrow workload_row_growth_a, borrow workload_row_growth_b,
+        analysis_workload_row_growth.verify(borrow database, borrow workload_row_growth_a));
+    let workload_version_growth_a = analysis_workload_version_growth.analyze(borrow database);
+    let workload_version_growth_b = analysis_workload_version_growth.analyze(borrow database);
+    include(inout out, borrow workload_version_growth_a, borrow workload_version_growth_b,
+        analysis_workload_version_growth.verify(borrow database, borrow workload_version_growth_a));
+    let workload_memory_proxy_a = analysis_workload_memory_proxy.analyze(borrow database);
+    let workload_memory_proxy_b = analysis_workload_memory_proxy.analyze(borrow database);
+    include(inout out, borrow workload_memory_proxy_a, borrow workload_memory_proxy_b,
+        analysis_workload_memory_proxy.verify(borrow database, borrow workload_memory_proxy_a));
+    let workload_cpu_proxy_a = analysis_workload_cpu_proxy.analyze(borrow database);
+    let workload_cpu_proxy_b = analysis_workload_cpu_proxy.analyze(borrow database);
+    include(inout out, borrow workload_cpu_proxy_a, borrow workload_cpu_proxy_b,
+        analysis_workload_cpu_proxy.verify(borrow database, borrow workload_cpu_proxy_a));
+    let workload_io_proxy_a = analysis_workload_io_proxy.analyze(borrow database);
+    let workload_io_proxy_b = analysis_workload_io_proxy.analyze(borrow database);
+    include(inout out, borrow workload_io_proxy_a, borrow workload_io_proxy_b,
+        analysis_workload_io_proxy.verify(borrow database, borrow workload_io_proxy_a));
+    let workload_cache_pressure_a = analysis_workload_cache_pressure.analyze(borrow database);
+    let workload_cache_pressure_b = analysis_workload_cache_pressure.analyze(borrow database);
+    include(inout out, borrow workload_cache_pressure_a, borrow workload_cache_pressure_b,
+        analysis_workload_cache_pressure.verify(borrow database, borrow workload_cache_pressure_a));
+    let workload_concurrency_a = analysis_workload_concurrency.analyze(borrow database);
+    let workload_concurrency_b = analysis_workload_concurrency.analyze(borrow database);
+    include(inout out, borrow workload_concurrency_a, borrow workload_concurrency_b,
+        analysis_workload_concurrency.verify(borrow database, borrow workload_concurrency_a));
+    let workload_tail_latency_a = analysis_workload_tail_latency.analyze(borrow database);
+    let workload_tail_latency_b = analysis_workload_tail_latency.analyze(borrow database);
+    include(inout out, borrow workload_tail_latency_a, borrow workload_tail_latency_b,
+        analysis_workload_tail_latency.verify(borrow database, borrow workload_tail_latency_a));
+    out.valid = out.passes == 112 && out.failures == 0 && out.deterministic;
+    out
+}

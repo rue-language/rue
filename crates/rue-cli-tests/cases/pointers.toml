@@ -91,16 +91,20 @@ stdout = "99\n"
 # wrong-direction scale) reads 10 or garbage instead.
 [[case]]
 name = "ptr_offset_reads_offset_element"
+# Uses a slot-identical element type (i64) so a raw pointer into the frame
+# array is supported; a non-slot-identical frame array (e.g. [i32; 3]) is
+# refused under the default compact layout (RUE-987 / RUE-1035 M2). The
+# @ptr_offset arithmetic under test is element-width-independent.
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let arr: [i32; 3] = [10, 20, 30];
-    let v: i32 = checked {
-        let base: ptr const i32 = @raw(arr[0]);
+    let arr: [i64; 3] = [10, 20, 30];
+    let v: i64 = checked {
+        let base: ptr const i64 = @raw(arr[0]);
         @ptr_read(@ptr_offset(base, 1))
     };
     @dbg(v);
-    let w: i32 = checked {
-        let base: ptr const i32 = @raw(arr[0]);
+    let w: i64 = checked {
+        let base: ptr const i64 = @raw(arr[0]);
         @ptr_read(@ptr_offset(base, 2))
     };
     @dbg(w);
@@ -115,11 +119,15 @@ stdout = "20\n30\n"
 # as ~4 billion and the address is corrupted (RUE-213).
 [[case]]
 name = "ptr_offset_negative_walks_backward"
+# Slot-identical i64 elements (see ptr_offset_reads_offset_element): a raw
+# pointer into a non-slot-identical frame array is refused under the compact
+# layout (M2). The narrow (i32) index -1 whose sign-extension this guards is
+# unchanged.
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let arr: [i32; 3] = [10, 20, 30];
-    let v: i32 = checked {
-        let base: ptr const i32 = @raw(arr[2]);
+    let arr: [i64; 3] = [10, 20, 30];
+    let v: i64 = checked {
+        let base: ptr const i64 = @raw(arr[2]);
         @ptr_read(@ptr_offset(base, -1))
     };
     @dbg(v);
@@ -133,11 +141,14 @@ stdout = "20\n"
 # arr[2].
 [[case]]
 name = "ptr_offset_write_hits_offset_element"
+# Slot-identical i64 elements (see ptr_offset_reads_offset_element): a raw
+# pointer into a non-slot-identical frame array is refused under the compact
+# layout (M2).
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let mut arr: [i32; 3] = [10, 20, 30];
+    let mut arr: [i64; 3] = [10, 20, 30];
     checked {
-        let base: ptr mut i32 = @raw_mut(arr[0]);
+        let base: ptr mut i64 = @raw_mut(arr[0]);
         @ptr_write(@ptr_offset(base, 2), 99);
     };
     @dbg(arr[0]);
@@ -152,9 +163,10 @@ stdout = "10\n99\n"
 # This walks a fresh mmap region (NOT a local array): @ptr_offset(base, 1)
 # must land one element FORWARD (higher address), so writing 100/200/300 at
 # offsets 0/1/2 and reading them back returns them in order, and the address
-# delta base->base+1 is exactly sizeof(pointee) (8, one slot). Before RUE-243
-# @ptr_offset subtracted, so it walked mmap pointers BACKWARD and this read
-# garbage. mmap uses the x86-64 Linux syscall ABI, so scope to that host.
+# delta base->base+1 is exactly sizeof(pointee) (4 = size_of(i32) under the
+# compact layout). Before RUE-243 @ptr_offset subtracted, so it walked mmap
+# pointers BACKWARD and this read garbage. mmap uses the x86-64 Linux syscall
+# ABI, so scope to that host.
 [[case]]
 name = "ptr_offset_forward_on_mmap_pointer"
 only_on = ["x86-64-linux"]
@@ -182,7 +194,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-stdout = "8\n100\n200\n300\n"
+stdout = "4\n100\n200\n300\n"
 
 # Array indexing and @ptr_offset AGREE by construction (ADR-0040 / RUE-243):
 # both compute base + i*size (ascending). Write element 2 through the index
@@ -192,11 +204,14 @@ stdout = "8\n100\n200\n300\n"
 # through the index path.
 [[case]]
 name = "array_index_and_ptr_offset_agree"
+# Slot-identical i64 elements so a raw pointer into the frame array is
+# supported (a non-slot-identical frame array is refused under the compact
+# layout, M2); the index/@ptr_offset agreement under test is width-independent.
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let mut a: [i32; 4] = [0, 0, 0, 0];
+    let mut a: [i64; 4] = [0, 0, 0, 0];
     a[2] = 77;
-    let via_ptr: i32 = checked { @ptr_read(@ptr_offset(@raw(a[0]), 2)) };
+    let via_ptr: i64 = checked { @ptr_read(@ptr_offset(@raw(a[0]), 2)) };
     @dbg(via_ptr);
     checked {
         @ptr_write(@ptr_offset(@raw_mut(a[0]), 3), 88);
@@ -209,7 +224,8 @@ stdout = "77\n88\n"
 
 # @ptr_offset moves toward HIGHER addresses for a positive index and LOWER
 # for a negative one, on an ordinary (non-array-origin) local pointer
-# (ADR-0040 / RUE-243). The forward delta is exactly sizeof(pointee) = 8.
+# (ADR-0040 / RUE-243). The forward delta is exactly sizeof(pointee) = 4
+# (size_of(i32) under the compact layout).
 [[case]]
 name = "ptr_offset_forward_is_higher_address"
 files = [{ path = "main.rue", source = """
@@ -223,7 +239,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-stdout = "8\n"
+stdout = "4\n"
 
 # Enforcement: a pointer operation outside a `checked` block is rejected
 # with E1300, not silently accepted (spec 9.1:12).

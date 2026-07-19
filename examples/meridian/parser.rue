@@ -1,0 +1,236 @@
+// Predictive parser for Meridian's compact SQL surface. Statements synchronize
+// on semicolons so one malformed query does not hide later catalog errors.
+const std = @import("std");
+const model = @import("model.rue");
+const poolmod = @import("pool.rue");
+const token = @import("token.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct ParseResult {
+    database: model.Database,
+    errors: StrBuf,
+}
+
+struct Parser {
+    tokens: token.Tokens,
+    at: u64,
+    database: model.Database,
+    errors: StrBuf,
+
+    fn new(tokens: token.Tokens, strings: poolmod.Pool) -> Self {
+        let mut database = model.new_database(strings);
+        database.name = database.strings.intern_literal("meridian");
+        Self { tokens: tokens, at: 0, database: database, errors: StrBuf.new() }
+    }
+
+    fn peek(borrow self) -> token.Token { self.tokens.get_or(self.at, token.empty()) }
+    fn check(borrow self, kind: u64) -> bool { self.peek().kind == kind }
+
+    fn advance(inout self) -> token.Token {
+        let value = self.peek();
+        if value.kind != token.EOF { self.at = self.at + 1; }
+        value
+    }
+
+    fn error(inout self, message: StrBuf) {
+        self.errors.push_str("meridian[parse] byte ");
+        self.errors.push_str(@to_string(self.peek().start));
+        self.errors.push_str(": ");
+        self.errors.push_str(message);
+        self.errors.push(10);
+    }
+
+    fn expect(inout self, kind: u64, message: StrBuf) -> token.Token {
+        if self.check(kind) { return self.advance(); }
+        self.error(message);
+        if !self.check(token.EOF) { self.advance() } else { self.peek() }
+    }
+
+    fn integer(inout self, label: StrBuf) -> u64 {
+        self.expect(token.INT, label).value
+    }
+
+    fn semicolon(inout self) {
+        let _ = self.expect(token.SEMI, "expected ';' after statement");
+    }
+
+    fn create_table(inout self) {
+        let name = self.expect(token.IDENT, "expected table name");
+        let declared_columns = self.integer("expected table column count");
+        self.semicolon();
+        self.database.tables.push(model.Table {
+            name: name.value, first_column: self.database.columns.len(),
+            column_count: declared_columns, row_count: 0, version: self.database.version,
+        });
+    }
+
+    fn create_index(inout self) {
+        let name = self.expect(token.IDENT, "expected index name");
+        let table_name = self.expect(token.IDENT, "expected index table");
+        let column_name = self.expect(token.IDENT, "expected index column");
+        let unique = if self.check(token.UNIQUE) { let _ = self.advance(); true } else { false };
+        self.semicolon();
+        self.database.indexes.push(model.Index {
+            name: name.value, table_name: table_name.value, column_name: column_name.value,
+            table: model.NONE(), column: model.NONE(), unique: unique, entries: 0,
+        });
+    }
+
+    fn create(inout self) {
+        if self.check(token.TABLE) {
+            let _ = self.advance();
+            self.create_table();
+        } else if self.check(token.INDEX) {
+            let _ = self.advance();
+            self.create_index();
+        } else {
+            self.error("expected TABLE or INDEX after CREATE");
+            self.recover();
+        }
+    }
+
+    fn column(inout self) {
+        let table_name = self.expect(token.IDENT, "expected column table");
+        let name = self.expect(token.IDENT, "expected column name");
+        let kind = if self.check(token.INT_TYPE) {
+            let _ = self.advance(); model.INT_KIND()
+        } else if self.check(token.TEXT_TYPE) {
+            let _ = self.advance(); model.TEXT_KIND()
+        } else {
+            self.error("expected INT or TEXT column type");
+            if !self.check(token.EOF) { let _ = self.advance(); }
+            0
+        };
+        let nullable = if self.check(token.REQUIRED) { let _ = self.advance(); false } else { true };
+        let unique = if self.check(token.UNIQUE) { let _ = self.advance(); true } else { false };
+        self.semicolon();
+        let table = model.find_table(borrow self.database, table_name.value);
+        let ordinal = if table == model.NONE() { 0 }
+            else { self.database.columns.len() - self.database.tables.get_or(table, model.empty_table()).first_column };
+        self.database.columns.push(model.Column {
+            name: name.value, table_name: table_name.value, table: table, kind: kind,
+            nullable: nullable, unique: unique, ordinal: ordinal,
+        });
+    }
+
+    fn insert(inout self) {
+        let table_name = self.expect(token.IDENT, "expected insert table");
+        let table = model.find_table(borrow self.database, table_name.value);
+        let first_cell = self.database.cells.len();
+        let row_index = self.database.rows.len();
+        let mut count: u64 = 0;
+        while !self.check(token.SEMI) && !self.check(token.EOF) {
+            if self.check(token.INT) {
+                let value = self.advance().value;
+                let column = if table == model.NONE() { model.NONE() }
+                    else { self.database.tables.get_or(table, model.empty_table()).first_column + count };
+                self.database.cells.push(model.Cell {
+                    table: table, row: row_index, column: column, number: value,
+                    text: model.NONE(), is_text: false, is_null: false,
+                });
+                count = count + 1;
+            } else {
+                self.error("INSERT values must be integers in the compact surface");
+                let _ = self.advance();
+            }
+        }
+        self.semicolon();
+        self.database.rows.push(model.Row {
+            table: table, first_cell: first_cell, cell_count: count,
+            version_created: self.database.version, version_deleted: model.NONE(),
+            transaction: model.NONE(), committed: true,
+        });
+        if table != model.NONE() {
+            let old = self.database.tables.get_or(table, model.empty_table());
+            self.database.tables.set(table, model.Table {
+                name: old.name, first_column: old.first_column, column_count: old.column_count,
+                row_count: old.row_count + 1, version: old.version,
+            });
+        }
+    }
+
+    fn select(inout self) {
+        let table_name = self.expect(token.IDENT, "expected SELECT table");
+        let mut query = model.empty_query();
+        query.table_name = table_name.value;
+        while !self.check(token.SEMI) && !self.check(token.EOF) {
+            if self.check(token.FILTER) {
+                let _ = self.advance();
+                query.filter_column_name = self.expect(token.IDENT, "expected filter column").value;
+                query.filter_value = self.integer("expected filter lower bound");
+            } else if self.check(token.JOIN) {
+                let _ = self.advance();
+                query.join_table_name = self.expect(token.IDENT, "expected join table").value;
+                let _ = self.expect(token.ON, "expected ON");
+                query.join_left_name = self.expect(token.IDENT, "expected left join column").value;
+                query.join_right_name = self.expect(token.IDENT, "expected right join column").value;
+            } else if self.check(token.GROUP) {
+                let _ = self.advance();
+                query.group_column_name = self.expect(token.IDENT, "expected group column").value;
+            } else if self.check(token.ORDER) {
+                let _ = self.advance();
+                query.order_column_name = self.expect(token.IDENT, "expected order column").value;
+            } else if self.check(token.LIMIT) {
+                let _ = self.advance();
+                query.limit = self.integer("expected LIMIT value");
+            } else {
+                self.error("unexpected SELECT clause");
+                let _ = self.advance();
+            }
+        }
+        self.semicolon();
+        self.database.queries.push(query);
+    }
+
+    fn begin(inout self) {
+        let id = self.integer("expected transaction id");
+        self.semicolon();
+        self.database.transactions.push(model.Transaction {
+            id: id, snapshot: self.database.version, state: 1, writes: 0, reads: 0,
+        });
+    }
+
+    fn finish_transaction(inout self, state: u64) {
+        let id = self.integer("expected transaction id");
+        self.semicolon();
+        let mut i: u64 = 0;
+        while i < self.database.transactions.len() {
+            let item = self.database.transactions.get_or(i, model.empty_transaction());
+            if item.id == id {
+                self.database.transactions.set(i, model.Transaction {
+                    id: item.id, snapshot: item.snapshot, state: state,
+                    writes: item.writes, reads: item.reads,
+                });
+            }
+            i = i + 1;
+        }
+        if state == 2 { self.database.version = self.database.version + 1; }
+    }
+
+    fn recover(inout self) {
+        while !self.check(token.SEMI) && !self.check(token.EOF) { let _ = self.advance(); }
+        if self.check(token.SEMI) { let _ = self.advance(); }
+    }
+
+    fn statement(inout self) {
+        let kind = self.peek().kind;
+        let _ = self.advance();
+        if kind == token.CREATE { self.create(); }
+        else if kind == token.COLUMN { self.column(); }
+        else if kind == token.INSERT { self.insert(); }
+        else if kind == token.SELECT { self.select(); }
+        else if kind == token.BEGIN { self.begin(); }
+        else if kind == token.COMMIT { self.finish_transaction(2); }
+        else if kind == token.ROLLBACK { self.finish_transaction(3); }
+        else {
+            self.error("expected CREATE, COLUMN, INSERT, SELECT, BEGIN, COMMIT, or ROLLBACK");
+            self.recover();
+        }
+    }
+}
+
+pub fn parse(tokens: token.Tokens, strings: poolmod.Pool) -> ParseResult {
+    let mut parser = Parser.new(tokens, strings);
+    while !parser.check(token.EOF) { parser.statement(); }
+    ParseResult { database: parser.database, errors: parser.errors }
+}

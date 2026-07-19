@@ -1,0 +1,93 @@
+// Shared POD aggregate for Meridian analysis, optimizer, and storage audits.
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct Metric {
+    tag: u64,
+    observations: u64,
+    sum: u64,
+    minimum: u64,
+    maximum: u64,
+    weighted: u64,
+    even: u64,
+    odd: u64,
+    zeroes: u64,
+    warnings: u64,
+    digest: u64,
+}
+
+pub fn new(tag: u64) -> Metric {
+    Metric {
+        tag: tag, observations: 0, sum: 0,
+        minimum: 18446744073709551615, maximum: 0,
+        weighted: 0, even: 0, odd: 0, zeroes: 0,
+        warnings: 0, digest: 14695981039346656037,
+    }
+}
+
+pub fn mix(hash: u64, value: u64) -> u64 {
+    @wrapping_mul(hash ^ value, 1099511628211)
+}
+
+pub fn add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+pub fn multiply(a: u64, b: u64) -> u64 {
+    if a == 0 || b == 0 { return 0; }
+    if a > 18446744073709551615 / b { 18446744073709551615 } else { a * b }
+}
+
+pub fn observe(inout value: Metric, observation: u64, weight: u64) {
+    value.observations = value.observations + 1;
+    value.sum = add(value.sum, observation);
+    value.weighted = add(value.weighted, multiply(observation, weight));
+    if observation < value.minimum { value.minimum = observation; }
+    if observation > value.maximum { value.maximum = observation; }
+    if observation == 0 { value.zeroes = value.zeroes + 1; }
+    if observation % 2 == 0 { value.even = value.even + 1; }
+    else { value.odd = value.odd + 1; }
+    value.digest = mix(value.digest, observation);
+    value.digest = mix(value.digest, weight);
+}
+
+pub fn warn(inout value: Metric, condition: bool) {
+    if condition { value.warnings = value.warnings + 1; }
+}
+
+pub fn finish(inout value: Metric) {
+    if value.observations == 0 { value.minimum = 0; }
+    value.digest = mix(value.digest, value.tag);
+    value.digest = mix(value.digest, value.observations);
+    value.digest = mix(value.digest, value.sum);
+    value.digest = mix(value.digest, value.weighted);
+    value.digest = mix(value.digest, value.warnings);
+}
+
+pub fn mean(borrow value: Metric) -> u64 {
+    if value.observations == 0 { 0 } else { value.sum / value.observations }
+}
+
+pub fn valid(borrow value: Metric) -> bool {
+    value.even + value.odd == value.observations &&
+        value.zeroes <= value.observations &&
+        (value.observations == 0 || value.minimum <= value.maximum)
+}
+
+pub fn render(label: str, borrow value: Metric) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, label); out.push(10);
+    text.line(inout out, "observations=", value.observations);
+    text.line(inout out, "sum=", value.sum);
+    text.line(inout out, "minimum=", value.minimum);
+    text.line(inout out, "maximum=", value.maximum);
+    text.line(inout out, "mean=", mean(borrow value));
+    text.line(inout out, "weighted=", value.weighted);
+    text.line(inout out, "even=", value.even);
+    text.line(inout out, "odd=", value.odd);
+    text.line(inout out, "zeroes=", value.zeroes);
+    text.line(inout out, "warnings=", value.warnings);
+    text.line(inout out, "digest=", value.digest);
+    out
+}

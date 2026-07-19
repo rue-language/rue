@@ -1,0 +1,218 @@
+// Exercises every Meridian report adapter twice and validates stable output.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+const plan = @import("plan.rue");
+const result = @import("result.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+const report_human = @import("report_human.rue");
+const report_csv = @import("report_csv.rue");
+const report_json = @import("report_json.rue");
+const report_ndjson = @import("report_ndjson.rue");
+const report_sql = @import("report_sql.rue");
+const report_dot = @import("report_dot.rue");
+const report_mermaid = @import("report_mermaid.rue");
+const report_html = @import("report_html.rue");
+const report_markdown = @import("report_markdown.rue");
+const report_yaml = @import("report_yaml.rue");
+const report_toml = @import("report_toml.rue");
+const report_xml = @import("report_xml.rue");
+const report_junit = @import("report_junit.rue");
+const report_sarif = @import("report_sarif.rue");
+const report_prometheus = @import("report_prometheus.rue");
+const report_otel = @import("report_otel.rue");
+const report_chrome_trace = @import("report_chrome_trace.rue");
+const report_catalog = @import("report_catalog.rue");
+const report_schema = @import("report_schema.rue");
+const report_table = @import("report_table.rue");
+const report_columns = @import("report_columns.rue");
+const report_indexes = @import("report_indexes.rue");
+const report_rows = @import("report_rows.rue");
+const report_cells = @import("report_cells.rue");
+const report_query = @import("report_query.rue");
+const report_plan = @import("report_plan.rue");
+const report_explain = @import("report_explain.rue");
+const report_cost = @import("report_cost.rue");
+const report_statistics = @import("report_statistics.rue");
+const report_transactions = @import("report_transactions.rue");
+const report_mvcc = @import("report_mvcc.rue");
+const report_wal = @import("report_wal.rue");
+const report_checkpoint = @import("report_checkpoint.rue");
+const report_recovery = @import("report_recovery.rue");
+const report_locks = @import("report_locks.rue");
+const report_deadlocks = @import("report_deadlocks.rue");
+const report_replicas = @import("report_replicas.rue");
+const report_failover = @import("report_failover.rue");
+const report_shards = @import("report_shards.rue");
+const report_partitions = @import("report_partitions.rue");
+const report_lineage = @import("report_lineage.rue");
+const report_audit = @import("report_audit.rue");
+const report_constraints = @import("report_constraints.rue");
+const report_benchmark = @import("report_benchmark.rue");
+
+pub struct Audit {
+    documents: u64,
+    bytes: u64,
+    failures: u64,
+    deterministic_mismatches: u64,
+    digest: u64,
+    valid: bool,
+}
+
+fn empty() -> Audit {
+    Audit { documents: 0, bytes: 0, failures: 0,
+        deterministic_mismatches: 0, digest: 14695981039346656037, valid: false }
+}
+
+fn include(inout audit: Audit, borrow first: StrBuf, borrow second: StrBuf, verified: bool) {
+    audit.documents = audit.documents + 1;
+    audit.bytes = audit.bytes + first.len();
+    audit.digest = metric.mix(audit.digest, text.fnv1a(borrow first));
+    if !verified || first.len() == 0 { audit.failures = audit.failures + 1; }
+    if first.len() != second.len() ||
+        text.fnv1a(borrow first) != text.fnv1a(borrow second) {
+        audit.deterministic_mismatches = audit.deterministic_mismatches + 1;
+        audit.failures = audit.failures + 1;
+    }
+}
+
+pub fn run(borrow database: model.Database, borrow query: model.Query,
+    borrow query_plan: plan.Plan, borrow output: result.Result) -> Audit {
+    let mut audit = empty();
+    let human_a = report_human.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let human_b = report_human.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow human_a, borrow human_b, report_human.verify(borrow human_a));
+    let csv_a = report_csv.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let csv_b = report_csv.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow csv_a, borrow csv_b, report_csv.verify(borrow csv_a));
+    let json_a = report_json.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let json_b = report_json.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow json_a, borrow json_b, report_json.verify(borrow json_a));
+    let ndjson_a = report_ndjson.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let ndjson_b = report_ndjson.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow ndjson_a, borrow ndjson_b, report_ndjson.verify(borrow ndjson_a));
+    let sql_a = report_sql.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let sql_b = report_sql.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow sql_a, borrow sql_b, report_sql.verify(borrow sql_a));
+    let dot_a = report_dot.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let dot_b = report_dot.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow dot_a, borrow dot_b, report_dot.verify(borrow dot_a));
+    let mermaid_a = report_mermaid.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let mermaid_b = report_mermaid.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow mermaid_a, borrow mermaid_b, report_mermaid.verify(borrow mermaid_a));
+    let html_a = report_html.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let html_b = report_html.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow html_a, borrow html_b, report_html.verify(borrow html_a));
+    let markdown_a = report_markdown.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let markdown_b = report_markdown.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow markdown_a, borrow markdown_b, report_markdown.verify(borrow markdown_a));
+    let yaml_a = report_yaml.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let yaml_b = report_yaml.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow yaml_a, borrow yaml_b, report_yaml.verify(borrow yaml_a));
+    let toml_a = report_toml.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let toml_b = report_toml.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow toml_a, borrow toml_b, report_toml.verify(borrow toml_a));
+    let xml_a = report_xml.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let xml_b = report_xml.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow xml_a, borrow xml_b, report_xml.verify(borrow xml_a));
+    let junit_a = report_junit.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let junit_b = report_junit.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow junit_a, borrow junit_b, report_junit.verify(borrow junit_a));
+    let sarif_a = report_sarif.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let sarif_b = report_sarif.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow sarif_a, borrow sarif_b, report_sarif.verify(borrow sarif_a));
+    let prometheus_a = report_prometheus.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let prometheus_b = report_prometheus.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow prometheus_a, borrow prometheus_b, report_prometheus.verify(borrow prometheus_a));
+    let otel_a = report_otel.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let otel_b = report_otel.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow otel_a, borrow otel_b, report_otel.verify(borrow otel_a));
+    let chrome_trace_a = report_chrome_trace.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let chrome_trace_b = report_chrome_trace.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow chrome_trace_a, borrow chrome_trace_b, report_chrome_trace.verify(borrow chrome_trace_a));
+    let catalog_a = report_catalog.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let catalog_b = report_catalog.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow catalog_a, borrow catalog_b, report_catalog.verify(borrow catalog_a));
+    let schema_a = report_schema.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let schema_b = report_schema.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow schema_a, borrow schema_b, report_schema.verify(borrow schema_a));
+    let table_a = report_table.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let table_b = report_table.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow table_a, borrow table_b, report_table.verify(borrow table_a));
+    let columns_a = report_columns.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let columns_b = report_columns.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow columns_a, borrow columns_b, report_columns.verify(borrow columns_a));
+    let indexes_a = report_indexes.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let indexes_b = report_indexes.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow indexes_a, borrow indexes_b, report_indexes.verify(borrow indexes_a));
+    let rows_a = report_rows.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let rows_b = report_rows.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow rows_a, borrow rows_b, report_rows.verify(borrow rows_a));
+    let cells_a = report_cells.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let cells_b = report_cells.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow cells_a, borrow cells_b, report_cells.verify(borrow cells_a));
+    let query_a = report_query.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let query_b = report_query.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow query_a, borrow query_b, report_query.verify(borrow query_a));
+    let plan_a = report_plan.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let plan_b = report_plan.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow plan_a, borrow plan_b, report_plan.verify(borrow plan_a));
+    let explain_a = report_explain.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let explain_b = report_explain.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow explain_a, borrow explain_b, report_explain.verify(borrow explain_a));
+    let cost_a = report_cost.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let cost_b = report_cost.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow cost_a, borrow cost_b, report_cost.verify(borrow cost_a));
+    let statistics_a = report_statistics.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let statistics_b = report_statistics.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow statistics_a, borrow statistics_b, report_statistics.verify(borrow statistics_a));
+    let transactions_a = report_transactions.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let transactions_b = report_transactions.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow transactions_a, borrow transactions_b, report_transactions.verify(borrow transactions_a));
+    let mvcc_a = report_mvcc.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let mvcc_b = report_mvcc.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow mvcc_a, borrow mvcc_b, report_mvcc.verify(borrow mvcc_a));
+    let wal_a = report_wal.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let wal_b = report_wal.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow wal_a, borrow wal_b, report_wal.verify(borrow wal_a));
+    let checkpoint_a = report_checkpoint.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let checkpoint_b = report_checkpoint.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow checkpoint_a, borrow checkpoint_b, report_checkpoint.verify(borrow checkpoint_a));
+    let recovery_a = report_recovery.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let recovery_b = report_recovery.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow recovery_a, borrow recovery_b, report_recovery.verify(borrow recovery_a));
+    let locks_a = report_locks.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let locks_b = report_locks.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow locks_a, borrow locks_b, report_locks.verify(borrow locks_a));
+    let deadlocks_a = report_deadlocks.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let deadlocks_b = report_deadlocks.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow deadlocks_a, borrow deadlocks_b, report_deadlocks.verify(borrow deadlocks_a));
+    let replicas_a = report_replicas.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let replicas_b = report_replicas.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow replicas_a, borrow replicas_b, report_replicas.verify(borrow replicas_a));
+    let failover_a = report_failover.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let failover_b = report_failover.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow failover_a, borrow failover_b, report_failover.verify(borrow failover_a));
+    let shards_a = report_shards.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let shards_b = report_shards.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow shards_a, borrow shards_b, report_shards.verify(borrow shards_a));
+    let partitions_a = report_partitions.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let partitions_b = report_partitions.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow partitions_a, borrow partitions_b, report_partitions.verify(borrow partitions_a));
+    let lineage_a = report_lineage.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let lineage_b = report_lineage.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow lineage_a, borrow lineage_b, report_lineage.verify(borrow lineage_a));
+    let audit_a = report_audit.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let audit_b = report_audit.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow audit_a, borrow audit_b, report_audit.verify(borrow audit_a));
+    let constraints_a = report_constraints.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let constraints_b = report_constraints.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow constraints_a, borrow constraints_b, report_constraints.verify(borrow constraints_a));
+    let benchmark_a = report_benchmark.render(borrow database, borrow query, borrow query_plan, borrow output);
+    let benchmark_b = report_benchmark.render(borrow database, borrow query, borrow query_plan, borrow output);
+    include(inout audit, borrow benchmark_a, borrow benchmark_b, report_benchmark.verify(borrow benchmark_a));
+    audit.valid = audit.documents == 44 && audit.failures == 0 &&
+        audit.deterministic_mismatches == 0;
+    audit
+}

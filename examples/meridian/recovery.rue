@@ -1,0 +1,43 @@
+// Crash recovery replays committed WAL and undoes incomplete transactions.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+
+pub struct Recovery {
+    scanned: u64,
+    redone: u64,
+    undone: u64,
+    skipped: u64,
+    checksum: u64,
+    valid: bool,
+}
+
+pub fn run(borrow database: model.Database, checkpoint_lsn: u64) -> Recovery {
+    let mut out = Recovery { scanned: 0, redone: 0, undone: 0, skipped: 0,
+        checksum: 14695981039346656037, valid: true };
+    let mut i: u64 = 0;
+    let mut previous: u64 = 0;
+    while i < database.wal.len() {
+        let entry = database.wal.get_or(i, model.empty_wal());
+        out.scanned = out.scanned + 1;
+        if entry.lsn <= checkpoint_lsn { out.skipped = out.skipped + 1; }
+        else if entry.committed {
+            out.redone = out.redone + 1;
+            out.checksum = metric.mix(out.checksum, entry.after);
+        } else {
+            out.undone = out.undone + 1;
+            out.checksum = metric.mix(out.checksum, entry.before);
+        }
+        if entry.lsn <= previous { out.valid = false; }
+        previous = entry.lsn;
+        i = i + 1;
+    }
+    out.checksum = metric.mix(out.checksum, out.redone);
+    out.checksum = metric.mix(out.checksum, out.undone);
+    out
+}
+
+pub fn agrees(borrow first: Recovery, borrow second: Recovery) -> bool {
+    first.scanned == second.scanned && first.redone == second.redone &&
+        first.undone == second.undone && first.skipped == second.skipped &&
+        first.checksum == second.checksum && first.valid && second.valid
+}

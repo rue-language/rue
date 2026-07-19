@@ -280,10 +280,8 @@ pub struct NarrowScalar {
 }
 
 /// The narrow-access description for a scalar accessed through a pointer, or
-/// `None` when the value occupies a full eight-byte slot (`i64`/`u64`/pointers)
-/// or the compact layout is inactive. When `None`, the existing eight-byte
-/// slot-shaped load/store is byte-for-byte correct, so gate-off behavior is
-/// unchanged.
+/// `None` when the value occupies a full eight-byte slot (`i64`/`u64`/pointers).
+/// When `None`, the eight-byte slot-shaped load/store is byte-for-byte correct.
 ///
 /// Only scalar leaves narrow: aggregates crossing the pointer boundary as whole
 /// values remain refused by [`compact_physical_access_unsupported`].
@@ -291,9 +289,6 @@ pub(crate) fn narrow_scalar_access(
     type_pool: &FrozenTypeInternPool,
     ty: Type,
 ) -> Option<NarrowScalar> {
-    if !type_pool.compact_layout() {
-        return None;
-    }
     let (width, signed) = match ty.kind() {
         TypeKind::I8 => (1, true),
         TypeKind::U8 | TypeKind::Bool => (1, false),
@@ -375,9 +370,6 @@ pub(crate) fn enum_physical_slot_map(
 ) -> Option<Vec<PhysicalEnumSlot>> {
     use rue_air::layout::LayoutKind;
 
-    if !type_pool.compact_layout() {
-        return None;
-    }
     let enum_id = ty.as_enum()?;
     let layout = type_pool.layout(ty);
     let (tag_size, payload_offset, variant_offsets) = match &layout.kind {
@@ -516,14 +508,11 @@ pub(crate) fn enum_physical_slot_map(
 /// Returns `None` (stay refused) for any aggregate containing a construct without
 /// a variant-independent image (an array, or an enum [`enum_physical_slot_map`]
 /// rejects), and asserts the flattened slot count equals the type's
-/// [`type_slot_count`]. Always `None` with the gate off.
+/// [`type_slot_count`].
 pub(crate) fn aggregate_physical_slot_map(
     type_pool: &FrozenTypeInternPool,
     ty: Type,
 ) -> Option<Vec<PhysicalEnumSlot>> {
-    if !type_pool.compact_layout() {
-        return None;
-    }
     let mut slots = Vec::new();
     push_physical_slots(type_pool, ty, 0, &mut slots)?;
     if slots.len() != type_pool.abi_slot_count(ty) as usize {
@@ -615,6 +604,251 @@ pub(crate) fn pointer_image_slot_map(
     }
 }
 
+/// One segment of a heterogeneous aggregate's compact memory image, mapping the
+/// aggregate's internal value-decomposition slots onto physical bytes with a
+/// runtime tag dispatch where the payload layout is variant-dependent (ADR-0052
+/// phase 5.12, RUE-1037).
+///
+/// A [`Leaf`](ImageSeg::Leaf) is a single value slot at a fixed byte position
+/// (exactly a [`PhysicalEnumSlot`], as in the variant-independent maps). A
+/// [`Switch`](ImageSeg::Switch) is a nested enum whose per-variant payload
+/// layouts disagree: the discriminant is read from `tag_slot`/`tag_offset` and
+/// selects one arm's segments. This is the general form the flatten-and-merge
+/// image (`enum_physical_slot_map`) collapses to when every variant agrees; when
+/// they disagree the merge returns `None` and this per-variant form is used
+/// instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImageSeg {
+    /// A scalar leaf: value slot `slot` lives at `phys.byte_offset` accessed at
+    /// `phys.access` width. Present for every non-enum leaf and for a nested
+    /// enum whose payload is variant-independent (it flattens to leaves).
+    Leaf { slot: u32, phys: PhysicalEnumSlot },
+    /// A tag-dispatched enum region whose per-variant payload layouts disagree.
+    Switch(SwitchRegion),
+}
+
+/// A tag-dispatched enum region within a compact memory image (RUE-1037). The
+/// discriminant at `tag_slot` (byte `tag_offset`, accessed `tag_access`) selects
+/// one arm; the region occupies value slots `tag_slot .. tag_slot + span` (the
+/// enum's internal slot count), of which `tag_slot` is the tag and the rest are
+/// the payload union. Slots the active variant does not use are zero.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchRegion {
+    pub tag_slot: u32,
+    pub tag_offset: i32,
+    pub tag_access: NarrowScalar,
+    /// Total value slots the enum occupies (tag + widest payload union).
+    pub span: u32,
+    pub arms: Vec<SwitchArm>,
+}
+
+/// One variant arm of a [`SwitchRegion`]: the runtime `discriminant` (the
+/// variant index) and the image segments for that variant's payload, referencing
+/// the payload's value slots (`tag_slot + 1 ..`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchArm {
+    pub discriminant: u64,
+    pub segs: Vec<ImageSeg>,
+}
+
+/// A whole aggregate's compact memory image expressed as tag-dispatched segments
+/// (RUE-1037). Used for a heterogeneous enum — or any aggregate containing one —
+/// whose variants' payload layouts disagree, so no single variant-independent map
+/// (`aggregate_physical_slot_map`) exists. The value decomposition is still
+/// variant-independent (`total_slots` slots); only the physical marshalling
+/// dispatches on the runtime tag at each `Switch`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchImage {
+    /// The aggregate's internal value-decomposition slot count (`abi_slot_count`).
+    pub total_slots: u32,
+    /// The compact image byte size, used for full-extent zeroing on a store so
+    /// every byte outside the active variant's leaves is deterministically zero
+    /// (ADR-0052 ruling 5 / RUE-1007).
+    pub image_size: u32,
+    pub segs: Vec<ImageSeg>,
+}
+
+/// Build the tag-dispatched compact memory image for `ty` (RUE-1037), or `None`
+/// when `ty` needs no dispatch — a slot-identical aggregate, or one whose compact
+/// image is already variant-independent (`aggregate_physical_slot_map` is
+/// `Some`), both of which use their existing single-map / full-slot paths
+/// unchanged.
+///
+/// Returns `Some` only when the aggregate genuinely requires a per-variant tag
+/// dispatch, i.e. it contains at least one heterogeneous enum whose per-variant
+/// payload layouts disagree. Every scalar/pointer/struct/array/enum leaf marshals
+/// (each variant's own layout is a valid compact image), so an enum — or an
+/// aggregate containing one — is no longer refused for heterogeneity.
+pub(crate) fn aggregate_dispatch_image(
+    type_pool: &FrozenTypeInternPool,
+    ty: Type,
+) -> Option<DispatchImage> {
+    // A variant-independent image (or a slot-identical aggregate) needs no
+    // dispatch; those keep their existing single-map / full-slot paths.
+    if aggregate_physical_slot_map(type_pool, ty).is_some() {
+        return None;
+    }
+    let mut segs = Vec::new();
+    let mut cursor = 0u32;
+    push_image_segments(type_pool, ty, 0, &mut cursor, &mut segs)?;
+    if cursor != type_pool.abi_slot_count(ty) {
+        return None;
+    }
+    // Only a genuine tag dispatch belongs here; a switch-free flattening is a
+    // full-slot / slot-identical case handled elsewhere and must not divert.
+    if !segs.iter().any(seg_has_switch) {
+        return None;
+    }
+    let image_size = u32::try_from(type_pool.layout(ty).size).ok()?;
+    Some(DispatchImage {
+        total_slots: cursor,
+        image_size,
+        segs,
+    })
+}
+
+fn seg_has_switch(seg: &ImageSeg) -> bool {
+    match seg {
+        ImageSeg::Leaf { .. } => false,
+        ImageSeg::Switch(_) => true,
+    }
+}
+
+/// Append the compact image segments of `ty` (byte-offset by `base_offset`) to
+/// `out`, advancing `slot_cursor` over the value slots consumed, in internal
+/// value-decomposition slot order. A variant-independent enum flattens to leaves
+/// (via [`enum_physical_slot_map`]); a heterogeneous enum becomes a
+/// [`SwitchRegion`]. Returns `None` for a genuinely imageless leaf (an unusable
+/// tag width — no real enum has one).
+fn push_image_segments(
+    type_pool: &FrozenTypeInternPool,
+    ty: Type,
+    base_offset: i32,
+    slot_cursor: &mut u32,
+    out: &mut Vec<ImageSeg>,
+) -> Option<()> {
+    use rue_air::layout::LayoutKind;
+    match ty.kind() {
+        TypeKind::Unit | TypeKind::Never => Some(()),
+        TypeKind::Struct(struct_id) => {
+            let layout = type_pool.layout(ty);
+            let LayoutKind::Struct { field_offsets, .. } = &layout.kind else {
+                return None;
+            };
+            let def = type_pool.struct_def(struct_id);
+            for (index, field) in def.fields.iter().enumerate() {
+                let field_offset = i32::try_from(*field_offsets.get(index)?).ok()?;
+                push_image_segments(
+                    type_pool,
+                    field.ty,
+                    base_offset + field_offset,
+                    slot_cursor,
+                    out,
+                )?;
+            }
+            Some(())
+        }
+        TypeKind::Array(array_id) => {
+            let (element, count) = type_pool.array_def(array_id);
+            let stride = i32::try_from(type_pool.layout(element).stride).ok()?;
+            for k in 0..count {
+                let element_base =
+                    base_offset.checked_add(i32::try_from(k).ok()?.checked_mul(stride)?)?;
+                push_image_segments(type_pool, element, element_base, slot_cursor, out)?;
+            }
+            Some(())
+        }
+        TypeKind::Enum(enum_id) => {
+            // A variant-independent enum keeps its flat leaves (no dispatch), so a
+            // homogeneous nested enum in a heterogeneous aggregate stays cheap.
+            if let Some(map) = enum_physical_slot_map(type_pool, ty) {
+                for slot in map {
+                    out.push(ImageSeg::Leaf {
+                        slot: *slot_cursor,
+                        phys: PhysicalEnumSlot {
+                            byte_offset: base_offset + slot.byte_offset,
+                            access: slot.access,
+                        },
+                    });
+                    *slot_cursor += 1;
+                }
+                return Some(());
+            }
+
+            // Heterogeneous: dispatch on the tag. The tag is slot 0 of the enum at
+            // its base byte offset (RUE-1000); every variant's payload begins at
+            // the next value slot (matching the value decomposition, which places
+            // payload fields at slots 1.. for every variant).
+            let layout = type_pool.layout(ty);
+            let LayoutKind::Enum {
+                tag,
+                variants: variant_offsets,
+                ..
+            } = &layout.kind
+            else {
+                return None;
+            };
+            let tag_width = u8::try_from(tag.size).ok()?;
+            if !matches!(tag_width, 1 | 2 | 4) {
+                return None;
+            }
+            let span = type_pool.abi_slot_count(ty);
+            let tag_slot = *slot_cursor;
+            let def = type_pool.enum_def(enum_id);
+            let mut arms = Vec::with_capacity(def.variant_count() as usize);
+            for variant in 0..def.variant_count() {
+                let payload = def.variant_payload(variant);
+                let mut arm_cursor = tag_slot + 1;
+                let mut arm_segs = Vec::new();
+                for (field_index, &field_ty) in payload.iter().enumerate() {
+                    let field_offset =
+                        i32::try_from(*variant_offsets.get(variant as usize)?.get(field_index)?)
+                            .ok()?;
+                    push_image_segments(
+                        type_pool,
+                        field_ty,
+                        base_offset + field_offset,
+                        &mut arm_cursor,
+                        &mut arm_segs,
+                    )?;
+                }
+                // A variant's payload must fit within its own value-slot region.
+                if arm_cursor > tag_slot + span {
+                    return None;
+                }
+                arms.push(SwitchArm {
+                    discriminant: variant as u64,
+                    segs: arm_segs,
+                });
+            }
+            out.push(ImageSeg::Switch(SwitchRegion {
+                tag_slot,
+                tag_offset: base_offset,
+                tag_access: NarrowScalar {
+                    width: tag_width,
+                    signed: false,
+                },
+                span,
+                arms,
+            }));
+            *slot_cursor = tag_slot + span;
+            Some(())
+        }
+        _ => {
+            let (width, signed) = scalar_physical_access(ty)?;
+            out.push(ImageSeg::Leaf {
+                slot: *slot_cursor,
+                phys: PhysicalEnumSlot {
+                    byte_offset: base_offset,
+                    access: (width != 8).then_some(NarrowScalar { width, signed }),
+                },
+            });
+            *slot_cursor += 1;
+            Some(())
+        }
+    }
+}
+
 /// The pointee of a pointer type, or the type itself when it is not a pointer.
 fn pointee_or_self(type_pool: &FrozenTypeInternPool, ty: Type) -> Type {
     match ty.kind() {
@@ -672,10 +906,6 @@ pub(crate) fn compact_physical_access_unsupported(
     type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,
 ) -> Option<Type> {
-    if !type_pool.compact_layout() {
-        return None;
-    }
-
     // A non-slot-identical aggregate (struct/array/enum) whose whole-value
     // marshalling across a CALL boundary is still unimplemented (RUE-976's
     // transitional indirect rule; call marshalling is the next phase). Narrow
@@ -695,7 +925,9 @@ pub(crate) fn compact_physical_access_unsupported(
     // caller-owned compact buffer and are allowed; arrays and enums without an
     // image stay refused.
     let call_boundary_unsupported = |ty: Type| -> bool {
-        unimplemented_aggregate(ty) && aggregate_physical_slot_map(type_pool, ty).is_none()
+        unimplemented_aggregate(ty)
+            && aggregate_physical_slot_map(type_pool, ty).is_none()
+            && aggregate_dispatch_image(type_pool, ty).is_none()
     };
 
     // A non-slot-identical aggregate whose whole-value marshalling THROUGH A
@@ -705,7 +937,10 @@ pub(crate) fn compact_physical_access_unsupported(
     // structs and arrays, and enums without such an image, still are.
     let unimplemented_through_pointer = |ty: Type| -> bool {
         match ty.kind() {
-            TypeKind::Enum(_) => enum_physical_slot_map(type_pool, ty).is_none(),
+            TypeKind::Enum(_) => {
+                enum_physical_slot_map(type_pool, ty).is_none()
+                    && aggregate_dispatch_image(type_pool, ty).is_none()
+            }
             // A compact (non-slot-identical) struct or array WITH a variant-
             // independent memory image marshals its whole value through the pointer
             // via its internal-slot → physical-byte map (RUE-987 struct, RUE-1014
@@ -715,6 +950,7 @@ pub(crate) fn compact_physical_access_unsupported(
             TypeKind::Struct(_) | TypeKind::Array(_) => {
                 !is_slot_identical_layout(type_pool, ty)
                     && aggregate_physical_slot_map(type_pool, ty).is_none()
+                    && aggregate_dispatch_image(type_pool, ty).is_none()
             }
             _ => false,
         }
@@ -817,7 +1053,7 @@ pub(crate) fn compact_physical_access_unsupported(
     None
 }
 
-/// Under the compact layout, an `@raw`/`@raw_mut`/`@field_ptr` pointer into a
+/// An `@raw`/`@raw_mut`/`@field_ptr` pointer into a
 /// **frame** aggregate that would then be accessed as a whole non-slot-identical
 /// aggregate, or strided across a non-slot-identical array, is unsupported and
 /// must be refused loudly (RUE-1035 M2).
@@ -850,10 +1086,6 @@ fn frame_raw_aggregate_pointer_unsupported(
     type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,
 ) -> Option<Type> {
-    if !type_pool.compact_layout() {
-        return None;
-    }
-
     let non_slot_identical_aggregate = |ty: Type| -> bool {
         matches!(
             ty.kind(),
@@ -901,11 +1133,11 @@ fn frame_raw_aggregate_pointer_unsupported(
     None
 }
 
-/// Refuse code generation with a clear diagnostic when the compact physical
-/// layout is active but the function needs narrow physical memory access that is
-/// not yet implemented (see [`compact_physical_access_unsupported`]). Both
-/// backends call this at the top of lowering so the feature fails loudly rather
-/// than silently emitting slot-shaped access against a compact layout.
+/// Refuse code generation with a clear diagnostic when the function marshals a
+/// compact aggregate that has no single physical memory image (see
+/// [`compact_physical_access_unsupported`]). Both backends call this at the top
+/// of lowering so an unsupported construct fails loudly rather than being
+/// silently miscompiled.
 pub(crate) fn ensure_compact_layout_codegen_supported(
     cfg: &Cfg,
     type_pool: &FrozenTypeInternPool,
@@ -915,7 +1147,7 @@ pub(crate) fn ensure_compact_layout_codegen_supported(
     // slot layout with compact-image pointer semantics (RUE-1035 M2). Name the
     // construct — not the preview — and point at the working heap alternative.
     if let Some(ty) = frame_raw_aggregate_pointer_unsupported(cfg, type_pool, interner) {
-        let name = type_name(ty, type_pool);
+        let name = rue_air::drop_glue_names::type_name(ty, type_pool);
         return Err(rue_error::CompileError::without_span(
             rue_error::ErrorKind::InternalCodegenError(format!(
                 "taking a raw pointer with `@raw`/`@raw_mut`/`@field_ptr` into the \
@@ -931,19 +1163,20 @@ pub(crate) fn ensure_compact_layout_codegen_supported(
     }
 
     if let Some(ty) = compact_physical_access_unsupported(cfg, type_pool, interner) {
-        let name = type_name(ty, type_pool);
+        let name = rue_air::drop_glue_names::type_name(ty, type_pool);
         return Err(rue_error::CompileError::without_span(
             rue_error::ErrorKind::InternalCodegenError(format!(
-                "aggregate_layout: physical-layout code generation for type `{name}` (in function \
-                 `{}`) is not yet implemented. Narrow scalar access through typed pointers \
-                 (RUE-989), compact enum memory (RUE-1000), call-boundary marshalling of a compact \
-                 aggregate through its memory image — sret returns and `inout`/`borrow` parameters \
-                 (RUE-1004), by-value arguments (RUE-1005) — whole compact-struct marshalling \
-                 through typed pointers (RUE-987), and variant-dependent enum images plus compact \
-                 arrays through pointers and across calls (RUE-1014) are lowered, but an aggregate \
-                 whose compact memory image is not variant-independent — an enum whose per-variant \
-                 payloads overlap or disagree on leaf offset, or an aggregate containing such an \
-                 enum — is still refused for a follow-up.",
+                "the aggregate `{name}` (in function `{}`) has no compact memory image, so it \
+                 cannot be marshalled through a pointer or across a call boundary. Narrow scalar \
+                 access through typed pointers (RUE-989), compact enum memory (RUE-1000), \
+                 call-boundary marshalling of a compact aggregate through its memory image — sret \
+                 returns and `inout`/`borrow` parameters (RUE-1004), by-value arguments (RUE-1005) \
+                 — whole compact-struct marshalling through typed pointers (RUE-987), \
+                 variant-dependent enum images plus compact arrays through pointers and across \
+                 calls (RUE-1014), and heterogeneous enums whose per-variant payload layouts \
+                 disagree via per-variant tag dispatch (RUE-1037) all marshal, but this aggregate \
+                 reduces to neither a variant-independent compact image nor a tag-dispatched one, \
+                 so it is refused.",
                 cfg.fn_name()
             )),
         ));
@@ -1013,56 +1246,11 @@ pub fn collect_array_scalar_vregs(
     }
 }
 
-/// Generate the drop glue function name for an array type.
-///
-/// The name encodes the element type and length, e.g., `__rue_drop_array_String_3`.
-/// This must match the name generated by `rue_compiler::drop_glue::array_drop_glue_name`.
-pub fn array_drop_glue_name(array_id: ArrayTypeId, type_pool: &FrozenTypeInternPool) -> String {
-    let (element_type, length) = type_pool.array_def(array_id);
-    let element_type_name = type_name(element_type, type_pool);
-    format!("__rue_drop_array_{}_{}", element_type_name, length)
-}
-
-/// Get a name for a type (used for generating drop glue function names).
-fn type_name(ty: Type, type_pool: &FrozenTypeInternPool) -> String {
-    match ty.kind() {
-        TypeKind::I8 => "i8".to_string(),
-        TypeKind::I16 => "i16".to_string(),
-        TypeKind::I32 => "i32".to_string(),
-        TypeKind::I64 => "i64".to_string(),
-        TypeKind::U8 => "u8".to_string(),
-        TypeKind::U16 => "u16".to_string(),
-        TypeKind::U32 => "u32".to_string(),
-        TypeKind::U64 => "u64".to_string(),
-        TypeKind::Bool => "bool".to_string(),
-        TypeKind::Unit => "unit".to_string(),
-        TypeKind::Never => "never".to_string(),
-        TypeKind::Error => "error".to_string(),
-        // ComptimeType only exists at compile time, no runtime representation
-        TypeKind::ComptimeType => "comptime_type".to_string(),
-        TypeKind::Enum(enum_id) => type_pool.enum_symbol_name(enum_id),
-        // Struct types include builtin types like String
-        // File-qualified when the struct name spans files (RUE-571); must
-        // match rue_compiler::drop_glue::type_name.
-        TypeKind::Struct(struct_id) => type_pool.struct_symbol_name(struct_id),
-        TypeKind::Array(array_id) => {
-            let (element_type, length) = type_pool.array_def(array_id);
-            let elem_name = type_name(element_type, type_pool);
-            format!("array_{}_{}", elem_name, length)
-        }
-        // Module types should never reach codegen (compile-time only)
-        TypeKind::Module(_) => "module".to_string(),
-        // Pointer types
-        TypeKind::PtrConst(ptr_id) => {
-            let pointee = type_pool.ptr_const_def(ptr_id);
-            format!("ptr_const_{}", type_name(pointee, type_pool))
-        }
-        TypeKind::PtrMut(ptr_id) => {
-            let pointee = type_pool.ptr_mut_def(ptr_id);
-            format!("ptr_mut_{}", type_name(pointee, type_pool))
-        }
-    }
-}
+// The drop-glue array symbol name comes from the single authority in
+// `rue_air::drop_glue_names`, shared with compiler glue synthesis and the other
+// backend, so the external ABI cannot drift (RUE-796). Re-exported for the
+// existing `crate::types::array_drop_glue_name` call sites.
+pub use rue_air::drop_glue_names::array_drop_glue_name;
 
 /// Recursively collect all scalar vregs from a struct value.
 ///
@@ -1125,7 +1313,7 @@ pub fn collect_struct_scalar_vregs(
 #[cfg(test)]
 mod layout_authority_tests {
     use rue_air::Sema;
-    use rue_air::layout::{LayoutKind, SLOT_BYTES};
+    use rue_air::layout::LayoutKind;
     use rue_error::PreviewFeatures;
     use rue_lexer::Lexer;
     use rue_parser::Parser;
@@ -1133,10 +1321,14 @@ mod layout_authority_tests {
 
     use super::{struct_field_slot_offset, type_size_bytes, type_slot_count};
 
-    /// The layout authority, the slot decomposition, and code generation's
-    /// field/size helpers agree across every type in a real compiled program.
+    /// The compact layout authority and code generation's size helper agree, and
+    /// the physical field offsets and the internal slot decomposition are each
+    /// self-consistent (ascending, in bounds) across every type in a real
+    /// compiled program. The physical byte offsets and the slot indices are
+    /// deliberately distinct representations (ADR-0052), so they are checked for
+    /// their own invariants rather than for equality.
     #[test]
-    fn layout_agrees_with_slot_model_over_a_compiled_fixture() {
+    fn layout_agrees_with_codegen_helpers_over_a_compiled_fixture() {
         let source = r#"
             struct Point { x: i32, y: i64 }
             struct Outer { tag: bool, points: [Point; 3] }
@@ -1167,24 +1359,27 @@ mod layout_authority_tests {
 
         for ty in pool.all_types() {
             let layout = pool.layout(ty);
-            assert_eq!(
-                layout.size,
-                u64::from(pool.abi_slot_count(ty)) * SLOT_BYTES,
-                "layout size disagrees with slot count for {ty:?}"
-            );
+            // Code generation's size helper reads the same authority.
             assert_eq!(type_size_bytes(pool, ty), layout.size);
             assert_eq!(layout.stride, layout.size);
 
-            // Struct field addressing and the layout's field offsets are one
-            // computation.
+            // The physical field byte offsets (compact) and the internal slot
+            // offsets (value decomposition) are each ascending and in bounds,
+            // but are distinct representations and need not coincide.
             if let (Some(struct_id), LayoutKind::Struct { field_offsets, .. }) =
                 (ty.as_struct(), &layout.kind)
             {
+                let mut prev_offset = 0u64;
+                let mut prev_slot = 0u32;
                 for (index, &offset) in field_offsets.iter().enumerate() {
+                    assert!(offset <= layout.size, "field offset within {ty:?}");
+                    assert!(offset >= prev_offset, "field offsets ascend in {ty:?}");
+                    prev_offset = offset;
                     let slot_offset = struct_field_slot_offset(pool, struct_id, index as u32);
-                    assert_eq!(u64::from(slot_offset) * SLOT_BYTES, offset);
+                    assert!(slot_offset >= prev_slot, "slot offsets ascend in {ty:?}");
+                    prev_slot = slot_offset;
                 }
-                let _ = type_slot_count(pool, ty);
+                assert!(type_slot_count(pool, ty) >= field_offsets.len() as u32);
             }
         }
     }

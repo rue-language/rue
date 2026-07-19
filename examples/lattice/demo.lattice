@@ -1,0 +1,12 @@
+workflow release;
+pool local slots 2 cpu 4 memory 8;
+pool large slots 1 cpu 8 memory 16;
+task fetch pool local duration 2 cpu 1 memory 1 priority 20 retries 1 cache true fail 0;
+task parse pool local duration 3 cpu 1 memory 2 priority 18 retries 1 cache false fail 0;
+task compile pool large duration 5 cpu 4 memory 8 priority 16 retries 2 cache true fail 1;
+task test pool local duration 4 cpu 2 memory 3 priority 14 retries 1 cache false fail 0;
+task package pool local duration 2 cpu 1 memory 1 priority 10 retries 0 cache true fail 0;
+after parse fetch;
+after compile parse;
+after test compile;
+after package test;

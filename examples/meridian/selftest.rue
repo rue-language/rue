@@ -1,0 +1,150 @@
+// Cross-oracle verification for every Meridian subsystem and generated suite.
+const analysis_suite = @import("analysis_suite.rue");
+const catalog_oracle = @import("catalog_oracle.rue");
+const checkpoint = @import("checkpoint.rue");
+const constraints = @import("constraints.rue");
+const engine = @import("engine.rue");
+const failover = @import("failover.rue");
+const generate = @import("generate.rue");
+const lineage = @import("lineage.rue");
+const locks = @import("locks.rue");
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+const mvcc = @import("mvcc.rue");
+const partition = @import("partition.rue");
+const plan = @import("plan.rue");
+const recovery = @import("recovery.rue");
+const replication = @import("replication.rue");
+const report_suite = @import("report_suite.rue");
+const row_oracle = @import("row_oracle.rue");
+const rule_suite = @import("rule_suite.rue");
+const shard = @import("shard.rue");
+const statistics = @import("statistics.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const undo = @import("undo.rue");
+const wal = @import("wal.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct Result {
+    checks: u64,
+    failures: u64,
+    queries: u64,
+    plans: u64,
+    executions: u64,
+    analysis_passes: u64,
+    optimizer_rules: u64,
+    optimizer_evaluations: u64,
+    report_documents: u64,
+    recovery_redone: u64,
+    recovery_undone: u64,
+    digest: u64,
+    valid: bool,
+}
+
+fn check(inout out: Result, condition: bool, fingerprint: u64) {
+    out.checks = out.checks + 1;
+    out.digest = metric.mix(out.digest, fingerprint);
+    if !condition { out.failures = out.failures + 1; }
+}
+
+pub fn run() -> Result {
+    let database = generate.database(1);
+    let mut out = Result { checks: 0, failures: 0, queries: database.queries.len(),
+        plans: 0, executions: 0, analysis_passes: 0, optimizer_rules: 0,
+        optimizer_evaluations: 0, report_documents: 0, recovery_redone: 0,
+        recovery_undone: 0, digest: 14695981039346656037, valid: false };
+
+    let catalog = catalog_oracle.audit(borrow database);
+    check(inout out, catalog.valid, catalog.checksum);
+    check(inout out, catalog.tables == 3 && catalog.columns == 9, catalog.rows);
+
+    let stats = statistics.analyze(borrow database);
+    check(inout out, metric.valid(borrow stats), stats.digest);
+    let constraint_audit = constraints.audit(borrow database);
+    check(inout out, metric.valid(borrow constraint_audit) &&
+        constraint_audit.warnings == 0, constraint_audit.digest);
+    let visibility = mvcc.audit(borrow database);
+    check(inout out, metric.valid(borrow visibility), visibility.digest);
+    let log = wal.audit(borrow database);
+    check(inout out, metric.valid(borrow log) && log.warnings == 0, log.digest);
+    let replicas = replication.audit(borrow database);
+    check(inout out, metric.valid(borrow replicas) && replicas.warnings == 0, replicas.digest);
+    let shards = shard.audit(borrow database, 4);
+    check(inout out, metric.valid(borrow shards) && shards.warnings == 0, shards.digest);
+    let partitions = partition.audit(borrow database, 5);
+    check(inout out, metric.valid(borrow partitions) && partitions.warnings == 0, partitions.digest);
+    let lineage_audit = lineage.audit(borrow database);
+    check(inout out, metric.valid(borrow lineage_audit), lineage_audit.digest);
+
+    let lock_audit = locks.audit(borrow database);
+    check(inout out, lock_audit.valid && lock_audit.cycles == 0, lock_audit.checksum);
+    let election = failover.elect(borrow database);
+    check(inout out, election.valid && election.winner == 0, election.winning_lsn);
+    let checkpoint_value = checkpoint.create(borrow database);
+    check(inout out, checkpoint_value.valid, checkpoint_value.checksum);
+    let undo_value = undo.run(borrow database);
+    check(inout out, undo_value.valid && undo_value.applied == 1, undo_value.checksum);
+
+    let recovered_a = recovery.run(borrow database, checkpoint_value.lsn);
+    let recovered_b = recovery.run(borrow database, checkpoint_value.lsn);
+    out.recovery_redone = recovered_a.redone;
+    out.recovery_undone = recovered_a.undone;
+    check(inout out, recovery.agrees(borrow recovered_a, borrow recovered_b),
+        recovered_a.checksum);
+
+    let mut q: u64 = 0;
+    while q < database.queries.len() {
+        let query = database.queries.get_or(q, model.empty_query());
+        let query_plan = plan.build(borrow database, borrow query);
+        let actual = engine.execute(borrow database, borrow query);
+        let expected = row_oracle.execute(borrow database, borrow query);
+        out.plans = out.plans + 1;
+        out.executions = out.executions + 2;
+        check(inout out, plan.verify(borrow query_plan), query_plan.digest);
+        check(inout out, actual.valid, actual.checksum);
+        check(inout out, row_oracle.agrees(borrow actual, borrow expected),
+            metric.mix(actual.checksum, expected.checksum));
+        q = q + 1;
+    }
+
+    let analyses = analysis_suite.run(borrow database);
+    out.analysis_passes = analyses.passes;
+    check(inout out, analyses.valid && analyses.passes == 112, analyses.digest);
+
+    let rules = rule_suite.run(borrow database);
+    out.optimizer_rules = rules.rules;
+    out.optimizer_evaluations = rules.evaluations;
+    check(inout out, rules.valid && rules.rules == 72, rules.digest);
+
+    let first_query = database.queries.get_or(0, model.empty_query());
+    let first_plan = plan.build(borrow database, borrow first_query);
+    let first_result = engine.execute(borrow database, borrow first_query);
+    let reports = report_suite.run(borrow database, borrow first_query,
+        borrow first_plan, borrow first_result);
+    out.report_documents = reports.documents;
+    check(inout out, reports.valid && reports.documents == 44, reports.digest);
+
+    out.valid = out.failures == 0 && out.queries == 2 && out.plans == 2 &&
+        out.analysis_passes == 112 && out.optimizer_rules == 72 &&
+        out.optimizer_evaluations == 144 && out.report_documents == 44;
+    out
+}
+
+pub fn render(borrow value: Result) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.line(inout out, "selftest checks=", value.checks);
+    text.line(inout out, "failures=", value.failures);
+    text.line(inout out, "queries=", value.queries);
+    text.line(inout out, "plans=", value.plans);
+    text.line(inout out, "executions=", value.executions);
+    text.line(inout out, "analysis_passes=", value.analysis_passes);
+    text.line(inout out, "optimizer_rules=", value.optimizer_rules);
+    text.line(inout out, "optimizer_evaluations=", value.optimizer_evaluations);
+    text.line(inout out, "report_documents=", value.report_documents);
+    text.line(inout out, "recovery_redone=", value.recovery_redone);
+    text.line(inout out, "recovery_undone=", value.recovery_undone);
+    text.line(inout out, "digest=", value.digest);
+    text.bool_line(inout out, "valid=", value.valid);
+    out
+}

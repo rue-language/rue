@@ -81,9 +81,7 @@ fn get_latency(inst: &Aarch64Inst) -> u32 {
 
         // Memory loads: 4 cycles (L1 cache hit)
         Aarch64Inst::Ldr { .. }
-        | Aarch64Inst::Ldrb { .. }
         | Aarch64Inst::LdrIndexed { .. }
-        | Aarch64Inst::LdrbIndexed { .. }
         | Aarch64Inst::LdrIndexedOffset { .. }
         | Aarch64Inst::NarrowLoad { .. }
         | Aarch64Inst::NarrowLoadIndexed { .. }
@@ -91,9 +89,7 @@ fn get_latency(inst: &Aarch64Inst) -> u32 {
 
         // Memory stores: 1 cycle to retire (store buffer)
         Aarch64Inst::Str { .. }
-        | Aarch64Inst::Strb { .. }
         | Aarch64Inst::StrIndexed { .. }
-        | Aarch64Inst::StrbIndexed { .. }
         | Aarch64Inst::StrIndexedOffset { .. }
         | Aarch64Inst::NarrowStore { .. }
         | Aarch64Inst::NarrowStoreIndexed { .. }
@@ -231,10 +227,6 @@ fn accesses_memory(inst: &Aarch64Inst) -> bool {
             | Aarch64Inst::StrIndexedOffset { .. }
             | Aarch64Inst::StpPre { .. }
             | Aarch64Inst::LdpPost { .. }
-            | Aarch64Inst::Ldrb { .. }
-            | Aarch64Inst::Strb { .. }
-            | Aarch64Inst::LdrbIndexed { .. }
-            | Aarch64Inst::StrbIndexed { .. }
             | Aarch64Inst::NarrowLoad { .. }
             | Aarch64Inst::NarrowStore { .. }
             | Aarch64Inst::NarrowLoadIndexed { .. }
@@ -255,12 +247,8 @@ fn regs_read(inst: &Aarch64Inst) -> Vec<Reg> {
     match inst {
         Aarch64Inst::MovImm { .. } => {}
         Aarch64Inst::MovRR { src, .. } => add_if_phys(src, &mut result),
-        Aarch64Inst::Ldr { base, .. }
-        | Aarch64Inst::Ldrb { base, .. }
-        | Aarch64Inst::NarrowLoad { base, .. } => result.push(*base),
-        Aarch64Inst::Str { src, base, .. }
-        | Aarch64Inst::Strb { src, base, .. }
-        | Aarch64Inst::NarrowStore { src, base, .. } => {
+        Aarch64Inst::Ldr { base, .. } | Aarch64Inst::NarrowLoad { base, .. } => result.push(*base),
+        Aarch64Inst::Str { src, base, .. } | Aarch64Inst::NarrowStore { src, base, .. } => {
             add_if_phys(src, &mut result);
             result.push(*base);
         }
@@ -343,7 +331,6 @@ fn regs_read(inst: &Aarch64Inst) -> Vec<Reg> {
             result.push(Reg::Sp); // Post-indexed LDP reads SP before writing
         }
         Aarch64Inst::LdrIndexed { .. }
-        | Aarch64Inst::LdrbIndexed { .. }
         | Aarch64Inst::LdrIndexedOffset { .. }
         | Aarch64Inst::NarrowLoadIndexed { .. } => {
             // Pre-regalloc indexed load. The scheduler runs after regalloc,
@@ -351,7 +338,6 @@ fn regs_read(inst: &Aarch64Inst) -> Vec<Reg> {
             // register to record here.
         }
         Aarch64Inst::StrIndexed { src, .. }
-        | Aarch64Inst::StrbIndexed { src, .. }
         | Aarch64Inst::StrIndexedOffset { src, .. }
         | Aarch64Inst::NarrowStoreIndexed { src, .. } => {
             // Pre-regalloc indexed store. The scheduler runs after regalloc,
@@ -391,7 +377,6 @@ fn regs_written(inst: &Aarch64Inst) -> Vec<Reg> {
         Aarch64Inst::MovImm { dst, .. }
         | Aarch64Inst::MovRR { dst, .. }
         | Aarch64Inst::Ldr { dst, .. }
-        | Aarch64Inst::Ldrb { dst, .. }
         | Aarch64Inst::AddRR { dst, .. }
         | Aarch64Inst::AddsRR { dst, .. }
         | Aarch64Inst::AddsRR64 { dst, .. }
@@ -439,7 +424,6 @@ fn regs_written(inst: &Aarch64Inst) -> Vec<Reg> {
         | Aarch64Inst::Uxtb { dst, .. }
         | Aarch64Inst::Uxth { dst, .. }
         | Aarch64Inst::LdrIndexed { dst, .. }
-        | Aarch64Inst::LdrbIndexed { dst, .. }
         | Aarch64Inst::LdrIndexedOffset { dst, .. }
         | Aarch64Inst::NarrowLoad { dst, .. }
         | Aarch64Inst::NarrowLoadIndexed { dst, .. }
@@ -454,9 +438,7 @@ fn regs_written(inst: &Aarch64Inst) -> Vec<Reg> {
             result.push(Reg::Sp); // Post-indexed LDP writes SP
         }
         Aarch64Inst::Str { .. }
-        | Aarch64Inst::Strb { .. }
         | Aarch64Inst::StrIndexed { .. }
-        | Aarch64Inst::StrbIndexed { .. }
         | Aarch64Inst::StrIndexedOffset { .. }
         | Aarch64Inst::NarrowStore { .. }
         | Aarch64Inst::NarrowStoreIndexed { .. } => {

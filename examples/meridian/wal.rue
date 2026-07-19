@@ -1,0 +1,22 @@
+// Write-ahead-log ordering, transaction, and commit audit.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+
+pub fn audit(borrow database: model.Database) -> metric.Metric {
+    let mut out = metric.new(4201);
+    let mut expected: u64 = 1;
+    let mut i: u64 = 0;
+    while i < database.wal.len() {
+        let entry = database.wal.get_or(i, model.empty_wal());
+        metric.observe(inout out, entry.lsn, entry.transaction + entry.kind + 1);
+        metric.warn(inout out, entry.lsn != expected);
+        metric.warn(inout out, entry.table >= database.tables.len());
+        metric.warn(inout out, entry.row >= database.rows.len());
+        if entry.committed { metric.observe(inout out, entry.after, 3); }
+        else { metric.observe(inout out, entry.before, 2); }
+        expected = entry.lsn + 1;
+        i = i + 1;
+    }
+    metric.finish(inout out);
+    out
+}

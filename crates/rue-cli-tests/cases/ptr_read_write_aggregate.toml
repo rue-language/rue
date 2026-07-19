@@ -11,6 +11,12 @@
 # type annotation (inference modeled it as an unconstrained fresh variable), so
 # an i64 pointee flowed into an i32 binding with no E0206 and a silent runtime
 # truncation. The pointee type now participates in ordinary type-checking.
+#
+# The multi-slot aggregate round-trips allocate their backing block on the HEAP
+# (@alloc), whose storage is the compact image, so the whole aggregate transfers
+# through @ptr_write/@ptr_read. A raw pointer into a frame-resident
+# non-slot-identical aggregate is refused under the default compact layout
+# (RUE-987 / RUE-1035 M2, frames stay slot-shaped for now).
 
 [section]
 id = "cli.ptr_read_write_aggregate"
@@ -23,12 +29,13 @@ name = "ptr_read_two_field_struct"
 files = [{ path = "main.rue", source = """
 struct P { x: i32, y: i32 }
 fn main() -> i32 {
-    let arr: [P; 1] = [P { x: 1, y: 2 }];
     checked {
-        let p: ptr const P = @raw(arr[0]);
+        let p: ptr mut P = @alloc(1);
+        @ptr_write(p, P { x: 1, y: 2 });
         let v = @ptr_read(p);
         @dbg(v.x);
         @dbg(v.y);
+        @free(p, 1);
     };
     0
 }
@@ -41,13 +48,14 @@ name = "ptr_write_two_field_struct"
 files = [{ path = "main.rue", source = """
 struct P { x: i32, y: i32 }
 fn main() -> i32 {
-    let mut arr: [P; 1] = [P { x: 0, y: 0 }];
     checked {
-        let p: ptr mut P = @raw_mut(arr[0]);
+        let p: ptr mut P = @alloc(1);
         @ptr_write(p, P { x: 7, y: 9 });
+        let v = @ptr_read(p);
+        @dbg(v.x);
+        @dbg(v.y);
+        @free(p, 1);
     };
-    @dbg(arr[0].x);
-    @dbg(arr[0].y);
     0
 }
 """ }]
@@ -60,19 +68,20 @@ files = [{ path = "main.rue", source = """
 struct Inner { a: i32, b: i32 }
 struct Outer { p: Inner, q: i32 }
 fn main() -> i32 {
-    let mut arr: [Outer; 1] = [Outer { p: Inner { a: 10, b: 20 }, q: 30 }];
     checked {
-        let rp: ptr const Outer = @raw(arr[0]);
-        let v = @ptr_read(rp);
+        let wp: ptr mut Outer = @alloc(1);
+        @ptr_write(wp, Outer { p: Inner { a: 10, b: 20 }, q: 30 });
+        let v = @ptr_read(wp);
         @dbg(v.p.a);
         @dbg(v.p.b);
         @dbg(v.q);
-        let wp: ptr mut Outer = @raw_mut(arr[0]);
         @ptr_write(wp, Outer { p: Inner { a: 1, b: 2 }, q: 3 });
+        let v2 = @ptr_read(wp);
+        @dbg(v2.p.a);
+        @dbg(v2.p.b);
+        @dbg(v2.q);
+        @free(wp, 1);
     };
-    @dbg(arr[0].p.a);
-    @dbg(arr[0].p.b);
-    @dbg(arr[0].q);
     0
 }
 """ }]

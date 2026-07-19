@@ -1,0 +1,32 @@
+// Reverse-order undo oracle for uncommitted WAL records.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+
+pub struct Undo {
+    visited: u64,
+    applied: u64,
+    skipped: u64,
+    checksum: u64,
+    valid: bool,
+}
+
+pub fn run(borrow database: model.Database) -> Undo {
+    let mut out = Undo { visited: 0, applied: 0, skipped: 0,
+        checksum: 14695981039346656037, valid: true };
+    let mut at = database.wal.len();
+    let mut previous = database.next_lsn;
+    while at > 0 {
+        at = at - 1;
+        let entry = database.wal.get_or(at, model.empty_wal());
+        out.visited = out.visited + 1;
+        if entry.lsn >= previous { out.valid = false; }
+        previous = entry.lsn;
+        if entry.committed { out.skipped = out.skipped + 1; }
+        else {
+            out.applied = out.applied + 1;
+            out.checksum = metric.mix(out.checksum, entry.before);
+            out.checksum = metric.mix(out.checksum, entry.row);
+        }
+    }
+    out
+}

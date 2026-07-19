@@ -214,7 +214,7 @@ The value returned by `@size_of` is determined at compile time.
 
 ```rue
 fn main() -> i32 {
-    @size_of(i32)     // 8 (one 8-byte slot, observed under the current default layout)
+    @size_of(i32)     // 4 (i32's natural byte width, observed under the compact layout)
 }
 ```
 
@@ -224,9 +224,8 @@ fn main() -> i32 {
 struct Point { x: i32, y: i32 }
 
 fn main() -> i32 {
-    // 16 under the current default layout (two 8-byte slots); the ratified
-    // compact layout (ADR-0052) would observe 8 (two 4-byte i32 fields).
-    @size_of(Point)   // 16
+    // 8 under the compact layout (ADR-0052): two four-byte i32 fields, no padding.
+    @size_of(Point)   // 8
 }
 ```
 
@@ -252,19 +251,18 @@ The value returned by `@align_of` is determined at compile time.
 
 `@align_of(T)` reports the alignment the implementation has chosen for `T`
 under the layout in effect for the compilation (1.3:6, 3.6:12); it *observes*
-that choice and does not guarantee a particular value. Under the current
-default layout every type observes 8-byte alignment. The ratified compact
-layout (ADR-0052, previewed by the `aggregate_layout` feature) instead gives
-each scalar its natural alignment — `@align_of(i32)` would then observe `4` and
-`@align_of(bool)` `1` — so a portable program must not assume the value `8`.
-Whichever layout is in effect, the size of a type is always a multiple of its
-alignment (3.6:8).
+that choice and does not guarantee a particular value. Under the compact layout
+(ADR-0052) each scalar has its natural alignment — `@align_of(i32)` observes
+`4`, `@align_of(bool)` observes `1`, `@align_of(i64)` observes `8` — and a
+struct's alignment is that of its most-aligned field, so a portable program must
+not assume a particular value such as `8`. Whichever layout is in effect, the
+size of a type is always a multiple of its alignment (3.6:8).
 
 {{ rule(id="4.13:23") }}
 
 ```rue
 fn main() -> i32 {
-    @align_of(i32)    // 8 (observed under the current default layout)
+    @align_of(i32)    // 4 (i32's natural alignment, observed under the compact layout)
 }
 ```
 
@@ -290,8 +288,9 @@ The value returned by `@offset_of` is the offset the compiler assigns to the
 field under the layout it chooses for the struct, determined at compile time.
 Because the value comes from the compiler's own layout rather than a
 hand-computed constant, `@offset_of` remains correct even if the struct layout
-is implementation-defined. The offset of a field is the sum of the sizes of all
-preceding fields under the current layout (§3.6).
+is implementation-defined. Under the compact layout each field is placed at the
+lowest offset satisfying its alignment after the preceding fields, so an offset
+accounts for both the preceding fields' sizes and any alignment padding (§3.6).
 
 {{ rule(id="4.13:95", cat="legality-rule") }}
 
@@ -305,8 +304,8 @@ struct Mixed { a: i32, b: i64, c: bool }
 
 fn main() -> i32 {
     let off_a: u64 = @offset_of(Mixed, a);   // 0
-    let off_b: u64 = @offset_of(Mixed, b);   // 8  (observed under the current default layout)
-    let off_c: u64 = @offset_of(Mixed, c);   // 16 (observed under the current default layout)
+    let off_b: u64 = @offset_of(Mixed, b);   // 8  (i64 field at its eight-byte alignment)
+    let off_c: u64 = @offset_of(Mixed, c);   // 16 (bool after the i64)
     let sum: u64 = off_a + off_b + off_c;    // 24
     @intCast(sum)
 }

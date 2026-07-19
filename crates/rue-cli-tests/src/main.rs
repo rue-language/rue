@@ -143,6 +143,36 @@ struct ExampleExpectation {
     stdin: Option<&'static str>,
 }
 
+/// Compile-and-execute timeout overrides for unusually large examples.
+///
+/// A large multi-module program can need more wall time to compile or start
+/// while the CLI harness is running its large corpus in parallel. Only an
+/// explicitly named example receives this narrowly scoped allowance.
+struct ExampleTimeout {
+    path: &'static str,
+    timeout_ms: u64,
+}
+
+const EXAMPLE_TIMEOUTS: &[ExampleTimeout] = &[
+    ExampleTimeout {
+        path: "lattice/main.rue",
+        timeout_ms: 30_000,
+    },
+    ExampleTimeout {
+        path: "meridian/main.rue",
+        timeout_ms: 60_000,
+    },
+];
+
+fn example_timeout(relative_path: &str) -> Duration {
+    Duration::from_millis(
+        EXAMPLE_TIMEOUTS
+            .iter()
+            .find(|override_| override_.path == relative_path)
+            .map_or(DEFAULT_TIMEOUT_MS, |override_| override_.timeout_ms),
+    )
+}
+
 const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
     // The 2026-07-11 ambitious-dogfood programs: each is a self-checking
     // program that returns 42 exactly when every internal @assert passes.
@@ -192,6 +222,22 @@ const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
         path: "linear_pool.rue",
         exit_code: 42,
         stdout: "",
+        stdin: None,
+    },
+    // Lattice and Meridian are large maintained Rue applications. Their
+    // automatic smoke invocations stay intentionally lightweight; explicit
+    // CLI cases run the demo and complete stress paths with their own
+    // assertions.
+    ExampleExpectation {
+        path: "lattice/main.rue",
+        exit_code: 0,
+        stdout: "usage: lattice [demo | run FILE | selftest | stress1 | stress2 | stress4 | benchmark | help]\nLattice compiles a workflow DSL, validates its graph, and simulates execution.\n",
+        stdin: None,
+    },
+    ExampleExpectation {
+        path: "meridian/main.rue",
+        exit_code: 0,
+        stdout: "usage: meridian [demo | run FILE | selftest | stress1 | stress2 | stress4 | benchmark | help]\nMeridian parses SQL-like workloads and audits planning, execution, transactions, and recovery.\n",
         stdin: None,
     },
     ExampleExpectation {
@@ -1529,6 +1575,7 @@ fn run_example(
     expectation: Option<&ExampleExpectation>,
     rue_binary: &Path,
     real_std: &Path,
+    timeout: Duration,
 ) -> TestResult {
     let temp_dir = tempfile::tempdir()
         .map_err(|e| TestFailure::fatal(format!("failed to create temp dir: {}", e)))?;
@@ -1537,9 +1584,10 @@ fn run_example(
     let mut cmd = compiler_command(rue_binary);
     cmd.arg(path).args(["-o", "prog"]).current_dir(dir);
     cmd.env("RUE_STD_PATH", real_std);
-    // Compile under the default timeout too (see run_case): an example that
-    // hangs the compiler fails as one TIMEOUT, not a wedged suite.
-    let compile_output = run_with_timeout(cmd, Duration::from_millis(DEFAULT_TIMEOUT_MS), None)?;
+    // Compile under the same per-example timeout too (see run_case): an
+    // example that hangs the compiler fails as one TIMEOUT, not a wedged
+    // suite, while explicitly large examples can opt into a larger budget.
+    let compile_output = run_with_timeout(cmd, timeout, None)?;
     let compile_stderr = String::from_utf8_lossy(&compile_output.stderr).to_string();
     let compile_stdout = String::from_utf8_lossy(&compile_output.stdout).to_string();
 
@@ -1564,11 +1612,7 @@ fn run_example(
 
     let mut run_cmd = Command::new(&program);
     run_cmd.current_dir(dir);
-    let run_output = run_with_timeout(
-        run_cmd,
-        Duration::from_millis(DEFAULT_TIMEOUT_MS),
-        expectation.and_then(|exp| exp.stdin),
-    )?;
+    let run_output = run_with_timeout(run_cmd, timeout, expectation.and_then(|exp| exp.stdin))?;
     let run_stdout = String::from_utf8_lossy(&run_output.stdout).to_string();
     let run_stderr = String::from_utf8_lossy(&run_output.stderr).to_string();
 
@@ -1686,10 +1730,11 @@ fn example_trials(rue_binary: &Path, real_std: &Path) -> Vec<Trial> {
         let real_std = real_std.to_path_buf();
         let test_name = example_test_name(&relative_path);
         trials.push(Trial::test(test_name, move |_ctx| {
+            let timeout = example_timeout(&relative_path);
             let expectation = EXAMPLE_EXPECTATIONS
                 .iter()
                 .find(|e| e.path == relative_path);
-            run_example(&path, expectation, &rue_binary, &real_std).map_err(RunError::fail)
+            run_example(&path, expectation, &rue_binary, &real_std, timeout).map_err(RunError::fail)
         }));
     }
     trials
@@ -1781,6 +1826,19 @@ mod tests {
         assert!(
             !welcome.stdout.is_empty(),
             "the onboarding example must print recognizable output (RUE-517)"
+        );
+    }
+
+    #[test]
+    fn heavyweight_example_timeout_is_narrowly_scoped() {
+        assert_eq!(example_timeout("lattice/main.rue"), Duration::from_secs(30));
+        assert_eq!(
+            example_timeout("meridian/main.rue"),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            example_timeout("welcome.rue"),
+            Duration::from_millis(DEFAULT_TIMEOUT_MS)
         );
     }
 
