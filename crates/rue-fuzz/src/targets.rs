@@ -1,11 +1,21 @@
 //! Fuzz targets for the Rue compiler.
 //!
-//! Each target exercises a different phase of the compiler:
-//! - Lexer: tokenization
-//! - Parser: AST construction
-//! - Sema: semantic analysis (type checking, name resolution)
-//! - Compiler: full compilation pipeline (frontend only, no codegen)
-//! - Emitter: instruction encoding (x86-64 and aarch64)
+//! Every registered target maps to a distinct pipeline boundary, so no two
+//! targets spend their budget re-fuzzing the same endpoint (RUE-776):
+//! - `lexer`: tokenization only.
+//! - `parser`: tokenization + AST construction.
+//! - `sema`: frontend through semantic analysis (type checking, name
+//!   resolution, affine checking) — the semantic query, no backend work.
+//! - `compiler`: the *whole* pipeline — frontend, CFG construction, MIR
+//!   lowering, register allocation, machine emission, and internal linking to a
+//!   finished executable. Strictly deeper than `sema`.
+//! - `payloadschemas`: the RIR/AIR/CFG payload publication path.
+//! - `emitter` / `emitteraarch64`: single-instruction encoding.
+//! - `emittersequence` / `emittersequenceaarch64`: instruction-sequence encoding.
+//!
+//! `sema` and `compiler` are kept on separate endpoints on purpose; the
+//! `compiler_target_is_deeper_than_sema` test guards against them silently
+//! collapsing back onto the same query.
 
 use super::FuzzTarget;
 use rue_codegen::aarch64::{
@@ -57,6 +67,9 @@ mod ice_classification_tests {
     }
 }
 
+/// Run the frontend up to and including semantic analysis. This is the endpoint
+/// of the `sema` target: type inference, name resolution, and affine checking,
+/// with no backend work.
 fn query_semantics(
     source: &str,
 ) -> rue_compiler::MultiErrorResult<std::sync::Arc<rue_compiler::SemanticView>> {
@@ -65,6 +78,19 @@ fn query_semantics(
     let mut session = rue_compiler::CompilerSession::new();
     session.update(&snapshot).into_result()?;
     session.semantic(&rue_compiler::CompileOptions::default())
+}
+
+/// Drive the whole compilation pipeline — frontend, backend code generation, and
+/// linking — to a finished executable. This is the endpoint of the `compiler`
+/// target and a strictly deeper boundary than [`query_semantics`]: it reaches
+/// CFG construction, MIR lowering, register allocation, machine emission, and
+/// object/link assembly, none of which the sema query touches (RUE-776). The
+/// default [`CompileOptions`] select the internal linker, so this stays
+/// in-process — no external linker is spawned.
+fn query_full_compile(source: &str) -> rue_compiler::MultiErrorResult<rue_compiler::CompileOutput> {
+    let snapshot = rue_compiler::SourceSnapshot::single("<fuzz>", source)
+        .map_err(rue_compiler::CompileErrors::from)?;
+    rue_compiler::compile_snapshot(&snapshot, &rue_compiler::CompileOptions::default())
 }
 
 /// Fuzz target for the lexer.
@@ -145,9 +171,19 @@ impl FuzzTarget for SemaTarget {
     }
 }
 
-/// Fuzz target for the full frontend compilation pipeline.
+/// Fuzz target for the whole compilation pipeline, through code generation and
+/// linking.
 ///
-/// Goal: Frontend compilation should never panic, always succeed or return errors.
+/// Goal: end-to-end compilation should never panic — it must succeed with a
+/// finished executable or return ordinary errors.
+///
+/// This is deliberately a deeper boundary than [`SemaTarget`], which stops at
+/// the semantic query. Where sema fuzzes type inference / name resolution /
+/// affine checking, this target additionally exercises CFG construction, MIR
+/// lowering, register allocation, machine emission, and internal linking — the
+/// backend phases where a distinct family of ICEs lives. Keeping the two on
+/// separate endpoints stops their fuzzing budget from being spent twice on the
+/// same query (RUE-776).
 pub struct CompilerTarget;
 
 impl FuzzTarget for CompilerTarget {
@@ -158,9 +194,9 @@ impl FuzzTarget for CompilerTarget {
     fn fuzz(&self, input: &[u8]) {
         // Only test valid UTF-8
         if let Ok(source) = std::str::from_utf8(input) {
-            // Query session semantics without code generation (which is slower)
-            // and focus on the analysis phases where bugs are more likely
-            let result = query_semantics(source);
+            // Take valid programs all the way through the backend and linker so
+            // codegen-stage invariants are fuzzed, not just semantic ones.
+            let result = query_full_compile(source);
             assert_no_ice(&result);
         }
     }
@@ -1152,6 +1188,34 @@ mod tests {
         // Test with structs and type inference
         target.fuzz(
             b"struct Point { x: i32, y: i32 } fn main() -> i32 { let p = Point { x: 1, y: 2 }; p.x }",
+        );
+    }
+
+    /// RUE-776: the `compiler` target must reach a strictly deeper boundary than
+    /// `sema`. The sema query stops at the semantic view; the compiler query
+    /// must drive codegen and linking to a finished executable. If the compiler
+    /// target is ever pointed back at the semantic query, `query_full_compile`
+    /// stops yielding a binary and this test fails — so the two contracts cannot
+    /// silently collapse onto the same endpoint again.
+    #[test]
+    fn compiler_target_is_deeper_than_sema() {
+        let source = "fn main() -> i32 { 42 }";
+
+        // sema endpoint: a semantic view over the program's functions, no
+        // backend artifact.
+        let semantic = query_semantics(source).expect("sema query succeeds on a valid program");
+        assert!(
+            semantic.function_views().len() >= 1,
+            "sema query analyzes the program's functions"
+        );
+
+        // compiler endpoint: a fully linked executable image. The concrete
+        // object format is host-dependent (ELF or Mach-O), so only its presence
+        // is asserted here.
+        let output = query_full_compile(source).expect("full compile succeeds on a valid program");
+        assert!(
+            !output.elf.is_empty(),
+            "compiler target must produce a linked executable — a deeper boundary than sema"
         );
     }
 
