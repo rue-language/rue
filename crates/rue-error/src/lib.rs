@@ -1592,13 +1592,14 @@ pub enum ErrorKind {
     },
 
     /// A type appeared in an `extern "C"` signature that the current FFI phase
-    /// cannot yet classify. C FFI P1 (ADR-0064, RUE-1055) supports only the
-    /// types whose native and target-C representations coincide: `i64`, `u64`,
-    /// and raw pointers. Other types (narrow integers, `bool`, aggregates,
-    /// floats, enums) await later phases.
+    /// cannot yet classify. C FFI P2 (ADR-0064, RUE-1056) supports every integer
+    /// and pointer scalar (`i8`/`u8`/`i16`/`u16`/`i32`/`u32`/`i64`/`u64`, `bool`
+    /// as `_Bool`, and raw pointers). Aggregates await by-value classification
+    /// (P3), floating-point awaits RUE-714 (P5), and enums are not FFI-safe.
     #[error(
         "type `{ty}` is not yet supported in an `extern \"C\"` signature: \
-         C FFI P1 (ADR-0064) supports only `i64`, `u64`, and pointer types"
+         C FFI (ADR-0064) supports integer and pointer scalars — aggregates \
+         await a later phase and floating-point awaits RUE-714"
     )]
     ExternSignatureTypeUnsupported {
         /// The rejected type, as rendered for the user.

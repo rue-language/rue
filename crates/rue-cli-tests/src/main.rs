@@ -99,23 +99,100 @@ use std::time::Duration;
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
 use rue_target::{Arch, Target};
 
-/// Build a tiny C-free static archive exporting `answer() -> 42` as pure machine
-/// code for `target` (ADR-0064 C FFI P1 proof). The object is produced with the
-/// compiler's own `rue_linker::ObjectBuilder` (which emits a defined global
-/// symbol named `answer`), then wrapped in a GNU `ar` archive — the same static
-/// archive shape the linker already resolves the runtime from.
+/// Build a tiny C-free static archive of pure machine code for `target`
+/// (ADR-0064 C FFI proof). Each function is a leaf object produced with the
+/// compiler's own `rue_linker::ObjectBuilder` (which emits one defined global
+/// symbol), and the objects are wrapped in a GNU `ar` archive — the same static
+/// archive shape the linker already resolves the runtime from. No C toolchain is
+/// involved. The linker pulls only the members a program references, so the
+/// unused members impose nothing on the `answer`-only P1 cases.
+///
+/// Members:
+/// - `answer() -> 42` — the P1 smoke function.
+/// - `ffi_i32_echo`/`ffi_i16_echo`/`ffi_u16_echo`/`ffi_u32_echo` — narrow-scalar
+///   echoes for the P2 round-trips. Each returns its argument in the low bits of
+///   the result register **with the bits above 32 deliberately dirtied**, so the
+///   round-trip is a genuine conformance probe: only a caller that applies the
+///   target-C narrow-integer extension (the `TargetCCallAbi` classifier) reads
+///   the right value back.
+/// - `ffi_bool_norm(int) -> _Bool` — a `_Bool` normalizer returning `x != 0` as a
+///   1-byte 0/1 value, again with dirty high bits; the `false`/dirty case is the
+///   load-bearing check that the boundary materializes exactly 0/1.
 fn synthesize_answer_archive(target: Target) -> TestResult<Vec<u8>> {
-    // A leaf function that returns the integer 42 and nothing else.
-    let code: Vec<u8> = match target.arch() {
+    // A leaf function returning 42 (P1).
+    let answer: Vec<u8> = match target.arch() {
         // mov eax, 42 ; ret
         Arch::X86_64 => vec![0xB8, 0x2A, 0x00, 0x00, 0x00, 0xC3],
         // movz w0, #42 ; ret
         Arch::Aarch64 => vec![0x40, 0x05, 0x80, 0x52, 0xC0, 0x03, 0x5F, 0xD6],
     };
-    let object = rue_linker::ObjectBuilder::new(target, "answer")
-        .code(code)
-        .build();
-    Ok(ar_archive(&[("answer.o", &object)]))
+    // A narrow-scalar echo: copy the low 32 bits of the argument into the result
+    // register, then OR in a fixed dirty pattern in bits 32..63 so the high bits
+    // no C callee is required to define are non-zero. Byte-for-byte from
+    // `llvm-mc` (Intel/AArch64), see the assembly in the P2 cases' comments.
+    let echo: Vec<u8> = match target.arch() {
+        // mov eax, edi ; movabs r10, 0xF0F0F0F000000000 ; or rax, r10 ; ret
+        Arch::X86_64 => vec![
+            0x89, 0xF8, 0x49, 0xBA, 0x00, 0x00, 0x00, 0x00, 0xF0, 0xF0, 0xF0, 0xF0, 0x4C, 0x09,
+            0xD0, 0xC3,
+        ],
+        // mov w0, w0 ; movz x10,#0xF0F0,lsl#48 ; movk x10,#0xF0F0,lsl#32
+        //           ; orr x0,x0,x10 ; ret
+        Arch::Aarch64 => vec![
+            0xE0, 0x03, 0x00, 0x2A, 0x0A, 0x1E, 0xFE, 0xD2, 0x0A, 0x1E, 0xDE, 0xF2, 0x00, 0x00,
+            0x0A, 0xAA, 0xC0, 0x03, 0x5F, 0xD6,
+        ],
+    };
+    // A `_Bool` normalizer: al/w0 = (x != 0), then the same dirty-high pattern.
+    let bool_norm: Vec<u8> = match target.arch() {
+        // xor eax,eax ; test edi,edi ; setne al ; movabs r10,... ; or rax,r10 ; ret
+        Arch::X86_64 => vec![
+            0x31, 0xC0, 0x85, 0xFF, 0x0F, 0x95, 0xC0, 0x49, 0xBA, 0x00, 0x00, 0x00, 0x00, 0xF0,
+            0xF0, 0xF0, 0xF0, 0x4C, 0x09, 0xD0, 0xC3,
+        ],
+        // cmp w0,#0 ; cset w0,ne ; movz x10,... ; movk x10,... ; orr x0,x0,x10 ; ret
+        Arch::Aarch64 => vec![
+            0x1F, 0x00, 0x00, 0x71, 0xE0, 0x07, 0x9F, 0x1A, 0x0A, 0x1E, 0xFE, 0xD2, 0x0A, 0x1E,
+            0xDE, 0xF2, 0x00, 0x00, 0x0A, 0xAA, 0xC0, 0x03, 0x5F, 0xD6,
+        ],
+    };
+
+    // One object (and thus one archive member) per exported symbol; the echo
+    // members share their machine code but differ in symbol name so the P2
+    // programs can declare a distinctly-typed signature for each.
+    let echo_symbols = [
+        "ffi_i32_echo",
+        "ffi_i16_echo",
+        "ffi_u16_echo",
+        "ffi_u32_echo",
+    ];
+    let mut objects: Vec<(String, Vec<u8>)> = Vec::new();
+    objects.push((
+        "answer.o".to_string(),
+        rue_linker::ObjectBuilder::new(target, "answer")
+            .code(answer)
+            .build(),
+    ));
+    for symbol in echo_symbols {
+        objects.push((
+            format!("{symbol}.o"),
+            rue_linker::ObjectBuilder::new(target, symbol)
+                .code(echo.clone())
+                .build(),
+        ));
+    }
+    objects.push((
+        "ffi_bool_norm.o".to_string(),
+        rue_linker::ObjectBuilder::new(target, "ffi_bool_norm")
+            .code(bool_norm)
+            .build(),
+    ));
+
+    let members: Vec<(&str, &[u8])> = objects
+        .iter()
+        .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+        .collect();
+    Ok(ar_archive(&members))
 }
 
 /// Assemble a minimal GNU `ar` archive from named object members. Only the

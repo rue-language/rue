@@ -412,6 +412,13 @@ pub trait ValueLowerAdapter:
     fn value_is_lowered(&self, value: CfgValue) -> bool;
     fn reserve_value_result(&mut self) -> VReg;
     fn resolve_symbol(&self, symbol: Spur) -> String;
+    /// Whether `machine_symbol` (already resolved via
+    /// [`resolve_symbol`](Self::resolve_symbol)) names an `extern "C"` foreign
+    /// function, so its call crosses under the target-C ABI (ADR-0064 P2).
+    fn is_foreign_symbol(&self, machine_symbol: &str) -> bool;
+    /// The target-C psABI flavor for this backend: SysV AMD64 on x86-64, AAPCS64
+    /// on AArch64. Names the classifier that governs a foreign-call boundary.
+    fn target_c_flavor(&self) -> rue_air::TargetCAbiFlavor;
     /// Resolve an intrinsic dispatch name without applying callable-machine
     /// aliases. A source callable may legally share an intrinsic's spelling.
     fn resolve_intrinsic_symbol(&self, symbol: Spur) -> String;
@@ -1442,8 +1449,22 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                 adapter.emit_runtime_call(plan)
             } else {
                 let symbol = adapter.resolve_symbol(*name);
+                // An `extern "C"` foreign call crosses under the target-C ABI
+                // (ADR-0064 P2): a scalar return is re-extended to Rue's canonical
+                // 64-bit form because a C callee leaves the bits above the
+                // return's declared width unspecified. The rule comes from the
+                // shared `TargetCCallAbi` classifier, not a backend-local choice.
+                let foreign_return_extension = if adapter.is_foreign_symbol(&symbol)
+                    && matches!(inputs.return_plan, crate::call_plan::ReturnPlan::Scalar)
+                {
+                    let ext = rue_air::TargetCCallAbi::new(adapter.target_c_flavor())
+                        .scalar_return_extension(inst.ty);
+                    (!ext.is_noop()).then_some(ext)
+                } else {
+                    None
+                };
                 let result_vreg = adapter.reserve_value_result();
-                let plan = crate::call_plan::CallPlan::from_inputs_with_result(
+                let mut plan = crate::call_plan::CallPlan::from_inputs_with_result(
                     crate::call_plan::CallTarget::rue(symbol),
                     inputs.return_plan,
                     inputs.compact_return_image.clone(),
@@ -1453,6 +1474,7 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     adapter,
                     Some(result_vreg),
                 );
+                plan.foreign_return_extension = foreign_return_extension;
                 adapter.emit_call(plan)
             };
             cache_result(adapter, value, result);

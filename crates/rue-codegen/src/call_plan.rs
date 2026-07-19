@@ -6,6 +6,8 @@
 //! those slots for their ABI.
 
 use rue_air::{ArgClass, ArgConvention, FrozenTypeInternPool, NativeCallAbi, ReturnClass};
+// `ScalarAbiExtension` is referenced by fully-qualified path in the struct so it
+// stays visible to readers of the field; no direct import is needed.
 use rue_cfg::{Cfg, CfgArgMode, CfgCallArg, Type};
 use rue_runtime_abi::{ReservedExportClass, ReservedExportId};
 
@@ -197,6 +199,14 @@ pub struct CallPlan {
     /// call, before the sret read-back. Zero when no argument crosses
     /// indirectly.
     pub caller_indirect_bytes: u32,
+    /// For a call across an `extern "C"` target-C boundary (ADR-0064 P2), the
+    /// narrow-integer extension the caller must apply to a **scalar** return so
+    /// it becomes Rue's canonical 64-bit form — a C callee leaves the bits above
+    /// the return's declared width unspecified. `None` for a native Rue call, a
+    /// non-scalar return, or a register-width scalar that needs no extension. The
+    /// value is resolved from the shared [`rue_air::TargetCCallAbi`] classifier so
+    /// both backends apply the same rule.
+    pub foreign_return_extension: Option<rue_air::ScalarAbiExtension>,
 }
 
 /// Input metadata for one CFG call argument. This is copied out of the CFG
@@ -549,6 +559,9 @@ impl CallPlan {
             stack_slot_count,
             stack_bytes,
             caller_indirect_bytes,
+            // Set by the caller (the value-plan Call arm) for an `extern "C"`
+            // foreign target with a scalar return; native calls leave it None.
+            foreign_return_extension: None,
         }
     }
 
@@ -572,6 +585,7 @@ impl CallPlan {
             stack_slot_count,
             stack_bytes: align_up((stack_slot_count * 8) as u32, 16),
             caller_indirect_bytes: 0,
+            foreign_return_extension: None,
         }
     }
 }
@@ -731,6 +745,7 @@ mod tests {
             stack_slot_count: 0,
             stack_bytes: 0,
             caller_indirect_bytes: 0,
+            foreign_return_extension: None,
         };
 
         assert!(plan.user_args[0].slots.is_empty());

@@ -137,7 +137,9 @@ fn generate_x86_64_objects(
 ) -> MultiErrorResult<Vec<Vec<u8>>> {
     let _span = info_span!("codegen", arch = "x86_64").entered();
     let symbol_mappings = foreign_call_symbol_mappings(functions, foreign_symbols);
-    let symbols = rue_codegen::MachineSymbolResolver::new(&symbol_mappings);
+    let foreign_set: std::collections::BTreeSet<String> = foreign_symbols.iter().cloned().collect();
+    let symbols =
+        rue_codegen::MachineSymbolResolver::new_with_foreign(&symbol_mappings, &foreign_set);
 
     let results: Vec<CompileResult<Vec<u8>>> = functions
         .par_iter()
@@ -213,7 +215,9 @@ fn generate_aarch64_objects(
 ) -> MultiErrorResult<Vec<Vec<u8>>> {
     let _span = info_span!("codegen", arch = "aarch64").entered();
     let symbol_mappings = foreign_call_symbol_mappings(functions, foreign_symbols);
-    let symbols = rue_codegen::MachineSymbolResolver::new(&symbol_mappings);
+    let foreign_set: std::collections::BTreeSet<String> = foreign_symbols.iter().cloned().collect();
+    let symbols =
+        rue_codegen::MachineSymbolResolver::new_with_foreign(&symbol_mappings, &foreign_set);
 
     let results: Vec<CompileResult<Vec<u8>>> = functions
         .par_iter()
