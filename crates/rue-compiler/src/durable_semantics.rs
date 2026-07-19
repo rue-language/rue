@@ -466,16 +466,13 @@ pub fn project_durable_declaration_semantics(
             key
         } else if shell.identity.kind == StableDefinitionKind::ValueConst {
             // Const shells are deliberately captured before initializer
-            // evaluation. A previous durable module payload may reclassify
-            // only this exact current const declaration; either the current
-            // provisional ValueConst definition or an authoritative
-            // ModuleBinding definition must prove its provenance.
+            // evaluation, and therefore have no provisional stable definition.
+            // A selected compatible durable baseline may reclassify only this
+            // exact current candidate as a module binding. The durable query's
+            // input fingerprints prove initializer compatibility; this adapter
+            // supplies only the current locator and header.
             let mut module_join = join_key.clone();
             module_join.kind = StableDefinitionKind::ModuleBinding;
-            let authoritative = definition_by_join_key.get(&module_join);
-            if exact_definition.is_none() && authoritative.is_none() {
-                return Err(DurableSemanticProjectionFailure::MissingDefinition);
-            }
             let key = durable_by_join_key
                 .get(&module_join)
                 .cloned()

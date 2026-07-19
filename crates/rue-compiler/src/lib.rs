@@ -39,6 +39,7 @@ mod bound_definitions;
 mod canonical_lower;
 mod canonical_merge;
 mod canonical_semantic;
+mod declaration_candidate;
 mod definition_snapshot;
 mod dependency_envelope;
 mod diagnostic;

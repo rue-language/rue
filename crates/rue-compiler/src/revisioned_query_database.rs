@@ -35,6 +35,10 @@ use crate::typed_query_store::{TerminalKind, TypedQueryFamily};
 
 const IMPORT_INPUT_REVISION_RETENTION: usize = 64;
 const MODULE_QUERY_MEMO_RETENTION: usize = 4096;
+// A semantic batch commonly requests hundreds of exact declaration shells.
+// Keep one large batch reusable after its active pins drop; the runtime still
+// bounds global retention deterministically.
+const DECLARATION_SHELL_MEMO_RETENTION: usize = MODULE_QUERY_MEMO_RETENTION;
 const MODULE_INPUT_REVISION_RETENTION: usize = 4096;
 
 #[derive(Debug, Clone)]
@@ -386,6 +390,8 @@ pub(crate) struct RevisionedQueryDatabase {
     module_store: Arc<Mutex<ModuleInputStore>>,
     parse_modules: QueryFamily<ModuleQueryKey, ParseModuleValue>,
     module_indexes: QueryFamily<ModuleQueryKey, ModuleIndexValue>,
+    declaration_occurrence_indexes: QueryFamily<ModuleQueryKey, DeclarationOccurrenceIndexValue>,
+    declaration_shells: QueryFamily<DeclarationShellQueryKey, DeclarationShellQueryValue>,
     module_rirs: QueryFamily<ModuleQueryKey, ModuleRirValue>,
     resolve_imports: QueryFamily<ResolveImportKey, ResolveImportValue>,
     lookup_names: QueryFamily<LookupNameKey, LookupNameValue>,
@@ -437,6 +443,41 @@ pub(crate) struct ProjectedModuleIndex {
 
 #[derive(Debug, Clone)]
 struct ModuleIndexValue(Result<Arc<ModuleIndex>, crate::CompileErrors>);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeclarationOccurrenceIndex {
+    capabilities: BTreeMap<
+        crate::declaration_candidate::DeclarationCandidateKey,
+        crate::declaration_candidate::DeclarationOccurrenceCapability,
+    >,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DeclarationOccurrenceIndexValue {
+    Available(Arc<DeclarationOccurrenceIndex>),
+    Failure(crate::declaration_candidate::DeclarationOccurrenceFailure),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeclarationShellQueryKey(crate::declaration_candidate::DeclarationCandidateKey);
+
+impl QueryKey for DeclarationShellQueryKey {
+    fn stable_identity(&self) -> String {
+        self.0.stable_identity()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DeclarationShellQueryValue {
+    Available(crate::declaration_candidate::DeclarationShellFact),
+    Failure(crate::declaration_candidate::DeclarationShellFailure),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DeclarationShellBatchFailure {
+    Query(QueryAbort),
+    Stable(crate::declaration_candidate::DeclarationShellFailure),
+}
 
 #[derive(Debug, Clone)]
 struct ModuleRirValue {
@@ -657,6 +698,13 @@ fn module_index_value_equal(left: &ModuleIndexValue, right: &ModuleIndexValue) -
     }
 }
 
+fn declaration_occurrence_index_value_equal(
+    left: &DeclarationOccurrenceIndexValue,
+    right: &DeclarationOccurrenceIndexValue,
+) -> bool {
+    left == right
+}
+
 fn module_rir_value_equal(left: &ModuleRirValue, right: &ModuleRirValue) -> bool {
     match (&left.result, &right.result) {
         (Ok(left), Ok(right)) => left.revision() == right.revision(),
@@ -680,6 +728,78 @@ fn module_rir_value_from_lowering(
             result: Err(crate::CompileErrors::from(error)),
             work,
         },
+    }
+}
+
+fn project_semantic_shell(
+    fact: &crate::declaration_candidate::DeclarationShellFact,
+    declaration_span: rue_span::Span,
+    source_order: u32,
+) -> rue_air::SemanticDeclarationShell {
+    use crate::declaration_candidate::{
+        DeclarationCandidateCategory as C, DeclarationParameterMode as M,
+    };
+    use rue_air::{StableDefinitionKind as K, StableDefinitionNamespace as N};
+
+    let (namespace, kind) = match fact.key.category {
+        C::Function | C::ExternFunction => (N::Value, K::Function),
+        C::Struct => (N::Type, K::Struct),
+        C::Enum => (N::Type, K::Enum),
+        // This is an epoch-local adapter only. The query fact and key remain
+        // `ConstCandidate`; no stable definition ID is issued from this value.
+        C::ConstCandidate => (N::Value, K::ValueConst),
+        C::Destructor => (N::Destructor, K::Destructor),
+        C::Method => (N::Method, K::Method),
+        C::AssociatedFunction => (N::Method, K::AssociatedFunction),
+    };
+    let parameter_names = fact
+        .parameters
+        .iter()
+        .map(|parameter| parameter.name.clone())
+        .collect::<Vec<_>>()
+        .into();
+    let parameter_modes = fact
+        .parameters
+        .iter()
+        .map(|parameter| match parameter.mode {
+            M::Value => rue_rir::RirParamMode::Normal,
+            M::Borrow => rue_rir::RirParamMode::Borrow,
+            M::Inout => rue_rir::RirParamMode::Inout,
+        })
+        .collect::<Vec<_>>()
+        .into();
+    let parameter_comptime = fact
+        .parameters
+        .iter()
+        .map(|parameter| parameter.is_comptime)
+        .collect::<Vec<_>>()
+        .into();
+    rue_air::SemanticDeclarationShell {
+        identity: rue_air::SemanticDeclarationShellIdentity {
+            module_path: Arc::from(fact.key.module.as_str()),
+            is_trusted_standard_library: fact.key.module.is_trusted_standard_library(),
+            namespace,
+            kind,
+            name: fact.key.name.clone(),
+            owner: fact.key.owner.as_ref().map(|owner| owner.name.clone()),
+        },
+        declaration_span,
+        parameter_names,
+        parameter_modes,
+        parameter_comptime,
+        source_order,
+        has_self: fact.receiver.is_some(),
+        receiver_mode: fact.receiver.map(|mode| match mode {
+            M::Value => rue_rir::RirParamMode::Normal,
+            M::Borrow => rue_rir::RirParamMode::Borrow,
+            M::Inout => rue_rir::RirParamMode::Inout,
+        }),
+        receiver_is_mut: fact.receiver_is_mut,
+        is_generic: fact.is_generic,
+        is_public: fact.is_public,
+        is_unchecked: fact.is_unchecked,
+        is_extern: fact.is_extern,
+        signature_fingerprint: fact.signature_fingerprint,
     }
 }
 
@@ -792,6 +912,121 @@ impl Default for RevisionedQueryDatabase {
                 },
             )
             .expect("the ModuleIndex family has one canonical name");
+        let parse_for_declaration_occurrences = parse_modules.clone();
+        let parse_for_declaration_shells = parse_modules.clone();
+        let declaration_occurrence_indexes = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.declaration-occurrence-index",
+                MODULE_QUERY_MEMO_RETENTION,
+                declaration_occurrence_index_value_equal,
+                move |context, _, key: &ModuleQueryKey| {
+                    let parsed = context
+                        .query_registered(&parse_for_declaration_occurrences, key.clone())?;
+                    let rue_query::QueryOutcome::Success(parsed) = parsed.outcome() else {
+                        unreachable!("ParseModule publishes typed values")
+                    };
+                    let value = match &parsed.result {
+                        Ok(module) => DeclarationOccurrenceIndexValue::Available(Arc::new(
+                            DeclarationOccurrenceIndex {
+                                capabilities: module
+                                    .definitions()
+                                    .declaration_capabilities()
+                                    .iter()
+                                    .cloned()
+                                    .map(|capability| (capability.key().clone(), capability))
+                                    .collect(),
+                            },
+                        )),
+                        Err(_) => DeclarationOccurrenceIndexValue::Failure(
+                            crate::declaration_candidate::DeclarationOccurrenceFailure::ParseRejected {
+                                module: key.0.clone(),
+                            },
+                        ),
+                    };
+                    let kind = if matches!(value, DeclarationOccurrenceIndexValue::Available(_)) {
+                        QueryTerminalKind::Success
+                    } else {
+                        QueryTerminalKind::Failure
+                    };
+                    Ok(QueryOutput::success(value).with_terminal_kind(kind))
+                },
+            )
+            .expect("the DeclarationOccurrenceIndex family has one canonical name");
+        let occurrences_for_shells = declaration_occurrence_indexes.clone();
+        let declaration_shells = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.declaration-shell",
+                DECLARATION_SHELL_MEMO_RETENTION,
+                |left: &DeclarationShellQueryValue, right: &DeclarationShellQueryValue| {
+                    left == right
+                },
+                move |context, _, key: &DeclarationShellQueryKey| {
+                    let indexed = context.query_registered(
+                        &occurrences_for_shells,
+                        ModuleQueryKey(key.0.module.clone()),
+                    )?;
+                    let rue_query::QueryOutcome::Success(indexed) = indexed.outcome() else {
+                        unreachable!("DeclarationOccurrenceIndex publishes typed values")
+                    };
+                    let value = match indexed {
+                        DeclarationOccurrenceIndexValue::Failure(failure) => {
+                            DeclarationShellQueryValue::Failure(
+                                crate::declaration_candidate::DeclarationShellFailure::OccurrencesUnavailable(
+                                    failure.clone(),
+                                ),
+                            )
+                        }
+                        DeclarationOccurrenceIndexValue::Available(index) => {
+                            match index.capabilities.get(&key.0) {
+                                None => DeclarationShellQueryValue::Failure(
+                                    crate::declaration_candidate::DeclarationShellFailure::Absent(
+                                        key.0.clone(),
+                                    ),
+                                ),
+                                Some(crate::declaration_candidate::DeclarationOccurrenceCapability::Ambiguous { .. }) => {
+                                    DeclarationShellQueryValue::Failure(
+                                        crate::declaration_candidate::DeclarationShellFailure::Ambiguous(
+                                            key.0.clone(),
+                                        ),
+                                    )
+                                }
+                                Some(crate::declaration_candidate::DeclarationOccurrenceCapability::Exact { .. }) => {
+                                    let parsed = context.query_registered(
+                                        &parse_for_declaration_shells,
+                                        ModuleQueryKey(key.0.module.clone()),
+                                    )?;
+                                    let rue_query::QueryOutcome::Success(parsed) = parsed.outcome() else {
+                                        unreachable!("ParseModule publishes typed values")
+                                    };
+                                    match &parsed.result {
+                                        Ok(module) => match module
+                                            .definitions()
+                                            .evaluate_declaration_shell(&key.0)
+                                        {
+                                            Ok(fact) => DeclarationShellQueryValue::Available(fact),
+                                            Err(failure) => DeclarationShellQueryValue::Failure(failure),
+                                        },
+                                        Err(_) => DeclarationShellQueryValue::Failure(
+                                            crate::declaration_candidate::DeclarationShellFailure::OccurrencesUnavailable(
+                                                crate::declaration_candidate::DeclarationOccurrenceFailure::ParseRejected {
+                                                    module: key.0.module.clone(),
+                                                },
+                                            ),
+                                        ),
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    let kind = if matches!(value, DeclarationShellQueryValue::Available(_)) {
+                        QueryTerminalKind::Success
+                    } else {
+                        QueryTerminalKind::Failure
+                    };
+                    Ok(QueryOutput::success(value).with_terminal_kind(kind))
+                },
+            )
+            .expect("the DeclarationShell family has one canonical name");
         let index_for_lookup = module_indexes.clone();
         let lookup_names = runtime
             .family_with_evaluator(
@@ -927,6 +1162,8 @@ impl Default for RevisionedQueryDatabase {
             module_store,
             parse_modules,
             module_indexes,
+            declaration_occurrence_indexes,
+            declaration_shells,
             module_rirs,
             resolve_imports,
             lookup_names,
@@ -938,6 +1175,113 @@ impl Default for RevisionedQueryDatabase {
 
 impl RevisionedQueryDatabase {
     pub(crate) const SOURCE_INPUT: &'static str = "selected-source";
+
+    pub(crate) fn current_parse_revision(&self) -> Option<Revision> {
+        let terminal = self.parse.selection.current()?;
+        let rue_query::QueryOutcome::Success(record) = terminal.outcome() else {
+            unreachable!("Parse publishes typed records")
+        };
+        Some(record.runtime_revision())
+    }
+
+    /// Request every query-owned declaration shell for the selected parsed
+    /// program and attach only the current revision's diagnostic locators.
+    pub(crate) fn projected_declaration_shells(
+        &self,
+        revision: Revision,
+        program: &crate::canonical_merge::CanonicalMergedAst,
+        cancellation: CancellationToken,
+    ) -> Result<Vec<rue_air::SemanticDeclarationShell>, DeclarationShellBatchFailure> {
+        let mut shells = Vec::new();
+        let mut index_pins = Vec::new();
+        let mut shell_pins = Vec::new();
+        for module in program.modules() {
+            if cancellation.is_canceled() {
+                return Err(DeclarationShellBatchFailure::Query(QueryAbort::Canceled));
+            }
+            let indexed_attempt = self.runtime.request_registered(
+                &self.declaration_occurrence_indexes,
+                revision,
+                ModuleQueryKey(module.module_id().clone()),
+                cancellation.clone(),
+            );
+            let indexed_terminal = indexed_attempt
+                .into_result()
+                .map_err(DeclarationShellBatchFailure::Query)?;
+            index_pins.push(
+                self.declaration_occurrence_indexes
+                    .pin_terminal(&indexed_terminal)
+                    .expect("occurrence terminal belongs to its family"),
+            );
+            let rue_query::QueryOutcome::Success(indexed) = indexed_terminal.outcome() else {
+                unreachable!("DeclarationOccurrenceIndex publishes typed values")
+            };
+            let index = match indexed {
+                DeclarationOccurrenceIndexValue::Available(index) => index,
+                DeclarationOccurrenceIndexValue::Failure(failure) => {
+                    return Err(DeclarationShellBatchFailure::Stable(
+                        crate::declaration_candidate::DeclarationShellFailure::OccurrencesUnavailable(
+                            failure.clone(),
+                        ),
+                    ));
+                }
+            };
+            for capability in index.capabilities.values() {
+                let key = capability.key();
+                let crate::declaration_candidate::DeclarationOccurrenceCapability::Exact { .. } =
+                    capability
+                else {
+                    return Err(DeclarationShellBatchFailure::Stable(
+                        crate::declaration_candidate::DeclarationShellFailure::Ambiguous(
+                            key.clone(),
+                        ),
+                    ));
+                };
+                if cancellation.is_canceled() {
+                    return Err(DeclarationShellBatchFailure::Query(QueryAbort::Canceled));
+                }
+                let attempt = self.runtime.request_registered(
+                    &self.declaration_shells,
+                    revision,
+                    DeclarationShellQueryKey(key.clone()),
+                    cancellation.clone(),
+                );
+                let terminal = attempt
+                    .into_result()
+                    .map_err(DeclarationShellBatchFailure::Query)?;
+                shell_pins.push(
+                    self.declaration_shells
+                        .pin_terminal(&terminal)
+                        .expect("shell terminal belongs to its family"),
+                );
+                let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+                    unreachable!("DeclarationShell publishes typed values")
+                };
+                let fact = match value {
+                    DeclarationShellQueryValue::Available(fact) => fact,
+                    DeclarationShellQueryValue::Failure(failure) => {
+                        return Err(DeclarationShellBatchFailure::Stable(failure.clone()));
+                    }
+                };
+                let Some(locator) = module.definitions().declaration_locator(&fact.key) else {
+                    return Err(DeclarationShellBatchFailure::Stable(
+                        crate::declaration_candidate::DeclarationShellFailure::ParserCapabilityMismatch(
+                            fact.key.clone(),
+                        ),
+                    ));
+                };
+                shells.push(project_semantic_shell(
+                    fact,
+                    locator.declaration_span,
+                    locator.source_order,
+                ));
+            }
+        }
+        if cancellation.is_canceled() {
+            return Err(DeclarationShellBatchFailure::Query(QueryAbort::Canceled));
+        }
+        Ok(shells)
+    }
 
     pub(crate) fn begin_import_inputs(
         &mut self,
@@ -1609,6 +1953,23 @@ impl RevisionedQueryDatabase {
 }
 
 #[cfg(test)]
+pub(crate) fn projected_declaration_shells_for_test(
+    merged: &crate::canonical_merge::CanonicalMergedProgram,
+) -> Result<Vec<rue_air::SemanticDeclarationShell>, crate::CompileErrors> {
+    let snapshot = merged.definitions().source_snapshot();
+    let mut database = RevisionedQueryDatabase::default();
+    let revision =
+        database.source_revision(&super::session::ExactSourceInput::new(snapshot), snapshot);
+    database
+        .projected_declaration_shells(revision, merged.ast(), CancellationToken::new())
+        .map_err(|failure| {
+            crate::CompileErrors::from(CompileError::without_span(ErrorKind::InternalError(
+                format!("test declaration-shell query failed: {failure:?}"),
+            )))
+        })
+}
+
+#[cfg(test)]
 pub(crate) fn execution(attempt: &QueryRequestAttempt<impl Sized>) -> RequestExecution {
     attempt.execution()
 }
@@ -1641,6 +2002,244 @@ mod tests {
                 .collect(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn declaration_shell_queries_are_keyed_exact_and_payload_stable() {
+        let first = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "struct Box { fn get(self) -> i32 { 1 } } const item = 1; fn main() {}",
+            )],
+            1,
+        );
+        let edited = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "// shifted file\nstruct Box { fn // comment-only signature trivia\n get(self) -> i32 { 999 } } const item = @import(\"x.rue\"); // shifted again\n fn main() { let x = 2; }",
+            )],
+            1,
+        );
+        let main = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let first_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&first),
+            &first,
+        );
+        let indexed = database.runtime.request_registered(
+            &database.declaration_occurrence_indexes,
+            first_revision,
+            ModuleQueryKey(main.clone()),
+            CancellationToken::new(),
+        );
+        assert_eq!(execution(&indexed), RequestExecution::Computed);
+        assert_eq!(indexed.dependencies().len(), 1);
+        let terminal = indexed.terminal().unwrap();
+        let rue_query::QueryOutcome::Success(indexed_value) = terminal.outcome() else {
+            unreachable!()
+        };
+        let DeclarationOccurrenceIndexValue::Available(indexed_value) = indexed_value else {
+            panic!("expected available occurrence index")
+        };
+        let keys = indexed_value
+            .capabilities
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(keys.len(), 4);
+        let mut shell_stamps = BTreeMap::new();
+        for key in &keys {
+            let first = database.runtime.request_registered(
+                &database.declaration_shells,
+                first_revision,
+                DeclarationShellQueryKey(key.clone()),
+                CancellationToken::new(),
+            );
+            assert_eq!(execution(&first), RequestExecution::Computed);
+            shell_stamps.insert(key.stable_identity(), first.terminal().unwrap().stamp());
+            assert_eq!(
+                first
+                    .dependencies()
+                    .iter()
+                    .map(|dependency| dependency.node.family())
+                    .collect::<Vec<_>>(),
+                vec![
+                    "compiler.declaration-occurrence-index",
+                    "compiler.parse-module"
+                ]
+            );
+            let warm = database.runtime.request_registered(
+                &database.declaration_shells,
+                first_revision,
+                DeclarationShellQueryKey(key.clone()),
+                CancellationToken::new(),
+            );
+            assert_eq!(execution(&warm), RequestExecution::Reused);
+        }
+
+        let edited_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&edited),
+            &edited,
+        );
+        let edited_index = database.runtime.request_registered(
+            &database.declaration_occurrence_indexes,
+            edited_revision,
+            ModuleQueryKey(main),
+            CancellationToken::new(),
+        );
+        let rue_query::QueryOutcome::Success(edited_value) =
+            edited_index.terminal().unwrap().outcome()
+        else {
+            unreachable!()
+        };
+        let DeclarationOccurrenceIndexValue::Available(edited_value) = edited_value else {
+            panic!("expected available edited occurrence index")
+        };
+        assert_eq!(&indexed_value.capabilities, &edited_value.capabilities);
+        for key in &keys {
+            let revalidated = database.runtime.request_registered(
+                &database.declaration_shells,
+                edited_revision,
+                DeclarationShellQueryKey(key.clone()),
+                CancellationToken::new(),
+            );
+            let terminal = revalidated.terminal().unwrap();
+            assert_eq!(
+                terminal.stamp(),
+                shell_stamps[&key.stable_identity()],
+                "payload-only edits must preserve the shell publication stamp"
+            );
+        }
+    }
+
+    #[test]
+    fn canceled_declaration_shell_request_publishes_no_terminal_and_recovers() {
+        let source = source_snapshot(&[(1, "/main.rue", "main.rue", "fn main() {}")], 1);
+        let main = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let indexed = database.runtime.request_registered(
+            &database.declaration_occurrence_indexes,
+            revision,
+            ModuleQueryKey(main),
+            CancellationToken::new(),
+        );
+        let rue_query::QueryOutcome::Success(indexed) = indexed.terminal().unwrap().outcome()
+        else {
+            unreachable!()
+        };
+        let DeclarationOccurrenceIndexValue::Available(indexed) = indexed else {
+            panic!("expected available occurrence index")
+        };
+        let key = indexed.capabilities.keys().next().unwrap().clone();
+        let canceled = CancellationToken::new();
+        canceled.cancel();
+        let aborted = database.runtime.request_registered(
+            &database.declaration_shells,
+            revision,
+            DeclarationShellQueryKey(key.clone()),
+            canceled,
+        );
+        assert_eq!(execution(&aborted), RequestExecution::Aborted);
+        assert!(aborted.terminal().is_none());
+        let recovered = database.runtime.request_registered(
+            &database.declaration_shells,
+            revision,
+            DeclarationShellQueryKey(key),
+            CancellationToken::new(),
+        );
+        assert_eq!(execution(&recovered), RequestExecution::Computed);
+        assert!(recovered.terminal().is_some());
+    }
+
+    #[test]
+    fn absent_declaration_shell_is_a_typed_position_free_failure_terminal() {
+        let source = source_snapshot(&[(1, "/main.rue", "main.rue", "fn main() {}")], 1);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let key = crate::declaration_candidate::DeclarationCandidateKey {
+            module,
+            category: crate::declaration_candidate::DeclarationCandidateCategory::Function,
+            name: Arc::from("missing"),
+            owner: None,
+            duplicate_discriminator: 0,
+        };
+        let requested = database.runtime.request_registered(
+            &database.declaration_shells,
+            revision,
+            DeclarationShellQueryKey(key.clone()),
+            CancellationToken::new(),
+        );
+        let terminal = requested.terminal().unwrap();
+        assert_eq!(terminal.kind(), QueryTerminalKind::Failure);
+        assert!(terminal.diagnostics().is_empty());
+        assert!(matches!(
+            terminal.outcome(),
+            rue_query::QueryOutcome::Success(DeclarationShellQueryValue::Failure(
+                crate::declaration_candidate::DeclarationShellFailure::Absent(absent)
+            )) if absent == &key
+        ));
+    }
+
+    #[test]
+    fn declaration_shell_batches_over_64_entries_reuse_without_thrashing() {
+        let source_text = (0..129)
+            .map(|index| format!("fn f{index}() {{}}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let source = source_snapshot(&[(1, "/main.rue", "main.rue", source_text.as_str())], 1);
+        let main = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let indexed = database.runtime.request_registered(
+            &database.declaration_occurrence_indexes,
+            revision,
+            ModuleQueryKey(main),
+            CancellationToken::new(),
+        );
+        let rue_query::QueryOutcome::Success(indexed) = indexed.terminal().unwrap().outcome()
+        else {
+            unreachable!()
+        };
+        let DeclarationOccurrenceIndexValue::Available(indexed) = indexed else {
+            panic!("expected available occurrence index")
+        };
+        let keys = indexed.capabilities.keys().cloned().collect::<Vec<_>>();
+        let mut first_stamps = Vec::with_capacity(keys.len());
+        for key in &keys {
+            let requested = database.runtime.request_registered(
+                &database.declaration_shells,
+                revision,
+                DeclarationShellQueryKey(key.clone()),
+                CancellationToken::new(),
+            );
+            assert_eq!(execution(&requested), RequestExecution::Computed);
+            first_stamps.push(requested.terminal().unwrap().stamp());
+        }
+        for (key, first_stamp) in keys.iter().zip(first_stamps) {
+            let warm = database.runtime.request_registered(
+                &database.declaration_shells,
+                revision,
+                DeclarationShellQueryKey(key.clone()),
+                CancellationToken::new(),
+            );
+            assert_eq!(execution(&warm), RequestExecution::Reused);
+            assert_eq!(warm.terminal().unwrap().stamp(), first_stamp);
+        }
     }
 
     #[test]

@@ -207,6 +207,7 @@ pub(crate) fn prepare_canonical_declarations<'a>(
     rir: &'a CanonicalRirOutput,
     options: &CompileOptions,
     imports: &CanonicalImportGraph,
+    query_shells: &[rue_air::SemanticDeclarationShell],
 ) -> Result<CanonicalPreparedDeclarations<'a>, CanonicalSemanticFailure> {
     let sema = configure_timed_canonical_sema(merged, rir, options, imports).map_err(|errors| {
         CanonicalSemanticFailure::declaration(errors, CanonicalSemanticWork::default())
@@ -218,20 +219,22 @@ pub(crate) fn prepare_canonical_declarations<'a>(
         shell_predeclaration_epochs: 1,
         ..CanonicalDeclarationReuseWork::default()
     };
-    let shells = sema.predeclare_declaration_shells().map_err(|errors| {
-        CanonicalSemanticFailure::declaration(
-            errors,
-            declaration_stage_work(
-                declaration_index,
-                DeclarationBindingWork::default(),
-                SemanticBindingManifestWork::default(),
-                BodyOwnerTokenWork::default(),
-                BodyAnalysisWork::default(),
-                false,
-                declaration_reuse,
-            ),
-        )
-    })?;
+    let shells = sema
+        .predeclare_imported_declaration_shells(query_shells)
+        .map_err(|errors| {
+            CanonicalSemanticFailure::declaration(
+                errors,
+                declaration_stage_work(
+                    declaration_index,
+                    DeclarationBindingWork::default(),
+                    SemanticBindingManifestWork::default(),
+                    BodyOwnerTokenWork::default(),
+                    BodyAnalysisWork::default(),
+                    false,
+                    declaration_reuse,
+                ),
+            )
+        })?;
     let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
     let definitions = match issue_shell_definitions(merged, rir.source_revision(), &shell_records) {
         Ok(definitions) => definitions,
@@ -277,6 +280,38 @@ impl CanonicalPreparedDeclarations<'_> {
     pub(crate) fn definitions(&self) -> &BoundDefinitionSet {
         &self.definitions
     }
+}
+
+#[cfg(test)]
+pub(crate) fn query_owned_declaration_shells_for_test<'a>(
+    merged: &CanonicalMergedProgram,
+    rir: &'a CanonicalRirOutput,
+    preview_features: rue_error::PreviewFeatures,
+    target: crate::Target,
+    imports: &CanonicalImportGraph,
+) -> MultiErrorResult<rue_air::DeclarationShells<'a>> {
+    let options = CompileOptions {
+        preview_features,
+        target,
+        ..CompileOptions::default()
+    };
+    let query_shells =
+        crate::revisioned_query_database::projected_declaration_shells_for_test(merged)?;
+    let prepared = prepare_canonical_declarations(merged, rir, &options, imports, &query_shells)
+        .map_err(|failure| failure.errors)?;
+    Ok(prepared.shells)
+}
+
+#[cfg(test)]
+pub(crate) fn bind_query_owned_declarations_for_test<'a>(
+    merged: &CanonicalMergedProgram,
+    rir: &'a CanonicalRirOutput,
+    preview_features: rue_error::PreviewFeatures,
+    target: crate::Target,
+    imports: &CanonicalImportGraph,
+) -> MultiErrorResult<rue_air::BoundSema<'a>> {
+    query_owned_declaration_shells_for_test(merged, rir, preview_features, target, imports)?
+        .resolve_declarations()
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -743,7 +778,7 @@ impl CanonicalSemanticOutput {
 /// Bind declarations once, optionally issue stable IDs, then consume the same
 /// transient bound Sema for body analysis and CFG construction.
 #[cfg(test)]
-pub(crate) fn analyze_canonical_program(
+pub(crate) fn analyze_canonical_program_for_test_support(
     merged: &CanonicalMergedProgram,
     rir: &CanonicalRirOutput,
     options: &CompileOptions,
@@ -758,7 +793,9 @@ pub(crate) fn analyze_canonical_program(
         ),
         opt_level: options.opt_level.into(),
     };
-    let prepared = prepare_canonical_declarations(merged, rir, options, imports)
+    let query_shells =
+        crate::revisioned_query_database::projected_declaration_shells_for_test(merged)?;
+    let prepared = prepare_canonical_declarations(merged, rir, options, imports, &query_shells)
         .map_err(|failure| failure.errors)?;
     let CanonicalPreparedDeclarations {
         shells,
@@ -981,8 +1018,9 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
                     reuse.declaration_indexes_built +=
                         fallback.rir_declaration_index_work().build_invocations;
                     reuse.shell_predeclaration_epochs += 1;
-                    let fallback_shells =
-                        fallback.predeclare_declaration_shells().map_err(|errors| {
+                    let fallback_shells = fallback
+                        .predeclare_imported_declaration_shells(&shell_records)
+                        .map_err(|errors| {
                             CanonicalSemanticFailure::declaration(
                                 errors,
                                 declaration_stage_work(
@@ -1990,12 +2028,12 @@ mod tests {
 
     use super::{
         BodyOwnerTokenWork, CanonicalSemanticOutput, CanonicalSemanticWork,
-        analyze_canonical_program,
+        analyze_canonical_program_for_test_support,
     };
     use crate::parsed_modules::parse_source_snapshot_modules;
     use crate::{
-        CanonicalRirOutput, CompileOptions, FunctionWithCfg, SourceMetadata, SourceSnapshot,
-        lower_canonical_rir, merge_parsed_modules,
+        CanonicalRirOutput, CompileOptions, FunctionWithCfg, PreviewFeatures, SourceMetadata,
+        SourceSnapshot, Target, lower_canonical_rir, merge_parsed_modules,
     };
 
     fn snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
@@ -2026,21 +2064,19 @@ mod tests {
         let options = CompileOptions::default();
         let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
 
-        let ordinary = match crate::bound_definitions::configure_canonical_sema(
-            &merged,
-            &rir,
+        let ordinary = match rue_air::Sema::new_synthetic(
+            rir.rir(),
+            rir.semantic_symbols().interner(),
             options.preview_features.clone(),
-            options.target,
-            &imports,
         )
-        .unwrap()
         .bind_declarations()
         {
             Err(errors) => errors,
             Ok(_) => panic!("test input must fail ordinary declaration binding"),
         };
         let canonical =
-            analyze_canonical_program(&merged, &rir, &options, &imports, false).unwrap_err();
+            analyze_canonical_program_for_test_support(&merged, &rir, &options, &imports, false)
+                .unwrap_err();
         let messages = |errors: crate::CompileErrors| {
             errors.iter().map(ToString::to_string).collect::<Vec<_>>()
         };
@@ -2051,11 +2087,35 @@ mod tests {
     fn token_preparation_failures_recover_ordinary_binding_diagnostics() {
         for source in [
             "const value: i32 = 1; const value: i32 = 2; fn main() {}",
+            "const X: i32 = 1; fn X() -> i32 { 2 } fn main() -> i32 { 0 }",
+            "enum Color { Red, Green } const Color: i32 = 5; fn main() -> i32 { Color }",
             "struct Value {} drop fn Value(self) {} drop fn Value(self) {} fn main() {}",
             "drop fn Missing(self) {} fn main() {}",
         ] {
             assert_token_preparation_preserves_source_errors(source);
         }
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "canonical compiler epochs must import query-owned declaration shells"
+    )]
+    fn canonical_sema_cannot_invoke_raw_declaration_discovery() {
+        let source = snapshot(&[(1, "/main.rue", "main.rue", "fn main() {}")], 1);
+        let parsed = parse_source_snapshot_modules(&source).unwrap();
+        let merged = merge_parsed_modules(&parsed).unwrap();
+        let rir = lower_canonical_rir(&merged).unwrap();
+        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        crate::bound_definitions::configure_canonical_sema(
+            &merged,
+            &rir,
+            PreviewFeatures::new(),
+            Target::default(),
+            &imports,
+        )
+        .unwrap()
+        .predeclare_declaration_shells()
+        .unwrap();
     }
 
     fn canonical(
@@ -2067,7 +2127,9 @@ mod tests {
         let merged = merge_parsed_modules(&parsed).unwrap();
         let rir = lower_canonical_rir(&merged).unwrap();
         let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
-        let output = analyze_canonical_program(&merged, &rir, options, &imports, ids).unwrap();
+        let output =
+            analyze_canonical_program_for_test_support(&merged, &rir, options, &imports, ids)
+                .unwrap();
         (output, rir)
     }
 

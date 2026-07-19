@@ -36,6 +36,16 @@ pub(crate) type IssuedCanonicalArguments =
 pub(crate) type IssuedStableProducerId =
     crate::StableProducerId<crate::SemanticDefinitionToken, crate::SemanticModuleToken>;
 
+/// Type-distinct, epoch-local producer for a const whose initializer has not
+/// yet been classified. It has no stable/durable export conversion.
+pub(crate) struct EpochLocalConstCandidateProducer(super::EpochLocalConstCandidateToken);
+
+impl EpochLocalConstCandidateProducer {
+    pub(crate) fn into_comptime_producer(self) -> IssuedStableProducerId {
+        IssuedStableProducerId::Definition(self.0.0)
+    }
+}
+
 impl<D: DeclarationPhase> Sema<'_, D> {
     pub(crate) fn anonymous_key_cmp(
         left: &IssuedAnonymousNominalKey,
@@ -84,6 +94,18 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         Ok(IssuedStableProducerId::Definition(
             self.stable_definition_token(file.index(), name, owner, kind)?,
         ))
+    }
+
+    pub(crate) fn epoch_local_const_candidate_producer(
+        &self,
+        file: rue_span::FileId,
+        name: &str,
+    ) -> Result<EpochLocalConstCandidateProducer, crate::SemanticBodyExportFailure> {
+        self.const_candidate_tokens
+            .get(&(file.index(), name.to_owned()))
+            .copied()
+            .map(EpochLocalConstCandidateProducer)
+            .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)
     }
 
     pub(crate) fn canonical_type_instance(
