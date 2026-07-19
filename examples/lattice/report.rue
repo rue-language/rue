@@ -1,0 +1,34 @@
+// Compact human-readable schedule report used by normal example discovery.
+const std = @import("std");
+const model = @import("model.rue");
+const portfolio = @import("portfolio.rue");
+const replay = @import("replay.rue");
+const state = @import("state.rue");
+const text = @import("text.rue");
+const topology = @import("topology.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn summary(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf {
+    let order = topology.sort(borrow workflow);
+    let audit = replay.audit(borrow workflow, borrow run);
+    let analyses = portfolio.analyze(borrow workflow);
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "workflow="); text.append_id(inout out, borrow workflow, workflow.name); out.push(10);
+    text.line(inout out, "tasks=", workflow.tasks.len());
+    text.line(inout out, "edges=", workflow.edges.len());
+    text.line(inout out, "pools=", workflow.pools.len());
+    text.line(inout out, "roots=", order.roots);
+    text.line(inout out, "leaves=", order.leaves);
+    text.line(inout out, "makespan=", run.makespan);
+    text.line(inout out, "succeeded=", run.succeeded);
+    text.line(inout out, "failed=", run.failed);
+    text.line(inout out, "cached=", run.cached);
+    text.line(inout out, "retries=", run.retries);
+    text.line(inout out, "events=", run.events.len());
+    text.line(inout out, "analysis_passes=", analyses.passes);
+    text.line(inout out, "analysis_observations=", analyses.observations);
+    text.line(inout out, "analysis_digest=", analyses.digest);
+    text.append_literal(inout out, "replay_ok="); text.append_bool(inout out, audit.ok); out.push(10);
+    text.line(inout out, "fingerprint=", run.fingerprint);
+    out
+}

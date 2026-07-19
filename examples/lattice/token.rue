@@ -1,0 +1,35 @@
+// POD tokens for the Lattice workflow language.
+const std = @import("std");
+
+pub const EOF: u64 = 0;
+pub const ERROR: u64 = 1;
+pub const IDENT: u64 = 2;
+pub const INT: u64 = 3;
+pub const WORKFLOW: u64 = 10;
+pub const POOL: u64 = 11;
+pub const TASK: u64 = 12;
+pub const AFTER: u64 = 13;
+pub const SLOTS: u64 = 14;
+pub const DURATION: u64 = 15;
+pub const CPU: u64 = 16;
+pub const MEMORY: u64 = 17;
+pub const PRIORITY: u64 = 18;
+pub const RETRIES: u64 = 19;
+pub const CACHE: u64 = 20;
+pub const FAIL: u64 = 21;
+pub const TRUE: u64 = 22;
+pub const FALSE: u64 = 23;
+pub const SEMI: u64 = 30;
+
+pub struct Token {
+    kind: u64,
+    start: u64,
+    end: u64,
+    value: u64,
+}
+
+pub const Tokens = std.arraybuf.ArrayBuf(Token);
+
+pub fn empty() -> Token {
+    Token { kind: EOF, start: 0, end: 0, value: 0 }
+}

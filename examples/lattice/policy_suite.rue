@@ -1,0 +1,40 @@
+// Policy profiles are executable invariants, not just report configuration.
+const model = @import("model.rue");
+const policy = @import("policy.rue");
+const state = @import("state.rue");
+
+pub struct Result {
+    profiles: u64,
+    checks: u64,
+    failures: u64,
+    expected_failures: u64,
+    unexpected_failures: u64,
+    digest: u64,
+    valid: bool,
+}
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+pub fn run(borrow workflow: model.Workflow, borrow execution: state.Run) -> Result {
+    let permissive_profile = policy.permissive();
+    let production_profile = policy.production();
+    let permissive = policy.evaluate(borrow workflow, borrow execution, borrow permissive_profile);
+    let production = policy.evaluate(borrow workflow, borrow execution, borrow production_profile);
+    let mut impossible = policy.permissive();
+    impossible.maximum_makespan = 0;
+    impossible.maximum_retries = 0;
+    impossible.minimum_efficiency_millis = 1001;
+    let negative = policy.evaluate(borrow workflow, borrow execution, borrow impossible);
+    let expected_failures = if execution.makespan > 0 { 1 } else { 0 } +
+        if execution.retries > 0 { 1 } else { 0 } + 1;
+    let unexpected_failures = permissive.failures + production.failures +
+        if negative.failures == expected_failures { 0 } else { 1 };
+    let mut digest = mix(permissive.digest, production.digest);
+    digest = mix(digest, negative.digest); digest = mix(digest, expected_failures);
+    Result {
+        profiles: 3, checks: permissive.checks + production.checks + negative.checks,
+        failures: permissive.failures + production.failures + negative.failures,
+        expected_failures: expected_failures, unexpected_failures: unexpected_failures,
+        digest: digest, valid: unexpected_failures == 0,
+    }
+}
