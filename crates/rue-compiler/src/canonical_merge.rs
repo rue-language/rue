@@ -6,7 +6,10 @@ use std::sync::Arc;
 use rue_error::{CompileError, CompileErrors, ErrorKind};
 use rue_span::Span;
 
-use crate::parsed_modules::{ParsedAstView, ParsedModule, ParsedProgram};
+#[cfg(test)]
+use crate::parsed_modules::ParsedAstView;
+use crate::parsed_modules::{ParsedModule, ParsedProgram};
+use crate::revisioned_query_database::{ModuleIndexEntry, ProjectedModuleIndex};
 use crate::{DefinitionKind, DefinitionSnapshot, ImportDirectives, ModuleId, SourceRevision};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -53,9 +56,7 @@ impl CanonicalMergedAst {
     pub fn import_directives(&self) -> &ImportDirectives {
         &self.imports
     }
-    pub fn ast_views(&self) -> impl ExactSizeIterator<Item = ParsedAstView> + '_ {
-        self.modules.iter().cloned().map(ParsedAstView::from_module)
-    }
+    #[cfg(test)]
     pub fn validate_view(&self, view: &ParsedAstView) -> Result<(), CompileError> {
         let index = self
             .modules
@@ -102,23 +103,60 @@ pub(crate) fn merge_parsed_modules(
     merge_parsed_modules_in_order(program, None)
 }
 
-pub(crate) fn merge_parsed_modules_reusing_definitions(
+pub(crate) fn merge_parsed_modules_reusing_indexes(
     program: &ParsedProgram,
+    indexes: &[ProjectedModuleIndex],
     previous: Option<&DefinitionSnapshot>,
+    diagnostic_order: Option<&[ModuleId]>,
 ) -> Result<CanonicalMergedProgram, CompileErrors> {
-    let (mut work, ordered_modules) = merge_inputs(program, None);
-    let errors = canonical_duplicate_errors(&ordered_modules);
+    if indexes.len() != program.modules().len()
+        || indexes
+            .iter()
+            .zip(program.modules())
+            .any(|(index, module)| index.revision != *module.revision())
+    {
+        return Err(CompileErrors::from(invalid_input(
+            "module indexes do not match the parsed program",
+        )));
+    }
+    let ordered = diagnostic_order.map_or_else(
+        || (0..program.modules().len()).collect::<Vec<_>>(),
+        |order| {
+            order
+                .iter()
+                .map(|module_id| {
+                    program
+                        .modules()
+                        .binary_search_by(|module| module.module_id().cmp(module_id))
+                        .expect("diagnostic order contains every parsed module")
+                })
+                .collect()
+        },
+    );
+    let errors = canonical_duplicate_errors_from_indexes(program, indexes, &ordered);
     if !errors.is_empty() {
         return Err(CompileErrors::from(errors));
     }
-    let (definitions, shards) = DefinitionSnapshot::from_parsed_modules_reusing(program, previous)
-        .map_err(CompileErrors::from)?;
+    let (definitions, shards) =
+        DefinitionSnapshot::from_module_indexes_reusing(program, indexes, previous)
+            .map_err(CompileErrors::from)?;
+    let mut work = CanonicalMergeWork {
+        modules_visited: program.modules().len(),
+        items_visited: program
+            .modules()
+            .iter()
+            .map(|module| module.ast().items.len())
+            .sum(),
+        candidates_visited: indexes.iter().map(|index| index.definitions.len()).sum(),
+        ..CanonicalMergeWork::default()
+    };
     work.definition_shards_indexed = shards.shards_indexed;
     work.definition_shards_reused = shards.shards_reused;
     work.definition_shards_rebuilt = shards.shards_rebuilt;
     Ok(assemble_merged_program(program, definitions, work))
 }
 
+#[cfg(test)]
 pub(crate) fn merge_parsed_modules_for_batch(
     program: &ParsedProgram,
     diagnostic_order: &[ModuleId],
@@ -126,6 +164,7 @@ pub(crate) fn merge_parsed_modules_for_batch(
     merge_parsed_modules_in_order(program, Some(diagnostic_order))
 }
 
+#[cfg(test)]
 fn merge_parsed_modules_in_order(
     program: &ParsedProgram,
     diagnostic_order: Option<&[ModuleId]>,
@@ -144,6 +183,7 @@ fn merge_parsed_modules_in_order(
     Ok(assemble_merged_program(program, definitions, work))
 }
 
+#[cfg(test)]
 fn merge_inputs<'a>(
     program: &'a ParsedProgram,
     diagnostic_order: Option<&[ModuleId]>,
@@ -192,21 +232,64 @@ fn assemble_merged_program(
     }
 }
 
+#[cfg(test)]
 fn canonical_duplicate_errors(modules: &[&Arc<ParsedModule>]) -> Vec<CompileError> {
+    let indexes = modules
+        .iter()
+        .map(|module| {
+            module
+                .definitions()
+                .candidates()
+                .iter()
+                .map(|candidate| ModuleIndexEntry {
+                    namespace: candidate.namespace(),
+                    kind: candidate.kind(),
+                    visibility: candidate.visibility(),
+                    name: Arc::from(candidate.name()),
+                    name_span: candidate.name_span(),
+                    declaration_span: candidate.declaration_span(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    duplicate_errors(
+        modules
+            .iter()
+            .zip(&indexes)
+            .map(|(module, index)| (module.physical_path(), index.as_slice())),
+    )
+}
+
+fn canonical_duplicate_errors_from_indexes(
+    program: &ParsedProgram,
+    indexes: &[ProjectedModuleIndex],
+    order: &[usize],
+) -> Vec<CompileError> {
+    duplicate_errors(order.iter().map(|&index| {
+        (
+            program.modules()[index].physical_path(),
+            indexes[index].definitions.as_ref(),
+        )
+    }))
+}
+
+fn duplicate_errors<'a>(
+    modules: impl IntoIterator<Item = (&'a str, &'a [ModuleIndexEntry])>,
+) -> Vec<CompileError> {
     let mut errors = Vec::new();
-    for module in modules {
+    for (physical_path, candidates) in modules {
         let mut functions = HashMap::<&str, CandidateDef>::new();
         let mut function_names = HashMap::<&str, CandidateDef>::new();
         let mut type_names = HashMap::<&str, CandidateDef>::new();
         let mut structs = HashMap::<&str, CandidateDef>::new();
         let mut enums = HashMap::<&str, CandidateDef>::new();
-        for candidate in module.definitions().candidates() {
-            let name = candidate.name();
+        for candidate in candidates {
+            let name = candidate.name.as_ref();
             let definition = || CandidateDef {
-                span: candidate.declaration_span(),
-                physical_path: Arc::from(module.physical_path()),
+                span: candidate.declaration_span,
+                physical_path: Arc::from(physical_path),
             };
-            match candidate.kind() {
+            match candidate.kind {
                 DefinitionKind::Function => {
                     // Duplicate names are diagnosed per file (spec 10.5:1),
                     // including `main`: namespacing makes a `main` in a
@@ -216,28 +299,28 @@ fn canonical_duplicate_errors(modules: &[&Arc<ParsedModule>]) -> Vec<CompileErro
                     // retired the program-wide `main` uniqueness check that
                     // ADR-0047 tracked as a transitional state.
                     if let Some(first) = functions.get(name) {
-                        errors.push(function_conflict(candidate.declaration_span(), name, first));
+                        errors.push(function_conflict(candidate.declaration_span, name, first));
                     } else {
                         functions.insert(name, definition());
                     }
                     if let Some(first) = type_names.get(name) {
-                        errors.push(function_conflict(candidate.declaration_span(), name, first));
+                        errors.push(function_conflict(candidate.declaration_span, name, first));
                     }
                     function_names.entry(name).or_insert_with(definition);
                 }
                 DefinitionKind::Struct => {
                     if let Some(first) = function_names.get(name) {
-                        errors.push(function_conflict(candidate.declaration_span(), name, first));
+                        errors.push(function_conflict(candidate.declaration_span, name, first));
                     } else if let Some(first) = structs.get(name) {
                         errors.push(type_conflict(
-                            candidate.declaration_span(),
+                            candidate.declaration_span,
                             format!("struct `{name}`"),
                             format!("first defined in {}", first.physical_path),
                             first.span,
                         ));
                     } else if let Some(first) = enums.get(name) {
                         errors.push(type_conflict(
-                            candidate.declaration_span(),
+                            candidate.declaration_span,
                             format!("struct `{name}` (conflicts with enum)"),
                             format!("enum first defined in {}", first.physical_path),
                             first.span,
@@ -249,17 +332,17 @@ fn canonical_duplicate_errors(modules: &[&Arc<ParsedModule>]) -> Vec<CompileErro
                 }
                 DefinitionKind::Enum => {
                     if let Some(first) = function_names.get(name) {
-                        errors.push(function_conflict(candidate.declaration_span(), name, first));
+                        errors.push(function_conflict(candidate.declaration_span, name, first));
                     } else if let Some(first) = enums.get(name) {
                         errors.push(type_conflict(
-                            candidate.declaration_span(),
+                            candidate.declaration_span,
                             format!("enum `{name}`"),
                             format!("first defined in {}", first.physical_path),
                             first.span,
                         ));
                     } else if let Some(first) = structs.get(name) {
                         errors.push(type_conflict(
-                            candidate.declaration_span(),
+                            candidate.declaration_span,
                             format!("enum `{name}` (conflicts with struct)"),
                             format!("struct first defined in {}", first.physical_path),
                             first.span,

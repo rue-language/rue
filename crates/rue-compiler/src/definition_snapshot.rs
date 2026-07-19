@@ -193,6 +193,7 @@ struct DefinitionShardRecord {
 }
 
 impl DefinitionShard {
+    #[cfg(test)]
     fn matches(&self, module: &crate::parsed_modules::ParsedModule) -> bool {
         self.file_id == module.file_id()
             && self.records.len() == module.definitions().candidates().len()
@@ -207,6 +208,27 @@ impl DefinitionShard {
                         && record.name.as_ref() == candidate.name()
                         && record.name_span == candidate.name_span()
                         && record.declaration_span == candidate.declaration_span()
+                })
+    }
+
+    fn matches_index(
+        &self,
+        module: &crate::parsed_modules::ParsedModule,
+        index: &crate::revisioned_query_database::ProjectedModuleIndex,
+    ) -> bool {
+        self.file_id == module.file_id()
+            && self.records.len() == index.definitions.len()
+            && self
+                .records
+                .iter()
+                .zip(index.definitions.iter())
+                .all(|(record, candidate)| {
+                    record.namespace == candidate.namespace
+                        && record.kind == candidate.kind
+                        && record.visibility == candidate.visibility
+                        && record.name == candidate.name
+                        && record.name_span == candidate.name_span
+                        && record.declaration_span == candidate.declaration_span
                 })
     }
 }
@@ -268,6 +290,7 @@ impl DefinitionSnapshot {
         Self::from_parsed_modules_reusing(program, None).map(|(snapshot, _)| snapshot)
     }
 
+    #[cfg(test)]
     pub(crate) fn from_parsed_modules_reusing(
         program: &crate::parsed_modules::ParsedProgram,
         previous: Option<&Self>,
@@ -317,6 +340,118 @@ impl DefinitionSnapshot {
                         .map(|index| snapshot.shards[index].clone())
                 })
                 .filter(|shard| shard.matches(module));
+            let shard = if let Some(shard) = shard {
+                work.shards_reused += 1;
+                shard
+            } else {
+                work.shards_rebuilt += 1;
+                Arc::new(DefinitionShard {
+                    key: module.module_id().clone(),
+                    file_id: module.file_id(),
+                    records: candidate_records().into(),
+                })
+            };
+            let mut definitions = Vec::with_capacity(shard.records.len());
+            for (definition_index, candidate) in shard.records.iter().enumerate() {
+                let id = DefinitionId {
+                    module_index,
+                    definition_index,
+                };
+                let name_key = DefinitionNameKey::new(
+                    module.module_id().clone(),
+                    candidate.namespace,
+                    &candidate.name,
+                );
+                definitions_by_name
+                    .entry(name_key.clone())
+                    .or_default()
+                    .push(id);
+                definitions.push(DefinitionRecord {
+                    id,
+                    name_key,
+                    kind: candidate.kind,
+                    visibility: candidate.visibility,
+                    file_id: module.file_id(),
+                    name_span: candidate.name_span,
+                    declaration_span: candidate.declaration_span,
+                });
+            }
+            modules.push(ModuleDefinition {
+                key: module.module_id().clone(),
+                file_id: module.file_id(),
+                definitions,
+            });
+            shards.push(shard);
+        }
+
+        Ok((
+            Self {
+                source_snapshot,
+                #[cfg(test)]
+                root_module: program.root().clone(),
+                modules,
+                definitions_by_name,
+                shards: shards.into(),
+            },
+            work,
+        ))
+    }
+
+    pub(crate) fn from_module_indexes_reusing(
+        program: &crate::parsed_modules::ParsedProgram,
+        indexes: &[crate::revisioned_query_database::ProjectedModuleIndex],
+        previous: Option<&Self>,
+    ) -> CompileResult<(Self, DefinitionShardWork)> {
+        let _span = info_span!(
+            "definition_snapshot_modules",
+            module_count = program.modules().len()
+        )
+        .entered();
+        if indexes.len() != program.modules().len()
+            || indexes
+                .iter()
+                .zip(program.modules())
+                .any(|(index, module)| index.revision != *module.revision())
+        {
+            return Err(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                "module indexes do not match the parsed program".into(),
+            )));
+        }
+        let source_snapshot = SourceSnapshot::from_parsed_modules(program)?;
+        let mut modules = Vec::with_capacity(program.modules().len());
+        let mut work = DefinitionShardWork {
+            shards_indexed: previous.map_or(0, |snapshot| snapshot.shards.len()),
+            ..DefinitionShardWork::default()
+        };
+        let mut shards = Vec::with_capacity(program.modules().len());
+        let definition_count = indexes.iter().map(|index| index.definitions.len()).sum();
+        let mut definitions_by_name =
+            HashMap::<DefinitionNameKey, Vec<DefinitionId>>::with_capacity(definition_count);
+
+        for (module_index, (module, index)) in program.modules().iter().zip(indexes).enumerate() {
+            let candidate_records = || {
+                index
+                    .definitions
+                    .iter()
+                    .map(|candidate| DefinitionShardRecord {
+                        namespace: candidate.namespace,
+                        kind: candidate.kind,
+                        visibility: candidate.visibility,
+                        name: candidate.name.clone(),
+                        name_span: candidate.name_span,
+                        declaration_span: candidate.declaration_span,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let shard = previous
+                .and_then(|snapshot| {
+                    snapshot
+                        .shards
+                        .binary_search_by(|shard| shard.key.cmp(module.module_id()))
+                        .ok()
+                        .map(|position| snapshot.shards[position].clone())
+                })
+                .filter(|shard| shard.matches_index(module, index));
             let shard = if let Some(shard) = shard {
                 work.shards_reused += 1;
                 shard

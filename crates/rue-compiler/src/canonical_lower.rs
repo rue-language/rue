@@ -7,7 +7,7 @@ use std::ops::Range;
 use rue_error::CompileResult;
 use rue_error::{CompileError, ErrorKind};
 use rue_rir::RirPrinter;
-use rue_rir::{AstGen, InstRef, Rir, RirValidationContext, ValidatedRir};
+use rue_rir::{AstGen, InstRef, Rir, RirEditor, RirValidationContext, ValidatedRir};
 use rue_span::FileId;
 
 use crate::{CanonicalMergedProgram, SemanticSymbolUniverse, SourceRevision};
@@ -15,6 +15,7 @@ use crate::{CanonicalMergedProgram, SemanticSymbolUniverse, SourceRevision};
 /// Structural work performed by canonical RIR lowering.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CanonicalRirWork {
+    /// Module lowerers that executed for this request (cache hits contribute zero).
     pub modules_visited: usize,
     pub items_visited: usize,
     pub symbol_fields_translated: usize,
@@ -25,6 +26,11 @@ pub struct CanonicalRirWork {
     pub parser_invocations: usize,
     pub ast_payload_clones: usize,
     pub source_text_clones: usize,
+    /// Deterministic compatibility projection work, accounted separately from
+    /// module lowering so terminal reuse remains visible.
+    pub modules_projected: usize,
+    pub instructions_appended: usize,
+    pub payload_words_appended: usize,
 }
 
 /// RIR paired with the exact source revision and symbol universe that created it.
@@ -36,6 +42,26 @@ pub struct CanonicalRirOutput {
     work: CanonicalRirWork,
     module_ranges: Vec<CanonicalRirModuleRange>,
     sources: Vec<CanonicalRirSource>,
+}
+
+/// Independently reusable lowering result for exactly one module source leaf.
+#[derive(Debug)]
+pub(crate) struct ModuleRirOutput {
+    revision: crate::ModuleRevision,
+    source_length: u32,
+    rir: ValidatedRir,
+    symbols: SemanticSymbolUniverse,
+    work: CanonicalRirWork,
+}
+
+impl ModuleRirOutput {
+    pub(crate) fn revision(&self) -> &crate::ModuleRevision {
+        &self.revision
+    }
+
+    pub(crate) fn work(&self) -> CanonicalRirWork {
+        self.work
+    }
 }
 
 #[derive(Debug)]
@@ -141,95 +167,46 @@ pub fn lower_canonical_rir(merged: &CanonicalMergedProgram) -> CompileResult<Can
     lower_canonical_rir_with_work(merged).map_err(|(error, _)| error)
 }
 
+#[cfg(test)]
 pub(crate) fn lower_canonical_rir_with_work(
     merged: &CanonicalMergedProgram,
 ) -> Result<CanonicalRirOutput, (CompileError, CanonicalRirWork)> {
     let ast = merged.ast();
     let symbols = SemanticSymbolUniverse::from_modules(ast.modules());
-    let current_view = RefCell::<Option<crate::parsed_modules::ParsedAstView>>::new(None);
-    let first_error = RefCell::<Option<CompileError>>::new(None);
-
     let mut module_ranges = Vec::with_capacity(ast.modules().len());
     let mut work = CanonicalRirWork::default();
-    let rir = {
-        let mut generator = AstGen::with_symbol_normalizer(symbols.interner(), |local| {
-            let view = current_view.borrow();
-            let translated = symbols.translate_ast_symbol(
-                view.as_ref()
-                    .expect("canonical lowering installs a module view before lowering items"),
-                local,
-            );
-            match translated {
-                Ok(symbol) => symbol.spur(),
-                Err(error) => {
-                    let mut slot = first_error.borrow_mut();
-                    if slot.is_none() {
-                        *slot = Some(error);
-                    }
-                    symbols
-                        .interner()
-                        .get_or_intern("__rue_invalid_local_symbol")
-                }
-            }
-        });
-
-        for view in ast.ast_views() {
-            if let Err(error) = ast.validate_view(&view) {
-                drop(generator);
-                let translation = symbols.work();
-                work.symbol_fields_translated = translation.local_symbol_resolutions;
-                work.semantic_intern_attempts = translation.semantic_intern_attempts;
-                work.unique_semantic_strings = translation.unique_semantic_strings;
-                work.semantic_strings_retained = symbols.interner().len();
-                return Err((error, work));
-            }
-            work.modules_visited += 1;
-            work.items_visited += view.module().ast().items.len();
-            *current_view.borrow_mut() = Some(view.clone());
-            let instruction_start = u32::try_from(generator.instruction_len())
-                .expect("AstGen enforces the u32 instruction limit");
-            let extra_start = u32::try_from(generator.extra_len())
-                .expect("AstGen enforces the u32 payload-word limit");
-            generator.append_items(&view.module().ast().items);
-            let instruction_end = u32::try_from(generator.instruction_len())
-                .expect("AstGen enforces the u32 instruction limit");
-            let extra_end = u32::try_from(generator.extra_len())
-                .expect("AstGen enforces the u32 payload-word limit");
-            module_ranges.push(CanonicalRirModuleRange {
-                file_id: view.module().file_id(),
-                instructions: instruction_start..instruction_end,
-                extra: extra_start..extra_end,
-            });
-            if let Some(error) = first_error.borrow_mut().take() {
-                drop(generator);
-                let translation = symbols.work();
-                work.symbol_fields_translated = translation.local_symbol_resolutions;
-                work.semantic_intern_attempts = translation.semantic_intern_attempts;
-                work.unique_semantic_strings = translation.unique_semantic_strings;
-                work.semantic_strings_retained = symbols.interner().len();
-                return Err((error, work));
-            }
-        }
-        match generator.try_finish_editor() {
-            Ok(rir) => rir,
-            Err(error) => {
-                let translation = symbols.work();
-                work.symbol_fields_translated = translation.local_symbol_resolutions;
-                work.semantic_intern_attempts = translation.semantic_intern_attempts;
-                work.unique_semantic_strings = translation.unique_semantic_strings;
-                work.semantic_strings_retained = symbols.interner().len();
-                return Err((
+    let mut editor = RirEditor::new();
+    for module in ast.modules() {
+        let lowered =
+            lower_module_rir_with_work(module.clone()).map_err(|(error, module_work)| {
+                work.accumulate(module_work);
+                (error, work)
+            })?;
+        work.accumulate(lowered.work());
+        let appended = editor
+            .append_remapped(&lowered.rir, |local| {
+                let text = lowered
+                    .symbols
+                    .interner()
+                    .try_resolve(&local)
+                    .expect("validated module RIR symbol belongs to its module universe");
+                symbols.interner().get_or_intern(text)
+            })
+            .map_err(|error| {
+                (
                     CompileError::new(
-                        ErrorKind::InternalError(format!(
-                            "RIR payload construction failed: {error}"
-                        )),
+                        ErrorKind::InternalError(format!("RIR module projection failed: {error}")),
                         rue_span::Span::new(0, 0),
                     ),
                     work,
-                ));
-            }
-        }
-    };
+                )
+            })?;
+        module_ranges.push(CanonicalRirModuleRange {
+            file_id: module.file_id(),
+            instructions: appended.instructions,
+            extra: appended.extra,
+        });
+    }
     let sources: Vec<CanonicalRirSource> = ast
         .modules()
         .iter()
@@ -259,7 +236,7 @@ pub(crate) fn lower_canonical_rir_with_work(
         symbol_count: symbols.interner().len(),
         source_lengths: &source_lengths,
     };
-    let rir = ValidatedRir::finish(rir, &validation).map_err(|error| {
+    let rir = ValidatedRir::finish(editor, &validation).map_err(|error| {
         (
             CompileError::new(
                 ErrorKind::InternalError(format!("RIR payload validation failed: {error}")),
@@ -269,10 +246,198 @@ pub(crate) fn lower_canonical_rir_with_work(
         )
     })?;
 
+    work.semantic_strings_retained = symbols.interner().len();
+    Ok(CanonicalRirOutput {
+        source_revision: ast.source_revision().clone(),
+        rir,
+        symbols,
+        work,
+        module_ranges,
+        sources,
+    })
+}
+
+impl CanonicalRirWork {
+    pub(crate) fn accumulate(&mut self, other: Self) {
+        self.modules_visited += other.modules_visited;
+        self.items_visited += other.items_visited;
+        self.symbol_fields_translated += other.symbol_fields_translated;
+        self.semantic_intern_attempts += other.semantic_intern_attempts;
+        self.unique_semantic_strings += other.unique_semantic_strings;
+        self.parser_invocations += other.parser_invocations;
+        self.ast_payload_clones += other.ast_payload_clones;
+        self.source_text_clones += other.source_text_clones;
+    }
+}
+
+pub(crate) fn lower_module_rir_with_work(
+    module: std::sync::Arc<crate::parsed_modules::ParsedModule>,
+) -> Result<ModuleRirOutput, (CompileError, CanonicalRirWork)> {
+    let symbols = SemanticSymbolUniverse::from_modules(std::slice::from_ref(&module));
+    let view = crate::parsed_modules::ParsedAstView::from_module(module.clone());
+    let first_error = RefCell::<Option<CompileError>>::new(None);
+    let mut work = CanonicalRirWork {
+        modules_visited: 1,
+        items_visited: module.ast().items.len(),
+        ..CanonicalRirWork::default()
+    };
+    let editor = {
+        let mut generator =
+            AstGen::with_symbol_normalizer(symbols.interner(), |local| {
+                match symbols.translate_ast_symbol(&view, local) {
+                    Ok(symbol) => symbol.spur(),
+                    Err(error) => {
+                        let mut slot = first_error.borrow_mut();
+                        if slot.is_none() {
+                            *slot = Some(error);
+                        }
+                        symbols
+                            .interner()
+                            .get_or_intern("__rue_invalid_local_symbol")
+                    }
+                }
+            });
+        generator.append_items(&module.ast().items);
+        if let Some(error) = first_error.borrow_mut().take() {
+            return Err((error, work));
+        }
+        generator.try_finish_editor().map_err(|error| {
+            (
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "RIR module payload construction failed: {error}"
+                    )),
+                    rue_span::Span::new(0, 0),
+                ),
+                work,
+            )
+        })?
+    };
+    let source_length = u32::try_from(module.source_text().len()).map_err(|_| {
+        (
+            CompileError::new(
+                ErrorKind::InternalError(
+                    "canonical module source length exceeds RIR span capacity".to_string(),
+                ),
+                rue_span::Span::new(0, 0),
+            ),
+            work,
+        )
+    })?;
+    let source_lengths = [(module.file_id(), source_length)];
+    let validation = RirValidationContext {
+        symbol_count: symbols.interner().len(),
+        source_lengths: &source_lengths,
+    };
+    let rir = ValidatedRir::finish(editor, &validation).map_err(|error| {
+        (
+            CompileError::new(
+                ErrorKind::InternalError(format!("RIR module payload validation failed: {error}")),
+                rue_span::Span::new(0, 0),
+            ),
+            work,
+        )
+    })?;
     let translation = symbols.work();
     work.symbol_fields_translated = translation.local_symbol_resolutions;
     work.semantic_intern_attempts = translation.semantic_intern_attempts;
     work.unique_semantic_strings = translation.unique_semantic_strings;
+    work.semantic_strings_retained = symbols.interner().len();
+    Ok(ModuleRirOutput {
+        revision: module.revision().clone(),
+        source_length,
+        rir,
+        symbols,
+        work,
+    })
+}
+
+/// Assemble the deterministic whole-program compatibility view from canonical
+/// module lowering terminals. This projection never traverses parser AST.
+pub(crate) fn project_module_rirs_with_work(
+    merged: &CanonicalMergedProgram,
+    modules: &[std::sync::Arc<ModuleRirOutput>],
+    query_work: CanonicalRirWork,
+) -> Result<CanonicalRirOutput, (CompileError, CanonicalRirWork)> {
+    let ast = merged.ast();
+    if modules.len() != ast.modules().len()
+        || modules
+            .iter()
+            .zip(ast.modules())
+            .any(|(lowered, parsed)| lowered.revision() != parsed.revision())
+    {
+        return Err((
+            CompileError::new(
+                ErrorKind::InternalError(
+                    "module RIR terminals do not match the canonical parsed projection".to_string(),
+                ),
+                rue_span::Span::new(0, 0),
+            ),
+            query_work,
+        ));
+    }
+    let symbols = SemanticSymbolUniverse::from_modules(ast.modules());
+    let mut editor = RirEditor::new();
+    let mut module_ranges = Vec::with_capacity(modules.len());
+    let mut work = query_work;
+    for (lowered, parsed) in modules.iter().zip(ast.modules()) {
+        let appended = editor
+            .append_remapped_with_spans(
+                &lowered.rir,
+                |local| {
+                    let text = lowered
+                        .symbols
+                        .interner()
+                        .try_resolve(&local)
+                        .expect("validated module RIR symbol belongs to its module universe");
+                    symbols.interner().get_or_intern(text)
+                },
+                |span| rue_span::Span::with_file(parsed.file_id(), span.start, span.end),
+            )
+            .map_err(|error| {
+                (
+                    CompileError::new(
+                        ErrorKind::InternalError(format!("RIR module projection failed: {error}")),
+                        rue_span::Span::new(0, 0),
+                    ),
+                    work,
+                )
+            })?;
+        work.modules_projected += 1;
+        work.instructions_appended += appended.instructions.len();
+        work.payload_words_appended += appended.extra.len();
+        module_ranges.push(CanonicalRirModuleRange {
+            file_id: parsed.file_id(),
+            instructions: appended.instructions,
+            extra: appended.extra,
+        });
+    }
+    let sources = modules
+        .iter()
+        .zip(ast.modules())
+        .map(|(module, parsed)| CanonicalRirSource {
+            file_id: parsed.file_id(),
+            revision: module.revision.clone(),
+            length: module.source_length,
+        })
+        .collect::<Vec<_>>();
+    let source_lengths = sources
+        .iter()
+        .map(|source| (source.file_id, source.length))
+        .collect::<Vec<_>>();
+    let validation = RirValidationContext {
+        symbol_count: symbols.interner().len(),
+        source_lengths: &source_lengths,
+    };
+    let rir = ValidatedRir::finish(editor, &validation).map_err(|error| {
+        (
+            CompileError::new(
+                ErrorKind::InternalError(format!("RIR payload validation failed: {error}")),
+                rue_span::Span::new(0, 0),
+            ),
+            work,
+        )
+    })?;
     work.semantic_strings_retained = symbols.interner().len();
     Ok(CanonicalRirOutput {
         source_revision: ast.source_revision().clone(),
@@ -361,6 +526,33 @@ mod tests {
         assert_eq!(output.work().parser_invocations, 0);
         assert_eq!(output.work().ast_payload_clones, 0);
         assert_eq!(output.work().source_text_clones, 0);
+    }
+
+    #[test]
+    fn module_lowering_failure_retains_completed_work() {
+        let source = snapshot(&[(1, "/main.rue", "main.rue", "fn main() -> i32 { 0 }")], 1);
+        let parsed = parse_source_snapshot_modules(&source).unwrap();
+        let faulty = parsed.modules()[0].with_test_foreign_ast_symbol();
+        let (error, work) = lower_module_rir_with_work(faulty).unwrap_err();
+        assert!(error.to_string().contains("AST symbol is absent"));
+        assert_eq!(work.modules_visited, 1);
+        assert_eq!(work.items_visited, 1);
+        assert_eq!(work.modules_projected, 0);
+    }
+
+    #[test]
+    fn projection_failure_preserves_incoming_query_work() {
+        let source = snapshot(&[(1, "/main.rue", "main.rue", "fn main() -> i32 { 0 }")], 1);
+        let parsed = parse_source_snapshot_modules(&source).unwrap();
+        let merged = merge_parsed_modules(&parsed).unwrap();
+        let query_work = CanonicalRirWork {
+            modules_visited: 1,
+            items_visited: 1,
+            ..CanonicalRirWork::default()
+        };
+        let (_, failure_work) =
+            project_module_rirs_with_work(&merged, &[], query_work).unwrap_err();
+        assert_eq!(failure_work, query_work);
     }
 
     #[test]

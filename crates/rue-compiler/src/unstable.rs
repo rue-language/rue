@@ -33,8 +33,8 @@ pub fn begin_import_input_request(
     session.begin_import_input_request(snapshot, context, accepted_reads)
 }
 
-/// Phase-2 full-plan compatibility adapter. RUE-1024/RUE-1026 delete this
-/// once canonical syntax/name queries originate exact occurrence roots.
+/// Full-plan host compatibility adapter. RUE-1026 deletes this after callers
+/// supply exact occurrence roots directly rather than selecting every site.
 pub fn import_demand_frontier(
     session: &mut crate::CompilerSession,
     revision: ImportInputRevision,

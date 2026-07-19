@@ -1235,8 +1235,13 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
     );
 
     let identity = get("module_identity_change");
-    assert_eq!(count(identity, &["parse", "modules_rebound"]), 1);
-    assert_reuse_parse_is_all_zero(identity);
+    // ParseModule is keyed by logical module identity. Renaming a module
+    // therefore installs one new exact syntax leaf instead of rebinding the
+    // former module's parser-owned artifact under a different identity.
+    assert_eq!(count(identity, &["parse", "modules_rebound"]), 0);
+    assert_eq!(count(identity, &["parse", "modules_reparsed"]), 1);
+    assert_eq!(count(identity, &["parse", "lexer_invocations"]), 1);
+    assert_eq!(count(identity, &["parse", "parser_invocations"]), 1);
     assert_query_executions(identity, 1, 1, 1, 0);
     assert_eq!(
         count(identity, &["merge_work", "definition_shards_reused"]),
@@ -1390,7 +1395,10 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
     assert_eq!(count(plan_root_edit, &["parse", "modules_reparsed"]), 1);
     assert_production_incremental_plan(plan_root_edit, 1, 1, 1, modules - 1, modules, 1);
     let plan_identity = get("invalidation_plan_module_identity_change");
-    assert_eq!(count(plan_identity, &["parse", "modules_rebound"]), 1);
+    assert_eq!(count(plan_identity, &["parse", "modules_rebound"]), 0);
+    assert_eq!(count(plan_identity, &["parse", "modules_reparsed"]), 1);
+    assert_eq!(count(plan_identity, &["parse", "lexer_invocations"]), 1);
+    assert_eq!(count(plan_identity, &["parse", "parser_invocations"]), 1);
     assert_production_incremental_plan(plan_identity, 1, 0, 2, modules - 1, modules - 1, 2);
 }
 

@@ -365,7 +365,10 @@ fn assert_structure(scenarios: &[Value]) {
         ("widely_depended_definition_edit", [1, 6, 6, 0, 4, 2, 1, 0]),
         ("import_change", [2, 5, 6, 0, 4, 2, 1, 0]),
         ("diagnostic_error_edit", [1, 6, 5, 0, 0, 0, 1, 0]),
-        ("diagnostic_recovery", [2, 5, 6, 0, 4, 2, 1, 0]),
+        // The failed ParseModule terminal is retained. Recovery changes only
+        // that module's source leaf, so the other six module terminals remain
+        // exact hits rather than being re-adopted after the diagnostic epoch.
+        ("diagnostic_recovery", [1, 6, 6, 0, 4, 2, 1, 0]),
     ];
     for (name, counts) in expected {
         let work = &get(name)["required_vs_reused_work"];
