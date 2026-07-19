@@ -71,7 +71,7 @@ fn execute(source: Bytes) -> i32 {
 
 fn help() -> StrBuf {
     let mut out = StrBuf.new();
-    out.push_str("usage: lattice [run FILE | selftest | stress1 | stress2 | stress4 | benchmark | help]\n");
+    out.push_str("usage: lattice [demo | run FILE | selftest | stress1 | stress2 | stress4 | benchmark | help]\n");
     out.push_str("Lattice compiles a workflow DSL, validates its graph, and simulates execution.\n");
     out
 }
@@ -79,8 +79,9 @@ fn help() -> StrBuf {
 fn main() -> i32 {
     let command = match std.env.arg(1) {
         OptStr.Some(value) => value,
-        OptStr.None => { return execute(demo().to_bytes()); },
+        OptStr.None => { print(help()); return 0; },
     };
+    if same(borrow command, "demo") { return execute(demo().to_bytes()); }
     if same(borrow command, "selftest") {
         let result = selftest.run();
         print(selftest.render(borrow result));
