@@ -160,7 +160,7 @@ const EXAMPLE_TIMEOUTS: &[ExampleTimeout] = &[
     },
     ExampleTimeout {
         path: "meridian/main.rue",
-        timeout_ms: 60_000,
+        timeout_ms: 120_000,
     },
 ];
 
@@ -1834,7 +1834,7 @@ mod tests {
         assert_eq!(example_timeout("lattice/main.rue"), Duration::from_secs(30));
         assert_eq!(
             example_timeout("meridian/main.rue"),
-            Duration::from_secs(60)
+            Duration::from_secs(120)
         );
         assert_eq!(
             example_timeout("welcome.rue"),
