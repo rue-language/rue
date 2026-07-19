@@ -143,25 +143,24 @@ struct ExampleExpectation {
     stdin: Option<&'static str>,
 }
 
-/// Execution-time overrides for unusually large example binaries.
+/// Compile-and-execute timeout overrides for unusually large examples.
 ///
-/// Compilation deliberately keeps the ordinary 10-second smoke budget. A
-/// large program can still need more wall time merely to start while the CLI
-/// harness is compiling and running its large corpus in parallel, so only the
-/// produced program receives this narrowly scoped allowance.
-struct ExampleRunTimeout {
+/// A large multi-module program can need more wall time to compile or start
+/// while the CLI harness is running its large corpus in parallel. Only an
+/// explicitly named example receives this narrowly scoped allowance.
+struct ExampleTimeout {
     path: &'static str,
     timeout_ms: u64,
 }
 
-const EXAMPLE_RUN_TIMEOUTS: &[ExampleRunTimeout] = &[ExampleRunTimeout {
+const EXAMPLE_TIMEOUTS: &[ExampleTimeout] = &[ExampleTimeout {
     path: "lattice/main.rue",
     timeout_ms: 30_000,
 }];
 
-fn example_run_timeout(relative_path: &str) -> Duration {
+fn example_timeout(relative_path: &str) -> Duration {
     Duration::from_millis(
-        EXAMPLE_RUN_TIMEOUTS
+        EXAMPLE_TIMEOUTS
             .iter()
             .find(|override_| override_.path == relative_path)
             .map_or(DEFAULT_TIMEOUT_MS, |override_| override_.timeout_ms),
@@ -1563,7 +1562,7 @@ fn run_example(
     expectation: Option<&ExampleExpectation>,
     rue_binary: &Path,
     real_std: &Path,
-    run_timeout: Duration,
+    timeout: Duration,
 ) -> TestResult {
     let temp_dir = tempfile::tempdir()
         .map_err(|e| TestFailure::fatal(format!("failed to create temp dir: {}", e)))?;
@@ -1572,9 +1571,10 @@ fn run_example(
     let mut cmd = compiler_command(rue_binary);
     cmd.arg(path).args(["-o", "prog"]).current_dir(dir);
     cmd.env("RUE_STD_PATH", real_std);
-    // Compile under the default timeout too (see run_case): an example that
-    // hangs the compiler fails as one TIMEOUT, not a wedged suite.
-    let compile_output = run_with_timeout(cmd, Duration::from_millis(DEFAULT_TIMEOUT_MS), None)?;
+    // Compile under the same per-example timeout too (see run_case): an
+    // example that hangs the compiler fails as one TIMEOUT, not a wedged
+    // suite, while explicitly large examples can opt into a larger budget.
+    let compile_output = run_with_timeout(cmd, timeout, None)?;
     let compile_stderr = String::from_utf8_lossy(&compile_output.stderr).to_string();
     let compile_stdout = String::from_utf8_lossy(&compile_output.stdout).to_string();
 
@@ -1599,7 +1599,7 @@ fn run_example(
 
     let mut run_cmd = Command::new(&program);
     run_cmd.current_dir(dir);
-    let run_output = run_with_timeout(run_cmd, run_timeout, expectation.and_then(|exp| exp.stdin))?;
+    let run_output = run_with_timeout(run_cmd, timeout, expectation.and_then(|exp| exp.stdin))?;
     let run_stdout = String::from_utf8_lossy(&run_output.stdout).to_string();
     let run_stderr = String::from_utf8_lossy(&run_output.stderr).to_string();
 
@@ -1717,12 +1717,11 @@ fn example_trials(rue_binary: &Path, real_std: &Path) -> Vec<Trial> {
         let real_std = real_std.to_path_buf();
         let test_name = example_test_name(&relative_path);
         trials.push(Trial::test(test_name, move |_ctx| {
-            let run_timeout = example_run_timeout(&relative_path);
+            let timeout = example_timeout(&relative_path);
             let expectation = EXAMPLE_EXPECTATIONS
                 .iter()
                 .find(|e| e.path == relative_path);
-            run_example(&path, expectation, &rue_binary, &real_std, run_timeout)
-                .map_err(RunError::fail)
+            run_example(&path, expectation, &rue_binary, &real_std, timeout).map_err(RunError::fail)
         }));
     }
     trials
@@ -1818,13 +1817,10 @@ mod tests {
     }
 
     #[test]
-    fn heavyweight_example_run_timeout_is_narrowly_scoped() {
+    fn heavyweight_example_timeout_is_narrowly_scoped() {
+        assert_eq!(example_timeout("lattice/main.rue"), Duration::from_secs(30));
         assert_eq!(
-            example_run_timeout("lattice/main.rue"),
-            Duration::from_secs(30)
-        );
-        assert_eq!(
-            example_run_timeout("welcome.rue"),
+            example_timeout("welcome.rue"),
             Duration::from_millis(DEFAULT_TIMEOUT_MS)
         );
     }
