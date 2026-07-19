@@ -430,6 +430,24 @@ warning_contains = ["unused function", "'use_it'"]
 expected_warning_count = 1
 
 [[case]]
+name = "array_length_constructor_reference_no_warning"
+source = """
+fn Width(comptime T: type) -> i32 { 2 }
+const I = i32;
+fn use_it(arr: [i32; Width(I)]) -> i32 { arr[0] }
+
+fn main() -> i32 {
+    0
+}
+"""
+# Width is referenced only as the value-returning comptime call in an array
+# length. The canonical type-call observation marks it referenced; only the
+# otherwise unreachable use_it function is unused.
+exit_code = 0
+warning_contains = ["unused function", "'use_it'"]
+expected_warning_count = 1
+
+[[case]]
 name = "unused_type_constructor_still_warns"
 source = """
 fn Unused(comptime T: type) -> type { struct { a: T } }

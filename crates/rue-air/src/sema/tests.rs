@@ -2,11 +2,14 @@
 mod tests {
     use std::collections::HashMap;
 
+    use crate::ConstValue;
     use crate::inst::{AirArgMode, AirInstData, AirRef};
     use crate::sema::{Sema, SemaOutput};
     use crate::types::{StructId, Type};
     use lasso::ThreadedRodeo;
-    use rue_error::{CompileErrors, CompileResult, ErrorKind, MultiErrorResult, PreviewFeatures};
+    use rue_error::{
+        CompileErrors, CompileResult, ErrorKind, MultiErrorResult, PreviewFeature, PreviewFeatures,
+    };
     use rue_lexer::Lexer;
     use rue_parser::Parser;
     use rue_rir::{AstGen, InstData, InternalIntrinsic, Rir, RirParamMode};
@@ -71,6 +74,62 @@ mod tests {
 
         let sema = Sema::new_synthetic(&rir, &mut interner, preview_features);
         sema.analyze_all()
+    }
+
+    fn gather_two_file_declarations_for_testing(main: &str, dependency: &str) -> Sema<'static> {
+        let dependency_file = FileId::new(1);
+        let (rir, interner) =
+            lower_files(&[(main, FileId::DEFAULT), (dependency, dependency_file)]);
+        let import = rir
+            .iter()
+            .find_map(|(_, inst)| {
+                let InstData::Intrinsic { name, args } = &inst.data else {
+                    return None;
+                };
+                (interner.resolve(name) == "import").then_some((inst.span.start, args))
+            })
+            .expect("two-file test main must import its dependency");
+        let argument = rir
+            .intrinsic_args(import.1)
+            .get(0)
+            .expect("import must have one argument");
+        let InstData::StringConst { content, .. } = rir.get(argument).data else {
+            panic!("import argument must be a string")
+        };
+        let specifier = interner.resolve(&content).to_owned();
+        let view = TestCanonicalImportView {
+            modules: vec![
+                TestModule {
+                    id: "main.rue".to_owned(),
+                    file_id: FileId::DEFAULT,
+                    path: "/main.rue".to_owned(),
+                },
+                TestModule {
+                    id: specifier.clone(),
+                    file_id: dependency_file,
+                    path: "/dep.rue".to_owned(),
+                },
+            ],
+            sites: vec![TestSite {
+                importer: "main.rue".to_owned(),
+                offset: import.0,
+                specifier: specifier.clone(),
+                target: specifier,
+            }],
+        };
+        let rir = Box::leak(Box::new(rir));
+        let interner = Box::leak(Box::new(interner));
+        let mut sema = Sema::new_synthetic(rir, interner, PreviewFeatures::new());
+        sema.set_root_file_id(FileId::DEFAULT);
+        sema.set_file_paths(HashMap::from([
+            (FileId::DEFAULT, "/main.rue".to_owned()),
+            (dependency_file, "/dep.rue".to_owned()),
+        ]));
+        sema.set_canonical_imports(&view).unwrap();
+        sema.inject_builtin_types();
+        sema.register_type_names().unwrap();
+        sema.resolve_declarations().unwrap();
+        sema
     }
 
     fn compile_to_air_with_authoritative_identity_order(
@@ -3873,5 +3932,331 @@ fn main() -> i32 {
         let stats = sema.type_pool.stats();
         assert!(stats.struct_count > 0); // At least String builtin
         assert!(stats.enum_count > 0); // The enum we added
+    }
+
+    #[test]
+    fn shared_type_syntax_observes_each_nominal_dependency_once_at_every_depth() {
+        for (syntax, expected_total_work) in [
+            ("Leaf", 1),
+            ("[Leaf; 2]", 1),
+            ("Make()", 1),
+            ("Id(Leaf)", 1),
+            ("Id(Id(Leaf))", 1),
+            ("ArrayOf(Leaf)", 1),
+            ("[Leaf; Width(Leaf)]", 1),
+        ] {
+            let source = format!(
+                "struct Leaf {{ value: i32 }}
+                 fn Id(comptime T: type) -> type {{ T }}
+                 fn ArrayOf(comptime T: type) -> type {{ [T; 2] }}
+                 fn Width(comptime T: type) -> i32 {{ 2 }}
+                 fn Make() -> type {{ Leaf }}
+                 fn main() -> i32 {{
+                     let size: u64 = @intCast(@size_of({syntax}));
+                     @intCast(size)
+                 }}"
+            );
+            let output = compile_to_air(&source)
+                .unwrap_or_else(|errors| panic!("type syntax '{syntax}' must resolve: {errors:?}"));
+            let dependencies = output
+                .declaration_type_dependencies
+                .iter()
+                .filter(|event| event.source_name == "main")
+                .collect::<Vec<_>>();
+
+            assert_eq!(
+                dependencies.len(),
+                1,
+                "'{syntax}' must emit one exact nominal edge"
+            );
+            assert_eq!(dependencies[0].target_name, "Leaf");
+            assert_eq!(
+                dependencies[0].target_kind,
+                crate::DeclarationTypeDependencyTargetKind::Struct
+            );
+            assert_eq!(
+                output.body_analysis_work.declaration_type_dependency_events, expected_total_work,
+                "'{syntax}' must increment work exactly once per declaration body"
+            );
+        }
+    }
+
+    #[test]
+    fn selected_alias_observes_the_alias_and_its_nominal_result_once_each() {
+        let output = compile_to_air(
+            "struct Leaf { value: i32 }
+             const Alias = Leaf;
+             fn main() -> i32 {
+                 let size: u64 = @intCast(@size_of(Alias));
+                 @intCast(size)
+             }",
+        )
+        .unwrap();
+        let dependencies = output
+            .declaration_type_dependencies
+            .iter()
+            .filter(|event| event.source_name == "main")
+            .map(|event| (event.target_name.as_str(), event.target_kind))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            dependencies,
+            [
+                (
+                    "Alias",
+                    crate::DeclarationTypeDependencyTargetKind::ValueConst
+                ),
+                ("Leaf", crate::DeclarationTypeDependencyTargetKind::Struct),
+            ]
+        );
+        assert_eq!(
+            output.body_analysis_work.declaration_type_dependency_events,
+            3
+        );
+    }
+
+    #[test]
+    fn substituted_signature_wrappers_emit_one_stable_edge_per_body() {
+        for (position, source) in [
+            (
+                "parameter",
+                "@copy struct Leaf { value: i32 }
+                 fn consume(comptime T: type, values: [T; 2]) -> i32 { 0 }
+                 fn main() -> i32 {
+                     consume(Leaf, [Leaf { value: 1 }, Leaf { value: 2 }])
+                 }",
+            ),
+            (
+                "return",
+                "@copy struct Leaf { value: i32 }
+                 fn pair(comptime T: type, value: T) -> [T; 2] { [value, value] }
+                 fn main() -> i32 {
+                     let values = pair(Leaf, Leaf { value: 1 });
+                     values[0].value
+                 }",
+            ),
+        ] {
+            let output = compile_to_air(source).unwrap_or_else(|errors| {
+                panic!("substituted {position} type must resolve: {errors:?}")
+            });
+            let dependencies = output
+                .declaration_type_dependencies
+                .iter()
+                .filter(|event| event.source_name == "main")
+                .collect::<Vec<_>>();
+
+            assert_eq!(
+                dependencies.len(),
+                1,
+                "substituted {position} type must emit one exact nominal edge"
+            );
+            assert_eq!(dependencies[0].target_name, "Leaf");
+            assert_eq!(
+                dependencies[0].target_kind,
+                crate::DeclarationTypeDependencyTargetKind::Struct
+            );
+            assert_eq!(
+                output.body_analysis_work.declaration_type_dependency_events, 2,
+                "substituted {position} type must increment work once in the caller and once in the specialized body"
+            );
+        }
+    }
+
+    #[test]
+    fn slice_preview_failure_precedes_unknown_element_resolution() {
+        let errors = compile_to_air(
+            "fn take(value: [Unknown]) -> i32 { 0 }
+             fn main() -> i32 { 0 }",
+        )
+        .unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(
+            matches!(
+                &errors.iter().next().unwrap().kind,
+                ErrorKind::PreviewFeatureRequired {
+                    feature: PreviewFeature::Slices,
+                    ..
+                }
+            ),
+            "unexpected diagnostics: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn deferred_array_lengths_reject_qualified_value_heads_but_allow_qualified_type_arguments() {
+        let span = Span::with_file(FileId::DEFAULT, 0, 0);
+        let mut sema = gather_two_file_declarations_for_testing(
+            "const dep = @import(\"dep.rue\"); fn main() -> i32 { 0 }",
+            "pub fn Width(comptime T: type) -> i32 { 2 }",
+        );
+        let type_param = sema.interner.get_or_intern("T");
+        let error = sema
+            .validate_deferred_type_position_for_testing("[T; dep.Width(T)]", &[type_param], span)
+            .unwrap_err();
+        assert!(matches!(
+            &error.kind,
+            ErrorKind::UnknownType(name) if name == "dep.Width(...)"
+        ));
+
+        let mut sema = gather_two_file_declarations_for_testing(
+            "const dep = @import(\"dep.rue\");
+             fn Width(comptime T: type) -> i32 { 2 }
+             fn main() -> i32 { 0 }",
+            "pub struct Item { value: i32 }",
+        );
+        let type_param = sema.interner.get_or_intern("T");
+        assert_eq!(
+            sema.validate_deferred_type_position_for_testing(
+                "[T; Width(dep.Item)]",
+                &[type_param],
+                span,
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn array_length_nested_type_argument_preserves_unknown_type_error() {
+        let errors = compile_to_air(
+            "fn Width(comptime T: type) -> i32 { 2 }
+             fn main() -> i32 {
+                 let values: [i32; Width(Unknown)] = [1, 2];
+                 values[0]
+             }",
+        )
+        .unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(
+            &errors.iter().next().unwrap().kind,
+            ErrorKind::UnknownType(name) if name == "Unknown"
+        ));
+    }
+
+    #[test]
+    fn array_length_nested_type_argument_preserves_provider_diagnostic() {
+        let mut sema = gather_declarations_for_testing(
+            "fn Width(comptime T: type) -> i32 { 2 }
+             fn main() -> i32 { 0 }",
+        );
+        let error = sema
+            .resolve_type_syntax_for_testing(
+                "[i32; Width([i32])]",
+                Span::with_file(FileId::DEFAULT, 0, 0),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            &error.kind,
+            ErrorKind::PreviewFeatureRequired {
+                feature: PreviewFeature::Slices,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn array_length_reducer_failure_preserves_provider_diagnostic() {
+        let mut sema = gather_declarations_for_testing(
+            "fn Width(comptime T: type) -> i32 { Width(T) }
+             fn main() -> i32 { 0 }",
+        );
+        let error = sema
+            .resolve_type_syntax_for_testing(
+                "[i32; Width(i32)]",
+                Span::with_file(FileId::DEFAULT, 0, 0),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                &error.kind,
+            ErrorKind::ComptimeEvaluationFailed { reason }
+                if reason.contains("maximum nesting depth")
+            ),
+            "unexpected diagnostic: {error:?}"
+        );
+    }
+
+    #[test]
+    fn deferred_value_calls_preserve_compile_time_function_diagnostic_wording() {
+        for (source, expected_reason) in [
+            (
+                "fn Width(comptime n: i32) -> i32 { n }
+                 fn use(comptime T: type, value: [T; Width()]) -> i32 { 0 }
+                 fn main() -> i32 { 0 }",
+                "compile-time function 'Width' expects 1 comptime argument(s), but 0 were provided",
+            ),
+            (
+                "fn RuntimeWidth(n: i32) -> i32 { n }
+                 fn use(comptime T: type, value: [T; RuntimeWidth(2)]) -> i32 { 0 }
+                 fn main() -> i32 { 0 }",
+                "call 'RuntimeWidth' is not a compile-time value; all of its parameters must be comptime",
+            ),
+        ] {
+            let errors = compile_to_air(source).unwrap_err();
+            assert_eq!(errors.len(), 1, "unexpected diagnostics: {errors:?}");
+            assert!(matches!(
+                &errors.iter().next().unwrap().kind,
+                ErrorKind::ComptimeEvaluationFailed { reason } if reason == expected_reason
+            ));
+        }
+    }
+
+    #[test]
+    fn unknown_type_constructor_diagnostic_preserves_placeholder_call_spelling() {
+        let errors = compile_to_air("fn main() -> i32 { @size_of(Foo(i32)) }").unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(
+            &errors.iter().next().unwrap().kind,
+            ErrorKind::UnknownType(syntax) if syntax == "Foo(...)"
+        ));
+    }
+
+    #[test]
+    fn speculative_global_type_resolution_excludes_file_zero_aliases_and_qualified_paths() {
+        let mut sema = gather_declarations_for_testing(
+            "struct Leaf { value: i32 }
+             const Alias = Leaf;
+             const CAP: i32 = 4;
+             fn Make() -> type { Leaf }
+             fn main() -> i32 { 0 }",
+        );
+        let leaf = sema.interner.get("Leaf").unwrap();
+        let alias = sema.interner.get("Alias").unwrap();
+        let make = sema.interner.get_or_intern("Make()");
+        let qualified = sema.interner.get_or_intern("api.Leaf");
+        let array_const = sema.interner.get_or_intern("[i32; CAP]");
+        let fixed_str_const = sema.interner.get_or_intern("Str(CAP)");
+        let plain_str = sema.interner.get_or_intern("str");
+        let array_literal = sema.interner.get_or_intern("[i32; 4]");
+        let fixed_str_literal = sema.interner.get_or_intern("Str(4)");
+
+        assert!(sema.resolve_type_for_comptime(make).is_some());
+        assert_eq!(sema.resolve_type_for_comptime(leaf), None);
+        assert_eq!(sema.resolve_type_for_comptime(alias), None);
+        assert_eq!(sema.resolve_type_for_comptime(qualified), None);
+        assert_eq!(sema.resolve_type_for_comptime(array_const), None);
+        assert_eq!(sema.resolve_type_for_comptime(fixed_str_const), None);
+        assert_eq!(sema.resolve_type_for_comptime(plain_str), None);
+        assert!(sema.resolve_type_for_comptime(array_literal).is_some());
+        assert!(sema.resolve_type_for_comptime(fixed_str_literal).is_some());
+
+        let cap = sema.interner.get("CAP").unwrap();
+        let value_substitutions = HashMap::from([(cap, ConstValue::Integer(4))]);
+        assert!(
+            sema.resolve_type_for_comptime_with_subst_and_values(
+                array_const,
+                &HashMap::new(),
+                &value_substitutions,
+            )
+            .is_some()
+        );
+        assert!(
+            sema.resolve_type_for_comptime_with_subst_and_values(
+                fixed_str_const,
+                &HashMap::new(),
+                &value_substitutions,
+            )
+            .is_some()
+        );
     }
 }

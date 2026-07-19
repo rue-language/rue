@@ -28,6 +28,7 @@ mod sema;
 mod semantic_body;
 mod semantic_identity;
 mod semantic_import;
+mod semantic_type_resolution;
 pub mod specialize;
 mod type_encoding;
 #[cfg(test)]
@@ -109,9 +110,19 @@ pub use semantic_import::{
     SemanticImportNominalKind, SemanticImportType, SemanticImportTypeFold, SemanticImportTypeKind,
     SemanticImportedConstValue, SemanticImportedType,
 };
+pub use semantic_type_resolution::{
+    SemanticComptimeCallExpectation, SemanticComptimeCallResult, SemanticModuleBinding,
+    SemanticModulePathFailure, SemanticModulePathProvider, SemanticProviderError,
+    SemanticProviderResult, SemanticResolutionError, SemanticResolvedComptimeCall,
+    SemanticResolvedModule, SemanticTypeConstructorHead, SemanticTypeConstructorParameter,
+    SemanticTypeFact, SemanticTypeFactKind, SemanticTypeSyntaxError, SemanticTypeSyntaxFailure,
+    SemanticTypeSyntaxProvider, SemanticVisibilityDomain, resolve_semantic_comptime_call,
+    resolve_semantic_module_path, resolve_semantic_type_syntax,
+};
 pub use types::{
-    ArrayTypeId, EnumDef, EnumId, LangItem, ModuleDef, ModuleId, PtrConstTypeId, PtrMutTypeId,
-    StructDef, StructField, StructId, Type, TypeKind, parse_array_type_syntax,
+    ArrayLen, ArrayTypeId, EnumDef, EnumId, LangItem, ModuleDef, ModuleId, PtrConstTypeId,
+    PtrMutTypeId, PtrMutability, StructDef, StructField, StructId, Type, TypeKind,
+    parse_array_type_syntax, parse_pointer_type_syntax,
 };
 
 /// Sentinel value used to encode parameter slots in AIR instructions.
