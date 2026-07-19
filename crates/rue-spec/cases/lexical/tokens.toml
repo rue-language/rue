@@ -167,6 +167,56 @@ source = "fn main() -> i32 { 0B101 }"
 compile_fail = true
 error_contains = "base prefixes are lowercase"
 
+# Byte literals (RUE-1042): `b'a'` is a readable u8 spelling of an ASCII byte
+# and lexes to the same integer literal as the byte's decimal code.
+[[case]]
+name = "byte_literal_ascii_value"
+spec = ["2.1:26"]
+source = "fn main() -> i32 { b'*' }"
+exit_code = 42
+
+[[case]]
+name = "byte_literal_types_as_u8_in_context"
+spec = ["2.1:26", "2.1:4"]
+source = """
+fn is_digit(c: u8) -> bool { c >= b'0' && c <= b'9' }
+fn main() -> i32 { if is_digit(b'7') { 0 } else { 1 } }
+"""
+exit_code = 0
+
+[[case]]
+name = "byte_literal_newline_escape"
+spec = ["2.1:26"]
+source = "fn main() -> i32 { let n: u8 = b'\\n'; @dbg(n); 0 }"
+exit_code = 0
+
+[[case]]
+name = "byte_literal_quote_escape"
+spec = ["2.1:26"]
+source = "fn main() -> i32 { b'\\'' }"
+exit_code = 39
+
+[[case]]
+name = "byte_literal_empty_error"
+spec = ["2.1:27"]
+source = "fn main() -> i32 { b'' }"
+compile_fail = true
+error_contains = "a byte literal must contain exactly one byte"
+
+[[case]]
+name = "byte_literal_multiple_bytes_error"
+spec = ["2.1:27"]
+source = "fn main() -> i32 { b'ab' }"
+compile_fail = true
+error_contains = "a byte literal must contain exactly one byte"
+
+[[case]]
+name = "byte_literal_unknown_escape_error"
+spec = ["2.1:27"]
+source = "fn main() -> i32 { b'\\q' }"
+compile_fail = true
+error_contains = "unknown escape"
+
 # =============================================================================
 # StrBuf Literals (syntax and legality)
 # =============================================================================
