@@ -1,0 +1,114 @@
+// Complete generated workload tier: every analysis, optimizer rule, report,
+// query oracle, storage audit, recovery path, and replication path runs twice.
+const analysis_suite = @import("analysis_suite.rue");
+const engine = @import("engine.rue");
+const generate = @import("generate.rue");
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+const plan = @import("plan.rue");
+const recovery = @import("recovery.rue");
+const report_suite = @import("report_suite.rue");
+const row_oracle = @import("row_oracle.rue");
+const rule_suite = @import("rule_suite.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct Result {
+    scale: u64,
+    tables: u64,
+    columns: u64,
+    rows: u64,
+    cells: u64,
+    queries: u64,
+    result_rows: u64,
+    plan_nodes: u64,
+    analysis_passes: u64,
+    optimizer_evaluations: u64,
+    report_documents: u64,
+    oracle_mismatches: u64,
+    deterministic_mismatches: u64,
+    digest: u64,
+    valid: bool,
+}
+
+fn once(scale: u64) -> Result {
+    let database = generate.database(scale);
+    let analyses = analysis_suite.run(borrow database);
+    let rules = rule_suite.run(borrow database);
+    let mut out = Result {
+        scale: scale, tables: database.tables.len(), columns: database.columns.len(),
+        rows: database.rows.len(), cells: database.cells.len(),
+        queries: database.queries.len(), result_rows: 0, plan_nodes: 0,
+        analysis_passes: analyses.passes, optimizer_evaluations: rules.evaluations,
+        report_documents: 0, oracle_mismatches: 0, deterministic_mismatches: 0,
+        digest: metric.mix(analyses.digest, rules.digest), valid: false,
+    };
+    let mut q: u64 = 0;
+    while q < database.queries.len() {
+        let query = database.queries.get_or(q, model.empty_query());
+        let query_plan = plan.build(borrow database, borrow query);
+        let actual = engine.execute(borrow database, borrow query);
+        let expected = row_oracle.execute(borrow database, borrow query);
+        out.result_rows = out.result_rows + actual.rows;
+        out.plan_nodes = out.plan_nodes + query_plan.nodes.len();
+        out.digest = metric.mix(out.digest, query_plan.digest);
+        out.digest = metric.mix(out.digest, actual.checksum);
+        if !plan.verify(borrow query_plan) ||
+            !row_oracle.agrees(borrow actual, borrow expected) {
+            out.oracle_mismatches = out.oracle_mismatches + 1;
+        }
+        if q == 0 {
+            let reports = report_suite.run(borrow database, borrow query,
+                borrow query_plan, borrow actual);
+            out.report_documents = reports.documents;
+            out.digest = metric.mix(out.digest, reports.digest);
+            if !reports.valid { out.oracle_mismatches = out.oracle_mismatches + 1; }
+        }
+        q = q + 1;
+    }
+    let recovered = recovery.run(borrow database, 2);
+    out.digest = metric.mix(out.digest, recovered.checksum);
+    out.valid = analyses.valid && rules.valid && recovered.valid &&
+        out.analysis_passes == 112 && out.optimizer_evaluations == 144 &&
+        out.report_documents == 44 && out.oracle_mismatches == 0;
+    out
+}
+
+pub fn run(scale: u64) -> Result {
+    let first = once(scale);
+    let second = once(scale);
+    let mismatches = if first.digest == second.digest && first.rows == second.rows &&
+        first.result_rows == second.result_rows && first.plan_nodes == second.plan_nodes { 0 } else { 1 };
+    Result {
+        scale: first.scale, tables: first.tables, columns: first.columns,
+        rows: first.rows, cells: first.cells, queries: first.queries,
+        result_rows: first.result_rows, plan_nodes: first.plan_nodes,
+        analysis_passes: first.analysis_passes,
+        optimizer_evaluations: first.optimizer_evaluations,
+        report_documents: first.report_documents,
+        oracle_mismatches: first.oracle_mismatches,
+        deterministic_mismatches: mismatches,
+        digest: first.digest, valid: first.valid && second.valid && mismatches == 0,
+    }
+}
+
+pub fn render(borrow value: Result) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.line(inout out, "stress scale=", value.scale);
+    text.line(inout out, "tables=", value.tables);
+    text.line(inout out, "columns=", value.columns);
+    text.line(inout out, "rows=", value.rows);
+    text.line(inout out, "cells=", value.cells);
+    text.line(inout out, "queries=", value.queries);
+    text.line(inout out, "result_rows=", value.result_rows);
+    text.line(inout out, "plan_nodes=", value.plan_nodes);
+    text.line(inout out, "analysis_passes=", value.analysis_passes);
+    text.line(inout out, "optimizer_evaluations=", value.optimizer_evaluations);
+    text.line(inout out, "report_documents=", value.report_documents);
+    text.line(inout out, "oracle_mismatches=", value.oracle_mismatches);
+    text.line(inout out, "deterministic_mismatches=", value.deterministic_mismatches);
+    text.line(inout out, "digest=", value.digest);
+    text.bool_line(inout out, "valid=", value.valid);
+    out
+}

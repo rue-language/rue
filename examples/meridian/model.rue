@@ -1,0 +1,293 @@
+// Canonical POD database model. Compact indices keep every pass deterministic
+// while real pooled strings preserve catalog names and diagnostics.
+const std = @import("std");
+const poolmod = @import("pool.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn NONE() -> u64 { 18446744073709551615 }
+pub fn INT_KIND() -> u64 { 1 }
+pub fn TEXT_KIND() -> u64 { 2 }
+
+pub struct Column {
+    name: u64,
+    table_name: u64,
+    table: u64,
+    kind: u64,
+    nullable: bool,
+    unique: bool,
+    ordinal: u64,
+}
+
+pub struct Table {
+    name: u64,
+    first_column: u64,
+    column_count: u64,
+    row_count: u64,
+    version: u64,
+}
+
+pub struct Cell {
+    table: u64,
+    row: u64,
+    column: u64,
+    number: u64,
+    text: u64,
+    is_text: bool,
+    is_null: bool,
+}
+
+pub struct Row {
+    table: u64,
+    first_cell: u64,
+    cell_count: u64,
+    version_created: u64,
+    version_deleted: u64,
+    transaction: u64,
+    committed: bool,
+}
+
+pub struct Index {
+    name: u64,
+    table_name: u64,
+    column_name: u64,
+    table: u64,
+    column: u64,
+    unique: bool,
+    entries: u64,
+}
+
+pub struct Query {
+    table_name: u64,
+    table: u64,
+    filter_column_name: u64,
+    filter_column: u64,
+    filter_value: u64,
+    join_table_name: u64,
+    join_table: u64,
+    join_left_name: u64,
+    join_right_name: u64,
+    join_left: u64,
+    join_right: u64,
+    group_column_name: u64,
+    group_column: u64,
+    order_column_name: u64,
+    order_column: u64,
+    limit: u64,
+}
+
+pub struct Transaction {
+    id: u64,
+    snapshot: u64,
+    state: u64,
+    writes: u64,
+    reads: u64,
+}
+
+pub struct WalEntry {
+    lsn: u64,
+    transaction: u64,
+    kind: u64,
+    table: u64,
+    row: u64,
+    before: u64,
+    after: u64,
+    committed: bool,
+}
+
+pub struct Replica {
+    id: u64,
+    applied_lsn: u64,
+    lag: u64,
+    healthy: bool,
+    primary: bool,
+}
+
+pub struct Diagnostic {
+    code: u64,
+    subject: u64,
+    detail: u64,
+}
+
+pub const Columns = std.arraybuf.ArrayBuf(Column);
+pub const Tables = std.arraybuf.ArrayBuf(Table);
+pub const Cells = std.arraybuf.ArrayBuf(Cell);
+pub const Rows = std.arraybuf.ArrayBuf(Row);
+pub const Indexes = std.arraybuf.ArrayBuf(Index);
+pub const Queries = std.arraybuf.ArrayBuf(Query);
+pub const Transactions = std.arraybuf.ArrayBuf(Transaction);
+pub const Wal = std.arraybuf.ArrayBuf(WalEntry);
+pub const Replicas = std.arraybuf.ArrayBuf(Replica);
+pub const Diagnostics = std.arraybuf.ArrayBuf(Diagnostic);
+pub const U64s = std.arraybuf.ArrayBuf(u64);
+pub const Bools = std.arraybuf.ArrayBuf(bool);
+
+pub struct Database {
+    strings: poolmod.Pool,
+    name: u64,
+    tables: Tables,
+    columns: Columns,
+    rows: Rows,
+    cells: Cells,
+    indexes: Indexes,
+    queries: Queries,
+    transactions: Transactions,
+    wal: Wal,
+    replicas: Replicas,
+    diagnostics: Diagnostics,
+    version: u64,
+    next_lsn: u64,
+}
+
+pub fn new_database(strings: poolmod.Pool) -> Database {
+    Database {
+        strings: strings, name: NONE(),
+        tables: Tables.new(), columns: Columns.new(),
+        rows: Rows.new(), cells: Cells.new(), indexes: Indexes.new(),
+        queries: Queries.new(), transactions: Transactions.new(),
+        wal: Wal.new(), replicas: Replicas.new(), diagnostics: Diagnostics.new(),
+        version: 1, next_lsn: 1,
+    }
+}
+
+pub fn empty_column() -> Column {
+    Column { name: NONE(), table_name: NONE(), table: NONE(), kind: 0,
+        nullable: true, unique: false, ordinal: 0 }
+}
+
+pub fn empty_table() -> Table {
+    Table { name: NONE(), first_column: 0, column_count: 0, row_count: 0, version: 0 }
+}
+
+pub fn empty_cell() -> Cell {
+    Cell { table: NONE(), row: NONE(), column: NONE(), number: 0, text: NONE(),
+        is_text: false, is_null: true }
+}
+
+pub fn empty_row() -> Row {
+    Row { table: NONE(), first_cell: 0, cell_count: 0, version_created: 0,
+        version_deleted: NONE(), transaction: NONE(), committed: false }
+}
+
+pub fn empty_index() -> Index {
+    Index { name: NONE(), table_name: NONE(), column_name: NONE(), table: NONE(),
+        column: NONE(), unique: false, entries: 0 }
+}
+
+pub fn empty_query() -> Query {
+    Query {
+        table_name: NONE(), table: NONE(),
+        filter_column_name: NONE(), filter_column: NONE(), filter_value: NONE(),
+        join_table_name: NONE(), join_table: NONE(),
+        join_left_name: NONE(), join_right_name: NONE(),
+        join_left: NONE(), join_right: NONE(),
+        group_column_name: NONE(), group_column: NONE(),
+        order_column_name: NONE(), order_column: NONE(), limit: NONE(),
+    }
+}
+
+pub fn empty_transaction() -> Transaction {
+    Transaction { id: NONE(), snapshot: 0, state: 0, writes: 0, reads: 0 }
+}
+
+pub fn empty_wal() -> WalEntry {
+    WalEntry { lsn: 0, transaction: NONE(), kind: 0, table: NONE(), row: NONE(),
+        before: 0, after: 0, committed: false }
+}
+
+pub fn empty_replica() -> Replica {
+    Replica { id: NONE(), applied_lsn: 0, lag: 0, healthy: false, primary: false }
+}
+
+pub fn add_error(inout database: Database, code: u64, subject: u64, detail: StrBuf) {
+    let detail_id = database.strings.intern(borrow detail);
+    database.diagnostics.push(Diagnostic { code: code, subject: subject, detail: detail_id });
+}
+
+pub fn find_table(borrow database: Database, name: u64) -> u64 {
+    let mut i: u64 = 0;
+    while i < database.tables.len() {
+        if database.strings.ids_equal(database.tables.get_or(i, empty_table()).name, name) {
+            return i;
+        }
+        i = i + 1;
+    }
+    NONE()
+}
+
+pub fn find_column(borrow database: Database, table: u64, name: u64) -> u64 {
+    let mut i: u64 = 0;
+    while i < database.columns.len() {
+        let column = database.columns.get_or(i, empty_column());
+        if column.table == table && database.strings.ids_equal(column.name, name) { return i; }
+        i = i + 1;
+    }
+    NONE()
+}
+
+pub fn visible(borrow row: Row, snapshot: u64) -> bool {
+    row.committed && row.version_created <= snapshot &&
+        (row.version_deleted == NONE() || row.version_deleted > snapshot)
+}
+
+pub fn cell_number(borrow database: Database, row: u64, column: u64) -> u64 {
+    let item = database.rows.get_or(row, empty_row());
+    let mut i: u64 = 0;
+    while i < item.cell_count {
+        let cell = database.cells.get_or(item.first_cell + i, empty_cell());
+        if cell.column == column && !cell.is_null { return cell.number; }
+        i = i + 1;
+    }
+    0
+}
+
+pub fn table_rows(borrow database: Database, table: u64, snapshot: u64) -> u64 {
+    let mut count: u64 = 0;
+    let mut i: u64 = 0;
+    while i < database.rows.len() {
+        let row = database.rows.get_or(i, empty_row());
+        if row.table == table && visible(borrow row, snapshot) { count = count + 1; }
+        i = i + 1;
+    }
+    count
+}
+
+pub fn table_cells(borrow database: Database, table: u64) -> u64 {
+    let mut count: u64 = 0;
+    let mut i: u64 = 0;
+    while i < database.cells.len() {
+        if database.cells.get_or(i, empty_cell()).table == table { count = count + 1; }
+        i = i + 1;
+    }
+    count
+}
+
+pub fn has_index(borrow database: Database, table: u64, column: u64) -> bool {
+    let mut i: u64 = 0;
+    while i < database.indexes.len() {
+        let index = database.indexes.get_or(i, empty_index());
+        if index.table == table && index.column == column { return true; }
+        i = i + 1;
+    }
+    false
+}
+
+pub fn transaction_state_name(state: u64) -> StrBuf {
+    if state == 1 { "active" }
+    else if state == 2 { "committed" }
+    else if state == 3 { "rolled_back" }
+    else { "unknown" }
+}
+
+pub fn diagnostic_name(code: u64) -> StrBuf {
+    if code == 100 { "lex" }
+    else if code == 101 { "parse" }
+    else if code == 200 { "duplicate" }
+    else if code == 201 { "reference" }
+    else if code == 202 { "schema" }
+    else if code == 203 { "row" }
+    else if code == 204 { "query" }
+    else if code == 300 { "transaction" }
+    else if code == 301 { "recovery" }
+    else if code == 302 { "replication" }
+    else { "unknown" }
+}

@@ -1,0 +1,166 @@
+// Deterministic catalog and workload generator used by demo, selftest, and stress.
+const model = @import("model.rue");
+const poolmod = @import("pool.rue");
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn add_table(inout database: model.Database, name: StrBuf, columns: u64) -> u64 {
+    let id = database.strings.intern_literal(name);
+    let index = database.tables.len();
+    database.tables.push(model.Table {
+        name: id, first_column: database.columns.len(), column_count: columns,
+        row_count: 0, version: database.version,
+    });
+    index
+}
+
+fn add_column(inout database: model.Database, table: u64, name: StrBuf,
+    kind: u64, nullable: bool, unique: bool) -> u64 {
+    let table_value = database.tables.get_or(table, model.empty_table());
+    let id = database.strings.intern_literal(name);
+    let index = database.columns.len();
+    database.columns.push(model.Column {
+        name: id, table_name: table_value.name, table: table, kind: kind,
+        nullable: nullable, unique: unique,
+        ordinal: index - table_value.first_column,
+    });
+    index
+}
+
+fn add_row3(inout database: model.Database, table: u64, a: u64, b: u64, c: u64) -> u64 {
+    let table_value = database.tables.get_or(table, model.empty_table());
+    let row_index = database.rows.len();
+    let first = database.cells.len();
+    database.cells.push(model.Cell { table: table, row: row_index,
+        column: table_value.first_column, number: a, text: model.NONE(),
+        is_text: false, is_null: false });
+    database.cells.push(model.Cell { table: table, row: row_index,
+        column: table_value.first_column + 1, number: b, text: model.NONE(),
+        is_text: false, is_null: false });
+    database.cells.push(model.Cell { table: table, row: row_index,
+        column: table_value.first_column + 2, number: c, text: model.NONE(),
+        is_text: false, is_null: false });
+    database.rows.push(model.Row {
+        table: table, first_cell: first, cell_count: 3,
+        version_created: database.version, version_deleted: model.NONE(),
+        transaction: model.NONE(), committed: true,
+    });
+    database.tables.set(table, model.Table {
+        name: table_value.name, first_column: table_value.first_column,
+        column_count: table_value.column_count, row_count: table_value.row_count + 1,
+        version: table_value.version,
+    });
+    row_index
+}
+
+fn add_index(inout database: model.Database, name: StrBuf, table: u64,
+    column: u64, unique: bool) {
+    let table_value = database.tables.get_or(table, model.empty_table());
+    let column_value = database.columns.get_or(column, model.empty_column());
+    database.indexes.push(model.Index {
+        name: database.strings.intern_literal(name),
+        table_name: table_value.name, column_name: column_value.name,
+        table: table, column: column, unique: unique,
+        entries: table_value.row_count,
+    });
+}
+
+fn add_wal(inout database: model.Database, transaction: u64, kind: u64,
+    table: u64, row: u64, before: u64, after: u64, committed: bool) {
+    database.wal.push(model.WalEntry {
+        lsn: database.next_lsn, transaction: transaction, kind: kind,
+        table: table, row: row, before: before, after: after, committed: committed,
+    });
+    database.next_lsn = database.next_lsn + 1;
+}
+
+pub fn database(scale: u64) -> model.Database {
+    let mut value = model.new_database(poolmod.Pool.new());
+    value.name = value.strings.intern_literal("meridian");
+
+    let teams = add_table(inout value, "teams", 3);
+    let team_id = add_column(inout value, teams, "id", model.INT_KIND(), false, true);
+    let _team_region = add_column(inout value, teams, "region", model.INT_KIND(), false, false);
+    let _team_budget = add_column(inout value, teams, "budget", model.INT_KIND(), false, false);
+
+    let users = add_table(inout value, "users", 3);
+    let user_id = add_column(inout value, users, "id", model.INT_KIND(), false, true);
+    let user_team = add_column(inout value, users, "team", model.INT_KIND(), false, false);
+    let user_score = add_column(inout value, users, "score", model.INT_KIND(), false, false);
+
+    let orders = add_table(inout value, "orders", 3);
+    let order_id = add_column(inout value, orders, "id", model.INT_KIND(), false, true);
+    let order_user = add_column(inout value, orders, "user_id", model.INT_KIND(), false, false);
+    let order_amount = add_column(inout value, orders, "amount", model.INT_KIND(), false, false);
+
+    let mut i: u64 = 0;
+    while i < 4 * scale {
+        let _ = add_row3(inout value, teams, i + 1, (i % 3) + 1, 1000 + i * 250);
+        i = i + 1;
+    }
+    i = 0;
+    while i < 12 * scale {
+        let _ = add_row3(inout value, users, i + 1, (i % (4 * scale)) + 1, 40 + ((i * 17) % 61));
+        i = i + 1;
+    }
+    i = 0;
+    while i < 30 * scale {
+        let _ = add_row3(inout value, orders, i + 1, (i % (12 * scale)) + 1, 10 + ((i * 29) % 240));
+        i = i + 1;
+    }
+
+    add_index(inout value, "teams_pk", teams, team_id, true);
+    add_index(inout value, "users_pk", users, user_id, true);
+    add_index(inout value, "users_team", users, user_team, false);
+    add_index(inout value, "users_score", users, user_score, false);
+    add_index(inout value, "orders_pk", orders, order_id, true);
+    add_index(inout value, "orders_user", orders, order_user, false);
+    add_index(inout value, "orders_amount", orders, order_amount, false);
+
+    value.queries.push(model.Query {
+        table_name: value.tables.get_or(users, model.empty_table()).name, table: users,
+        filter_column_name: value.columns.get_or(user_score, model.empty_column()).name,
+        filter_column: user_score, filter_value: 70,
+        join_table_name: value.tables.get_or(teams, model.empty_table()).name,
+        join_table: teams,
+        join_left_name: value.columns.get_or(user_team, model.empty_column()).name,
+        join_right_name: value.columns.get_or(team_id, model.empty_column()).name,
+        join_left: user_team, join_right: team_id,
+        group_column_name: value.columns.get_or(user_team, model.empty_column()).name,
+        group_column: user_team,
+        order_column_name: value.columns.get_or(user_score, model.empty_column()).name,
+        order_column: user_score, limit: 20 * scale,
+    });
+    value.queries.push(model.Query {
+        table_name: value.tables.get_or(orders, model.empty_table()).name, table: orders,
+        filter_column_name: value.columns.get_or(order_amount, model.empty_column()).name,
+        filter_column: order_amount, filter_value: 100,
+        join_table_name: value.tables.get_or(users, model.empty_table()).name,
+        join_table: users,
+        join_left_name: value.columns.get_or(order_user, model.empty_column()).name,
+        join_right_name: value.columns.get_or(user_id, model.empty_column()).name,
+        join_left: order_user, join_right: user_id,
+        group_column_name: value.columns.get_or(order_user, model.empty_column()).name,
+        group_column: order_user,
+        order_column_name: value.columns.get_or(order_amount, model.empty_column()).name,
+        order_column: order_amount, limit: 50 * scale,
+    });
+
+    value.transactions.push(model.Transaction { id: 1, snapshot: 1, state: 2, writes: 2, reads: 4 });
+    value.transactions.push(model.Transaction { id: 2, snapshot: 1, state: 3, writes: 1, reads: 2 });
+    value.transactions.push(model.Transaction { id: 3, snapshot: 2, state: 2, writes: 3, reads: 8 });
+    add_wal(inout value, 1, 1, users, 0, 40, 70, true);
+    add_wal(inout value, 1, 2, users, 1, 57, 80, true);
+    add_wal(inout value, 2, 1, orders, 2, 68, 999, false);
+    add_wal(inout value, 3, 1, orders, 3, 97, 120, true);
+    add_wal(inout value, 3, 3, orders, 4, 126, 0, true);
+
+    value.replicas.push(model.Replica { id: value.strings.intern_literal("primary"),
+        applied_lsn: value.next_lsn - 1, lag: 0, healthy: true, primary: true });
+    value.replicas.push(model.Replica { id: value.strings.intern_literal("east"),
+        applied_lsn: value.next_lsn - 2, lag: 1, healthy: true, primary: false });
+    value.replicas.push(model.Replica { id: value.strings.intern_literal("west"),
+        applied_lsn: value.next_lsn - 3, lag: 2, healthy: true, primary: false });
+    value.version = 3;
+    value
+}

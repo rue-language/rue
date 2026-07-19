@@ -153,10 +153,16 @@ struct ExampleTimeout {
     timeout_ms: u64,
 }
 
-const EXAMPLE_TIMEOUTS: &[ExampleTimeout] = &[ExampleTimeout {
-    path: "lattice/main.rue",
-    timeout_ms: 30_000,
-}];
+const EXAMPLE_TIMEOUTS: &[ExampleTimeout] = &[
+    ExampleTimeout {
+        path: "lattice/main.rue",
+        timeout_ms: 30_000,
+    },
+    ExampleTimeout {
+        path: "meridian/main.rue",
+        timeout_ms: 60_000,
+    },
+];
 
 fn example_timeout(relative_path: &str) -> Duration {
     Duration::from_millis(
@@ -218,13 +224,20 @@ const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
         stdout: "",
         stdin: None,
     },
-    // Lattice is the largest maintained Rue application. Its automatic smoke
-    // invocation stays intentionally lightweight; the explicit CLI cases run
-    // the demo and complete stress paths with their own assertions.
+    // Lattice and Meridian are large maintained Rue applications. Their
+    // automatic smoke invocations stay intentionally lightweight; explicit
+    // CLI cases run the demo and complete stress paths with their own
+    // assertions.
     ExampleExpectation {
         path: "lattice/main.rue",
         exit_code: 0,
         stdout: "usage: lattice [demo | run FILE | selftest | stress1 | stress2 | stress4 | benchmark | help]\nLattice compiles a workflow DSL, validates its graph, and simulates execution.\n",
+        stdin: None,
+    },
+    ExampleExpectation {
+        path: "meridian/main.rue",
+        exit_code: 0,
+        stdout: "usage: meridian [demo | run FILE | selftest | stress1 | stress2 | stress4 | benchmark | help]\nMeridian parses SQL-like workloads and audits planning, execution, transactions, and recovery.\n",
         stdin: None,
     },
     ExampleExpectation {
@@ -1819,6 +1832,10 @@ mod tests {
     #[test]
     fn heavyweight_example_timeout_is_narrowly_scoped() {
         assert_eq!(example_timeout("lattice/main.rue"), Duration::from_secs(30));
+        assert_eq!(
+            example_timeout("meridian/main.rue"),
+            Duration::from_secs(60)
+        );
         assert_eq!(
             example_timeout("welcome.rue"),
             Duration::from_millis(DEFAULT_TIMEOUT_MS)

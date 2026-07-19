@@ -1,0 +1,155 @@
+// Catalog, row, index, query, transaction, and replica validation.
+const model = @import("model.rue");
+
+fn validate_tables(inout database: model.Database) {
+    let mut i: u64 = 0;
+    while i < database.tables.len() {
+        let table = database.tables.get_or(i, model.empty_table());
+        let mut actual: u64 = 0;
+        let mut c: u64 = 0;
+        while c < database.columns.len() {
+            let column = database.columns.get_or(c, model.empty_column());
+            if database.strings.ids_equal(column.table_name, table.name) {
+                let resolved = model.Column {
+                    name: column.name, table_name: column.table_name, table: i,
+                    kind: column.kind, nullable: column.nullable, unique: column.unique,
+                    ordinal: actual,
+                };
+                database.columns.set(c, resolved);
+                actual = actual + 1;
+            }
+            c = c + 1;
+        }
+        if actual != table.column_count {
+            model.add_error(inout database, 202, table.name, "declared column count does not match COLUMN statements");
+        }
+        let mut j: u64 = i + 1;
+        while j < database.tables.len() {
+            if database.strings.ids_equal(table.name, database.tables.get_or(j, model.empty_table()).name) {
+                model.add_error(inout database, 200, table.name, "duplicate table name");
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
+fn validate_columns(inout database: model.Database) {
+    let mut i: u64 = 0;
+    while i < database.columns.len() {
+        let column = database.columns.get_or(i, model.empty_column());
+        if column.table == model.NONE() {
+            model.add_error(inout database, 201, column.table_name, "column references unknown table");
+        }
+        let mut j: u64 = i + 1;
+        while j < database.columns.len() {
+            let other = database.columns.get_or(j, model.empty_column());
+            if column.table != model.NONE() && column.table == other.table &&
+                database.strings.ids_equal(column.name, other.name) {
+                model.add_error(inout database, 200, column.name, "duplicate column name");
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
+fn validate_rows(inout database: model.Database) {
+    let mut i: u64 = 0;
+    while i < database.rows.len() {
+        let row = database.rows.get_or(i, model.empty_row());
+        if row.table == model.NONE() {
+            model.add_error(inout database, 201, model.NONE(), "INSERT references unknown table");
+        } else {
+            let table = database.tables.get_or(row.table, model.empty_table());
+            if row.cell_count != table.column_count {
+                model.add_error(inout database, 203, table.name, "INSERT value count does not match table schema");
+            }
+        }
+        i = i + 1;
+    }
+}
+
+fn validate_indexes(inout database: model.Database) {
+    let mut i: u64 = 0;
+    while i < database.indexes.len() {
+        let index = database.indexes.get_or(i, model.empty_index());
+        let table = model.find_table(borrow database, index.table_name);
+        let column = if table == model.NONE() { model.NONE() }
+            else { model.find_column(borrow database, table, index.column_name) };
+        let entries = if table == model.NONE() { 0 } else { model.table_rows(borrow database, table, database.version) };
+        database.indexes.set(i, model.Index {
+            name: index.name, table_name: index.table_name, column_name: index.column_name,
+            table: table, column: column, unique: index.unique, entries: entries,
+        });
+        if table == model.NONE() || column == model.NONE() {
+            model.add_error(inout database, 201, index.name, "index references unknown table or column");
+        }
+        i = i + 1;
+    }
+}
+
+fn resolve_queries(inout database: model.Database) {
+    let mut i: u64 = 0;
+    while i < database.queries.len() {
+        let mut query = database.queries.get_or(i, model.empty_query());
+        query.table = model.find_table(borrow database, query.table_name);
+        if query.table == model.NONE() {
+            model.add_error(inout database, 204, query.table_name, "SELECT references unknown table");
+        } else {
+            if query.filter_column_name != model.NONE() {
+                query.filter_column = model.find_column(borrow database, query.table, query.filter_column_name);
+                if query.filter_column == model.NONE() {
+                    model.add_error(inout database, 204, query.filter_column_name, "unknown FILTER column");
+                }
+            }
+            if query.group_column_name != model.NONE() {
+                query.group_column = model.find_column(borrow database, query.table, query.group_column_name);
+            }
+            if query.order_column_name != model.NONE() {
+                query.order_column = model.find_column(borrow database, query.table, query.order_column_name);
+            }
+        }
+        if query.join_table_name != model.NONE() {
+            query.join_table = model.find_table(borrow database, query.join_table_name);
+            if query.join_table == model.NONE() {
+                model.add_error(inout database, 204, query.join_table_name, "unknown JOIN table");
+            } else {
+                query.join_left = model.find_column(borrow database, query.table, query.join_left_name);
+                query.join_right = model.find_column(borrow database, query.join_table, query.join_right_name);
+                if query.join_left == model.NONE() || query.join_right == model.NONE() {
+                    model.add_error(inout database, 204, query.join_table_name, "unknown JOIN column");
+                }
+            }
+        }
+        database.queries.set(i, query);
+        i = i + 1;
+    }
+}
+
+fn validate_transactions(inout database: model.Database) {
+    let mut i: u64 = 0;
+    while i < database.transactions.len() {
+        let item = database.transactions.get_or(i, model.empty_transaction());
+        if item.state == 1 {
+            model.add_error(inout database, 300, item.id, "transaction remains active at end of input");
+        }
+        let mut j: u64 = i + 1;
+        while j < database.transactions.len() {
+            if item.id == database.transactions.get_or(j, model.empty_transaction()).id {
+                model.add_error(inout database, 300, item.id, "duplicate transaction id");
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
+pub fn database(inout value: model.Database) {
+    validate_tables(inout value);
+    validate_columns(inout value);
+    validate_rows(inout value);
+    validate_indexes(inout value);
+    resolve_queries(inout value);
+    validate_transactions(inout value);
+}

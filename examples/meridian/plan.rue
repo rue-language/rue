@@ -1,0 +1,126 @@
+// Logical and physical plan arena with deterministic cardinality/cost estimates.
+const std = @import("std");
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+
+pub fn SCAN() -> u64 { 1 }
+pub fn INDEX_SCAN() -> u64 { 2 }
+pub fn FILTER() -> u64 { 3 }
+pub fn NESTED_JOIN() -> u64 { 4 }
+pub fn HASH_JOIN() -> u64 { 5 }
+pub fn GROUP() -> u64 { 6 }
+pub fn SORT() -> u64 { 7 }
+pub fn LIMIT() -> u64 { 8 }
+
+pub struct Node {
+    kind: u64,
+    left: u64,
+    right: u64,
+    table: u64,
+    column: u64,
+    estimated_rows: u64,
+    cost: u64,
+    flags: u64,
+}
+
+pub const Nodes = std.arraybuf.ArrayBuf(Node);
+
+pub struct Plan {
+    nodes: Nodes,
+    root: u64,
+    estimated_rows: u64,
+    cost: u64,
+    rules_applied: u64,
+    digest: u64,
+    valid: bool,
+}
+
+pub fn empty_node() -> Node {
+    Node { kind: 0, left: model.NONE(), right: model.NONE(), table: model.NONE(),
+        column: model.NONE(), estimated_rows: 0, cost: 0, flags: 0 }
+}
+
+fn add(inout value: Plan, kind: u64, left: u64, right: u64, table: u64,
+    column: u64, rows: u64, cost: u64, flags: u64) -> u64 {
+    let id = value.nodes.len();
+    value.nodes.push(Node {
+        kind: kind, left: left, right: right, table: table, column: column,
+        estimated_rows: rows, cost: cost, flags: flags,
+    });
+    value.digest = metric.mix(value.digest, kind);
+    value.digest = metric.mix(value.digest, rows);
+    value.digest = metric.mix(value.digest, cost);
+    id
+}
+
+pub fn build(borrow database: model.Database, borrow query: model.Query) -> Plan {
+    let mut value = Plan {
+        nodes: Nodes.new(), root: model.NONE(), estimated_rows: 0, cost: 0,
+        rules_applied: 0, digest: 14695981039346656037, valid: true,
+    };
+    if query.table == model.NONE() { value.valid = false; return value; }
+    let base_rows = model.table_rows(borrow database, query.table, database.version);
+    let indexed = query.filter_column != model.NONE() &&
+        model.has_index(borrow database, query.table, query.filter_column);
+    let scan_kind = if indexed { INDEX_SCAN() } else { SCAN() };
+    let scan_cost = if indexed { base_rows + 2 } else { base_rows * 3 + 1 };
+    let mut root = add(inout value, scan_kind, model.NONE(), model.NONE(),
+        query.table, query.filter_column, base_rows, scan_cost, 0);
+    let mut rows = base_rows;
+    let mut cost = scan_cost;
+    if query.filter_column != model.NONE() {
+        rows = (rows + 1) / 2;
+        cost = cost + base_rows;
+        root = add(inout value, FILTER(), root, model.NONE(), query.table,
+            query.filter_column, rows, cost, 0);
+    }
+    if query.join_table != model.NONE() {
+        let right_rows = model.table_rows(borrow database, query.join_table, database.version);
+        let right = add(inout value, SCAN(), model.NONE(), model.NONE(), query.join_table,
+            query.join_right, right_rows, right_rows * 3 + 1, 0);
+        let hashable = model.has_index(borrow database, query.join_table, query.join_right) ||
+            right_rows > 3;
+        let kind = if hashable { HASH_JOIN() } else { NESTED_JOIN() };
+        rows = if rows < right_rows { rows } else { right_rows };
+        cost = cost + right_rows + if hashable { rows * 2 } else { rows * right_rows };
+        root = add(inout value, kind, root, right, query.table, query.join_left, rows, cost, 0);
+    }
+    if query.group_column != model.NONE() {
+        rows = if rows > 4 { 4 } else { rows };
+        cost = cost + rows * 2;
+        root = add(inout value, GROUP(), root, model.NONE(), query.table,
+            query.group_column, rows, cost, 0);
+    }
+    if query.order_column != model.NONE() {
+        cost = cost + rows * (rows + 1);
+        root = add(inout value, SORT(), root, model.NONE(), query.table,
+            query.order_column, rows, cost, 0);
+    }
+    if query.limit != model.NONE() {
+        if rows > query.limit { rows = query.limit; }
+        cost = cost + 1;
+        root = add(inout value, LIMIT(), root, model.NONE(), query.table,
+            model.NONE(), rows, cost, 0);
+    }
+    value.root = root;
+    value.estimated_rows = rows;
+    value.cost = cost;
+    value.digest = metric.mix(value.digest, root);
+    value.digest = metric.mix(value.digest, rows);
+    value.digest = metric.mix(value.digest, cost);
+    value
+}
+
+pub fn verify(borrow value: Plan) -> bool {
+    if !value.valid || value.nodes.len() == 0 || value.root >= value.nodes.len() { return false; }
+    let mut i: u64 = 0;
+    while i < value.nodes.len() {
+        let node = value.nodes.get_or(i, empty_node());
+        if node.kind == 0 || node.cost == 0 { return false; }
+        if node.left != model.NONE() && node.left >= i { return false; }
+        if node.right != model.NONE() && node.right >= i { return false; }
+        i = i + 1;
+    }
+    let root = value.nodes.get_or(value.root, empty_node());
+    root.estimated_rows == value.estimated_rows && root.cost == value.cost
+}

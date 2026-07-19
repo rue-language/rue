@@ -1,0 +1,56 @@
+// Independent, deliberately simple execution oracle used by selftest.
+const model = @import("model.rue");
+const result = @import("result.rue");
+
+pub fn execute(borrow database: model.Database, borrow query: model.Query) -> result.Result {
+    let mut out = result.empty();
+    let mut i: u64 = 0;
+    while i < database.rows.len() {
+        let row = database.rows.get_or(i, model.empty_row());
+        if row.table == query.table && model.visible(borrow row, database.version) {
+            let pass = query.filter_column == model.NONE() ||
+                model.cell_number(borrow database, i, query.filter_column) >= query.filter_value;
+            if pass {
+                let mut matches: u64 = 1;
+                if query.join_table != model.NONE() {
+                    matches = 0;
+                    let key = model.cell_number(borrow database, i, query.join_left);
+                    let mut j: u64 = 0;
+                    while j < database.rows.len() {
+                        let other = database.rows.get_or(j, model.empty_row());
+                        if other.table == query.join_table &&
+                            model.visible(borrow other, database.version) &&
+                            model.cell_number(borrow database, j, query.join_right) == key {
+                            matches = matches + 1;
+                        }
+                        j = j + 1;
+                    }
+                }
+                let column = if query.order_column != model.NONE() { query.order_column }
+                    else if query.filter_column != model.NONE() { query.filter_column }
+                    else { database.tables.get_or(query.table, model.empty_table()).first_column };
+                let value = model.cell_number(borrow database, i, column);
+                let mut n: u64 = 0;
+                while n < matches {
+                    result.observe(inout out, value);
+                    if query.join_table != model.NONE() { out.joined_rows = out.joined_rows + 1; }
+                    n = n + 1;
+                }
+            }
+        }
+        i = i + 1;
+    }
+    if query.limit != model.NONE() && out.rows > query.limit {
+        out.rows = query.limit;
+        out.truncated = true;
+    }
+    result.finish(inout out);
+    out.valid = true;
+    out
+}
+
+pub fn agrees(borrow first: result.Result, borrow second: result.Result) -> bool {
+    first.rows == second.rows && first.joined_rows == second.joined_rows &&
+        first.sum == second.sum && first.minimum == second.minimum &&
+        first.maximum == second.maximum
+}

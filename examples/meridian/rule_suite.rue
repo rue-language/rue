@@ -1,0 +1,419 @@
+// Evaluates every Meridian optimizer rule twice against every checked query.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+const plan = @import("plan.rue");
+const rule_result = @import("rule_result.rue");
+const rule_logical_push_filter = @import("rule_logical_push_filter.rue");
+const rule_logical_merge_filters = @import("rule_logical_merge_filters.rue");
+const rule_logical_prune_projection = @import("rule_logical_prune_projection.rue");
+const rule_logical_fold_limit = @import("rule_logical_fold_limit.rue");
+const rule_logical_remove_redundant_sort = @import("rule_logical_remove_redundant_sort.rue");
+const rule_logical_simplify_predicate = @import("rule_logical_simplify_predicate.rue");
+const rule_logical_eliminate_identity_join = @import("rule_logical_eliminate_identity_join.rue");
+const rule_logical_push_limit = @import("rule_logical_push_limit.rue");
+const rule_logical_pull_common_filter = @import("rule_logical_pull_common_filter.rue");
+const rule_logical_collapse_projection = @import("rule_logical_collapse_projection.rue");
+const rule_logical_normalize_group = @import("rule_logical_normalize_group.rue");
+const rule_logical_prune_distinct = @import("rule_logical_prune_distinct.rue");
+const rule_logical_reorder_conjunction = @import("rule_logical_reorder_conjunction.rue");
+const rule_logical_eliminate_constant_filter = @import("rule_logical_eliminate_constant_filter.rue");
+const rule_logical_merge_aggregates = @import("rule_logical_merge_aggregates.rue");
+const rule_logical_push_group = @import("rule_logical_push_group.rue");
+const rule_logical_pull_projection = @import("rule_logical_pull_projection.rue");
+const rule_logical_reduce_join_columns = @import("rule_logical_reduce_join_columns.rue");
+const rule_logical_infer_key_filter = @import("rule_logical_infer_key_filter.rue");
+const rule_logical_rewrite_count = @import("rule_logical_rewrite_count.rue");
+const rule_logical_eliminate_empty_branch = @import("rule_logical_eliminate_empty_branch.rue");
+const rule_logical_reuse_subplan = @import("rule_logical_reuse_subplan.rue");
+const rule_logical_canonicalize_order = @import("rule_logical_canonicalize_order.rue");
+const rule_logical_deduplicate_keys = @import("rule_logical_deduplicate_keys.rue");
+const rule_join_commute_inner = @import("rule_join_commute_inner.rue");
+const rule_join_associate_left = @import("rule_join_associate_left.rue");
+const rule_join_associate_right = @import("rule_join_associate_right.rue");
+const rule_join_push_left_filter = @import("rule_join_push_left_filter.rue");
+const rule_join_push_right_filter = @import("rule_join_push_right_filter.rue");
+const rule_join_choose_build_side = @import("rule_join_choose_build_side.rue");
+const rule_join_use_unique_key = @import("rule_join_use_unique_key.rue");
+const rule_join_eliminate_unused = @import("rule_join_eliminate_unused.rue");
+const rule_join_reduce_cartesian = @import("rule_join_reduce_cartesian.rue");
+const rule_join_prune_columns = @import("rule_join_prune_columns.rue");
+const rule_join_infer_transitive_filter = @import("rule_join_infer_transitive_filter.rue");
+const rule_join_select_star_schema = @import("rule_join_select_star_schema.rue");
+const rule_join_reuse_hash = @import("rule_join_reuse_hash.rue");
+const rule_join_bloom_prefilter = @import("rule_join_bloom_prefilter.rue");
+const rule_join_partition_keys = @import("rule_join_partition_keys.rue");
+const rule_join_delay_payload = @import("rule_join_delay_payload.rue");
+const rule_physical_choose_index_scan = @import("rule_physical_choose_index_scan.rue");
+const rule_physical_choose_table_scan = @import("rule_physical_choose_table_scan.rue");
+const rule_physical_choose_hash_join = @import("rule_physical_choose_hash_join.rue");
+const rule_physical_choose_nested_join = @import("rule_physical_choose_nested_join.rue");
+const rule_physical_choose_merge_join = @import("rule_physical_choose_merge_join.rue");
+const rule_physical_choose_stream_group = @import("rule_physical_choose_stream_group.rue");
+const rule_physical_choose_hash_group = @import("rule_physical_choose_hash_group.rue");
+const rule_physical_choose_topn = @import("rule_physical_choose_topn.rue");
+const rule_physical_choose_full_sort = @import("rule_physical_choose_full_sort.rue");
+const rule_physical_fuse_filter_scan = @import("rule_physical_fuse_filter_scan.rue");
+const rule_physical_fuse_project_scan = @import("rule_physical_fuse_project_scan.rue");
+const rule_physical_vectorize_scan = @import("rule_physical_vectorize_scan.rue");
+const rule_physical_batch_lookup = @import("rule_physical_batch_lookup.rue");
+const rule_physical_prefetch_index = @import("rule_physical_prefetch_index.rue");
+const rule_physical_spill_hash = @import("rule_physical_spill_hash.rue");
+const rule_physical_parallel_scan = @import("rule_physical_parallel_scan.rue");
+const rule_distributed_route_single_shard = @import("rule_distributed_route_single_shard.rue");
+const rule_distributed_prune_shards = @import("rule_distributed_prune_shards.rue");
+const rule_distributed_push_filter = @import("rule_distributed_push_filter.rue");
+const rule_distributed_push_aggregate = @import("rule_distributed_push_aggregate.rue");
+const rule_distributed_colocate_join = @import("rule_distributed_colocate_join.rue");
+const rule_distributed_broadcast_small = @import("rule_distributed_broadcast_small.rue");
+const rule_distributed_repartition_large = @import("rule_distributed_repartition_large.rue");
+const rule_distributed_merge_exchange = @import("rule_distributed_merge_exchange.rue");
+const rule_distributed_limit_exchange = @import("rule_distributed_limit_exchange.rue");
+const rule_distributed_order_exchange = @import("rule_distributed_order_exchange.rue");
+const rule_distributed_replica_read = @import("rule_distributed_replica_read.rue");
+const rule_distributed_primary_write = @import("rule_distributed_primary_write.rue");
+const rule_distributed_retry_fragment = @import("rule_distributed_retry_fragment.rue");
+const rule_distributed_pipeline_fragment = @import("rule_distributed_pipeline_fragment.rue");
+const rule_distributed_compress_exchange = @import("rule_distributed_compress_exchange.rue");
+const rule_distributed_balance_fragments = @import("rule_distributed_balance_fragments.rue");
+
+pub struct Result {
+    rules: u64,
+    evaluations: u64,
+    inspected: u64,
+    matches: u64,
+    rewrites: u64,
+    benefit: u64,
+    failures: u64,
+    deterministic: bool,
+    digest: u64,
+    valid: bool,
+}
+
+fn empty() -> Result {
+    Result { rules: 0, evaluations: 0, inspected: 0, matches: 0,
+        rewrites: 0, benefit: 0, failures: 0, deterministic: true,
+        digest: 14695981039346656037, valid: false }
+}
+
+fn include(inout out: Result, borrow input: plan.Plan,
+    borrow first: rule_result.Decision, borrow second: rule_result.Decision,
+    verified: bool) {
+    out.evaluations = out.evaluations + 1;
+    out.inspected = out.inspected + first.inspected;
+    out.matches = out.matches + first.matches;
+    out.rewrites = out.rewrites + first.rewrites;
+    out.benefit = out.benefit + first.benefit;
+    out.digest = metric.mix(out.digest, first.rule);
+    out.digest = metric.mix(out.digest, first.digest);
+    if !verified || !first.valid || first.cost_before != input.cost {
+        out.failures = out.failures + 1;
+    }
+    if first.digest != second.digest || first.matches != second.matches ||
+        first.rewrites != second.rewrites || first.cost_after != second.cost_after {
+        out.deterministic = false;
+        out.failures = out.failures + 1;
+    }
+}
+
+pub fn run(borrow database: model.Database) -> Result {
+    let mut out = empty();
+    let mut q: u64 = 0;
+    while q < database.queries.len() {
+        let query = database.queries.get_or(q, model.empty_query());
+        let input = plan.build(borrow database, borrow query);
+        let logical_push_filter_a = rule_logical_push_filter.evaluate(borrow database, borrow query, borrow input);
+        let logical_push_filter_b = rule_logical_push_filter.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_push_filter_a, borrow logical_push_filter_b,
+            rule_logical_push_filter.verify(borrow input, borrow logical_push_filter_a));
+        let logical_merge_filters_a = rule_logical_merge_filters.evaluate(borrow database, borrow query, borrow input);
+        let logical_merge_filters_b = rule_logical_merge_filters.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_merge_filters_a, borrow logical_merge_filters_b,
+            rule_logical_merge_filters.verify(borrow input, borrow logical_merge_filters_a));
+        let logical_prune_projection_a = rule_logical_prune_projection.evaluate(borrow database, borrow query, borrow input);
+        let logical_prune_projection_b = rule_logical_prune_projection.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_prune_projection_a, borrow logical_prune_projection_b,
+            rule_logical_prune_projection.verify(borrow input, borrow logical_prune_projection_a));
+        let logical_fold_limit_a = rule_logical_fold_limit.evaluate(borrow database, borrow query, borrow input);
+        let logical_fold_limit_b = rule_logical_fold_limit.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_fold_limit_a, borrow logical_fold_limit_b,
+            rule_logical_fold_limit.verify(borrow input, borrow logical_fold_limit_a));
+        let logical_remove_redundant_sort_a = rule_logical_remove_redundant_sort.evaluate(borrow database, borrow query, borrow input);
+        let logical_remove_redundant_sort_b = rule_logical_remove_redundant_sort.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_remove_redundant_sort_a, borrow logical_remove_redundant_sort_b,
+            rule_logical_remove_redundant_sort.verify(borrow input, borrow logical_remove_redundant_sort_a));
+        let logical_simplify_predicate_a = rule_logical_simplify_predicate.evaluate(borrow database, borrow query, borrow input);
+        let logical_simplify_predicate_b = rule_logical_simplify_predicate.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_simplify_predicate_a, borrow logical_simplify_predicate_b,
+            rule_logical_simplify_predicate.verify(borrow input, borrow logical_simplify_predicate_a));
+        let logical_eliminate_identity_join_a = rule_logical_eliminate_identity_join.evaluate(borrow database, borrow query, borrow input);
+        let logical_eliminate_identity_join_b = rule_logical_eliminate_identity_join.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_eliminate_identity_join_a, borrow logical_eliminate_identity_join_b,
+            rule_logical_eliminate_identity_join.verify(borrow input, borrow logical_eliminate_identity_join_a));
+        let logical_push_limit_a = rule_logical_push_limit.evaluate(borrow database, borrow query, borrow input);
+        let logical_push_limit_b = rule_logical_push_limit.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_push_limit_a, borrow logical_push_limit_b,
+            rule_logical_push_limit.verify(borrow input, borrow logical_push_limit_a));
+        let logical_pull_common_filter_a = rule_logical_pull_common_filter.evaluate(borrow database, borrow query, borrow input);
+        let logical_pull_common_filter_b = rule_logical_pull_common_filter.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_pull_common_filter_a, borrow logical_pull_common_filter_b,
+            rule_logical_pull_common_filter.verify(borrow input, borrow logical_pull_common_filter_a));
+        let logical_collapse_projection_a = rule_logical_collapse_projection.evaluate(borrow database, borrow query, borrow input);
+        let logical_collapse_projection_b = rule_logical_collapse_projection.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_collapse_projection_a, borrow logical_collapse_projection_b,
+            rule_logical_collapse_projection.verify(borrow input, borrow logical_collapse_projection_a));
+        let logical_normalize_group_a = rule_logical_normalize_group.evaluate(borrow database, borrow query, borrow input);
+        let logical_normalize_group_b = rule_logical_normalize_group.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_normalize_group_a, borrow logical_normalize_group_b,
+            rule_logical_normalize_group.verify(borrow input, borrow logical_normalize_group_a));
+        let logical_prune_distinct_a = rule_logical_prune_distinct.evaluate(borrow database, borrow query, borrow input);
+        let logical_prune_distinct_b = rule_logical_prune_distinct.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_prune_distinct_a, borrow logical_prune_distinct_b,
+            rule_logical_prune_distinct.verify(borrow input, borrow logical_prune_distinct_a));
+        let logical_reorder_conjunction_a = rule_logical_reorder_conjunction.evaluate(borrow database, borrow query, borrow input);
+        let logical_reorder_conjunction_b = rule_logical_reorder_conjunction.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_reorder_conjunction_a, borrow logical_reorder_conjunction_b,
+            rule_logical_reorder_conjunction.verify(borrow input, borrow logical_reorder_conjunction_a));
+        let logical_eliminate_constant_filter_a = rule_logical_eliminate_constant_filter.evaluate(borrow database, borrow query, borrow input);
+        let logical_eliminate_constant_filter_b = rule_logical_eliminate_constant_filter.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_eliminate_constant_filter_a, borrow logical_eliminate_constant_filter_b,
+            rule_logical_eliminate_constant_filter.verify(borrow input, borrow logical_eliminate_constant_filter_a));
+        let logical_merge_aggregates_a = rule_logical_merge_aggregates.evaluate(borrow database, borrow query, borrow input);
+        let logical_merge_aggregates_b = rule_logical_merge_aggregates.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_merge_aggregates_a, borrow logical_merge_aggregates_b,
+            rule_logical_merge_aggregates.verify(borrow input, borrow logical_merge_aggregates_a));
+        let logical_push_group_a = rule_logical_push_group.evaluate(borrow database, borrow query, borrow input);
+        let logical_push_group_b = rule_logical_push_group.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_push_group_a, borrow logical_push_group_b,
+            rule_logical_push_group.verify(borrow input, borrow logical_push_group_a));
+        let logical_pull_projection_a = rule_logical_pull_projection.evaluate(borrow database, borrow query, borrow input);
+        let logical_pull_projection_b = rule_logical_pull_projection.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_pull_projection_a, borrow logical_pull_projection_b,
+            rule_logical_pull_projection.verify(borrow input, borrow logical_pull_projection_a));
+        let logical_reduce_join_columns_a = rule_logical_reduce_join_columns.evaluate(borrow database, borrow query, borrow input);
+        let logical_reduce_join_columns_b = rule_logical_reduce_join_columns.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_reduce_join_columns_a, borrow logical_reduce_join_columns_b,
+            rule_logical_reduce_join_columns.verify(borrow input, borrow logical_reduce_join_columns_a));
+        let logical_infer_key_filter_a = rule_logical_infer_key_filter.evaluate(borrow database, borrow query, borrow input);
+        let logical_infer_key_filter_b = rule_logical_infer_key_filter.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_infer_key_filter_a, borrow logical_infer_key_filter_b,
+            rule_logical_infer_key_filter.verify(borrow input, borrow logical_infer_key_filter_a));
+        let logical_rewrite_count_a = rule_logical_rewrite_count.evaluate(borrow database, borrow query, borrow input);
+        let logical_rewrite_count_b = rule_logical_rewrite_count.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_rewrite_count_a, borrow logical_rewrite_count_b,
+            rule_logical_rewrite_count.verify(borrow input, borrow logical_rewrite_count_a));
+        let logical_eliminate_empty_branch_a = rule_logical_eliminate_empty_branch.evaluate(borrow database, borrow query, borrow input);
+        let logical_eliminate_empty_branch_b = rule_logical_eliminate_empty_branch.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_eliminate_empty_branch_a, borrow logical_eliminate_empty_branch_b,
+            rule_logical_eliminate_empty_branch.verify(borrow input, borrow logical_eliminate_empty_branch_a));
+        let logical_reuse_subplan_a = rule_logical_reuse_subplan.evaluate(borrow database, borrow query, borrow input);
+        let logical_reuse_subplan_b = rule_logical_reuse_subplan.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_reuse_subplan_a, borrow logical_reuse_subplan_b,
+            rule_logical_reuse_subplan.verify(borrow input, borrow logical_reuse_subplan_a));
+        let logical_canonicalize_order_a = rule_logical_canonicalize_order.evaluate(borrow database, borrow query, borrow input);
+        let logical_canonicalize_order_b = rule_logical_canonicalize_order.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_canonicalize_order_a, borrow logical_canonicalize_order_b,
+            rule_logical_canonicalize_order.verify(borrow input, borrow logical_canonicalize_order_a));
+        let logical_deduplicate_keys_a = rule_logical_deduplicate_keys.evaluate(borrow database, borrow query, borrow input);
+        let logical_deduplicate_keys_b = rule_logical_deduplicate_keys.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow logical_deduplicate_keys_a, borrow logical_deduplicate_keys_b,
+            rule_logical_deduplicate_keys.verify(borrow input, borrow logical_deduplicate_keys_a));
+        let join_commute_inner_a = rule_join_commute_inner.evaluate(borrow database, borrow query, borrow input);
+        let join_commute_inner_b = rule_join_commute_inner.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow join_commute_inner_a, borrow join_commute_inner_b,
+            rule_join_commute_inner.verify(borrow input, borrow join_commute_inner_a));
+        let join_associate_left_a = rule_join_associate_left.evaluate(borrow database, borrow query, borrow input);
+        let join_associate_left_b = rule_join_associate_left.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow join_associate_left_a, borrow join_associate_left_b,
+            rule_join_associate_left.verify(borrow input, borrow join_associate_left_a));
+        let join_associate_right_a = rule_join_associate_right.evaluate(borrow database, borrow query, borrow input);
+        let join_associate_right_b = rule_join_associate_right.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow join_associate_right_a, borrow join_associate_right_b,
+            rule_join_associate_right.verify(borrow input, borrow join_associate_right_a));
+        let join_push_left_filter_a = rule_join_push_left_filter.evaluate(borrow database, borrow query, borrow input);
+        let join_push_left_filter_b = rule_join_push_left_filter.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow join_push_left_filter_a, borrow join_push_left_filter_b,
+            rule_join_push_left_filter.verify(borrow input, borrow join_push_left_filter_a));
+        let join_push_right_filter_a = rule_join_push_right_filter.evaluate(borrow database, borrow query, borrow input);
+        let join_push_right_filter_b = rule_join_push_right_filter.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow join_push_right_filter_a, borrow join_push_right_filter_b,
+            rule_join_push_right_filter.verify(borrow input, borrow join_push_right_filter_a));
+        let join_choose_build_side_a = rule_join_choose_build_side.evaluate(borrow database, borrow query, borrow input);
+        let join_choose_build_side_b = rule_join_choose_build_side.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow join_choose_build_side_a, borrow join_choose_build_side_b,
+            rule_join_choose_build_side.verify(borrow input, borrow join_choose_build_side_a));
+        let join_use_unique_key_a = rule_join_use_unique_key.evaluate(borrow database, borrow query, borrow input);
+        let join_use_unique_key_b = rule_join_use_unique_key.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow join_use_unique_key_a, borrow join_use_unique_key_b,
+            rule_join_use_unique_key.verify(borrow input, borrow join_use_unique_key_a));
+        let join_eliminate_unused_a = rule_join_eliminate_unused.evaluate(borrow database, borrow query, borrow input);
+        let join_eliminate_unused_b = rule_join_eliminate_unused.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow join_eliminate_unused_a, borrow join_eliminate_unused_b,
+            rule_join_eliminate_unused.verify(borrow input, borrow join_eliminate_unused_a));
+        let join_reduce_cartesian_a = rule_join_reduce_cartesian.evaluate(borrow database, borrow query, borrow input);
+        let join_reduce_cartesian_b = rule_join_reduce_cartesian.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow join_reduce_cartesian_a, borrow join_reduce_cartesian_b,
+            rule_join_reduce_cartesian.verify(borrow input, borrow join_reduce_cartesian_a));
+        let join_prune_columns_a = rule_join_prune_columns.evaluate(borrow database, borrow query, borrow input);
+        let join_prune_columns_b = rule_join_prune_columns.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow join_prune_columns_a, borrow join_prune_columns_b,
+            rule_join_prune_columns.verify(borrow input, borrow join_prune_columns_a));
+        let join_infer_transitive_filter_a = rule_join_infer_transitive_filter.evaluate(borrow database, borrow query, borrow input);
+        let join_infer_transitive_filter_b = rule_join_infer_transitive_filter.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow join_infer_transitive_filter_a, borrow join_infer_transitive_filter_b,
+            rule_join_infer_transitive_filter.verify(borrow input, borrow join_infer_transitive_filter_a));
+        let join_select_star_schema_a = rule_join_select_star_schema.evaluate(borrow database, borrow query, borrow input);
+        let join_select_star_schema_b = rule_join_select_star_schema.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow join_select_star_schema_a, borrow join_select_star_schema_b,
+            rule_join_select_star_schema.verify(borrow input, borrow join_select_star_schema_a));
+        let join_reuse_hash_a = rule_join_reuse_hash.evaluate(borrow database, borrow query, borrow input);
+        let join_reuse_hash_b = rule_join_reuse_hash.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow join_reuse_hash_a, borrow join_reuse_hash_b,
+            rule_join_reuse_hash.verify(borrow input, borrow join_reuse_hash_a));
+        let join_bloom_prefilter_a = rule_join_bloom_prefilter.evaluate(borrow database, borrow query, borrow input);
+        let join_bloom_prefilter_b = rule_join_bloom_prefilter.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow join_bloom_prefilter_a, borrow join_bloom_prefilter_b,
+            rule_join_bloom_prefilter.verify(borrow input, borrow join_bloom_prefilter_a));
+        let join_partition_keys_a = rule_join_partition_keys.evaluate(borrow database, borrow query, borrow input);
+        let join_partition_keys_b = rule_join_partition_keys.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow join_partition_keys_a, borrow join_partition_keys_b,
+            rule_join_partition_keys.verify(borrow input, borrow join_partition_keys_a));
+        let join_delay_payload_a = rule_join_delay_payload.evaluate(borrow database, borrow query, borrow input);
+        let join_delay_payload_b = rule_join_delay_payload.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow join_delay_payload_a, borrow join_delay_payload_b,
+            rule_join_delay_payload.verify(borrow input, borrow join_delay_payload_a));
+        let physical_choose_index_scan_a = rule_physical_choose_index_scan.evaluate(borrow database, borrow query, borrow input);
+        let physical_choose_index_scan_b = rule_physical_choose_index_scan.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow physical_choose_index_scan_a, borrow physical_choose_index_scan_b,
+            rule_physical_choose_index_scan.verify(borrow input, borrow physical_choose_index_scan_a));
+        let physical_choose_table_scan_a = rule_physical_choose_table_scan.evaluate(borrow database, borrow query, borrow input);
+        let physical_choose_table_scan_b = rule_physical_choose_table_scan.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow physical_choose_table_scan_a, borrow physical_choose_table_scan_b,
+            rule_physical_choose_table_scan.verify(borrow input, borrow physical_choose_table_scan_a));
+        let physical_choose_hash_join_a = rule_physical_choose_hash_join.evaluate(borrow database, borrow query, borrow input);
+        let physical_choose_hash_join_b = rule_physical_choose_hash_join.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow physical_choose_hash_join_a, borrow physical_choose_hash_join_b,
+            rule_physical_choose_hash_join.verify(borrow input, borrow physical_choose_hash_join_a));
+        let physical_choose_nested_join_a = rule_physical_choose_nested_join.evaluate(borrow database, borrow query, borrow input);
+        let physical_choose_nested_join_b = rule_physical_choose_nested_join.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow physical_choose_nested_join_a, borrow physical_choose_nested_join_b,
+            rule_physical_choose_nested_join.verify(borrow input, borrow physical_choose_nested_join_a));
+        let physical_choose_merge_join_a = rule_physical_choose_merge_join.evaluate(borrow database, borrow query, borrow input);
+        let physical_choose_merge_join_b = rule_physical_choose_merge_join.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow physical_choose_merge_join_a, borrow physical_choose_merge_join_b,
+            rule_physical_choose_merge_join.verify(borrow input, borrow physical_choose_merge_join_a));
+        let physical_choose_stream_group_a = rule_physical_choose_stream_group.evaluate(borrow database, borrow query, borrow input);
+        let physical_choose_stream_group_b = rule_physical_choose_stream_group.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow physical_choose_stream_group_a, borrow physical_choose_stream_group_b,
+            rule_physical_choose_stream_group.verify(borrow input, borrow physical_choose_stream_group_a));
+        let physical_choose_hash_group_a = rule_physical_choose_hash_group.evaluate(borrow database, borrow query, borrow input);
+        let physical_choose_hash_group_b = rule_physical_choose_hash_group.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow physical_choose_hash_group_a, borrow physical_choose_hash_group_b,
+            rule_physical_choose_hash_group.verify(borrow input, borrow physical_choose_hash_group_a));
+        let physical_choose_topn_a = rule_physical_choose_topn.evaluate(borrow database, borrow query, borrow input);
+        let physical_choose_topn_b = rule_physical_choose_topn.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow physical_choose_topn_a, borrow physical_choose_topn_b,
+            rule_physical_choose_topn.verify(borrow input, borrow physical_choose_topn_a));
+        let physical_choose_full_sort_a = rule_physical_choose_full_sort.evaluate(borrow database, borrow query, borrow input);
+        let physical_choose_full_sort_b = rule_physical_choose_full_sort.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow physical_choose_full_sort_a, borrow physical_choose_full_sort_b,
+            rule_physical_choose_full_sort.verify(borrow input, borrow physical_choose_full_sort_a));
+        let physical_fuse_filter_scan_a = rule_physical_fuse_filter_scan.evaluate(borrow database, borrow query, borrow input);
+        let physical_fuse_filter_scan_b = rule_physical_fuse_filter_scan.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow physical_fuse_filter_scan_a, borrow physical_fuse_filter_scan_b,
+            rule_physical_fuse_filter_scan.verify(borrow input, borrow physical_fuse_filter_scan_a));
+        let physical_fuse_project_scan_a = rule_physical_fuse_project_scan.evaluate(borrow database, borrow query, borrow input);
+        let physical_fuse_project_scan_b = rule_physical_fuse_project_scan.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow physical_fuse_project_scan_a, borrow physical_fuse_project_scan_b,
+            rule_physical_fuse_project_scan.verify(borrow input, borrow physical_fuse_project_scan_a));
+        let physical_vectorize_scan_a = rule_physical_vectorize_scan.evaluate(borrow database, borrow query, borrow input);
+        let physical_vectorize_scan_b = rule_physical_vectorize_scan.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow physical_vectorize_scan_a, borrow physical_vectorize_scan_b,
+            rule_physical_vectorize_scan.verify(borrow input, borrow physical_vectorize_scan_a));
+        let physical_batch_lookup_a = rule_physical_batch_lookup.evaluate(borrow database, borrow query, borrow input);
+        let physical_batch_lookup_b = rule_physical_batch_lookup.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow physical_batch_lookup_a, borrow physical_batch_lookup_b,
+            rule_physical_batch_lookup.verify(borrow input, borrow physical_batch_lookup_a));
+        let physical_prefetch_index_a = rule_physical_prefetch_index.evaluate(borrow database, borrow query, borrow input);
+        let physical_prefetch_index_b = rule_physical_prefetch_index.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow physical_prefetch_index_a, borrow physical_prefetch_index_b,
+            rule_physical_prefetch_index.verify(borrow input, borrow physical_prefetch_index_a));
+        let physical_spill_hash_a = rule_physical_spill_hash.evaluate(borrow database, borrow query, borrow input);
+        let physical_spill_hash_b = rule_physical_spill_hash.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow physical_spill_hash_a, borrow physical_spill_hash_b,
+            rule_physical_spill_hash.verify(borrow input, borrow physical_spill_hash_a));
+        let physical_parallel_scan_a = rule_physical_parallel_scan.evaluate(borrow database, borrow query, borrow input);
+        let physical_parallel_scan_b = rule_physical_parallel_scan.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow physical_parallel_scan_a, borrow physical_parallel_scan_b,
+            rule_physical_parallel_scan.verify(borrow input, borrow physical_parallel_scan_a));
+        let distributed_route_single_shard_a = rule_distributed_route_single_shard.evaluate(borrow database, borrow query, borrow input);
+        let distributed_route_single_shard_b = rule_distributed_route_single_shard.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow distributed_route_single_shard_a, borrow distributed_route_single_shard_b,
+            rule_distributed_route_single_shard.verify(borrow input, borrow distributed_route_single_shard_a));
+        let distributed_prune_shards_a = rule_distributed_prune_shards.evaluate(borrow database, borrow query, borrow input);
+        let distributed_prune_shards_b = rule_distributed_prune_shards.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow distributed_prune_shards_a, borrow distributed_prune_shards_b,
+            rule_distributed_prune_shards.verify(borrow input, borrow distributed_prune_shards_a));
+        let distributed_push_filter_a = rule_distributed_push_filter.evaluate(borrow database, borrow query, borrow input);
+        let distributed_push_filter_b = rule_distributed_push_filter.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow distributed_push_filter_a, borrow distributed_push_filter_b,
+            rule_distributed_push_filter.verify(borrow input, borrow distributed_push_filter_a));
+        let distributed_push_aggregate_a = rule_distributed_push_aggregate.evaluate(borrow database, borrow query, borrow input);
+        let distributed_push_aggregate_b = rule_distributed_push_aggregate.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow distributed_push_aggregate_a, borrow distributed_push_aggregate_b,
+            rule_distributed_push_aggregate.verify(borrow input, borrow distributed_push_aggregate_a));
+        let distributed_colocate_join_a = rule_distributed_colocate_join.evaluate(borrow database, borrow query, borrow input);
+        let distributed_colocate_join_b = rule_distributed_colocate_join.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow distributed_colocate_join_a, borrow distributed_colocate_join_b,
+            rule_distributed_colocate_join.verify(borrow input, borrow distributed_colocate_join_a));
+        let distributed_broadcast_small_a = rule_distributed_broadcast_small.evaluate(borrow database, borrow query, borrow input);
+        let distributed_broadcast_small_b = rule_distributed_broadcast_small.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow distributed_broadcast_small_a, borrow distributed_broadcast_small_b,
+            rule_distributed_broadcast_small.verify(borrow input, borrow distributed_broadcast_small_a));
+        let distributed_repartition_large_a = rule_distributed_repartition_large.evaluate(borrow database, borrow query, borrow input);
+        let distributed_repartition_large_b = rule_distributed_repartition_large.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow distributed_repartition_large_a, borrow distributed_repartition_large_b,
+            rule_distributed_repartition_large.verify(borrow input, borrow distributed_repartition_large_a));
+        let distributed_merge_exchange_a = rule_distributed_merge_exchange.evaluate(borrow database, borrow query, borrow input);
+        let distributed_merge_exchange_b = rule_distributed_merge_exchange.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow distributed_merge_exchange_a, borrow distributed_merge_exchange_b,
+            rule_distributed_merge_exchange.verify(borrow input, borrow distributed_merge_exchange_a));
+        let distributed_limit_exchange_a = rule_distributed_limit_exchange.evaluate(borrow database, borrow query, borrow input);
+        let distributed_limit_exchange_b = rule_distributed_limit_exchange.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow distributed_limit_exchange_a, borrow distributed_limit_exchange_b,
+            rule_distributed_limit_exchange.verify(borrow input, borrow distributed_limit_exchange_a));
+        let distributed_order_exchange_a = rule_distributed_order_exchange.evaluate(borrow database, borrow query, borrow input);
+        let distributed_order_exchange_b = rule_distributed_order_exchange.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow distributed_order_exchange_a, borrow distributed_order_exchange_b,
+            rule_distributed_order_exchange.verify(borrow input, borrow distributed_order_exchange_a));
+        let distributed_replica_read_a = rule_distributed_replica_read.evaluate(borrow database, borrow query, borrow input);
+        let distributed_replica_read_b = rule_distributed_replica_read.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow distributed_replica_read_a, borrow distributed_replica_read_b,
+            rule_distributed_replica_read.verify(borrow input, borrow distributed_replica_read_a));
+        let distributed_primary_write_a = rule_distributed_primary_write.evaluate(borrow database, borrow query, borrow input);
+        let distributed_primary_write_b = rule_distributed_primary_write.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow distributed_primary_write_a, borrow distributed_primary_write_b,
+            rule_distributed_primary_write.verify(borrow input, borrow distributed_primary_write_a));
+        let distributed_retry_fragment_a = rule_distributed_retry_fragment.evaluate(borrow database, borrow query, borrow input);
+        let distributed_retry_fragment_b = rule_distributed_retry_fragment.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow distributed_retry_fragment_a, borrow distributed_retry_fragment_b,
+            rule_distributed_retry_fragment.verify(borrow input, borrow distributed_retry_fragment_a));
+        let distributed_pipeline_fragment_a = rule_distributed_pipeline_fragment.evaluate(borrow database, borrow query, borrow input);
+        let distributed_pipeline_fragment_b = rule_distributed_pipeline_fragment.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow distributed_pipeline_fragment_a, borrow distributed_pipeline_fragment_b,
+            rule_distributed_pipeline_fragment.verify(borrow input, borrow distributed_pipeline_fragment_a));
+        let distributed_compress_exchange_a = rule_distributed_compress_exchange.evaluate(borrow database, borrow query, borrow input);
+        let distributed_compress_exchange_b = rule_distributed_compress_exchange.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow distributed_compress_exchange_a, borrow distributed_compress_exchange_b,
+            rule_distributed_compress_exchange.verify(borrow input, borrow distributed_compress_exchange_a));
+        let distributed_balance_fragments_a = rule_distributed_balance_fragments.evaluate(borrow database, borrow query, borrow input);
+        let distributed_balance_fragments_b = rule_distributed_balance_fragments.evaluate(borrow database, borrow query, borrow input);
+        include(inout out, borrow input, borrow distributed_balance_fragments_a, borrow distributed_balance_fragments_b,
+            rule_distributed_balance_fragments.verify(borrow input, borrow distributed_balance_fragments_a));
+        q = q + 1;
+    }
+    out.rules = 72;
+    out.valid = out.rules == 72 &&
+        out.evaluations == database.queries.len() * 72 &&
+        out.failures == 0 && out.deterministic;
+    out
+}

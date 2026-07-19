@@ -1,0 +1,135 @@
+// ASCII lexer for Meridian SQL. Keywords are uppercase in examples but
+// matching accepts either case so generated and hand-written workloads agree.
+const std = @import("std");
+const poolmod = @import("pool.rue");
+const token = @import("token.rue");
+const StrBuf = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+
+pub struct ScanResult {
+    tokens: token.Tokens,
+    strings: poolmod.Pool,
+    errors: StrBuf,
+}
+
+fn is_alpha(value: u8) -> bool {
+    (value >= 65 && value <= 90) || (value >= 97 && value <= 122) || value == 95
+}
+
+fn is_digit(value: u8) -> bool { value >= 48 && value <= 57 }
+fn is_alnum(value: u8) -> bool { is_alpha(value) || is_digit(value) || value == 95 }
+
+struct Lexer {
+    source: Bytes,
+    at: u64,
+    tokens: token.Tokens,
+    strings: poolmod.Pool,
+    errors: StrBuf,
+
+    fn new(source: Bytes) -> Self {
+        Self {
+            source: source, at: 0, tokens: token.Tokens.new(),
+            strings: poolmod.Pool.new(), errors: StrBuf.new(),
+        }
+    }
+
+    fn byte(borrow self, index: u64) -> u8 { self.source.get_or(index, 0) }
+    fn done(borrow self) -> bool { self.at >= self.source.len() }
+
+    fn advance(inout self) -> u8 {
+        let value = self.byte(self.at);
+        self.at = self.at + 1;
+        value
+    }
+
+    fn push(inout self, kind: u64, start: u64, value: u64) {
+        self.tokens.push(token.Token { kind: kind, start: start, end: self.at, value: value });
+    }
+
+    fn error(inout self, start: u64, message: StrBuf) {
+        self.errors.push_str("meridian[lex] byte ");
+        self.errors.push_str(@to_string(start));
+        self.errors.push_str(": ");
+        self.errors.push_str(message);
+        self.errors.push(10);
+    }
+
+    fn equal_folded(borrow word: StrBuf, value: str) -> bool {
+        if word.len() != value.len() { return false; }
+        let mut i: u64 = 0;
+        while i < word.len() {
+            let actual = StrBuf.byte_at_borrowed(borrow word, i);
+            let folded = if actual >= 97 && actual <= 122 { actual - 32 } else { actual };
+            if folded != value[i] { return false; }
+            i = i + 1;
+        }
+        true
+    }
+
+    fn keyword(borrow word: StrBuf) -> u64 {
+        if Self.equal_folded(borrow word, "CREATE") { token.CREATE }
+        else if Self.equal_folded(borrow word, "TABLE") { token.TABLE }
+        else if Self.equal_folded(borrow word, "COLUMN") { token.COLUMN }
+        else if Self.equal_folded(borrow word, "INSERT") { token.INSERT }
+        else if Self.equal_folded(borrow word, "SELECT") { token.SELECT }
+        else if Self.equal_folded(borrow word, "INDEX") { token.INDEX }
+        else if Self.equal_folded(borrow word, "BEGIN") { token.BEGIN }
+        else if Self.equal_folded(borrow word, "COMMIT") { token.COMMIT }
+        else if Self.equal_folded(borrow word, "ROLLBACK") { token.ROLLBACK }
+        else if Self.equal_folded(borrow word, "FILTER") { token.FILTER }
+        else if Self.equal_folded(borrow word, "JOIN") { token.JOIN }
+        else if Self.equal_folded(borrow word, "ON") { token.ON }
+        else if Self.equal_folded(borrow word, "GROUP") { token.GROUP }
+        else if Self.equal_folded(borrow word, "ORDER") { token.ORDER }
+        else if Self.equal_folded(borrow word, "LIMIT") { token.LIMIT }
+        else if Self.equal_folded(borrow word, "INT") { token.INT_TYPE }
+        else if Self.equal_folded(borrow word, "TEXT") { token.TEXT_TYPE }
+        else if Self.equal_folded(borrow word, "REQUIRED") { token.REQUIRED }
+        else if Self.equal_folded(borrow word, "UNIQUE") { token.UNIQUE }
+        else { token.IDENT }
+    }
+
+    fn identifier(inout self, start: u64) {
+        while !self.done() && is_alnum(self.byte(self.at)) { let _ = self.advance(); }
+        let spelling = StrBuf.from_byte_range(borrow self.source, start, self.at - start);
+        let kind = Self.keyword(borrow spelling);
+        let value = if kind == token.IDENT { self.strings.intern(borrow spelling) } else { 0 };
+        self.push(kind, start, value);
+    }
+
+    fn number(inout self, start: u64, first: u8) {
+        let mut value: u64 = @intCast(first - 48);
+        while !self.done() && is_digit(self.byte(self.at)) {
+            let digit: u64 = @intCast(self.advance() - 48);
+            if value > 1844674407370955161 || (value == 1844674407370955161 && digit > 5) {
+                self.error(start, "integer literal is too large");
+                value = 0;
+            } else { value = value * 10 + digit; }
+        }
+        self.push(token.INT, start, value);
+    }
+
+    fn scan_one(inout self) {
+        let start = self.at;
+        let value = self.advance();
+        if value == 32 || value == 9 || value == 10 || value == 13 || value == 44 ||
+            value == 40 || value == 41 { return; }
+        if is_alpha(value) { self.identifier(start); return; }
+        if is_digit(value) { self.number(start, value); return; }
+        if value == 45 && !self.done() && self.byte(self.at) == 45 {
+            let _ = self.advance();
+            while !self.done() && self.byte(self.at) != 10 { let _ = self.advance(); }
+            return;
+        }
+        if value == 59 { self.push(token.SEMI, start, 0); return; }
+        self.error(start, "unexpected character");
+        self.push(token.ERROR, start, 0);
+    }
+}
+
+pub fn scan(source: Bytes) -> ScanResult {
+    let mut lexer = Lexer.new(source);
+    while !lexer.done() { lexer.scan_one(); }
+    lexer.tokens.push(token.Token { kind: token.EOF, start: lexer.at, end: lexer.at, value: 0 });
+    ScanResult { tokens: lexer.tokens, strings: lexer.strings, errors: lexer.errors }
+}

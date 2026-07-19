@@ -1,0 +1,40 @@
+// Checkpoint selection and bounded recovery-window model.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+
+pub struct Checkpoint {
+    lsn: u64,
+    active_transactions: u64,
+    dirty_rows: u64,
+    retained_records: u64,
+    checksum: u64,
+    valid: bool,
+}
+
+pub fn create(borrow database: model.Database) -> Checkpoint {
+    let latest = if database.next_lsn == 0 { 0 } else { database.next_lsn - 1 };
+    let lsn = latest / 2;
+    let mut active: u64 = 0;
+    let mut i: u64 = 0;
+    while i < database.transactions.len() {
+        if database.transactions.get_or(i, model.empty_transaction()).state == 1 {
+            active = active + 1;
+        }
+        i = i + 1;
+    }
+    let mut retained: u64 = 0;
+    let mut dirty: u64 = 0;
+    i = 0;
+    while i < database.wal.len() {
+        let entry = database.wal.get_or(i, model.empty_wal());
+        if entry.lsn > lsn { retained = retained + 1; }
+        if entry.kind == 1 || entry.kind == 2 { dirty = dirty + 1; }
+        i = i + 1;
+    }
+    let mut checksum = metric.mix(14695981039346656037, lsn);
+    checksum = metric.mix(checksum, active);
+    checksum = metric.mix(checksum, dirty);
+    checksum = metric.mix(checksum, retained);
+    Checkpoint { lsn: lsn, active_transactions: active, dirty_rows: dirty,
+        retained_records: retained, checksum: checksum, valid: lsn <= latest }
+}

@@ -1,0 +1,25 @@
+// Stable diagnostic renderer.
+const model = @import("model.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render(borrow database: model.Database) -> StrBuf {
+    let mut out = StrBuf.new();
+    let mut i: u64 = 0;
+    while i < database.diagnostics.len() {
+        let item = database.diagnostics.get_or(i, model.Diagnostic {
+            code: 0, subject: model.NONE(), detail: model.NONE(),
+        });
+        let name = model.diagnostic_name(item.code);
+        text.append_literal(inout out, "meridian[");
+        text.append_string(inout out, borrow name);
+        text.append_literal(inout out, "] ");
+        text.append_id(inout out, borrow database, item.subject);
+        text.append_literal(inout out, ": ");
+        text.append_id(inout out, borrow database, item.detail);
+        out.push(10);
+        i = i + 1;
+    }
+    out
+}

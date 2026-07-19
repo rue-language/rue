@@ -1,0 +1,79 @@
+// Meridian report adapter: audit.
+// Serializes catalog, plan, result, transaction, WAL, and replica summaries
+// through a stable format profile that is re-parsed by the report suite.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+const plan = @import("plan.rue");
+const result = @import("result.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn PROFILE() -> u64 { 7042 }
+
+fn separator(inout out: StrBuf) {
+    if PROFILE() % 4 == 0 { text.append_literal(inout out, ","); }
+    else if PROFILE() % 4 == 1 { text.append_literal(inout out, ":"); }
+    else if PROFILE() % 4 == 2 { text.append_literal(inout out, "="); }
+    else { text.append_literal(inout out, " "); }
+}
+
+fn field(inout out: StrBuf, label: str, value: u64) {
+    text.append_literal(inout out, label);
+    separator(inout out);
+    text.append_u64(inout out, value);
+    out.push(10);
+}
+
+pub fn render(borrow database: model.Database, borrow query: model.Query,
+    borrow query_plan: plan.Plan, borrow output: result.Result) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "format=audit\n");
+    field(inout out, "profile", PROFILE());
+    field(inout out, "tables", database.tables.len());
+    field(inout out, "columns", database.columns.len());
+    field(inout out, "rows", database.rows.len());
+    field(inout out, "cells", database.cells.len());
+    field(inout out, "indexes", database.indexes.len());
+    field(inout out, "transactions", database.transactions.len());
+    field(inout out, "wal", database.wal.len());
+    field(inout out, "replicas", database.replicas.len());
+    field(inout out, "plan_nodes", query_plan.nodes.len());
+    field(inout out, "plan_cost", query_plan.cost);
+    field(inout out, "estimated_rows", query_plan.estimated_rows);
+    field(inout out, "result_rows", output.rows);
+    field(inout out, "result_sum", output.sum);
+    field(inout out, "result_groups", output.groups);
+    let mut i: u64 = 0;
+    while i < database.tables.len() {
+        let table = database.tables.get_or(i, model.empty_table());
+        text.append_literal(inout out, "table");
+        separator(inout out);
+        text.append_id(inout out, borrow database, table.name);
+        separator(inout out);
+        text.append_u64(inout out, table.column_count);
+        separator(inout out);
+        text.append_u64(inout out, table.row_count);
+        out.push(10);
+        i = i + 1;
+    }
+    i = 0;
+    while i < query_plan.nodes.len() {
+        let node = query_plan.nodes.get_or(i, plan.empty_node());
+        text.append_literal(inout out, "node");
+        separator(inout out);
+        text.append_u64(inout out, node.kind);
+        separator(inout out);
+        text.append_u64(inout out, node.estimated_rows);
+        separator(inout out);
+        text.append_u64(inout out, node.cost);
+        out.push(10);
+        i = i + 1;
+    }
+    field(inout out, "digest", metric.mix(query_plan.digest, output.checksum));
+    out
+}
+
+pub fn verify(borrow document: StrBuf) -> bool {
+    document.len() > 32 && text.fnv1a(borrow document) != 0
+}

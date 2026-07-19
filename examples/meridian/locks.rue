@@ -1,0 +1,54 @@
+// Deterministic wait-for graph and deadlock detector derived from transaction ids.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+
+pub struct Audit {
+    transactions: u64,
+    waits: u64,
+    cycles: u64,
+    checksum: u64,
+    valid: bool,
+}
+
+fn waits_for(borrow left: model.Transaction, borrow right: model.Transaction) -> bool {
+    left.id != right.id && left.state == 1 && right.state == 1 &&
+        ((left.id + left.writes + right.reads) % 3 == 0)
+}
+
+fn reaches(borrow database: model.Database, start: u64, target: u64, depth: u64) -> bool {
+    if depth > database.transactions.len() { return false; }
+    let left = database.transactions.get_or(start, model.empty_transaction());
+    let mut i: u64 = 0;
+    while i < database.transactions.len() {
+        let right = database.transactions.get_or(i, model.empty_transaction());
+        if waits_for(borrow left, borrow right) {
+            if i == target { return true; }
+            if reaches(borrow database, i, target, depth + 1) { return true; }
+        }
+        i = i + 1;
+    }
+    false
+}
+
+pub fn audit(borrow database: model.Database) -> Audit {
+    let mut out = Audit { transactions: database.transactions.len(), waits: 0,
+        cycles: 0, checksum: 14695981039346656037, valid: true };
+    let mut i: u64 = 0;
+    while i < database.transactions.len() {
+        let left = database.transactions.get_or(i, model.empty_transaction());
+        let mut j: u64 = 0;
+        while j < database.transactions.len() {
+            let right = database.transactions.get_or(j, model.empty_transaction());
+            if waits_for(borrow left, borrow right) {
+                out.waits = out.waits + 1;
+                out.checksum = metric.mix(out.checksum, left.id);
+                out.checksum = metric.mix(out.checksum, right.id);
+            }
+            j = j + 1;
+        }
+        if reaches(borrow database, i, i, 0) { out.cycles = out.cycles + 1; }
+        i = i + 1;
+    }
+    out.valid = out.cycles <= out.transactions;
+    out
+}

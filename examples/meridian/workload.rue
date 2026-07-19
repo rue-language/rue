@@ -1,0 +1,15 @@
+// Benchmark-shaped execution with the full 2x stress tier.
+const std = @import("std");
+const stress = @import("stress.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn run() -> stress.Result { stress.run(2) }
+
+pub fn render(borrow value: stress.Result) -> StrBuf {
+    let mut out = StrBuf.new();
+    let summary = stress.render(borrow value);
+    text.append_literal(inout out, "benchmark=meridian-complete\n");
+    text.append_string(inout out, borrow summary);
+    out
+}
