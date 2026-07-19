@@ -395,6 +395,73 @@ impl ScalarAbiExtension {
     }
 }
 
+/// How a C-classifiable aggregate crosses a target-C boundary as an *argument*
+/// (ADR-0064 P3, RUE-1057).
+///
+/// The classification is computed from the aggregate's byte size (and alignment
+/// for the memory paths) by [`TargetCCallAbi::classify_aggregate_arg`]. In the
+/// integer-only core every eightbyte classifies INTEGER (a field type that would
+/// classify SSE cannot exist until RUE-714), so the two ≤16-byte psABIs coincide:
+/// the struct packs into one or two general-purpose integer registers **in C
+/// field order**. That C order is the register-packing audit's key finding — the
+/// native slot model decomposes one slot per leaf and *reverses* multi-slot
+/// values, which disagrees with C packing even for a two-field struct — so a
+/// target-C aggregate is marshaled through its physical memory image (ascending
+/// C order) rather than reusing the native decomposition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggregateArgClass {
+    /// Packed into `eightbytes` (1 or 2) consecutive integer argument registers,
+    /// low eightbyte first, i.e. C field order. Covers SysV AMD64 INTEGER-class
+    /// ≤16-byte structs and AAPCS64 ≤16-byte composites.
+    IntegerRegisters {
+        /// Number of eightbyte integer registers (1 or 2).
+        eightbytes: u32,
+    },
+    /// SysV AMD64 MEMORY class (>16 bytes): the whole struct image is passed by
+    /// value in the outgoing stack argument area — `size` bytes at `align`
+    /// alignment — consuming no integer registers.
+    ByValueStack {
+        /// The struct's byte size.
+        size: u32,
+        /// The struct's alignment.
+        align: u32,
+    },
+    /// AAPCS64 composite >16 bytes (AAPCS64 §6.8.2 B.4/C.12): passed **by
+    /// reference to a caller-owned copy** — the caller copies the struct and
+    /// passes the copy's address in one integer register. This is *not* the SysV
+    /// byval-on-stack rule.
+    ByReferenceCopy {
+        /// The struct's byte size (the caller copy's size).
+        size: u32,
+        /// The struct's alignment (the caller copy's alignment).
+        align: u32,
+    },
+}
+
+/// How a C-classifiable aggregate crosses a target-C boundary as a *return value*
+/// (ADR-0064 P3, RUE-1057). Computed by
+/// [`TargetCCallAbi::classify_aggregate_return`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggregateReturnClass {
+    /// Returned in `eightbytes` (1 or 2) result registers — `rax:rdx` on SysV,
+    /// `x0:x1` on AAPCS64 — low eightbyte first (C field order), ≤16 bytes.
+    IntegerRegisters {
+        /// Number of eightbyte result registers (1 or 2).
+        eightbytes: u32,
+    },
+    /// Returned indirectly through caller-provided storage (sret), >16 bytes.
+    /// SysV passes the hidden pointer in `rdi` and the callee **echoes it in
+    /// `rax`**; AAPCS64 passes it in the dedicated `x8` and does not echo (see
+    /// [`TargetCCallAbi::sret_pointer_echoed_in_result_register`] and
+    /// [`TargetCCallAbi::sret_pointer_in_dedicated_register`]).
+    Indirect {
+        /// The struct's byte size (caller storage size).
+        size: u32,
+        /// The struct's alignment.
+        align: u32,
+    },
+}
+
 /// The guaranteed target-C call-ABI classifier: the [`CallAbi::TargetC`]
 /// implementation for scalars and pointers (ADR-0064 P2, RUE-1056).
 ///
@@ -483,12 +550,83 @@ impl TargetCCallAbi {
     /// Whether the callee echoes the hidden sret pointer back in the primary
     /// return register: SysV requires `rax` to hold the sret pointer on return;
     /// AAPCS64 uses the dedicated indirect-result register `x8`, which is **not**
-    /// echoed. Documented here for the P3/P4 aggregate/export work; scalars in P2
-    /// never take an sret path.
+    /// echoed. Reachable from P3: an aggregate return >16 bytes takes the sret
+    /// path; scalars in P2 never do.
     pub const fn sret_pointer_echoed_in_result_register(&self) -> bool {
         match self.flavor {
             TargetCAbiFlavor::SysVAmd64 => true,
             TargetCAbiFlavor::Aapcs64 => false,
+        }
+    }
+
+    /// Whether the hidden sret pointer is passed in a **dedicated** indirect-
+    /// result register rather than the first ordinary integer argument register.
+    /// AAPCS64 uses the dedicated `x8` (§6.9), so the sret pointer does not
+    /// consume `x0` and the ordinary arguments still start at `x0`. SysV AMD64
+    /// passes the sret pointer as the hidden first argument in `rdi`, consuming
+    /// the first integer argument register. P3 aggregate returns exercise both.
+    pub const fn sret_pointer_in_dedicated_register(&self) -> bool {
+        match self.flavor {
+            TargetCAbiFlavor::SysVAmd64 => false,
+            TargetCAbiFlavor::Aapcs64 => true,
+        }
+    }
+
+    /// The maximum aggregate size, in bytes, that a target-C boundary passes or
+    /// returns in integer registers rather than in memory. Both psABIs use two
+    /// eightbytes (16 bytes): a larger INTEGER-class aggregate goes to memory
+    /// (SysV MEMORY class / AAPCS64 by-reference).
+    pub const fn max_aggregate_register_bytes(&self) -> u64 {
+        16
+    }
+
+    /// Number of eightbytes a `size`-byte aggregate occupies (ceil(size / 8)).
+    const fn eightbytes(size: u64) -> u32 {
+        ((size + 7) / 8) as u32
+    }
+
+    /// Classify how a C-classifiable aggregate of `size` bytes at `align`
+    /// alignment crosses as an *argument* under this psABI (ADR-0064 P3).
+    ///
+    /// Integer-only core: every eightbyte classifies INTEGER (SSE is unreachable
+    /// until RUE-714), so a ≤16-byte aggregate packs into one or two integer
+    /// registers in C field order on both psABIs. A larger aggregate diverges:
+    /// SysV MEMORY class is byval-on-stack, AAPCS64 passes a pointer to a
+    /// caller-owned copy. `size` is the aggregate's `@size_of`; `align` its
+    /// `@align_of` — the caller has already gated the type through
+    /// [`c_passable_by_value`](crate::c_passable_by_value), so `size >= 1`.
+    pub fn classify_aggregate_arg(&self, size: u64, align: u64) -> AggregateArgClass {
+        if size <= self.max_aggregate_register_bytes() {
+            return AggregateArgClass::IntegerRegisters {
+                eightbytes: Self::eightbytes(size),
+            };
+        }
+        let size = size as u32;
+        let align = align as u32;
+        match self.flavor {
+            TargetCAbiFlavor::SysVAmd64 => AggregateArgClass::ByValueStack { size, align },
+            TargetCAbiFlavor::Aapcs64 => AggregateArgClass::ByReferenceCopy { size, align },
+        }
+    }
+
+    /// Classify how a C-classifiable aggregate of `size` bytes at `align`
+    /// alignment crosses as a *return value* under this psABI (ADR-0064 P3).
+    ///
+    /// ≤16 bytes returns in one or two result registers (`rax:rdx` / `x0:x1`) in
+    /// C field order; a larger aggregate returns indirectly through caller
+    /// storage (sret) on both psABIs, differing only in the sret-pointer register
+    /// and echo ([`Self::sret_pointer_in_dedicated_register`],
+    /// [`Self::sret_pointer_echoed_in_result_register`]).
+    pub fn classify_aggregate_return(&self, size: u64, align: u64) -> AggregateReturnClass {
+        if size <= self.max_aggregate_register_bytes() {
+            AggregateReturnClass::IntegerRegisters {
+                eightbytes: Self::eightbytes(size),
+            }
+        } else {
+            AggregateReturnClass::Indirect {
+                size: size as u32,
+                align: align as u32,
+            }
         }
     }
 
@@ -644,6 +782,83 @@ mod tests {
         assert_eq!(ReturnClass::Indirect { slot_count: 9 }.slot_count(), 9);
         assert!(!ReturnClass::Registers { slot_count: 3 }.uses_sret());
         assert!(ReturnClass::Indirect { slot_count: 9 }.uses_sret());
+    }
+
+    #[test]
+    fn aggregate_arg_classification_packs_by_size_in_c_order() {
+        let sysv = TargetCCallAbi::sysv_amd64();
+        let aapcs = TargetCCallAbi::aapcs64();
+        // A two-`i32` struct is 8 bytes: ONE eightbyte register on both psABIs.
+        // (Native would decompose it to two reversed slots — the packing the
+        // audit warns disagrees; the target-C classifier packs one eightbyte.)
+        assert_eq!(
+            sysv.classify_aggregate_arg(8, 4),
+            AggregateArgClass::IntegerRegisters { eightbytes: 1 }
+        );
+        assert_eq!(
+            aapcs.classify_aggregate_arg(8, 4),
+            AggregateArgClass::IntegerRegisters { eightbytes: 1 }
+        );
+        // A 16-byte struct packs into two eightbyte registers on both.
+        assert_eq!(
+            sysv.classify_aggregate_arg(16, 8),
+            AggregateArgClass::IntegerRegisters { eightbytes: 2 }
+        );
+        assert_eq!(
+            aapcs.classify_aggregate_arg(16, 8),
+            AggregateArgClass::IntegerRegisters { eightbytes: 2 }
+        );
+        // >16 bytes diverges: SysV byval-on-stack, AAPCS64 by-reference copy.
+        assert_eq!(
+            sysv.classify_aggregate_arg(24, 8),
+            AggregateArgClass::ByValueStack { size: 24, align: 8 }
+        );
+        assert_eq!(
+            aapcs.classify_aggregate_arg(24, 8),
+            AggregateArgClass::ByReferenceCopy { size: 24, align: 8 }
+        );
+        // A non-multiple-of-8 size rounds up to whole eightbytes.
+        assert_eq!(
+            sysv.classify_aggregate_arg(12, 4),
+            AggregateArgClass::IntegerRegisters { eightbytes: 2 }
+        );
+    }
+
+    #[test]
+    fn aggregate_return_classification_registers_then_sret() {
+        let sysv = TargetCCallAbi::sysv_amd64();
+        let aapcs = TargetCCallAbi::aapcs64();
+        assert_eq!(
+            sysv.classify_aggregate_return(8, 4),
+            AggregateReturnClass::IntegerRegisters { eightbytes: 1 }
+        );
+        assert_eq!(
+            sysv.classify_aggregate_return(16, 8),
+            AggregateReturnClass::IntegerRegisters { eightbytes: 2 }
+        );
+        // >16 bytes returns via sret on both psABIs.
+        assert_eq!(
+            sysv.classify_aggregate_return(24, 8),
+            AggregateReturnClass::Indirect { size: 24, align: 8 }
+        );
+        assert_eq!(
+            aapcs.classify_aggregate_return(24, 8),
+            AggregateReturnClass::Indirect { size: 24, align: 8 }
+        );
+    }
+
+    #[test]
+    fn sret_pointer_register_and_echo_diverge_by_psabi() {
+        let sysv = TargetCCallAbi::sysv_amd64();
+        let aapcs = TargetCCallAbi::aapcs64();
+        // SysV: sret pointer in rdi (first arg reg), echoed in rax.
+        assert!(!sysv.sret_pointer_in_dedicated_register());
+        assert!(sysv.sret_pointer_echoed_in_result_register());
+        // AAPCS64: dedicated x8, not echoed.
+        assert!(aapcs.sret_pointer_in_dedicated_register());
+        assert!(!aapcs.sret_pointer_echoed_in_result_register());
+        assert_eq!(sysv.max_aggregate_register_bytes(), 16);
+        assert_eq!(aapcs.max_aggregate_register_bytes(), 16);
     }
 
     #[test]

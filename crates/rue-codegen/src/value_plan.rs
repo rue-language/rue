@@ -427,6 +427,16 @@ pub trait ValueLowerAdapter:
     fn return_register_budget(&self) -> u32;
     fn emit_value(&mut self, plan: ValueEmissionPlan) -> ValueResult;
     fn emit_call(&mut self, plan: CallPlan) -> ValueResult;
+    /// Emit an `extern "C"` foreign call that crosses one or more aggregates by
+    /// value (ADR-0064 P3). The classification comes from the shared
+    /// [`ForeignCallInputs`](crate::foreign_call::ForeignCallInputs) authority;
+    /// the backend owns only the physical register/stack/sret sequence.
+    /// `result` is the pre-reserved result vreg.
+    fn emit_foreign_call(
+        &mut self,
+        inputs: crate::foreign_call::ForeignCallInputs,
+        result: VReg,
+    ) -> ValueResult;
     fn emit_runtime_call(&mut self, plan: crate::runtime_call_plan::RuntimeCallPlan)
     -> ValueResult;
     fn emit_intrinsic(&mut self, plan: IntrinsicPlan) -> ValueResult;
@@ -1449,33 +1459,57 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                 adapter.emit_runtime_call(plan)
             } else {
                 let symbol = adapter.resolve_symbol(*name);
-                // An `extern "C"` foreign call crosses under the target-C ABI
-                // (ADR-0064 P2): a scalar return is re-extended to Rue's canonical
-                // 64-bit form because a C callee leaves the bits above the
-                // return's declared width unspecified. The rule comes from the
-                // shared `TargetCCallAbi` classifier, not a backend-local choice.
-                let foreign_return_extension = if adapter.is_foreign_symbol(&symbol)
-                    && matches!(inputs.return_plan, crate::call_plan::ReturnPlan::Scalar)
+                let is_foreign = adapter.is_foreign_symbol(&symbol);
+                // A foreign call that crosses an aggregate by value takes the
+                // dedicated target-C path (ADR-0064 P3): the native slot plan
+                // reverses multi-slot aggregates, disagreeing with C packing, so
+                // aggregates are marshaled through their physical memory image in
+                // C field order. A scalars-only foreign call keeps P2's native
+                // plan with a boundary return extension.
+                if is_foreign
+                    && crate::foreign_call::ForeignCallInputs::call_touches_aggregate(
+                        ctx.cfg, inst.ty, call_args,
+                    )
                 {
-                    let ext = rue_air::TargetCCallAbi::new(adapter.target_c_flavor())
-                        .scalar_return_extension(inst.ty);
-                    (!ext.is_noop()).then_some(ext)
+                    let foreign_inputs = crate::foreign_call::ForeignCallInputs::from_cfg(
+                        symbol,
+                        ctx.cfg,
+                        ctx.type_pool,
+                        inst.ty,
+                        call_args,
+                        adapter.target_c_flavor(),
+                    );
+                    let result_vreg = adapter.reserve_value_result();
+                    adapter.emit_foreign_call(foreign_inputs, result_vreg)
                 } else {
-                    None
-                };
-                let result_vreg = adapter.reserve_value_result();
-                let mut plan = crate::call_plan::CallPlan::from_inputs_with_result(
-                    crate::call_plan::CallTarget::rue(symbol),
-                    inputs.return_plan,
-                    inputs.compact_return_image.clone(),
-                    inputs.compact_return_dispatch.clone(),
-                    &inputs.args,
-                    adapter.call_arg_register_budget(),
-                    adapter,
-                    Some(result_vreg),
-                );
-                plan.foreign_return_extension = foreign_return_extension;
-                adapter.emit_call(plan)
+                    // An `extern "C"` scalar/pointer call (ADR-0064 P2): a scalar
+                    // return is re-extended to Rue's canonical 64-bit form because
+                    // a C callee leaves the bits above the return's declared width
+                    // unspecified. The rule comes from the shared `TargetCCallAbi`
+                    // classifier, not a backend-local choice.
+                    let foreign_return_extension = if is_foreign
+                        && matches!(inputs.return_plan, crate::call_plan::ReturnPlan::Scalar)
+                    {
+                        let ext = rue_air::TargetCCallAbi::new(adapter.target_c_flavor())
+                            .scalar_return_extension(inst.ty);
+                        (!ext.is_noop()).then_some(ext)
+                    } else {
+                        None
+                    };
+                    let result_vreg = adapter.reserve_value_result();
+                    let mut plan = crate::call_plan::CallPlan::from_inputs_with_result(
+                        crate::call_plan::CallTarget::rue(symbol),
+                        inputs.return_plan,
+                        inputs.compact_return_image.clone(),
+                        inputs.compact_return_dispatch.clone(),
+                        &inputs.args,
+                        adapter.call_arg_register_budget(),
+                        adapter,
+                        Some(result_vreg),
+                    );
+                    plan.foreign_return_extension = foreign_return_extension;
+                    adapter.emit_call(plan)
+                }
             };
             cache_result(adapter, value, result);
             Some(ValueKind::Call)

@@ -37,8 +37,8 @@ mod type_properties;
 mod types;
 
 pub use call_abi::{
-    ArgClass, ArgConvention, CallAbi, NativeCallAbi, ReturnClass, ScalarAbiExtension,
-    TargetCAbiFlavor, TargetCCallAbi, is_slot_identical_layout,
+    AggregateArgClass, AggregateReturnClass, ArgClass, ArgConvention, CallAbi, NativeCallAbi,
+    ReturnClass, ScalarAbiExtension, TargetCAbiFlavor, TargetCCallAbi, is_slot_identical_layout,
 };
 pub use canonical_imports::CanonicalImportView;
 pub use ffi_predicates::{

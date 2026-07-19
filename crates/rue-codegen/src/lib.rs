@@ -44,6 +44,7 @@ macro_rules! end_inst {
 mod allocation;
 pub mod call_plan;
 mod codegen_pipeline;
+pub mod foreign_call;
 pub mod runtime_call_plan;
 mod schedule_core;
 mod stack_frame;
