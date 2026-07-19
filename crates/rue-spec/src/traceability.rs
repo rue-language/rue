@@ -894,6 +894,13 @@ params = [{ kind = "expanded", spec_extra = ["1.1:2"] }]
         let spec = spec_dir.path().join("unreadable.md");
         fs::write(&spec, "{{ rule(id=\"1.1:1\") }}\nRule.").unwrap();
         fs::set_permissions(&spec, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(&spec).is_ok() {
+            // Mode bits are not enforced for this user (root / CAP_DAC_OVERRIDE),
+            // so the unreadable-file premise is vacuous here. Skip, don't fail.
+            fs::set_permissions(&spec, fs::Permissions::from_mode(0o600)).unwrap();
+            eprintln!("skipped: permission bits not enforced for this user");
+            return;
+        }
         let cases_dir = tempfile::tempdir().unwrap();
         let result = generate_report(spec_dir.path(), cases_dir.path());
         fs::set_permissions(&spec, fs::Permissions::from_mode(0o600)).unwrap();

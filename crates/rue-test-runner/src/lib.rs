@@ -2584,6 +2584,13 @@ exit_code = 0
         let root = directory.path().join("root");
         fs::create_dir(&root).unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read_dir(&root).is_ok() {
+            // Mode bits are not enforced for this user (root / CAP_DAC_OVERRIDE),
+            // so the unreadable-directory premise is vacuous here. Skip, don't fail.
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+            eprintln!("skipped: permission bits not enforced for this user");
+            return;
+        }
         let result = discover_files(&root, "toml");
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
         assert!(result.is_err());
@@ -2610,6 +2617,13 @@ exit_code = 0
         fs::create_dir(&unreadable).unwrap();
         fs::write(unreadable.join("hidden.toml"), VALID_TEST_FILE).unwrap();
         fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read_dir(&unreadable).is_ok() {
+            // Mode bits are not enforced for this user (root / CAP_DAC_OVERRIDE),
+            // so the unreadable-subdirectory premise is vacuous here. Skip.
+            fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o700)).unwrap();
+            eprintln!("skipped: permission bits not enforced for this user");
+            return;
+        }
         let result = discover_files(directory.path(), "toml");
         fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o700)).unwrap();
         assert!(result.is_err());
@@ -2624,6 +2638,13 @@ exit_code = 0
         let unreadable = directory.path().join("unreadable.toml");
         fs::write(&unreadable, VALID_TEST_FILE).unwrap();
         fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(&unreadable).is_ok() {
+            // Mode bits are not enforced for this user (root / CAP_DAC_OVERRIDE),
+            // so the unreadable-file premise is vacuous here. Skip, don't fail.
+            fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o600)).unwrap();
+            eprintln!("skipped: permission bits not enforced for this user");
+            return;
+        }
         let result = load_test_files(directory.path());
         fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o600)).unwrap();
         assert!(result.is_err());
