@@ -1015,6 +1015,33 @@ class BenchmarkValidationTests(unittest.TestCase):
             "extreme_range",
         )
 
+    def test_range_guard_trusts_a_healthy_mad_despite_a_wide_range(self):
+        # A tight core with two one-sided scheduler spikes (the shared-runner
+        # regime that filed the trunk benchmark-failure issue): the scaled MAD
+        # is a healthy fraction of the center, so it honestly represents the
+        # spread and its growth bounds are trustworthy. The raw range exceeds
+        # the guard threshold, but distrusting it here only manufactures
+        # indeterminate false alarms, so the samples stay robust.
+        healthy = [92.0, 96.0, 100.0, 175.0, 180.0]
+        summary = metrics.robust_summary(healthy)
+        self.assertGreater(summary["scaled_mad"], 100.0 * metrics.MAD_TRUST_FRACTION)
+        self.assertGreater(
+            summary["range"], max(100.0 * 0.5, summary["scaled_mad"] * 6.0)
+        )
+        self.assertEqual(summary["dispersion_classification"], "robust")
+
+        # The guard still fires when the same wide range hides behind a
+        # deceptively tight MAD: a clustered core plus two far outliers keeps
+        # the scaled MAD near zero, so the evidence cannot be certified.
+        deceptive = [99.0, 100.0, 100.0, 300.0, 305.0]
+        deceptive_summary = metrics.robust_summary(deceptive)
+        self.assertLessEqual(
+            deceptive_summary["scaled_mad"], 100.0 * metrics.MAD_TRUST_FRACTION
+        )
+        self.assertEqual(
+            deceptive_summary["dispersion_classification"], "extreme_range"
+        )
+
     def test_scaling_runner_resamples_noisy_tiers_until_evidence_is_determinate(self):
         family = manifest_tools.scaling_families(INPUT_ROOT / "benchmarks/manifest.toml")[0]
         centers = dict(zip(family["sizes"], (10.0, 30.0, 90.0)))

@@ -70,8 +70,11 @@ MIN_GROWTH_SAMPLES = 3
 # Each tier is bounded at MAX_SAMPLE_MULTIPLIER times the base iterations;
 # evidence that is still indeterminate at the bound fails enforcement as
 # before. `at_least_three_samples_required` is deliberately excluded: it
-# reflects the caller's --iterations choice, not runner noise.
-MAX_SAMPLE_MULTIPLIER = 3
+# reflects the caller's --iterations choice, not runner noise. The bound is 5×
+# rather than 3× because the hosted runners proved noisier than the original
+# budget assumed; the extra headroom lets a genuinely transient spike dilute out
+# instead of capping while still indeterminate.
+MAX_SAMPLE_MULTIPLIER = 5
 RESAMPLE_REASONS = frozenset(
     {"extreme_sample_range", "uncertainty_crosses_budget", "variation_reaches_zero"}
 )
