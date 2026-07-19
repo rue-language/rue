@@ -250,15 +250,11 @@ pub fn uses(inst: &X86Inst) -> Vec<VReg> {
             add_if_virtual(dst, &mut result);
             add_if_virtual(count, &mut result);
         }
-        X86Inst::MovRMIndexed { base, .. }
-        | X86Inst::Movzx8RMIndexed { base, .. }
-        | X86Inst::NarrowLoadIndexed { base, .. } => {
+        X86Inst::MovRMIndexed { base, .. } | X86Inst::NarrowLoadIndexed { base, .. } => {
             // base is a VReg
             result.push(*base);
         }
-        X86Inst::MovMRIndexed { base, src, .. }
-        | X86Inst::MovMR8Indexed { base, src, .. }
-        | X86Inst::NarrowStoreIndexed { base, src, .. } => {
+        X86Inst::MovMRIndexed { base, src, .. } | X86Inst::NarrowStoreIndexed { base, src, .. } => {
             result.push(*base);
             add_if_virtual(src, &mut result);
         }
@@ -413,14 +409,10 @@ pub fn defs(inst: &X86Inst) -> Vec<VReg> {
         X86Inst::Shl { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
-        X86Inst::MovRMIndexed { dst, .. }
-        | X86Inst::Movzx8RMIndexed { dst, .. }
-        | X86Inst::NarrowLoadIndexed { dst, .. } => {
+        X86Inst::MovRMIndexed { dst, .. } | X86Inst::NarrowLoadIndexed { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
-        X86Inst::MovMRIndexed { .. }
-        | X86Inst::MovMR8Indexed { .. }
-        | X86Inst::NarrowStoreIndexed { .. } => {
+        X86Inst::MovMRIndexed { .. } | X86Inst::NarrowStoreIndexed { .. } => {
             // Writes to memory
         }
         X86Inst::MovRMSib { dst, .. } => {

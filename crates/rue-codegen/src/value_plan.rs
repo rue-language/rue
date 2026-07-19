@@ -1095,7 +1095,9 @@ fn residual_plan<A: ValueLowerAdapter>(
                 })
                 .collect(),
             total_slots: ctx.type_slot_count(ctx.cfg.get_inst(value).ty),
-            zero_unused_payload: ctx.type_pool.compact_layout(),
+            // ADR-0052 ruling 5: the compact image zeroes padding and unused
+            // payload bytes deterministically on construction.
+            zero_unused_payload: true,
         },
         ResidualInput::EnumPayloadGet {
             base,
@@ -1650,14 +1652,12 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                         ctx.type_pool,
                         ctx.cfg.get_inst(args[1]).ty,
                     ),
-                    // Under the compact layout (`aggregate_layout`) the raw-byte
-                    // family folds into the ordinary typed `ptr u8` path: a byte
-                    // access is exactly the one-byte narrow scalar access
-                    // (RUE-989) that `@ptr_read`/`@ptr_write` of a `u8` pointee
-                    // take, so `@byte_read`/`@byte_write` reuse that single
-                    // emission path (ADR-0052 phase 7, RUE-978). Keying on
-                    // `Type::U8` makes the gate the sole switch: gate-off this is
-                    // `None`, preserving the bespoke byte load/store byte-for-byte.
+                    // Under the compact layout the raw-byte family folds into the
+                    // ordinary typed `ptr u8` path: a byte access is exactly the
+                    // one-byte narrow scalar access (RUE-989) that
+                    // `@ptr_read`/`@ptr_write` of a `u8` pointee take, so
+                    // `@byte_read`/`@byte_write` reuse that single emission path
+                    // (ADR-0052 phase 7, RUE-978).
                     IntrinsicOperation::ByteRead | IntrinsicOperation::ByteWrite => {
                         crate::types::narrow_scalar_access(ctx.type_pool, Type::U8)
                     }

@@ -11,6 +11,17 @@
 # Deferred to later phases (still reported cleanly, not runnable here):
 # `inout [T]` write-slices, range slicing `x[a..b]`, ArrayBuf/Vec slices, and
 # returning/storing a slice (E0487-E0489 second-class enforcement).
+#
+# Under the default compact layout these cases view a slot-identical backing
+# element type (i64: one eight-byte slot per element). The view is materialized
+# as `{ptr: @raw(arr[0]), len: N}` and indexed by `@ptr_offset(ptr, i)`, which
+# strides by `size_of(T)`; for a slot-identical element that stride equals the
+# frame's slot stride, so a frame-array view is exact. A slice over a frame array
+# of a NON-slot-identical element (e.g. `[i32]`/`[u8]`, whose compact stride is
+# narrower than the 8-byte frame slot) would stride across mismatched storage and
+# is refused loudly (RUE-987 / RUE-1035 M2); `slice_param_narrow_frame_refused`
+# pins that. The slice runtime itself (len, bounds-checked indexing, forwarding,
+# methods) is element-width-independent and is exercised here on i64.
 
 [section]
 id = "cli.slices"
@@ -22,17 +33,17 @@ description = "borrow-a-whole-array slice parameter: len() and bounds-checked re
 [[case]]
 name = "slice_param_sum_len_index"
 files = [{ path = "main.rue", source = """
-fn sum(borrow s: [i32]) -> i32 {
-    let mut t = 0;
+fn sum(borrow s: [i64]) -> i32 {
+    let mut t: i64 = 0;
     let mut i: u64 = 0;
     while i < s.len() {
         t = t + s[i];
         i = i + 1;
     }
-    t
+    @intCast(t)
 }
 fn main() -> i32 {
-    let a: [i32; 3] = [10, 20, 30];
+    let a: [i64; 3] = [10, 20, 30];
     sum(borrow a)
 }
 """ }]
@@ -44,11 +55,11 @@ exit_code = 60
 [[case]]
 name = "slice_param_index_out_of_bounds_traps"
 files = [{ path = "main.rue", source = """
-fn get(borrow s: [i32], i: u64) -> i32 {
-    s[i]
+fn get(borrow s: [i64], i: u64) -> i32 {
+    @intCast(s[i])
 }
 fn main() -> i32 {
-    let a: [i32; 3] = [10, 20, 30];
+    let a: [i64; 3] = [10, 20, 30];
     get(borrow a, 5)
 }
 """ }]
@@ -61,11 +72,11 @@ exit_code = 101
 [[case]]
 name = "slice_param_negative_signed_index_traps"
 files = [{ path = "main.rue", source = """
-fn get(borrow s: [i32], i: i32) -> i32 {
-    s[i]
+fn get(borrow s: [i64], i: i32) -> i32 {
+    @intCast(s[i])
 }
 fn main() -> i32 {
-    let a: [i32; 3] = [10, 20, 30];
+    let a: [i64; 3] = [10, 20, 30];
     get(borrow a, -1)
 }
 """ }]
@@ -77,11 +88,11 @@ exit_code = 101
 [[case]]
 name = "slice_param_constant_index"
 files = [{ path = "main.rue", source = """
-fn second(borrow s: [i32]) -> i32 {
-    s[1]
+fn second(borrow s: [i64]) -> i32 {
+    @intCast(s[1])
 }
 fn main() -> i32 {
-    let a: [i32; 4] = [3, 5, 7, 9];
+    let a: [i64; 4] = [3, 5, 7, 9];
     second(borrow a)
 }
 """ }]
@@ -92,22 +103,25 @@ exit_code = 5
 [[case]]
 name = "slice_param_len"
 files = [{ path = "main.rue", source = """
-fn ln(borrow s: [i32]) -> i32 {
+fn ln(borrow s: [i64]) -> i32 {
     @intCast(s.len())
 }
 fn main() -> i32 {
-    let a: [i32; 6] = [9, 9, 9, 9, 9, 9];
+    let a: [i64; 6] = [9, 9, 9, 9, 9, 9];
     ln(borrow a)
 }
 """ }]
 args = ["main.rue", "--preview", "slices", "-o", "prog"]
 exit_code = 6
 
-# A `[u8]` slice exercises a different element type: the pointer field is
-# `ptr const u8` and `@ptr_offset` stride must still land on each element
-# (sum 1+2+3+4 = 10).
+# A `[u8]` view over a frame array is refused under the compact layout: the
+# slice would stride `@ptr_offset` by the compact element size (1) while the
+# frame stores each `u8` element in an 8-byte slot, so the pointer walk crosses
+# mismatched storage. The refusal is loud (RUE-987 / RUE-1035 M2) and names the
+# frame aggregate. A slot-identical element (see the i64 cases above) is exact;
+# a heap-backed narrow slice awaits compact frames (RUE-975) / a heap slice API.
 [[case]]
-name = "slice_param_u8_element"
+name = "slice_param_narrow_frame_refused"
 files = [{ path = "main.rue", source = """
 fn sum(borrow s: [u8]) -> i32 {
     let mut t: i32 = 0;
@@ -124,7 +138,8 @@ fn main() -> i32 {
 }
 """ }]
 args = ["main.rue", "--preview", "slices", "-o", "prog"]
-exit_code = 10
+compile_fail = true
+error_contains = ["raw pointer", "frame-resident aggregate"]
 
 # Borrowing a zero-length fixed array still produces a valid zero-length slice:
 # the pointer word is never dereferenced because `len()` is 0. This used to ICE
@@ -155,20 +170,20 @@ exit_code = 0
 [[case]]
 name = "slice_param_forwarding"
 files = [{ path = "main.rue", source = """
-fn sum(borrow s: [i32]) -> i32 {
-    let mut t = 0;
+fn sum(borrow s: [i64]) -> i32 {
+    let mut t: i64 = 0;
     let mut i: u64 = 0;
     while i < s.len() {
         t = t + s[i];
         i = i + 1;
     }
-    t
+    @intCast(t)
 }
-fn outer(borrow s: [i32]) -> i32 {
+fn outer(borrow s: [i64]) -> i32 {
     sum(borrow s)
 }
 fn main() -> i32 {
-    let a: [i32; 3] = [10, 20, 30];
+    let a: [i64; 3] = [10, 20, 30];
     outer(borrow a)
 }
 """ }]
@@ -184,17 +199,17 @@ files = [{ path = "main.rue", source = """
 struct Sum {
     bias: i32,
 
-    fn method(borrow self, borrow s: [i32]) -> i32 {
-        self.bias + s[0] + s[1]
+    fn method(borrow self, borrow s: [i64]) -> i32 {
+        self.bias + @intCast(s[0] + s[1])
     }
 
-    fn assoc(borrow s: [i32]) -> i32 {
-        s[0] + s[1]
+    fn assoc(borrow s: [i64]) -> i32 {
+        @intCast(s[0] + s[1])
     }
 }
 
 fn main() -> i32 {
-    let values: [i32; 2] = [5, 7];
+    let values: [i64; 2] = [5, 7];
     let sum = Sum { bias: 18 };
     sum.method(borrow values) + Sum.assoc(borrow values)
 }
@@ -211,22 +226,22 @@ files = [{ path = "main.rue", source = """
 struct Sum {
     bias: i32,
 
-    fn method(borrow self, borrow s: [i32]) -> i32 {
-        self.bias + s[0] + s[1]
+    fn method(borrow self, borrow s: [i64]) -> i32 {
+        self.bias + @intCast(s[0] + s[1])
     }
 
-    fn assoc(borrow s: [i32]) -> i32 {
-        s[0] + s[1]
+    fn assoc(borrow s: [i64]) -> i32 {
+        @intCast(s[0] + s[1])
     }
 }
 
-fn forward(borrow s: [i32]) -> i32 {
+fn forward(borrow s: [i64]) -> i32 {
     let sum = Sum { bias: 18 };
     sum.method(borrow s) + Sum.assoc(borrow s)
 }
 
 fn main() -> i32 {
-    let values: [i32; 2] = [5, 7];
+    let values: [i64; 2] = [5, 7];
     forward(borrow values)
 }
 """ }]

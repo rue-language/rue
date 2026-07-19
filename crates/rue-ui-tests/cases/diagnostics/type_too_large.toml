@@ -42,7 +42,7 @@ error_contains = ["[E0906]"]
 name = "large_but_legal_array_size_of_ok"
 source = """
 fn main() -> i32 {
-    if @size_of([i32; 1000]) == 8000 { 0 } else { 1 }
+    if @size_of([i32; 1000]) == 4000 { 0 } else { 1 }
 }
 """
 exit_code = 0

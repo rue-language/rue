@@ -485,20 +485,6 @@ pub enum X86Inst {
         src: Operand,
     },
 
-    /// Pre-register-allocation one-byte load through a virtual address.
-    Movzx8RMIndexed {
-        dst: Operand,
-        base: VReg,
-        offset: i32,
-    },
-
-    /// Pre-register-allocation one-byte store through a virtual address.
-    MovMR8Indexed {
-        base: VReg,
-        offset: i32,
-        src: Operand,
-    },
-
     /// Pre-register-allocation narrow (1/2/4-byte) load of `[base]` extended
     /// into the 64-bit `dst` (ADR-0052, RUE-989). `signed` selects `movsx`
     /// (sign-extend) versus `movzx`/`mov r32` (zero-extend). The pointer address
@@ -745,12 +731,6 @@ impl fmt::Display for X86Inst {
                 } else {
                     write!(f, "mov [{}-{}], {}", base, -offset, src)
                 }
-            }
-            X86Inst::Movzx8RMIndexed { dst, base, offset } => {
-                write!(f, "movzx {}, byte [{}+{}]", dst, base, offset)
-            }
-            X86Inst::MovMR8Indexed { base, offset, src } => {
-                write!(f, "mov byte [{}+{}], {}", base, offset, src)
             }
             X86Inst::NarrowLoadIndexed {
                 dst,

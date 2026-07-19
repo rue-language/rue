@@ -61,44 +61,33 @@ Whatever layout the implementation chooses, every value of a struct type satisfi
 - `@size_of(T)` and `@align_of(T)` are well-defined for every sized type `T` and report the size and alignment the implementation has chosen for `T`.
 - The size of a type is a multiple of its alignment.
 
-These are the only layout properties a portable program may rely on; the specific offsets, slot sizes, and paddings the current implementation happens to use (3.6:9, 3.6:10, 3.6:12) are documented observations, not part of this set.
+These are the only layout properties a portable program may rely on; the specific offsets, sizes, alignments, and paddings the current implementation happens to use (3.6:9, 3.6:10, 3.6:12) are documented observations, not part of this set.
 
 {{ rule(id="3.6:9", cat="informative") }}
 
-Under the current implementation, every non-zero-sized value occupies one or more 8-byte slots: each scalar type (`i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `bool`) occupies a single slot, and a struct's fields are placed in declaration order, each in the slots determined by its type, with no padding between or after them. This is a documented property of the current implementation (1.3:6), not a language guarantee.
+Under the current implementation, each scalar type uses its natural byte width and alignment (`i8`, `u8`, and `bool` are one byte; `i16`/`u16` two; `i32`/`u32` four; `i64`/`u64` and raw pointers eight), and a struct's fields are placed in declaration order, each at the lowest offset satisfying its alignment, with interior padding inserted where a field's alignment requires it. This is a documented property of the current implementation (1.3:6), not a language guarantee.
 
 {{ rule(id="3.6:10", cat="informative") }}
 
-It follows that, under the current implementation, the size of a struct is the sum of the sizes of all its fields, with no padding between fields or at the end (a zero-sized field contributes nothing). A future version that packed scalars or reordered fields would change this observation.
+It follows that, under the current implementation, a struct's size packs its fields at their natural alignment and is rounded up to the struct's own alignment, so it includes any interior and tail padding (a zero-sized field contributes nothing). A future version that reordered fields or chose a different packing would change this observation.
 
 {{ rule(id="3.6:10a", cat="informative") }}
 
-The ratified direction (ADR-0052) replaces the eight-byte slot model with a
-*compact* native layout, already selectable behind the `aggregate_layout`
-preview feature. Under it each scalar uses its natural byte width and alignment
-(for example `i32` is four bytes, four-aligned; `bool` is one byte), struct
-fields are placed in declaration order at offsets satisfying their alignment
-with explicit interior and tail padding, a type's size includes that tail
-padding and equals its array element stride (`stride == size`), enums use the
-smallest sufficient unsigned tag, and a zero-sized type has size `0`, alignment
-`1`, and stride `0`. This too is a documented observation, not a guarantee:
-whichever layout is in effect, only the properties of 3.6:8 are portable, and
-`@size_of`, `@align_of`, `@offset_of`, and `@field_ptr` continue to report the
-chosen layout so compiler-mediated code stays correct across the change.
+This is the *compact* native layout ratified by ADR-0052, the compiler's default. Under it a type's size includes tail padding and equals its array element stride (`stride == size`), enums use the smallest sufficient unsigned tag placed before a payload at the maximum variant alignment, and a zero-sized type has size `0`, alignment `1`, and stride `0`. This too is a documented observation, not a guarantee: only the properties of 3.6:8 are portable, and `@size_of`, `@align_of`, `@offset_of`, and `@field_ptr` continue to report the chosen layout so compiler-mediated code stays correct even if it changes again.
 
 {{ rule(id="3.6:11") }}
 
 ```rue
-// Under the current implementation, two i32 fields occupy 2 slots (16 bytes).
+// Under the current implementation, two i32 fields pack to 8 bytes.
 struct Point { x: i32, y: i32 }
 
-// A nested struct occupies the sum of all nested field slots: 4 slots (32 bytes).
+// A nested struct is the sum of its nested fields: two Points = 16 bytes.
 struct Line { start: Point, end: Point }
 ```
 
 {{ rule(id="3.6:12", cat="informative") }}
 
-Under the current implementation, a struct with one or more fields has 8-byte alignment, and an empty struct (a zero-sized type) has 1-byte alignment; `@align_of` observes these values. Like the sizes above, these are documented observations of the current layout, not language guarantees.
+Under the current implementation, a struct's alignment is that of its most-aligned field (a struct of `i32` fields is four-aligned), and an empty struct (a zero-sized type) has 1-byte alignment; `@align_of` observes these values. Like the sizes above, these are documented observations of the current layout, not language guarantees.
 
 {{ rule(id="3.6:13", cat="normative") }}
 

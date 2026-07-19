@@ -3,12 +3,20 @@
 # Every aggregate (struct/array/StrBuf) is laid out ascending-in-address:
 # field 0 / element 0 at the LOWEST address, slot k at base + k*8. `@raw`
 # returns the low end and `@ptr_read`/`@ptr_write`/`@ptr_offset` walk slots
-# UPWARD from it, so a raw pointer behaves identically whether it points into a
-# stack local or an `@alloc`'d heap block. Before the fix, multi-slot aggregates
-# were written descending through a raw pointer (slot i at ptr - i*8), which on
-# the ascending heap underflowed into the PRECEDING allocation — silent memory
-# corruption with zero test coverage. These cases pin the fixed behavior via
-# exact stdout (drops printed for ordering), not just exit codes.
+# UPWARD from it. On the HEAP (`@alloc`), whose storage is the compact image, a
+# raw pointer round-trips a multi-slot aggregate correctly. Before the fix,
+# multi-slot aggregates were written descending through a raw pointer (slot i at
+# ptr - i*8), which on the ascending heap underflowed into the PRECEDING
+# allocation — silent memory corruption with zero test coverage. These cases pin
+# the fixed behavior via exact stdout (drops printed for ordering), not just exit
+# codes.
+#
+# The stack/heap raw-pointer equivalence is SUSPENDED under the default compact
+# layout: a stack frame stays slot-shaped (one eight-byte slot per leaf) while a
+# raw pointer addresses memory by the packed compact image, so taking `@raw` of a
+# frame-resident non-slot-identical aggregate is refused loudly rather than
+# silently mixing representations (RUE-987 / RUE-1035 M2). `stack_raw_ptr_refused`
+# pins that refusal; the heap remains the working round-trip path above.
 
 [section]
 id = "cli.aggregate_ascending_layout"
@@ -46,24 +54,27 @@ fn main() -> i32 {
 """ }]
 stdout = "11\n22\n33\n44\n999\n999\n"
 
-# --- @raw of a stack struct + @ptr round-trip (low-end ascending) -----------
+# --- @raw of a stack struct is refused under the compact layout (M2) ---------
+# Under the default compact layout a stack frame stays slot-shaped, so a raw
+# pointer into a frame-resident non-slot-identical struct would mix the slot
+# frame with the compact image `@ptr_read`/`@ptr_write` assume. It is refused
+# loudly and points at the working heap alternative (RUE-987 / RUE-1035 M2).
 [[case]]
-name = "stack_raw_ptr_roundtrip"
+name = "stack_raw_ptr_refused"
 files = [{ path = "main.rue", source = """
 struct P { x: i32, y: i32, z: i32 }
 fn main() -> i32 {
     let mut v: P = P { x: 5, y: 7, z: 9 };
     checked {
         let p: ptr mut P = @raw_mut(v);
-        let r = @ptr_read(p);
-        @dbg(r.x); @dbg(r.y); @dbg(r.z);
         @ptr_write(p, P { x: 40, y: 50, z: 60 });
     };
     @dbg(v.x); @dbg(v.y); @dbg(v.z);
     0
 }
 """ }]
-stdout = "5\n7\n9\n40\n50\n60\n"
+compile_fail = true
+error_contains = ["raw pointer", "frame-resident aggregate", "@alloc"]
 
 # --- Array-of-struct: whole-element and field write/read --------------------
 [[case]]

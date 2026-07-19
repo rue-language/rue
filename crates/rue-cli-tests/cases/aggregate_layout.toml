@@ -1,29 +1,27 @@
-# Compact native physical layout through the real driver (ADR-0052, RUE-974 +
-# RUE-989). With `--preview aggregate_layout` the canonical layout authority
-# reports the ratified compact representation: natural scalar widths and
-# alignments, declaration-order struct fields with interior/tail padding,
-# ascending array stride, a smallest-sufficient enum tag, and the uniform
-# zero-sized-type rule. The compile-time layout queries (@size_of / @align_of /
-# @offset_of) observe those values; slot-identical aggregates (all eight-byte
-# leaves) marshal correctly through memory; and RUE-989 lowers narrow
-# (one/two/four-byte) scalar access through typed pointers with the correct
-# zero/sign extension, so narrow heap round-trips, compact struct field access,
-# and heap arrays of narrow scalars compile and execute. A program that would
-# still need unimplemented whole-aggregate marshalling through a pointer or
-# across a call (or compact enum memory) fails loudly rather than emitting
-# slot-shaped access against a compact layout. Without the flag every case below
-# observes today's eight-byte slot model unchanged.
+# Compact native physical layout through the real driver (ADR-0052, RUE-987
+# stabilization). The canonical layout authority reports the ratified compact
+# representation by default: natural scalar widths and alignments,
+# declaration-order struct fields with interior/tail padding, ascending array
+# stride, a smallest-sufficient enum tag, and the uniform zero-sized-type rule.
+# The compile-time layout queries (@size_of / @align_of / @offset_of) observe
+# those values; slot-identical aggregates (all eight-byte leaves) marshal
+# correctly through memory; and narrow (one/two/four-byte) scalar access through
+# typed pointers extends with the correct zero/sign extension, so narrow heap
+# round-trips, compact struct field access, and heap arrays of narrow scalars
+# compile and execute. The one construct without a single physical memory image
+# — an enum whose per-variant payloads overlap (an overlapping variant union),
+# or an aggregate containing one — is refused loudly rather than miscompiled.
 
 [section]
 id = "cli.aggregate_layout"
-name = "Compact native layout (ADR-0052 phase 3)"
-description = "The aggregate_layout preview reports the compact physical layout in @size_of / @align_of / @offset_of; slot-identical aggregates still execute, and narrow physical access fails loudly."
+name = "Compact native layout (ADR-0052)"
+description = "The compiler reports the compact physical layout in @size_of / @align_of / @offset_of by default; slot-identical aggregates still execute, and an imageless overlapping-union enum fails loudly."
 
 # Scalars take their natural LP64 width and alignment under the compact layout.
 [[case]]
 name = "compact_scalar_sizes_and_alignments"
-description = "Natural scalar widths/alignments (u8=1, i16=2, i32=4, i64=8, bool=1) under --preview aggregate_layout."
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+description = "Natural scalar widths/alignments (u8=1, i16=2, i32=4, i64=8, bool=1) by default."
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     @dbg(@size_of(u8) == 1);
@@ -44,7 +42,7 @@ exit_code = 0
 [[case]]
 name = "compact_struct_padding_and_offsets"
 description = "Padded { a: u8, b: i32, c: u8 } -> a@0, b@4, c@8, size 12, align 4."
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Padded { a: u8, b: i32, c: u8 }
 fn main() -> i32 {
@@ -63,7 +61,7 @@ exit_code = 0
 [[case]]
 name = "compact_array_stride"
 description = "[i32; 3] has size 12; [u8; 4] has size 4 under the compact layout."
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     @dbg(@size_of([i32; 3]) == 12);
@@ -80,7 +78,7 @@ exit_code = 0
 [[case]]
 name = "compact_zero_sized_rules"
 description = "unit and [i32; 0] are size 0 with alignment 1."
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     @dbg(@size_of(()) == 0);
@@ -98,9 +96,9 @@ exit_code = 0
 # correctly under the compact layout.
 [[case]]
 name = "compact_slot_identical_field_ptr_roundtrip"
-description = "An all-i64 struct writes and reads a field through a pointer under --preview aggregate_layout."
+description = "An all-i64 struct writes and reads a field through a pointer by default."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Cell { first: i64, second: i64 }
 fn main() -> i32 {
@@ -123,7 +121,7 @@ exit_code = 100
 [[case]]
 name = "compact_slot_identical_offsets_match_slot_model"
 description = "An all-i64 struct has offsets 0/8 and size 16 under the compact layout."
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Cell { first: i64, second: i64 }
 fn main() -> i32 {
@@ -142,9 +140,9 @@ exit_code = 0
 # store hits its low bytes (little-endian), so the round-trip is correct.
 [[case]]
 name = "compact_struct_field_narrow_roundtrip"
-description = "Writing a narrow i32 field through a pointer round-trips under --preview aggregate_layout (RUE-989)."
+description = "Writing a narrow i32 field through a pointer round-trips (RUE-989)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Pair { a: i32, b: i32 }
 fn main() -> i32 {
@@ -160,33 +158,15 @@ fn main() -> i32 {
 stdout = "7\n"
 exit_code = 100
 
-# The same narrow-field program also compiles and runs under the default slot
-# model when the preview is off (byte-identical gate-off behavior).
-[[case]]
-name = "narrow_program_unchanged_without_the_preview"
-description = "The narrow-field program compiles and runs under the default slot model when the preview is off."
-files = [{ path = "main.rue", source = """
-struct Pair { a: i32, b: i32 }
-fn main() -> i32 {
-    let mut p = Pair { a: 7, b: 9 };
-    checked {
-        let fp: ptr mut i32 = @field_ptr(p.b);
-        @ptr_write(fp, 100);
-    };
-    p.b
-}
-""" }]
-exit_code = 100
-
 # RUE-989: narrow scalar heap round-trips through @alloc/@ptr_write/@ptr_read
 # for i32, i16 (signed, storing -1 and reading it back), u16 (zero-extended),
 # and u8. The load extends the narrow physical value into its slot per the
 # scalar's signedness.
 [[case]]
 name = "narrow_heap_roundtrip_scalars"
-description = "i32/i16/u16/u8 heap round-trips with correct sign/zero extension under --preview aggregate_layout (RUE-989)."
+description = "i32/i16/u16/u8 heap round-trips with correct sign/zero extension (RUE-989)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     checked {
@@ -220,9 +200,9 @@ exit_code = 0
 # stride (u8 stride 1, i16 stride 2, i32 stride 4), covering signed negatives.
 [[case]]
 name = "narrow_heap_array_walk"
-description = "Walk heap [u8;4], [i16;3] (with negatives), [i32;3] at compact stride under --preview aggregate_layout (RUE-989)."
+description = "Walk heap [u8;4], [i16;3] (with negatives), [i32;3] at compact stride (RUE-989)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     checked {
@@ -262,7 +242,7 @@ exit_code = 0
 name = "mixed_struct_field_roundtrip"
 description = "Round-trip every field of { a: u8, b: i32, c: u8 } through narrow field pointers (RUE-989)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Mixed { a: u8, b: i32, c: u8 }
 fn main() -> i32 {
@@ -296,7 +276,7 @@ exit_code = 0
 [[case]]
 name = "compact_struct_through_pointer_roundtrip"
 description = "A whole compact struct round-trips through a typed heap pointer via its compact memory image (RUE-987)."
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Padded { a: u8, b: i32, c: u8 }
 fn main() -> i32 {
@@ -327,7 +307,7 @@ exit_code = 0
 name = "array_bearing_struct_through_pointer_roundtrip"
 description = "A struct containing a fixed array marshals whole through a pointer: the array field flattens into the compact image at the compact element stride (RUE-1014)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct HasArr { xs: [i32; 2] }
 fn main() -> i32 {
@@ -351,8 +331,8 @@ exit_code = 0
 # so @size_of reflects the u8 tag (1) rather than the eight-byte slot.
 [[case]]
 name = "compact_enum_tag_narrows_size"
-description = "A discriminant-only enum is one byte (u8 tag) under --preview aggregate_layout; a payload enum sizes tag + max-aligned payload."
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+description = "A discriminant-only enum is one byte (u8 tag); a payload enum sizes tag + max-aligned payload."
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Flag { Off, On }
 enum Opt { Some(i32), None }
@@ -374,8 +354,8 @@ exit_code = 0
 # compiles and runs under the preview (RUE-989 refused every enum value).
 [[case]]
 name = "compact_enum_frame_match_allowed"
-description = "A frame-only enum construct-and-match compiles and runs under --preview aggregate_layout (RUE-1000)."
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+description = "A frame-only enum construct-and-match compiles and runs (RUE-1000)."
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Color { Red, Green, Blue }
 enum Shape { Circle(i32), Rect(i32, i32), Empty }
@@ -394,9 +374,9 @@ exit_code = 9
 # at the compact payload offset. Some(42) reads back 42; None matches None.
 [[case]]
 name = "compact_enum_option_heap_roundtrip"
-description = "An Option-like enum write/read/match round-trips through heap memory under --preview aggregate_layout (RUE-1000)."
+description = "An Option-like enum write/read/match round-trips through heap memory (RUE-1000)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Opt { Some(i32), None }
 fn main() -> i32 {
@@ -422,9 +402,9 @@ exit_code = 0
 # the narrower values are clean in their slot, so each variant round-trips.
 [[case]]
 name = "compact_enum_mixed_payload_widths"
-description = "An enum with u8/i32/i64 payload variants round-trips each through heap memory under --preview aggregate_layout (RUE-1000)."
+description = "An enum with u8/i32/i64 payload variants round-trips each through heap memory (RUE-1000)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Num { B(u8), W(i32), Big(i64) }
 fn main() -> i32 {
@@ -452,9 +432,9 @@ exit_code = 0
 # distinct, non-overlapping compact positions (payload_offset and +4).
 [[case]]
 name = "compact_enum_uniform_multifield_heap"
-description = "A multi-field payload enum (Rect(i32,i32)) round-trips through heap memory under --preview aggregate_layout (RUE-1000)."
+description = "A multi-field payload enum (Rect(i32,i32)) round-trips through heap memory (RUE-1000)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Shape { Circle(i32), Rect(i32, i32), Empty }
 fn main() -> i32 {
@@ -485,7 +465,7 @@ exit_code = 0
 name = "compact_enum_padding_is_deterministically_zeroed"
 description = "An enum heap image zeros its tag-to-payload and inter-field padding on @ptr_write, with no residue across an overwrite (RUE-1007)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Wide { A(u8, i32), B }
 fn main() -> i32 {
@@ -544,7 +524,7 @@ exit_code = 0
 name = "compact_enum_overlapping_union_roundtrip"
 description = "A heterogeneous enum (i64 vs two i32, overlapping union positions) round-trips through a heap pointer via per-variant tag dispatch (RUE-1037)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Bad { A(i64), B(i32, i32) }
 fn first(v: Bad) -> i64 {
@@ -574,7 +554,7 @@ exit_code = 0
 name = "compact_enum_struct_payload_roundtrip"
 description = "An enum with a struct payload marshals whole through a pointer: the struct payload flattens to a variant-independent image (RUE-1014)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Res { id: i32 }
 enum Holder { Full(Res), Nothing }
@@ -605,7 +585,7 @@ exit_code = 0
 name = "compact_heterogeneous_enum_crossing_call_by_value"
 description = "A heterogeneous compact enum (i64 vs two i32) passed by value across a call marshals through its tag-dispatched image (RUE-1037)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Bad { A(i64), B(i32, i32) }
 fn first(v: Bad) -> i64 {
@@ -637,9 +617,9 @@ exit_code = 0
 # reads that image back, extending each field into its slot-shaped vreg.
 [[case]]
 name = "compact_struct_return_sret_roundtrip"
-description = "A padded struct returned by value round-trips its fields through the compact sret image under --preview aggregate_layout (RUE-1004)."
+description = "A padded struct returned by value round-trips its fields through the compact sret image (RUE-1004)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Padded { a: u8, b: i32, c: u8 }
 fn make(x: i32) -> Padded { Padded { a: 7, b: x, c: 9 } }
@@ -659,9 +639,9 @@ exit_code = 0
 # round-trip and match correctly in the caller.
 [[case]]
 name = "compact_enum_return_sret_roundtrip"
-description = "An Option-like enum returned by value round-trips through the compact sret image under --preview aggregate_layout (RUE-1004)."
+description = "An Option-like enum returned by value round-trips through the compact sret image (RUE-1004)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Opt { Some(i32), None }
 fn wrap(x: i32) -> Opt { Opt.Some(x) }
@@ -684,9 +664,9 @@ exit_code = 0
 # transport. The callee's mutation is observed by the caller.
 [[case]]
 name = "compact_struct_inout_mutation"
-description = "An inout compact struct mutated by the callee is observed by the caller under --preview aggregate_layout (RUE-1004)."
+description = "An inout compact struct mutated by the callee is observed by the caller (RUE-1004)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Padded { a: u8, b: i32, c: u8 }
 fn bump(inout p: Padded) {
@@ -709,9 +689,9 @@ exit_code = 0
 # its fields through the pointer without mutating the caller's value.
 [[case]]
 name = "compact_struct_borrow_read"
-description = "A borrow compact struct read field-by-field in the callee under --preview aggregate_layout (RUE-1004)."
+description = "A borrow compact struct read field-by-field in the callee (RUE-1004)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Padded { a: u8, b: i32, c: u8 }
 fn total(borrow p: Padded) -> i32 { p.b }
@@ -731,9 +711,9 @@ exit_code = 0
 # reads back correctly. Gate-off passes slot-shaped registers identically.
 [[case]]
 name = "compact_struct_by_value_read_fields"
-description = "A compact struct passed by value has all fields read in the callee via the caller-written compact image and homed pointer under --preview aggregate_layout (RUE-1005)."
+description = "A compact struct passed by value has all fields read in the callee via the caller-written compact image and homed pointer (RUE-1005)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Padded { a: u8, b: i32, c: u8 }
 fn sum(p: Padded) -> i32 {
@@ -756,9 +736,9 @@ exit_code = 0
 # both variants correctly.
 [[case]]
 name = "compact_enum_by_value_match"
-description = "An Option-like enum passed by value is matched in the callee through the compact image and homed pointer under --preview aggregate_layout (RUE-1005)."
+description = "An Option-like enum passed by value is matched in the callee through the compact image and homed pointer (RUE-1005)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Opt { Some(i32), None }
 fn unwrap_or(o: Opt, d: i32) -> i32 {
@@ -778,9 +758,9 @@ exit_code = 0
 # for the next call, and the deepest callee reads every field.
 [[case]]
 name = "compact_struct_by_value_two_level_chain"
-description = "A compact struct passed by value through a two-level call chain (caller -> f -> g) reads correctly at the bottom under --preview aggregate_layout (RUE-1005)."
+description = "A compact struct passed by value through a two-level call chain (caller -> f -> g) reads correctly at the bottom (RUE-1005)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Padded { a: u8, b: i32, c: u8 }
 fn g(p: Padded) -> i32 { @intCast(p.a) + p.b + @intCast(p.c) }
@@ -800,9 +780,9 @@ exit_code = 0
 # preserved convention.
 [[case]]
 name = "compact_mixed_signature_by_value"
-description = "A call mixing i64, a by-value compact struct, and bool passes the struct indirectly while scalars stay direct under --preview aggregate_layout (RUE-1005)."
+description = "A call mixing i64, a by-value compact struct, and bool passes the struct indirectly while scalars stay direct (RUE-1005)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Padded { a: u8, b: i32, c: u8 }
 fn mix(x: i64, p: Padded, flag: bool) -> i64 {
@@ -826,9 +806,9 @@ exit_code = 0
 # read-back reads its buffer.
 [[case]]
 name = "compact_struct_takes_and_returns_by_value"
-description = "A call that both takes and returns a compact aggregate by value round-trips under --preview aggregate_layout (RUE-1005)."
+description = "A call that both takes and returns a compact aggregate by value round-trips (RUE-1005)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Padded { a: u8, b: i32, c: u8 }
 fn bump(p: Padded) -> Padded { Padded { a: p.a, b: p.b + 1, c: p.c } }
@@ -851,7 +831,7 @@ exit_code = 0
 name = "compact_array_by_value_arg_roundtrip"
 description = "A by-value fixed array crossing a call marshals through its compact image (compact element stride) and is indexed in the callee at the slot stride (RUE-1014)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn sum(a: [i32; 3]) -> i32 { a[0] + a[1] + a[2] }
 fn main() -> i32 {
@@ -863,8 +843,8 @@ fn main() -> i32 {
 stdout = "60\n"
 exit_code = 0
 
-# RUE-1004 prize: a std-like generic `ArrayBuf(i32)` compiles and runs under
-# --preview aggregate_layout. `ArrayBuf(T)` is `{ buf: ptr mut T, len: u64,
+# RUE-1004 prize: a std-like generic `ArrayBuf(i32)` compiles and runs under the
+# default compact layout. `ArrayBuf(T)` is `{ buf: ptr mut T, len: u64,
 # cap: u64 }` — all eight-byte leaves, so it is slot-identical and crosses its
 # `borrow self` / `inout self` method calls unchanged; the i32 heap elements use
 # RUE-989 narrow access; and `get`/`pop` return `Option(i32)` BY VALUE, which is
@@ -873,9 +853,9 @@ exit_code = 0
 # to compile and execute under the compact-layout gate.
 [[case]]
 name = "compact_arraybuf_option_return_dogfood"
-description = "A generic ArrayBuf(i32) push/get/pop dogfood compiles and runs under --preview aggregate_layout; Option(i32) returns cross via the compact sret image (RUE-1004)."
+description = "A generic ArrayBuf(i32) push/get/pop dogfood compiles and runs; Option(i32) returns cross via the compact sret image (RUE-1004)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [
   { path = "main.rue", source = """const arraybuf = @import("arraybuf.rue");
 
@@ -988,9 +968,9 @@ exit_code = 0
 # behavior across all opt levels; the output matches the gate-off run.
 [[case]]
 name = "compact_arraybuf_struct_element_dogfood"
-description = "A generic ArrayBuf(Point) with a compact struct element: push/get/set/pop_or round-trip the whole struct through heap pointers and sret returns under --preview aggregate_layout (RUE-987)."
+description = "A generic ArrayBuf(Point) with a compact struct element: push/get/set/pop_or round-trip the whole struct through heap pointers and sret returns (RUE-987)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [
   { path = "main.rue", source = """const arraybuf = @import("arraybuf.rue");
 
@@ -1092,7 +1072,7 @@ exit_code = 0
 name = "variant_dependent_enum_struct_payload_sret"
 description = "An Option(struct) enum returned by value marshals through the compact sret image and matches on both variants (RUE-1014)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Point { x: i32, y: i32 }
 enum Opt { Some(Point), None }
@@ -1116,7 +1096,7 @@ exit_code = 0
 name = "compact_enum_variant_overwrite_leaves_no_residue"
 description = "Overwriting a heap enum with a shorter variant leaves no residue from the wider variant's payload (RUE-1014 / RUE-1007 ruling 5)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum E { Big(i64, i64), Small(u8) }
 fn main() -> i32 {
@@ -1138,9 +1118,10 @@ stdout = "0\n"
 exit_code = 0
 
 # --- RUE-1035: single-slot by-value, array drop glue, and frame @raw ---------
-# Three compact-codegen miscompiles reachable under --preview aggregate_layout,
-# each reproduced then fixed. M1/M3 now execute correctly across optimization
-# levels; M2 converts a silent miscompile into a loud construct-level refusal.
+# Three compact-codegen miscompiles that the flip to the default compact layout
+# exposed, each reproduced then fixed (RUE-1035). M1/M3 now execute correctly
+# across optimization levels; M2 converts a silent miscompile into a loud
+# construct-level refusal that is now the default behavior (RUE-987).
 
 # M1: a single-narrow-field struct passed BY VALUE. The classifier used to force
 # ANY non-slot-identical aggregate indirect; a one-slot struct went through the
@@ -1151,7 +1132,7 @@ exit_code = 0
 name = "compact_single_field_struct_by_value"
 description = "A single-i32-field struct passed by value returns its field, not garbage (RUE-1035 M1)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct D { v: i32 }
 fn c(d: D) -> i32 { d.v }
@@ -1170,7 +1151,7 @@ exit_code = 0
 name = "compact_single_field_struct_returned"
 description = "A single-i32-field struct returned by value round-trips (RUE-1035 M1, return side)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct D { v: i32 }
 fn mk() -> D { D { v: 7 } }
@@ -1192,7 +1173,7 @@ exit_code = 0
 name = "compact_array_element_drop_glue"
 description = "Array-element drop glue over a struct with a destructor drops each element in order (RUE-1035 M3)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct D { a: i32, b: i32 }
 drop fn D(self) { @dbg(self.a); @dbg(self.b); }
@@ -1211,7 +1192,7 @@ exit_code = 0
 [[case]]
 name = "compact_frame_raw_whole_struct_refused"
 description = "@raw_mut of a non-slot-identical frame struct is refused with a construct-level error (RUE-1035 M2)."
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct P { x: i32, y: i32, z: i32 }
 fn main() -> i32 {
@@ -1233,7 +1214,7 @@ error_contains = ["raw pointer", "frame-resident aggregate", "@alloc"]
 [[case]]
 name = "compact_frame_raw_array_element_refused"
 description = "@raw of a frame array element (a non-slot-identical array) is refused (RUE-1035 M2)."
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     let mut arr: [i32; 3] = [10, 20, 30];
@@ -1261,7 +1242,7 @@ error_contains = ["raw pointer", "frame-resident aggregate"]
 name = "compact_heterogeneous_enum_construct_return_match"
 description = "A heterogeneous enum { Ok(struct{i32,i32,i32}), Err(i64) } is constructed, sret-returned, passed by value, and matched on both variants (RUE-1037)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum R { Ok(Point), Err(i64) }
 struct Point { x: i32, y: i32, z: i32 }
@@ -1292,7 +1273,7 @@ exit_code = 0
 name = "compact_heterogeneous_enum_heap_overwrite_no_residue"
 description = "Overwriting a heap heterogeneous enum with a shorter variant zeroes the wider variant's payload bytes; the round-tripped value classifies correctly (RUE-1037 / RUE-1007)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum R { Ok(Point), Err(i64) }
 struct Point { x: i32, y: i32, z: i32 }
@@ -1328,7 +1309,7 @@ exit_code = 0
 name = "compact_heterogeneous_enum_in_struct_across_call"
 description = "A struct containing a heterogeneous enum crosses a call boundary in both directions, marshalled via a nested tag dispatch (RUE-1037)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum R { Ok(Point), Err(i64) }
 struct Point { x: i32, y: i32, z: i32 }

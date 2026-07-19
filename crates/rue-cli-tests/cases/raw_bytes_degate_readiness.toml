@@ -1,42 +1,31 @@
-# De-gate differential: plain (no preview) vs aggregate_layout (RUE-978,
-# evidence gathered for the RUE-937 gate-removal decision; retained after
-# stabilization as a standing behavior-preservation check).
+# Raw-byte surface behavior check (RUE-978 fold-in; originally the RUE-937
+# de-gate differential, retained after the RUE-987 layout flip as a standing
+# behavior-preservation check).
 #
-# The raw-byte access family is now ungated (ADR-0059 Phase 6, RUE-937). ADR-0059
-# folds that family into the ordinary typed `ptr u8` path under `aggregate_layout`
-# (phase 7): `@byte_read`/`@byte_write` lower through the same one-byte narrow
-# scalar access a typed `ptr u8` takes, and the byte allocators share the general
-# allocator helper. The question these cases pin down is whether that fold-in
-# changes the OBSERVABLE behavior of the byte surface — i.e. does turning
-# `aggregate_layout` on alter what a byte-intrinsic program computes?
-#
-# It must not. The byte family is byte-granular in BOTH layout states (a
+# The raw-byte access family is ungated (ADR-0059 Phase 6, RUE-937) and, under
+# the compact layout that is now the default (ADR-0052, RUE-987), folds into the
+# ordinary typed `ptr u8` path (phase 7): `@byte_read`/`@byte_write` lower
+# through the same one-byte narrow scalar access a typed `ptr u8` takes, and the
+# byte allocators share the general allocator helper. These cases pin that the
+# fold-in is behavior-preserving: the byte family is byte-granular (a
 # `@byte_read` reads one physical byte, `@alloc_bytes(n, a)` reserves n physical
-# bytes, offsets are never scaled by the slot size), so the fold-in only changes
-# which instruction carries the access, never its result. Each program below
-# therefore appears TWICE — once plain (default slot layout, bespoke packed
-# lowering), once under `aggregate_layout` (folded into the narrow typed path) —
-# pinned to the SAME `stdout`/`exit_code`. A divergence (a fold-in that shifted a
-# byte, a stride that leaked into the byte surface) flips one half of a pair and
-# fails.
+# bytes, offsets are never scaled by the slot size), so the result never moves.
 #
 # Note: the byte surface deliberately avoids `@ptr_offset` for byte addressing
-# (it strides by the slot size, which is 8 under the default layout and 1 under
-# aggregate_layout — the one element that is NOT byte-identical across the layout),
-# addressing sub-ranges through `@ptr_to_int`/`@int_to_ptr` exactly as
-# `std/strbuf.rue` does. That is why these programs are byte-identical and a naive
-# `@ptr_offset`-based one would not be.
+# (it strides by the pointee width, so it is not byte-granular), addressing
+# sub-ranges through `@ptr_to_int`/`@int_to_ptr` exactly as `std/strbuf.rue`
+# does.
 
 [section]
 id = "cli.raw_bytes_degate_readiness"
-name = "raw-byte surface behaves identically with and without aggregate_layout"
-description = "Byte-intrinsic programs produce identical output plain (default slot layout) and under `aggregate_layout`, evidencing that the RUE-978 fold-in is behavior-preserving (RUE-937 de-gate readiness)."
+name = "raw-byte surface behaves identically under the compact layout"
+description = "Byte-intrinsic programs compute the byte-granular result the byte surface guarantees, evidencing that the RUE-978 fold-in into the narrow typed path is behavior-preserving."
 
 # The whole byte family — @alloc_bytes/@byte_set/@byte_write/@realloc_bytes/
-# @byte_copy/@byte_read/@free_bytes — in one round-trip. Baseline: plain, no preview.
+# @byte_copy/@byte_read/@free_bytes — in one round-trip.
 [[case]]
 name = "byte_family_roundtrip_plain"
-description = "Full byte-family round-trip plain, no preview (default slot layout, bespoke packed lowering)."
+description = "Full byte-family round-trip through the byte surface."
 differential_opt = true
 args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
@@ -64,40 +53,8 @@ fn main() -> i32 {
 stdout = "100\n"
 exit_code = 0
 
-# The identical program under aggregate_layout. The fold-in routes
-# @byte_read/@byte_write through the narrow typed path; the output must not move.
-[[case]]
-name = "byte_family_roundtrip_aggregate_layout"
-description = "The same byte-family round-trip under aggregate_layout (folded into the narrow typed path); output must be byte-identical."
-differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
-files = [{ path = "main.rue", source = """
-fn main() -> i32 {
-    checked {
-        let p: ptr mut u8 = @alloc_bytes(6, 1);
-        @byte_set(p, 0, 6);
-        @byte_write(p, 0, 10);
-        @byte_write(p, 1, 20);
-        @byte_write(p, 2, 30);
-        let q: ptr mut u8 = @realloc_bytes(p, 6, 1, 8);
-        @byte_write(q, 3, 40);
-        let dst: ptr mut u8 = @alloc_bytes(8, 1);
-        @byte_copy(dst, q, 8);
-        let sum: i32 = @intCast(@byte_read(dst, 0)) + @intCast(@byte_read(dst, 1))
-            + @intCast(@byte_read(dst, 2)) + @intCast(@byte_read(dst, 3))
-            + @intCast(@byte_read(dst, 4));
-        @dbg(sum);
-        @free_bytes(q, 8, 1);
-        @free_bytes(dst, 8, 1);
-    };
-    0
-}
-""" }]
-stdout = "100\n"
-exit_code = 0
-
 # StrBuf's packed sub-range copy idiom: byte offsets folded into the address via
-# @ptr_to_int/@int_to_ptr (never @ptr_offset), then @byte_copy. Baseline.
+# @ptr_to_int/@int_to_ptr (never @ptr_offset), then @byte_copy.
 [[case]]
 name = "packed_subrange_copy_plain"
 description = "StrBuf-style packed sub-range @byte_copy addressed through @ptr_to_int/@int_to_ptr, plain (no preview)."
@@ -133,37 +90,3 @@ fn main() -> i32 {
 stdout = "9\n"
 exit_code = 0
 
-[[case]]
-name = "packed_subrange_copy_aggregate_layout"
-description = "The same packed sub-range copy under aggregate_layout; output must be byte-identical."
-differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
-files = [{ path = "main.rue", source = """
-fn main() -> i32 {
-    checked {
-        let src: ptr mut u8 = @alloc_bytes(5, 1);
-        let mut i: u64 = 0;
-        while i < 5 {
-            @byte_write(src, i, @intCast(i + 1));
-            i = i + 1;
-        }
-        let dst: ptr mut u8 = @alloc_bytes(5, 1);
-        @byte_set(dst, 0, 5);
-        let sp: ptr mut u8 = @int_to_ptr(@ptr_to_int(src) + 1);
-        let dp: ptr mut u8 = @int_to_ptr(@ptr_to_int(dst) + 2);
-        @byte_copy(dp, sp, 3);
-        let mut sum: i32 = 0;
-        let mut j: u64 = 0;
-        while j < 5 {
-            sum = sum + @intCast(@byte_read(dst, j));
-            j = j + 1;
-        }
-        @dbg(sum);
-        @free_bytes(src, 5, 1);
-        @free_bytes(dst, 5, 1);
-    };
-    0
-}
-""" }]
-stdout = "9\n"
-exit_code = 0

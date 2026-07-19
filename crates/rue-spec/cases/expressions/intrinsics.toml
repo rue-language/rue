@@ -28,7 +28,7 @@ fn main() -> i32 {
     @size_of(i32)
 }
 """
-exit_code = 8
+exit_code = 4
 
 [[case]]
 name = "unknown_intrinsic"
@@ -417,7 +417,7 @@ fn main() -> i32 {
     @size_of(i32)
 }
 """
-exit_code = 8
+exit_code = 4
 
 [[case]]
 name = "size_of_returns_i32"
@@ -428,7 +428,7 @@ fn main() -> i32 {
     takes_i32(@size_of(i32))
 }
 """
-exit_code = 8
+exit_code = 4
 
 [[case]]
 name = "size_of_compile_time"
@@ -440,7 +440,7 @@ fn main() -> i32 {
     size
 }
 """
-exit_code = 8
+exit_code = 4
 
 [[case]]
 name = "size_of_struct"
@@ -451,7 +451,7 @@ fn main() -> i32 {
     @size_of(Point)
 }
 """
-exit_code = 16
+exit_code = 8
 
 [[case]]
 name = "size_of_array"
@@ -461,7 +461,7 @@ fn main() -> i32 {
     @size_of([i32; 3])
 }
 """
-exit_code = 24
+exit_code = 12
 
 # =============================================================================
 # @align_of Intrinsic
@@ -475,7 +475,7 @@ fn main() -> i32 {
     @align_of(i32)
 }
 """
-exit_code = 8
+exit_code = 4
 
 [[case]]
 name = "align_of_returns_i32"
@@ -486,7 +486,7 @@ fn main() -> i32 {
     takes_i32(@align_of(i32))
 }
 """
-exit_code = 8
+exit_code = 4
 
 [[case]]
 name = "align_of_compile_time"
@@ -498,22 +498,21 @@ fn main() -> i32 {
     align
 }
 """
-exit_code = 8
+exit_code = 4
 
-# slot-model-default: observes 8-byte alignment under the current default
-# layout (4.13:22, now observe-only). RUE-987 re-golds these values when the
-# compact layout (ADR-0052) becomes the default.
+# Each type observes its natural compact alignment (4.13:22): i8 and bool are
+# one byte, i64 is eight, and a struct's alignment is its widest field's (Point
+# is four, from its i32 fields).
 [[case]]
-name = "align_of_all_types_8"
+name = "align_of_natural_alignments"
 spec = ["4.13:22"]
 source = """
 struct Point { x: i32, y: i32 }
 fn main() -> i32 {
-    // All types currently observe 8-byte alignment under the default layout.
-    if @align_of(i8) != 8 { return 1; }
+    if @align_of(i8) != 1 { return 1; }
     if @align_of(i64) != 8 { return 2; }
-    if @align_of(bool) != 8 { return 3; }
-    if @align_of(Point) != 8 { return 4; }
+    if @align_of(bool) != 1 { return 3; }
+    if @align_of(Point) != 4 { return 4; }
     0
 }
 """
@@ -545,7 +544,7 @@ fn main() -> i32 {
     @intCast(off)
 }
 """
-exit_code = 8
+exit_code = 4
 
 [[case]]
 name = "offset_of_returns_u64"
@@ -558,7 +557,7 @@ fn main() -> i32 {
     @intCast(off)
 }
 """
-exit_code = 8
+exit_code = 4
 
 [[case]]
 name = "offset_of_accounts_for_multislot_fields"
@@ -567,13 +566,13 @@ source = """
 struct Inner { x: i32, y: i32 }
 struct Outer { flag: bool, arr: [i32; 3], inner: Inner, last: i64 }
 fn main() -> i32 {
-    // flag: 1 slot -> arr at slot 1 (byte 8)
-    // arr: 3 slots -> inner at slot 4 (byte 32)
-    // inner: 2 slots -> last at slot 6 (byte 48)
+    // flag: bool@0 -> arr (align 4) at byte 4
+    // arr: [i32;3] size 12 -> inner (align 4) at byte 16
+    // inner: Inner size 8 -> last (i64, align 8) at byte 24
     if @offset_of(Outer, flag) != 0 { return 1; }
-    if @offset_of(Outer, arr) != 8 { return 2; }
-    if @offset_of(Outer, inner) != 32 { return 3; }
-    if @offset_of(Outer, last) != 48 { return 4; }
+    if @offset_of(Outer, arr) != 4 { return 2; }
+    if @offset_of(Outer, inner) != 16 { return 3; }
+    if @offset_of(Outer, last) != 24 { return 4; }
     0
 }
 """
@@ -590,7 +589,7 @@ fn main() -> i32 {
     @intCast(off)
 }
 """
-exit_code = 8
+exit_code = 4
 
 [[case]]
 name = "offset_of_non_struct_type_errors"
@@ -2198,7 +2197,7 @@ fn main() -> i32 {
     @size_of(Pair(i32)) + witness.first - 1
 }
 """
-exit_code = 16
+exit_code = 8
 
 [[case]]
 name = "align_of_pointer_type"
@@ -2224,7 +2223,7 @@ fn main() -> i32 {
     @align_of(Pair(i32)) + witness.first - 1
 }
 """
-exit_code = 8
+exit_code = 4
 
 [[case]]
 name = "offset_of_type_call"

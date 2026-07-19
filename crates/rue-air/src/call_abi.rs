@@ -28,9 +28,8 @@
 //! crossing a call is either expressible slot-identically (classified and
 //! marshaled exactly as today), passed indirectly (this rule), or refused
 //! loudly by code generation because the narrow indirect marshaling is not yet
-//! implemented — never silently wrong. With the gate off `compact_layout()` is
-//! false, the rule never fires, and every classification is byte-for-byte the
-//! historical slot decision.
+//! implemented — never silently wrong. Slot-identical aggregates keep the
+//! historical register classification byte-for-byte.
 
 use crate::{FrozenTypeInternPool, Type, TypeKind};
 
@@ -271,10 +270,11 @@ impl<'a> NativeCallAbi<'a> {
             || (ty.is_enum() && slot_count > 1)
     }
 
-    /// The memory-first transitional rule (ADR-0052 ruling 9): under the compact
-    /// layout, an aggregate whose compact representation is not slot-identical
-    /// cannot cross the preserved register convention and must go indirect —
-    /// *unless it occupies exactly one ABI slot* (RUE-1035).
+    /// The memory-first rule (ADR-0052 ruling 9): a multi-slot aggregate whose
+    /// compact representation is not slot-identical cannot cross the preserved
+    /// register convention and must go indirect (by-reference / sret) — *unless
+    /// it occupies exactly one ABI slot* (RUE-1035). Slot-identical aggregates
+    /// keep the historical register decision.
     ///
     /// A single-slot aggregate carries its whole value in one eight-byte slot: a
     /// narrow leaf lives in that slot's low bytes under both the compact image
@@ -283,16 +283,12 @@ impl<'a> NativeCallAbi<'a> {
     /// a value indirect gained nothing and drove the not-yet-correct single-slot
     /// indirect marshalling (garbage by-value args, RUE-1035 M1); classifying it
     /// Direct instead routes it through the proven one-slot path — byte-for-byte
-    /// the same classification the gate-off slot model already produces for it, on
-    /// both backends and in the oracle. Returns stay consistent: a single-slot
-    /// aggregate return is `Registers { slot_count: 1 }` (never sret), so no
-    /// caller-side image read-back is implied.
-    ///
-    /// Always false with the gate off (`compact_layout()` is false), so every
-    /// classification is byte-for-byte the historical slot decision.
+    /// the same classification the slot model produces for it, on both backends
+    /// and in the oracle. Returns stay consistent: a single-slot aggregate return
+    /// is `Registers { slot_count: 1 }` (never sret), so no caller-side image
+    /// read-back is implied.
     fn crosses_indirectly_under_compact(&self, ty: Type, slot_count: u32) -> bool {
-        self.type_pool.compact_layout()
-            && slot_count > 1
+        slot_count > 1
             && self.is_multislot_aggregate(ty, slot_count)
             && !is_slot_identical_layout(self.type_pool, ty)
     }

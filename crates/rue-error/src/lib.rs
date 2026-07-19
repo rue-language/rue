@@ -520,15 +520,6 @@ pub enum PreviewFeature {
     /// collection/string trio. Gated until the fat-pointer ABI lands on both
     /// backends.
     Slices,
-    /// Compact native physical type layout (ADR-0052). Replaces the flattened
-    /// eight-byte ABI-slot physical layout with natural scalar widths and
-    /// alignments, declaration-order struct fields with padding, ascending
-    /// array stride, and tagged-enum representation. Gated while compact-memory
-    /// code generation is staged: RUE-974 lands the layout authority and the
-    /// compile-time layout queries (`@size_of`/`@align_of`/`@offset_of`);
-    /// RUE-975/RUE-976 land the stack-and-value separation and call-ABI
-    /// classifier that compact heap/pointer code generation depends on.
-    AggregateLayout,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -550,7 +541,6 @@ impl PreviewFeature {
         match *self {
             PreviewFeature::TestInfra => "test_infra",
             PreviewFeature::Slices => "slices",
-            PreviewFeature::AggregateLayout => "aggregate_layout",
         }
     }
 
@@ -560,17 +550,12 @@ impl PreviewFeature {
         match *self {
             PreviewFeature::TestInfra => "ADR-0005",
             PreviewFeature::Slices => "ADR-0043",
-            PreviewFeature::AggregateLayout => "ADR-0052",
         }
     }
 
     /// Get all available preview features.
     pub fn all() -> &'static [PreviewFeature] {
-        &[
-            PreviewFeature::TestInfra,
-            PreviewFeature::Slices,
-            PreviewFeature::AggregateLayout,
-        ]
+        &[PreviewFeature::TestInfra, PreviewFeature::Slices]
     }
 
     /// Get a comma-separated list of all feature names (for help text).
@@ -594,7 +579,6 @@ impl std::str::FromStr for PreviewFeature {
         match s {
             "test_infra" => Ok(PreviewFeature::TestInfra),
             "slices" => Ok(PreviewFeature::Slices),
-            "aggregate_layout" => Ok(PreviewFeature::AggregateLayout),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -2610,7 +2594,7 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra, slices, aggregate_layout");
+        assert_eq!(names, "test_infra, slices");
     }
 
     #[test]
@@ -2688,8 +2672,9 @@ mod tests {
     #[test]
     fn test_preview_feature_stabilized_are_unknown() {
         // for_loops, method_receivers, enum_payloads, array_repeat,
-        // field_init_shorthand, inline_type_ctor_paths, and raw_bytes were
-        // stabilized (no longer gated) — their names must now be rejected.
+        // field_init_shorthand, inline_type_ctor_paths, raw_bytes, and
+        // aggregate_layout were stabilized (no longer gated) — their names must
+        // now be rejected.
         for name in [
             "for_loops",
             "method_receivers",
@@ -2698,6 +2683,7 @@ mod tests {
             "field_init_shorthand",
             "inline_type_ctor_paths",
             "raw_bytes",
+            "aggregate_layout",
         ] {
             assert!(
                 name.parse::<PreviewFeature>().is_err(),

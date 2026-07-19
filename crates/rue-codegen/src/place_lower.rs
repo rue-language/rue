@@ -360,7 +360,6 @@ mod tests {
                 let i: u64 = 1;
                 let j: u64 = 0;
                 grid.cells[i][j] = grid.cells[i][j] + 1;
-                let _address: ptr const i32 = checked { @raw(grid.cells[i][j]) };
                 grid.cells[i][j]
             }
         "#;
@@ -408,31 +407,33 @@ mod tests {
         .lower()
         .expect("AArch64 fixture should lower");
 
-        // RHS read, write destination, @raw's argument read/address pair, and
-        // final read each walk both indices. Only the write emits an indexed
-        // store; the three ordinary reads emit indexed loads. These counts
-        // make projection traversal regressions visible without snapshotting
-        // unrelated prologue/ABI details.
+        // RHS read, write destination, and final read each walk both indices.
+        // Only the write emits an indexed store; the two ordinary reads emit
+        // indexed loads. (Taking a raw pointer into the frame-resident nested
+        // array is refused by the compact-layout M2 contract and is covered by
+        // `raw_pointer_into_frame_nested_array_is_refused_on_both_backends`.)
+        // These counts make projection traversal regressions visible without
+        // snapshotting unrelated prologue/ABI details.
         assert_eq!(
             x86.instructions()
                 .iter()
                 .filter(|inst| matches!(inst, X86Inst::ImulRR64 { .. }))
                 .count(),
-            5
+            3
         );
         assert_eq!(
             x86.instructions()
                 .iter()
                 .filter(|inst| matches!(inst, X86Inst::Shl { .. }))
                 .count(),
-            5
+            3
         );
         assert_eq!(
             x86.instructions()
                 .iter()
                 .filter(|inst| matches!(inst, X86Inst::MovRMIndexed { .. }))
                 .count(),
-            3
+            2
         );
         assert_eq!(
             x86.instructions()
@@ -447,21 +448,21 @@ mod tests {
                 .iter()
                 .filter(|inst| matches!(inst, Aarch64Inst::MulRR { .. }))
                 .count(),
-            5
+            3
         );
         assert_eq!(
             arm.instructions()
                 .iter()
                 .filter(|inst| matches!(inst, Aarch64Inst::LslImm { .. }))
                 .count(),
-            5
+            3
         );
         assert_eq!(
             arm.instructions()
                 .iter()
                 .filter(|inst| matches!(inst, Aarch64Inst::LdrIndexed { .. }))
                 .count(),
-            3
+            2
         );
         assert_eq!(
             arm.instructions()
@@ -698,5 +699,73 @@ mod tests {
         assert!(unit_write_arm.instructions().iter().any(|inst| {
             matches!(inst, Aarch64Inst::Bl { symbol_id } if unit_write_arm.get_symbol(*symbol_id) == "__rue_bounds_check")
         }));
+    }
+
+    /// Taking a raw pointer into an element of a frame-resident non-slot-identical
+    /// array (`@raw(grid.cells[i][j])`) is refused loudly on both backends: the
+    /// frame stores the array slot-shaped while the raw pointer addresses memory
+    /// by its packed compact image, so an `@ptr_offset` walk would stride across
+    /// mismatched layouts (the compact-layout M2b contract, RUE-1035 / RUE-987).
+    /// The sibling read/write projection test covers the paths that still lower.
+    #[test]
+    fn raw_pointer_into_frame_nested_array_is_refused_on_both_backends() {
+        let source = r#"
+            struct Grid { pad: i32, cells: [[i32; 2]; 2] }
+            fn main() -> i32 {
+                let mut grid = Grid { pad: 9, cells: [[10, 20], [30, 40]] };
+                let i: u64 = 1;
+                let j: u64 = 0;
+                let _address: ptr const i32 = checked { @raw(grid.cells[i][j]) };
+                grid.cells[i][j]
+            }
+        "#;
+
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().expect("fixture should lex");
+        let parser = Parser::new(tokens, interner);
+        let (ast, mut interner) = parser.parse().expect("fixture should parse");
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
+        let output = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new())
+            .analyze_all()
+            .expect("fixture should analyze");
+        let function = output
+            .functions
+            .iter()
+            .find(|function| function.name == "main")
+            .expect("fixture function should exist");
+        let cfg = CfgBuilder::build(
+            &function.air,
+            function.num_locals,
+            function.num_param_slots,
+            &function.name,
+            &output.type_pool,
+            function.param_modes.clone(),
+            &interner,
+            function.allow_unreachable_code,
+        )
+        .cfg
+        .unwrap();
+
+        let x86_err = X86CfgLower::new_unchecked(&cfg, &output.type_pool, &interner)
+            .lower()
+            .expect_err("x86 must refuse a raw pointer into a frame nested array");
+        assert!(
+            format!("{x86_err:?}").contains("frame-resident aggregate"),
+            "unexpected x86 diagnostic: {x86_err:?}"
+        );
+        let arm_err = Aarch64CfgLower::new_unchecked(
+            &cfg,
+            &output.type_pool,
+            &interner,
+            Target::Aarch64Linux,
+        )
+        .lower()
+        .expect_err("AArch64 must refuse a raw pointer into a frame nested array");
+        assert!(
+            format!("{arm_err:?}").contains("frame-resident aggregate"),
+            "unexpected AArch64 diagnostic: {arm_err:?}"
+        );
     }
 }
