@@ -253,6 +253,15 @@ pub struct CfgBuilder<'a> {
     anonymous_destructor_dependency_incomplete: bool,
 }
 
+/// Whether `fn_name` is a cleanup callee reached only through the direct
+/// flattened-slot drop convention (`CallPlan::from_slot_values`): synthesized
+/// drop glue (`__rue_drop_*`) or a user/anon destructor (`<Type>.__drop`).
+/// These reserved synthetic symbols cannot collide with a source function, and
+/// codegen already resolves the same names for cleanup calls (RUE-1035).
+fn is_cleanup_slot_callee(fn_name: &str) -> bool {
+    fn_name.starts_with("__rue_drop_") || fn_name.ends_with(".__drop")
+}
+
 /// Derive the grouped per-source-parameter ABI descriptors (ADR-0052 phase 5.8,
 /// RUE-1005) from the AIR and the per-slot by-reference vector.
 ///
@@ -273,6 +282,21 @@ fn derive_source_param_abi(builder: &CfgBuilder<'_>) -> Vec<SourceParamAbi> {
     let num_params = builder.cfg.num_params();
     let by_ref: Vec<bool> = builder.cfg.param_modes().to_vec();
     let abi = NativeCallAbi::for_arguments(type_pool);
+
+    // Drop glue and destructors are invoked exclusively through the cleanup
+    // call convention (`CallPlan::from_slot_values`), which passes an
+    // aggregate's already-materialized slots DIRECTLY and flattened (RUE-998 /
+    // RUE-311), never the ordinary indirect compact-aggregate transport
+    // (RUE-1005). Their by-value parameters must therefore home one incoming
+    // register per slot; letting the compact classifier force a multi-slot
+    // element parameter indirect (one pointer) desynchronizes the direct-slot
+    // caller from an indirect-unmarshalling callee and miscompiles — an array
+    // drop glue dereferenced its element values as addresses and overflowed the
+    // stack (RUE-1035 M3). These synthetic symbols are compiler-reserved
+    // (`__rue_drop_*` glue, `<Type>.__drop` destructors), so this is the same
+    // identity codegen already resolves them by. Gate-off the classifier is
+    // already Direct, so this is inert there.
+    let direct_slot_abi = is_cleanup_slot_callee(builder.cfg.fn_name());
 
     // Slot -> source type. `param_drops` covers every Normal by-value parameter
     // (including unused ones); `Param` instructions supplement any used
@@ -298,10 +322,15 @@ fn derive_source_param_abi(builder: &CfgBuilder<'_>) -> Vec<SourceParamAbi> {
             (1, 1, None)
         } else if let Some(&ty) = ty_at.get(&slot) {
             let width = type_pool.abi_slot_count(ty).max(1);
-            let crossing = abi
-                .classify_arg(ty, ArgConvention::ByValue)
-                .crossing_slots()
-                .max(1);
+            let crossing = if direct_slot_abi {
+                // Cleanup-slot callees receive every slot directly (see above),
+                // so the incoming-register width is the full decomposition.
+                width
+            } else {
+                abi.classify_arg(ty, ArgConvention::ByValue)
+                    .crossing_slots()
+                    .max(1)
+            };
             // Carry the type only when the parameter crosses indirectly (one
             // pointer over a multi-slot span), so a direct parameter's CFG stays
             // layout-independent.
@@ -3288,6 +3317,21 @@ mod tests {
 
     fn build_cfg(source: &str) -> Cfg {
         build_cfg_for(source, 0)
+    }
+
+    #[test]
+    fn cleanup_slot_callees_are_the_reserved_drop_symbols() {
+        // Drop glue and destructors are reached only through the direct
+        // flattened-slot cleanup convention, so their by-value params must home
+        // directly under compact layout (RUE-1035 M3).
+        assert!(is_cleanup_slot_callee("__rue_drop_D"));
+        assert!(is_cleanup_slot_callee("__rue_drop_array_D_3"));
+        assert!(is_cleanup_slot_callee("D.__drop"));
+        assert!(is_cleanup_slot_callee("__anon_struct_7.__drop"));
+        // Ordinary user functions keep the standard call ABI.
+        assert!(!is_cleanup_slot_callee("main"));
+        assert!(!is_cleanup_slot_callee("consume"));
+        assert!(!is_cleanup_slot_callee("drop_helper"));
     }
 
     /// Build the CFG for the `index`-th analyzed function in `source`
