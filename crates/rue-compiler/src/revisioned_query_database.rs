@@ -1802,9 +1802,7 @@ mod tests {
             projected_rir
                 .rir()
                 .iter()
-                .filter(|(_, instruction)| instruction.span.file_id == FileId::new(2))
-                .next()
-                .is_some()
+                .any(|(_, instruction)| instruction.span.file_id == FileId::new(2))
         );
     }
 
