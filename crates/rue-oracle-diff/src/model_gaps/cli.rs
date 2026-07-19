@@ -425,6 +425,54 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::IntToPointer),
         &[],
     ),
+    // std.fs v1 follow-ups (ADR-0057 "Future Work"): seek/tell, fstat/newfstatat
+    // metadata, rename, unlink, and directory create/remove. Same raw-pointer
+    // substrate as v0 (StrBuf/ArrayBuf `@int_to_ptr` prologue), so the oracle
+    // model stops at the same IntToPointer gap. These cases are `only_on` the two
+    // Linux targets (macOS stat layout + Darwin *at syscall numbers are a
+    // documented, unverified follow-up), so their scope is Linux-only to match.
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_seek_set_read_back",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &["aarch64-linux", "x86-64-linux"],
+    ),
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_seek_cur_end_relative",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &["aarch64-linux", "x86-64-linux"],
+    ),
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_stat_size_and_is_file",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &["aarch64-linux", "x86-64-linux"],
+    ),
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_metadata_by_path_size",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &["aarch64-linux", "x86-64-linux"],
+    ),
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_rename_old_gone_new_present",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &["aarch64-linux", "x86-64-linux"],
+    ),
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_remove_file_then_open_notfound",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &["aarch64-linux", "x86-64-linux"],
+    ),
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_mkdir_stat_is_dir_then_rmdir",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &["aarch64-linux", "x86-64-linux"],
+    ),
     Entry::new(
         "cli.heap_intrinsics",
         "alloc_count_size_overflow_traps",

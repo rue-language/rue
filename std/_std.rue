@@ -16,7 +16,8 @@
 //   ArrayBuf(u8) (`from_str`, `from_bytes`, `to_bytes`, and append variants)
 // - std.arraybuf.ArrayBuf: Growable heap-backed collections; ArrayBuf(u8) can
 //   copy from str with `from_str` / `extend_str`
-// - std.fs.File: File IO v0 (open/create/append/read/write/close over @syscall)
+// - std.fs.File: File IO (open/create/append/read/write/seek/tell/metadata/close
+//   over @syscall) plus fs.rename/remove/create_dir/remove_dir/metadata
 // - std.binary: endianness-explicit integer<->byte conversions
 // - std.net: network IO v1 address model + Linux sockaddr marshalling
 
@@ -31,7 +32,8 @@ pub const result = @import("result.rue");
 pub const strbuf = @import("strbuf.rue");
 pub const arraybuf = @import("arraybuf.rue");
 
-// File IO v0 (RUE-712, ADR-0057): pure-Rue std.fs over @syscall.
+// File IO (RUE-712, ADR-0057): pure-Rue std.fs over @syscall. v0 open/read/
+// write/close plus the v1 follow-ups seek/stat/rename/remove/directories.
 pub const fs = @import("fs.rue");
 
 // Endianness-explicit integer<->byte conversions (RUE-970, ADR-0059/0060).
