@@ -53,6 +53,7 @@ mod linking;
 mod parsed_modules;
 mod queries;
 mod query_graph;
+mod revisioned_query_database;
 mod semantic_symbols;
 mod session;
 mod source_identity;

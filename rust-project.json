@@ -431,6 +431,10 @@
           "name": "rue_parser"
         },
         {
+          "crate": 20,
+          "name": "rue_query"
+        },
+        {
           "crate": 21,
           "name": "rue_rir"
         },
@@ -593,6 +597,10 @@
         {
           "crate": 9,
           "name": "rue_compiler"
+        },
+        {
+          "crate": 10,
+          "name": "rue_error"
         },
         {
           "crate": 13,
@@ -1179,6 +1187,10 @@
           "name": "rue_compiler"
         },
         {
+          "crate": 10,
+          "name": "rue_error"
+        },
+        {
           "crate": 21,
           "name": "rue_rir"
         },
@@ -1233,6 +1245,10 @@
         {
           "crate": 9,
           "name": "rue_compiler"
+        },
+        {
+          "crate": 10,
+          "name": "rue_error"
         },
         {
           "crate": 21,

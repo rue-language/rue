@@ -30,6 +30,7 @@ rue_crate(
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-linker:rue-linker",
         "//crates/rue-parser:rue-parser",
+        "//crates/rue-query:rue-query",
         "//crates/rue-rir:rue-rir",
         "//crates/rue-runtime-abi:rue-runtime-abi",
         "//crates/rue-span:rue-span",

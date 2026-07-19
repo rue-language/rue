@@ -538,17 +538,6 @@ pub struct CanonicalParseUpdate {
 }
 
 impl CanonicalParseUpdate {
-    pub(crate) fn reused(
-        result: Result<Arc<ParsedProgram>, CompileErrors>,
-        invalidation: ParseInvalidationSummary,
-    ) -> Self {
-        Self {
-            result,
-            work: ParsedModulesWork::default(),
-            invalidation,
-        }
-    }
-
     #[cfg(test)]
     pub(crate) fn result(&self) -> Result<&Arc<ParsedProgram>, &CompileErrors> {
         self.result.as_ref()
