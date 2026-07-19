@@ -5,6 +5,16 @@ name = "Lattice workflow compiler and scheduler written in Rue"
 description = "exercise parsing, validation, graph algorithms, scheduling, replay, operational analytics, reporting, selftests, and generated scaling workloads"
 
 [[case]]
+name = "lattice_runs_built_in_demo"
+description = "the explicit demo command exercises the same full pipeline without making the generic no-argument example smoke path expensive"
+source_path = "examples/lattice/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_args = ["demo"]
+timeout_ms = 30000
+exit_code = 0
+stdout_contains = ["workflow=demo", "tasks=5", "makespan=22", "analysis_passes=48", "replay_ok=true"]
+
+[[case]]
 name = "lattice_compiles_and_schedules_workflow"
 description = "the file path parses a real workflow, recovers a failed attempt, and produces the stable schedule summary"
 source_path = "examples/lattice/main.rue"
@@ -89,4 +99,4 @@ env = { RUE_STD_PATH = "${REAL_STD}" }
 program_args = ["help"]
 timeout_ms = 30000
 exit_code = 0
-stdout_contains = ["usage: lattice", "run FILE", "selftest", "stress1", "stress2", "stress4", "benchmark"]
+stdout_contains = ["usage: lattice", "demo", "run FILE", "selftest", "stress1", "stress2", "stress4", "benchmark"]

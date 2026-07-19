@@ -24,8 +24,12 @@ and a large cross-module call graph. The main subsystems are:
 Run the built-in demonstration:
 
 ```console
-scripts/rue exec examples/lattice/main.rue
+scripts/rue exec examples/lattice/main.rue demo
 ```
+
+Running without arguments prints the command reference, keeping the repository's
+automatic example smoke test fast even when the complete CLI corpus runs in
+parallel on a constrained CI worker.
 
 Compile and schedule a workflow file:
 
