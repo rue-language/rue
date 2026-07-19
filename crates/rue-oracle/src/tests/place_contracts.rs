@@ -32,6 +32,7 @@ fn flattened_parameter_padding_is_a_semantic_gap_but_oob_is_a_contract_failure()
         ],
         locals: Vec::new(),
         cache: HashMap::new(),
+        promoted: HashMap::new(),
     };
 
     let padding = expect_flow_unsupported(Interp::base_value(&frame, PlaceBase::Param(1)));
@@ -115,6 +116,7 @@ fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
+        heap: Vec::new(),
     };
     let mut frame = Frame {
         // Deliberately inject the oracle's text runtime representation under
@@ -123,6 +125,7 @@ fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
         params: vec![Some(Value::string("not a Pair")), None],
         locals: vec![None; cfg.num_locals() as usize],
         cache: HashMap::new(),
+        promoted: HashMap::new(),
     };
     let projection = expect_flow_unsupported(interp.place_read(cfg, &mut frame, field_place));
     assert_eq!(
@@ -166,6 +169,7 @@ fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
+        heap: Vec::new(),
     };
     let inout = expect_flow_unsupported(ordinary_interp.lvalue_of(ordinary_cfg, ordinary_param));
     assert_eq!(
@@ -267,6 +271,7 @@ fn logical_inout_writability_is_distinct_from_the_by_reference_abi() {
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
+        heap: Vec::new(),
     };
     let place_read = |name: &str| {
         let cfg = state
@@ -343,6 +348,7 @@ fn validated_cfg_rejects_invalid_owned_text_projection_metadata() {
         params: Vec::new(),
         locals: vec![None; view_cfg.num_locals() as usize],
         cache: HashMap::new(),
+        promoted: HashMap::new(),
     };
     view_frame.locals[view_slot as usize] = Some(Value::string("wrong three-slot value"));
     let mut view_interp = Interp {
@@ -353,6 +359,7 @@ fn validated_cfg_rejects_invalid_owned_text_projection_metadata() {
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
+        heap: Vec::new(),
     };
     let width =
         expect_flow_unsupported(view_interp.place_read(view_cfg, &mut view_frame, view_place));
@@ -613,6 +620,7 @@ fn zero_sized_place_base_uses_the_canonical_boundary_slot() {
             stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
+            heap: Vec::new(),
         };
         let CfgInstData::PlaceRead { place } = &cfg.get_inst(read_value).data else {
             unreachable!()
@@ -774,6 +782,7 @@ fn validated_cfg_allows_only_the_explicit_str_view_whole_place_read_coercion() {
             stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
+            heap: Vec::new(),
         };
         assert!(interp.is_str_like_type(original_place.base_type));
         assert!(interp.is_str_like_type(read_type));

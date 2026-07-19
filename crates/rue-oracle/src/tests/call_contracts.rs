@@ -60,6 +60,7 @@ fn stable_text_runtime_calls_require_exact_metadata() {
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
+        heap: Vec::new(),
     };
     for (runtime, kind) in [
         (RuntimeCallKind::StrPrintAggregate, RuntimeCall::Print),
@@ -151,6 +152,7 @@ fn random_intrinsic_requires_exact_arity_and_result_type() {
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
+        heap: Vec::new(),
     };
     assert_eq!(
         interp.classify_unsupported_intrinsic(cfg, inst, "random_u32", &args, result),
@@ -213,6 +215,7 @@ fn shared_str_character_builtins_require_and_model_ptr_len_offset() {
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
+        heap: Vec::new(),
     };
     // The builtin contract only needs the logical pointer kind. Look up the
     // pointer registered by Probe rather than mutating the completed universe.
@@ -319,6 +322,7 @@ fn panic_never_signature_is_an_oracle_contract_for_both_arities() {
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
+        heap: Vec::new(),
     };
     for function_name in ["panic_no_message", "panic_with_message"] {
         let (cfg, _intrinsic, args, result_ty) =
@@ -434,11 +438,13 @@ fn user_call_layout_is_rejected_before_unmodeled_operands_run() {
             stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
+            heap: Vec::new(),
         };
         let mut frame = Frame {
             params: Vec::new(),
             locals: vec![None; cfg.num_locals() as usize],
             cache: HashMap::new(),
+            promoted: HashMap::new(),
         };
         let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, call));
         assert_eq!(
@@ -528,11 +534,13 @@ fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
             stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
+            heap: Vec::new(),
         };
         let mut frame = Frame {
             params: Vec::new(),
             locals: vec![None; cfg.num_locals() as usize],
             cache: HashMap::new(),
+            promoted: HashMap::new(),
         };
         let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, outer));
         assert_eq!(
@@ -562,11 +570,13 @@ fn abort_intrinsics_require_exact_runtime_value_shapes() {
             stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
+            heap: Vec::new(),
         };
         let mut frame = Frame {
             params: Vec::new(),
             locals: vec![None; cfg.num_locals() as usize],
             cache: HashMap::new(),
+            promoted: HashMap::new(),
         };
         let corrupted = if name == "panic" { args[0] } else { args[1] };
         frame.cache.insert(corrupted.as_u32(), Value::Int(7));
@@ -589,11 +599,13 @@ fn abort_intrinsics_require_exact_runtime_value_shapes() {
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
+        heap: Vec::new(),
     };
     let mut frame = Frame {
         params: Vec::new(),
         locals: vec![None; cfg.num_locals() as usize],
         cache: HashMap::new(),
+        promoted: HashMap::new(),
     };
     frame.cache.insert(args[0].as_u32(), Value::Int(1));
     let unsupported = expect_flow_unsupported(interp.eval(cfg, &mut frame, assertion));
@@ -634,6 +646,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
+        heap: Vec::new(),
     };
 
     let (slice_cfg, slice_inst, slice_args, slice_result) =
@@ -747,6 +760,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
+        heap: Vec::new(),
     };
     assert_eq!(
         drift_interp.classify_unsupported_intrinsic(
@@ -801,6 +815,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
+        heap: Vec::new(),
     };
     assert_eq!(
         extra_interp.classify_unsupported_intrinsic(
@@ -864,6 +879,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
+        heap: Vec::new(),
     };
     assert_eq!(
         extra_init_interp.classify_unsupported_intrinsic(
@@ -941,6 +957,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
+        heap: Vec::new(),
     };
     assert_eq!(
         wrong_consumer_interp.classify_unsupported_intrinsic(
@@ -994,6 +1011,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
+        heap: Vec::new(),
     };
     assert_eq!(
         wrong_init_interp.classify_unsupported_intrinsic(
@@ -1026,6 +1044,7 @@ fn validated_cfg_rejects_out_of_bounds_field_pointer_projection_metadata() {
             stderr_cap: MAX_STDERR_BYTES,
             budget: STEP_BUDGET,
             depth: 0,
+            heap: Vec::new(),
         };
         assert_eq!(
             interp.classify_unsupported_intrinsic(cfg, inst, "field_ptr", &args, result),
@@ -1099,6 +1118,7 @@ fn option_returning_intrinsics_require_the_exact_payload_type() {
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
+        heap: Vec::new(),
     };
     let (parse32_cfg, parse32_inst, parse32_args, parse32_result) =
         find_intrinsic_in_function(&state, "parse32", "parse_i32");
@@ -1274,6 +1294,7 @@ fn read_line_requires_trusted_source_strbuf_payload_metadata() {
         stderr_cap: MAX_STDERR_BYTES,
         budget: STEP_BUDGET,
         depth: 0,
+        heap: Vec::new(),
     };
     let (cfg, inst, args, result) = find_intrinsic_in_function(&state, "line", "read_line");
     assert_eq!(

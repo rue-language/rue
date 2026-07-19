@@ -72,24 +72,6 @@ impl Entry {
 /// values moved, which the RUE-987 sweep re-verified.
 const ENTRIES: &[Entry] = &[
     Entry::new(
-        "array_literal_string",
-        "array_of_string_new_len",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    Entry::new(
-        "array_literal_string",
-        "array_of_string_var_single",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    Entry::new(
-        "array_literal_string",
-        "array_of_string_with_capacity",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
         "cli.abi",
         "string_return_by_value",
         semantic(SemanticGapKind::TextProjectionRead),
@@ -99,60 +81,6 @@ const ENTRIES: &[Entry] = &[
         "cli.abi",
         "string_return_with_args",
         implementation_defined(ImplementationDefinedKind::StringCapacityValue),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_abi_matrix",
-        "aos_ptr_rw",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_abi_matrix",
-        "arr_ptr_rw",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_abi_matrix",
-        "enum_ptr_rw",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_abi_matrix",
-        "nest_ptr_rw",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_abi_matrix",
-        "s1_ptr_rw",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_abi_matrix",
-        "s2_ptr_rw",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_abi_matrix",
-        "s3_ptr_rw",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_abi_matrix",
-        "s8_ptr_rw",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_ascending_layout",
-        "heap_multislot_roundtrip_no_clobber",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
         &[],
     ),
     Entry::new(
@@ -174,69 +102,45 @@ const ENTRIES: &[Entry] = &[
         &[],
     ),
     Entry::new(
-        "cli.anon_struct_destructor",
-        "generic_heap_buffer_auto_freed",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    Entry::new(
         "cli.arraybuf_library",
         "arraybuf_clear_set_free_drop_accounting",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.arraybuf_library",
         "arraybuf_drop_trace_ascending",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.arraybuf_library",
         "arraybuf_nested_drop_trace",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.arraybuf_library",
         "arraybuf_nested_i64_drain",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.arraybuf_library",
         "arraybuf_strbuf_elements",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.arraybuf_library",
         "arraybuf_zero_sized_element",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.borrow_sibling_moves",
         "byref_method_receiver_stays_usable_control",
         implementation_defined(ImplementationDefinedKind::StringCapacityValue),
-        &[],
-    ),
-    Entry::new(
-        "cli.builtin_assocfn_infer",
-        "string_new_len_eq_literal",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    Entry::new(
-        "cli.builtin_assocfn_infer",
-        "string_new_result_is_empty",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    Entry::new(
-        "cli.builtin_assocfn_infer",
-        "with_capacity_literal_arg_is_u64",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
         &[],
     ),
     Entry::new(
@@ -258,21 +162,15 @@ const ENTRIES: &[Entry] = &[
         &[],
     ),
     Entry::new(
-        "cli.comptime_type_var_composite",
-        "pointer_to_comptime_type_var",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
         "cli.const_alias_inference",
         "intcast_infers_target_from_method_param",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.const_alias_inference",
         "negative_literal_arg_through_const_alias",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
@@ -288,45 +186,21 @@ const ENTRIES: &[Entry] = &[
         &[],
     ),
     Entry::new(
-        "cli.differential_opt",
-        "raw_pointer_place_operands_across_opt_levels",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.differential_opt",
-        "param_raw_mut_write_reread_across_opt_levels",
-        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
-        &[],
-    ),
-    Entry::new(
         "cli.divergence",
         "break_mid_block_no_double_drop",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.divergence",
         "return_mid_block_in_untaken_branch",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
-        "cli.drop_moves",
-        "branch_divergent_string_field_move_no_double_free",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
-        "cli.drop_moves",
-        "partial_string_field_move_no_double_free",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.enum_payloads",
         "returned_nested_json_drops_safely",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
@@ -344,7 +218,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.for_loops",
         "for_chars_lossy_replaces_raw_invalid_bytes",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
@@ -374,164 +248,104 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.fs_file_io",
         "fs_roundtrip",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_append",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_drop_close_reopen",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_close_then_reopen_safe",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_read_full_buffer_invalid",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_read_whole_file_loop",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_reserve_then_read_fills",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_open_missing_not_found",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_write_to_readonly",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     // std.fs v1 follow-ups (ADR-0057 "Future Work"): seek/tell, fstat/newfstatat
     // metadata, rename, unlink, and directory create/remove. Same raw-pointer
     // substrate as v0 (StrBuf/ArrayBuf `@int_to_ptr` prologue), so the oracle
-    // model stops at the same IntToPointer gap. These cases are `only_on` the two
+    // model, with the heap now modeled, stops at the inout-forwarding gap. These cases are `only_on` the two
     // Linux targets (macOS stat layout + Darwin *at syscall numbers are a
     // documented, unverified follow-up), so their scope is Linux-only to match.
     Entry::new(
         "cli.fs_file_io",
         "fs_seek_set_read_back",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &["aarch64-linux", "x86-64-linux"],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_seek_cur_end_relative",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &["aarch64-linux", "x86-64-linux"],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_stat_size_and_is_file",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &["aarch64-linux", "x86-64-linux"],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_metadata_by_path_size",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &["aarch64-linux", "x86-64-linux"],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_rename_old_gone_new_present",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &["aarch64-linux", "x86-64-linux"],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_remove_file_then_open_notfound",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &["aarch64-linux", "x86-64-linux"],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_mkdir_stat_is_dir_then_rmdir",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &["aarch64-linux", "x86-64-linux"],
-    ),
-    Entry::new(
-        "cli.heap_intrinsics",
-        "alloc_count_size_overflow_traps",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.heap_intrinsics",
-        "alloc_page_rounding_overflow_returns_null",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.heap_intrinsics",
-        "alloc_write_read_free",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.heap_intrinsics",
-        "free_from_destructor",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.heap_intrinsics",
-        "realloc_count_size_overflow_traps",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.heap_intrinsics",
-        "realloc_failure_preserves_original",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.heap_intrinsics",
-        "realloc_grows_and_preserves",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.ice_regressions",
-        "array_literal_string_element_rue96",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    Entry::new(
-        "cli.ice_regressions",
-        "array_literal_string_exprs_rue190",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    Entry::new(
-        "cli.ice_regressions",
-        "string_param_rebound_to_local_rue63",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
     ),
     Entry::new(
         "cli.ice_regressions",
@@ -545,143 +359,35 @@ const ENTRIES: &[Entry] = &[
         semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
-    Entry::new(
-        "cli.offset_of_field_ptr",
-        "field_ptr_on_param_struct",
-        intrinsic(UnsupportedIntrinsicKind::FieldPointer),
-        &[],
-    ),
-    Entry::new(
-        "cli.offset_of_field_ptr",
-        "field_ptr_read_roundtrip",
-        intrinsic(UnsupportedIntrinsicKind::FieldPointer),
-        &[],
-    ),
-    Entry::new(
-        "cli.offset_of_field_ptr",
-        "field_ptr_write_updates_field",
-        intrinsic(UnsupportedIntrinsicKind::FieldPointer),
-        &[],
-    ),
-    Entry::new(
-        "cli.offset_of_field_ptr",
-        "offset_of_ptr_offset_agrees_with_field_ptr",
-        intrinsic(UnsupportedIntrinsicKind::FieldPointer),
-        &[],
-    ),
     // ADR-0052 phase 3 (RUE-974): the compact-layout CLI cases reach a field
     // through `@field_ptr`, which the oracle model does not model (same gap as
     // the `offset_of_field_ptr` cases above).
-    Entry::new(
-        "cli.aggregate_layout",
-        "compact_slot_identical_field_ptr_roundtrip",
-        intrinsic(UnsupportedIntrinsicKind::FieldPointer),
-        &[],
-    ),
     // ADR-0052 phase 5.5 (RUE-989): the narrow-access execution cases reach
     // memory through `@field_ptr` and `@alloc`, both outside the oracle model
     // (same gaps as the entries above and the heap_intrinsics corpus).
-    Entry::new(
-        "cli.aggregate_layout",
-        "compact_struct_field_narrow_roundtrip",
-        intrinsic(UnsupportedIntrinsicKind::FieldPointer),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_layout",
-        "mixed_struct_field_roundtrip",
-        intrinsic(UnsupportedIntrinsicKind::FieldPointer),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_layout",
-        "narrow_heap_array_walk",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_layout",
-        "narrow_heap_roundtrip_scalars",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
     // ADR-0052 phase 5.6 (RUE-1000): the compact-enum heap round-trips reach
     // memory through `@alloc`, outside the oracle model (same gap as the narrow
     // heap cases above).
     Entry::new(
         "cli.aggregate_layout",
-        "compact_enum_option_heap_roundtrip",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_layout",
-        "compact_enum_mixed_payload_widths",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_layout",
-        "compact_enum_uniform_multifield_heap",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_layout",
         "compact_enum_padding_is_deterministically_zeroed",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        intrinsic(UnsupportedIntrinsicKind::ByteWrite),
         &[],
     ),
     // ADR-0052 phase 5.10 (RUE-987): the whole compact-struct-through-pointer
     // round-trip reaches memory through `@alloc`, outside the oracle model (same
     // gap as the narrow/enum heap cases above).
-    Entry::new(
-        "cli.aggregate_layout",
-        "compact_struct_through_pointer_roundtrip",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
     // ADR-0052 phase 5.10 (RUE-987): the std-under-gate sweep's heap cases reach
     // memory through `@alloc`, outside the oracle model. (The container dogfood is
     // multi-file and excluded upstream; the two refusal sentinels are expected
     // compile failures.)
-    Entry::new(
-        "cli.aggregate_layout_std_sweep",
-        "heap_struct_array_walk",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_layout_std_sweep",
-        "nested_compact_struct_through_pointer",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_layout_std_sweep",
-        "narrow_byte_buffer_roundtrip",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
     // ADR-0052 phase 5.10 (RUE-1014): the variant-dependent-enum-image and
     // compact-array heap round-trips reach memory through `@alloc`, outside the
     // oracle model (same gap as the enum/struct heap cases above).
     Entry::new(
         "cli.aggregate_layout",
-        "array_bearing_struct_through_pointer_roundtrip",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_layout",
-        "compact_enum_struct_payload_roundtrip",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_layout",
         "compact_enum_variant_overwrite_leaves_no_residue",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        intrinsic(UnsupportedIntrinsicKind::PointerRead),
         &[],
     ),
     // ADR-0052 phase 5.12 (RUE-1037): the heterogeneous-enum tag-dispatch heap
@@ -690,25 +396,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.aggregate_layout",
         "compact_heterogeneous_enum_heap_overwrite_no_residue",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_layout",
-        "compact_enum_overlapping_union_roundtrip",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_layout_std_sweep",
-        "overlapping_union_enum_roundtrips_via_dispatch",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_layout_std_sweep",
-        "std_net_result_sockaddr_networkerror_mirror",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
+        intrinsic(UnsupportedIntrinsicKind::PointerRead),
         &[],
     ),
     // RUE-1014: the real-std json/priority-queue cases reach memory through the
@@ -717,29 +405,17 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.aggregate_layout_std_sweep",
         "std_json_parse_variant",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.aggregate_layout_std_sweep",
         "std_priority_queue_option_pair",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     // RUE-978: the byte-surface behavior cases allocate through @alloc_bytes,
     // which the oracle model does not model.
-    Entry::new(
-        "cli.raw_bytes_degate_readiness",
-        "byte_family_roundtrip_plain",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
-        "cli.raw_bytes_degate_readiness",
-        "packed_subrange_copy_plain",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
     Entry::new(
         "cli.partial_move_depth",
         "disjoint_sibling_after_subfield_move_ok",
@@ -754,104 +430,14 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "cli.pointers",
-        "array_index_and_ptr_offset_agree",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.pointers",
-        "ptr_across_function",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.pointers",
-        "ptr_int_roundtrip",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.pointers",
-        "ptr_offset_forward_is_higher_address",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.pointers",
         "ptr_offset_forward_on_mmap_pointer",
         external(ExternalDependencyKind::SystemCall),
         &["x86-64-linux"],
     ),
     Entry::new(
-        "cli.pointers",
-        "ptr_offset_negative_walks_backward",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.pointers",
-        "ptr_offset_reads_offset_element",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.pointers",
-        "ptr_offset_write_hits_offset_element",
-        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.pointers",
-        "ptr_read_roundtrip",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.pointers",
-        "ptr_write_literal_infers_i64_pointee",
-        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.pointers",
-        "ptr_write_literal_infers_u8_pointee",
-        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.pointers",
-        "ptr_write_mutates_local",
-        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.pointers",
-        "raw_mut_of_parameter_mutates_it",
-        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.pointers",
-        "raw_of_local_still_works",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.pointers",
-        "raw_of_param_struct_field",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.pointers",
-        "raw_of_parameter_takes_address",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
         "cli.print",
         "print_borrows_string_reusable_after_call",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
@@ -887,103 +473,31 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.programs",
         "dbg_string_then_use",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.programs",
         "string_builder_push_str",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    Entry::new(
-        "cli.ptr_read_write_aggregate",
-        "ptr_read_result_type_match_i32",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.ptr_read_write_aggregate",
-        "ptr_read_two_field_struct",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.ptr_read_write_aggregate",
-        "ptr_read_write_nested_struct",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.ptr_read_write_aggregate",
-        "ptr_read_write_scalar",
-        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.ptr_read_write_aggregate",
-        "ptr_write_two_field_struct",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "cli.raw_ptr_and_method_name",
-        "raw_mut_ptr_does_not_suppress_destructor",
-        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.raw_ptr_and_method_name",
-        "raw_ptr_does_not_suppress_destructor",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.raw_ptr_and_method_name",
-        "raw_ptr_operand_usable_after",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.raw_ptr_and_method_name",
-        "raw_ptr_then_move_operand_single_drop",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.raw_ptr_and_method_name",
         "string_push_str_on_mut_ok",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.reexport_qualified_ctor",
         "std_chain_alias_types_wide_payload_literal",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.reserved_names",
         "builtin_method_name_allowed",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    Entry::new(
-        "cli.slices",
-        "method_and_assoc_forward_slice_view",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.slices",
-        "method_and_assoc_slice_view_coercions",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.slices",
-        "slice_param_constant_index",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
@@ -993,45 +507,15 @@ const ENTRIES: &[Entry] = &[
         &[],
     ),
     Entry::new(
-        "cli.slices",
-        "slice_param_forwarding",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.slices",
-        "slice_param_index_out_of_bounds_traps",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.slices",
-        "slice_param_len",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.slices",
-        "slice_param_negative_signed_index_traps",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "cli.slices",
-        "slice_param_sum_len_index",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
         "cli.std_bitset",
         "bitset_set_test_count_clear_toggle",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.std_collections",
         "std_collections_m2_smoke",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
@@ -1040,13 +524,13 @@ const ENTRIES: &[Entry] = &[
         // `std.mem.swap` now performs a bytewise exchange through `@raw_mut`
         // (RUE-943), so the oracle model's first unsupported intrinsic for this
         // case is the address-of rather than the later `@int_to_ptr`.
-        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
+        intrinsic(UnsupportedIntrinsicKind::ByteRead),
         &[],
     ),
     Entry::new(
         "cli.std_deque",
         "deque_both_ends_grow_drain",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     // std.env (RUE-935): argv/envp are captured process state, so the oracle
@@ -1097,19 +581,19 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.std_byte_bridges",
         "all_three_representations_round_trip_without_consuming_sources",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
         "cli.std_byte_bridges",
         "byte_range_bridges_reject_out_of_bounds_ranges",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.std_byte_bridges",
         "empty_bridges_and_spare_capacity_are_preserved",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
@@ -1121,7 +605,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.std_m3",
         "std_sort_m3",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
@@ -1151,7 +635,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.std_m3",
         "std_strings_count_chars_strict_invalid_utf8_traps",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
@@ -1174,12 +658,6 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "cli.std_strbuf",
-        "aliased_three_word_layout_and_scope_drop",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_strbuf",
         "canonical_identity_drives_string_semantics",
         semantic(SemanticGapKind::TextProjectionRead),
         &[],
@@ -1193,37 +671,13 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.std_strbuf",
         "mem_swap_exchanges_move_only_strbufs",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_strbuf",
-        "owned_allocation_drop_and_early_free",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_strbuf",
-        "qualified_nonallocating_surface",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_strbuf",
-        "source_allocation_failure_fails_fast",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.std_strbuf",
         "source_byte_range_out_of_bounds",
         semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_strbuf",
-        "source_capacity_overflow_fails_fast",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
         &[],
     ),
     Entry::new(
@@ -1235,19 +689,19 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.std_strbuf",
         "source_owned_algorithms_use_packed_bytes",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.std_strbuf",
         "source_zero_capacity_empty_ranges_and_early_free",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
         "cli.std_strmap",
         "std_strmap_smoke",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
@@ -1307,55 +761,25 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.strbuf_library",
         "strbuf_new_push_str_len_print",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.strbuf_library",
         "strbuf_with_capacity_concat",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.string_alloc_failure",
         "arraybuf_growth_overflow_traps",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    Entry::new(
-        "cli.string_alloc_failure",
-        "arraybuf_with_capacity_huge_traps",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    Entry::new(
-        "cli.string_alloc_failure",
-        "arraybuf_zero_capacity_does_not_allocate",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    Entry::new(
-        "cli.string_alloc_failure",
-        "grid_capacity_overflow_traps",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    Entry::new(
-        "cli.string_alloc_failure",
-        "strbuf_with_capacity_huge_traps",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
-        "cli.string_alloc_failure",
-        "strbuf_zero_capacity_does_not_allocate",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.string_alloc_failure",
         "with_capacity_normal_reserves",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
@@ -1385,49 +809,49 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.string_growth",
         "growth_does_not_corrupt_neighbor",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.string_growth",
         "interleaved_repeated_growth_stress",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.string_mutation_receivers",
         "array_element_const_index_push",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.string_mutation_receivers",
         "array_element_dynamic_index_push",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.string_mutation_receivers",
         "field_receiver_push_str",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.string_mutation_receivers",
         "inout_param_receiver_push_str",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.string_mutation_receivers",
         "self_field_receiver_via_method",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.string_mutation_value_position",
         "statement_position_mutation_still_runs",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
@@ -1481,7 +905,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.unit_fields",
         "std_option_and_arraybuf_accept_unit",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
@@ -1493,19 +917,19 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.zst_drop_glue",
         "enum_payload_fields_keep_drop_offsets",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.zst_drop_glue",
         "nested_struct_array_keeps_drop_offsets_and_stride",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "cli.zst_drop_glue",
         "struct_fields_keep_drop_offsets",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(

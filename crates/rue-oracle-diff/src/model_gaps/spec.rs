@@ -100,43 +100,43 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "expressions.intrinsics",
         "dbg_string_borrows_not_consumed",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "expressions.intrinsics",
         "dbg_string_dropped_exactly_once",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "items.general",
         "fn_builtin_method_name_allowed",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "types.destructors",
         "codegen_nontrivial_drop_call",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "types.destructors",
         "struct_with_destructor_field",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "types.destructors",
         "struct_with_string_fields_dropped",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "types.destructors",
         "type_with_destructor",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
@@ -166,7 +166,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "types.mutable_strings",
         "string_building_message",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
@@ -202,7 +202,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "types.mutable_strings",
         "string_byte_semantics",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
@@ -238,7 +238,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "types.mutable_strings",
         "string_equality_after_mutation",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
@@ -267,26 +267,20 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "types.mutable_strings",
-        "string_new_empty",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    Entry::new(
-        "types.mutable_strings",
         "string_push_byte",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "types.mutable_strings",
         "string_push_str_basic",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "types.mutable_strings",
         "string_push_str_multiple",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
@@ -303,20 +297,8 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "types.strings",
-        "string_new_basic",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    Entry::new(
-        "types.strings",
         "string_new_equality_with_empty",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    Entry::new(
-        "types.strings",
-        "string_new_is_empty",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
@@ -333,14 +315,8 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "types.strings",
-        "string_with_capacity_basic",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
-        "types.strings",
         "string_with_capacity_equality_with_empty",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
@@ -377,12 +353,6 @@ const ENTRIES: &[Entry] = &[
         "types.strings",
         "to_string_unsigned_widths_high_bit",
         implementation_defined(ImplementationDefinedKind::StringCapacityValue),
-        &[],
-    ),
-    Entry::new(
-        "expressions.comparison",
-        "struct_raw_pointer_field_equality_by_address",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
         &[],
     ),
     Entry::new(
@@ -604,248 +574,8 @@ const ENTRIES: &[Entry] = &[
         semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
-    Entry::new(
-        "items.unchecked",
-        "ptr_ops_in_checked_ok",
-        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
-        &[],
-    ),
-    Entry::new(
-        "runtime.allocation-failure",
-        "strbuf_allocation_failure_traps",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
-        "runtime.heap",
-        "alloc_multiple_elements",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "runtime.heap",
-        "alloc_then_free",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "runtime.heap",
-        "alloc_write_read",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "runtime.heap",
-        "realloc_failure_preserves_original",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "runtime.heap",
-        "realloc_null_is_alloc",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    Entry::new(
-        "runtime.heap",
-        "realloc_preserves_contents",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "runtime.raw_bytes",
-        "alloc_bytes_result_type_is_inferred",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
-        "runtime.raw_bytes",
-        "alloc_bytes_zero_returns_null",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
-        "runtime.raw_bytes",
-        "byte_read_accepts_const_u8_pointer",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "runtime.raw_bytes",
-        "byte_write_preserves_adjacent_bytes",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
-        "runtime.raw_bytes",
-        "failed_realloc_bytes_preserves_original",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
-        "runtime.raw_bytes",
-        "free_bytes_null_zero_is_permitted",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
-        "runtime.raw_bytes",
-        "packed_offsets_read_write_exactly_one_byte",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
-        "runtime.raw_bytes",
-        "raw_byte_allocation_failure_returns_null",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
-        "runtime.raw_bytes",
-        "realloc_bytes_zero_frees_and_returns_null",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
-        "runtime.raw_bytes",
-        "realloc_bytes_preserves_packed_prefix",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
-        "runtime.raw_bytes",
-        "byte_copy_round_trip",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
-        "runtime.raw_bytes",
-        "byte_set_fills_every_byte",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
-        "runtime.raw_bytes",
-        "byte_copy_size_zero_is_noop",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
-        "runtime.raw_bytes",
-        "byte_copy_copies_subrange",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
-        "runtime.raw_bytes",
-        "alloc_bytes_align_one_round_trip",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
-    Entry::new(
-        "runtime.raw_bytes",
-        "alloc_bytes_align_eight_round_trip",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
-        &[],
-    ),
     // ADR-0052 phase 7 (RUE-978): the unaligned-access round trip allocates
     // through @alloc, which the oracle model does not model.
-    Entry::new(
-        "runtime.raw_bytes",
-        "ptr_unaligned_round_trip",
-        intrinsic(UnsupportedIntrinsicKind::Allocate),
-        &[],
-    ),
-    Entry::new(
-        "runtime.pointers",
-        "field_ptr_first_field",
-        intrinsic(UnsupportedIntrinsicKind::FieldPointer),
-        &[],
-    ),
-    Entry::new(
-        "runtime.pointers",
-        "field_ptr_read_matches_direct",
-        intrinsic(UnsupportedIntrinsicKind::FieldPointer),
-        &[],
-    ),
-    Entry::new(
-        "runtime.pointers",
-        "field_ptr_write_updates_field",
-        intrinsic(UnsupportedIntrinsicKind::FieldPointer),
-        &[],
-    ),
-    Entry::new(
-        "runtime.pointers",
-        "int_to_ptr_mutable_pointer",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "runtime.pointers",
-        "int_to_ptr_u64_pointer",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "runtime.pointers",
-        "int_to_ptr_with_type_annotation",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "runtime.pointers",
-        "ptr_offset_add_backward",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "runtime.pointers",
-        "ptr_offset_add_forward",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "runtime.pointers",
-        "ptr_to_int_basic",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "runtime.pointers",
-        "ptr_write_and_read",
-        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
-        &[],
-    ),
-    Entry::new(
-        "runtime.pointers",
-        "ptr_write_array_element",
-        intrinsic(UnsupportedIntrinsicKind::RawMutableAddress),
-        &[],
-    ),
-    Entry::new(
-        "runtime.pointers",
-        "raw_array_element",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "runtime.pointers",
-        "raw_array_last_element",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "runtime.pointers",
-        "raw_array_second_element",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
-    Entry::new(
-        "runtime.pointers",
-        "raw_simple_local",
-        intrinsic(UnsupportedIntrinsicKind::RawAddress),
-        &[],
-    ),
     Entry::new(
         "runtime.syscall",
         "syscall_basic_aarch64",
@@ -903,13 +633,13 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "types.mutable_strings",
         "string_clear",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
         "types.mutable_strings",
         "string_growth_on_append",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
@@ -945,13 +675,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "types.mutable_strings",
         "string_reserve",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
-        &[],
-    ),
-    Entry::new(
-        "types.mutable_strings",
-        "string_with_capacity",
-        intrinsic(UnsupportedIntrinsicKind::AllocateBytes),
+        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
@@ -1096,12 +820,6 @@ const ENTRIES: &[Entry] = &[
         "types.strings",
         "string_substring_out_of_bounds_traps",
         semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "types.strings",
-        "string_with_capacity_zero",
-        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
         &[],
     ),
 ];
