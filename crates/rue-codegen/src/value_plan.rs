@@ -869,7 +869,10 @@ fn drop_plan<A: ValueLowerAdapter>(
                     offset += count;
                 }
                 actions.push(DropAction {
-                    symbol: format!("__rue_drop_{}", ctx.type_pool.struct_symbol_name(struct_id)),
+                    symbol: rue_air::drop_glue_names::struct_drop_glue_name(
+                        struct_id,
+                        ctx.type_pool,
+                    ),
                     slots: glue_slots,
                 });
             }
@@ -882,7 +885,7 @@ fn drop_plan<A: ValueLowerAdapter>(
                 }
             }
             actions.push(DropAction {
-                symbol: crate::types::array_drop_glue_name(array_id, ctx.type_pool),
+                symbol: rue_air::drop_glue_names::array_drop_glue_name(array_id, ctx.type_pool),
                 slots,
             });
         }
@@ -894,7 +897,7 @@ fn drop_plan<A: ValueLowerAdapter>(
             // active payload fields back out of that reversed area (RUE-998).
             slots.reverse();
             actions.push(DropAction {
-                symbol: format!("__rue_drop_{}", ctx.type_pool.enum_symbol_name(enum_id)),
+                symbol: rue_air::drop_glue_names::enum_drop_glue_name(enum_id, ctx.type_pool),
                 slots,
             });
         }
