@@ -1,3 +1,12 @@
+# V1 FOLLOW-UPS (ADR-0057 "Future Work"): the cases whose names begin `fs_seek_`,
+# `fs_stat_`/`fs_metadata_`, `fs_rename_`, `fs_remove_`, and `fs_mkdir_` exercise
+# seek/tell, fstat/newfstatat metadata, rename, unlink, and directory
+# create/remove. They are `only_on` the two Linux targets: this repo's CI host is
+# Linux, and the macOS `struct stat` layout plus the Darwin *at/stat syscall
+# numbers are the DOCUMENTED, not-yet-device-verified follow-up (see std/fs.rue).
+# Seek offsets are bound to an `i64` value before the call to dodge a caller-side
+# literal-typing limitation for imported functions (see File.seek's doc comment).
+#
 # std.fs File IO v0 (RUE-712, ADR-0057) driven end-to-end as a user would: the
 # real std.fs (via RUE_STD_PATH) compiled to a real binary that opens, writes,
 # reads, and closes real files in the harness's per-case temp directory (the
@@ -419,6 +428,297 @@ fn main() -> i32 {
     };
     match g.close() { CR.Ok(_u) => {}, CR.Err(_e) => {} };
     outcome
+}
+""" }]
+exit_code = 0
+
+# ---------------------------------------------------------------------------
+# v1 follow-ups (ADR-0057 "Future Work"). Linux-scoped; see the header note.
+# ---------------------------------------------------------------------------
+
+# seek-then-read-back: write "0123456789", reopen, seek to offset 4 (SEEK_SET),
+# read the remaining bytes, and assert they are "456789" (6 bytes) starting at
+# '4'. Also asserts seek returns the new absolute offset (4) and tell() reports
+# it. Exit code is the read count (6).
+[[case]]
+name = "fs_seek_set_read_back"
+only_on = ["x86-64-linux", "aarch64-linux"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let WR = std.result.Result(u64, FE);
+    let CR = std.result.Result((), FE);
+    let Buf = std.arraybuf.ArrayBuf(u8);
+    let W = std.fs.Whence;
+
+    let mut path = std.strbuf.StrBuf.new();
+    path.push_str("seekset.dat");
+
+    let mut out = Buf.new();
+    let mut k: u64 = 0;
+    while k < 10 { out.push(48 + @intCast(k)); k = k + 1; } // "0123456789"
+    let mut f = match F.create(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 81; } };
+    match f.write_all(borrow out) { CR.Ok(_u) => {}, CR.Err(_e) => { return 82; } };
+    match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 83; } };
+
+    let mut g = match F.open(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 84; } };
+    let four: i64 = 4;
+    let pos = match g.seek(four, W.Set) { WR.Ok(p) => p, WR.Err(_e) => { return 85; } };
+    if pos != 4 { return 70; }
+    let t = match g.tell() { WR.Ok(p) => p, WR.Err(_e) => { return 86; } };
+    if t != 4 { return 71; }
+    let mut inb = Buf.with_capacity(32);
+    let nr = match g.read(inout inb) { WR.Ok(n) => n, WR.Err(_e) => { return 87; } };
+    match g.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 88; } };
+
+    if nr != 6 { return 72; }
+    if inb.get_or(0, 0) != 52 { return 73; } // '4'
+    if inb.get_or(5, 0) != 57 { return 74; } // '9'
+    @intCast(nr)
+}
+""" }]
+exit_code = 6
+
+# relative seeks: after reading to EOF the offset is at end; seek CUR by -2 lands
+# at 8, then seek END by -3 lands at 7. Negative offsets are bound to an i64
+# value first (caller literal-typing limitation). Exit code is the final offset (7).
+[[case]]
+name = "fs_seek_cur_end_relative"
+only_on = ["x86-64-linux", "aarch64-linux"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let WR = std.result.Result(u64, FE);
+    let CR = std.result.Result((), FE);
+    let Buf = std.arraybuf.ArrayBuf(u8);
+    let W = std.fs.Whence;
+
+    let mut path = std.strbuf.StrBuf.new();
+    path.push_str("seekrel.dat");
+
+    let mut out = Buf.new();
+    let mut k: u64 = 0;
+    while k < 10 { out.push(65); k = k + 1; } // 10 'A' bytes
+    let mut f = match F.create(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 61; } };
+    match f.write_all(borrow out) { CR.Ok(_u) => {}, CR.Err(_e) => { return 62; } };
+    match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 63; } };
+
+    let mut g = match F.open(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 64; } };
+    // read all 10 -> offset now at 10 (EOF)
+    let mut inb = Buf.with_capacity(16);
+    let nr = match g.read(inout inb) { WR.Ok(n) => n, WR.Err(_e) => { return 65; } };
+    if nr != 10 { return 51; }
+
+    let back2: i64 = 0 - 2;
+    let p1 = match g.seek(back2, W.Cur) { WR.Ok(p) => p, WR.Err(_e) => { return 66; } };
+    if p1 != 8 { return 52; }
+
+    let back3: i64 = 0 - 3;
+    let p2 = match g.seek(back3, W.End) { WR.Ok(p) => p, WR.Err(_e) => { return 67; } };
+    if p2 != 7 { return 53; }
+    match g.close() { CR.Ok(_u) => {}, CR.Err(_e) => {} };
+    @intCast(p2)
+}
+""" }]
+exit_code = 7
+
+# stat size after write: write 13 bytes, then File.metadata (fstat) reports
+# size==13, is_file()==true, is_dir()==false. Exit code is the reported size (13).
+[[case]]
+name = "fs_stat_size_and_is_file"
+only_on = ["x86-64-linux", "aarch64-linux"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let CR = std.result.Result((), FE);
+    let MR = std.result.Result(std.fs.Metadata, FE);
+    let Buf = std.arraybuf.ArrayBuf(u8);
+
+    let mut path = std.strbuf.StrBuf.new();
+    path.push_str("statsize.dat");
+
+    let mut out = Buf.new();
+    let mut k: u64 = 0;
+    while k < 13 { out.push(88); k = k + 1; } // 13 'X' bytes
+    let mut f = match F.create(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 41; } };
+    match f.write_all(borrow out) { CR.Ok(_u) => {}, CR.Err(_e) => { return 42; } };
+
+    let md = match f.metadata() { MR.Ok(m) => m, MR.Err(_e) => { return 43; } };
+    match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 44; } };
+
+    if md.size() != 13 { return 31; }
+    if !md.is_file() { return 32; }
+    if md.is_dir() { return 33; }
+    @intCast(md.size())
+}
+""" }]
+exit_code = 13
+
+# metadata by path (newfstatat): create a 9-byte file, close, then stat it by
+# path — size==9 and is_file. Exit code is the size (9).
+[[case]]
+name = "fs_metadata_by_path_size"
+only_on = ["x86-64-linux", "aarch64-linux"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let CR = std.result.Result((), FE);
+    let MR = std.result.Result(std.fs.Metadata, FE);
+    let Buf = std.arraybuf.ArrayBuf(u8);
+
+    let mut path = std.strbuf.StrBuf.new();
+    path.push_str("pathstat.dat");
+
+    let mut out = Buf.new();
+    let mut k: u64 = 0;
+    while k < 9 { out.push(89); k = k + 1; } // 9 'Y' bytes
+    let mut f = match F.create(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 21; } };
+    match f.write_all(borrow out) { CR.Ok(_u) => {}, CR.Err(_e) => { return 22; } };
+    match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 23; } };
+
+    let md = match std.fs.metadata(borrow path) { MR.Ok(m) => m, MR.Err(_e) => { return 24; } };
+    if md.size() != 9 { return 11; }
+    if !md.is_file() { return 12; }
+    @intCast(md.size())
+}
+""" }]
+exit_code = 9
+
+# rename: create a file at the old path, rename it, then opening the OLD path
+# fails with NotFound while opening the NEW path succeeds and reads the content
+# back. Exit code 0 on the full success path.
+[[case]]
+name = "fs_rename_old_gone_new_present"
+only_on = ["x86-64-linux", "aarch64-linux"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let WR = std.result.Result(u64, FE);
+    let CR = std.result.Result((), FE);
+    let Buf = std.arraybuf.ArrayBuf(u8);
+
+    let mut oldp = std.strbuf.StrBuf.new();
+    oldp.push_str("rename_old.dat");
+    let mut newp = std.strbuf.StrBuf.new();
+    newp.push_str("rename_new.dat");
+
+    let mut payload = Buf.new();
+    payload.push(77); payload.push(78); // "MN"
+    let mut f = match F.create(borrow oldp) { R.Ok(x) => x, R.Err(_e) => { return 91; } };
+    match f.write_all(borrow payload) { CR.Ok(_u) => {}, CR.Err(_e) => { return 92; } };
+    match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 93; } };
+
+    match std.fs.rename(borrow oldp, borrow newp) { CR.Ok(_u) => {}, CR.Err(_e) => { return 94; } };
+
+    // old path must be gone
+    match F.open(borrow oldp) {
+        R.Ok(_x) => { return 95; },
+        R.Err(e) => match e { FE.NotFound => {}, _ => { return 96; } },
+    };
+
+    // new path opens and reads "MN"
+    let mut g = match F.open(borrow newp) { R.Ok(x) => x, R.Err(_e) => { return 97; } };
+    let mut inb = Buf.with_capacity(8);
+    let nr = match g.read(inout inb) { WR.Ok(n) => n, WR.Err(_e) => { return 98; } };
+    match g.close() { CR.Ok(_u) => {}, CR.Err(_e) => {} };
+    if nr != 2 { return 31; }
+    if inb.get_or(0, 0) != 77 { return 32; }
+    if inb.get_or(1, 0) != 78 { return 33; }
+    0
+}
+""" }]
+exit_code = 0
+
+# remove (unlink): create a file, remove it, then opening it fails with
+# NotFound. Exit code 0 on the full success path.
+[[case]]
+name = "fs_remove_file_then_open_notfound"
+only_on = ["x86-64-linux", "aarch64-linux"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let CR = std.result.Result((), FE);
+    let Buf = std.arraybuf.ArrayBuf(u8);
+
+    let mut path = std.strbuf.StrBuf.new();
+    path.push_str("to_remove.dat");
+
+    let mut payload = Buf.new();
+    payload.push(81); // "Q"
+    let mut f = match F.create(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 71; } };
+    match f.write_all(borrow payload) { CR.Ok(_u) => {}, CR.Err(_e) => { return 72; } };
+    match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 73; } };
+
+    match std.fs.remove(borrow path) { CR.Ok(_u) => {}, CR.Err(_e) => { return 74; } };
+
+    match F.open(borrow path) {
+        R.Ok(_x) => 1,
+        R.Err(e) => match e { FE.NotFound => 0, _ => 2 },
+    }
+}
+""" }]
+exit_code = 0
+
+# directory create/stat/remove: create_dir, then stat the path — is_dir()==true,
+# is_file()==false — remove_dir, then stat fails with NotFound. Exit code 0 on
+# the full success path.
+[[case]]
+name = "fs_mkdir_stat_is_dir_then_rmdir"
+only_on = ["x86-64-linux", "aarch64-linux"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let FE = std.fs.FileError;
+    let CR = std.result.Result((), FE);
+    let MR = std.result.Result(std.fs.Metadata, FE);
+
+    let mut dir = std.strbuf.StrBuf.new();
+    dir.push_str("rue_v1_dir");
+
+    match std.fs.create_dir(borrow dir) { CR.Ok(_u) => {}, CR.Err(_e) => { return 61; } };
+
+    let md = match std.fs.metadata(borrow dir) { MR.Ok(m) => m, MR.Err(_e) => { return 62; } };
+    if !md.is_dir() { return 51; }
+    if md.is_file() { return 52; }
+
+    match std.fs.remove_dir(borrow dir) { CR.Ok(_u) => {}, CR.Err(_e) => { return 63; } };
+
+    match std.fs.metadata(borrow dir) {
+        MR.Ok(_m) => 1,
+        MR.Err(e) => match e { FE.NotFound => 0, _ => 2 },
+    }
 }
 """ }]
 exit_code = 0

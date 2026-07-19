@@ -9,8 +9,24 @@
 //
 // v0 surface: `File.open` (read-only), `File.create` (truncate+write),
 // `File.append`, `read`, `write`/`write_all`, and a consuming `close`. Files
-// close themselves via a `drop fn` at scope exit. No seek, stat, directories,
-// rename, or buffering (ADR-0057 defers all of it).
+// close themselves via a `drop fn` at scope exit.
+//
+// v1 follow-ups (this change, the ADR-0057 "Future Work" items): `File.seek`
+// (lseek with a `Whence` enum) and `File.tell`; `File.metadata`/`fs.metadata`
+// (fstat/newfstatat -> `Metadata` with size + is_file/is_dir); `fs.rename`,
+// `fs.remove` (unlinkat); and directory create/remove (`fs.create_dir`,
+// `fs.remove_dir` via mkdirat/unlinkat+AT_REMOVEDIR). Reading directory
+// entries (getdents64) remains DEFERRED — the largest remaining chunk — as
+// does buffering and stdin/stdout unification (still out of ADR-0057 scope).
+//
+// PER-TARGET STAT LAYOUT: `stat` is the fiddliest v1 piece because the kernel's
+// `struct stat` byte layout differs per OS AND per arch. This module decodes
+// only two fields (st_mode, st_size) at documented offsets (see the stat
+// section below). x86-64-linux and aarch64-linux offsets are exercised by CI
+// here; the macOS 64-bit-inode offsets and Darwin stat/at-syscall numbers are
+// the DOCUMENTED, NOT-YET-CI-VERIFIED follow-up (this host is Linux). New v1
+// CLI cases are therefore `only_on` the two Linux targets, mirroring how v0's
+// error-detection cases were Linux-scoped until a macOS device could confirm.
 //
 // PATHS are byte-string `StrBuf`s; the syscall boundary copies the bytes into a
 // NUL-terminated buffer and never exposes that terminator to the caller.
@@ -35,6 +51,7 @@ const result = @import("result.rue");
 const option = @import("option.rue");
 const strbuf = @import("strbuf.rue");
 const arraybuf = @import("arraybuf.rue");
+const binary = @import("binary.rue");
 
 // A normalized, target-independent file error. Decoded from the per-OS errno
 // tables below so that a program matching on `FileError` means the same thing
@@ -48,6 +65,47 @@ pub enum FileError {
     WouldBlock,         // EAGAIN / EWOULDBLOCK
     InvalidInput,       // EINVAL, EBADF
     Other(i64),         // any other raw errno
+}
+
+// Where a `seek` offset is measured from (the lseek `whence` argument). The
+// three constants agree across Linux and macOS: SEEK_SET=0, SEEK_CUR=1,
+// SEEK_END=2, so `Whence` maps to a plain integer with no per-OS table.
+pub enum Whence {
+    Set,   // SEEK_SET: from the start of the file
+    Cur,   // SEEK_CUR: from the current position (offset may be negative)
+    End,   // SEEK_END: from end-of-file (offset may be negative)
+}
+
+// Size + type metadata for a file, decoded from `struct stat` (ADR-0057 v1
+// follow-up). v1 exposes only the two portable fields programs branch on most:
+// the byte size and whether the entry is a regular file or a directory. The
+// S_IF* type constants are POSIX and identical on Linux and macOS even though
+// the byte OFFSET of st_mode within `struct stat` is per-OS/per-arch.
+pub struct Metadata {
+    // The low 16 bits of st_mode: the file-type bits (S_IFMT) plus permission
+    // bits. Reading 2 bytes suffices on every target — the type bits live in
+    // the low 16 bits of st_mode whether st_mode is a 32-bit (Linux) or 16-bit
+    // (macOS) field, and the buffer is little-endian on all supported targets.
+    mode: u16,
+    // The file size in bytes (st_size), read as a little-endian 64-bit field.
+    size_bytes: u64,
+
+    // The file size in bytes.
+    fn size(borrow self) -> u64 {
+        self.size_bytes
+    }
+
+    // True if this is a regular file: (st_mode & S_IFMT) == S_IFREG.
+    // S_IFMT=0o170000=61440, S_IFREG=0o100000=32768.
+    fn is_file(borrow self) -> bool {
+        (self.mode & 61440) == 32768
+    }
+
+    // True if this is a directory: (st_mode & S_IFMT) == S_IFDIR.
+    // S_IFMT=0o170000=61440, S_IFDIR=0o040000=16384.
+    fn is_dir(borrow self) -> bool {
+        (self.mode & 61440) == 16384
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +183,126 @@ fn _sys_write() -> u64 {
     }
 }
 
+// lseek(2) — reposition the file offset. Linux: 8 (x86-64), 62 (aarch64,
+// asm-generic). macOS raw BSD trap 199 (DOCUMENTED, not CI-verified here).
+fn _sys_lseek() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 8,
+                Os.Macos => 199,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 62,
+                Os.Macos => 199,
+            }
+        },
+    }
+}
+
+// fstat(2) — stat an open fd. Linux: 5 (x86-64), 80 (aarch64). macOS raw BSD
+// fstat64 trap 339 (DOCUMENTED, not CI-verified — see the stat-layout note).
+fn _sys_fstat() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 5,
+                Os.Macos => 339,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 80,
+                Os.Macos => 339,
+            }
+        },
+    }
+}
+
+// newfstatat(2)/fstatat — stat a path relative to a dirfd. Used uniformly with
+// AT_FDCWD for path-based stat (aarch64 Linux has no bare `stat`, exactly like
+// openat). Linux: 262 (x86-64), 79 (aarch64). macOS raw BSD fstatat trap 469
+// (DOCUMENTED, not CI-verified).
+fn _sys_newfstatat() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 262,
+                Os.Macos => 469,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 79,
+                Os.Macos => 469,
+            }
+        },
+    }
+}
+
+// renameat(2) — rename oldpath to newpath, both relative to a dirfd. Used with
+// AT_FDCWD for both ends. Linux: 264 (x86-64), 38 (aarch64). macOS raw BSD
+// renameat trap 465 (DOCUMENTED, not CI-verified).
+fn _sys_renameat() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 264,
+                Os.Macos => 465,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 38,
+                Os.Macos => 465,
+            }
+        },
+    }
+}
+
+// unlinkat(2) — remove a path relative to a dirfd; with AT_REMOVEDIR it removes
+// a directory instead of a file. Used with AT_FDCWD for both `remove` and
+// `remove_dir`. Linux: 263 (x86-64), 35 (aarch64). macOS raw BSD unlinkat trap
+// 472 (DOCUMENTED, not CI-verified).
+fn _sys_unlinkat() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 263,
+                Os.Macos => 472,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 35,
+                Os.Macos => 472,
+            }
+        },
+    }
+}
+
+// mkdirat(2) — create a directory relative to a dirfd. Used with AT_FDCWD.
+// Linux: 258 (x86-64), 34 (aarch64). macOS raw BSD mkdirat trap 475
+// (DOCUMENTED, not CI-verified).
+fn _sys_mkdirat() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 258,
+                Os.Macos => 475,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 34,
+                Os.Macos => 475,
+            }
+        },
+    }
+}
+
 // AT_FDCWD as a u64 bit pattern. Linux uses -100, macOS uses -2, so this is
 // per-OS data, not a shared constant.
 fn _at_fdcwd() -> u64 {
@@ -166,6 +344,117 @@ fn _o_append() -> u64 {
 
 // Default mode for newly created files: 0o644.
 fn _create_mode() -> u64 { 420 }
+
+// Default mode for newly created directories: 0o755.
+fn _dir_mode() -> u64 { 493 }
+
+// AT_REMOVEDIR: the unlinkat flag that makes it remove a directory (like rmdir)
+// instead of a file. Linux 0x200=512 (asm-generic, both arches); macOS 0x80=128
+// (DOCUMENTED, not CI-verified).
+fn _at_removedir() -> u64 {
+    match @target_os() {
+        Os.Linux => 512,
+        Os.Macos => 128,
+    }
+}
+
+// Reinterpret an i64 as its raw u64 two's-complement bit pattern, for passing a
+// possibly-negative argument (a seek offset) to `@syscall`, whose arguments are
+// u64. `@intCast` PANICS on a negative source (the value is not representable in
+// u64), so it cannot be used for the bit reinterpretation; the low path rebuilds
+// 2^64 + x from the magnitude with non-trapping unsigned arithmetic. (An offset
+// of i64::MIN is not supported — its negation overflows i64 — but no real seek
+// uses it.)
+fn _i64_bits(x: i64) -> u64 {
+    if x >= 0 {
+        @intCast(x)
+    } else {
+        // Two's complement of a negative x: 2^64 - |x| == ~(|x| - 1) computed in
+        // u64. `~` is a bitwise op (never traps), and |x| - 1 >= 0 for x < 0, so
+        // it @intCasts cleanly. This avoids a 2^64-scale decimal literal.
+        let mag_minus_1: u64 = @intCast((0 - x) - 1);
+        ~mag_minus_1
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-target `struct stat` field offsets. v1 decodes only st_mode and st_size.
+// The kernel layout is per-OS AND per-arch, so the offsets are a small table
+// (ADR-0057 v1). Verified against the kernel headers cited below.
+//
+//   Linux x86-64 (arch/x86 `struct stat`, asm/stat.h):
+//     st_mode  unsigned int  @ 24     st_size  long  @ 48
+//   Linux aarch64 (asm-generic `struct stat`, uapi/asm-generic/stat.h):
+//     st_mode  unsigned int  @ 16     st_size  long  @ 48
+//   macOS (Darwin `struct stat`, _DARWIN_FEATURE_64_BIT_INODE, sys/stat.h):
+//     st_mode  __uint16_t    @ 4      st_size  __int64_t  @ 96
+//     (DOCUMENTED, not CI-verified on this Linux host.)
+//
+// st_mode is read as a little-endian u16 (the file-type bits fit the low 16
+// bits on every target); st_size is read as a little-endian u64.
+// ---------------------------------------------------------------------------
+
+fn _stat_mode_offset() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 24,
+                Os.Macos => 4,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 16,
+                Os.Macos => 4,
+            }
+        },
+    }
+}
+
+fn _stat_size_offset() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 48,
+                Os.Macos => 96,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 48,
+                Os.Macos => 96,
+            }
+        },
+    }
+}
+
+// Bytes to allocate for a kernel `struct stat`. 256 comfortably exceeds every
+// supported layout (Linux x86-64 is 144, aarch64 128, macOS ~144), so the
+// documented field offsets are always in bounds.
+fn _stat_buf_size() -> u64 { 256 }
+
+// Decode the two v1 fields from a kernel-filled `struct stat` buffer at the
+// per-target offsets above. Reads bytes through `@byte_read` and reassembles
+// them little-endian, so nothing depends on Rue struct layout.
+fn _decode_stat(buf: ptr mut u8) -> Metadata {
+    let mo = _stat_mode_offset();
+    let m0 = checked { @byte_read(buf, mo) };
+    let m1 = checked { @byte_read(buf, mo + 1) };
+    let mode = binary.u16_from_le_bytes([m0, m1]);
+
+    let so = _stat_size_offset();
+    let s0 = checked { @byte_read(buf, so) };
+    let s1 = checked { @byte_read(buf, so + 1) };
+    let s2 = checked { @byte_read(buf, so + 2) };
+    let s3 = checked { @byte_read(buf, so + 3) };
+    let s4 = checked { @byte_read(buf, so + 4) };
+    let s5 = checked { @byte_read(buf, so + 5) };
+    let s6 = checked { @byte_read(buf, so + 6) };
+    let s7 = checked { @byte_read(buf, so + 7) };
+    let size = binary.u64_from_le_bytes([s0, s1, s2, s3, s4, s5, s6, s7]);
+
+    Metadata { mode: mode, size_bytes: size }
+}
 
 // ---------------------------------------------------------------------------
 // Errno normalization. `errno` is the POSITIVE OS error number. The tables are
@@ -414,6 +703,64 @@ pub struct File {
         R.Ok(())
     }
 
+    // Reposition the file offset. `offset` is measured from `whence`
+    // (SEEK_SET/CUR/END) and may be negative for `Cur`/`End`. Returns the new
+    // absolute offset from the start of the file (lseek's own return), or the
+    // normalized error. Seeking before the start is `Err(FileError.InvalidInput)`
+    // (EINVAL); seeking past end-of-file is allowed (a later write leaves a hole).
+    //
+    // CALLER NOTE: pass `offset` as an `i64` VALUE, not a bare integer literal:
+    //
+    //     let off: i64 = 0 - 2;          // bind first
+    //     f.seek(off, Whence.Cur)?;      // then seek two bytes back
+    //
+    // A bare literal argument (`f.seek(0 - 2, ...)`) is currently mis-typed as
+    // `i32` by the caller's inference for imported functions, which sign-loses a
+    // negative offset and rejects any magnitude above 2^31. Binding to an `i64`
+    // first is the reliable form until that frontend limitation is fixed.
+    fn seek(inout self, offset: i64, whence: Whence) -> result.Result(u64, FileError) {
+        let R = result.Result(u64, FileError);
+        let w: u64 = match whence {
+            Whence.Set => 0,
+            Whence.Cur => 1,
+            Whence.End => 2,
+        };
+        let fd_u: u64 = @intCast(self.fd);
+        let off_u: u64 = _i64_bits(offset);
+        let ret: i64 = checked { @syscall(_sys_lseek(), fd_u, off_u, w) };
+        if ret < 0 {
+            R.Err(_normalize_errno(0 - ret))
+        } else {
+            R.Ok(@intCast(ret))
+        }
+    }
+
+    // The current file offset, in bytes from the start: lseek(0, SEEK_CUR).
+    fn tell(inout self) -> result.Result(u64, FileError) {
+        self.seek(0, Whence.Cur)
+    }
+
+    // Size + type metadata for this open file, via fstat on the fd (no path
+    // lookup). See `Metadata` for the exposed fields.
+    fn metadata(inout self) -> result.Result(Metadata, FileError) {
+        let R = result.Result(Metadata, FileError);
+        let sz = _stat_buf_size();
+        let buf: ptr mut u8 = checked { @alloc_bytes(sz, 8) };
+        if checked { @ptr_to_int(buf) } == 0 {
+            @panic("out of memory");
+        }
+        let addr: u64 = checked { @ptr_to_int(buf) };
+        let fd_u: u64 = @intCast(self.fd);
+        let ret: i64 = checked { @syscall(_sys_fstat(), fd_u, addr) };
+        if ret < 0 {
+            checked { @free_bytes(buf, sz, 8); };
+            return R.Err(_normalize_errno(0 - ret));
+        }
+        let md = _decode_stat(buf);
+        checked { @free_bytes(buf, sz, 8); };
+        R.Ok(md)
+    }
+
     // Consuming close: closes the fd and returns the close error. Moving `self`
     // out of the caller's binding means the caller's scope-exit drop does not
     // fire; the sentinel (`fd = -1`) makes THIS value's own scope-exit drop a
@@ -442,5 +789,109 @@ drop fn File(self) {
     if self.fd >= 0 {
         let fd_u: u64 = @intCast(self.fd);
         checked { @syscall(_sys_close(), fd_u); };
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Path-based operations (ADR-0057 v1 follow-ups). Each marshals its path(s)
+// through the same NUL-appended `_path_to_cbuf` the constructors use, issues an
+// *at syscall relative to AT_FDCWD (uniform with `openat`), and normalizes the
+// errno through the shared per-OS tables. No new errno class appears, so the
+// tables are unchanged.
+// ---------------------------------------------------------------------------
+
+// Size + type metadata for a path, via newfstatat(AT_FDCWD, path, .., 0). This
+// follows symlinks (flags 0). See `Metadata` for the exposed fields.
+pub fn metadata(borrow path: strbuf.StrBuf) -> result.Result(Metadata, FileError) {
+    let R = result.Result(Metadata, FileError);
+    let cbuf = _path_to_cbuf(borrow path);
+    let paddr: u64 = checked { @ptr_to_int(cbuf) };
+    let free_len = path.len() + 1;
+
+    let sz = _stat_buf_size();
+    let sbuf: ptr mut u8 = checked { @alloc_bytes(sz, 8) };
+    if checked { @ptr_to_int(sbuf) } == 0 {
+        @panic("out of memory");
+    }
+    let saddr: u64 = checked { @ptr_to_int(sbuf) };
+    let no_flags: u64 = 0; // follow symlinks (AT_SYMLINK_NOFOLLOW unset)
+    let ret: i64 = checked { @syscall(_sys_newfstatat(), _at_fdcwd(), paddr, saddr, no_flags) };
+    checked { @free_bytes(cbuf, free_len, 1); };
+    if ret < 0 {
+        checked { @free_bytes(sbuf, sz, 8); };
+        return R.Err(_normalize_errno(0 - ret));
+    }
+    let md = _decode_stat(sbuf);
+    checked { @free_bytes(sbuf, sz, 8); };
+    R.Ok(md)
+}
+
+// Rename (move) `from` to `to`: renameat(AT_FDCWD, from, AT_FDCWD, to). An
+// existing `to` is atomically replaced (POSIX rename semantics).
+pub fn rename(borrow from: strbuf.StrBuf, borrow to: strbuf.StrBuf) -> result.Result((), FileError) {
+    let R = result.Result((), FileError);
+    let fbuf = _path_to_cbuf(borrow from);
+    let faddr: u64 = checked { @ptr_to_int(fbuf) };
+    let flen = from.len() + 1;
+    let tbuf = _path_to_cbuf(borrow to);
+    let taddr: u64 = checked { @ptr_to_int(tbuf) };
+    let tlen = to.len() + 1;
+    let ret: i64 = checked { @syscall(_sys_renameat(), _at_fdcwd(), faddr, _at_fdcwd(), taddr) };
+    checked { @free_bytes(fbuf, flen, 1); };
+    checked { @free_bytes(tbuf, tlen, 1); };
+    if ret < 0 {
+        R.Err(_normalize_errno(0 - ret))
+    } else {
+        R.Ok(())
+    }
+}
+
+// Remove a file (not a directory): unlinkat(AT_FDCWD, path, 0). Removing a
+// directory path fails (EISDIR/EPERM -> the normalized error); use `remove_dir`.
+pub fn remove(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
+    let R = result.Result((), FileError);
+    let cbuf = _path_to_cbuf(borrow path);
+    let addr: u64 = checked { @ptr_to_int(cbuf) };
+    let free_len = path.len() + 1;
+    let no_flags: u64 = 0; // no AT_REMOVEDIR: unlink a file, not a directory
+    let ret: i64 = checked { @syscall(_sys_unlinkat(), _at_fdcwd(), addr, no_flags) };
+    checked { @free_bytes(cbuf, free_len, 1); };
+    if ret < 0 {
+        R.Err(_normalize_errno(0 - ret))
+    } else {
+        R.Ok(())
+    }
+}
+
+// Create a directory with mode 0o755: mkdirat(AT_FDCWD, path, 0o755). Only the
+// final component is created; a missing parent is `Err(FileError.NotFound)`, an
+// existing path is `Err(FileError.AlreadyExists)`.
+pub fn create_dir(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
+    let R = result.Result((), FileError);
+    let cbuf = _path_to_cbuf(borrow path);
+    let addr: u64 = checked { @ptr_to_int(cbuf) };
+    let free_len = path.len() + 1;
+    let ret: i64 = checked { @syscall(_sys_mkdirat(), _at_fdcwd(), addr, _dir_mode()) };
+    checked { @free_bytes(cbuf, free_len, 1); };
+    if ret < 0 {
+        R.Err(_normalize_errno(0 - ret))
+    } else {
+        R.Ok(())
+    }
+}
+
+// Remove an empty directory: unlinkat(AT_FDCWD, path, AT_REMOVEDIR). A
+// non-empty directory is `Err` (ENOTEMPTY -> `Other`, or the normalized case).
+pub fn remove_dir(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
+    let R = result.Result((), FileError);
+    let cbuf = _path_to_cbuf(borrow path);
+    let addr: u64 = checked { @ptr_to_int(cbuf) };
+    let free_len = path.len() + 1;
+    let ret: i64 = checked { @syscall(_sys_unlinkat(), _at_fdcwd(), addr, _at_removedir()) };
+    checked { @free_bytes(cbuf, free_len, 1); };
+    if ret < 0 {
+        R.Err(_normalize_errno(0 - ret))
+    } else {
+        R.Ok(())
     }
 }
