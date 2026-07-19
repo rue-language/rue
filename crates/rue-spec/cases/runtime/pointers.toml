@@ -28,6 +28,15 @@ exit_code = 42
 
 # =============================================================================
 # @raw with array element (the bug fix this was added for)
+#
+# These use a slot-identical element type (`i64`: one eight-byte slot per
+# element, so the compact image and the slot-shaped frame agree). Under the
+# default compact layout a raw pointer into a frame-resident NON-slot-identical
+# array (e.g. `[i32; 3]`, which packs to 4-byte strides while the frame stores
+# 8-byte slots) is refused loudly rather than silently mixing representations
+# (RUE-987 / RUE-1035 M2); that refusal is pinned in the CLI corpora. The `@raw`
+# and `@ptr_offset` semantics themselves are width-independent, so a
+# slot-identical array demonstrates them faithfully on the frame.
 # =============================================================================
 
 [[case]]
@@ -35,12 +44,12 @@ name = "raw_array_element"
 spec = ["9.2:1"]
 source = """
 fn main() -> i32 {
-    let arr: [i32; 3] = [10, 20, 30];
-    let first: i32 = checked {
-        let p: ptr const i32 = @raw(arr[0]);
+    let arr: [i64; 3] = [10, 20, 30];
+    let first: i64 = checked {
+        let p: ptr const i64 = @raw(arr[0]);
         @ptr_read(p)
     };
-    first
+    @intCast(first)
 }
 """
 exit_code = 10
@@ -50,12 +59,12 @@ name = "raw_array_second_element"
 spec = ["9.2:1"]
 source = """
 fn main() -> i32 {
-    let arr: [i32; 3] = [10, 20, 30];
-    let second: i32 = checked {
-        let p: ptr const i32 = @raw(arr[1]);
+    let arr: [i64; 3] = [10, 20, 30];
+    let second: i64 = checked {
+        let p: ptr const i64 = @raw(arr[1]);
         @ptr_read(p)
     };
-    second
+    @intCast(second)
 }
 """
 exit_code = 20
@@ -65,12 +74,12 @@ name = "raw_array_last_element"
 spec = ["9.2:1"]
 source = """
 fn main() -> i32 {
-    let arr: [i32; 3] = [10, 20, 30];
-    let third: i32 = checked {
-        let p: ptr const i32 = @raw(arr[2]);
+    let arr: [i64; 3] = [10, 20, 30];
+    let third: i64 = checked {
+        let p: ptr const i64 = @raw(arr[2]);
         @ptr_read(p)
     };
-    third
+    @intCast(third)
 }
 """
 exit_code = 30
@@ -118,12 +127,12 @@ name = "ptr_write_array_element"
 spec = ["9.2:1"]
 source = """
 fn main() -> i32 {
-    let mut arr: [i32; 3] = [10, 20, 30];
+    let mut arr: [i64; 3] = [10, 20, 30];
     checked {
-        let p: ptr mut i32 = @raw_mut(arr[1]);
+        let p: ptr mut i64 = @raw_mut(arr[1]);
         @ptr_write(p, 77);
     };
-    arr[1]
+    @intCast(arr[1])
 }
 """
 exit_code = 77
@@ -191,13 +200,14 @@ name = "ptr_offset_add_forward"
 spec = ["9.2:7"]
 source = """
 fn main() -> i32 {
-    let arr: [i32; 3] = [10, 20, 30];
-    checked {
-        let base: ptr const i32 = @raw(arr[0]);
-        let a: i32 = @ptr_read(@ptr_offset(base, 1));
-        let b: i32 = @ptr_read(@ptr_offset(base, 2));
+    let arr: [i64; 3] = [10, 20, 30];
+    let sum: i64 = checked {
+        let base: ptr const i64 = @raw(arr[0]);
+        let a: i64 = @ptr_read(@ptr_offset(base, 1));
+        let b: i64 = @ptr_read(@ptr_offset(base, 2));
         a + b
-    }
+    };
+    @intCast(sum)
 }
 """
 exit_code = 50  # 20 + 30
@@ -209,11 +219,12 @@ name = "ptr_offset_add_backward"
 spec = ["9.2:7"]
 source = """
 fn main() -> i32 {
-    let arr: [i32; 3] = [10, 20, 30];
-    checked {
-        let base: ptr const i32 = @raw(arr[2]);
+    let arr: [i64; 3] = [10, 20, 30];
+    let v: i64 = checked {
+        let base: ptr const i64 = @raw(arr[2]);
         @ptr_read(@ptr_offset(base, -1))
-    }
+    };
+    @intCast(v)
 }
 """
 exit_code = 20

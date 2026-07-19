@@ -2009,17 +2009,11 @@ impl<'a> CfgLower<'a> {
                     src: Operand::Virtual(plan.args[1].primary),
                 });
                 let dst = self.mir.alloc_vreg();
-                if let Some(narrow) = plan.narrow_access {
-                    // Gate-on: fold into the typed `ptr u8` narrow load (RUE-978).
-                    self.emit_narrow_load_through_ptr(dst, addr, 0, narrow);
-                } else {
-                    // Gate-off: the bespoke packed byte load, byte-for-byte.
-                    self.mir.push(X86Inst::Movzx8RMIndexed {
-                        dst: Operand::Virtual(dst),
-                        base: addr,
-                        offset: 0,
-                    });
-                }
+                let narrow = plan
+                    .narrow_access
+                    .expect("byte access always has a one-byte narrow descriptor");
+                // Fold into the typed `ptr u8` narrow load (RUE-978).
+                self.emit_narrow_load_through_ptr(dst, addr, 0, narrow);
                 dst
             }
             crate::value_plan::IntrinsicOperation::ByteWrite => {
@@ -2032,17 +2026,11 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(addr),
                     src: Operand::Virtual(plan.args[1].primary),
                 });
-                if let Some(narrow) = plan.narrow_access {
-                    // Gate-on: fold into the typed `ptr u8` narrow store (RUE-978).
-                    self.emit_narrow_store_through_ptr(plan.args[2].primary, addr, 0, narrow);
-                } else {
-                    // Gate-off: the bespoke packed byte store, byte-for-byte.
-                    self.mir.push(X86Inst::MovMR8Indexed {
-                        base: addr,
-                        offset: 0,
-                        src: Operand::Virtual(plan.args[2].primary),
-                    });
-                }
+                let narrow = plan
+                    .narrow_access
+                    .expect("byte access always has a one-byte narrow descriptor");
+                // Fold into the typed `ptr u8` narrow store (RUE-978).
+                self.emit_narrow_store_through_ptr(plan.args[2].primary, addr, 0, narrow);
                 let dst = self.mir.alloc_vreg();
                 self.mir.push(X86Inst::MovRI32 {
                     dst: Operand::Virtual(dst),
@@ -3154,7 +3142,7 @@ mod tests {
     use super::*;
     use rue_air::Sema;
     use rue_cfg::CfgBuilder;
-    use rue_error::{PreviewFeature, PreviewFeatures};
+    use rue_error::PreviewFeatures;
     use rue_lexer::Lexer;
     use rue_parser::Parser;
     use rue_rir::AstGen;
@@ -3247,26 +3235,21 @@ mod tests {
     /// even when the compact element size diverges from the slot stride.
     #[test]
     fn aggregate_layout_allows_frame_array_slot_stride_indexing() {
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::AggregateLayout);
         try_lower_first_fn(
             "fn main() -> i32 { let a: [i32; 3] = [1, 2, 3]; let i: u64 = 1; a[i] }",
-            preview,
+            PreviewFeatures::new(),
         )
         .expect("a frame array indexed at the slot stride must lower under compact layout");
     }
 
-    /// RUE-989: under `aggregate_layout`, narrow scalar access through a typed
-    /// pointer now lowers, emitting the narrow (1/2/4-byte) load/store pseudos
-    /// instead of a full eight-byte slot access. Gate-off, the same program uses
-    /// the eight-byte `MovRMIndexed`/`MovMRIndexed`.
+    /// RUE-989: narrow scalar access through a typed pointer lowers, emitting the
+    /// narrow (1/2/4-byte) load/store pseudos instead of a full eight-byte slot
+    /// access.
     #[test]
     fn aggregate_layout_allows_narrow_scalar_physical_access() {
         let source = "fn main() -> i32 { checked { let p: ptr mut i32 = @alloc(1); \
                       @ptr_write(p, 5); @dbg(@ptr_read(p)); @free(p, 1); }; 0 }";
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::AggregateLayout);
-        let mir = try_lower_first_fn(source, preview)
+        let mir = try_lower_first_fn(source, PreviewFeatures::new())
             .expect("a narrow scalar through a typed pointer must lower under compact layout");
         assert!(
             mir.instructions()
@@ -3285,23 +3268,11 @@ mod tests {
             )),
             "a narrow i32 @ptr_read must emit a sign-extending 4-byte narrow load"
         );
-
-        // Gate-off, the identical program keeps the eight-byte slot access.
-        let off = try_lower_first_fn(source, PreviewFeatures::new())
-            .expect("the same program lowers under the default slot model");
-        assert!(
-            off.instructions().iter().all(|inst| !matches!(
-                inst,
-                X86Inst::NarrowStoreIndexed { .. } | X86Inst::NarrowLoadIndexed { .. }
-            )),
-            "gate-off must not emit any narrow access"
-        );
     }
 
-    /// RUE-1000: under `aggregate_layout`, a compact enum with a
-    /// variant-independent memory image round-trips through a typed pointer,
-    /// marshalling the narrow tag at offset 0 and the payload at its compact
-    /// offset. Gate-off, the same program uses eight-byte slot access.
+    /// RUE-1000: a compact enum with a variant-independent memory image
+    /// round-trips through a typed pointer, marshalling the narrow tag at offset 0
+    /// and the payload at its compact offset.
     #[test]
     fn aggregate_layout_allows_compact_enum_memory() {
         let source = "enum Opt { Some(i32), None } \
@@ -3309,9 +3280,7 @@ mod tests {
                       @ptr_write(p, Opt.Some(42)); let e = @ptr_read(p); \
                       match e { Opt.Some(x) => @dbg(x), Opt.None => @dbg(0), }; \
                       @free(p, 1); }; 0 }";
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::AggregateLayout);
-        let mir = try_lower_first_fn(source, preview)
+        let mir = try_lower_first_fn(source, PreviewFeatures::new())
             .expect("a compact enum with a variant-independent image must lower");
         assert!(
             mir.instructions()
@@ -3330,32 +3299,18 @@ mod tests {
             )),
             "the enum read must load the u8 tag zero-extended"
         );
-
-        // Gate-off, the identical program keeps eight-byte slot marshalling.
-        let off = try_lower_first_fn(source, PreviewFeatures::new())
-            .expect("the same program lowers under the default slot model");
-        assert!(
-            off.instructions().iter().all(|inst| !matches!(
-                inst,
-                X86Inst::NarrowStoreIndexed { .. } | X86Inst::NarrowLoadIndexed { .. }
-            )),
-            "gate-off must not emit any narrow access"
-        );
     }
 
     /// RUE-987: a whole compact struct round-trips through a typed pointer on
     /// x86-64, reusing the enum-image slot machinery — `@ptr_write` stores each
-    /// field narrow at its compact offset and `@ptr_read` reloads it. Gate-off
-    /// keeps the eight-byte slot access.
+    /// field narrow at its compact offset and `@ptr_read` reloads it.
     #[test]
     fn aggregate_layout_allows_compact_struct_memory() {
         let source = "struct Padded { a: u8, b: i32, c: u8 } \
                       fn main() -> i32 { checked { let p: ptr mut Padded = @alloc(1); \
                       @ptr_write(p, Padded { a: 7, b: 1000, c: 9 }); let s = @ptr_read(p); \
                       @dbg(s.b); @free(p, 1); }; 0 }";
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::AggregateLayout);
-        let mir = try_lower_first_fn(source, preview).expect(
+        let mir = try_lower_first_fn(source, PreviewFeatures::new()).expect(
             "a whole compact struct through a typed pointer must lower under compact layout",
         );
         assert!(
@@ -3370,46 +3325,25 @@ mod tests {
                 .any(|inst| matches!(inst, X86Inst::NarrowLoadIndexed { width: 4, .. })),
             "the struct read must reload the i32 field narrow from its compact offset"
         );
-
-        let off = try_lower_first_fn(source, PreviewFeatures::new())
-            .expect("the same program lowers under the default slot model");
-        assert!(
-            off.instructions().iter().all(|inst| !matches!(
-                inst,
-                X86Inst::NarrowStoreIndexed { .. } | X86Inst::NarrowLoadIndexed { .. }
-            )),
-            "gate-off must not emit any narrow access"
-        );
     }
 
     /// RUE-1014: a struct containing a fixed array now HAS a variant-independent
     /// compact image — the array flattens to its elements at the compact stride —
     /// so it marshals whole through a pointer on x86-64. The narrow element
-    /// stores/loads land at the compact byte offsets; gate-off emits none.
+    /// stores/loads land at the compact byte offsets.
     #[test]
     fn aggregate_layout_allows_array_bearing_struct_memory() {
         let source = "struct HasArr { tag: u8, xs: [i32; 2] } \
                       fn main() -> i32 { let r = checked { let p: ptr mut HasArr = @alloc(1); \
                       @ptr_write(p, HasArr { tag: 5, xs: [10, 20] }); let v = @ptr_read(p); \
                       @free(p, 1); v.xs[0] + v.xs[1] }; @dbg(r); 0 }";
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::AggregateLayout);
-        let mir = try_lower_first_fn(source, preview)
+        let mir = try_lower_first_fn(source, PreviewFeatures::new())
             .expect("a struct with a compact array image must lower under compact layout");
         assert!(
             mir.instructions()
                 .iter()
                 .any(|inst| matches!(inst, X86Inst::NarrowStoreIndexed { width: 4, .. })),
             "the array elements must store narrow (4-byte i32) at their compact stride"
-        );
-        let off = try_lower_first_fn(source, PreviewFeatures::new())
-            .expect("the same program lowers under the default slot model");
-        assert!(
-            off.instructions().iter().all(|inst| !matches!(
-                inst,
-                X86Inst::NarrowStoreIndexed { .. } | X86Inst::NarrowLoadIndexed { .. }
-            )),
-            "gate-off must not emit any narrow access"
         );
     }
 
@@ -3423,9 +3357,7 @@ mod tests {
                       @ptr_write(p, Opt.Some(Point { x: 40, y: 2 })); let v = @ptr_read(p); \
                       @free(p, 1); match v { Opt.Some(pt) => pt.x + pt.y, Opt.None => 0 - 1 } }; \
                       @dbg(r); 0 }";
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::AggregateLayout);
-        let mir = try_lower_first_fn(source, preview)
+        let mir = try_lower_first_fn(source, PreviewFeatures::new())
             .expect("an enum with a variant-independent struct-payload image must lower");
         assert!(
             mir.instructions()
@@ -3444,9 +3376,7 @@ mod tests {
         let source = "enum Bad { A(i64), B(i32, i32) } struct HasBad { b: Bad } \
                       fn main() -> i32 { checked { let p: ptr mut HasBad = @alloc(1); \
                       @ptr_write(p, HasBad { b: Bad.A(5) }); @free(p, 1); }; 0 }";
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::AggregateLayout);
-        let mir = try_lower_first_fn(source, preview)
+        let mir = try_lower_first_fn(source, PreviewFeatures::new())
             .expect("a struct embedding a heterogeneous enum must lower via nested tag dispatch");
         assert!(
             mir.instructions()
@@ -3456,51 +3386,35 @@ mod tests {
         );
     }
 
-    /// RUE-1004: under `aggregate_layout`, a non-slot-identical struct returned
-    /// by value is forced indirect (sret); the caller reads the callee-written
-    /// compact image back from the sret buffer, extending each narrow field from
-    /// its compact byte offset (`main` here is the caller). Gate-off, the same
-    /// return reads eight-byte slots and emits no narrow access.
+    /// RUE-1004: a non-slot-identical struct returned by value is forced indirect
+    /// (sret); the caller reads the callee-written compact image back from the
+    /// sret buffer, extending each narrow field from its compact byte offset
+    /// (`main` here is the caller).
     #[test]
     fn aggregate_layout_allows_compact_struct_sret_return() {
         let source = "struct Padded { a: u8, b: i32, c: u8 } \
                       fn make() -> Padded { Padded { a: 7, b: 1000, c: 9 } } \
                       fn main() -> i32 { let p = make(); @dbg(p.b); 0 }";
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::AggregateLayout);
-        let mir =
-            try_lower_first_fn(source, preview).expect("a compact struct sret return must lower");
+        let mir = try_lower_first_fn(source, PreviewFeatures::new())
+            .expect("a compact struct sret return must lower");
         assert!(
             mir.instructions()
                 .iter()
                 .any(|inst| matches!(inst, X86Inst::NarrowLoadIndexed { width: 1, .. })),
             "the caller must read the u8 fields narrow from the compact sret image"
         );
-
-        let off = try_lower_first_fn(source, PreviewFeatures::new())
-            .expect("the same program lowers under the default slot model");
-        assert!(
-            off.instructions()
-                .iter()
-                .all(|inst| !matches!(inst, X86Inst::NarrowLoadIndexed { .. })),
-            "gate-off must not emit any narrow sret read-back"
-        );
     }
 
-    /// RUE-1037: under `aggregate_layout`, a HETEROGENEOUS enum (variants whose
-    /// payload layouts disagree) is marshalled through a pointer by dispatching on
-    /// the runtime tag — the store emits a tag compare/branch per variant plus
-    /// narrow field stores. Gate-off the same `@ptr_write` stores eight-byte slots
-    /// with no tag dispatch and no narrow store.
+    /// RUE-1037: a HETEROGENEOUS enum (variants whose payload layouts disagree) is
+    /// marshalled through a pointer by dispatching on the runtime tag — the store
+    /// emits a tag compare/branch per variant plus narrow field stores.
     #[test]
     fn aggregate_layout_heterogeneous_enum_ptr_write_tag_dispatches() {
         let source = "enum R { Ok(Point), Err(i64) } \
                       struct Point { x: i32, y: i32, z: i32 } \
                       fn store_it(p: ptr mut R) { checked { @ptr_write(p, R.Ok(Point { x: 1, y: 2, z: 3 })); }; } \
                       fn main() -> i32 { checked { let p: ptr mut R = @alloc(1); store_it(p); @free(p, 1); }; 0 }";
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::AggregateLayout);
-        let mir = try_lower_named_fn(source, preview, Some("store_it"))
+        let mir = try_lower_named_fn(source, PreviewFeatures::new(), Some("store_it"))
             .expect("a heterogeneous enum @ptr_write must lower via tag dispatch");
         assert!(
             mir.instructions()
@@ -3514,48 +3428,32 @@ mod tests {
                 .any(|inst| matches!(inst, X86Inst::NarrowStoreIndexed { .. })),
             "the active variant's narrow leaves must be stored narrow"
         );
-
-        let off = try_lower_named_fn(source, PreviewFeatures::new(), Some("store_it"))
-            .expect("the same program lowers under the default slot model");
-        assert!(
-            off.instructions().iter().all(|inst| !matches!(
-                inst,
-                X86Inst::CmpRI { .. } | X86Inst::NarrowStoreIndexed { .. }
-            )),
-            "gate-off must store eight-byte slots with no tag dispatch and no narrow store"
-        );
     }
 
-    /// RUE-1004: under `aggregate_layout`, an `inout` non-slot-identical struct
-    /// argument is accepted — the callee reads/writes the caller's slot-based
-    /// frame storage through the by-reference pointer (slot-shaped transport), so
-    /// the call site lowers rather than being refused.
+    /// RUE-1004: an `inout` non-slot-identical struct argument is accepted — the
+    /// callee reads/writes the caller's slot-based frame storage through the
+    /// by-reference pointer (slot-shaped transport), so the call site lowers
+    /// rather than being refused.
     #[test]
     fn aggregate_layout_allows_inout_compact_struct_param() {
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::AggregateLayout);
         try_lower_first_fn(
             "struct Padded { a: u8, b: i32, c: u8 } \
              fn bump(inout p: Padded) { p.b = p.b + 1; } \
              fn main() -> i32 { let mut s = Padded { a: 1, b: 2, c: 3 }; bump(inout s); s.b }",
-            preview,
+            PreviewFeatures::new(),
         )
         .expect("an inout compact struct argument must lower");
     }
 
-    /// RUE-1005: under `aggregate_layout`, a non-slot-identical struct passed BY
-    /// VALUE across a call now lowers. The caller (`main`, first here) writes the
-    /// aggregate's compact image into a caller-owned buffer with narrow stores
-    /// and passes one pointer. Gate-off, the same call passes slot-shaped
-    /// registers and emits no narrow store.
+    /// RUE-1005: a non-slot-identical struct passed BY VALUE across a call lowers.
+    /// The caller (`main`, first here) writes the aggregate's compact image into a
+    /// caller-owned buffer with narrow stores and passes one pointer.
     #[test]
     fn aggregate_layout_allows_by_value_compact_struct_arg_caller() {
         let source = "struct Padded { a: u8, b: i32, c: u8 } \
                       fn main() -> i32 { sum(Padded { a: 1, b: 5, c: 3 }) } \
                       fn sum(p: Padded) -> i32 { p.b }";
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::AggregateLayout);
-        let mir = try_lower_first_fn(source, preview)
+        let mir = try_lower_first_fn(source, PreviewFeatures::new())
             .expect("a by-value compact struct argument must lower");
         assert!(
             mir.instructions()
@@ -3563,29 +3461,17 @@ mod tests {
                 .any(|inst| matches!(inst, X86Inst::NarrowStoreIndexed { width: 1, .. })),
             "the caller must write the u8 fields narrow into the compact argument buffer"
         );
-
-        let off = try_lower_first_fn(source, PreviewFeatures::new())
-            .expect("the same program lowers under the default slot model");
-        assert!(
-            off.instructions()
-                .iter()
-                .all(|inst| !matches!(inst, X86Inst::NarrowStoreIndexed { .. })),
-            "gate-off must not emit any narrow argument-buffer store"
-        );
     }
 
     /// RUE-1005 callee side: the function receiving a by-value compact aggregate
     /// unmarshals its compact image (narrow loads) from the homed pointer into
-    /// its frame slots at entry. Gate-off, it reads slot-shaped registers with no
-    /// narrow load.
+    /// its frame slots at entry.
     #[test]
     fn aggregate_layout_allows_by_value_compact_struct_arg_callee() {
         let source = "struct Padded { a: u8, b: i32, c: u8 } \
                       fn sum(p: Padded) -> i32 { p.b } \
                       fn main() -> i32 { sum(Padded { a: 1, b: 5, c: 3 }) }";
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::AggregateLayout);
-        let mir = try_lower_named_fn(source, preview, Some("sum"))
+        let mir = try_lower_named_fn(source, PreviewFeatures::new(), Some("sum"))
             .expect("the callee of a by-value compact struct argument must lower");
         assert!(
             mir.instructions()
@@ -3593,26 +3479,13 @@ mod tests {
                 .any(|inst| matches!(inst, X86Inst::NarrowLoadIndexed { width: 1, .. })),
             "the callee must unmarshal the u8 fields narrow from the homed pointer"
         );
-
-        let off = try_lower_named_fn(source, PreviewFeatures::new(), Some("sum"))
-            .expect("the same program lowers under the default slot model");
-        assert!(
-            off.instructions()
-                .iter()
-                .all(|inst| !matches!(inst, X86Inst::NarrowLoadIndexed { .. })),
-            "gate-off must not emit any narrow parameter unmarshalling"
-        );
     }
 
-    /// RUE-1005 descriptor plumbing: with the gate off, the per-source-parameter
-    /// prologue homing plan is byte-identical to the historical one-register-per-
-    /// slot loop — a multi-slot direct struct parameter homes exactly one
-    /// incoming register per frame slot, so the flattened register→slot mapping is
-    /// the identity. With the gate on, the same struct parameter crosses as one
+    /// RUE-1005 descriptor plumbing: a compact struct parameter crosses as one
     /// indirect pointer, so its plan entry consumes a single register while still
     /// reserving all three frame slots.
     #[test]
-    fn param_homing_plan_is_inert_gate_off_and_collapses_indirect_gate_on() {
+    fn param_homing_plan_collapses_indirect_compact_aggregate() {
         use rue_cfg::CfgBuilder;
         let source = "struct Padded { a: u8, b: i32, c: u8 } \
                       fn take(p: Padded, q: i32) -> i32 { p.b + q } \
@@ -3647,28 +3520,10 @@ mod tests {
             (plan, cfg.num_params())
         };
 
-        // Gate-off: total incoming registers equals the parameter slot count and
-        // register i homes into frame slot i (identity) — the historical prologue.
-        let (off, num_params) = plan_for(PreviewFeatures::new());
-        assert_eq!(off.iter().map(|h| h.reg_count).sum::<u32>(), num_params);
-        let mut reg = 0u32;
-        for homing in &off {
-            for k in 0..homing.reg_count {
-                assert_eq!(
-                    homing.start_slot + k,
-                    reg,
-                    "gate-off homing must be identity"
-                );
-                reg += 1;
-            }
-        }
-
-        // Gate-on: the compact struct parameter collapses to one incoming pointer
-        // register while its three frame slots stay reserved, so the total
-        // incoming register count drops below the parameter slot count.
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::AggregateLayout);
-        let (on, num_params_on) = plan_for(preview);
+        // The compact struct parameter collapses to one incoming pointer register
+        // while its three frame slots stay reserved, so the total incoming
+        // register count drops below the parameter slot count.
+        let (on, num_params_on) = plan_for(PreviewFeatures::new());
         assert_eq!(num_params_on, 4, "Padded (3 slots) + i32 (1 slot)");
         assert_eq!(
             on.iter().map(|h| h.reg_count).sum::<u32>(),
@@ -3697,13 +3552,11 @@ mod tests {
     /// dispatches on the tag and writes the active variant's leaves.
     #[test]
     fn aggregate_layout_marshals_variant_dependent_enum_memory() {
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::AggregateLayout);
         let mir = try_lower_first_fn(
             "enum Bad { A(i64), B(i32, i32) } \
              fn main() -> i32 { checked { let p: ptr mut Bad = @alloc(1); \
              @ptr_write(p, Bad.A(5)); @free(p, 1); }; 0 }",
-            preview,
+            PreviewFeatures::new(),
         )
         .expect("a variant-dependent enum memory image must lower via tag dispatch");
         assert!(
@@ -3719,11 +3572,9 @@ mod tests {
     /// compact codegen is accepted.
     #[test]
     fn aggregate_layout_allows_slot_identical_physical_layout_codegen() {
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::AggregateLayout);
         try_lower_first_fn(
             "struct Cell { a: i64, b: i64 } fn main() -> i32 { let c = Cell { a: 7, b: 9 }; @intCast(c.a) }",
-            preview,
+            PreviewFeatures::new(),
         )
         .expect("a slot-identical aggregate must lower under compact layout");
     }
@@ -3907,12 +3758,12 @@ mod tests {
         assert!(
             mir.instructions()
                 .iter()
-                .any(|inst| matches!(inst, X86Inst::MovMR8Indexed { .. }))
+                .any(|inst| matches!(inst, X86Inst::NarrowStoreIndexed { width: 1, .. }))
         );
         assert!(
             mir.instructions()
                 .iter()
-                .any(|inst| matches!(inst, X86Inst::Movzx8RMIndexed { .. }))
+                .any(|inst| matches!(inst, X86Inst::NarrowLoadIndexed { width: 1, .. }))
         );
 
         let alloc = runtime_call_index(&mir, rue_runtime_abi::RuntimeHelperId::Alloc);
@@ -3929,25 +3780,21 @@ mod tests {
         assert_eq!(immediate_call_arg(&mir, free, Reg::Rdx), Some(1));
     }
 
-    /// RUE-978: under the compact layout the raw-byte access family folds into
-    /// the ordinary typed `ptr u8` narrow path — `@byte_read`/`@byte_write`
-    /// emit the same one-byte `NarrowLoadIndexed`/`NarrowStoreIndexed` a typed
-    /// `@ptr_read`/`@ptr_write` of a `u8` pointee does, not the bespoke
-    /// `Movzx8RMIndexed`/`MovMR8Indexed`. Gate-off keeps the bespoke path
-    /// (asserted by `raw_bytes_runtime_helper_identity_and_slots_match_shared_plan`).
+    /// RUE-978: the raw-byte access family folds into the ordinary typed
+    /// `ptr u8` narrow path — `@byte_read`/`@byte_write` emit the same one-byte
+    /// `NarrowLoadIndexed`/`NarrowStoreIndexed` a typed `@ptr_read`/`@ptr_write`
+    /// of a `u8` pointee does.
     #[test]
     fn aggregate_layout_folds_byte_access_into_narrow_typed_path() {
         let source = "fn main() -> i32 { checked { let p = @alloc_bytes(2, 1); \
              @byte_write(p, 0, 65); let b = @byte_read(p, 1); \
              @free_bytes(p, 2, 1); @intCast(b) } }";
-        let mut preview = PreviewFeatures::new();
-        preview.insert(PreviewFeature::AggregateLayout);
-        let mir = lower_to_mir_with_preview(source, preview);
+        let mir = lower_to_mir_with_preview(source, PreviewFeatures::new());
         assert!(
             mir.instructions()
                 .iter()
                 .any(|inst| matches!(inst, X86Inst::NarrowStoreIndexed { width: 1, .. })),
-            "gated @byte_write must fold into the one-byte narrow store"
+            "@byte_write must fold into the one-byte narrow store"
         );
         assert!(
             mir.instructions().iter().any(|inst| matches!(
@@ -3958,14 +3805,7 @@ mod tests {
                     ..
                 }
             )),
-            "gated @byte_read must fold into the one-byte zero-extended narrow load"
-        );
-        assert!(
-            mir.instructions().iter().all(|inst| !matches!(
-                inst,
-                X86Inst::Movzx8RMIndexed { .. } | X86Inst::MovMR8Indexed { .. }
-            )),
-            "the bespoke packed byte load/store must not survive the fold-in"
+            "@byte_read must fold into the one-byte zero-extended narrow load"
         );
     }
 }

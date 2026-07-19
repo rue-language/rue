@@ -59,8 +59,12 @@ stdout = "7\n"
 [[case]]
 name = "pointer_to_comptime_type_var"
 description = "`ptr const P` where P is a local comptime type value resolves as a pointee type (RUE-263)."
+# Slot-identical field type (i64) so a raw pointer into the frame-resident
+# struct is supported; a non-slot-identical frame struct (e.g. i32 fields) is
+# refused under the default compact layout (RUE-987 / RUE-1035 M2). The
+# pointer-to-comptime-type resolution under test is field-width-independent.
 files = [{ path = "main.rue", source = """
-fn Point() -> type { struct { x: i32, y: i32 } }
+fn Point() -> type { struct { x: i64, y: i64 } }
 fn main() -> i32 {
     let P = Point();
     let p: P = P { x: 10, y: 20 };

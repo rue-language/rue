@@ -30,6 +30,15 @@
 #
 # Runs on BOTH backends; the aarch64 runtime path is only exercised in CI, so a
 # backend that forgets a slot-routing gate for one type shape fails here.
+#
+# The `@ptr_read / @ptr_write` cells allocate their backing block on the HEAP
+# (`@alloc`), whose storage is the compact image, so the value round-trips
+# through a single whole-aggregate `@ptr_write`/`@ptr_read`. Taking a raw pointer
+# into a frame-resident non-slot-identical aggregate is refused under the default
+# compact layout (RUE-987 / RUE-1035 M2, frames stay slot-shaped for now); that
+# refusal is pinned in `aggregate_layout.toml`. A bare fixed array cannot be an
+# `@alloc` pointee directly, so the ARR/AOS cells round-trip it as a one-field
+# struct wrapper — the array value still crosses the pointer boundary whole.
 
 [section]
 id = "cli.aggregate_abi_matrix"
@@ -79,13 +88,12 @@ name = "s1_ptr_rw"
 files = [{ path = "main.rue", source = """
 struct S1 { a: i32 }
 fn main() -> i32 {
-    let mut arr: [S1; 1] = [S1 { a: 0 }];
     checked {
-        let wp: ptr mut S1 = @raw_mut(arr[0]);
+        let wp: ptr mut S1 = @alloc(1);
         @ptr_write(wp, S1 { a: 55 });
-        let rp: ptr const S1 = @raw(arr[0]);
-        let v = @ptr_read(rp);
+        let v = @ptr_read(wp);
         @dbg(v.a);
+        @free(wp, 1);
     };
     0
 }
@@ -191,13 +199,12 @@ name = "s2_ptr_rw"
 files = [{ path = "main.rue", source = """
 struct S2 { a: i32, b: i32 }
 fn main() -> i32 {
-    let mut arr: [S2; 1] = [S2 { a: 0, b: 0 }];
     checked {
-        let wp: ptr mut S2 = @raw_mut(arr[0]);
+        let wp: ptr mut S2 = @alloc(1);
         @ptr_write(wp, S2 { a: 7, b: 8 });
-        let rp: ptr const S2 = @raw(arr[0]);
-        let v = @ptr_read(rp);
+        let v = @ptr_read(wp);
         @dbg(v.a); @dbg(v.b);
+        @free(wp, 1);
     };
     0
 }
@@ -231,13 +238,12 @@ name = "s3_ptr_rw"
 files = [{ path = "main.rue", source = """
 struct S3 { a: i32, b: i32, c: i32 }
 fn main() -> i32 {
-    let mut arr: [S3; 1] = [S3 { a: 0, b: 0, c: 0 }];
     checked {
-        let wp: ptr mut S3 = @raw_mut(arr[0]);
+        let wp: ptr mut S3 = @alloc(1);
         @ptr_write(wp, S3 { a: 3, b: 6, c: 9 });
-        let rp: ptr const S3 = @raw(arr[0]);
-        let v = @ptr_read(rp);
+        let v = @ptr_read(wp);
         @dbg(v.a); @dbg(v.b); @dbg(v.c);
+        @free(wp, 1);
     };
     0
 }
@@ -288,13 +294,12 @@ name = "s8_ptr_rw"
 files = [{ path = "main.rue", source = """
 struct S8 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
 fn main() -> i32 {
-    let mut arr: [S8; 1] = [S8 { a: 0, b: 0, c: 0, d: 0, e: 0, f: 0, g: 0, h: 0 }];
     checked {
-        let wp: ptr mut S8 = @raw_mut(arr[0]);
+        let wp: ptr mut S8 = @alloc(1);
         @ptr_write(wp, S8 { a: 11, b: 22, c: 33, d: 44, e: 55, f: 66, g: 77, h: 88 });
-        let rp: ptr const S8 = @raw(arr[0]);
-        let v = @ptr_read(rp);
+        let v = @ptr_read(wp);
         @dbg(v.a); @dbg(v.e); @dbg(v.h);
+        @free(wp, 1);
     };
     0
 }
@@ -360,13 +365,12 @@ files = [{ path = "main.rue", source = """
 struct Inner { a: i32, b: i32 }
 struct Outer { p: Inner, q: i32 }
 fn main() -> i32 {
-    let mut arr: [Outer; 1] = [Outer { p: Inner { a: 0, b: 0 }, q: 0 }];
     checked {
-        let wp: ptr mut Outer = @raw_mut(arr[0]);
+        let wp: ptr mut Outer = @alloc(1);
         @ptr_write(wp, Outer { p: Inner { a: 1, b: 2 }, q: 3 });
-        let rp: ptr const Outer = @raw(arr[0]);
-        let v = @ptr_read(rp);
+        let v = @ptr_read(wp);
         @dbg(v.p.a); @dbg(v.p.b); @dbg(v.q);
+        @free(wp, 1);
     };
     0
 }
@@ -423,14 +427,14 @@ stdout = "7\n9\n"
 [[case]]
 name = "arr_ptr_rw"
 files = [{ path = "main.rue", source = """
+struct ArrBox { a: [i32; 4] }
 fn main() -> i32 {
-    let mut a: [i32; 4] = [0, 0, 0, 0];
     checked {
-        let wp: ptr mut [i32; 4] = @raw_mut(a);
-        @ptr_write(wp, [1, 2, 3, 4]);
-        let rp: ptr const [i32; 4] = @raw(a);
-        let v = @ptr_read(rp);
-        @dbg(v[0]); @dbg(v[3]);
+        let wp: ptr mut ArrBox = @alloc(1);
+        @ptr_write(wp, ArrBox { a: [1, 2, 3, 4] });
+        let v = @ptr_read(wp);
+        @dbg(v.a[0]); @dbg(v.a[3]);
+        @free(wp, 1);
     };
     0
 }
@@ -474,14 +478,14 @@ stdout = "5\n6\n"
 name = "aos_ptr_rw"
 files = [{ path = "main.rue", source = """
 struct P { x: i32, y: i32 }
+struct AosBox { a: [P; 2] }
 fn main() -> i32 {
-    let mut a: [P; 2] = [P { x: 0, y: 0 }, P { x: 0, y: 0 }];
     checked {
-        let wp: ptr mut [P; 2] = @raw_mut(a);
-        @ptr_write(wp, [P { x: 1, y: 2 }, P { x: 3, y: 4 }]);
-        let rp: ptr const [P; 2] = @raw(a);
-        let v = @ptr_read(rp);
-        @dbg(v[0].x); @dbg(v[1].y);
+        let wp: ptr mut AosBox = @alloc(1);
+        @ptr_write(wp, AosBox { a: [P { x: 1, y: 2 }, P { x: 3, y: 4 }] });
+        let v = @ptr_read(wp);
+        @dbg(v.a[0].x); @dbg(v.a[1].y);
+        @free(wp, 1);
     };
     0
 }
@@ -612,13 +616,12 @@ files = [{ path = "main.rue", source = """
 enum E { V(i32, i32), Empty }
 fn sum(e: E) -> i32 { match e { E.V(x, y) => x + y, E.Empty => 0 } }
 fn main() -> i32 {
-    let mut arr: [E; 1] = [E.Empty];
     checked {
-        let wp: ptr mut E = @raw_mut(arr[0]);
+        let wp: ptr mut E = @alloc(1);
         @ptr_write(wp, E.V(9, 8));
-        let rp: ptr const E = @raw(arr[0]);
-        let v = @ptr_read(rp);
+        let v = @ptr_read(wp);
         @dbg(sum(v));
+        @free(wp, 1);
     };
     0
 }

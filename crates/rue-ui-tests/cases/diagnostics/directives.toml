@@ -167,7 +167,7 @@ fn main() -> i32 {
     @size_of(i32)
 }
 """
-exit_code = 8
+exit_code = 4
 
 [[case]]
 name = "duplicate_comptime_modifier_rejected"

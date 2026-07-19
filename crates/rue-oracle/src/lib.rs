@@ -614,7 +614,7 @@ enum Value {
     /// it were a growable string. Every width here is the compiler's
     /// `abi_slot_count` for the corresponding text type; `string_literal_value`
     /// and `text_struct_slots` derive it from that authority, and the type-free
-    /// constructors below carry the same values (slot-model-default) for the
+    /// constructors below carry the same values for the
     /// sites that have no type in hand.
     Str {
         bytes: Vec<u8>,
@@ -627,7 +627,7 @@ impl Value {
         Self::string_bytes(text.into().into_bytes())
     }
 
-    /// slot-model-default: the owned-`StrBuf` width `abi_slot_count(StrBuf) == 3`
+    /// The owned-`StrBuf` width `abi_slot_count(StrBuf) == 3`
     /// ({ptr, len, cap}). Used by the type-free sites (the `@to_string` result,
     /// which is always a `StrBuf`, and test fixtures); the type-aware paths
     /// derive the same value from the compiler authority.
@@ -643,7 +643,7 @@ impl Value {
         Self::str_view_bytes(text.into().into_bytes())
     }
 
-    /// slot-model-default: the `str`/`Str(N)` view width
+    /// The `str`/`Str(N)` view width
     /// `abi_slot_count(str) == 2` ({ptr, len}). The interpreter's live path
     /// (`string_literal_value`) now derives the width from the compiler
     /// authority, so this explicit two-slot constructor is a test fixture only.
@@ -855,7 +855,7 @@ enum WritebackPlace<'a> {
 
 impl<'a> Interp<'a> {
     fn string_literal_value(&self, text: String, ty: Type) -> Value {
-        // slot-model-default: derive the text value's ABI slot width from the
+        // Derive the text value's ABI slot width from the
         // compiler's `abi_slot_count` authority instead of hardcoding
         // str/Str(N) = 2 and StrBuf = 3. A str/Str(N) view is two slots
         // ({ptr, len}); an owned StrBuf is three ({ptr, len, cap}). The
@@ -897,7 +897,7 @@ impl<'a> Interp<'a> {
     }
 
     fn text_struct_slots(&self, struct_id: rue_air::StructId) -> Option<usize> {
-        // slot-model-default: a str/Str(N) view certifies two ABI slots and an
+        // A str/Str(N) view certifies two ABI slots and an
         // owned StrBuf three. Derive the width from `abi_slot_count` rather than
         // carrying the 2/3 literals independently; the guard keeps this `None`
         // for every non-text struct.

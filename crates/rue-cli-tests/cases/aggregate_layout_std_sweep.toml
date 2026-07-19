@@ -1,17 +1,16 @@
-# std-under-aggregate_layout sweep (ADR-0052, RUE-987 / RUE-1014).
+# std-under-compact-layout sweep (ADR-0052, RUE-987 / RUE-1014).
 #
-# The compact physical layout (`--preview aggregate_layout`) is only useful if the
-# standard library's data-structure PATTERNS compile and run correctly under it.
-# This suite is the permanent CI home for that sweep: each case exercises a real
-# std shape — heap-backed containers, byte buffers, nested records, struct
-# elements, and now variant-dependent enum images and compact arrays — through the
-# compact-layout machinery (narrow scalar access RUE-989, compact enum memory
-# RUE-1000, call-boundary marshalling RUE-1004/1005, zero-padding RUE-1007, whole
+# The compact physical layout is only useful if the standard library's
+# data-structure PATTERNS compile and run correctly under it. This suite is the
+# permanent CI home for that sweep: each case exercises a real std shape —
+# heap-backed containers, byte buffers, nested records, struct elements, and
+# variant-dependent enum images and compact arrays — through the compact-layout
+# machinery (narrow scalar access RUE-989, compact enum memory RUE-1000,
+# call-boundary marshalling RUE-1004/1005, zero-padding RUE-1007, whole
 # compact-struct marshalling through typed pointers RUE-987, and variant-dependent
 # enum images plus compact arrays through pointers and across calls RUE-1014).
-# Every `stdout`/`exit_code` here is the gate-OFF oracle: the compact-layout run
-# must be byte-identical, so a miscompile changes the pinned output and fails.
-# `differential_opt` additionally pins identical behavior across every
+# Every `stdout`/`exit_code` here is pinned oracle output that a miscompile would
+# change. `differential_opt` additionally pins identical behavior across every
 # optimization level.
 #
 # Most programs are self-contained mirrors of the std container/string/record
@@ -26,7 +25,7 @@
 [section]
 id = "cli.aggregate_layout_std_sweep"
 name = "std patterns under the compact layout"
-description = "Self-contained programs mirroring std container/string/record patterns compile and run byte-identically under --preview aggregate_layout (RUE-987)."
+description = "Self-contained programs mirroring std container/string/record patterns compile and run byte-identically (RUE-987)."
 
 # A heap array of compact records walked with @ptr_offset at the compact stride:
 # each record { id: u8, val: i32, tag: u16 } is written whole through the typed
@@ -36,7 +35,7 @@ description = "Self-contained programs mirroring std container/string/record pat
 name = "heap_struct_array_walk"
 description = "A heap array of compact { u8, i32, u16 } records walked with @ptr_offset; whole-struct @ptr_write/@ptr_read at the compact stride."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Rec { id: u8, val: i32, tag: u16 }
 fn main() -> i32 {
@@ -74,7 +73,7 @@ exit_code = 0
 name = "nested_compact_struct_through_pointer"
 description = "A nested compact record round-trips whole through a typed pointer; the inner struct's leaves flatten into the outer compact image (RUE-987)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Inner { a: u8, b: i32 }
 struct Outer { x: u16, inner: Inner, y: u8 }
@@ -105,7 +104,7 @@ exit_code = 0
 name = "narrow_byte_buffer_roundtrip"
 description = "A heap u8 buffer written/read at compact stride 1 with narrow access — the StrBuf/ArrayBuf(u8) storage pattern."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     let sum = checked {
@@ -134,7 +133,7 @@ exit_code = 0
 name = "arraybuf_compact_struct_element"
 description = "A generic @import ArrayBuf(Point) with a compact struct element: push/get/set/pop_or round-trip whole structs under the gate (RUE-987)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [
   { path = "main.rue", source = """const arraybuf = @import("arraybuf.rue");
 struct Point { x: i32, y: i32 }
@@ -214,7 +213,7 @@ exit_code = 0
 name = "option_struct_return_roundtrip"
 description = "Returning an enum with a struct payload (Option(struct)) by value round-trips under the gate: the struct payload flattens to a variant-independent image (RUE-1014)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct P { x: i32, y: i32 }
 enum Opt { Some(P), None }
@@ -237,7 +236,7 @@ exit_code = 0
 name = "array_crossing_call_roundtrip"
 description = "A fixed array returned by value across a call marshals through its compact image and is then indexed as a frame value (RUE-1014)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn make() -> [u8; 4] { [1, 2, 3, 4] }
 fn main() -> i32 {
@@ -258,10 +257,10 @@ exit_code = 0
 # construct RUE-987 recorded as the last blocker; classifying the parsed value
 # pins the top-level variant (an array -> 5).
 [[case]]
-name = "std_json_parse_variant_under_gate"
-description = "The real std.json parser compiles and runs under the gate: Json's variant-dependent aggregate payloads marshal through one variant-independent image (RUE-1014)."
+name = "std_json_parse_variant"
+description = "The real std.json parser compiles and runs by default: Json's variant-dependent aggregate payloads marshal through one variant-independent image (RUE-1014)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -299,10 +298,10 @@ exit_code = 0
 # dependent enum image (RUE-1014) — across the sret boundary. A four-element
 # min-heap pops in ascending priority order, pinning the whole pipeline.
 [[case]]
-name = "std_priority_queue_option_pair_under_gate"
-description = "The real std PriorityQueue(i32,i32) runs under the gate: ArrayBuf(Pair) struct elements plus Option(Pair) variant-dependent enum returns (RUE-1014)."
+name = "std_priority_queue_option_pair"
+description = "The real std PriorityQueue(i32,i32) runs by default: ArrayBuf(Pair) struct elements plus Option(Pair) variant-dependent enum returns (RUE-1014)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -341,7 +340,7 @@ exit_code = 0
 name = "overlapping_union_enum_roundtrips_via_dispatch"
 description = "An enum with overlapping narrow payload positions (u16,u16 vs u32) round-trips through a heap pointer via per-variant tag dispatch (RUE-1037)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Ov { A(u16, u16), B(u32) }
 fn make(v: bool) -> Ov { if v { Ov.A(1, 2) } else { Ov.B(3) } }
@@ -364,18 +363,18 @@ fn main() -> i32 {
 stdout = "33\n"
 exit_code = 0
 
-# RUE-1037 SUCCESS GATE: a faithful mirror of std.net's Result(SockAddr,
-# NetworkError) return surface (TcpListener.local_addr) — the exact heterogeneous
-# shape that blocked the compact-layout default. Ok(SockAddr{ IpAddr enum, u16 })
-# and Err(NetworkError enum with an Other(i64) payload) have DISAGREEING payload
+# RUE-1037: a faithful mirror of std.net's Result(SockAddr, NetworkError) return
+# surface (TcpListener.local_addr) — the exact heterogeneous shape that blocked
+# the compact-layout default. Ok(SockAddr{ IpAddr enum, u16 }) and
+# Err(NetworkError enum with an Other(i64) payload) have DISAGREEING payload
 # layouts, so the enum is marshalled by per-variant tag dispatch. Exercised as an
 # sret return, a by-value argument, a heap @ptr_write/@ptr_read round-trip, and a
 # nested-match on both variants. 8208 (Ok) + 111 (Err) + 8208 (heap Ok) = 16527.
 [[case]]
-name = "std_net_result_sockaddr_networkerror_mirror_under_gate"
-description = "A faithful mirror of std.net Result(SockAddr, NetworkError) — the heterogeneous enum blocking the compact default — round-trips by value, by argument, and through the heap under the gate via per-variant tag dispatch (RUE-1037)."
+name = "std_net_result_sockaddr_networkerror_mirror"
+description = "A faithful mirror of std.net Result(SockAddr, NetworkError) — the heterogeneous enum blocking the compact default — round-trips by value, by argument, and through the heap via per-variant tag dispatch (RUE-1037)."
 differential_opt = true
-args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Ipv4Addr { a: u8, b: u8, c: u8, d: u8 }
 enum IpAddr { V4(Ipv4Addr) }

@@ -398,8 +398,6 @@ impl<'a> Emitter<'a> {
                 inst,
                 X86Inst::MovRMIndexed { .. }
                     | X86Inst::MovMRIndexed { .. }
-                    | X86Inst::Movzx8RMIndexed { .. }
-                    | X86Inst::MovMR8Indexed { .. }
                     | X86Inst::NarrowLoadIndexed { .. }
                     | X86Inst::NarrowStoreIndexed { .. }
             ) {
@@ -1209,8 +1207,6 @@ impl<'a> Emitter<'a> {
 
             X86Inst::MovRMIndexed { .. }
             | X86Inst::MovMRIndexed { .. }
-            | X86Inst::Movzx8RMIndexed { .. }
-            | X86Inst::MovMR8Indexed { .. }
             | X86Inst::NarrowLoadIndexed { .. }
             | X86Inst::NarrowStoreIndexed { .. } => {
                 // Regalloc lowers these into MovRM/MovMR/NarrowLoadRM/NarrowStoreMR,
