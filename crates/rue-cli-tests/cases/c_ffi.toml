@@ -207,6 +207,89 @@ execute_if_native = true
 stdout = "-9\n-300\n50000\nfalse\n"
 exit_code = 0
 
+# --- P3 aggregate by-value round-trips, execution-verified (both backends) ----
+# Each case exercises one of the four target-C aggregate paths against a
+# hand-assembled C member that follows the psABI exactly, so a *wrong* caller
+# packing produces WRONG OUTPUT, not an accidental pass:
+#   (a) two-field struct arg combined order-sensitively (catches reversed slots),
+#   (b) >16-byte struct arg passed in memory, tail field read,
+#   (c) two-register struct return,
+#   (d) large struct return via sret.
+# Target-pinned like cli.abi_conformance; the native host executes. The @offset_of
+# assertions embed the expected C-side field offsets so a layout drift is caught
+# in the same program that relies on them.
+
+[[case]]
+name = "x86_64_linux_extern_struct_by_value_roundtrips"
+description = "P3 aggregate by-value arg/return round-trips on x86-64 (SysV): two-field combine, byval tail, two-register + sret returns."
+files = [{ path = "main.rue", source = """
+@repr(c)
+struct Pair { a: i32, b: i32 }
+@repr(c)
+struct Triple { a: i64, b: i64, c: i64 }
+extern "C" {
+    fn ffi_pair_combine(p: Pair) -> i32;
+    fn ffi_triple_tail(t: Triple) -> i64;
+    fn ffi_make_pair(x: i32) -> Pair;
+    fn ffi_fill_triple(x: i64) -> Triple;
+}
+fn main() -> i32 {
+    // Layout cross-check: the C members assume these exact offsets.
+    @dbg(@offset_of(Pair, b));
+    @dbg(@offset_of(Triple, c));
+    // (a) two-field struct by value, combined a*1000 + b = 3005 (order-sensitive).
+    @dbg(checked { ffi_pair_combine(Pair { a: 3, b: 5 }) });
+    // (b) >16-byte struct byval, read tail c = 300.
+    @dbg(checked { ffi_triple_tail(Triple { a: 100, b: 200, c: 300 }) });
+    // (c) two-register struct return {a: 10, b: 11}.
+    @dbg(checked { ffi_make_pair(10).a });
+    @dbg(checked { ffi_make_pair(10).b });
+    // (d) large struct return via sret {a: 1000, b: 1001, c: 1002}.
+    @dbg(checked { ffi_fill_triple(1000).a });
+    @dbg(checked { ffi_fill_triple(1000).c });
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "x86-64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = "4\n16\n3005\n300\n10\n11\n1000\n1002\n"
+exit_code = 0
+
+[[case]]
+name = "aarch64_linux_extern_struct_by_value_roundtrips"
+description = "P3 aggregate by-value arg/return round-trips on AArch64 (AAPCS64): two-field combine, by-reference tail, two-register + x8-sret returns."
+files = [{ path = "main.rue", source = """
+@repr(c)
+struct Pair { a: i32, b: i32 }
+@repr(c)
+struct Triple { a: i64, b: i64, c: i64 }
+extern "C" {
+    fn ffi_pair_combine(p: Pair) -> i32;
+    fn ffi_triple_tail(t: Triple) -> i64;
+    fn ffi_make_pair(x: i32) -> Pair;
+    fn ffi_fill_triple(x: i64) -> Triple;
+}
+fn main() -> i32 {
+    @dbg(@offset_of(Pair, b));
+    @dbg(@offset_of(Triple, c));
+    @dbg(checked { ffi_pair_combine(Pair { a: 3, b: 5 }) });
+    @dbg(checked { ffi_triple_tail(Triple { a: 100, b: 200, c: 300 }) });
+    @dbg(checked { ffi_make_pair(10).a });
+    @dbg(checked { ffi_make_pair(10).b });
+    @dbg(checked { ffi_fill_triple(1000).a });
+    @dbg(checked { ffi_fill_triple(1000).c });
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "aarch64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = "4\n16\n3005\n300\n10\n11\n1000\n1002\n"
+exit_code = 0
+
 [[case]]
 name = "extern_unsupported_abi_rejected"
 description = "Only the \"C\" ABI is accepted in v0."
@@ -372,19 +455,33 @@ compile_fail = true
 error_contains = ["aggregate type `Pt`", "must be marked", "@repr(c)"]
 
 [[case]]
-name = "extern_repr_c_aggregate_by_value_is_phase_gated"
-description = "A marker-eligible @repr(c) aggregate is still not passable by value until P2/P3: the phase diagnostic."
+name = "extern_repr_c_aggregate_by_value_accepted"
+description = "A marker-eligible @repr(c) aggregate now crosses by value (P3, RUE-1057): the signature is accepted."
 files = [{ path = "main.rue", source = """
 @repr(c)
 struct Pt { x: i64, y: i64 }
 extern "C" {
     fn f(p: Pt) -> i64;
+    fn g(x: i64) -> Pt;
+}
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+exit_code = 0
+
+[[case]]
+name = "extern_enum_by_value_still_rejected"
+description = "A Rue enum is not FFI-safe: it still takes the phase diagnostic in an extern signature."
+files = [{ path = "main.rue", source = """
+enum Color { Red, Green, Blue }
+extern "C" {
+    fn f(c: Color) -> i64;
 }
 fn main() -> i32 { 0 }
 """ }]
 args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
 compile_fail = true
-error_contains = ["Pt", "not yet supported", "ADR-0064"]
+error_contains = ["Color", "not supported", "ADR-0064"]
 
 [[case]]
 name = "extern_fixed_array_param_decays"

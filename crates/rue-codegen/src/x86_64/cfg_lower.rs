@@ -51,6 +51,11 @@ pub(super) const ARG_REGS: [Reg; 6] = [Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, R
 /// `crate::cfg_lower::type_uses_sret_return`. (RUE-106)
 pub(super) const RET_REGS: [Reg; 6] = [Reg::Rax, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9, Reg::R10];
 
+/// Round `value` up to a multiple of `alignment` (a power of two ≥ 1).
+const fn align_up_u32(value: u32, alignment: u32) -> u32 {
+    value.div_ceil(alignment) * alignment
+}
+
 /// CFG to X86Mir lowering.
 pub struct CfgLower<'a> {
     /// Shared context with type helpers and chain tracing.
@@ -1142,6 +1147,232 @@ impl<'a> CfgLower<'a> {
                 panic!("unexpected target-C scalar extension width {from_bits}")
             }
         }
+    }
+
+    /// Lower an `extern "C"` foreign call that crosses one or more aggregates by
+    /// value under SysV AMD64 (ADR-0064 P3). The classification comes from the
+    /// shared [`ForeignCallInputs`](crate::foreign_call::ForeignCallInputs)
+    /// authority; every aggregate is marshaled through its compact physical image
+    /// (C field order), so the native reversed-slot packing is never used.
+    fn lower_foreign_call(
+        &mut self,
+        inputs: crate::foreign_call::ForeignCallInputs,
+        primary: VReg,
+    ) -> crate::value_plan::MaterializedValue {
+        use crate::foreign_call::{ForeignArg, ForeignReturn};
+        let abi = rue_air::TargetCCallAbi::new(inputs.flavor);
+        let budget = ARG_REGS.len();
+
+        // Reserve sret storage first: a >16-byte aggregate return writes here and
+        // the buffer must survive the call. Its size is 16-aligned, preserving
+        // the call site's 16-byte stack alignment.
+        let mut sret_ptr: Option<VReg> = None;
+        let mut sret_storage: u32 = 0;
+        if let ForeignReturn::AggregateSret { image } = &inputs.ret {
+            sret_storage = image.storage_bytes;
+            self.mir.push(X86Inst::AddRI {
+                dst: Operand::Physical(Reg::Rsp),
+                imm: -(sret_storage as i32),
+            });
+            let p = self.mir.alloc_vreg();
+            self.mir.push(X86Inst::MovRR {
+                dst: Operand::Virtual(p),
+                src: Operand::Physical(Reg::Rsp),
+            });
+            sret_ptr = Some(p);
+        }
+
+        // Physical argument operands: `int_ops` fill ARG_REGS in order, `stack_ops`
+        // are 8-byte outgoing-stack slots (ascending). The SysV sret pointer is the
+        // hidden first integer argument (rdi); AAPCS64's dedicated x8 never reaches
+        // this x86 path.
+        let mut int_ops: Vec<VReg> = Vec::new();
+        let mut stack_ops: Vec<VReg> = Vec::new();
+        if let Some(p) = sret_ptr {
+            debug_assert!(!abi.sret_pointer_in_dedicated_register());
+            int_ops.push(p);
+        }
+
+        for arg in &inputs.args {
+            match arg {
+                ForeignArg::Scalar { value } => {
+                    let v = self.get_vreg(*value);
+                    if int_ops.len() < budget {
+                        int_ops.push(v);
+                    } else {
+                        stack_ops.push(v);
+                    }
+                }
+                ForeignArg::AggregateRegisters { value, image } => {
+                    let ebs = self.image_arg_eightbytes(*value, image);
+                    // All-or-nothing: an aggregate uses registers only if all its
+                    // eightbytes fit in the remaining integer registers (SysV).
+                    if int_ops.len() + ebs.len() <= budget {
+                        int_ops.extend(ebs);
+                    } else {
+                        stack_ops.extend(ebs);
+                    }
+                }
+                ForeignArg::AggregateByvalStack { value, image } => {
+                    // SysV MEMORY class: the whole struct image sits in the
+                    // outgoing stack area (contiguous, ascending), consuming no
+                    // integer registers.
+                    let ebs = self.image_arg_eightbytes(*value, image);
+                    stack_ops.extend(ebs);
+                }
+                ForeignArg::AggregateByRefCopy { .. } => {
+                    panic!(
+                        "SysV AMD64 passes a >16-byte aggregate byval-on-stack, not by reference; \
+                         ByReferenceCopy is an AAPCS64-only class"
+                    )
+                }
+            }
+        }
+
+        // Emit the call frame: stack args first (reverse push so the first stack
+        // arg lands at the lowest address), then the integer args pushed and popped
+        // into ARG_REGS, matching the native `lower_call_plan` idiom.
+        let num_stack = stack_ops.len();
+        let stack_bytes = align_up_u32((num_stack * 8) as u32, 16);
+        let needs_alignment = stack_bytes > (num_stack * 8) as u32;
+        if needs_alignment {
+            self.mir.push(X86Inst::AddRI {
+                dst: Operand::Physical(Reg::Rsp),
+                imm: -8,
+            });
+        }
+        for v in stack_ops.iter().rev() {
+            self.mir.push(X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rax),
+                src: Operand::Virtual(*v),
+            });
+            self.mir.push(X86Inst::Push {
+                src: Operand::Physical(Reg::Rax),
+            });
+        }
+        for v in int_ops.iter().rev() {
+            self.mir.push(X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rax),
+                src: Operand::Virtual(*v),
+            });
+            self.mir.push(X86Inst::Push {
+                src: Operand::Physical(Reg::Rax),
+            });
+        }
+        for index in 0..int_ops.len() {
+            self.mir.push(X86Inst::Pop {
+                dst: Operand::Physical(ARG_REGS[index]),
+            });
+        }
+        let symbol_id = self.intern_symbol(inputs.symbol_ref());
+        self.mir.push(X86Inst::CallRel { symbol_id });
+        if num_stack > 0 || needs_alignment {
+            self.mir.push(X86Inst::AddRI {
+                dst: Operand::Physical(Reg::Rsp),
+                imm: stack_bytes as i32,
+            });
+        }
+
+        // Reconstruct the Rue value from the C result.
+        let slots = match &inputs.ret {
+            ForeignReturn::ZeroSized => {
+                self.mir.push(X86Inst::MovRI32 {
+                    dst: Operand::Virtual(primary),
+                    imm: 0,
+                });
+                Vec::new()
+            }
+            ForeignReturn::Scalar { ext } => {
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(primary),
+                    src: Operand::Physical(Reg::Rax),
+                });
+                self.emit_c_return_extension(primary, *ext);
+                Vec::new()
+            }
+            ForeignReturn::AggregateRegisters { image } => {
+                // rax:rdx hold the return eightbytes (C field order). Store them to
+                // a scratch buffer, then read the native slots back through the
+                // compact image map so downstream sees the ascending decomposition.
+                let eb = image.eightbytes();
+                self.mir.push(X86Inst::AddRI {
+                    dst: Operand::Physical(Reg::Rsp),
+                    imm: -(image.storage_bytes as i32),
+                });
+                let buf = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(buf),
+                    src: Operand::Physical(Reg::Rsp),
+                });
+                let mut eb_vals = Vec::with_capacity(eb as usize);
+                for index in 0..eb as usize {
+                    let v = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(v),
+                        src: Operand::Physical(RET_REGS[index]),
+                    });
+                    eb_vals.push(v);
+                }
+                crate::agg_slots::store_slots_through_ptr(self, &eb_vals, buf, 0);
+                let native = crate::agg_slots::load_enum_slots_through_ptr(self, buf, &image.map);
+                self.mir.push(X86Inst::AddRI {
+                    dst: Operand::Physical(Reg::Rsp),
+                    imm: image.storage_bytes as i32,
+                });
+                native
+            }
+            ForeignReturn::AggregateSret { image } => {
+                let p = sret_ptr.expect("an sret return reserved its storage pointer");
+                let native = crate::agg_slots::load_enum_slots_through_ptr(self, p, &image.map);
+                self.mir.push(X86Inst::AddRI {
+                    dst: Operand::Physical(Reg::Rsp),
+                    imm: sret_storage as i32,
+                });
+                native
+            }
+        };
+        if let Some(&slot) = slots.first() {
+            self.mir.push(X86Inst::MovRR {
+                dst: Operand::Virtual(primary),
+                src: Operand::Virtual(slot),
+            });
+        }
+        crate::value_plan::MaterializedValue { primary, slots }
+    }
+
+    /// Materialize an aggregate argument's eightbytes (ADR-0064 P3): write its
+    /// native slots into a scratch buffer as the compact C image, then load the
+    /// whole eightbytes back so they pack in ascending C field order. The scratch
+    /// buffer is freed immediately — a register/byval aggregate argument's bytes
+    /// live only in the returned eightbyte vregs, so this is rsp-neutral.
+    fn image_arg_eightbytes(
+        &mut self,
+        value: CfgValue,
+        image: &crate::foreign_call::AggregateImage,
+    ) -> Vec<VReg> {
+        self.mir.push(X86Inst::AddRI {
+            dst: Operand::Physical(Reg::Rsp),
+            imm: -(image.storage_bytes as i32),
+        });
+        let buf = self.mir.alloc_vreg();
+        self.mir.push(X86Inst::MovRR {
+            dst: Operand::Virtual(buf),
+            src: Operand::Physical(Reg::Rsp),
+        });
+        let slots = self.require_aggregate_slots(value);
+        crate::agg_slots::store_enum_slots_through_ptr(
+            self,
+            &slots,
+            buf,
+            &image.map,
+            &image.padding,
+        );
+        let ebs = crate::agg_slots::load_slots_through_ptr(self, buf, image.eightbytes());
+        self.mir.push(X86Inst::AddRI {
+            dst: Operand::Physical(Reg::Rsp),
+            imm: image.storage_bytes as i32,
+        });
+        ebs
     }
 
     fn lower_residual_value(
@@ -2781,6 +3012,13 @@ impl crate::value_plan::ValueLowerAdapter for CfgLower<'_> {
     }
     fn emit_call(&mut self, plan: crate::call_plan::CallPlan) -> crate::value_plan::ValueResult {
         crate::value_plan::ValueResult::Materialized(self.lower_call_plan(plan))
+    }
+    fn emit_foreign_call(
+        &mut self,
+        inputs: crate::foreign_call::ForeignCallInputs,
+        result: VReg,
+    ) -> crate::value_plan::ValueResult {
+        crate::value_plan::ValueResult::Materialized(self.lower_foreign_call(inputs, result))
     }
     fn emit_runtime_call(
         &mut self,

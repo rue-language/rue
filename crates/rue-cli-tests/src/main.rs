@@ -118,6 +118,24 @@ use rue_target::{Arch, Target};
 /// - `ffi_bool_norm(int) -> _Bool` — a `_Bool` normalizer returning `x != 0` as a
 ///   1-byte 0/1 value, again with dirty high bits; the `false`/dirty case is the
 ///   load-bearing check that the boundary materializes exactly 0/1.
+///
+/// P3 aggregate members (ADR-0064 P3, RUE-1057) — each hand-assembled from
+/// `llvm-mc` and following the target psABI exactly, so a *wrong* caller packing
+/// produces WRONG OUTPUT rather than an accidental pass:
+/// - `ffi_pair_combine(Pair{i32 a, i32 b}) -> i32` returns `a*1000 + b` — an
+///   order-sensitive combination of a two-field struct passed by value in one
+///   register (a in the low eightbyte half, b in the high half). A caller that
+///   reused the native *reversed*-slot packing would swap a and b and compute a
+///   different number.
+/// - `ffi_triple_tail(Triple{i64 a, b, c}) -> i64` returns the TAIL field `c` of a
+///   24-byte struct passed in memory (SysV byval-on-stack; AAPCS64 by reference to
+///   a caller copy). Reading the tail specifically catches a wrong memory image or
+///   a struct wrongly squeezed into registers.
+/// - `ffi_make_pair(i32 x) -> Pair` returns `{a: x, b: x+1}` in the two result
+///   registers (a low half, b high half) — the two-register aggregate return.
+/// - `ffi_fill_triple(i64 x) -> Triple` returns `{a: x, b: x+1, c: x+2}` via sret:
+///   the callee writes the caller storage (SysV echoes the pointer in rax; AAPCS64
+///   uses the dedicated x8, no echo) — the large indirect aggregate return.
 fn synthesize_answer_archive(target: Target) -> TestResult<Vec<u8>> {
     // A leaf function returning 42 (P1).
     let answer: Vec<u8> = match target.arch() {
@@ -187,6 +205,70 @@ fn synthesize_answer_archive(target: Target) -> TestResult<Vec<u8>> {
             .code(bool_norm)
             .build(),
     ));
+
+    // --- P3 aggregate members (ADR-0064 P3, RUE-1057) ------------------------
+
+    // ffi_pair_combine(Pair{i32 a, i32 b}) -> i32 == a*1000 + b, order-sensitive.
+    let pair_combine: Vec<u8> = match target.arch() {
+        // mov eax,edi ; imul eax,eax,1000 ; mov rcx,rdi ; shr rcx,32 ; add eax,ecx ; ret
+        Arch::X86_64 => vec![
+            0x89, 0xF8, 0x69, 0xC0, 0xE8, 0x03, 0x00, 0x00, 0x48, 0x89, 0xF9, 0x48, 0xC1, 0xE9,
+            0x20, 0x01, 0xC8, 0xC3,
+        ],
+        // mov w1,w0 ; mov w2,#1000 ; mul w1,w1,w2 ; lsr x0,x0,#32 ; add w0,w1,w0 ; ret
+        Arch::Aarch64 => vec![
+            0xE1, 0x03, 0x00, 0x2A, 0x02, 0x7D, 0x80, 0x52, 0x21, 0x7C, 0x02, 0x1B, 0x00, 0xFC,
+            0x60, 0xD3, 0x20, 0x00, 0x00, 0x0B, 0xC0, 0x03, 0x5F, 0xD6,
+        ],
+    };
+    // ffi_triple_tail(Triple{i64 a,b,c}) -> i64 == c (the tail).
+    let triple_tail: Vec<u8> = match target.arch() {
+        // SysV byval-on-stack: c is at [rsp+24] (return addr + a + b). mov rax,[rsp+24] ; ret
+        Arch::X86_64 => vec![0x48, 0x8B, 0x44, 0x24, 0x18, 0xC3],
+        // AAPCS64 by-reference: x0 = &Triple; ldr x0,[x0,#16] ; ret
+        Arch::Aarch64 => vec![0x00, 0x08, 0x40, 0xF9, 0xC0, 0x03, 0x5F, 0xD6],
+    };
+    // ffi_make_pair(i32 x) -> Pair{a: x, b: x+1} in two result registers.
+    let make_pair: Vec<u8> = match target.arch() {
+        // mov eax,edi ; lea rcx,[rdi+1] ; shl rcx,32 ; or rax,rcx ; ret
+        Arch::X86_64 => vec![
+            0x89, 0xF8, 0x48, 0x8D, 0x4F, 0x01, 0x48, 0xC1, 0xE1, 0x20, 0x48, 0x09, 0xC8, 0xC3,
+        ],
+        // mov w1,w0 ; add w2,w0,#1 ; mov w0,w1 ; lsl x2,x2,#32 ; orr x0,x0,x2 ; ret
+        Arch::Aarch64 => vec![
+            0xE1, 0x03, 0x00, 0x2A, 0x02, 0x04, 0x00, 0x11, 0xE0, 0x03, 0x01, 0x2A, 0x42, 0x7C,
+            0x60, 0xD3, 0x00, 0x00, 0x02, 0xAA, 0xC0, 0x03, 0x5F, 0xD6,
+        ],
+    };
+    // ffi_fill_triple(i64 x) -> Triple{a: x, b: x+1, c: x+2} via sret.
+    let fill_triple: Vec<u8> = match target.arch() {
+        // SysV: rdi=sret ptr, rsi=x, echo rax=rdi.
+        // mov rax,rdi ; mov [rdi],rsi ; lea rcx,[rsi+1] ; mov [rdi+8],rcx
+        //             ; lea rcx,[rsi+2] ; mov [rdi+16],rcx ; ret
+        Arch::X86_64 => vec![
+            0x48, 0x89, 0xF8, 0x48, 0x89, 0x37, 0x48, 0x8D, 0x4E, 0x01, 0x48, 0x89, 0x4F, 0x08,
+            0x48, 0x8D, 0x4E, 0x02, 0x48, 0x89, 0x4F, 0x10, 0xC3,
+        ],
+        // AAPCS64: x8=sret ptr (dedicated, no echo), x0=x.
+        // str x0,[x8] ; add x1,x0,#1 ; str x1,[x8,#8] ; add x1,x0,#2 ; str x1,[x8,#16] ; ret
+        Arch::Aarch64 => vec![
+            0x00, 0x01, 0x00, 0xF9, 0x01, 0x04, 0x00, 0x91, 0x01, 0x05, 0x00, 0xF9, 0x01, 0x08,
+            0x00, 0x91, 0x01, 0x09, 0x00, 0xF9, 0xC0, 0x03, 0x5F, 0xD6,
+        ],
+    };
+    for (symbol, code) in [
+        ("ffi_pair_combine", pair_combine),
+        ("ffi_triple_tail", triple_tail),
+        ("ffi_make_pair", make_pair),
+        ("ffi_fill_triple", fill_triple),
+    ] {
+        objects.push((
+            format!("{symbol}.o"),
+            rue_linker::ObjectBuilder::new(target, symbol)
+                .code(code)
+                .build(),
+        ));
+    }
 
     let members: Vec<(&str, &[u8])> = objects
         .iter()

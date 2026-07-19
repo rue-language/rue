@@ -1218,23 +1218,24 @@ impl<'a> Sema<'a> {
     ///
     /// ## Diagnostic layering
     ///
-    /// P2 (RUE-1056) widens the by-value scalar set to every integer width plus
-    /// `bool` and pointers via the `c_passable_by_value` predicate; aggregates
-    /// stay phase-gated until P3. Amendment 1 adds the marker/array rules *on
-    /// top*, so the gate is already in place. The order below picks the most
-    /// specific, forward-looking diagnostic:
+    /// P3 (RUE-1057) widens the by-value type set to **C-classifiable
+    /// aggregates**: a `@repr(c)` struct satisfying `c_passable_by_value` (marker
+    /// eligible: `has_c_layout` ∧ `c_ffi_safe`) now crosses by value, joining the
+    /// full scalar set P2 accepts. Amendment 1's marker/array rules still layer
+    /// on top. The order below picks the most specific, forward-looking
+    /// diagnostic:
     ///
     /// 1. A **fixed array** as a direct parameter/return is the array-decay
     ///    rejection (`ExternArrayByValue`) — C has no by-value array parameter;
     ///    arrays are eligible only as struct fields.
     /// 2. A **struct** without `@repr(c)` names the missing marker
-    ///    (`ExternAggregateNotReprC`). A `@repr(c)` struct is already
-    ///    marker-eligible (checked at declaration), but by-value aggregate
-    ///    passing is not implemented until P2/P3, so it takes the phase
-    ///    diagnostic (`ExternSignatureTypeUnsupported`) — the same "not yet"
-    ///    story as a narrow scalar, now behind a satisfied marker gate.
-    /// 3. Any remaining type that is not register-passable in this phase
-    ///    (narrow integers, `bool`, enums, …) takes the phase diagnostic via the
+    ///    (`ExternAggregateNotReprC`). A marked-and-eligible `@repr(c)` struct is
+    ///    now *accepted* by value (P3); a marked struct that is not marker
+    ///    eligible was already rejected at its declaration, so reaching the phase
+    ///    diagnostic here would be a marker the declaration let through — mapped
+    ///    to `ExternSignatureTypeUnsupported` defensively.
+    /// 3. Any remaining type that is not passable in this phase (enums, and — once
+    ///    RUE-714 adds them — floats) takes the phase diagnostic via the
     ///    `c_passable_by_value` predicate seam.
     fn check_extern_signature_type(&self, ty: Type, span: Span) -> CompileResult<()> {
         match ty.kind() {
@@ -1253,13 +1254,17 @@ impl<'a> Sema<'a> {
                         span,
                     ));
                 }
-                // Marker-eligible, but by-value aggregate passing awaits P2/P3.
-                Err(CompileError::new(
-                    ErrorKind::ExternSignatureTypeUnsupported {
-                        ty: self.format_type_name(ty),
-                    },
-                    span,
-                ))
+                // A marked, eligible `@repr(c)` struct now crosses by value (P3):
+                // the target-C classifier packs it eightbyte-wise. Delegating to
+                // the predicate keeps the accept/reject boundary in one authority.
+                crate::c_passable_by_value(&self.type_pool, ty).map_err(|_| {
+                    CompileError::new(
+                        ErrorKind::ExternSignatureTypeUnsupported {
+                            ty: self.format_type_name(ty),
+                        },
+                        span,
+                    )
+                })
             }
             _ => crate::c_passable_by_value(&self.type_pool, ty).map_err(|_| {
                 CompileError::new(

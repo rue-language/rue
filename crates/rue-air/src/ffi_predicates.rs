@@ -303,19 +303,28 @@ fn check_c_ffi_safe<P: FfiTypePool>(
 /// Predicate 3: can `ty` cross a C boundary *by value* in the current phase?
 ///
 /// This is the classifier seam, kept in lock-step with the
-/// [`TargetCCallAbi`](crate::call_abi::TargetCCallAbi) scalar classifier that
-/// lowers each crossing. P2 (RUE-1056) widens it from the P1 register-only set
-/// (`i64`/`u64`/pointers) to the **full integer scalar set** — every signed and
-/// unsigned integer width (`i8`/`u8`/`i16`/`u16`/`i32`/`u32`/`i64`/`u64`),
-/// `bool` as the 1-byte `_Bool` with the 0/1 contract, and raw pointers. These
-/// are exactly the scalars the target-C classifier assigns to a single integer
-/// register with a defined narrow-integer extension at the boundary
+/// [`TargetCCallAbi`](crate::call_abi::TargetCCallAbi) classifier that lowers
+/// each crossing. P2 (RUE-1056) widened it from the P1 register-only set to the
+/// **full integer scalar set** — every signed and unsigned integer width, `bool`
+/// as the 1-byte `_Bool`, and raw pointers, the scalars the target-C classifier
+/// assigns to a single integer register with a defined narrow-integer extension
 /// ([`ScalarAbiExtension`](crate::call_abi::ScalarAbiExtension)).
 ///
-/// Aggregates (eightbyte classification, register packing, byval stack args)
-/// stay rejected until P3; floating-point scalars are unreachable until RUE-714
-/// adds the type (P5). Neither widening touches the other two predicates.
-pub fn c_passable_by_value<P: FfiTypePool>(_pool: &P, ty: Type) -> Result<(), FfiPredicateFailure> {
+/// P3 (RUE-1057) widens it again to **C-classifiable aggregates**: a struct that
+/// is marked `@repr(c)` and satisfies [`has_c_layout`] and [`c_ffi_safe`] (i.e.
+/// is [`repr_c_marker_eligible`]) is now passable by value. The target-C
+/// classifier assigns it eightbyte-wise — ≤16-byte structs pack into one or two
+/// integer registers in C field order; larger structs go to memory
+/// ([`AggregateArgClass`](crate::call_abi::AggregateArgClass) /
+/// [`AggregateReturnClass`](crate::call_abi::AggregateReturnClass)). In the
+/// integer-only core every eightbyte classifies INTEGER; a field type that would
+/// classify SSE cannot exist until RUE-714 adds floats (P5).
+///
+/// Fixed arrays stay rejected here (`NotRegisterPassable`) — C decays an array
+/// parameter to a pointer, so a by-value array is not a boundary type; it is
+/// eligible only as a *struct field*. As a direct `extern` parameter/return it
+/// is diagnosed earlier as `ExternArrayByValue`. Enums are not FFI-safe in v0.
+pub fn c_passable_by_value<P: FfiTypePool>(pool: &P, ty: Type) -> Result<(), FfiPredicateFailure> {
     match ty.kind() {
         TypeKind::I8
         | TypeKind::U8
@@ -328,6 +337,11 @@ pub fn c_passable_by_value<P: FfiTypePool>(_pool: &P, ty: Type) -> Result<(), Ff
         | TypeKind::Bool
         | TypeKind::PtrConst(_)
         | TypeKind::PtrMut(_) => Ok(()),
+        // A C-classifiable aggregate is passable by value iff it is a marked and
+        // eligible `@repr(c)` struct (P3). `repr_c_marker_eligible` runs the
+        // has_c_layout + c_ffi_safe checks and reports the failing predicate,
+        // field path, and reason for a struct that is marked but not eligible.
+        TypeKind::Struct(_) => repr_c_marker_eligible(pool, ty),
         _ => Err(FfiPredicateFailure::new(
             FfiPredicate::CPassableByValue,
             &[],
@@ -444,7 +458,8 @@ mod tests {
                 "{ty:?} should be passable by value in P2"
             );
         }
-        // Aggregates are still not passable by value (the P3 seam).
+        // P3 (RUE-1057): an eligible `@repr(c)` aggregate is now passable by
+        // value; the classifier assigns it eightbyte-wise.
         let mut agg_pool = MockPool::default();
         let agg = agg_pool.add_struct(
             9,
@@ -454,7 +469,28 @@ mod tests {
                 ..Default::default()
             },
         );
-        let fail = c_passable_by_value(&agg_pool, agg).unwrap_err();
+        assert!(
+            c_passable_by_value(&agg_pool, agg).is_ok(),
+            "an eligible @repr(c) struct is passable by value in P3"
+        );
+        // A non-`@repr(c)` struct is still not passable — it fails the marker
+        // gate (has_c_layout), reported through the eligibility check.
+        let mut bad_pool = MockPool::default();
+        let unmarked = bad_pool.add_struct(
+            9,
+            MockStruct {
+                repr_c: false,
+                fields: vec![field("x", Type::I64)],
+                ..Default::default()
+            },
+        );
+        let fail = c_passable_by_value(&bad_pool, unmarked).unwrap_err();
+        assert_eq!(fail.predicate, FfiPredicate::HasCLayout);
+        assert_eq!(fail.reason, FfiRejectReason::NonReprCAggregate);
+        // A fixed array is never passable directly by value (array decay).
+        let mut arr_pool = MockPool::default();
+        let arr = arr_pool.add_array(0, Type::I64);
+        let fail = c_passable_by_value(&arr_pool, arr).unwrap_err();
         assert_eq!(fail.predicate, FfiPredicate::CPassableByValue);
         assert_eq!(fail.reason, FfiRejectReason::NotRegisterPassable);
     }
