@@ -351,6 +351,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                         .insert(struct_id, captured_values.clone());
                 }
                 self.anon_struct_type_subst.remove(&struct_id);
+                self.remove_callable_methods_for_owner(struct_id);
                 self.anonymous_methods
                     .retain(|(owner, _), _| *owner != struct_id);
                 return (ty, true);

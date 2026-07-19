@@ -538,32 +538,26 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                 StableDefinitionKind::Function,
             );
         }
-        let resolved = self.interner.resolve(&symbol);
-        for (&(struct_id, method_name), info) in
-            self.methods.iter().chain(self.anonymous_methods.iter())
-        {
-            let method = self.interner.resolve(&method_name);
-            if self.method_symbol(struct_id, method, info.has_self) != resolved {
-                continue;
-            }
-            let owner = self.type_pool.struct_def(struct_id);
-            if owner.name.starts_with("__anon_struct_") {
-                return Err(F::AnonymousNominal);
-            }
-            return self.stable_definition_token(
-                info.span.file_id.index(),
-                method,
-                Some(owner.name.as_str()),
-                if method == "__drop" {
-                    StableDefinitionKind::Destructor
-                } else if info.has_self {
-                    StableDefinitionKind::Method
-                } else {
-                    StableDefinitionKind::AssociatedFunction
-                },
-            );
+        let (struct_id, method_name, info) = self
+            .method_by_callable_symbol(symbol)
+            .ok_or(F::UnmappedFunction)?;
+        let method = self.interner.resolve(&method_name);
+        let owner = self.type_pool.struct_def(struct_id);
+        if owner.name.starts_with("__anon_struct_") {
+            return Err(F::AnonymousNominal);
         }
-        Err(F::UnmappedFunction)
+        self.stable_definition_token(
+            info.span.file_id.index(),
+            method,
+            Some(owner.name.as_str()),
+            if method == "__drop" {
+                StableDefinitionKind::Destructor
+            } else if info.has_self {
+                StableDefinitionKind::Method
+            } else {
+                StableDefinitionKind::AssociatedFunction
+            },
+        )
     }
 
     fn body_function_identity(
@@ -575,34 +569,26 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                 self.function_identity(symbol)?,
             ));
         }
-        let resolved = self.interner.resolve(&symbol);
-        for (&(struct_id, method_name), info) in
-            self.methods.iter().chain(self.anonymous_methods.iter())
-        {
-            let method = self.interner.resolve(&method_name);
-            if self.method_symbol(struct_id, method, info.has_self) != resolved {
-                continue;
-            }
-            let owner = Type::new_struct(struct_id);
-            if self.canonical_anonymous_types.contains_key(&owner) {
-                let kind = if method == "__drop" {
-                    crate::AnonymousMemberKind::Destructor
-                } else if info.has_self {
-                    crate::AnonymousMemberKind::Method
-                } else {
-                    crate::AnonymousMemberKind::AssociatedFunction
-                };
-                return Ok(crate::FunctionInstanceKey::AnonymousMember {
-                    owner: Box::new(self.canonical_type_instance(owner)?),
-                    member: crate::AnonymousMemberKey {
-                        kind,
-                        name: Arc::from(method),
-                    },
-                });
-            }
-            return Ok(crate::FunctionInstanceKey::Definition(
-                self.function_identity(symbol)?,
-            ));
+        let (struct_id, method_name, info) = self
+            .method_by_callable_symbol(symbol)
+            .ok_or(F::UnmappedFunction)?;
+        let method = self.interner.resolve(&method_name);
+        let owner = Type::new_struct(struct_id);
+        if self.canonical_anonymous_types.contains_key(&owner) {
+            let kind = if method == "__drop" {
+                crate::AnonymousMemberKind::Destructor
+            } else if info.has_self {
+                crate::AnonymousMemberKind::Method
+            } else {
+                crate::AnonymousMemberKind::AssociatedFunction
+            };
+            return Ok(crate::FunctionInstanceKey::AnonymousMember {
+                owner: Box::new(self.canonical_type_instance(owner)?),
+                member: crate::AnonymousMemberKey {
+                    kind,
+                    name: Arc::from(method),
+                },
+            });
         }
         Ok(crate::FunctionInstanceKey::Definition(
             self.function_identity(symbol)?,

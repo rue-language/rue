@@ -511,12 +511,8 @@ pub(crate) fn imported_body_references(
             functions.insert(name);
             continue;
         }
-        let symbol = sema.interner.resolve(&name);
-        if let Some((key, _)) = sema.methods.iter().find(|entry| {
-            let (&(struct_id, method), info) = *entry;
-            sema.method_symbol(struct_id, sema.interner.resolve(&method), info.has_self) == symbol
-        }) {
-            methods.insert(*key);
+        if let Some((struct_id, method, _)) = sema.named_method_by_callable_symbol(name) {
+            methods.insert((struct_id, method));
         }
     }
     (functions, methods)

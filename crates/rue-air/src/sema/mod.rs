@@ -232,6 +232,13 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     /// keyed by defining file/module. Internal function symbols remain the
     /// stable keys used by AIR and codegen.
     pub(crate) anonymous_methods: HashMap<(StructId, Spur), MethodInfo>,
+    /// Reverse lookups from the AIR/codegen callable symbol to method keys.
+    /// Keeping source and anonymous owners separate makes the language's
+    /// named-first resolution precedence explicit even when their rendered
+    /// symbols collide. Buckets retain collisions so ambiguity fails closed
+    /// instead of depending on hash-map iteration order.
+    pub(crate) named_callable_methods_by_symbol: HashMap<String, Vec<(StructId, Spur)>>,
+    pub(crate) anonymous_callable_methods_by_symbol: HashMap<String, Vec<(StructId, Spur)>>,
     /// Body-created synthetic and anonymous type-name overlays.
     pub(crate) generated_structs: HashMap<Spur, StructId>,
     pub(crate) generated_enums: HashMap<Spur, EnumId>,
@@ -412,6 +419,8 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             interner,
             declaration_index,
             anonymous_methods,
+            named_callable_methods_by_symbol,
+            anonymous_callable_methods_by_symbol,
             generated_structs,
             generated_enums,
             anon_struct_identities,
@@ -477,6 +486,8 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             interner,
             declaration_index,
             anonymous_methods,
+            named_callable_methods_by_symbol,
+            anonymous_callable_methods_by_symbol,
             generated_structs,
             generated_enums,
             anon_struct_identities,
@@ -546,6 +557,119 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         self.anonymous_methods
             .get(&key)
             .or_else(|| self.methods.get(&key))
+    }
+
+    pub(crate) fn method_by_callable_symbol(
+        &self,
+        symbol: Spur,
+    ) -> Option<(StructId, Spur, &MethodInfo)> {
+        let symbol = self.interner.resolve(&symbol);
+        let (anonymous, (struct_id, method_name)) = self.callable_method_key_by_symbol(symbol)?;
+        let info = if anonymous {
+            self.anonymous_methods.get(&(struct_id, method_name))?
+        } else {
+            self.methods.get(&(struct_id, method_name))?
+        };
+        Some((struct_id, method_name, info))
+    }
+
+    fn callable_method_key_by_symbol(&self, symbol: &str) -> Option<(bool, (StructId, Spur))> {
+        if let Some(candidates) = self.named_callable_methods_by_symbol.get(symbol) {
+            let &[key] = candidates.as_slice() else {
+                return None;
+            };
+            return Some((false, key));
+        }
+        let &[key] = self
+            .anonymous_callable_methods_by_symbol
+            .get(symbol)?
+            .as_slice()
+        else {
+            return None;
+        };
+        Some((true, key))
+    }
+
+    pub(crate) fn named_method_by_callable_symbol(
+        &self,
+        symbol: Spur,
+    ) -> Option<(StructId, Spur, &MethodInfo)> {
+        let &[(struct_id, method_name)] = self
+            .named_callable_methods_by_symbol
+            .get(self.interner.resolve(&symbol))?
+            .as_slice()
+        else {
+            return None;
+        };
+        Some((
+            struct_id,
+            method_name,
+            self.methods.get(&(struct_id, method_name))?,
+        ))
+    }
+
+    fn insert_callable_method_candidate(
+        candidates: &mut HashMap<String, Vec<(StructId, Spur)>>,
+        symbol: String,
+        key: (StructId, Spur),
+    ) {
+        let bucket = candidates.entry(symbol).or_default();
+        if !bucket.contains(&key) {
+            bucket.push(key);
+        }
+    }
+
+    pub(crate) fn index_anonymous_callable_method(
+        &mut self,
+        struct_id: StructId,
+        method_name: Spur,
+        has_self: bool,
+    ) {
+        let symbol = self.method_symbol(struct_id, self.interner.resolve(&method_name), has_self);
+        Self::insert_callable_method_candidate(
+            &mut self.anonymous_callable_methods_by_symbol,
+            symbol,
+            (struct_id, method_name),
+        );
+    }
+
+    pub(crate) fn remove_callable_methods_for_owner(&mut self, struct_id: StructId) {
+        for candidates in self.anonymous_callable_methods_by_symbol.values_mut() {
+            candidates.retain(|(owner, _)| *owner != struct_id);
+        }
+        self.anonymous_callable_methods_by_symbol
+            .retain(|_, candidates| !candidates.is_empty());
+    }
+
+    fn rebuild_callable_method_index(&mut self) {
+        let named_methods = self
+            .methods
+            .iter()
+            .map(|(&(struct_id, method_name), info)| (struct_id, method_name, info.has_self))
+            .collect::<Vec<_>>();
+        let anonymous_methods = self
+            .anonymous_methods
+            .iter()
+            .map(|(&(struct_id, method_name), info)| (struct_id, method_name, info.has_self))
+            .collect::<Vec<_>>();
+        self.named_callable_methods_by_symbol.clear();
+        self.named_callable_methods_by_symbol
+            .reserve(named_methods.len());
+        for (struct_id, method_name, has_self) in named_methods {
+            let symbol =
+                self.method_symbol(struct_id, self.interner.resolve(&method_name), has_self);
+            Self::insert_callable_method_candidate(
+                &mut self.named_callable_methods_by_symbol,
+                symbol,
+                (struct_id, method_name),
+            );
+        }
+        self.anonymous_callable_methods_by_symbol.clear();
+        self.anonymous_callable_methods_by_symbol
+            .reserve(anonymous_methods.len());
+        for (struct_id, method_name, has_self) in anonymous_methods {
+            self.index_anonymous_callable_method(struct_id, method_name, has_self);
+        }
     }
 
     pub(crate) fn has_method(&self, key: (StructId, Spur)) -> bool {
@@ -776,7 +900,8 @@ impl<D: DeclarationPhase> Sema<'_, D> {
 }
 
 impl<'a> Sema<'a> {
-    fn freeze_declarations(self) -> BodySema<'a> {
+    fn freeze_declarations(mut self) -> BodySema<'a> {
+        self.rebuild_callable_method_index();
         self.map_declarations(|MutableDeclarations(namespace)| SourceDeclarations(namespace))
     }
 
@@ -822,6 +947,8 @@ impl<'a> Sema<'a> {
             interner,
             declaration_index: declaration_index::RirDeclarationIndex::new(rir),
             anonymous_methods: HashMap::new(),
+            named_callable_methods_by_symbol: HashMap::new(),
+            anonymous_callable_methods_by_symbol: HashMap::new(),
             generated_structs: HashMap::new(),
             generated_enums: HashMap::new(),
             anon_struct_identities: HashMap::new(),

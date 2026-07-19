@@ -89,6 +89,7 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
                         span: method_inst.span,
                     },
                 );
+                self.index_anonymous_callable_method(struct_id, *method_name, *has_self);
             }
         }
         Ok(())
@@ -182,6 +183,7 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
                         span: method_inst.span,
                     },
                 );
+                self.index_anonymous_callable_method(struct_id, *method_name, *has_self);
             }
         }
         Some(())
@@ -350,7 +352,12 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
                 ));
             }
         }
-        self.anonymous_methods.extend(staged);
+        for ((struct_id, method_name), info) in staged {
+            let has_self = info.has_self;
+            self.anonymous_methods
+                .insert((struct_id, method_name), info);
+            self.index_anonymous_callable_method(struct_id, method_name, has_self);
+        }
         Some(())
     }
 

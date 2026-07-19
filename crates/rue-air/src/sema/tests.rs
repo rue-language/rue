@@ -4,7 +4,7 @@ mod tests {
 
     use crate::inst::{AirArgMode, AirInstData, AirRef};
     use crate::sema::{Sema, SemaOutput};
-    use crate::types::Type;
+    use crate::types::{StructId, Type};
     use lasso::ThreadedRodeo;
     use rue_error::{CompileErrors, CompileResult, ErrorKind, MultiErrorResult, PreviewFeatures};
     use rue_lexer::Lexer;
@@ -2744,6 +2744,87 @@ mod tests {
                 .get(&(FileId::new(0), name)),
             Some(&Type::new_struct(source_id))
         );
+    }
+
+    fn callable_collision_index_fixture() -> (Sema<'static>, StructId, lasso::Spur) {
+        let sema = gather_declarations_for_testing(
+            "struct __anon_struct_5 { fn f(borrow self) -> i32 { 10 } }
+             fn main() -> i32 { 0 }",
+        );
+        let owner_name = sema.interner.get("__anon_struct_5").unwrap();
+        let owner = *sema
+            .structs_by_file_name
+            .get(&(FileId::DEFAULT, owner_name))
+            .unwrap();
+        let method = sema.interner.get("f").unwrap();
+        (sema, owner, method)
+    }
+
+    #[test]
+    fn callable_symbol_collision_preserves_named_before_anonymous_precedence() {
+        let (mut sema, named_owner, method) = callable_collision_index_fixture();
+        let named = (named_owner, method);
+        let anonymous = (StructId(u32::MAX - 1), method);
+        let symbol = "__anon_struct_5.f".to_string();
+        Sema::<crate::sema::MutableDeclarations>::insert_callable_method_candidate(
+            &mut sema.named_callable_methods_by_symbol,
+            symbol.clone(),
+            named,
+        );
+        Sema::<crate::sema::MutableDeclarations>::insert_callable_method_candidate(
+            &mut sema.anonymous_callable_methods_by_symbol,
+            symbol.clone(),
+            anonymous,
+        );
+
+        assert_eq!(
+            sema.callable_method_key_by_symbol(&symbol),
+            Some((false, named))
+        );
+    }
+
+    #[test]
+    fn callable_symbol_same_tier_collision_fails_closed() {
+        let (mut sema, _, method) = callable_collision_index_fixture();
+        let symbol = "__anon_struct_5.f".to_string();
+        for owner in [StructId(u32::MAX - 1), StructId(u32::MAX)] {
+            Sema::<crate::sema::MutableDeclarations>::insert_callable_method_candidate(
+                &mut sema.anonymous_callable_methods_by_symbol,
+                symbol.clone(),
+                (owner, method),
+            );
+        }
+
+        assert_eq!(sema.callable_method_key_by_symbol(&symbol), None);
+    }
+
+    #[test]
+    fn anonymous_callable_owner_removal_and_restoration_preserve_candidates() {
+        let (mut sema, _, method) = callable_collision_index_fixture();
+        let symbol = "__anon_struct_5.f".to_string();
+        let first = (StructId(u32::MAX - 1), method);
+        let second = (StructId(u32::MAX), method);
+        for key in [first, second] {
+            Sema::<crate::sema::MutableDeclarations>::insert_callable_method_candidate(
+                &mut sema.anonymous_callable_methods_by_symbol,
+                symbol.clone(),
+                key,
+            );
+        }
+        assert_eq!(sema.callable_method_key_by_symbol(&symbol), None);
+
+        sema.remove_callable_methods_for_owner(first.0);
+        assert_eq!(
+            sema.callable_method_key_by_symbol(&symbol),
+            Some((true, second))
+        );
+
+        Sema::<crate::sema::MutableDeclarations>::insert_callable_method_candidate(
+            &mut sema.anonymous_callable_methods_by_symbol,
+            symbol.clone(),
+            first,
+        );
+        assert_eq!(sema.callable_method_key_by_symbol(&symbol), None);
     }
 
     #[test]
