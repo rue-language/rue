@@ -346,6 +346,14 @@ struct TypeInternPoolInner {
 
     /// Reverse index enforcing one canonical nominal for each language item.
     lang_item_structs: HashMap<LangItem, StructId>,
+
+    /// Structs carrying the `@repr(c)` guarantee marker (ADR-0064 Amendment 1,
+    /// RUE-1063). A side map, like `struct_lang_items`, so the marker travels
+    /// with the type universe (and into the frozen pool the FFI predicates and
+    /// classifier consult) without widening `StructDef` or its durable form. A
+    /// layout no-op today; the guarantee that pins C representation and anchors
+    /// FFI-safety.
+    repr_c_structs: HashSet<StructId>,
 }
 
 fn checked_pool_index(index: usize) -> Option<u32> {
@@ -1437,6 +1445,7 @@ impl TypeInternPool {
                 symbol_paths: HashMap::new(),
                 struct_lang_items: HashMap::new(),
                 lang_item_structs: HashMap::new(),
+                repr_c_structs: HashSet::new(),
             }),
         }
     }
@@ -2196,6 +2205,20 @@ impl TypeInternPool {
         inner.struct_lang_items.get(&struct_id) == Some(&LangItem::StrBuf)
     }
 
+    /// Record that a struct carries the `@repr(c)` guarantee marker (ADR-0064
+    /// Amendment 1). Set during type-name registration; read by the FFI
+    /// predicates and extern-signature enforcement.
+    pub fn set_struct_repr_c(&self, struct_id: StructId) {
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        inner.repr_c_structs.insert(struct_id);
+    }
+
+    /// Whether a struct carries the `@repr(c)` guarantee marker.
+    pub fn is_struct_repr_c(&self, struct_id: StructId) -> bool {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        inner.repr_c_structs.contains(&struct_id)
+    }
+
     /// Get an enum definition by EnumId.
     ///
     /// This method resolves the pool-issued identity and returns a clone of its
@@ -2759,6 +2782,13 @@ impl FrozenTypeInternPool {
         self.struct_lang_item(id) == Some(LangItem::StrBuf)
     }
 
+    /// Whether a struct carries the `@repr(c)` guarantee marker (ADR-0064
+    /// Amendment 1). The marker set during semantic analysis travels into the
+    /// frozen pool for the FFI predicates and the classifier.
+    pub fn is_struct_repr_c(&self, id: StructId) -> bool {
+        self.inner.repr_c_structs.contains(&id)
+    }
+
     pub fn struct_symbol_name(&self, id: StructId) -> String {
         self.inner.struct_symbol_name(id)
     }
@@ -2908,8 +2938,53 @@ impl Clone for TypeInternPool {
                 symbol_paths: inner.symbol_paths.clone(),
                 struct_lang_items: inner.struct_lang_items.clone(),
                 lang_item_structs: inner.lang_item_structs.clone(),
+                repr_c_structs: inner.repr_c_structs.clone(),
             }),
         }
+    }
+}
+
+impl crate::ffi_predicates::FfiTypePool for TypeInternPool {
+    fn ffi_struct_is_repr_c(&self, id: StructId) -> bool {
+        self.is_struct_repr_c(id)
+    }
+    fn ffi_struct_is_linear(&self, id: StructId) -> bool {
+        self.struct_def(id).is_linear
+    }
+    fn ffi_struct_has_destructor(&self, id: StructId) -> bool {
+        self.struct_def(id).destructor.is_some()
+    }
+    fn ffi_struct_fields(&self, id: StructId) -> Vec<(String, Type)> {
+        self.struct_def(id)
+            .fields
+            .iter()
+            .map(|f| (f.name.clone(), f.ty))
+            .collect()
+    }
+    fn ffi_array_element(&self, id: ArrayTypeId) -> Type {
+        self.array_def(id).0
+    }
+}
+
+impl crate::ffi_predicates::FfiTypePool for FrozenTypeInternPool {
+    fn ffi_struct_is_repr_c(&self, id: StructId) -> bool {
+        self.is_struct_repr_c(id)
+    }
+    fn ffi_struct_is_linear(&self, id: StructId) -> bool {
+        self.struct_def(id).is_linear
+    }
+    fn ffi_struct_has_destructor(&self, id: StructId) -> bool {
+        self.struct_def(id).destructor.is_some()
+    }
+    fn ffi_struct_fields(&self, id: StructId) -> Vec<(String, Type)> {
+        self.struct_def(id)
+            .fields
+            .iter()
+            .map(|f| (f.name.clone(), f.ty))
+            .collect()
+    }
+    fn ffi_array_element(&self, id: ArrayTypeId) -> Type {
+        self.array_def(id).0
     }
 }
 

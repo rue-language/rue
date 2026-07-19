@@ -3,7 +3,7 @@
 # Unknown @-directives in item/statement position used to be silently
 # accepted and ignored, so a typo like `@alllow(...)` was a no-op. They are
 # now a compile error naming the directive. The known set lives in
-# rue-parser's `validate::KNOWN_DIRECTIVES` (allow, copy); the cases
+# rue-parser's `validate::KNOWN_DIRECTIVES` (allow, copy, repr); the cases
 # below pin both the rejection and that every known directive still works.
 # (Expression-position intrinsics like @dbg/@intCast and the fused @import
 # token are separate mechanisms and unaffected.)
@@ -23,7 +23,7 @@ source = """
 fn main() -> i32 { 42 }
 """
 compile_fail = true
-error_contains = ["unknown directive '@important'", "@allow and @copy"]
+error_contains = ["unknown directive '@important'", "@allow, @copy, and @repr"]
 
 [[case]]
 name = "unknown_directive_typo_of_allow"
@@ -112,6 +112,57 @@ fn main() -> i32 {
 """
 exit_code = 42
 
+# --- @repr(c) marker grammar (ADR-0064 Amendment 1, RUE-1063) ---------------
+# The `@repr(c)` guarantee marker reuses the parameterized `@name(arg)` directive
+# grammar. Placement (structs only) and argument (`c` in v0) validation happen at
+# parse time, before the `c_ffi` preview gate in sema.
+
+[[case]]
+name = "repr_directive_on_function_rejected"
+description = "@repr is a struct marker; on a function it is a parse error naming the site."
+source = """
+@repr(c)
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["@repr can only be applied to structs"]
+
+[[case]]
+name = "repr_unknown_argument_rejected"
+description = "Only `c` is accepted in v0; @repr(packed) fails loudly naming the accepted set."
+source = """
+@repr(packed)
+struct P { x: i64 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["unknown @repr argument 'packed'", "accepted arguments are c"]
+
+[[case]]
+name = "repr_missing_argument_rejected"
+description = "@repr is parameterized: a bare @repr with no argument is rejected."
+source = """
+@repr
+struct P { x: i64 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["@repr takes exactly one representation argument", "accepted arguments are c"]
+
+[[case]]
+name = "known_directive_repr_c_still_works"
+description = "A well-formed @repr(c) struct compiles under the c_ffi preview (layout no-op)."
+preview = "c_ffi"
+source = """
+@repr(c)
+struct P { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = P { x: 20, y: 22 };
+    p.x + p.y
+}
+"""
+exit_code = 42
+
 [[case]]
 name = "retired_handle_directive_is_unknown"
 description = """
@@ -136,7 +187,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["unknown directive '@handle'", "@allow and @copy"]
+error_contains = ["unknown directive '@handle'", "@allow, @copy, and @repr"]
 
 [[case]]
 name = "ordinary_handle_method_still_works"

@@ -544,7 +544,10 @@ impl Parser {
             }
         }
         self.expect(TokenKind::RParen)?;
-        if name.name == self.syms.allow_directive || name.name == self.syms.copy_directive {
+        if name.name == self.syms.allow_directive
+            || name.name == self.syms.copy_directive
+            || name.name == self.syms.repr_directive
+        {
             self.error_at("directive must precede a statement", self.span_from(start));
             return Err(());
         }

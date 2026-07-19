@@ -39,7 +39,7 @@ There are two kinds of builtins, distinguished by their syntactic position:
 | Kind | Position | Purpose | Examples |
 |------|----------|---------|----------|
 | Intrinsic | Expression | Produces a value | `@dbg`, `@size_of`, `@align_of` |
-| Directive | Before item/statement | Modifies compiler behavior | `@allow`, `@copy` |
+| Directive | Before item/statement | Modifies compiler behavior | `@allow`, `@copy`, `@repr` |
 
 {{ rule(id="2.5:6", cat="normative") }}
 
@@ -226,3 +226,58 @@ fn main() -> i32 {
 {{ rule(id="2.5:31", cat="informative") }}
 
 See [Move Semantics](@/03-types/08-move-semantics.md#the-copy-directive) for the full semantics of `@copy` structs.
+
+## `@repr`
+
+{{ rule(id="2.5:33", cat="normative") }}
+
+The `@repr` directive is a **representation guarantee marker** for a struct
+type. `@repr(c)` guarantees the struct's object representation follows the
+selected compilation target's default C data model (the platform psABI): its
+size, alignment, field order, field offsets, and tail padding equal the
+corresponding C aggregate's.
+
+{{ rule(id="2.5:34", cat="normative") }}
+
+`@repr` **MUST** appear immediately before a struct definition, and is
+parameterized: it takes exactly one representation argument. Only `c` is
+accepted; any other argument is a compile-time error. The parameterized form
+reserves room for future representations without a re-spelling.
+
+{{ rule(id="2.5:35", cat="normative") }}
+
+`@repr(c)` is gated behind the `c_ffi` preview feature (ADR-0064): the marker is
+meaningful only at a C FFI boundary, so it requires `--preview c_ffi`.
+
+{{ rule(id="2.5:36", cat="normative") }}
+
+A `@repr(c)` struct **MUST** be FFI-eligible: it is not empty, and every field
+is a C-compatible scalar, a raw pointer, a fixed array of eligible elements, or a
+nested `@repr(c)` struct. An empty struct, an enum field, an aggregate field that
+is not itself `@repr(c)`, and a linear or destructor-bearing field are each
+rejected — the representation is never guessed. A pointer field crosses without
+the pointee's layout, so a pointer to an opaque or incomplete type is eligible.
+
+{{ rule(id="2.5:37", cat="informative") }}
+
+Because Rue's sole memory representation (compact layout) already matches the C
+aggregate rule for the supported field subset, `@repr(c)` changes no bytes today:
+it is a layout no-op whose value is the forward guarantee against future
+native-layout evolution, and the anchor of the FFI-safety predicates.
+
+{{ rule(id="2.5:38") }}
+
+```rue
+@repr(c)
+struct Point { x: i32, y: i32 }
+
+extern "C" {
+    fn translate(p: ptr const Point, dx: i32) -> i32;
+}
+```
+
+{{ rule(id="2.5:39", cat="informative") }}
+
+See [ADR-0064](https://github.com/rue-language/rue/blob/trunk/docs/designs/0064-c-ffi.md)
+for the full C FFI boundary contract, the three FFI-safety predicates, and the
+staged migration plan.

@@ -250,3 +250,67 @@ fn main() -> i32 {
 }
 """
 exit_code = 10
+
+# =============================================================================
+# @repr(c) Directive (ADR-0064 Amendment 1, RUE-1063)
+# =============================================================================
+
+[[case]]
+name = "repr_c_marker_on_struct"
+spec = ["2.5:33"]
+preview = "c_ffi"
+preview_should_pass = true
+description = "@repr(c) marks a struct with the C representation guarantee; it is a layout no-op"
+source = """
+@repr(c)
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p = Point { x: 4, y: 3 };
+    p.x + p.y
+}
+"""
+exit_code = 7
+
+[[case]]
+name = "repr_only_accepts_c_argument"
+spec = ["2.5:34"]
+description = "@repr is parameterized and only `c` is accepted; @repr(packed) is a compile-time error"
+source = """
+@repr(packed)
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["unknown @repr argument 'packed'", "accepted arguments are c"]
+
+[[case]]
+name = "repr_c_requires_c_ffi_preview"
+spec = ["2.5:35"]
+description = "@repr(c) is gated behind the c_ffi preview feature"
+source = """
+@repr(c)
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["requires preview feature", "c_ffi"]
+
+[[case]]
+name = "repr_c_rejects_ineligible_field"
+spec = ["2.5:36"]
+preview = "c_ffi"
+preview_should_pass = true
+description = "A @repr(c) struct must be FFI-eligible: an enum field is rejected"
+source = """
+enum Color { Red, Green }
+
+@repr(c)
+struct S { tag: Color }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["not FFI-eligible", "enum is not FFI-safe"]

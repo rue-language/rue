@@ -152,3 +152,177 @@ fn main() -> i32 {
 args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
 compile_fail = true
 error_contains = ["undefined symbol", "answer", "searched"]
+
+# --- @repr(c) guarantee marker and FFI predicates (Amendment 1, RUE-1063) ----
+
+# Layout no-op, execution-verified: a `@repr(c)` struct has byte-identical layout
+# to the same struct unmarked (compact IS the C layout for the supported subset),
+# so `@size_of`/`@offset_of` agree. Prints `1` for each equality.
+[[case]]
+name = "x86_64_linux_repr_c_layout_is_a_no_op"
+description = "A @repr(c) struct has the same @size_of/@offset_of as its unmarked twin."
+files = [{ path = "main.rue", source = """
+@repr(c)
+struct Marked { a: i32, b: i64, c: u8 }
+struct Unmarked { a: i32, b: i64, c: u8 }
+
+fn main() -> i32 {
+    @dbg(@size_of(Marked) == @size_of(Unmarked));
+    @dbg(@offset_of(Marked, b) == @offset_of(Unmarked, b));
+    @dbg(@offset_of(Marked, c) == @offset_of(Unmarked, c));
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = "true\ntrue\ntrue\n"
+exit_code = 0
+
+[[case]]
+name = "repr_c_requires_preview"
+description = "The `@repr(c)` marker is inert without `--preview c_ffi` (it is meaningless without FFI)."
+files = [{ path = "main.rue", source = """
+@repr(c)
+struct P { x: i64 }
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["@repr(c)", "c_ffi", "preview"]
+
+# --- reject-don't-guess list, enforced ON THE MARKER -------------------------
+
+[[case]]
+name = "repr_c_empty_struct_rejected"
+description = "An empty / zero-sized @repr(c) struct has no C object representation in v0."
+files = [{ path = "main.rue", source = """
+@repr(c)
+struct Empty {}
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+compile_fail = true
+error_contains = ["@repr(c)", "Empty", "empty"]
+
+[[case]]
+name = "repr_c_enum_field_rejected"
+description = "A Rue enum field is not FFI-safe in v0; the diagnostic names the field path."
+files = [{ path = "main.rue", source = """
+enum Color { Red, Green }
+@repr(c)
+struct S { tag: Color }
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+compile_fail = true
+error_contains = ["@repr(c)", "tag", "enum is not FFI-safe"]
+
+[[case]]
+name = "repr_c_nested_non_repr_c_aggregate_rejected"
+description = "A by-value aggregate field must itself be @repr(c) — no silent C-layout promotion."
+files = [{ path = "main.rue", source = """
+struct Inner { x: i64 }
+@repr(c)
+struct S { inner: Inner }
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+compile_fail = true
+error_contains = ["@repr(c)", "inner", "must itself be marked"]
+
+[[case]]
+name = "repr_c_destructor_rejected"
+description = "A destructor-bearing @repr(c) struct carries an ownership obligation C cannot honor."
+files = [{ path = "main.rue", source = """
+@repr(c)
+struct D { x: i64 }
+drop fn D(self) {}
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+compile_fail = true
+error_contains = ["@repr(c)", "destructor-bearing"]
+
+[[case]]
+name = "repr_c_linear_rejected"
+description = "A linear @repr(c) struct carries a must-consume obligation C cannot honor."
+files = [{ path = "main.rue", source = """
+@repr(c)
+linear struct L { x: i64 }
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+compile_fail = true
+error_contains = ["@repr(c)", "linear type cannot cross"]
+
+[[case]]
+name = "repr_c_nested_repr_c_and_array_fields_accepted"
+description = "Nested @repr(c) structs and fixed arrays of eligible elements are eligible fields."
+files = [{ path = "main.rue", source = """
+@repr(c)
+struct Inner { x: i64 }
+@repr(c)
+struct S { inner: Inner, buf: [u8; 4], p: ptr const u8 }
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+exit_code = 0
+
+# --- extern-signature enforcement (marker/array layering) --------------------
+
+[[case]]
+name = "extern_aggregate_without_marker_names_the_marker"
+description = "A non-@repr(c) aggregate in an extern signature is rejected naming the marker (Amendment 1)."
+files = [{ path = "main.rue", source = """
+struct Pt { x: i64, y: i64 }
+extern "C" {
+    fn f(p: Pt) -> i64;
+}
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+compile_fail = true
+error_contains = ["aggregate type `Pt`", "must be marked", "@repr(c)"]
+
+[[case]]
+name = "extern_repr_c_aggregate_by_value_is_phase_gated"
+description = "A marker-eligible @repr(c) aggregate is still not passable by value until P2/P3: the phase diagnostic."
+files = [{ path = "main.rue", source = """
+@repr(c)
+struct Pt { x: i64, y: i64 }
+extern "C" {
+    fn f(p: Pt) -> i64;
+}
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+compile_fail = true
+error_contains = ["Pt", "not yet supported", "ADR-0064"]
+
+[[case]]
+name = "extern_fixed_array_param_decays"
+description = "A fixed array as a direct extern parameter is rejected: C decays arrays to pointers."
+files = [{ path = "main.rue", source = """
+extern "C" {
+    fn f(a: [i64; 4]) -> i64;
+}
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+compile_fail = true
+error_contains = ["fixed-size array", "decays arrays to pointers"]
+
+[[case]]
+name = "extern_pointer_to_repr_c_struct_accepted"
+description = "A pointer to a @repr(c) struct is an accepted extern signature — pointers cross without the pointee's layout."
+files = [{ path = "main.rue", source = """
+@repr(c)
+struct Pt { x: i64, y: i64 }
+extern "C" {
+    fn f(p: ptr const Pt) -> i64;
+}
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+exit_code = 0

@@ -317,6 +317,26 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         false
     }
 
+    /// Check if a directive list carries the `@repr(c)` guarantee marker
+    /// (ADR-0064 Amendment 1). The parser has already validated that a `@repr`
+    /// directive on a struct carries exactly the argument `c`, so presence of a
+    /// `@repr` directive naming `c` is the marker.
+    pub(crate) fn has_repr_c_directive<'r>(
+        &self,
+        directives: impl Iterator<Item = rue_rir::RirDirectiveView<'r>>,
+    ) -> bool {
+        let repr_sym = self.interner.get("repr");
+        let c_sym = self.interner.get("c");
+        for directive in directives {
+            if Some(directive.name) == repr_sym
+                && directive.args.iter().any(|arg| Some(*arg) == c_sym)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Post-collection check: a value constant's name must not collide with a
     /// function, struct, or enum (spec 10.3:1, 10.5:1, RUE-239).
     ///
@@ -442,6 +462,7 @@ impl<'a> Sema<'a> {
 
                     let directives = self.rir.directives(directives);
                     let is_copy = self.has_copy_directive(directives.iter());
+                    let is_repr_c = self.has_repr_c_directive(directives.iter());
 
                     // Linear types cannot be @copy
                     if *is_linear && is_copy {
@@ -465,6 +486,13 @@ impl<'a> Sema<'a> {
 
                     // Register in type pool and get pool-based StructId
                     let (struct_id, _) = self.type_pool.declare_struct(*name, struct_def);
+                    // Record the `@repr(c)` guarantee marker on the pool as a
+                    // side fact (ADR-0064 Amendment 1). Preview gating and the
+                    // reject-don't-guess eligibility check run in phase 2
+                    // (`validate_repr_c_struct`), once fields are resolved.
+                    if is_repr_c {
+                        self.type_pool.set_struct_repr_c(struct_id);
+                    }
                     if self
                         .trusted_standard_library_files
                         .contains(&inst.span.file_id)
@@ -1117,6 +1145,19 @@ impl<'a> Sema<'a> {
             }
         }
 
+        // Second pass: validate `@repr(c)` structs now that every destructor has
+        // been collected, so the `c_ffi_safe` reject-list sees a
+        // destructor-bearing struct (or field) uniformly regardless of
+        // declaration order.
+        for (_inst_ref, inst) in self.rir.iter() {
+            if let InstData::StructDecl {
+                directives, name, ..
+            } = &inst.data
+            {
+                self.validate_repr_c_struct(directives, *name, inst.span)?;
+            }
+        }
+
         Ok(())
     }
 
@@ -1170,6 +1211,147 @@ impl<'a> Sema<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Enforce one `extern "C"` parameter or return type (ADR-0064 P1 +
+    /// Amendment 1).
+    ///
+    /// ## Diagnostic layering
+    ///
+    /// P1 restricts the by-value type set to `i64`/`u64`/pointers — the types
+    /// whose native and target-C representations coincide in registers — and
+    /// P2/P3 widen it. Amendment 1 adds the marker/array rules *on top*, so the
+    /// gate is already in place when the type set widens. The order below picks
+    /// the most specific, forward-looking diagnostic:
+    ///
+    /// 1. A **fixed array** as a direct parameter/return is the array-decay
+    ///    rejection (`ExternArrayByValue`) — C has no by-value array parameter;
+    ///    arrays are eligible only as struct fields.
+    /// 2. A **struct** without `@repr(c)` names the missing marker
+    ///    (`ExternAggregateNotReprC`). A `@repr(c)` struct is already
+    ///    marker-eligible (checked at declaration), but by-value aggregate
+    ///    passing is not implemented until P2/P3, so it takes the phase
+    ///    diagnostic (`ExternSignatureTypeUnsupported`) — the same "not yet"
+    ///    story as a narrow scalar, now behind a satisfied marker gate.
+    /// 3. Any remaining type that is not register-passable in this phase
+    ///    (narrow integers, `bool`, enums, …) takes the phase diagnostic via the
+    ///    `c_passable_by_value` predicate seam.
+    fn check_extern_signature_type(&self, ty: Type, span: Span) -> CompileResult<()> {
+        match ty.kind() {
+            TypeKind::Array(_) => Err(CompileError::new(
+                ErrorKind::ExternArrayByValue {
+                    ty: self.format_type_name(ty),
+                },
+                span,
+            )),
+            TypeKind::Struct(struct_id) => {
+                if !self.type_pool.is_struct_repr_c(struct_id) {
+                    return Err(CompileError::new(
+                        ErrorKind::ExternAggregateNotReprC {
+                            ty: self.format_type_name(ty),
+                        },
+                        span,
+                    ));
+                }
+                // Marker-eligible, but by-value aggregate passing awaits P2/P3.
+                Err(CompileError::new(
+                    ErrorKind::ExternSignatureTypeUnsupported {
+                        ty: self.format_type_name(ty),
+                    },
+                    span,
+                ))
+            }
+            _ => crate::c_passable_by_value(&self.type_pool, ty).map_err(|_| {
+                CompileError::new(
+                    ErrorKind::ExternSignatureTypeUnsupported {
+                        ty: self.format_type_name(ty),
+                    },
+                    span,
+                )
+            }),
+        }
+    }
+
+    /// Gate and validate a `@repr(c)` struct (ADR-0064 Amendment 1, RUE-1063).
+    ///
+    /// The marker is meaningless without FFI, so it is gated behind the existing
+    /// `c_ffi` preview. When present it must satisfy the reject-don't-guess list
+    /// *on the marker itself*: no empty body, no enum / non-`@repr(c)` aggregate
+    /// / unsupported field, and no linear / destructor-bearing field. Layout is
+    /// otherwise unchanged — compact layout already is the C layout for the
+    /// supported subset, so the marker changes no bytes today; it is a guarantee.
+    fn validate_repr_c_struct(
+        &self,
+        directives: &rue_rir::RirDirectivesRange,
+        name: Spur,
+        span: Span,
+    ) -> CompileResult<()> {
+        let directives = self.rir.directives(directives);
+        if !self.has_repr_c_directive(directives.iter()) {
+            return Ok(());
+        }
+
+        // The marker is inert without the FFI preview: require it explicitly, as
+        // an `extern "C"` declaration does.
+        self.require_preview(
+            rue_error::PreviewFeature::CFfi,
+            "the `@repr(c)` representation marker",
+            span,
+        )?;
+
+        let struct_name = self.interner.resolve(&name).to_string();
+        let struct_id = *self
+            .structs_by_file_name
+            .get(&(span.file_id, name))
+            .ok_or_else(|| {
+                CompileError::new(
+                    ErrorKind::InternalError(
+                        ice!(
+                            "struct not found during @repr(c) validation",
+                            phase: "sema/declarations",
+                            details: { "struct_name" => struct_name.clone() }
+                        )
+                        .to_string(),
+                    ),
+                    span,
+                )
+            })?;
+
+        let struct_ty = Type::new_struct(struct_id);
+        if let Err(failure) = crate::repr_c_marker_eligible(&self.type_pool, struct_ty) {
+            return Err(self.repr_c_ineligible_error(struct_name, &failure, span));
+        }
+        Ok(())
+    }
+
+    /// Render an [`FfiPredicateFailure`](crate::FfiPredicateFailure) from the
+    /// `@repr(c)` eligibility check into a user-facing diagnostic, preserving the
+    /// failing predicate, field path, and reason (the RUE-504 exposure shape).
+    fn repr_c_ineligible_error(
+        &self,
+        struct_name: String,
+        failure: &crate::FfiPredicateFailure,
+        span: Span,
+    ) -> CompileError {
+        let field_path = failure.field_path_display();
+        let failing_type = self.format_type_name(failure.failing_type);
+        let reason = if field_path.is_empty() {
+            failure.reason.describe().to_string()
+        } else {
+            format!(
+                "field `{field_path}` of type `{failing_type}` — {}",
+                failure.reason.describe()
+            )
+        };
+        CompileError::new(
+            ErrorKind::ReprCStructIneligible(Box::new(rue_error::ReprCIneligibleError {
+                struct_name,
+                field_path,
+                failing_type,
+                reason,
+            })),
+            span,
+        )
     }
 
     /// Collect a destructor definition and register it with its struct.
@@ -1424,37 +1606,19 @@ impl<'a> Sema<'a> {
         };
 
         // Foreign `extern "C"` declarations are gated behind the `c_ffi` preview
-        // and restricted to the P1 type set — the types whose native and
-        // target-C representations coincide (ADR-0064 P1): `i64`, `u64`, and
-        // pointers, plus `()` in return position (C `void`). Every other type
-        // (narrow integers, `bool`, aggregates, floats, enums) awaits a later
-        // FFI phase and is rejected here with a clear not-yet diagnostic.
+        // and their signature types enforced (ADR-0064 P1 + Amendment 1). See
+        // `check_extern_signature_type` for the diagnostic layering.
         if is_extern {
             self.require_preview(
                 PreviewFeature::CFfi,
                 "an `extern \"C\"` foreign declaration",
                 span,
             )?;
-            let is_supported_extern_scalar = |ty: Type| {
-                ty == Type::I64 || ty == Type::U64 || ty.is_ptr_const() || ty.is_ptr_mut()
-            };
             for &param_type in &param_types {
-                if !is_supported_extern_scalar(param_type) {
-                    return Err(CompileError::new(
-                        ErrorKind::ExternSignatureTypeUnsupported {
-                            ty: self.format_type_name(param_type),
-                        },
-                        span,
-                    ));
-                }
+                self.check_extern_signature_type(param_type, span)?;
             }
-            if ret_type != Type::UNIT && !is_supported_extern_scalar(ret_type) {
-                return Err(CompileError::new(
-                    ErrorKind::ExternSignatureTypeUnsupported {
-                        ty: self.format_type_name(ret_type),
-                    },
-                    span,
-                ));
+            if ret_type != Type::UNIT {
+                self.check_extern_signature_type(ret_type, span)?;
             }
         }
 

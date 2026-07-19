@@ -15,6 +15,7 @@ mod api_inventory;
 pub mod call_abi;
 mod canonical_imports;
 pub mod drop_glue_names;
+pub mod ffi_predicates;
 mod inference;
 mod inst;
 mod intern_pool;
@@ -38,6 +39,10 @@ pub use call_abi::{
     ArgClass, ArgConvention, CallAbi, NativeCallAbi, ReturnClass, is_slot_identical_layout,
 };
 pub use canonical_imports::CanonicalImportView;
+pub use ffi_predicates::{
+    FfiPredicate, FfiPredicateFailure, FfiRejectReason, FfiTypePool, c_ffi_safe,
+    c_passable_by_value, check_c_layout, has_c_layout, repr_c_marker_eligible,
+};
 pub use inference::{
     Constraint, ConstraintContext, ConstraintGenerator, ExprInfo, FunctionSig, InferType,
     LocalVarInfo, MethodSig, ParamVarInfo, Substitution, TypeVarAllocator, TypeVarId,
