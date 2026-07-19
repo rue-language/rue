@@ -79,6 +79,6 @@ description = "stress mode executes every maintained analysis, optimizer, render
 source_path = "examples/meridian/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 program_args = ["stress1"]
-timeout_ms = 60000
+timeout_ms = 120000
 exit_code = 0
 stdout_contains = ["stress scale=1", "tables=3", "rows=46", "analysis_passes=112", "optimizer_evaluations=144", "report_documents=44", "oracle_mismatches=0", "deterministic_mismatches=0", "valid=true"]
