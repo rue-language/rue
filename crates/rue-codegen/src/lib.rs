@@ -112,6 +112,28 @@ pub struct EmittedRelocation {
     pub addend: i64,
 }
 
+/// Borrowed compiler authority for projecting legacy live callable names to
+/// canonical machine symbols. Runtime helpers never pass through this map.
+#[derive(Clone, Copy, Default)]
+pub struct MachineSymbolResolver<'a> {
+    mappings: Option<&'a std::collections::BTreeMap<String, String>>,
+}
+
+impl<'a> MachineSymbolResolver<'a> {
+    pub fn new(mappings: &'a std::collections::BTreeMap<String, String>) -> Self {
+        Self {
+            mappings: Some(mappings),
+        }
+    }
+
+    pub fn resolve(&self, legacy_or_canonical: &str) -> String {
+        self.mappings
+            .and_then(|mappings| mappings.get(legacy_or_canonical))
+            .cloned()
+            .unwrap_or_else(|| legacy_or_canonical.to_owned())
+    }
+}
+
 impl EmittedRelocation {
     // ========== x86-64 relocation helpers ==========
 
@@ -197,6 +219,18 @@ pub struct MachineCode {
     pub strings: Vec<String>,
 }
 
+/// Stable local-data identity projected onto the current program string table.
+///
+/// Multiple occurrence identities may intentionally share one dense ID when
+/// equal-content literals are coalesced. Codegen validates this projection
+/// before compacting the table for a function-local object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalAtomProjection<'a> {
+    pub stable_id: &'a str,
+    pub dense_id: u32,
+    pub content: &'a str,
+}
+
 /// Build a function-local string table and remap MIR string IDs to it.
 ///
 /// Semantic analysis assigns IDs in the program-wide string table. Object files
@@ -205,22 +239,54 @@ pub struct MachineCode {
 /// local strings by their global ID keeps the object bytes deterministic.
 fn compact_string_table(
     strings: &[String],
+    atoms: &[LocalAtomProjection<'_>],
     referenced_ids: impl IntoIterator<Item = u32>,
-) -> (Vec<String>, std::collections::BTreeMap<u32, u32>) {
+    require_complete_atoms: bool,
+) -> rue_error::CompileResult<(Vec<String>, std::collections::BTreeMap<u32, u32>)> {
+    let mut stable_ids = std::collections::BTreeSet::new();
+    let mut projected_dense_ids = std::collections::BTreeSet::new();
+    for atom in atoms {
+        if atom.stable_id.is_empty()
+            || !stable_ids.insert(atom.stable_id)
+            || strings.get(atom.dense_id as usize).map(String::as_str) != Some(atom.content)
+        {
+            return Err(rue_error::CompileError::without_span(
+                rue_error::ErrorKind::InternalCodegenError(
+                    "invalid stable local-atom string projection".to_owned(),
+                ),
+            ));
+        }
+        projected_dense_ids.insert(atom.dense_id);
+    }
     let referenced_ids: std::collections::BTreeSet<_> = referenced_ids.into_iter().collect();
+    if require_complete_atoms
+        && referenced_ids
+            .iter()
+            .any(|dense_id| !projected_dense_ids.contains(dense_id))
+    {
+        return Err(rue_error::CompileError::without_span(
+            rue_error::ErrorKind::InternalCodegenError(
+                "referenced local string has no stable local-atom projection".to_owned(),
+            ),
+        ));
+    }
     let mut remap = std::collections::BTreeMap::new();
     let mut local_strings = Vec::with_capacity(referenced_ids.len());
 
     for global_id in referenced_ids {
         let local_id = local_strings.len() as u32;
-        let string = strings
-            .get(global_id as usize)
-            .unwrap_or_else(|| panic!("string ID {global_id} is absent from the global table"));
+        let Some(string) = strings.get(global_id as usize) else {
+            return Err(rue_error::CompileError::without_span(
+                rue_error::ErrorKind::InternalCodegenError(format!(
+                    "string ID {global_id} is absent from the global table"
+                )),
+            ));
+        };
         local_strings.push(string.clone());
         remap.insert(global_id, local_id);
     }
 
-    (local_strings, remap)
+    Ok((local_strings, remap))
 }
 
 /// A single emitted machine instruction.
@@ -409,6 +475,83 @@ mod tests {
     use rue_cfg::{CfgBuilder, ValidatedCfg};
     use rue_span::Span;
 
+    #[test]
+    fn stable_atom_aliases_compact_to_one_dense_string_deterministically() {
+        let strings = vec!["other".to_owned(), "same".to_owned()];
+        let atoms = [
+            LocalAtomProjection {
+                stable_id: "atom-b",
+                dense_id: 1,
+                content: "same",
+            },
+            LocalAtomProjection {
+                stable_id: "atom-a",
+                dense_id: 1,
+                content: "same",
+            },
+        ];
+        let (compacted, remap) = compact_string_table(&strings, &atoms, [1, 1], true).unwrap();
+        assert_eq!(compacted, ["same"]);
+        assert_eq!(remap.into_iter().collect::<Vec<_>>(), [(1, 0)]);
+
+        let mut shuffled = atoms;
+        shuffled.reverse();
+        assert_eq!(
+            compact_string_table(&strings, &shuffled, [1], true)
+                .unwrap()
+                .0,
+            compacted
+        );
+    }
+
+    #[test]
+    fn stable_atom_projection_rejects_duplicate_identity_and_content_mismatch() {
+        let strings = vec!["actual".to_owned()];
+        let duplicate = [
+            LocalAtomProjection {
+                stable_id: "same-id",
+                dense_id: 0,
+                content: "actual",
+            },
+            LocalAtomProjection {
+                stable_id: "same-id",
+                dense_id: 0,
+                content: "actual",
+            },
+        ];
+        assert!(compact_string_table(&strings, &duplicate, [0], true).is_err());
+        assert!(
+            compact_string_table(
+                &strings,
+                &[LocalAtomProjection {
+                    stable_id: "atom",
+                    dense_id: 0,
+                    content: "wrong",
+                }],
+                [0],
+                true,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn strict_atom_projection_rejects_unidentified_referenced_strings() {
+        let strings = vec!["identified".to_owned(), "unidentified".to_owned()];
+        let atoms = [LocalAtomProjection {
+            stable_id: "stable-identified",
+            dense_id: 0,
+            content: "identified",
+        }];
+        assert!(compact_string_table(&strings, &atoms, [1], true).is_err());
+        assert_eq!(
+            compact_string_table(&strings, &atoms, [1], false)
+                .unwrap()
+                .0,
+            ["unidentified"]
+        );
+    }
+
     fn test_cfg() -> (ValidatedCfg, FrozenTypeInternPool, ThreadedRodeo) {
         let mut air = AirEditor::new(Type::I32);
 
@@ -420,8 +563,17 @@ mod tests {
         let air = air
             .finish(AirValidationContext::Canonical(&type_pool))
             .expect("test AIR must validate");
-        let cfg_output =
-            CfgBuilder::build(&air, 0, 0, "main", &type_pool, vec![], &interner, false);
+        let cfg_output = CfgBuilder::build(
+            &air,
+            0,
+            0,
+            "main",
+            &type_pool,
+            vec![],
+            &interner,
+            false,
+            rue_air::AnalyzedCallableKind::Ordinary,
+        );
         (cfg_output.cfg.unwrap(), type_pool, interner)
     }
 
@@ -455,6 +607,7 @@ mod tests {
             vec![false, false],
             &interner,
             false,
+            rue_air::AnalyzedCallableKind::Ordinary,
         );
         (cfg_output.cfg.unwrap(), type_pool, interner)
     }
@@ -489,6 +642,7 @@ mod tests {
             vec![],
             &interner,
             false,
+            rue_air::AnalyzedCallableKind::Ordinary,
         );
         (cfg_output.cfg.unwrap(), type_pool, interner)
     }

@@ -64,9 +64,9 @@ pub use runtime_call::{
     RuntimeOperandOrigin,
 };
 pub use sema::{
-    AnalyzedBodyOwnerEvent, AnalyzedFunction, BodyAnalysisFailure, BodyAnalysisWork,
-    BodyNamedDependencyEvent, BodyOwnerEndpoint, BodyOwnerKind, BodyOwnerToken, BoundSema,
-    BuiltinTypeCallHead, ConstValue, DeclarationBindingWork,
+    AnalyzedBodyOwnerEvent, AnalyzedCallableKind, AnalyzedFunction, BodyAnalysisFailure,
+    BodyAnalysisWork, BodyNamedDependencyEvent, BodyOwnerEndpoint, BodyOwnerKind, BodyOwnerToken,
+    BoundSema, BuiltinTypeCallHead, ConstValue, DeclarationBindingWork,
     DeclarationBuiltinTypeCallHeadDependencyEvent, DeclarationInstallFailure,
     DeclarationResolutionFailure, DeclarationShells, DeclarationTypeCallHeadDependencyEvent,
     DeclarationTypeDependencyEvent, DeclarationTypeDependencyKind,
@@ -96,8 +96,12 @@ pub use semantic_body::{
     SemanticStableResolutionFailure,
 };
 pub use semantic_identity::{
-    STABLE_DEFINITION_KINDS, STABLE_DEFINITION_NAMESPACES, StableDefinitionKind,
-    StableDefinitionNamespace,
+    AnonymousMemberKey, AnonymousMemberKind, AnonymousNominalIdentitySet, AnonymousNominalKey,
+    AnonymousNominalKind, CanonicalArgumentValue, CanonicalArguments, CompilerCallableId,
+    FunctionInstanceKey, LocalAtomId, LocalAtomKind, LocalAtomRecord, NominalInstanceKey,
+    STABLE_DEFINITION_KINDS, STABLE_DEFINITION_NAMESPACES, SemanticBodyLocalAtom, StableCallableId,
+    StableDefinitionKind, StableDefinitionNamespace, StableProducerId, StableSymbolId,
+    TypeInstanceKey,
 };
 pub use semantic_import::{
     SEMANTIC_IMPORT_CONST_KINDS, SEMANTIC_IMPORT_TYPE_KINDS, SemanticImportConstKind,

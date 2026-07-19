@@ -246,7 +246,15 @@ impl<'a> BodySema<'a> {
         string_literal_types.sort_unstable_by_key(Type::as_u32);
         string_literal_types.dedup();
         unifier.mark_string_literal_vars(&string_literal_vars, &string_literal_types);
-        let errors = unifier.solve_constraints(&constraints);
+        let equivalence_queries = std::cell::Cell::new(0usize);
+        let errors = unifier.solve_constraints_with(&constraints, &|left, right| {
+            if left == right {
+                return true;
+            }
+            equivalence_queries.set(equivalence_queries.get() + 1);
+            self.types_equivalent(left, right)
+        });
+        self.body_analysis_work.semantic_type_equivalence_queries += equivalence_queries.get();
 
         // Convert unification errors to compile errors
         // For now, we collect the first error. In the future, we could
@@ -343,7 +351,7 @@ impl<'a> BodySema<'a> {
         let inst = self.rir.get(inst_ref);
 
         // For VarRef, we handle it specially: check for full moves but don't mark as moved
-        if let InstData::VarRef { name } = &inst.data {
+        if let InstData::VarRef { name, anchor } = &inst.data {
             // Check if it's a parameter — unless a `let` shadowed it with a
             // same-named local, which then wins for all later references
             // (spec 5.1:10, RUE-278); the local is resolved just below.
@@ -388,7 +396,14 @@ impl<'a> BodySema<'a> {
                 // value, so there is no move state to preserve, and unknown
                 // names still get E0201 from the fallback.
                 let resolved_ty = ctx.resolved_types.get(&inst_ref).copied();
-                return self.analyze_var_ref(air, *name, inst.span, resolved_ty, ctx);
+                return self.analyze_var_ref(
+                    air,
+                    *name,
+                    anchor.clone(),
+                    inst.span,
+                    resolved_ty,
+                    ctx,
+                );
             };
 
             let ty = local.ty;
@@ -430,7 +445,7 @@ impl<'a> BodySema<'a> {
             // as a comparison operand (`Color.Red == Color.Red`). Mirror the
             // reroute in `analyze_field_get`, including the module-qualified
             // form `module.Enum.Variant`.
-            if let InstData::VarRef { name } = self.rir.get(base).data
+            if let InstData::VarRef { name, .. } = self.rir.get(base).data
                 && !self.is_runtime_value_binding(name, ctx)
                 && let Some(result) =
                     self.try_analyze_dotted_enum_variant(air, name, field, field_span, ctx)?
@@ -466,8 +481,14 @@ impl<'a> BodySema<'a> {
             // rejecting it as field access on a non-struct (RUE-632). A
             // constant inlines a fresh value, so no move state applies.
             if let Some(module_id) = base_type.as_module() {
-                return self
-                    .analyze_module_type_member_access(air, module_id, field, field_span, ctx);
+                return self.analyze_module_type_member_access(
+                    air,
+                    module_id,
+                    field,
+                    super::const_use_anchor_of(self.rir, base),
+                    field_span,
+                    ctx,
+                );
             }
 
             let struct_id = match base_type.kind() {

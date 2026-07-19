@@ -49,6 +49,10 @@ pub struct AstGen<'a> {
     /// temporaries of a `for`-loop desugaring (RUE-220), so nested for-loops
     /// don't shadow one another's position/length/collection bindings.
     for_counter: u32,
+    /// Typed structural route to the AST node currently being lowered. The
+    /// route is relative to its producing definition and contains no spans or
+    /// global instruction ordinals.
+    structural_path: Vec<crate::RirStructuralPathSegment>,
     normalize_symbol: Box<dyn Fn(Spur) -> Spur + 'a>,
 }
 
@@ -64,6 +68,7 @@ impl<'a> AstGen<'a> {
             rir: RirEditor::new(),
             payload_error: None,
             for_counter: 0,
+            structural_path: Vec::new(),
             normalize_symbol: Box::new(normalize_symbol),
         }
     }
@@ -122,6 +127,56 @@ impl<'a> AstGen<'a> {
 
     fn symbol(&self, symbol: Spur) -> Spur {
         (self.normalize_symbol)(symbol)
+    }
+
+    fn with_structural_segment<T>(
+        &mut self,
+        segment: crate::RirStructuralPathSegment,
+        action: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        self.structural_path.push(segment);
+        let result = action(self);
+        self.structural_path.pop();
+        result
+    }
+
+    /// Run one semantic producer with a producer-relative structural path.
+    ///
+    /// A method may be discovered while traversing a containing struct, for
+    /// example, but its body is an independent semantic producer. Anchors in
+    /// that body must therefore be unaffected by sibling member insertion or
+    /// reordering in the owner.
+    fn with_producer_root<T>(&mut self, action: impl FnOnce(&mut Self) -> T) -> T {
+        let outer_path = std::mem::take(&mut self.structural_path);
+        let result = action(self);
+        self.structural_path = outer_path;
+        result
+    }
+
+    fn gen_expr_at(&mut self, segment: crate::RirStructuralPathSegment, expr: &Expr) -> InstRef {
+        self.with_structural_segment(segment, |this| this.gen_expr(expr))
+    }
+
+    fn intern_type_at(&mut self, segment: crate::RirStructuralPathSegment, ty: &TypeExpr) -> Spur {
+        self.with_structural_segment(segment, |this| this.intern_type(ty))
+    }
+
+    fn anonymous_type_anchor(&self, occurrence: u32) -> crate::RirStructuralAnchor {
+        let mut segments = self.structural_path.clone();
+        segments.push(crate::RirStructuralPathSegment::AnonymousType(occurrence));
+        crate::RirStructuralAnchor::new(segments)
+    }
+
+    fn string_literal_anchor(&self, occurrence: u32) -> crate::RirStructuralAnchor {
+        let mut segments = self.structural_path.clone();
+        segments.push(crate::RirStructuralPathSegment::StringLiteral(occurrence));
+        crate::RirStructuralAnchor::new(segments)
+    }
+
+    fn read_only_data_anchor(&self, occurrence: u32) -> crate::RirStructuralAnchor {
+        let mut segments = self.structural_path.clone();
+        segments.push(crate::RirStructuralPathSegment::ReadOnlyData(occurrence));
+        crate::RirStructuralAnchor::new(segments)
     }
 
     fn gen_item(&mut self, item: &Item) {
@@ -336,9 +391,13 @@ impl<'a> AstGen<'a> {
         let fields: Vec<_> = struct_decl
             .fields
             .iter()
-            .map(|f| {
+            .enumerate()
+            .map(|(index, f)| {
                 let field_name = self.symbol(f.name.name);
-                let field_type = self.intern_type(&f.ty);
+                let field_type = self.intern_type_at(
+                    crate::RirStructuralPathSegment::FieldType(index as u32),
+                    &f.ty,
+                );
                 (field_name, field_type)
             })
             .collect();
@@ -346,7 +405,13 @@ impl<'a> AstGen<'a> {
         let methods: Vec<_> = struct_decl
             .methods
             .iter()
-            .map(|m| self.gen_method(m))
+            .enumerate()
+            .map(|(index, m)| {
+                self.with_structural_segment(
+                    crate::RirStructuralPathSegment::Method(index as u32),
+                    |this| this.gen_method(m),
+                )
+            })
             .collect();
         self.rir
             .add_struct_decl(
@@ -375,11 +440,21 @@ impl<'a> AstGen<'a> {
         let payload_types: Vec<Vec<Spur>> = enum_decl
             .variants
             .iter()
-            .map(|variant| {
+            .enumerate()
+            .map(|(variant_index, variant)| {
                 variant
                     .payload
                     .iter()
-                    .map(|ty| self.intern_type(ty))
+                    .enumerate()
+                    .map(|(payload_index, ty)| {
+                        self.intern_type_at(
+                            crate::RirStructuralPathSegment::VariantPayload {
+                                variant: variant_index as u32,
+                                payload: payload_index as u32,
+                            },
+                            ty,
+                        )
+                    })
                     .collect()
             })
             .collect();
@@ -395,10 +470,17 @@ impl<'a> AstGen<'a> {
     }
 
     fn gen_const(&mut self, const_decl: &ConstDecl) -> InstRef {
+        self.with_producer_root(|this| this.gen_const_body(const_decl))
+    }
+
+    fn gen_const_body(&mut self, const_decl: &ConstDecl) -> InstRef {
         let directives = self.convert_directives(&const_decl.directives);
         let name = self.symbol(const_decl.name.name);
-        let ty = const_decl.ty.as_ref().map(|t| self.intern_type(t));
-        let init = self.gen_expr(&const_decl.init);
+        let ty = const_decl
+            .ty
+            .as_ref()
+            .map(|t| self.intern_type_at(crate::RirStructuralPathSegment::ReturnType, t));
+        let init = self.gen_expr_at(crate::RirStructuralPathSegment::Body, &const_decl.init);
 
         self.rir
             .add_const_decl(
@@ -413,10 +495,14 @@ impl<'a> AstGen<'a> {
     }
 
     fn gen_drop_fn(&mut self, drop_fn: &DropFn) -> InstRef {
+        self.with_producer_root(|this| this.gen_drop_fn_body(drop_fn))
+    }
+
+    fn gen_drop_fn_body(&mut self, drop_fn: &DropFn) -> InstRef {
         let type_name = self.symbol(drop_fn.type_name.name);
 
         // Generate the body expression
-        let body = self.gen_expr(&drop_fn.body);
+        let body = self.gen_expr_at(crate::RirStructuralPathSegment::Body, &drop_fn.body);
 
         self.rir.add_inst(Inst {
             data: InstData::DropFnDecl { type_name, body },
@@ -425,13 +511,17 @@ impl<'a> AstGen<'a> {
     }
 
     fn gen_method(&mut self, method: &Method) -> InstRef {
+        self.with_producer_root(|this| this.gen_method_body(method))
+    }
+
+    fn gen_method_body(&mut self, method: &Method) -> InstRef {
         // Convert directives
         let directives = self.convert_directives(&method.directives);
 
         // Get the method name (already a Symbol) and return type
         let name = self.symbol(method.name.name);
         let return_type = match &method.return_type {
-            Some(ty) => self.intern_type(ty),
+            Some(ty) => self.intern_type_at(crate::RirStructuralPathSegment::ReturnType, ty),
             None => self.interner.get_or_intern("()"), // Default to unit type
         };
 
@@ -439,16 +529,20 @@ impl<'a> AstGen<'a> {
         let params: Vec<_> = method
             .params
             .iter()
-            .map(|p| RirParam {
+            .enumerate()
+            .map(|(index, p)| RirParam {
                 name: self.symbol(p.name.name),
-                ty: self.intern_type(&p.ty),
+                ty: self.intern_type_at(
+                    crate::RirStructuralPathSegment::ParameterType(index as u32),
+                    &p.ty,
+                ),
                 mode: self.convert_param_mode(p.mode),
                 is_comptime: p.mode == ParamMode::Comptime,
                 span: p.name.span,
             })
             .collect();
         // Generate body expression
-        let body = self.gen_expr(&method.body);
+        let body = self.gen_expr_at(crate::RirStructuralPathSegment::Body, &method.body);
 
         // Track whether this method has a self receiver (method vs associated
         // function) and, if so, the receiver's passing mode (`borrow self` /
@@ -540,13 +634,17 @@ impl<'a> AstGen<'a> {
     }
 
     fn gen_function(&mut self, func: &Function) -> InstRef {
+        self.with_producer_root(|this| this.gen_function_body(func))
+    }
+
+    fn gen_function_body(&mut self, func: &Function) -> InstRef {
         // Convert directives
         let directives = self.convert_directives(&func.directives);
 
         // Get the function name (already a Symbol) and return type
         let name = self.symbol(func.name.name);
         let return_type = match &func.return_type {
-            Some(ty) => self.intern_type(ty),
+            Some(ty) => self.intern_type_at(crate::RirStructuralPathSegment::ReturnType, ty),
             None => self.interner.get_or_intern("()"), // Default to unit type
         };
 
@@ -554,16 +652,20 @@ impl<'a> AstGen<'a> {
         let params: Vec<_> = func
             .params
             .iter()
-            .map(|p| RirParam {
+            .enumerate()
+            .map(|(index, p)| RirParam {
                 name: self.symbol(p.name.name),
-                ty: self.intern_type(&p.ty),
+                ty: self.intern_type_at(
+                    crate::RirStructuralPathSegment::ParameterType(index as u32),
+                    &p.ty,
+                ),
                 mode: self.convert_param_mode(p.mode),
                 is_comptime: p.mode == ParamMode::Comptime,
                 span: p.name.span,
             })
             .collect();
         // Generate body expression
-        let body = self.gen_expr(&func.body);
+        let body = self.gen_expr_at(crate::RirStructuralPathSegment::Body, &func.body);
 
         // Create function declaration instruction
         // Regular functions don't have a self receiver
@@ -598,7 +700,10 @@ impl<'a> AstGen<'a> {
                 span: lit.span,
             }),
             Expr::String(lit) => self.rir.add_inst(Inst {
-                data: InstData::StringConst(self.symbol(lit.value)),
+                data: InstData::StringConst {
+                    content: self.symbol(lit.value),
+                    anchor: self.string_literal_anchor(0),
+                },
                 span: lit.span,
             }),
             Expr::Unit(lit) => self.rir.add_inst(Inst {
@@ -608,12 +713,13 @@ impl<'a> AstGen<'a> {
             Expr::Ident(ident) => self.rir.add_inst(Inst {
                 data: InstData::VarRef {
                     name: self.symbol(ident.name),
+                    anchor: Some(self.read_only_data_anchor(0)),
                 },
                 span: ident.span,
             }),
             Expr::Binary(bin) => {
-                let lhs = self.gen_expr(&bin.left);
-                let rhs = self.gen_expr(&bin.right);
+                let lhs = self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), &bin.left);
+                let rhs = self.gen_expr_at(crate::RirStructuralPathSegment::Operand(1), &bin.right);
                 let data = match bin.op {
                     BinaryOp::Add => InstData::Add { lhs, rhs },
                     BinaryOp::Sub => InstData::Sub { lhs, rhs },
@@ -640,7 +746,8 @@ impl<'a> AstGen<'a> {
                 })
             }
             Expr::Unary(un) => {
-                let operand = self.gen_expr(&un.operand);
+                let operand =
+                    self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), &un.operand);
                 let data = match un.op {
                     UnaryOp::Neg => InstData::Neg { operand },
                     UnaryOp::Not => InstData::Not { operand },
@@ -652,7 +759,10 @@ impl<'a> AstGen<'a> {
                 })
             }
             Expr::Try(try_expr) => {
-                let operand = self.gen_expr(&try_expr.operand);
+                let operand = self.gen_expr_at(
+                    crate::RirStructuralPathSegment::Operand(0),
+                    &try_expr.operand,
+                );
                 self.rir.add_inst(Inst {
                     data: InstData::Try { operand },
                     span: try_expr.span,
@@ -664,9 +774,18 @@ impl<'a> AstGen<'a> {
             }
             Expr::Block(block) => self.gen_block(block),
             Expr::If(if_expr) => {
-                let cond = self.gen_expr(&if_expr.cond);
-                let then_block = self.gen_block(&if_expr.then_block);
-                let else_block = if_expr.else_block.as_ref().map(|b| self.gen_block(b));
+                let cond =
+                    self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), &if_expr.cond);
+                let then_block = self
+                    .with_structural_segment(crate::RirStructuralPathSegment::Branch(0), |this| {
+                        this.gen_block(&if_expr.then_block)
+                    });
+                let else_block = if_expr.else_block.as_ref().map(|block| {
+                    self.with_structural_segment(
+                        crate::RirStructuralPathSegment::Branch(1),
+                        |this| this.gen_block(block),
+                    )
+                });
 
                 self.rir.add_inst(Inst {
                     data: InstData::Branch {
@@ -678,8 +797,14 @@ impl<'a> AstGen<'a> {
                 })
             }
             Expr::While(while_expr) => {
-                let cond = self.gen_expr(&while_expr.cond);
-                let body = self.gen_block(&while_expr.body);
+                let cond = self.gen_expr_at(
+                    crate::RirStructuralPathSegment::Operand(0),
+                    &while_expr.cond,
+                );
+                let body = self
+                    .with_structural_segment(crate::RirStructuralPathSegment::Branch(0), |this| {
+                        this.gen_block(&while_expr.body)
+                    });
                 self.rir.add_inst(Inst {
                     data: InstData::Loop { cond, body },
                     span: while_expr.span,
@@ -687,7 +812,10 @@ impl<'a> AstGen<'a> {
             }
             Expr::For(for_expr) => self.gen_for(for_expr),
             Expr::Loop(loop_expr) => {
-                let body = self.gen_block(&loop_expr.body);
+                let body = self
+                    .with_structural_segment(crate::RirStructuralPathSegment::Branch(0), |this| {
+                        this.gen_block(&loop_expr.body)
+                    });
                 self.rir.add_inst(Inst {
                     data: InstData::InfiniteLoop {
                         body,
@@ -697,14 +825,29 @@ impl<'a> AstGen<'a> {
                 })
             }
             Expr::Match(match_expr) => {
-                let scrutinee = self.gen_expr(&match_expr.scrutinee);
+                let scrutinee = self.gen_expr_at(
+                    crate::RirStructuralPathSegment::Operand(0),
+                    &match_expr.scrutinee,
+                );
                 let arms: Vec<_> = match_expr
                     .arms
                     .iter()
-                    .map(|arm| {
-                        let pattern = self.gen_pattern(&arm.pattern);
-                        let body = self.gen_expr(&arm.body);
-                        (pattern, body)
+                    .enumerate()
+                    .map(|(index, arm)| {
+                        self.with_structural_segment(
+                            crate::RirStructuralPathSegment::MatchArm(index as u32),
+                            |this| {
+                                let pattern = this.with_structural_segment(
+                                    crate::RirStructuralPathSegment::Operand(0),
+                                    |this| this.gen_pattern(&arm.pattern),
+                                );
+                                let body = this.gen_expr_at(
+                                    crate::RirStructuralPathSegment::Operand(1),
+                                    &arm.body,
+                                );
+                                (pattern, body)
+                            },
+                        )
                     })
                     .collect();
                 self.rir
@@ -712,14 +855,26 @@ impl<'a> AstGen<'a> {
                     .record_failure(&mut self.payload_error)
             }
             Expr::Call(call) => {
-                let args: Vec<_> = call.args.iter().map(|a| self.convert_call_arg(a)).collect();
+                let args: Vec<_> = call
+                    .args
+                    .iter()
+                    .enumerate()
+                    .map(|(index, arg)| {
+                        self.with_structural_segment(
+                            crate::RirStructuralPathSegment::Operand(index as u32),
+                            |this| this.convert_call_arg(arg),
+                        )
+                    })
+                    .collect();
                 let name = self.symbol(call.name.name);
                 self.rir
                     .add_call(name, &args, call.span)
                     .record_failure(&mut self.payload_error)
             }
             Expr::Break(break_expr) => {
-                let value = break_expr.value.as_ref().map(|v| self.gen_expr(v));
+                let value = break_expr.value.as_ref().map(|value| {
+                    self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), value)
+                });
                 self.rir.add_inst(Inst {
                     data: InstData::Break { value },
                     span: break_expr.span,
@@ -730,7 +885,9 @@ impl<'a> AstGen<'a> {
                 span: continue_expr.span,
             }),
             Expr::Return(return_expr) => {
-                let value = return_expr.value.as_ref().map(|v| self.gen_expr(v));
+                let value = return_expr.value.as_ref().map(|value| {
+                    self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), value)
+                });
                 self.rir.add_inst(Inst {
                     data: InstData::Ret(value),
                     span: return_expr.span,
@@ -738,10 +895,9 @@ impl<'a> AstGen<'a> {
             }
             Expr::StructLit(struct_lit) => {
                 // Generate module reference if this is a qualified struct literal
-                let module = struct_lit
-                    .base
-                    .as_ref()
-                    .map(|base_expr| self.gen_expr(base_expr));
+                let module = struct_lit.base.as_ref().map(|base_expr| {
+                    self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), base_expr)
+                });
 
                 // Inline type-constructor struct-literal head `F(args) { ... }`
                 // (RUE-596): generate the constructor call `F(args)` as its own
@@ -751,7 +907,16 @@ impl<'a> AstGen<'a> {
                 // emit a method call on it exactly as the pattern ctor head does
                 // (RUE-947); a bare call would fail to resolve `Pair` locally.
                 let ctor_head = struct_lit.ctor_args.as_ref().map(|args| {
-                    let arg_refs: Vec<_> = args.iter().map(|a| self.convert_call_arg(a)).collect();
+                    let arg_refs: Vec<_> = args
+                        .iter()
+                        .enumerate()
+                        .map(|(index, arg)| {
+                            self.with_structural_segment(
+                                crate::RirStructuralPathSegment::Operand(index as u32 + 1),
+                                |this| this.convert_call_arg(arg),
+                            )
+                        })
+                        .collect();
                     let name = self.symbol(struct_lit.name.name);
                     match module {
                         Some(base) => {
@@ -766,8 +931,12 @@ impl<'a> AstGen<'a> {
                 let fields: Vec<_> = struct_lit
                     .fields
                     .iter()
-                    .map(|f| {
-                        let field_value = self.gen_expr(&f.value);
+                    .enumerate()
+                    .map(|(index, f)| {
+                        let field_value = self.gen_expr_at(
+                            crate::RirStructuralPathSegment::FieldType(index as u32),
+                            &f.value,
+                        );
                         (self.symbol(f.name.name), field_value)
                     })
                     .collect();
@@ -793,7 +962,10 @@ impl<'a> AstGen<'a> {
                     .record_failure(&mut self.payload_error)
             }
             Expr::Field(field_expr) => {
-                let base = self.gen_expr(&field_expr.base);
+                let base = self.gen_expr_at(
+                    crate::RirStructuralPathSegment::Operand(0),
+                    &field_expr.base,
+                );
 
                 self.rir.add_inst(Inst {
                     data: InstData::FieldGet {
@@ -852,8 +1024,12 @@ impl<'a> AstGen<'a> {
                 let args: Vec<_> = intrinsic
                     .args
                     .iter()
-                    .map(|a| match a {
-                        IntrinsicArg::Expr(expr) => self.gen_expr(expr),
+                    .enumerate()
+                    .map(|(index, a)| match a {
+                        IntrinsicArg::Expr(expr) => self.gen_expr_at(
+                            crate::RirStructuralPathSegment::Operand(index as u32),
+                            expr,
+                        ),
                         // A type argument to an expression intrinsic (e.g. the
                         // `()` in `@syscall(a, (), b)`) is invalid, but it must
                         // NOT be dropped: that would shift the later arguments
@@ -878,7 +1054,10 @@ impl<'a> AstGen<'a> {
                     // Repeat form `[value; count]` (RUE-235): the single value
                     // is evaluated once; the count is carried symbolically and
                     // resolved during sema via the array-length const-eval path.
-                    let value = self.gen_expr(&array_lit.elements[0]);
+                    let value = self.gen_expr_at(
+                        crate::RirStructuralPathSegment::Operand(0),
+                        &array_lit.elements[0],
+                    );
                     let count = match count {
                         ArrayLength::Literal(n) => RepeatCount::Literal(*n),
                         ArrayLength::Named(ident) => RepeatCount::Named(self.symbol(ident.name)),
@@ -898,7 +1077,13 @@ impl<'a> AstGen<'a> {
                     let elements: Vec<_> = array_lit
                         .elements
                         .iter()
-                        .map(|e| self.gen_expr(e))
+                        .enumerate()
+                        .map(|(index, element)| {
+                            self.gen_expr_at(
+                                crate::RirStructuralPathSegment::Operand(index as u32),
+                                element,
+                            )
+                        })
                         .collect();
                     self.rir
                         .add_array_init(&elements, array_lit.span)
@@ -906,8 +1091,14 @@ impl<'a> AstGen<'a> {
                 }
             }
             Expr::Index(index_expr) => {
-                let base = self.gen_expr(&index_expr.base);
-                let index = self.gen_expr(&index_expr.index);
+                let base = self.gen_expr_at(
+                    crate::RirStructuralPathSegment::Operand(0),
+                    &index_expr.base,
+                );
+                let index = self.gen_expr_at(
+                    crate::RirStructuralPathSegment::Operand(1),
+                    &index_expr.index,
+                );
 
                 self.rir.add_inst(Inst {
                     data: InstData::IndexGet { base, index },
@@ -916,10 +1107,9 @@ impl<'a> AstGen<'a> {
             }
             Expr::Path(path_expr) => {
                 // Generate module reference if this is a qualified path
-                let module = path_expr
-                    .base
-                    .as_ref()
-                    .map(|base_expr| self.gen_expr(base_expr));
+                let module = path_expr.base.as_ref().map(|base_expr| {
+                    self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), base_expr)
+                });
 
                 self.rir.add_inst(Inst {
                     data: InstData::EnumVariant {
@@ -931,11 +1121,20 @@ impl<'a> AstGen<'a> {
                 })
             }
             Expr::MethodCall(method_call) => {
-                let receiver = self.gen_expr(&method_call.receiver);
+                let receiver = self.gen_expr_at(
+                    crate::RirStructuralPathSegment::Operand(0),
+                    &method_call.receiver,
+                );
                 let args: Vec<_> = method_call
                     .args
                     .iter()
-                    .map(|a| self.convert_call_arg(a))
+                    .enumerate()
+                    .map(|(index, arg)| {
+                        self.with_structural_segment(
+                            crate::RirStructuralPathSegment::Operand(index as u32 + 1),
+                            |this| this.convert_call_arg(arg),
+                        )
+                    })
                     .collect();
                 let method = self.symbol(method_call.method.name);
                 self.rir
@@ -946,14 +1145,17 @@ impl<'a> AstGen<'a> {
                 // `self` in method bodies is just a variable reference to the implicit self parameter
                 let name = self.interner.get_or_intern("self");
                 self.rir.add_inst(Inst {
-                    data: InstData::VarRef { name },
+                    data: InstData::VarRef { name, anchor: None },
                     span: self_expr.span,
                 })
             }
             Expr::Comptime(comptime_block) => {
                 // Generate the inner expression, wrapped in a Comptime instruction
                 // The semantic analyzer will evaluate this at compile time
-                let inner_expr = self.gen_expr(&comptime_block.expr);
+                let inner_expr = self.gen_expr_at(
+                    crate::RirStructuralPathSegment::Operand(0),
+                    &comptime_block.expr,
+                );
                 self.rir.add_inst(Inst {
                     data: InstData::Comptime { expr: inner_expr },
                     span: comptime_block.span,
@@ -962,7 +1164,10 @@ impl<'a> AstGen<'a> {
             Expr::Checked(checked_block) => {
                 // Generate the inner expression, wrapped in a Checked instruction
                 // Unchecked operations are only allowed inside checked blocks
-                let inner_expr = self.gen_expr(&checked_block.expr);
+                let inner_expr = self.gen_expr_at(
+                    crate::RirStructuralPathSegment::Operand(0),
+                    &checked_block.expr,
+                );
                 self.rir.add_inst(Inst {
                     data: InstData::Checked { expr: inner_expr },
                     span: checked_block.span,
@@ -974,21 +1179,34 @@ impl<'a> AstGen<'a> {
                     TypeExpr::AnonymousStruct {
                         fields, methods, ..
                     } => {
+                        let anchor = self.anonymous_type_anchor(0);
                         // Generate an anonymous struct type instruction with methods
                         let field_decls: Vec<(Spur, Spur)> = fields
                             .iter()
-                            .map(|f| {
+                            .enumerate()
+                            .map(|(index, f)| {
                                 let name = self.symbol(f.name.name);
-                                let ty = self.intern_type(&f.ty);
+                                let ty = self.intern_type_at(
+                                    crate::RirStructuralPathSegment::FieldType(index as u32),
+                                    &f.ty,
+                                );
                                 (name, ty)
                             })
                             .collect();
                         // Generate each method inside the anonymous struct
                         // (reusing gen_method, which generates FnDecl instructions)
-                        let method_refs: Vec<InstRef> =
-                            methods.iter().map(|m| self.gen_method(m)).collect();
+                        let method_refs: Vec<InstRef> = methods
+                            .iter()
+                            .enumerate()
+                            .map(|(index, method)| {
+                                self.with_structural_segment(
+                                    crate::RirStructuralPathSegment::Method(index as u32),
+                                    |this| this.gen_method(method),
+                                )
+                            })
+                            .collect();
                         self.rir
-                            .add_anon_struct_type(&field_decls, &method_refs, type_lit.span)
+                            .add_anon_struct_type(&field_decls, &method_refs, anchor, type_lit.span)
                             .record_failure(&mut self.payload_error)
                     }
                     TypeExpr::AnonymousEnum { variants, .. } => {
@@ -1000,16 +1218,32 @@ impl<'a> AstGen<'a> {
                             variants.iter().map(|v| self.symbol(v.name.name)).collect();
                         let payload_types: Vec<Vec<Spur>> = variants
                             .iter()
-                            .map(|variant| {
+                            .enumerate()
+                            .map(|(variant_index, variant)| {
                                 variant
                                     .payload
                                     .iter()
-                                    .map(|ty| self.intern_type(ty))
+                                    .enumerate()
+                                    .map(|(payload_index, ty)| {
+                                        self.intern_type_at(
+                                            crate::RirStructuralPathSegment::VariantPayload {
+                                                variant: variant_index as u32,
+                                                payload: payload_index as u32,
+                                            },
+                                            ty,
+                                        )
+                                    })
                                     .collect()
                             })
                             .collect();
+                        let anchor = self.anonymous_type_anchor(0);
                         self.rir
-                            .add_anon_enum_type(&variant_syms, &payload_types, type_lit.span)
+                            .add_anon_enum_type(
+                                &variant_syms,
+                                &payload_types,
+                                anchor,
+                                type_lit.span,
+                            )
                             .record_failure(&mut self.payload_error)
                     }
                     _ => {
@@ -1094,7 +1328,9 @@ impl<'a> AstGen<'a> {
             Pattern::Bool(lit) => RirPattern::Bool(lit.value, lit.span),
             Pattern::Path(path) => {
                 // If there's a base expression (module reference), generate it first
-                let module = path.base.as_ref().map(|base| self.gen_expr(base));
+                let module = path.base.as_ref().map(|base| {
+                    self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), base)
+                });
                 // Inline type-constructor pattern head `F(args).Variant(..)`
                 // (RUE-596): generate the constructor call `F(args)` as its own
                 // instruction; sema reduces it to the enum type at comptime. When
@@ -1103,7 +1339,16 @@ impl<'a> AstGen<'a> {
                 // emit a method call on it exactly as the construction head does;
                 // a bare call would fail to resolve `Result` in local scope.
                 let ctor_head = path.ctor_args.as_ref().map(|args| {
-                    let arg_refs: Vec<_> = args.iter().map(|a| self.convert_call_arg(a)).collect();
+                    let arg_refs: Vec<_> = args
+                        .iter()
+                        .enumerate()
+                        .map(|(index, arg)| {
+                            self.with_structural_segment(
+                                crate::RirStructuralPathSegment::Operand(index as u32 + 1),
+                                |this| this.convert_call_arg(arg),
+                            )
+                        })
+                        .collect();
                     let name = self.symbol(path.type_name.name);
                     match module {
                         Some(base) => self.rir.add_method_call(base, name, &arg_refs, path.span),
@@ -1127,22 +1372,32 @@ impl<'a> AstGen<'a> {
     }
 
     fn gen_block(&mut self, block: &rue_parser::BlockExpr) -> InstRef {
+        self.with_structural_segment(crate::RirStructuralPathSegment::Body, |this| {
+            this.gen_block_contents(block)
+        })
+    }
+
+    fn gen_block_contents(&mut self, block: &rue_parser::BlockExpr) -> InstRef {
         if block.statements.is_empty() {
             // No statements, just the final expression
-            self.gen_expr(&block.expr)
+            self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), &block.expr)
         } else {
             // Collect all instruction refs for the block
             // statements + 1 for the final expression
             let mut inst_refs = Vec::with_capacity(block.statements.len() + 1);
 
             // Generate all statements first
-            for stmt in &block.statements {
-                let inst_ref = self.gen_statement(stmt);
+            for (index, stmt) in block.statements.iter().enumerate() {
+                let inst_ref = self.with_structural_segment(
+                    crate::RirStructuralPathSegment::Statement(index as u32),
+                    |this| this.gen_statement(stmt),
+                );
                 inst_refs.push(inst_ref.as_u32());
             }
 
             // Generate the final expression
-            let final_expr = self.gen_expr(&block.expr);
+            let final_expr =
+                self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), &block.expr);
             inst_refs.push(final_expr.as_u32());
 
             // Store the refs in extra data
@@ -1213,7 +1468,7 @@ impl<'a> AstGen<'a> {
         let coll_name: Spur = if let Expr::Ident(id) = coll_expr {
             self.symbol(id.name)
         } else {
-            let init = self.gen_expr(coll_expr);
+            let init = self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), coll_expr);
             let name = self.interner.get_or_intern(format!("__rue_for_coll_{n}"));
             let alloc = self
                 .rir
@@ -1243,7 +1498,10 @@ impl<'a> AstGen<'a> {
         let iter_span = coll_expr.span();
         let len_name = self.interner.get_or_intern(format!("__rue_for_len_{n}"));
         let coll_for_len = self.rir.add_inst(Inst {
-            data: InstData::VarRef { name: coll_name },
+            data: InstData::VarRef {
+                name: coll_name,
+                anchor: None,
+            },
             span: iter_span,
         });
         let len_call = self
@@ -1269,11 +1527,17 @@ impl<'a> AstGen<'a> {
 
         // if __p >= __len { break }
         let p_ref1 = self.rir.add_inst(Inst {
-            data: InstData::VarRef { name: p_name },
+            data: InstData::VarRef {
+                name: p_name,
+                anchor: None,
+            },
             span,
         });
         let len_ref = self.rir.add_inst(Inst {
-            data: InstData::VarRef { name: len_name },
+            data: InstData::VarRef {
+                name: len_name,
+                anchor: None,
+            },
             span,
         });
         let cond = self.rir.add_inst(Inst {
@@ -1311,11 +1575,17 @@ impl<'a> AstGen<'a> {
             }
         };
         let p_for_get = self.rir.add_inst(Inst {
-            data: InstData::VarRef { name: p_name },
+            data: InstData::VarRef {
+                name: p_name,
+                anchor: None,
+            },
             span,
         });
         let coll_for_get = self.rir.add_inst(Inst {
-            data: InstData::VarRef { name: coll_name },
+            data: InstData::VarRef {
+                name: coll_name,
+                anchor: None,
+            },
             span,
         });
         let get_inst = if is_chars {
@@ -1346,12 +1616,18 @@ impl<'a> AstGen<'a> {
 
         // __p = <advance>;   (advanced before the body so `continue` steps)
         let p_for_adv = self.rir.add_inst(Inst {
-            data: InstData::VarRef { name: p_name },
+            data: InstData::VarRef {
+                name: p_name,
+                anchor: None,
+            },
             span,
         });
         let advance = if is_chars {
             let coll_for_adv = self.rir.add_inst(Inst {
-                data: InstData::VarRef { name: coll_name },
+                data: InstData::VarRef {
+                    name: coll_name,
+                    anchor: None,
+                },
                 span,
             });
             let intrinsic = if is_lossy {
@@ -1385,7 +1661,10 @@ impl<'a> AstGen<'a> {
         body_stmts.push(assign.as_u32());
 
         // user body (value discarded)
-        let user_body = self.gen_block(&for_expr.body);
+        let user_body = self
+            .with_structural_segment(crate::RirStructuralPathSegment::Branch(0), |this| {
+                this.gen_block(&for_expr.body)
+            });
         body_stmts.push(user_body.as_u32());
 
         // block value = ()
@@ -1436,8 +1715,12 @@ impl<'a> AstGen<'a> {
                     LetPattern::Ident(ident) => Some(self.symbol(ident.name)),
                     LetPattern::Wildcard(_) => None,
                 };
-                let ty = let_stmt.ty.as_ref().map(|t| self.intern_type(t));
-                let init = self.gen_expr(&let_stmt.init);
+                let ty = let_stmt
+                    .ty
+                    .as_ref()
+                    .map(|ty| self.intern_type_at(crate::RirStructuralPathSegment::ReturnType, ty));
+                let init =
+                    self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), &let_stmt.init);
                 self.rir
                     .add_alloc(
                         &directives,
@@ -1451,7 +1734,8 @@ impl<'a> AstGen<'a> {
                     .record_failure(&mut self.payload_error)
             }
             Statement::Assign(assign) => {
-                let value = self.gen_expr(&assign.value);
+                let value =
+                    self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), &assign.value);
                 match &assign.target {
                     AssignTarget::Var(ident) => self.rir.add_inst(Inst {
                         data: InstData::Assign {
@@ -1461,7 +1745,10 @@ impl<'a> AstGen<'a> {
                         span: assign.span,
                     }),
                     AssignTarget::Field(field_expr) => {
-                        let base = self.gen_expr(&field_expr.base);
+                        let base = self.gen_expr_at(
+                            crate::RirStructuralPathSegment::Operand(1),
+                            &field_expr.base,
+                        );
                         self.rir.add_inst(Inst {
                             data: InstData::FieldSet {
                                 base,
@@ -1472,8 +1759,14 @@ impl<'a> AstGen<'a> {
                         })
                     }
                     AssignTarget::Index(index_expr) => {
-                        let base = self.gen_expr(&index_expr.base);
-                        let index = self.gen_expr(&index_expr.index);
+                        let base = self.gen_expr_at(
+                            crate::RirStructuralPathSegment::Operand(1),
+                            &index_expr.base,
+                        );
+                        let index = self.gen_expr_at(
+                            crate::RirStructuralPathSegment::Operand(2),
+                            &index_expr.index,
+                        );
                         self.rir.add_inst(Inst {
                             data: InstData::IndexSet { base, index, value },
                             span: assign.span,
@@ -1507,6 +1800,193 @@ mod tests {
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
         (rir, interner)
+    }
+
+    fn anonymous_anchors(source: &str) -> Vec<crate::RirStructuralAnchor> {
+        let (rir, _) = gen_rir(source);
+        rir.iter()
+            .filter_map(|(_, instruction)| match &instruction.data {
+                InstData::AnonStructType { anchor, .. } | InstData::AnonEnumType { anchor, .. } => {
+                    Some(anchor.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn string_anchors(source: &str) -> Vec<(String, crate::RirStructuralAnchor)> {
+        let (rir, interner) = gen_rir(source);
+        rir.iter()
+            .filter_map(|(_, instruction)| match &instruction.data {
+                InstData::StringConst { content, anchor } => {
+                    Some((interner.resolve(content).to_owned(), anchor.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn string_anchors_are_occurrence_preserving_and_trivia_insensitive() {
+        let baseline =
+            string_anchors(r#"fn f(comptime b: bool) -> str { if b { "same" } else { "same" } }"#);
+        let shifted = string_anchors(
+            r#"// unrelated file trivia
+               fn unrelated() -> i32 { 0 }
+               fn f(comptime b: bool) -> str {
+                   if b {
+                       // local trivia
+                       "same"
+                   } else { "same" }
+               }"#,
+        );
+        assert_eq!(baseline, shifted);
+        assert_eq!(baseline.len(), 2);
+        assert_eq!(baseline[0].0, baseline[1].0);
+        assert_ne!(baseline[0].1, baseline[1].1);
+        assert!(
+            baseline[0]
+                .1
+                .segments()
+                .contains(&crate::RirStructuralPathSegment::Branch(0))
+        );
+        assert!(
+            baseline[1]
+                .1
+                .segments()
+                .contains(&crate::RirStructuralPathSegment::Branch(1))
+        );
+    }
+
+    #[test]
+    fn string_anchor_is_stable_when_an_unrelated_later_statement_is_inserted() {
+        let baseline = string_anchors(r#"fn f() -> str { let kept = "kept"; kept }"#);
+        let inserted =
+            string_anchors(r#"fn f() -> str { let kept = "kept"; let later = "later"; kept }"#);
+        assert_eq!(baseline[0], inserted[0]);
+        assert_ne!(inserted[0].1, inserted[1].1);
+    }
+
+    #[test]
+    fn method_string_anchors_reset_at_each_callable_producer() {
+        let baseline = string_anchors(r#"struct S { fn keep() -> str { "kept" } }"#);
+        let sibling_inserted = string_anchors(
+            r#"struct S { fn added() -> str { "added" } fn keep() -> str { "kept" } }"#,
+        );
+        assert_eq!(baseline[0], sibling_inserted[1]);
+        assert_eq!(baseline[0].1, sibling_inserted[0].1);
+        assert!(
+            baseline[0]
+                .1
+                .segments()
+                .iter()
+                .all(|segment| !matches!(segment, crate::RirStructuralPathSegment::Method(_)))
+        );
+    }
+
+    #[test]
+    fn anonymous_anchors_are_trivia_insensitive_and_definition_relative() {
+        let baseline = anonymous_anchors("fn make() -> type { struct { x: i32 } }");
+        let shifted = anonymous_anchors(
+            "// unrelated declaration above the producer\nfn unrelated() -> i32 { 1 }\n\nfn make() -> type {\n    // trivia\n    struct { x: i32 }\n}",
+        );
+        assert_eq!(baseline, shifted);
+        assert_eq!(baseline.len(), 1);
+        assert!(
+            baseline[0]
+                .segments()
+                .contains(&crate::RirStructuralPathSegment::Body)
+        );
+        assert_eq!(
+            baseline[0].segments().last(),
+            Some(&crate::RirStructuralPathSegment::AnonymousType(0))
+        );
+    }
+
+    #[test]
+    fn anonymous_anchors_distinguish_branches_statements_and_fields() {
+        let branches = anonymous_anchors(
+            "fn make(comptime b: bool) -> type { if b { struct { x: i32 } } else { struct { x: i32 } } }",
+        );
+        assert_ne!(branches[0], branches[1]);
+        assert!(
+            branches[0]
+                .segments()
+                .contains(&crate::RirStructuralPathSegment::Branch(0))
+        );
+        assert!(
+            branches[1]
+                .segments()
+                .contains(&crate::RirStructuralPathSegment::Branch(1))
+        );
+
+        let statements = anonymous_anchors(
+            "fn make() -> type { let A = struct { x: i32 }; let B = struct { x: i32 }; A }",
+        );
+        assert_ne!(statements[0], statements[1]);
+        assert!(
+            statements[0]
+                .segments()
+                .contains(&crate::RirStructuralPathSegment::Statement(0))
+        );
+        assert!(
+            statements[1]
+                .segments()
+                .contains(&crate::RirStructuralPathSegment::Statement(1))
+        );
+
+        let fields = anonymous_anchors(
+            "fn make() -> type { Pair { left: struct { x: i32 }, right: struct { x: i32 } } }",
+        );
+        assert_ne!(fields[0], fields[1]);
+        assert!(
+            fields[0]
+                .segments()
+                .contains(&crate::RirStructuralPathSegment::FieldType(0))
+        );
+        assert!(
+            fields[1]
+                .segments()
+                .contains(&crate::RirStructuralPathSegment::FieldType(1))
+        );
+    }
+
+    #[test]
+    fn method_anchors_are_relative_to_the_method_producer() {
+        let baseline =
+            anonymous_anchors("struct S { x: i32, fn keep() -> type { struct { x: i32 } } }");
+        let sibling_inserted = anonymous_anchors(
+            "struct S { x: i32, fn added() -> type { struct { x: i32 } } fn keep() -> type { struct { x: i32 } } }",
+        );
+        let sibling_reordered = anonymous_anchors(
+            "struct S { x: i32, fn keep() -> type { struct { x: i32 } } fn added() -> type { struct { x: i32 } } }",
+        );
+
+        assert_eq!(baseline[0], sibling_inserted[1]);
+        assert_eq!(baseline[0], sibling_reordered[0]);
+        assert_eq!(sibling_inserted[0], sibling_inserted[1]);
+        assert!(
+            baseline[0]
+                .segments()
+                .iter()
+                .all(|segment| !matches!(segment, crate::RirStructuralPathSegment::Method(_)))
+        );
+    }
+
+    #[test]
+    fn structural_anchor_equality_is_exact_and_segment_framed() {
+        use crate::RirStructuralPathSegment as S;
+        let path =
+            crate::RirStructuralAnchor::new(vec![S::Body, S::Operand(1), S::AnonymousType(0)]);
+        assert_eq!(path, path.clone());
+        assert_ne!(
+            path,
+            crate::RirStructuralAnchor::new(vec![S::Body, S::Operand(10), S::AnonymousType(0)])
+        );
+        assert_ne!(
+            crate::RirStructuralAnchor::new(vec![S::Statement(1), S::Operand(2)]),
+            crate::RirStructuralAnchor::new(vec![S::Statement(12), S::Operand(0)])
+        );
     }
 
     #[test]
@@ -1806,7 +2286,7 @@ mod tests {
                         // Last instruction in block is the VarRef
                         let var_ref_inst = rir.get(inst_refs.get(1).unwrap());
                         match &var_ref_inst.data {
-                            InstData::VarRef { name } => {
+                            InstData::VarRef { name, .. } => {
                                 assert_eq!(interner.resolve(&*name), "x");
                             }
                             _ => panic!("expected VarRef"),
@@ -2025,7 +2505,7 @@ mod tests {
                 args,
             } => {
                 match &rir.get(*receiver).data {
-                    InstData::VarRef { name } => assert_eq!(interner.resolve(name), "Point"),
+                    InstData::VarRef { name, .. } => assert_eq!(interner.resolve(name), "Point"),
                     other => panic!("expected VarRef receiver, got {other:?}"),
                 }
                 assert_eq!(interner.resolve(&*method), "origin");
@@ -2284,7 +2764,7 @@ mod tests {
 
         // Find the VarRef instruction for "self"
         let self_ref = rir.iter().find(|(_, inst)| match &inst.data {
-            InstData::VarRef { name } => interner.resolve(&*name) == "self",
+            InstData::VarRef { name, .. } => interner.resolve(&*name) == "self",
             _ => false,
         });
         assert!(self_ref.is_some(), "Expected self VarRef instruction");
@@ -2338,7 +2818,7 @@ mod tests {
         match &inst.data {
             InstData::FieldGet { base, field } => {
                 match &rir.get(*base).data {
-                    InstData::VarRef { name } => assert_eq!(interner.resolve(name), "Color"),
+                    InstData::VarRef { name, .. } => assert_eq!(interner.resolve(name), "Color"),
                     other => panic!("expected VarRef base, got {other:?}"),
                 }
                 assert_eq!(interner.resolve(&*field), "Red");
@@ -2449,7 +2929,9 @@ mod tests {
 
         let (_, inst) = anon_struct.unwrap();
         match &inst.data {
-            InstData::AnonStructType { fields, methods } => {
+            InstData::AnonStructType {
+                fields, methods, ..
+            } => {
                 // Should have 2 fields (x and y)
                 let fields = rir.anon_struct_fields(fields).to_vec();
                 assert_eq!(fields.len(), 2);

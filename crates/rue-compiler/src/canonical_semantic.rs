@@ -26,6 +26,12 @@ pub(crate) struct PreparedDurableSpecializedBodyCandidate {
     pub dependency_boundary_complete: bool,
 }
 
+#[derive(Debug, Clone)]
+struct CanonicalAnonymousNominalAssociation {
+    representative: crate::AnonymousNominalKey,
+    aliases: Arc<[crate::AnonymousNominalKey]>,
+}
+
 fn fold_body_import_work(durable: &mut crate::DurableBodyWork, body: BodyAnalysisWork) {
     durable.import_attempts += body.ordinary_body_import_attempts;
     durable.import_successes += body.ordinary_body_import_successes;
@@ -244,6 +250,21 @@ pub(crate) fn prepare_canonical_declarations<'a>(
             ));
         }
     };
+    let shells = shells
+        .install_stable_identity_endpoints(
+            &definitions.semantic_definition_endpoints(),
+            &definitions.semantic_module_endpoints(merged),
+        )
+        .map_err(|failure| {
+            CanonicalSemanticFailure::declaration(
+                crate::CompileErrors::from(crate::CompileError::without_span(
+                    rue_error::ErrorKind::InternalError(format!(
+                        "failed to install provisional stable identity endpoints: {failure:?}"
+                    )),
+                )),
+                CanonicalSemanticWork::default(),
+            )
+        })?;
     Ok(CanonicalPreparedDeclarations {
         shells,
         shell_records,
@@ -408,6 +429,10 @@ pub struct CanonicalSemanticOutput {
     warnings: Vec<CompileWarning>,
     #[cfg_attr(not(test), allow(dead_code))]
     bound_definitions: Option<BoundDefinitionSet>,
+    /// Request-independent anonymous nominal identities. The AIR issuer tokens
+    /// have already been projected through `body_owner_issuer`; no live pool or
+    /// issuer identity crosses this retention boundary.
+    anonymous_nominal_associations: Arc<[CanonicalAnonymousNominalAssociation]>,
     body_owner_issuer: BoundDefinitionSet,
     durable_ordinary_body_payloads: Arc<[crate::DurableOrdinaryBodyPayload]>,
     durable_specialized_body_payloads: Arc<[crate::DurableSpecializedBodyPayload]>,
@@ -476,6 +501,15 @@ impl CanonicalSemanticOutput {
         record!("functions", &self.functions);
         record!("type_pool", type_pool);
         record!("bound_definitions", &self.bound_definitions);
+        let anonymous_nominal_associations = self
+            .anonymous_nominal_associations
+            .iter()
+            .map(|association| (&association.representative, &association.aliases))
+            .collect::<Vec<_>>();
+        record!(
+            "anonymous_nominal_associations",
+            anonymous_nominal_associations
+        );
         record!("strings", &self.strings);
         record!("warnings", &self.warnings);
         record!("analyzed_body_owners", &self.analyzed_body_owners);
@@ -983,6 +1017,21 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
                                     ),
                                 )
                             })?;
+                    let fallback_shells = fallback_shells
+                        .install_stable_identity_endpoints(
+                            &selected_definitions.semantic_definition_endpoints(),
+                            &selected_definitions.semantic_module_endpoints(merged),
+                        )
+                        .map_err(|failure| {
+                            CanonicalSemanticFailure::declaration(
+                                crate::CompileErrors::from(crate::CompileError::without_span(
+                                    rue_error::ErrorKind::InternalError(format!(
+                                        "failed to install fallback stable identity endpoints: {failure:?}"
+                                    )),
+                                )),
+                                CanonicalSemanticWork::default(),
+                            )
+                        })?;
                     fallback_shells
                         .resolve_declarations_with_work()
                         .map_err(|failure| {
@@ -1030,6 +1079,248 @@ fn configure_timed_canonical_sema<'a>(
         options.target,
         imports,
     )
+}
+
+fn project_anonymous_nominal_key(
+    key: &rue_air::AnonymousNominalKey<
+        rue_air::SemanticDefinitionToken,
+        rue_air::SemanticModuleToken,
+    >,
+    merged: &CanonicalMergedProgram,
+    definitions: &BoundDefinitionSet,
+) -> Result<crate::AnonymousNominalKey, rue_air::SemanticStableResolutionFailure> {
+    use rue_air::SemanticStableResolutionFailure as Failure;
+
+    fn definition(
+        token: rue_air::SemanticDefinitionToken,
+        definitions: &BoundDefinitionSet,
+    ) -> Result<crate::StableDefinitionKey, Failure> {
+        definitions.key_for_semantic_token(token).cloned()
+    }
+
+    fn nominal_definition(
+        token: rue_air::SemanticDefinitionToken,
+        definitions: &BoundDefinitionSet,
+    ) -> Result<crate::StableDefinitionKey, Failure> {
+        let key = definition(token, definitions)?;
+        if !matches!(
+            key.kind(),
+            crate::StableDefinitionKind::Struct | crate::StableDefinitionKind::Enum
+        ) {
+            return Err(Failure::WrongKind);
+        }
+        Ok(key)
+    }
+
+    fn function_definition(
+        token: rue_air::SemanticDefinitionToken,
+        definitions: &BoundDefinitionSet,
+    ) -> Result<crate::StableDefinitionKey, Failure> {
+        let key = definition(token, definitions)?;
+        if !key.kind().owns_body() {
+            return Err(Failure::WrongKind);
+        }
+        Ok(key)
+    }
+
+    fn arguments(
+        value: &rue_air::CanonicalArguments<
+            rue_air::SemanticDefinitionToken,
+            rue_air::SemanticModuleToken,
+        >,
+        merged: &CanonicalMergedProgram,
+        definitions: &BoundDefinitionSet,
+    ) -> Result<crate::CanonicalArguments, Failure> {
+        Ok(crate::CanonicalArguments {
+            types: value
+                .types
+                .iter()
+                .map(|value| ty(value, merged, definitions))
+                .collect::<Result<Vec<_>, _>>()?
+                .into(),
+            values: value
+                .values
+                .iter()
+                .map(|value| argument(value, merged, definitions))
+                .collect::<Result<Vec<_>, _>>()?
+                .into(),
+        })
+    }
+
+    fn argument(
+        value: &rue_air::CanonicalArgumentValue<
+            rue_air::SemanticDefinitionToken,
+            rue_air::SemanticModuleToken,
+        >,
+        merged: &CanonicalMergedProgram,
+        definitions: &BoundDefinitionSet,
+    ) -> Result<crate::CanonicalArgumentValue, Failure> {
+        use rue_air::CanonicalArgumentValue as V;
+        Ok(match value {
+            V::Integer(value) => crate::CanonicalArgumentValue::Integer(*value),
+            V::Bool(value) => crate::CanonicalArgumentValue::Bool(*value),
+            V::Type(value) => {
+                crate::CanonicalArgumentValue::Type(Box::new(ty(value, merged, definitions)?))
+            }
+            V::Function(value) => crate::CanonicalArgumentValue::Function(Box::new(function(
+                value,
+                merged,
+                definitions,
+            )?)),
+            V::Unit => crate::CanonicalArgumentValue::Unit,
+            V::String(value) => crate::CanonicalArgumentValue::String(value.clone()),
+        })
+    }
+
+    fn anonymous(
+        value: &rue_air::AnonymousNominalKey<
+            rue_air::SemanticDefinitionToken,
+            rue_air::SemanticModuleToken,
+        >,
+        merged: &CanonicalMergedProgram,
+        definitions: &BoundDefinitionSet,
+    ) -> Result<crate::AnonymousNominalKey, Failure> {
+        Ok(crate::AnonymousNominalKey {
+            kind: value.kind,
+            producer: producer(&value.producer, merged, definitions)?,
+            anchor: value.anchor.clone(),
+            arguments: arguments(&value.arguments, merged, definitions)?,
+        })
+    }
+
+    fn ty(
+        value: &rue_air::TypeInstanceKey<
+            rue_air::SemanticDefinitionToken,
+            rue_air::SemanticModuleToken,
+        >,
+        merged: &CanonicalMergedProgram,
+        definitions: &BoundDefinitionSet,
+    ) -> Result<crate::TypeInstanceKey, Failure> {
+        use rue_air::{NominalInstanceKey as N, TypeInstanceKey as T};
+        Ok(match value {
+            T::I8 => crate::TypeInstanceKey::I8,
+            T::I16 => crate::TypeInstanceKey::I16,
+            T::I32 => crate::TypeInstanceKey::I32,
+            T::I64 => crate::TypeInstanceKey::I64,
+            T::U8 => crate::TypeInstanceKey::U8,
+            T::U16 => crate::TypeInstanceKey::U16,
+            T::U32 => crate::TypeInstanceKey::U32,
+            T::U64 => crate::TypeInstanceKey::U64,
+            T::Bool => crate::TypeInstanceKey::Bool,
+            T::Unit => crate::TypeInstanceKey::Unit,
+            T::Never => crate::TypeInstanceKey::Never,
+            T::ComptimeType => crate::TypeInstanceKey::ComptimeType,
+            T::BuiltinNominal { kind, name } => crate::TypeInstanceKey::BuiltinNominal {
+                kind: *kind,
+                name: name.clone(),
+            },
+            T::Nominal(N::Named(value)) => crate::TypeInstanceKey::Nominal(
+                crate::NominalInstanceKey::Named(nominal_definition(*value, definitions)?),
+            ),
+            T::Nominal(N::Anonymous(value)) => crate::TypeInstanceKey::Nominal(
+                crate::NominalInstanceKey::Anonymous(anonymous(value, merged, definitions)?),
+            ),
+            T::Array { element, len } => crate::TypeInstanceKey::Array {
+                element: Box::new(ty(element, merged, definitions)?),
+                len: *len,
+            },
+            T::PtrConst(value) => {
+                crate::TypeInstanceKey::PtrConst(Box::new(ty(value, merged, definitions)?))
+            }
+            T::PtrMut(value) => {
+                crate::TypeInstanceKey::PtrMut(Box::new(ty(value, merged, definitions)?))
+            }
+            T::Module(value) => crate::TypeInstanceKey::Module(
+                definitions
+                    .module_for_semantic_token(merged, *value)?
+                    .clone(),
+            ),
+            T::GenericParameter(value) => crate::TypeInstanceKey::GenericParameter(*value),
+        })
+    }
+
+    fn function(
+        value: &rue_air::FunctionInstanceKey<
+            rue_air::SemanticDefinitionToken,
+            rue_air::SemanticModuleToken,
+        >,
+        merged: &CanonicalMergedProgram,
+        definitions: &BoundDefinitionSet,
+    ) -> Result<crate::FunctionInstanceKey, Failure> {
+        use rue_air::FunctionInstanceKey as F;
+        Ok(match value {
+            F::Definition(value) => {
+                crate::FunctionInstanceKey::Definition(function_definition(*value, definitions)?)
+            }
+            F::Specialization {
+                base,
+                arguments: args,
+            } => crate::FunctionInstanceKey::Specialization {
+                base: Box::new(function(base, merged, definitions)?),
+                arguments: arguments(args, merged, definitions)?,
+            },
+            F::AnonymousMember { owner, member } => crate::FunctionInstanceKey::AnonymousMember {
+                owner: Box::new(ty(owner, merged, definitions)?),
+                member: member.clone(),
+            },
+            F::DropGlue(value) => {
+                crate::FunctionInstanceKey::DropGlue(Box::new(ty(value, merged, definitions)?))
+            }
+        })
+    }
+
+    fn producer(
+        value: &rue_air::StableProducerId<
+            rue_air::SemanticDefinitionToken,
+            rue_air::SemanticModuleToken,
+        >,
+        merged: &CanonicalMergedProgram,
+        definitions: &BoundDefinitionSet,
+    ) -> Result<crate::StableProducerId, Failure> {
+        Ok(match value {
+            rue_air::StableProducerId::Definition(value) => {
+                crate::StableProducerId::Definition(definition(*value, definitions)?)
+            }
+            rue_air::StableProducerId::Function(value) => {
+                crate::StableProducerId::Function(Box::new(function(value, merged, definitions)?))
+            }
+        })
+    }
+
+    anonymous(key, merged, definitions)
+}
+
+pub(crate) fn project_function_instance_key(
+    key: &rue_air::FunctionInstanceKey<
+        rue_air::SemanticDefinitionToken,
+        rue_air::SemanticModuleToken,
+    >,
+    merged: &CanonicalMergedProgram,
+    definitions: &BoundDefinitionSet,
+) -> Result<crate::FunctionInstanceKey, rue_air::SemanticStableResolutionFailure> {
+    use rue_air::SemanticStableResolutionFailure as Failure;
+    let projected = key.try_map_identities(
+        &|token| definitions.key_for_semantic_token(*token).cloned(),
+        &|token| {
+            definitions
+                .module_for_semantic_token(merged, *token)
+                .cloned()
+        },
+    )?;
+    fn validate(key: &crate::FunctionInstanceKey) -> Result<(), Failure> {
+        match key {
+            crate::FunctionInstanceKey::Definition(definition) => definition
+                .kind()
+                .owns_body()
+                .then_some(())
+                .ok_or(Failure::WrongKind),
+            crate::FunctionInstanceKey::Specialization { base, .. } => validate(base),
+            crate::FunctionInstanceKey::AnonymousMember { .. }
+            | crate::FunctionInstanceKey::DropGlue(_) => Ok(()),
+        }
+    }
+    validate(&projected)?;
+    Ok(projected)
 }
 
 fn finish_canonical_analysis(
@@ -1319,6 +1610,66 @@ fn finish_canonical_analysis(
         &mut durable_body_work,
     )
     .unwrap_or_else(|_| Arc::from([]));
+    let anonymous_nominal_associations = sema_output
+        .anonymous_nominal_identities_by_type
+        .iter()
+        .map(|(_, identities)| {
+            let representative = project_anonymous_nominal_key(
+                &identities.representative,
+                merged,
+                &authoritative_definitions,
+            )?;
+            let aliases = identities
+                .aliases
+                .iter()
+                .map(|key| project_anonymous_nominal_key(key, merged, &authoritative_definitions))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(CanonicalAnonymousNominalAssociation {
+                representative,
+                aliases: aliases.into(),
+            })
+        })
+        .collect::<Result<Vec<_>, rue_air::SemanticStableResolutionFailure>>();
+    let mut anonymous_nominal_associations = match anonymous_nominal_associations {
+        Ok(associations) => associations,
+        Err(failure) => {
+            let work = CanonicalSemanticWork {
+                declaration_index,
+                binding,
+                manifest: manifest_work,
+                bound_definitions: bound_definitions.as_ref().map(BoundDefinitionSet::work),
+                body_owner_tokens,
+                body_analysis,
+                durable_bodies: durable_body_work,
+                cfg: CfgConstructionWork::default(),
+                stable_ids_requested: request_stable_ids,
+                declaration_reuse,
+            };
+            return Err(CanonicalSemanticFailure::new(
+                CanonicalSemanticFailurePhase::BodyAnalysis,
+                crate::CompileErrors::from(crate::CompileError::without_span(
+                    rue_error::ErrorKind::InternalError(format!(
+                        "failed to project an anonymous nominal identity through the authoritative definition boundary: {failure:?}"
+                    )),
+                )),
+                work,
+            ));
+        }
+    };
+    anonymous_nominal_associations.sort_by(|left, right| {
+        left.representative
+            .cmp(&right.representative)
+            .then_with(|| left.aliases.cmp(&right.aliases))
+    });
+    for association in &anonymous_nominal_associations {
+        debug_assert_eq!(
+            association.aliases.first(),
+            Some(&association.representative),
+            "AIR must expose the stable-min representative first"
+        );
+    }
+    let anonymous_nominal_associations: Arc<[CanonicalAnonymousNominalAssociation]> =
+        anonymous_nominal_associations.into();
     let analyzed_body_owners = sema_output.analyzed_body_owners.clone();
     let body_named_dependencies = sema_output.body_named_dependencies.clone();
     let ordinary_free_function_dependencies =
@@ -1350,6 +1701,47 @@ fn finish_canonical_analysis(
     let named_const_dependencies = sema_output.named_const_dependencies.clone();
     let named_value_const_dependencies_complete =
         sema_output.named_value_const_dependencies_complete;
+    let issued_callable_identities = sema_output
+        .functions
+        .iter()
+        .map(|function| function.identity.clone())
+        .chain(
+            sema_output
+                .aggregate_type_identities_by_type
+                .values()
+                .cloned()
+                .map(|ty| rue_air::FunctionInstanceKey::DropGlue(Box::new(ty))),
+        )
+        .collect::<std::collections::BTreeSet<_>>();
+    let projected_callable_identities = issued_callable_identities
+        .into_iter()
+        .map(|issued| {
+            project_function_instance_key(&issued, merged, &authoritative_definitions)
+                .map(|stable| (issued, stable))
+        })
+        .collect::<Result<std::collections::BTreeMap<_, _>, _>>()
+        .map_err(|failure| {
+            CanonicalSemanticFailure::new(
+                CanonicalSemanticFailurePhase::BodyAnalysis,
+                crate::CompileErrors::from(crate::CompileError::without_span(
+                    rue_error::ErrorKind::InternalError(format!(
+                        "failed to project callable identity through the authoritative definition boundary: {failure:?}"
+                    )),
+                )),
+                CanonicalSemanticWork {
+                    declaration_index,
+                    binding,
+                    manifest: manifest_work,
+                    bound_definitions: bound_definitions.as_ref().map(BoundDefinitionSet::work),
+                    body_owner_tokens,
+                    body_analysis,
+                    durable_bodies: durable_body_work,
+                    cfg: CfgConstructionWork::default(),
+                    stable_ids_requested: request_stable_ids,
+                    declaration_reuse,
+                },
+            )
+        })?;
     let mut stable_cfg_inputs = Vec::new();
     for function in &sema_output.functions {
         let selected = if let Some(token) = function.ordinary_owner {
@@ -1364,7 +1756,13 @@ fn finish_canonical_analysis(
                             authoritative_definitions
                                 .definition_by_key(key)
                                 .and_then(|record| record.body_span())
-                                .map(|span| (span, payload.clone(), None))
+                                .map(|span| {
+                                    (
+                                        span,
+                                        payload.clone(),
+                                        crate::FunctionInstanceKey::Definition(key.clone()),
+                                    )
+                                })
                         })
                 })
         } else if let Some(rue_air::ImplicitDropDependencySourceEvent::Specialization {
@@ -1385,19 +1783,20 @@ fn finish_canonical_analysis(
                     .and_then(|payload| {
                         authoritative_definitions
                             .definition_by_key(&identity.base)
-                            .map(|record| {
-                                (
-                                    record.declaration_span(),
-                                    payload.body.clone(),
-                                    Some(identity.clone()),
+                            .and_then(|record| {
+                                crate::semantic_identity::function_instance_from_specialization(
+                                    &identity,
                                 )
+                                .map(|function| {
+                                    (record.declaration_span(), payload.body.clone(), function)
+                                })
                             })
                     })
             })
         } else {
             None
         };
-        if let Some((body_span, body, specialization)) = selected {
+        if let Some((body_span, body, function_key)) = selected {
             let Ok(type_dependencies) = crate::durable_cfg::transitive_body_type_dependencies(
                 &body,
                 &sema_output.type_pool,
@@ -1424,16 +1823,17 @@ fn finish_canonical_analysis(
             let Some(type_inputs) = type_inputs else {
                 continue;
             };
-            stable_cfg_inputs.push(crate::durable_cfg::StableCfgInput {
-                identity: Arc::from(function.name.as_str()),
+            stable_cfg_inputs.push(crate::durable_cfg::CurrentCfgInput {
+                stable: crate::durable_cfg::StableCfgInput {
+                    function: function_key,
+                    body,
+                    type_inputs: type_inputs.into(),
+                },
                 body_span,
-                body,
-                specialization,
-                type_inputs: type_inputs.into(),
             });
         }
     }
-    stable_cfg_inputs.sort_by(|left, right| left.identity.cmp(&right.identity));
+    stable_cfg_inputs.sort_by(|left, right| left.stable.function.cmp(&right.stable.function));
     drop(sema_span);
     let cfg = build_functions_and_cfgs(
         sema_output,
@@ -1442,6 +1842,7 @@ fn finish_canonical_analysis(
         rir.semantic_symbols().interner(),
         &durable_cfg_candidates,
         &stable_cfg_inputs,
+        &projected_callable_identities,
     )
     .map_err(|failure| {
         let work = CanonicalSemanticWork {
@@ -1514,6 +1915,7 @@ fn finish_canonical_analysis(
         strings: cfg.strings,
         warnings,
         bound_definitions,
+        anonymous_nominal_associations,
         body_owner_issuer: authoritative_definitions,
         durable_ordinary_body_payloads,
         durable_specialized_body_payloads,

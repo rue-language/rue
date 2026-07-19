@@ -4,7 +4,9 @@
 //! - [`AnalyzedFunction`] - A single analyzed function with typed IR
 //! - [`SemaOutput`] - Complete output from analyzing a program
 
-use crate::{SemanticBodyExport, SemanticSpecializedBodyExport};
+use std::collections::HashMap;
+
+use crate::{SemanticBodyExport, SemanticSpecializedBodyExport, Type};
 use rue_error::CompileWarning;
 /// Opaque identity issued by the compiler for one supported ordinary body.
 ///
@@ -386,13 +388,24 @@ impl From<Vec<bool>> for ParamSlotModes {
 /// Result of analyzing a function.
 #[derive(Debug)]
 pub struct AnalyzedFunction {
+    /// Exact issuer-scoped semantic identity of this concrete callable.
+    ///
+    /// This is independent of durable-body/CFG eligibility: every analyzed or
+    /// synthesized body has an identity even when it cannot be retained.
+    pub identity:
+        crate::FunctionInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
     pub name: String,
-    /// Authoritative identity of a source-level ordinary body. Specialized,
-    /// synthesized, and anonymous functions deliberately carry no token.
+    pub callable_kind: AnalyzedCallableKind,
+    /// Durable-body ownership of an eligible source-level ordinary body.
+    /// This is retention metadata, not callable identity.
     pub ordinary_owner: Option<BodyOwnerToken>,
     /// Definition-level provenance used by CFG dependency capture.
     pub implicit_drop_source: Option<ImplicitDropDependencySourceEvent>,
     pub air: crate::ValidatedAir,
+    /// Occurrence-preserving local data identities sorted at the compiler
+    /// retention boundary after dense string IDs are globally remapped.
+    pub local_atoms:
+        Vec<crate::LocalAtomRecord<crate::SemanticDefinitionToken, crate::SemanticModuleToken>>,
     /// Number of local variable slots needed
     pub num_locals: u32,
     /// Number of ABI slots used by parameters.
@@ -406,6 +419,19 @@ pub struct AnalyzedFunction {
     /// Whether function-level `@allow(unreachable_code)` suppresses CFG
     /// unreachable-code warnings while lowering this function.
     pub allow_unreachable_code: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AnalyzedCallableKind {
+    Ordinary,
+    Destructor,
+    DropGlue,
+}
+
+impl AnalyzedCallableKind {
+    pub fn uses_direct_slot_abi(self) -> bool {
+        matches!(self, Self::Destructor | Self::DropGlue)
+    }
 }
 
 /// Output from semantic analysis.
@@ -422,6 +448,23 @@ pub struct SemaOutput {
     pub warnings: Vec<CompileWarning>,
     /// Completed immutable type metadata (contains all types including arrays).
     pub type_pool: crate::FrozenTypeInternPool,
+    /// Request-local anonymous nominal types mapped to identities issued before
+    /// their pool allocation. Consumers must project the opaque definition and
+    /// module tokens at the compiler retention boundary before persisting keys.
+    pub anonymous_nominal_identities_by_type: HashMap<
+        Type,
+        crate::AnonymousNominalIdentitySet<
+            crate::SemanticDefinitionToken,
+            crate::SemanticModuleToken,
+        >,
+    >,
+    /// Issuer-scoped canonical identities for every aggregate type that may
+    /// own synthesized drop glue. This lets the compiler name glue without
+    /// reconstructing semantic identity from display names or pool order.
+    pub aggregate_type_identities_by_type: HashMap<
+        Type,
+        crate::TypeInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
+    >,
     /// Exact structural work performed while dispatching reachable bodies.
     pub body_analysis_work: BodyAnalysisWork,
     /// Pre-specialization durable candidates for supported ordinary bodies.
@@ -472,6 +515,10 @@ pub struct BodyAnalysisWork {
     pub bodies_attempted: usize,
     pub bodies_succeeded: usize,
     pub bodies_failed: usize,
+    /// Demand-driven comparisons between distinct concrete semantic types.
+    /// This stays proportional to comparisons requested by body constraints;
+    /// it never includes a scan of unrelated types in the global pool.
+    pub semantic_type_equivalence_queries: usize,
     pub air_instructions_produced: usize,
     pub body_dependency_air_instructions_observed: usize,
     pub local_strings_produced: usize,

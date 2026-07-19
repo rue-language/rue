@@ -184,6 +184,19 @@ impl Unifier {
     /// 7. `Array(T1, N) = Array(T2, N)` → succeeds if T1 unifies with T2
     /// 8. `Array(T1, N1) = Array(T2, N2)` where N1 ≠ N2 → fails
     pub fn unify(&mut self, lhs: &InferType, rhs: &InferType) -> UnifyResult {
+        self.unify_with(lhs, rhs, &|left, right| left == right)
+    }
+
+    /// Unify two types using the semantic authority supplied for concrete
+    /// type equality. The authority is queried only when unification actually
+    /// compares two concrete types; it is never precomputed over the global
+    /// type pool.
+    pub(crate) fn unify_with(
+        &mut self,
+        lhs: &InferType,
+        rhs: &InferType,
+        concrete_types_equal: &dyn Fn(Type, Type) -> bool,
+    ) -> UnifyResult {
         // Apply current substitution to get most specific types
         let lhs_resolved = self.substitution.apply(lhs);
         let rhs_resolved = self.substitution.apply(rhs);
@@ -191,7 +204,7 @@ impl Unifier {
         match (&lhs_resolved, &rhs_resolved) {
             // Same concrete types unify
             (InferType::Concrete(t1), InferType::Concrete(t2)) => {
-                if t1 == t2 || t1.can_coerce_to(t2) || t2.can_coerce_to(t1) {
+                if concrete_types_equal(*t1, *t2) || t1.can_coerce_to(t2) || t2.can_coerce_to(t1) {
                     UnifyResult::Ok
                 } else {
                     // Every directional constraint site passes (actual, expected):
@@ -254,7 +267,7 @@ impl Unifier {
                     }
                 } else {
                     // Recursively unify element types
-                    self.unify(elem1, elem2)
+                    self.unify_with(elem1, elem2, concrete_types_equal)
                 }
             }
 
@@ -486,12 +499,21 @@ impl Unifier {
     ///
     /// Returns a list of errors (empty if all constraints were satisfied).
     pub fn solve_constraints(&mut self, constraints: &[Constraint]) -> Vec<UnificationError> {
+        self.solve_constraints_with(constraints, &|left, right| left == right)
+    }
+
+    /// Solve constraints with demand-driven semantic concrete-type equality.
+    pub(crate) fn solve_constraints_with(
+        &mut self,
+        constraints: &[Constraint],
+        concrete_types_equal: &dyn Fn(Type, Type) -> bool,
+    ) -> Vec<UnificationError> {
         let mut errors = Vec::new();
 
         for constraint in constraints {
             let result = match constraint {
                 Constraint::Equal(lhs, rhs, span) => {
-                    let result = self.unify(lhs, rhs);
+                    let result = self.unify_with(lhs, rhs, concrete_types_equal);
                     if !result.is_ok() {
                         // On error, try to bind any unbound type variables to Error
                         // for recovery

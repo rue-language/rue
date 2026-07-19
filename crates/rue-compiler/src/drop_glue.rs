@@ -37,14 +37,24 @@ fn type_needs_drop(ty: Type, type_pool: &FrozenTypeInternPool) -> bool {
 /// Returns a list of synthesized functions that should be added to the compilation.
 pub fn synthesize_drop_glue(
     type_pool: &FrozenTypeInternPool,
+    type_identities: &std::collections::HashMap<
+        Type,
+        rue_air::TypeInstanceKey<rue_air::SemanticDefinitionToken, rue_air::SemanticModuleToken>,
+    >,
 ) -> CompileResult<Vec<AnalyzedFunction>> {
     let mut drop_glue_functions = Vec::new();
 
     // Create drop glue for structs
     for struct_id in type_pool.all_struct_ids() {
         let struct_def = type_pool.struct_def(struct_id);
-        // Skip structs that don't need drop
         let struct_ty = Type::new_struct(struct_id);
+        // Body analysis may retain inert request-local pool slots from an
+        // abandoned anonymous representative attempt. Only the active
+        // semantic identity map is authoritative for terminal glue emission.
+        if !type_identities.contains_key(&struct_ty) {
+            continue;
+        }
+        // Skip structs that don't need drop
         if !type_needs_drop(struct_ty, type_pool) {
             continue;
         }
@@ -57,20 +67,33 @@ pub fn synthesize_drop_glue(
         }
 
         // Create drop glue function for struct
-        let func = create_struct_drop_glue_function(struct_def, struct_id, type_pool)?;
+        let identity = type_identities.get(&struct_ty).cloned().ok_or_else(|| {
+            CompileError::without_span(ErrorKind::InternalError(
+                "missing canonical struct identity for drop glue".into(),
+            ))
+        })?;
+        let func = create_struct_drop_glue_function(struct_def, struct_id, type_pool, identity)?;
         drop_glue_functions.push(func);
     }
 
     // Create drop glue for arrays
     for array_id in type_pool.all_array_ids() {
-        // Skip arrays that don't need drop
         let array_ty = Type::new_array(array_id);
+        if !type_identities.contains_key(&array_ty) {
+            continue;
+        }
+        // Skip arrays that don't need drop
         if !type_needs_drop(array_ty, type_pool) {
             continue;
         }
 
         // Create drop glue function for array
-        let func = create_array_drop_glue_function(array_id, type_pool)?;
+        let identity = type_identities.get(&array_ty).cloned().ok_or_else(|| {
+            CompileError::without_span(ErrorKind::InternalError(
+                "missing canonical array identity for drop glue".into(),
+            ))
+        })?;
+        let func = create_array_drop_glue_function(array_id, type_pool, identity)?;
         drop_glue_functions.push(func);
     }
 
@@ -78,11 +101,19 @@ pub fn synthesize_drop_glue(
     // on the discriminant and drops the active variant's payload.
     for enum_id in type_pool.all_enum_ids() {
         let enum_ty = Type::new_enum(enum_id);
+        if !type_identities.contains_key(&enum_ty) {
+            continue;
+        }
         if !type_needs_drop(enum_ty, type_pool) {
             continue;
         }
 
-        let func = create_enum_drop_glue_function(enum_id, type_pool)?;
+        let identity = type_identities.get(&enum_ty).cloned().ok_or_else(|| {
+            CompileError::without_span(ErrorKind::InternalError(
+                "missing canonical enum identity for drop glue".into(),
+            ))
+        })?;
+        let func = create_enum_drop_glue_function(enum_id, type_pool, identity)?;
         drop_glue_functions.push(func);
     }
 
@@ -94,6 +125,10 @@ fn create_struct_drop_glue_function(
     struct_def: &StructDef,
     struct_id: rue_air::StructId,
     type_pool: &FrozenTypeInternPool,
+    identity: rue_air::TypeInstanceKey<
+        rue_air::SemanticDefinitionToken,
+        rue_air::SemanticModuleToken,
+    >,
 ) -> CompileResult<AnalyzedFunction> {
     // Derived by the shared authority so glue synthesis and the backends'
     // lowering agree; file-qualified when the struct name spans files (RUE-571).
@@ -172,6 +207,8 @@ fn create_struct_drop_glue_function(
     let param_modes = vec![false; num_param_slots as usize];
 
     Ok(AnalyzedFunction {
+        identity: rue_air::FunctionInstanceKey::DropGlue(Box::new(identity)),
+        callable_kind: rue_air::AnalyzedCallableKind::DropGlue,
         ordinary_owner: None,
         name: fn_name,
         implicit_drop_source: if struct_def.name.starts_with("__anon_struct_") {
@@ -187,6 +224,7 @@ fn create_struct_drop_glue_function(
             .map_err(|error| {
                 CompileError::new(ErrorKind::InternalError(error.to_string()), span)
             })?,
+        local_atoms: Vec::new(),
         num_locals: 0,
         num_param_slots,
         param_modes: ParamSlotModes::new(param_modes.clone(), vec![false; param_modes.len()]),
@@ -201,6 +239,10 @@ fn create_struct_drop_glue_function(
 fn create_array_drop_glue_function(
     array_id: rue_air::ArrayTypeId,
     type_pool: &FrozenTypeInternPool,
+    identity: rue_air::TypeInstanceKey<
+        rue_air::SemanticDefinitionToken,
+        rue_air::SemanticModuleToken,
+    >,
 ) -> CompileResult<AnalyzedFunction> {
     let fn_name = array_drop_glue_name(array_id, type_pool);
     let span = Span::new(0, 0); // Synthetic span
@@ -272,6 +314,8 @@ fn create_array_drop_glue_function(
     let param_modes = vec![false; num_param_slots as usize];
 
     Ok(AnalyzedFunction {
+        identity: rue_air::FunctionInstanceKey::DropGlue(Box::new(identity)),
+        callable_kind: rue_air::AnalyzedCallableKind::DropGlue,
         ordinary_owner: None,
         name: fn_name,
         implicit_drop_source: None,
@@ -280,6 +324,7 @@ fn create_array_drop_glue_function(
             .map_err(|error| {
                 CompileError::new(ErrorKind::InternalError(error.to_string()), span)
             })?,
+        local_atoms: Vec::new(),
         num_locals: 0,
         num_param_slots,
         param_modes: ParamSlotModes::new(param_modes.clone(), vec![false; param_modes.len()]),
@@ -300,6 +345,10 @@ fn create_array_drop_glue_function(
 fn create_enum_drop_glue_function(
     enum_id: EnumId,
     type_pool: &FrozenTypeInternPool,
+    identity: rue_air::TypeInstanceKey<
+        rue_air::SemanticDefinitionToken,
+        rue_air::SemanticModuleToken,
+    >,
 ) -> CompileResult<AnalyzedFunction> {
     let enum_def = type_pool.enum_def(enum_id);
     let fn_name = enum_drop_glue_name(enum_id, type_pool);
@@ -366,6 +415,8 @@ fn create_enum_drop_glue_function(
     let param_modes = vec![false; num_param_slots as usize];
 
     Ok(AnalyzedFunction {
+        identity: rue_air::FunctionInstanceKey::DropGlue(Box::new(identity)),
+        callable_kind: rue_air::AnalyzedCallableKind::DropGlue,
         ordinary_owner: None,
         name: fn_name,
         implicit_drop_source: Some(rue_air::ImplicitDropDependencySourceEvent::NamedEnum {
@@ -377,6 +428,7 @@ fn create_enum_drop_glue_function(
             .map_err(|error| {
                 CompileError::new(ErrorKind::InternalError(error.to_string()), span)
             })?,
+        local_atoms: Vec::new(),
         num_locals: 0,
         num_param_slots,
         param_modes: ParamSlotModes::new(param_modes.clone(), vec![false; param_modes.len()]),
@@ -590,21 +642,32 @@ mod tests {
         );
         let outer_ty = Type::new_struct(outer_id);
         let type_pool = type_pool.freeze();
-        let outer =
-            create_struct_drop_glue_function(type_pool.struct_def(outer_id), outer_id, &type_pool)
-                .unwrap();
+        let outer = create_struct_drop_glue_function(
+            type_pool.struct_def(outer_id),
+            outer_id,
+            &type_pool,
+            rue_air::TypeInstanceKey::I32,
+        )
+        .unwrap();
         assert_eq!(outer.num_param_slots, type_pool.abi_slot_count(outer_ty));
         assert_eq!(outer.num_param_slots, 27);
         assert_eq!(param_indices(&outer), [19, 20, 22, 24]);
 
-        let array = create_array_drop_glue_function(drop_array_id, &type_pool).unwrap();
+        let array = create_array_drop_glue_function(
+            drop_array_id,
+            &type_pool,
+            rue_air::TypeInstanceKey::I32,
+        )
+        .unwrap();
         assert_eq!(
             array.num_param_slots,
             type_pool.abi_slot_count(drop_array_ty)
         );
         assert_eq!(param_indices(&array), [0, 1]);
 
-        let enum_glue = create_enum_drop_glue_function(drop_enum_id, &type_pool).unwrap();
+        let enum_glue =
+            create_enum_drop_glue_function(drop_enum_id, &type_pool, rue_air::TypeInstanceKey::I32)
+                .unwrap();
         assert_eq!(
             enum_glue.num_param_slots,
             type_pool.abi_slot_count(drop_enum_ty)

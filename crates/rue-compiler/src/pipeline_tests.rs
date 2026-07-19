@@ -93,6 +93,13 @@ mod tests {
                 .len(),
             1
         );
+        assert_eq!(
+            cold.durable_specialized_body_payloads()[0]
+                .body
+                .local_atoms
+                .len(),
+            1
+        );
         assert!(cold.durable_specialized_body_payloads()[0].dependency_boundary_complete);
         let warm = warm_session.canonical_semantic(&optimized).unwrap();
         assert_eq!(warm.work().body_analysis.specialized_bodies_reused, 1);
@@ -104,6 +111,13 @@ mod tests {
             1
         );
         assert!(!warm.strings().is_empty());
+        let warm_atoms = warm
+            .functions()
+            .iter()
+            .flat_map(|function| function.local_atoms.iter())
+            .collect::<Vec<_>>();
+        assert_eq!(warm_atoms.len(), 1);
+        assert_eq!(warm_atoms[0].content.as_ref(), "hello");
 
         let mut fresh_session = CompilerSession::new();
         fresh_session
@@ -111,6 +125,12 @@ mod tests {
             .into_result()
             .unwrap();
         let fresh = fresh_session.canonical_semantic(&optimized).unwrap();
+        let fresh_atoms = fresh
+            .functions()
+            .iter()
+            .flat_map(|function| function.local_atoms.iter())
+            .collect::<Vec<_>>();
+        assert_eq!(warm_atoms, fresh_atoms);
         assert_eq!(
             format!("{:?}", warm.functions()),
             format!("{:?}", fresh.functions())
@@ -157,6 +177,108 @@ mod tests {
         );
         assert_eq!(warm_execution.stdout, b"hello\n");
         assert!(warm_execution.stderr.is_empty());
+        assert_eq!(warm_execution.status.code(), fresh_execution.status.code());
+        assert_eq!(warm_execution.stdout, fresh_execution.stdout);
+        assert_eq!(warm_execution.stderr, fresh_execution.stderr);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn named_const_strings_keep_stable_atoms_across_warm_reorder_and_codegen() {
+        let first = SourceSnapshot::single(
+            "<named-const-strings>",
+            r#"
+                const MESSAGE: str = "hello";
+
+                fn helper() -> i32 {
+                    @dbg(MESSAGE);
+                    @dbg(MESSAGE);
+                    7
+                }
+
+                fn main() -> i32 { helper() }
+            "#,
+        )
+        .unwrap();
+        let reordered = SourceSnapshot::single(
+            "<named-const-strings>",
+            r#"
+                const MESSAGE: str = "hello";
+
+                // Shift positions and reverse the sibling declarations.
+                fn main() -> i32 { helper() }
+
+                fn helper() -> i32 {
+                    @dbg(MESSAGE);
+                    @dbg(MESSAGE);
+                    7
+                }
+            "#,
+        )
+        .unwrap();
+        let optimized = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+
+        let mut warm_session = CompilerSession::new();
+        warm_session
+            .update_for_presentation(&first)
+            .into_result()
+            .unwrap();
+        let cold = warm_session.canonical_semantic(&optimized).unwrap();
+        let cold_atoms = cold
+            .functions()
+            .iter()
+            .flat_map(|function| function.local_atoms.iter())
+            .collect::<Vec<_>>();
+        assert_eq!(cold_atoms.len(), 2);
+        assert!(cold_atoms.iter().all(|atom| {
+            atom.identity.kind == rue_air::LocalAtomKind::ReadOnlyData
+                && atom.content.as_ref() == "hello"
+        }));
+        assert_ne!(
+            cold_atoms[0].identity.anchor, cold_atoms[1].identity.anchor,
+            "duplicate-content const uses retain occurrence identity"
+        );
+
+        warm_session
+            .update_for_presentation(&reordered)
+            .into_result()
+            .unwrap();
+        let warm = warm_session.canonical_semantic(&optimized).unwrap();
+        assert_eq!(warm.work().cfg.cfg_reuses, 2);
+        assert_eq!(warm.work().cfg.cfg_import_successes, 2);
+        let warm_atoms = warm
+            .functions()
+            .iter()
+            .flat_map(|function| function.local_atoms.iter())
+            .collect::<Vec<_>>();
+        assert_eq!(warm_atoms.len(), 2);
+        assert!(warm_atoms.iter().all(|atom| {
+            atom.identity.kind == rue_air::LocalAtomKind::ReadOnlyData
+                && warm
+                    .strings()
+                    .get(atom.dense_id as usize)
+                    .map(String::as_str)
+                    == Some(atom.content.as_ref())
+        }));
+
+        let warm_output =
+            crate::queries::compile_with_session(&mut warm_session, &reordered, &optimized)
+                .unwrap();
+        let mut fresh_session = CompilerSession::new();
+        fresh_session
+            .update_for_presentation(&reordered)
+            .into_result()
+            .unwrap();
+        let fresh_output =
+            crate::queries::compile_with_session(&mut fresh_session, &reordered, &optimized)
+                .unwrap();
+        let warm_execution = execute_compiled_output(&warm_output, "named-const-warm");
+        let fresh_execution = execute_compiled_output(&fresh_output, "named-const-fresh");
+        assert_eq!(warm_execution.status.code(), Some(7));
+        assert_eq!(warm_execution.stdout, b"hello\nhello\n");
         assert_eq!(warm_execution.status.code(), fresh_execution.status.code());
         assert_eq!(warm_execution.stdout, fresh_execution.stdout);
         assert_eq!(warm_execution.stderr, fresh_execution.stderr);

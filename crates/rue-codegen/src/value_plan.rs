@@ -412,6 +412,10 @@ pub trait ValueLowerAdapter:
     fn value_is_lowered(&self, value: CfgValue) -> bool;
     fn reserve_value_result(&mut self) -> VReg;
     fn resolve_symbol(&self, symbol: Spur) -> String;
+    /// Resolve an intrinsic dispatch name without applying callable-machine
+    /// aliases. A source callable may legally share an intrinsic's spelling.
+    fn resolve_intrinsic_symbol(&self, symbol: Spur) -> String;
+    fn resolve_named_symbol(&self, symbol: &str) -> String;
     fn call_arg_register_budget(&self) -> usize;
     fn return_register_budget(&self) -> u32;
     fn emit_value(&mut self, plan: ValueEmissionPlan) -> ValueResult;
@@ -846,7 +850,7 @@ fn drop_plan<A: ValueLowerAdapter>(
             if struct_def.is_builtin {
                 if let Some(destructor) = &struct_def.destructor {
                     actions.push(DropAction {
-                        symbol: destructor.clone(),
+                        symbol: adapter.resolve_named_symbol(destructor),
                         slots,
                     });
                 }
@@ -855,7 +859,7 @@ fn drop_plan<A: ValueLowerAdapter>(
                     let mut destructor_slots = slots.clone();
                     destructor_slots.reverse();
                     actions.push(DropAction {
-                        symbol: destructor.clone(),
+                        symbol: adapter.resolve_named_symbol(destructor),
                         slots: destructor_slots,
                     });
                 }
@@ -869,9 +873,8 @@ fn drop_plan<A: ValueLowerAdapter>(
                     offset += count;
                 }
                 actions.push(DropAction {
-                    symbol: rue_air::drop_glue_names::struct_drop_glue_name(
-                        struct_id,
-                        ctx.type_pool,
+                    symbol: adapter.resolve_named_symbol(
+                        &rue_air::drop_glue_names::struct_drop_glue_name(struct_id, ctx.type_pool),
                     ),
                     slots: glue_slots,
                 });
@@ -885,7 +888,9 @@ fn drop_plan<A: ValueLowerAdapter>(
                 }
             }
             actions.push(DropAction {
-                symbol: rue_air::drop_glue_names::array_drop_glue_name(array_id, ctx.type_pool),
+                symbol: adapter.resolve_named_symbol(
+                    &rue_air::drop_glue_names::array_drop_glue_name(array_id, ctx.type_pool),
+                ),
                 slots,
             });
         }
@@ -897,7 +902,9 @@ fn drop_plan<A: ValueLowerAdapter>(
             // active payload fields back out of that reversed area (RUE-998).
             slots.reverse();
             actions.push(DropAction {
-                symbol: rue_air::drop_glue_names::enum_drop_glue_name(enum_id, ctx.type_pool),
+                symbol: adapter.resolve_named_symbol(
+                    &rue_air::drop_glue_names::enum_drop_glue_name(enum_id, ctx.type_pool),
+                ),
                 slots,
             });
         }
@@ -1454,7 +1461,7 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
         CfgInstData::Intrinsic { runtime, name, .. } => {
             debug_assert!(runtime.is_none_or(|runtime| runtime.validate()));
             let args = ctx.cfg.get_intrinsic_args(&inst.data);
-            let name_string = adapter.resolve_symbol(*name);
+            let name_string = adapter.resolve_intrinsic_symbol(*name);
             let values: Vec<IntrinsicArgPlan> = args
                 .iter()
                 .copied()

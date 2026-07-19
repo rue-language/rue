@@ -161,7 +161,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     ) -> Option<FileId> {
         let inst = self.rir.get(module_ref);
         let module_ty = match inst.data {
-            InstData::VarRef { name } => {
+            InstData::VarRef { name, .. } => {
                 ctx.locals.get(&name).map(|local| local.ty).or_else(|| {
                     self.module_bindings
                         .get(&(inst.span.file_id, name))

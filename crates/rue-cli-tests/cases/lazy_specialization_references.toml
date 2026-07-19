@@ -88,7 +88,7 @@ exit_code = 0
 
 [[case]]
 name = "alternating_specialization_method_recursion_is_bounded"
-description = "Specialization and a newly registered anonymous method cannot evade the specialization-depth guard by alternating outer scheduler waves."
+description = "Structurally equal anonymous specializations converge on the stable lowest representative even when their captured values would otherwise alternate scheduler waves."
 files = [
     { path = "main.rue", source = """
 const lib = @import("lib.rue");
@@ -111,5 +111,4 @@ fn runaway(comptime n: i32) -> i32 {
 pub fn start() -> i32 { runaway(0) }
 """ },
 ]
-compile_fail = true
-error_contains = ["E1200", "exceeded the maximum nesting depth"]
+compile_only = true

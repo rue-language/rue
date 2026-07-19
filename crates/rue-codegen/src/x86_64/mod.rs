@@ -40,12 +40,13 @@ fn prepare_backend(
     cfg: &ValidatedCfg,
     type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,
+    symbols: crate::MachineSymbolResolver<'_>,
 ) -> CompileResult<crate::codegen_pipeline::PreparedMir<X86Mir, Reg>> {
     crate::codegen_pipeline::prepare_mir(
         cfg,
         type_pool,
         cfg_lower::RET_REGS.len() as u32,
-        || CfgLower::new(cfg, type_pool, interner).lower(),
+        || CfgLower::new_with_symbols(cfg, type_pool, interner, symbols).lower(),
         |mir, existing_slots| RegAlloc::new(mir, existing_slots).allocate_with_spills(),
         |mir| {
             peephole::optimize(mir.instructions_vec_mut());
@@ -60,12 +61,15 @@ fn generate_inner<T, Emit>(
     type_pool: &FrozenTypeInternPool,
     strings: &[String],
     interner: &ThreadedRodeo,
+    symbols: crate::MachineSymbolResolver<'_>,
+    atoms: &[crate::LocalAtomProjection<'_>],
+    require_complete_atoms: bool,
     emit: Emit,
 ) -> CompileResult<(T, Vec<String>)>
 where
     Emit: for<'a> FnOnce(Emitter<'a>) -> CompileResult<T>,
 {
-    let mut prepared = prepare_backend(cfg, type_pool, interner)?;
+    let mut prepared = prepare_backend(cfg, type_pool, interner, symbols)?;
     let referenced_strings = prepared
         .mir
         .instructions()
@@ -76,7 +80,8 @@ where
             | X86Inst::StringConstCap { string_id, .. } => Some(*string_id),
             _ => None,
         });
-    let (local_strings, string_id_remap) = crate::compact_string_table(strings, referenced_strings);
+    let (local_strings, string_id_remap) =
+        crate::compact_string_table(strings, atoms, referenced_strings, require_complete_atoms)?;
     for inst in prepared.mir.instructions_vec_mut() {
         let string_id = match inst {
             X86Inst::StringConstPtr { string_id, .. }
@@ -110,11 +115,68 @@ pub fn generate(
     strings: &[String],
     interner: &ThreadedRodeo,
 ) -> CompileResult<MachineCode> {
-    let ((code, relocations), strings) =
-        generate_inner(cfg, type_pool, strings, interner, |emitter| {
+    let ((code, relocations), strings) = generate_inner(
+        cfg,
+        type_pool,
+        strings,
+        interner,
+        crate::MachineSymbolResolver::default(),
+        &[],
+        false,
+        |emitter| {
             // Keep the normal path allocation-free with respect to assembly text.
             emitter.emit()
-        })?;
+        },
+    )?;
+    Ok(MachineCode {
+        code,
+        relocations,
+        strings,
+    })
+}
+
+pub fn generate_with_symbols(
+    cfg: &ValidatedCfg,
+    type_pool: &FrozenTypeInternPool,
+    strings: &[String],
+    interner: &ThreadedRodeo,
+    symbols: crate::MachineSymbolResolver<'_>,
+) -> CompileResult<MachineCode> {
+    let ((code, relocations), strings) = generate_inner(
+        cfg,
+        type_pool,
+        strings,
+        interner,
+        symbols,
+        &[],
+        false,
+        |emitter| emitter.emit(),
+    )?;
+    Ok(MachineCode {
+        code,
+        relocations,
+        strings,
+    })
+}
+
+pub fn generate_with_symbols_and_atoms(
+    cfg: &ValidatedCfg,
+    type_pool: &FrozenTypeInternPool,
+    strings: &[String],
+    interner: &ThreadedRodeo,
+    symbols: crate::MachineSymbolResolver<'_>,
+    atoms: &[crate::LocalAtomProjection<'_>],
+) -> CompileResult<MachineCode> {
+    let ((code, relocations), strings) = generate_inner(
+        cfg,
+        type_pool,
+        strings,
+        interner,
+        symbols,
+        atoms,
+        true,
+        |emitter| emitter.emit(),
+    )?;
     Ok(MachineCode {
         code,
         relocations,
@@ -132,9 +194,16 @@ pub fn generate_with_asm(
     strings: &[String],
     interner: &ThreadedRodeo,
 ) -> CompileResult<(MachineCode, String)> {
-    let (emitted, strings) = generate_inner(cfg, type_pool, strings, interner, |emitter| {
-        emitter.emit_all()
-    })?;
+    let (emitted, strings) = generate_inner(
+        cfg,
+        type_pool,
+        strings,
+        interner,
+        crate::MachineSymbolResolver::default(),
+        &[],
+        false,
+        |emitter| emitter.emit_all(),
+    )?;
     let asm = emitted.to_asm();
     let machine_code = MachineCode {
         code: emitted.to_bytes(),

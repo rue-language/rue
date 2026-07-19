@@ -1235,10 +1235,12 @@ impl<'a> BodySema<'a> {
         // very same `EnumId` an in-scope `Option(payload)` produces (ADR-0038),
         // so `?` then unwraps it exactly like any other typed `Option`.
         if ctx.try_operand {
-            return Ok(self.find_or_create_anon_enum(
+            if let Some(option) = self.find_compatible_anon_enum(
                 &["Some".to_string(), "None".to_string()],
                 &[vec![expected_payload], Vec::new()],
-            ));
+            ) {
+                return Ok(option);
+            }
         }
 
         // Otherwise: with no context at all the resolved type is `<error>`; point
@@ -1648,7 +1650,7 @@ impl<'a> BodySema<'a> {
         self.require_process_index_type(display, index.ty, span)?;
         let result_ty = Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
         if let Some(&expected) = ctx.resolved_types.get(&inst_ref)
-            && expected != result_ty
+            && !self.types_equivalent(expected, result_ty)
             && !expected.is_error()
             && !expected.is_never()
         {
@@ -1777,9 +1779,9 @@ impl<'a> BodySema<'a> {
         // diagnostic. AIR only binds the already-resolved canonical record.
         let arg_inst = self.rir.get(arg.value);
         let import_path = match &arg_inst.data {
-            rue_rir::InstData::StringConst(path_spur) => {
-                self.interner.resolve(path_spur).to_string()
-            }
+            rue_rir::InstData::StringConst {
+                content: path_spur, ..
+            } => self.interner.resolve(path_spur).to_string(),
             _ => unreachable!("compiler import preflight requires a string literal"),
         };
 

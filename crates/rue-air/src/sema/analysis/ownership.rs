@@ -576,7 +576,7 @@ impl<'a> BodySema<'a> {
 
         match &inst.data {
             // Base case: local variable reference
-            InstData::VarRef { name } => {
+            InstData::VarRef { name, .. } => {
                 // Locals shadow parameters (spec 5.1:10): a `let` that rebinds a
                 // parameter name makes every later reference resolve to the new
                 // local, not the parameter (RUE-278). A local with a param's
@@ -794,9 +794,9 @@ impl<'a> BodySema<'a> {
                 air, directives, *name, *is_mut, *ty, *init, *iter_elem, inst.span, ctx,
             ),
 
-            InstData::VarRef { name } => {
+            InstData::VarRef { name, anchor } => {
                 let resolved_ty = ctx.resolved_types.get(&inst_ref).copied();
-                self.analyze_var_ref(air, *name, inst.span, resolved_ty, ctx)
+                self.analyze_var_ref(air, *name, anchor.clone(), inst.span, resolved_ty, ctx)
             }
 
             InstData::Assign { name, value } => {
@@ -1046,8 +1046,10 @@ impl<'a> BodySema<'a> {
         ctx: &mut AnalysisContext,
         value: ConstValue,
         ty: Type,
-    ) -> (AirInstData, Type) {
-        match value {
+        anchor: Option<rue_rir::RirStructuralAnchor>,
+        span: Span,
+    ) -> CompileResult<(AirInstData, Type)> {
+        Ok(match value {
             ConstValue::Integer(v) => (AirInstData::Const(v as u64), ty),
             ConstValue::Bool(b) => (AirInstData::BoolConst(b), Type::BOOL),
             ConstValue::Unit => (AirInstData::UnitConst, Type::UNIT),
@@ -1060,10 +1062,19 @@ impl<'a> BodySema<'a> {
             // and lowers to a `.rodata`-backed `str` value (RUE-957).
             ConstValue::String(content) => {
                 let content = self.interner.resolve(&content).to_string();
-                let local_id = ctx.add_local_string(content);
+                let anchor = anchor.ok_or_else(|| {
+                    CompileError::new(
+                        ErrorKind::InternalError(
+                            "named string constant use has no stable RIR occurrence anchor"
+                                .to_string(),
+                        ),
+                        span,
+                    )
+                })?;
+                let local_id = ctx.add_local_read_only_data(content, anchor);
                 (AirInstData::StringConst(local_id), ty)
             }
-        }
+        })
     }
 
     /// Analyze a variable reference.
@@ -1071,6 +1082,7 @@ impl<'a> BodySema<'a> {
         &mut self,
         air: &mut Air,
         name: Spur,
+        atom_anchor: Option<rue_rir::RirStructuralAnchor>,
         span: Span,
         // The Hindley-Milner-resolved type of this reference, if known. Used
         // to recover the declared width of a captured comptime value parameter
@@ -1379,7 +1391,13 @@ impl<'a> BodySema<'a> {
                     span,
                 ));
             }
-            let (data, ty) = self.materialize_const_value(ctx, const_info.value, const_info.ty);
+            let (data, ty) = self.materialize_const_value(
+                ctx,
+                const_info.value,
+                const_info.ty,
+                atom_anchor,
+                span,
+            )?;
             let air_ref = air.add_inst(AirInst { data, ty, span });
             return Ok(AnalysisResult::new(air_ref, ty));
         }
@@ -1522,7 +1540,7 @@ impl<'a> BodySema<'a> {
                 // Non-literal values retain their own type and are checked
                 // exactly below.
                 let contextual_fixed_literal = self.is_str_fixed_struct(param_ty)
-                    && matches!(&self.rir.get(value).data, InstData::StringConst(_));
+                    && matches!(&self.rir.get(value).data, InstData::StringConst { .. });
                 let value_result = if contextual_fixed_literal {
                     let prev_expected = ctx.expected_type.replace(param_ty);
                     let result = self.analyze_inst(air, value, ctx);
@@ -1537,7 +1555,7 @@ impl<'a> BodySema<'a> {
                 // identity before emitting it so equal source/target layout is
                 // a proved invariant, not an assumption. Never/Error retain
                 // their usual recovery coercions and cannot execute a store.
-                if value_result.ty != param_ty
+                if !self.types_equivalent(value_result.ty, param_ty)
                     && !value_result.ty.is_never()
                     && !value_result.ty.is_error()
                     && !param_ty.is_error()
@@ -1814,7 +1832,7 @@ impl<'a> BodySema<'a> {
         // First, check if the base is a module access (special case, not a place)
         // We need to peek at the base type to detect module.Type access patterns.
         let base_inst = self.rir.get(base);
-        if let InstData::VarRef { name } = &base_inst.data {
+        if let InstData::VarRef { name, .. } = &base_inst.data {
             if !self.is_runtime_value_binding(*name, ctx) {
                 if let Some(result) =
                     self.try_analyze_dotted_enum_variant(air, *name, field, span, ctx)?
@@ -1830,8 +1848,14 @@ impl<'a> BodySema<'a> {
                     // Member access is a use of the binding (`let m =
                     // @import(..); m.ANSWER` must not warn about `m`).
                     ctx.used_locals.insert(*name);
-                    return self
-                        .analyze_module_type_member_access(air, module_id, field, span, ctx);
+                    return self.analyze_module_type_member_access(
+                        air,
+                        module_id,
+                        field,
+                        super::const_use_anchor_of(self.rir, base),
+                        span,
+                        ctx,
+                    );
                 }
             }
         }
@@ -2064,7 +2088,14 @@ impl<'a> BodySema<'a> {
 
         // Handle module member access that wasn't caught above
         if let Some(module_id) = base_type.as_module() {
-            return self.analyze_module_type_member_access(air, module_id, field, span, ctx);
+            return self.analyze_module_type_member_access(
+                air,
+                module_id,
+                field,
+                super::const_use_anchor_of(self.rir, base),
+                span,
+                ctx,
+            );
         }
 
         let struct_id = match base_type.as_struct() {
@@ -3874,7 +3905,7 @@ impl<'a> BodySema<'a> {
         operand: InstRef,
         ctx: &AnalysisContext,
     ) -> Option<RirParamMode> {
-        if let InstData::VarRef { name } = self.rir.get(operand).data {
+        if let InstData::VarRef { name, .. } = self.rir.get(operand).data {
             // Locals shadow parameters. Without this guard a local reusing a
             // view parameter's name would inherit its second-class provenance.
             if ctx.locals.contains_key(&name) {
@@ -4255,7 +4286,7 @@ impl<'a> BodySema<'a> {
         // Forwarding an existing slice (`inner(borrow s)` where `s: [T]`): the
         // fat pointer is already built, so read it by value (a slice is `@copy`)
         // and pass it through — no re-materialization.
-        if arr_ty == slice_ty {
+        if self.types_equivalent(arr_ty, slice_ty) {
             let projs: Vec<AirProjection> = trace.projections.iter().map(|p| p.proj).collect();
             let place_ref = air.make_place(trace.base, trace.base_type, projs)?;
             let val = air.add_inst(AirInst {
@@ -4273,7 +4304,7 @@ impl<'a> BodySema<'a> {
                 return Err(self.type_mismatch_error(slice_ty, arr_ty, span));
             }
         };
-        if arr_elem != slice_elem {
+        if !self.types_equivalent(arr_elem, slice_elem) {
             return Err(self.type_mismatch_error(slice_ty, arr_ty, span));
         }
 

@@ -92,6 +92,19 @@ impl Default for CompileOptions {
 pub struct FunctionWithCfg {
     /// The analyzed function from semantic analysis.
     pub analyzed: AnalyzedFunction,
+    /// Durable semantic identity retained independently from machine naming.
+    pub semantic_identity: crate::FunctionInstanceKey,
+    /// Typed symbol projection selected by the compiler authority.
+    pub symbol: crate::StableSymbolId,
+    /// Stable occurrence identities for local data owned by this function.
+    /// Dense IDs remain a current string-table projection consumed by codegen.
+    pub local_atoms: Vec<rue_air::LocalAtomRecord<crate::StableDefinitionKey, crate::ModuleId>>,
+    /// Final object/linker symbol. Root source `main` is the documented
+    /// ProgramEntry ABI alias; all other source/glue bodies use the encoder.
+    pub machine_name: String,
+    /// Request-local live symbol used only to resolve pre-projection AIR and
+    /// cleanup metadata through the authoritative mapping.
+    pub(crate) legacy_name: String,
     /// The control flow graph built from the AIR.
     pub cfg: Cfg,
 }
@@ -129,7 +142,7 @@ pub(crate) struct CfgFrontendOutput {
     pub(crate) durable_cfgs: std::sync::Arc<[DurableCfgArtifact]>,
 }
 
-pub(crate) const DURABLE_CFG_SCHEMA_VERSION: u32 = 1;
+pub(crate) const DURABLE_CFG_SCHEMA_VERSION: u32 = 4;
 
 /// Last-good, fail-closed CFG candidate retained between semantic requests.
 ///
@@ -160,23 +173,33 @@ pub(crate) fn build_functions_and_cfgs(
     target: Target,
     interner: &ThreadedRodeo,
     durable_candidates: &[DurableCfgArtifact],
-    stable_inputs: &[crate::durable_cfg::StableCfgInput],
+    stable_inputs: &[crate::durable_cfg::CurrentCfgInput],
+    projected_identities: &std::collections::BTreeMap<
+        rue_air::FunctionInstanceKey<
+            rue_air::SemanticDefinitionToken,
+            rue_air::SemanticModuleToken,
+        >,
+        crate::FunctionInstanceKey,
+    >,
 ) -> Result<CfgFrontendOutput, CfgConstructionFailure> {
     let SemaOutput {
         functions,
         strings,
         mut warnings,
         type_pool,
+        aggregate_type_identities_by_type,
         body_analysis_work: _,
         ..
     } = sema_output;
 
     // Synthesize drop glue functions.
     let drop_glue_functions =
-        drop_glue::synthesize_drop_glue(&type_pool).map_err(|error| CfgConstructionFailure {
-            errors: error.into(),
-            work: canonical_semantic::CfgConstructionWork::default(),
-        })?;
+        drop_glue::synthesize_drop_glue(&type_pool, &aggregate_type_identities_by_type).map_err(
+            |error| CfgConstructionFailure {
+                errors: error.into(),
+                work: canonical_semantic::CfgConstructionWork::default(),
+            },
+        )?;
     let mut work = canonical_semantic::CfgConstructionWork {
         drop_glue_functions_synthesized: drop_glue_functions.len(),
         functions_considered: functions.len() + drop_glue_functions.len(),
@@ -193,213 +216,359 @@ pub(crate) fn build_functions_and_cfgs(
         .filter(|f| f.air.return_type() != Type::COMPTIME_TYPE)
         .chain(drop_glue_functions)
         .collect();
+    let mut legacy_to_machine = std::collections::BTreeMap::<String, String>::new();
+    let mut canonical_owners =
+        std::collections::BTreeMap::<String, crate::FunctionInstanceKey>::new();
+    let mut projected = Vec::with_capacity(all_functions.len());
+    for function in all_functions.drain(..) {
+        let semantic_identity = projected_identities
+            .get(&function.identity)
+            .cloned()
+            .ok_or_else(|| CfgConstructionFailure {
+                errors: CompileError::without_span(ErrorKind::InternalError(format!(
+                    "callable '{}' has no canonical identity projection",
+                    function.name
+                )))
+                .into(),
+                work: work.clone(),
+            })?;
+        let mut local_atoms = function
+            .local_atoms
+            .iter()
+            .map(|atom| {
+                if atom.identity.producer != function.identity
+                    || strings.get(atom.dense_id as usize).map(String::as_str)
+                        != Some(atom.content.as_ref())
+                {
+                    return Err(CfgConstructionFailure {
+                        errors: CompileError::without_span(ErrorKind::InternalError(format!(
+                            "callable '{}' has an invalid local atom projection",
+                            function.name
+                        )))
+                        .into(),
+                        work: work.clone(),
+                    });
+                }
+                Ok(rue_air::LocalAtomRecord {
+                    identity: rue_air::LocalAtomId {
+                        producer: semantic_identity.clone(),
+                        kind: atom.identity.kind,
+                        anchor: atom.identity.anchor.clone(),
+                    },
+                    content: atom.content.clone(),
+                    dense_id: atom.dense_id,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        local_atoms.sort_by(|left, right| left.identity.cmp(&right.identity));
+        if local_atoms
+            .windows(2)
+            .any(|pair| pair[0].identity == pair[1].identity)
+        {
+            return Err(CfgConstructionFailure {
+                errors: CompileError::without_span(ErrorKind::InternalError(format!(
+                    "callable '{}' has duplicate local atom identities",
+                    function.name
+                )))
+                .into(),
+                work,
+            });
+        }
+        let is_program_entry = function.name == "main";
+        let symbol = if is_program_entry {
+            crate::StableSymbolId::Callable(crate::StableCallableId::Compiler(
+                crate::CompilerCallableId::ProgramEntry,
+            ))
+        } else {
+            crate::StableSymbolId::Callable(crate::StableCallableId::Function(
+                semantic_identity.clone(),
+            ))
+        };
+        // `main` is the platform entry ABI alias of the root source function;
+        // the function record still retains `semantic_identity` above.
+        let machine_name = if is_program_entry {
+            "main".to_owned()
+        } else {
+            crate::StableSymbolEncoder::encode(&symbol)
+        };
+        if let Some(previous) =
+            legacy_to_machine.insert(function.name.clone(), machine_name.clone())
+            && previous != machine_name
+        {
+            return Err(CfgConstructionFailure {
+                errors: CompileError::without_span(ErrorKind::InternalError(format!(
+                    "live callable symbol '{}' fans out to '{}' and '{}'",
+                    function.name, previous, machine_name
+                )))
+                .into(),
+                work,
+            });
+        }
+        if let Some(previous) =
+            canonical_owners.insert(machine_name.clone(), semantic_identity.clone())
+            && previous != semantic_identity
+        {
+            return Err(CfgConstructionFailure {
+                errors: CompileError::without_span(ErrorKind::InternalError(format!(
+                    "canonical machine symbol collision at '{machine_name}'"
+                )))
+                .into(),
+                work,
+            });
+        }
+        projected.push((
+            function,
+            semantic_identity,
+            symbol,
+            local_atoms,
+            machine_name,
+        ));
+    }
+    // AIR and CFG remain source-semantic artifacts. Their live call names are
+    // resolved through `legacy_to_machine` only at the codegen boundary; this
+    // keeps presentation and durable CFG reuse independent of interner slots.
+    let mut all_functions = projected;
     // Function order controls indexed Rayon collection, object-file order,
     // and final linker layout. Machine symbols are the stable semantic
     // identity shared by user, specialized, destructor, and glue functions.
-    all_functions.sort_by(|left, right| left.name.cmp(&right.name));
+    all_functions.sort_by(|left, right| left.4.cmp(&right.4));
 
     let _span = info_span!("cfg_construction").entered();
 
     let results: Vec<_> = all_functions
         .into_par_iter()
-        .map(|func| {
-            let dependency_source = func.implicit_drop_source.clone();
-            let stable_input = stable_inputs
-                .binary_search_by(|input| input.identity.as_ref().cmp(&func.name))
-                .ok()
-                .map(|index| &stable_inputs[index]);
-            let projection = stable_input.and_then(|input| {
-                crate::durable_cfg::CfgDomainProjection::from_body(&func, input, &strings).ok()
-            });
-            let candidate = durable_candidates
-                .binary_search_by(|candidate| candidate.input.identity.as_ref().cmp(&func.name))
-                .ok()
-                .map(|index| &durable_candidates[index]);
-            let mut function_work = canonical_semantic::CfgConstructionWork::default();
-            if let Some(candidate) = candidate {
-                function_work.cfg_reuse_candidates = 1;
-                function_work.cfg_import_attempts = 1;
-                let schema_compatible = candidate.schema_version == DURABLE_CFG_SCHEMA_VERSION
-                    && crate::DURABLE_SEMANTIC_SCHEMA_VERSION
-                        .accepts(candidate.semantic_schema_version);
-                if !schema_compatible {
-                    function_work.cfg_schema_version_rejections = 1;
-                }
-                if schema_compatible
-                    && candidate.opt_level == opt_level
-                    && candidate.target == target
-                    && stable_input.is_some_and(|input| {
-                        input.body == candidate.input.body
-                            && input.specialization == candidate.input.specialization
-                            && input.type_inputs == candidate.input.type_inputs
-                    })
-                    && let Some(projection) = projection.as_ref()
-                {
-                    match crate::durable_cfg::CfgDomainProjection::import_cfg(
-                        &candidate.domains,
-                        projection,
-                        &candidate.cfg,
-                        stable_input.unwrap().body_span,
-                    ) {
-                        Ok(imported) => {
-                            if let Ok(imported) = imported.finish(&type_pool) {
-                                function_work.cfg_import_successes = 1;
-                                function_work.cfg_reuses = 1;
-                                let artifact = candidate.clone();
-                                return Ok((
-                                    (
-                                        FunctionWithCfg {
-                                            analyzed: func,
-                                            cfg: imported,
-                                        },
-                                        Vec::new(),
-                                        Vec::new(),
-                                        true,
-                                        Some(artifact),
-                                    ),
-                                    function_work,
-                                ));
-                            }
-                        }
-                        Err(crate::durable_cfg::CfgDomainFailure::Edit(error)) => {
-                            function_work.cfg_import_failures = 1;
-                            function_work.cfg_builds_failed = 1;
-                            let mut errors = CompileErrors::new();
-                            errors.push(CompileError::new(
-                                ErrorKind::InternalError(format!(
-                                    "CFG import payload construction failed: {error:?}"
-                                )),
-                                stable_input.unwrap().body_span,
-                            ));
-                            return Err((errors, function_work));
-                        }
-                        Err(_) => {}
+        .map(
+            |(func, semantic_identity, symbol, local_atoms, machine_name)| {
+                let legacy_name = func.name.clone();
+                let dependency_source = func.implicit_drop_source.clone();
+                let current_input = stable_inputs
+                    .binary_search_by(|input| input.stable.function.cmp(&semantic_identity))
+                    .ok()
+                    .map(|index| &stable_inputs[index]);
+                let projection = current_input.and_then(|input| {
+                    crate::durable_cfg::CfgDomainProjection::from_body(
+                        &func,
+                        &input.stable,
+                        input.body_span,
+                        &strings,
+                    )
+                    .ok()
+                });
+                let candidate = current_input.and_then(|input| {
+                    durable_candidates
+                        .binary_search_by(|candidate| {
+                            candidate.input.function.cmp(&input.stable.function)
+                        })
+                        .ok()
+                        .map(|index| &durable_candidates[index])
+                });
+                let mut function_work = canonical_semantic::CfgConstructionWork::default();
+                if let Some(candidate) = candidate {
+                    function_work.cfg_reuse_candidates = 1;
+                    function_work.cfg_import_attempts = 1;
+                    let schema_compatible = candidate.schema_version == DURABLE_CFG_SCHEMA_VERSION
+                        && crate::DURABLE_SEMANTIC_SCHEMA_VERSION
+                            .accepts(candidate.semantic_schema_version);
+                    if !schema_compatible {
+                        function_work.cfg_schema_version_rejections = 1;
                     }
-                }
-                function_work.cfg_import_failures = 1;
-                function_work.cfg_fallbacks = 1;
-            }
-            function_work.cfg_builds_attempted = 1;
-            function_work.air_instructions_consumed = func.air.instructions().len();
-            let cfg_output = CfgBuilder::build(
-                &func.air,
-                func.num_locals,
-                func.num_param_slots,
-                &func.name,
-                &type_pool,
-                func.param_modes.clone(),
-                interner,
-                func.allow_unreachable_code,
-            );
-
-            // A non-empty `errors` means the CFG builder hit malformed AIR
-            // (an internal compiler error, RUE-7). Abort before optimizing
-            // the discarded CFG rather than working on it.
-            if !cfg_output.errors.is_empty() {
-                function_work.cfg_builds_failed = 1;
-                let mut errs = CompileErrors::new();
-                for e in cfg_output.errors {
-                    errs.push(e);
-                }
-                return Err((errs, function_work));
-            }
-
-            function_work.cfg_builds_succeeded = 1;
-            function_work.optimization_attempts = 1;
-            function_work.optimized_level_attempts = usize::from(opt_level != OptLevel::O0);
-            let cfg = cfg_output
-                .cfg
-                .expect("successful CFG construction publishes a validated CFG");
-            let cfg = match rue_cfg::opt::optimize(cfg, opt_level, &type_pool) {
-                Ok(cfg) => cfg,
-                Err(error) => {
-                    function_work.cfg_builds_failed = 1;
-                    let mut errors = CompileErrors::new();
-                    errors.push(CompileError::without_span(ErrorKind::InternalError(
-                        format!("CFG optimization failed: {error}"),
-                    )));
-                    return Err((errors, function_work));
-                }
-            };
-            function_work.optimization_completions = 1;
-            function_work.cfg_warnings_emitted = cfg_output.warnings.len();
-            function_work.implicit_destructor_targets_emitted =
-                cfg_output.implicit_named_destructors.len();
-
-            let mut implicit_edges = Vec::new();
-            let mut complete = !cfg_output.anonymous_destructor_dependency_incomplete;
-            // A named struct definition globally owns its synthesized glue.
-            // Its own destructor is emitted as a direct AIR call rather than a
-            // CFG Drop, so retain that definition -> destructor edge here.
-            if let Some(rue_air::ImplicitDropDependencySourceEvent::NamedStruct { file, name }) =
-                &dependency_source
-            {
-                for struct_id in type_pool.all_struct_ids() {
-                    let target = type_pool.struct_def(struct_id);
-                    if target.file_id.index() == *file
-                        && target.name == *name
-                        && target.destructor.is_some()
-                        && !target.is_builtin
+                    if schema_compatible
+                        && candidate.opt_level == opt_level
+                        && candidate.target == target
+                        && current_input.is_some_and(|input| input.stable == candidate.input)
+                        && let Some(projection) = projection.as_ref()
                     {
-                        implicit_edges.push(rue_air::ImplicitNamedDestructorDependencyEvent {
-                            source: dependency_source.clone().unwrap(),
-                            target_file: *file,
-                            target_owner_name: name.clone(),
-                        });
+                        match crate::durable_cfg::CfgDomainProjection::import_cfg(
+                            &candidate.domains,
+                            projection,
+                            &candidate.cfg,
+                            current_input.unwrap().body_span,
+                        ) {
+                            Ok(imported) => {
+                                let imported = imported.finish_after_optimization(&type_pool);
+                                if let Ok(imported) = imported {
+                                    function_work.cfg_import_successes = 1;
+                                    function_work.cfg_reuses = 1;
+                                    // Publish the current request's domain projection.
+                                    // Retaining the candidate's old spans would make a
+                                    // second position-only edit reuse stale locations.
+                                    let artifact = DurableCfgArtifact {
+                                        schema_version: candidate.schema_version,
+                                        semantic_schema_version: candidate.semantic_schema_version,
+                                        input: current_input.unwrap().stable.clone(),
+                                        opt_level: candidate.opt_level,
+                                        target: candidate.target,
+                                        cfg: imported.clone(),
+                                        domains: projection.clone(),
+                                    };
+                                    return Ok((
+                                        (
+                                            FunctionWithCfg {
+                                                analyzed: func,
+                                                semantic_identity,
+                                                symbol,
+                                                local_atoms,
+                                                machine_name,
+                                                legacy_name,
+                                                cfg: imported,
+                                            },
+                                            Vec::new(),
+                                            Vec::new(),
+                                            true,
+                                            Some(artifact),
+                                        ),
+                                        function_work,
+                                    ));
+                                }
+                            }
+                            Err(crate::durable_cfg::CfgDomainFailure::Edit(error)) => {
+                                function_work.cfg_import_failures = 1;
+                                function_work.cfg_builds_failed = 1;
+                                let mut errors = CompileErrors::new();
+                                errors.push(CompileError::new(
+                                    ErrorKind::InternalError(format!(
+                                        "CFG import payload construction failed: {error:?}"
+                                    )),
+                                    current_input.unwrap().body_span,
+                                ));
+                                return Err((errors, function_work));
+                            }
+                            Err(_) => {}
+                        }
                     }
+                    function_work.cfg_import_failures = 1;
+                    function_work.cfg_fallbacks = 1;
                 }
-            }
-            if !cfg_output.implicit_named_destructors.is_empty() {
-                if matches!(
-                    dependency_source,
-                    Some(rue_air::ImplicitDropDependencySourceEvent::Anonymous)
-                ) {
-                    complete = false;
-                } else if let Some(source) = dependency_source {
-                    for struct_id in cfg_output.implicit_named_destructors {
-                        let target = type_pool.struct_def(struct_id);
-                        implicit_edges.push(rue_air::ImplicitNamedDestructorDependencyEvent {
-                            source: source.clone(),
-                            target_file: target.file_id.index(),
-                            target_owner_name: target.name.clone(),
-                        });
-                    }
-                }
-            }
+                function_work.cfg_builds_attempted = 1;
+                function_work.air_instructions_consumed = func.air.instructions().len();
+                let cfg_output = CfgBuilder::build(
+                    &func.air,
+                    func.num_locals,
+                    func.num_param_slots,
+                    &legacy_name,
+                    &type_pool,
+                    func.param_modes.clone(),
+                    interner,
+                    func.allow_unreachable_code,
+                    func.callable_kind,
+                );
 
-            function_work.cfg_export_attempts = usize::from(stable_input.is_some());
-            let artifact = stable_input.zip(projection).and_then(|(input, domains)| {
-                (cfg_output.warnings.is_empty()
-                    && implicit_edges.is_empty()
-                    && complete
-                    && domains.validate_cfg(&cfg, input.body_span).is_ok())
-                .then(|| DurableCfgArtifact {
-                    schema_version: DURABLE_CFG_SCHEMA_VERSION,
-                    semantic_schema_version: crate::DURABLE_SEMANTIC_SCHEMA_VERSION,
-                    input: input.clone(),
-                    opt_level,
-                    target,
-                    cfg: cfg.clone(),
-                    domains,
-                })
-            });
-            function_work.cfg_export_successes = usize::from(artifact.is_some());
-            function_work.cfg_export_rejections =
-                function_work.cfg_export_attempts - function_work.cfg_export_successes;
-            Ok((
-                (
-                    FunctionWithCfg {
-                        analyzed: func,
-                        cfg,
-                    },
-                    cfg_output.warnings,
-                    implicit_edges,
-                    complete,
-                    artifact,
-                ),
-                function_work,
-            ))
-        })
+                // A non-empty `errors` means the CFG builder hit malformed AIR
+                // (an internal compiler error, RUE-7). Abort before optimizing
+                // the discarded CFG rather than working on it.
+                if !cfg_output.errors.is_empty() {
+                    function_work.cfg_builds_failed = 1;
+                    let mut errs = CompileErrors::new();
+                    for e in cfg_output.errors {
+                        errs.push(e);
+                    }
+                    return Err((errs, function_work));
+                }
+
+                function_work.cfg_builds_succeeded = 1;
+                function_work.optimization_attempts = 1;
+                function_work.optimized_level_attempts = usize::from(opt_level != OptLevel::O0);
+                let cfg = cfg_output
+                    .cfg
+                    .expect("successful CFG construction publishes a validated CFG");
+                let cfg = match rue_cfg::opt::optimize(cfg, opt_level, &type_pool) {
+                    Ok(cfg) => cfg,
+                    Err(error) => {
+                        function_work.cfg_builds_failed = 1;
+                        let mut errors = CompileErrors::new();
+                        errors.push(CompileError::without_span(ErrorKind::InternalError(
+                            format!("CFG optimization failed: {error}"),
+                        )));
+                        return Err((errors, function_work));
+                    }
+                };
+                function_work.optimization_completions = 1;
+                function_work.cfg_warnings_emitted = cfg_output.warnings.len();
+                function_work.implicit_destructor_targets_emitted =
+                    cfg_output.implicit_named_destructors.len();
+
+                let mut implicit_edges = Vec::new();
+                let mut complete = !cfg_output.anonymous_destructor_dependency_incomplete;
+                // A named struct definition globally owns its synthesized glue.
+                // Its own destructor is emitted as a direct AIR call rather than a
+                // CFG Drop, so retain that definition -> destructor edge here.
+                if let Some(rue_air::ImplicitDropDependencySourceEvent::NamedStruct {
+                    file,
+                    name,
+                }) = &dependency_source
+                {
+                    for struct_id in type_pool.all_struct_ids() {
+                        let target = type_pool.struct_def(struct_id);
+                        if target.file_id.index() == *file
+                            && target.name == *name
+                            && target.destructor.is_some()
+                            && !target.is_builtin
+                        {
+                            implicit_edges.push(rue_air::ImplicitNamedDestructorDependencyEvent {
+                                source: dependency_source.clone().unwrap(),
+                                target_file: *file,
+                                target_owner_name: name.clone(),
+                            });
+                        }
+                    }
+                }
+                if !cfg_output.implicit_named_destructors.is_empty() {
+                    if matches!(
+                        dependency_source,
+                        Some(rue_air::ImplicitDropDependencySourceEvent::Anonymous)
+                    ) {
+                        complete = false;
+                    } else if let Some(source) = dependency_source {
+                        for struct_id in cfg_output.implicit_named_destructors {
+                            let target = type_pool.struct_def(struct_id);
+                            implicit_edges.push(rue_air::ImplicitNamedDestructorDependencyEvent {
+                                source: source.clone(),
+                                target_file: target.file_id.index(),
+                                target_owner_name: target.name.clone(),
+                            });
+                        }
+                    }
+                }
+
+                function_work.cfg_export_attempts = usize::from(current_input.is_some());
+                let artifact = current_input.zip(projection).and_then(|(input, domains)| {
+                    (cfg_output.warnings.is_empty()
+                        && implicit_edges.is_empty()
+                        && complete
+                        && domains.validate_cfg(&cfg, input.body_span).is_ok())
+                    .then(|| DurableCfgArtifact {
+                        schema_version: DURABLE_CFG_SCHEMA_VERSION,
+                        semantic_schema_version: crate::DURABLE_SEMANTIC_SCHEMA_VERSION,
+                        input: input.stable.clone(),
+                        opt_level,
+                        target,
+                        cfg: cfg.clone(),
+                        domains,
+                    })
+                });
+                function_work.cfg_export_successes = usize::from(artifact.is_some());
+                function_work.cfg_export_rejections =
+                    function_work.cfg_export_attempts - function_work.cfg_export_successes;
+                Ok((
+                    (
+                        FunctionWithCfg {
+                            analyzed: func,
+                            semantic_identity,
+                            symbol,
+                            local_atoms,
+                            machine_name,
+                            legacy_name,
+                            cfg,
+                        },
+                        cfg_output.warnings,
+                        implicit_edges,
+                        complete,
+                        artifact,
+                    ),
+                    function_work,
+                ))
+            },
+        )
         .collect();
 
     let mut functions = Vec::with_capacity(results.len());
@@ -452,6 +621,7 @@ pub(crate) fn build_functions_and_cfgs(
     }
     implicit_named_destructor_dependencies.sort();
     implicit_named_destructor_dependencies.dedup();
+    durable_cfgs.sort_by(|left, right| left.input.function.cmp(&right.input.function));
 
     info!(
         function_count = functions.len(),
@@ -468,6 +638,64 @@ pub(crate) fn build_functions_and_cfgs(
         work,
         durable_cfgs: durable_cfgs.into(),
     })
+}
+
+#[cfg(test)]
+pub(crate) fn synthetic_projected_function_identities(
+    sema_output: &SemaOutput,
+) -> std::collections::BTreeMap<
+    rue_air::FunctionInstanceKey<rue_air::SemanticDefinitionToken, rue_air::SemanticModuleToken>,
+    crate::FunctionInstanceKey,
+> {
+    use std::convert::Infallible;
+    use std::sync::Arc;
+
+    let definition_module = crate::ModuleId::from_logical_path("test/definitions.rue")
+        .expect("synthetic test module path is valid");
+    let project = |identity: &rue_air::FunctionInstanceKey<
+        rue_air::SemanticDefinitionToken,
+        rue_air::SemanticModuleToken,
+    >| {
+        identity
+            .try_map_identities(
+                &|token| {
+                    Ok::<_, Infallible>(crate::StableDefinitionKey::for_test(
+                        definition_module.clone(),
+                        crate::StableDefinitionNamespace::Value,
+                        crate::StableDefinitionKind::Function,
+                        Arc::<str>::from(format!("definition_{}", token.slot())),
+                        None,
+                    ))
+                },
+                &|token| {
+                    Ok::<_, Infallible>(
+                        crate::ModuleId::from_logical_path(&format!(
+                            "test/module_{}.rue",
+                            token.slot()
+                        ))
+                        .expect("synthetic test module path is valid"),
+                    )
+                },
+            )
+            .expect("synthetic identity projection is infallible")
+    };
+
+    sema_output
+        .functions
+        .iter()
+        .map(|function| (function.identity.clone(), project(&function.identity)))
+        .chain(
+            sema_output
+                .aggregate_type_identities_by_type
+                .values()
+                .cloned()
+                .map(|identity| {
+                    let identity = rue_air::FunctionInstanceKey::DropGlue(Box::new(identity));
+                    let projected = project(&identity);
+                    (identity, projected)
+                }),
+        )
+        .collect()
 }
 
 /// Source-volume and phase-work metrics collected by one-shot compilation.
@@ -707,6 +935,7 @@ mod failure_work_tests {
     fn malformed_air_retains_deterministic_work_from_every_cfg_builder() {
         let run = || {
             let (output, interner) = malformed_cfg_input();
+            let projected_identities = synthetic_projected_function_identities(&output);
             match build_functions_and_cfgs(
                 output,
                 OptLevel::O1,
@@ -714,6 +943,7 @@ mod failure_work_tests {
                 &interner,
                 &[],
                 &[],
+                &projected_identities,
             ) {
                 Ok(_) => panic!("malformed AIR unexpectedly built a CFG"),
                 Err(failure) => failure,
@@ -735,8 +965,8 @@ mod failure_work_tests {
         );
         assert_eq!(
             first.errors.iter().next().unwrap().span().unwrap().start,
-            10,
-            "the first sorted failing function supplies the published diagnostic"
+            20,
+            "the first canonically sorted failing function supplies the published diagnostic"
         );
     }
 }

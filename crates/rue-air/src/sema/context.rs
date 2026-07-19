@@ -335,6 +335,16 @@ impl CallLoanKind {
 /// Bundles together the mutable state that needs to be threaded through
 /// recursive `analyze_inst` calls.
 pub(crate) struct AnalysisContext<'a> {
+    /// RIR body root of the definition producing values in this analysis.
+    /// Anonymous structural anchors are relative to this producer.
+    pub producer: InstRef,
+    /// Issuer-scoped canonical identity of that producer and its arguments.
+    /// Anonymous nominal allocation consumes these values directly; the RIR
+    /// handle above is traversal context only and never enters an entity key.
+    pub canonical_producer: super::anon_structs::IssuedStableProducerId,
+    pub canonical_producer_arguments: super::anon_structs::IssuedCanonicalArguments,
+    /// Exact callable identity which owns local data atoms in this body.
+    pub canonical_function_identity: super::anon_structs::IssuedFunctionInstanceKey,
     /// File that owns the function body currently being analyzed.
     pub current_file_id: FileId,
     /// Local variables in scope
@@ -403,6 +413,9 @@ pub(crate) struct AnalysisContext<'a> {
     /// Local string data indexed by local string table index.
     /// After analysis, these are merged into the global string table with ID remapping.
     pub local_strings: Vec<String>,
+    /// Every source occurrence, including aliases sharing one dense string ID.
+    pub local_atoms:
+        Vec<crate::LocalAtomRecord<crate::SemanticDefinitionToken, crate::SemanticModuleToken>>,
     /// Comptime type variables: maps variable symbols to their compile-time type values.
     /// When a variable is bound to a comptime type (e.g., `let P = make_point()` where
     /// `make_point() -> type`), this map stores the resolved type so it can be used
@@ -632,6 +645,10 @@ impl<'a> AnalysisContext<'a> {
     /// context.
     pub fn fork_for_loop_recheck(&self) -> AnalysisContext<'a> {
         AnalysisContext {
+            producer: self.producer,
+            canonical_producer: self.canonical_producer.clone(),
+            canonical_producer_arguments: self.canonical_producer_arguments.clone(),
+            canonical_function_identity: self.canonical_function_identity.clone(),
             current_file_id: self.current_file_id,
             locals: self.locals.clone(),
             params: self.params,
@@ -650,6 +667,7 @@ impl<'a> AnalysisContext<'a> {
             allow_unused_variables: self.allow_unused_variables,
             local_string_table: self.local_string_table.clone(),
             local_strings: self.local_strings.clone(),
+            local_atoms: self.local_atoms.clone(),
             comptime_type_vars: self.comptime_type_vars.clone(),
             comptime_value_vars: self.comptime_value_vars.clone(),
             referenced_functions: HashSet::new(),
@@ -764,7 +782,42 @@ impl<'a> AnalysisContext<'a> {
     /// This deduplicates strings within a single function. After function analysis
     /// completes, local strings are merged into the global string table with ID
     /// remapping in the AIR instructions.
-    pub fn add_local_string(&mut self, content: String) -> u32 {
+    pub fn add_local_string(
+        &mut self,
+        content: String,
+        anchor: rue_rir::RirStructuralAnchor,
+    ) -> u32 {
+        self.add_local_atom(content, crate::LocalAtomKind::String, anchor)
+    }
+
+    pub fn add_local_read_only_data(
+        &mut self,
+        content: String,
+        anchor: rue_rir::RirStructuralAnchor,
+    ) -> u32 {
+        self.add_local_atom(content, crate::LocalAtomKind::ReadOnlyData, anchor)
+    }
+
+    fn add_local_atom(
+        &mut self,
+        content: String,
+        kind: crate::LocalAtomKind,
+        anchor: rue_rir::RirStructuralAnchor,
+    ) -> u32 {
+        let dense_id = self.add_local_string_content(content.clone());
+        self.local_atoms.push(crate::LocalAtomRecord {
+            identity: crate::LocalAtomId {
+                producer: self.canonical_function_identity.clone(),
+                kind,
+                anchor,
+            },
+            content: content.into(),
+            dense_id,
+        });
+        dense_id
+    }
+
+    fn add_local_string_content(&mut self, content: String) -> u32 {
         use std::collections::hash_map::Entry;
         match self.local_string_table.entry(content) {
             Entry::Occupied(e) => *e.get(),

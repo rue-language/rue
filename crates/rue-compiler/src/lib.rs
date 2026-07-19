@@ -54,6 +54,7 @@ mod parsed_modules;
 mod queries;
 mod query_graph;
 mod revisioned_query_database;
+mod semantic_identity;
 mod semantic_symbols;
 mod session;
 mod source_identity;
@@ -111,6 +112,13 @@ pub(crate) use import_graph::{ResolvedCodegenRevision, ResolvedProgramRevision};
 pub(crate) use parsed_modules::{InvalidImportShape, ParsedProgram};
 pub(crate) use queries::FunctionWithCfg;
 pub use queries::{CompileOptions, CompileOutput, LinkerMode, SourceView, compile_snapshot};
+#[allow(unused_imports)]
+pub(crate) use semantic_identity::{
+    AnonymousMemberKey, AnonymousMemberKind, AnonymousNominalKey, AnonymousNominalKind,
+    CanonicalArgumentValue, CanonicalArguments, CompilerCallableId, FunctionInstanceKey,
+    LocalAtomId, LocalAtomKind, NominalInstanceKey, StableCallableId, StableProducerId,
+    StableSymbolEncoder, StableSymbolId, StructuralAnchor, StructuralPathSegment, TypeInstanceKey,
+};
 pub use session::{CanonicalImportGraphOutput, CompilerSession, CompilerSessionUpdate};
 pub use source_identity::{ModuleId, ModuleRevision, SourceId, SourceIdVersion, SourceRevision};
 pub use source_metadata::SourceMetadata;

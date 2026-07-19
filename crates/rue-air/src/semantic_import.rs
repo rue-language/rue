@@ -13,10 +13,11 @@ use lasso::{Spur, ThreadedRodeo};
 use rue_span::FileId;
 
 use crate::{
-    Air, AirCallArg, AirInst, AirInstData, AirPattern, AirProjection, AirRef, ConstValue, EnumDef,
-    EnumId, ModuleId, ModuleRegistry, SemanticBody, SemanticBodyImportFailure,
-    SemanticBodyInstData, SemanticBodyPattern, SemanticBodyProjection, SemanticImportedBody,
-    StructDef, StructField, StructId, Type, TypeInternPool,
+    Air, AirCallArg, AirInst, AirInstData, AirPattern, AirProjection, AirRef, AnonymousNominalKey,
+    ConstValue, EnumDef, EnumId, FunctionInstanceKey, ModuleId, ModuleRegistry, NominalInstanceKey,
+    SemanticBody, SemanticBodyImportFailure, SemanticBodyInstData, SemanticBodyPattern,
+    SemanticBodyProjection, SemanticImportedBody, StructDef, StructField, StructId, Type,
+    TypeInternPool,
 };
 use rue_span::Span;
 
@@ -55,6 +56,7 @@ pub enum SemanticImportType<K, M> {
         kind: SemanticImportNominalKind,
     },
     Nominal(K),
+    AnonymousNominal(AnonymousNominalKey<K, M>),
     Array {
         element: Box<Self>,
         len: u64,
@@ -87,6 +89,7 @@ macro_rules! semantic_import_type_schema {
             PtrMut, SemanticImportType::PtrMut(..), 16, "ptr_mut";
             Module, SemanticImportType::Module(..), 17, "module";
             GenericParameter, SemanticImportType::GenericParameter(..), 18, "generic_parameter";
+            AnonymousNominal, SemanticImportType::AnonymousNominal(..), 19, "anonymous_nominal";
         }
     };
 }
@@ -154,6 +157,7 @@ pub enum SemanticImportTypeFold<'a, K, M, T> {
         kind: SemanticImportNominalKind,
     },
     Nominal(&'a K),
+    AnonymousNominal(&'a AnonymousNominalKey<K, M>),
     Array {
         element: T,
         len: u64,
@@ -255,6 +259,7 @@ impl<K, M> SemanticImportType<K, M> {
             S::ComptimeType => F::ComptimeType,
             S::BuiltinNominal { name, kind } => F::BuiltinNominal { name, kind: *kind },
             S::Nominal(key) => F::Nominal(key),
+            S::AnonymousNominal(key) => F::AnonymousNominal(key),
             S::Array { element, len } => F::Array {
                 element: element.try_fold(fold)?,
                 len: *len,
@@ -296,6 +301,9 @@ impl<K, M> SemanticImportType<K, M> {
                     kind,
                 },
                 F::Nominal(value) => T::Nominal(key(value)?),
+                F::AnonymousNominal(value) => {
+                    T::AnonymousNominal(value.try_map_identities(key, module)?)
+                }
                 F::Array { element, len } => T::Array {
                     element: Box::new(element),
                     len,
@@ -415,7 +423,7 @@ where
         &self,
         body: &SemanticBody<K, M>,
         body_span: Span,
-    ) -> Result<SemanticImportedBody, SemanticBodyImportFailure> {
+    ) -> Result<SemanticImportedBody<K, M>, SemanticBodyImportFailure> {
         self.type_pool.transaction(|type_pool| {
             let scratch_interner = ThreadedRodeo::new();
             self.import_body_in_pool(body, body_span, type_pool, &scratch_interner)?;
@@ -434,7 +442,7 @@ where
         body_span: Span,
         type_pool: &TypeInternPool,
         interner: &ThreadedRodeo,
-    ) -> Result<SemanticImportedBody, SemanticBodyImportFailure> {
+    ) -> Result<SemanticImportedBody<K, M>, SemanticBodyImportFailure> {
         Self::import_body_with(
             body,
             body_span,
@@ -443,27 +451,44 @@ where
                 self.import_type_local_with(ty, type_pool, None)
                     .map_err(Into::into)
             },
-            |key| match self.nominals.get(key) {
-                Some(LocalNominal::Struct(id)) => Ok(*id),
-                Some(LocalNominal::Enum(_)) => Err(SemanticBodyImportFailure::WrongNominalKind),
-                None => Err(SemanticBodyImportFailure::Semantic(
+            |key| match key {
+                NominalInstanceKey::Named(key) => match self.nominals.get(key) {
+                    Some(LocalNominal::Struct(id)) => Ok(*id),
+                    Some(LocalNominal::Enum(_)) => Err(SemanticBodyImportFailure::WrongNominalKind),
+                    None => Err(SemanticBodyImportFailure::Semantic(
+                        SemanticImportFailure::MissingNominal,
+                    )),
+                },
+                NominalInstanceKey::Anonymous(_) => Err(SemanticBodyImportFailure::Semantic(
                     SemanticImportFailure::MissingNominal,
                 )),
             },
-            |key| match self.nominals.get(key) {
-                Some(LocalNominal::Enum(id)) => Ok(*id),
-                Some(LocalNominal::Struct(_)) => Err(SemanticBodyImportFailure::WrongNominalKind),
-                None => Err(SemanticBodyImportFailure::Semantic(
+            |key| match key {
+                NominalInstanceKey::Named(key) => match self.nominals.get(key) {
+                    Some(LocalNominal::Enum(id)) => Ok(*id),
+                    Some(LocalNominal::Struct(_)) => {
+                        Err(SemanticBodyImportFailure::WrongNominalKind)
+                    }
+                    None => Err(SemanticBodyImportFailure::Semantic(
+                        SemanticImportFailure::MissingNominal,
+                    )),
+                },
+                NominalInstanceKey::Anonymous(_) => Err(SemanticBodyImportFailure::Semantic(
                     SemanticImportFailure::MissingNominal,
                 )),
             },
-            |key| {
-                self.functions
-                    .get(key)
-                    .copied()
-                    .ok_or(SemanticBodyImportFailure::Semantic(
-                        SemanticImportFailure::MissingFunction,
-                    ))
+            |key| match key {
+                FunctionInstanceKey::Definition(key) => {
+                    self.functions
+                        .get(key)
+                        .copied()
+                        .ok_or(SemanticBodyImportFailure::Semantic(
+                            SemanticImportFailure::MissingFunction,
+                        ))
+                }
+                _ => Err(SemanticBodyImportFailure::Semantic(
+                    SemanticImportFailure::MissingFunction,
+                )),
             },
             |_| Err(SemanticBodyImportFailure::UnsupportedGenericCall),
             |name| interner.get_or_intern(name),
@@ -475,9 +500,9 @@ where
         body_span: Span,
         type_pool: &TypeInternPool,
         import_type: impl Fn(&SemanticImportType<K, M>) -> Result<Type, SemanticBodyImportFailure>,
-        struct_id: impl Fn(&K) -> Result<StructId, SemanticBodyImportFailure>,
-        enum_id: impl Fn(&K) -> Result<EnumId, SemanticBodyImportFailure>,
-        resolve_function: impl Fn(&K) -> Result<Spur, SemanticBodyImportFailure>,
+        struct_id: impl Fn(&NominalInstanceKey<K, M>) -> Result<StructId, SemanticBodyImportFailure>,
+        enum_id: impl Fn(&NominalInstanceKey<K, M>) -> Result<EnumId, SemanticBodyImportFailure>,
+        resolve_function: impl Fn(&FunctionInstanceKey<K, M>) -> Result<Spur, SemanticBodyImportFailure>,
         resolve_specialization: impl Fn(
             &crate::SemanticSpecializationIdentity<K, M>,
         ) -> Result<
@@ -485,7 +510,7 @@ where
             SemanticBodyImportFailure,
         >,
         intern: impl Fn(&str) -> Spur,
-    ) -> Result<SemanticImportedBody, SemanticBodyImportFailure> {
+    ) -> Result<SemanticImportedBody<K, M>, SemanticBodyImportFailure> {
         use SemanticBodyImportFailure as F;
         let body_len = body_span
             .end
@@ -847,10 +872,28 @@ where
                 })
             })
             .collect::<Result<Vec<_>, F>>()?;
+        let local_atoms = body
+            .local_atoms
+            .iter()
+            .map(|atom| {
+                let dense_id = body
+                    .strings
+                    .iter()
+                    .position(|content| content == &atom.content)
+                    .and_then(|index| u32::try_from(index).ok())
+                    .ok_or(F::InvalidStringReference)?;
+                Ok(crate::LocalAtomRecord {
+                    identity: atom.identity.clone(),
+                    content: atom.content.clone(),
+                    dense_id,
+                })
+            })
+            .collect::<Result<Vec<_>, F>>()?;
         Ok(SemanticImportedBody {
             air: crate::ValidatedAir::from_semantic_air(air, type_pool)
                 .map_err(F::AirValidation)?,
             strings: body.strings.iter().map(|s| s.to_string()).collect(),
+            local_atoms,
             num_locals: body.num_locals,
             num_param_slots: body.num_param_slots,
             param_modes: crate::ParamSlotModes::new(
@@ -1085,6 +1128,12 @@ where
                     Some(LocalNominal::Enum(id)) => Type::new_enum(*id),
                     None => return Err(SemanticImportFailure::MissingNominal),
                 },
+                // A generic fresh import epoch has no current-request
+                // authority capable of joining an anonymous nominal key to a
+                // live AIR type. Only BodySema's exact-key importer may do so.
+                F::AnonymousNominal(_) => {
+                    return Err(SemanticImportFailure::MissingNominal);
+                }
                 F::Array { element, len } => type_pool
                     .try_intern_array(element, len)
                     .map_err(|_| SemanticImportFailure::InvalidStructuralType)?,
@@ -1431,7 +1480,7 @@ mod tests {
 
     #[test]
     fn canonical_schema_kinds_have_stable_unique_tags_and_names() {
-        assert_eq!(SEMANTIC_IMPORT_TYPE_KINDS.len(), 19);
+        assert_eq!(SEMANTIC_IMPORT_TYPE_KINDS.len(), 20);
         for (tag, kind) in SEMANTIC_IMPORT_TYPE_KINDS.iter().copied().enumerate() {
             assert_eq!(usize::from(kind.schema_tag()), tag);
             assert_eq!(kind.to_string(), kind.display_name());
@@ -1507,6 +1556,15 @@ mod tests {
             ImportType::PtrMut(Box::new(ImportType::Nominal("Record"))),
             ImportType::Module("pkg/main.rue"),
             ImportType::GenericParameter(3),
+            ImportType::AnonymousNominal(crate::AnonymousNominalKey {
+                kind: crate::AnonymousNominalKind::Struct,
+                producer: crate::StableProducerId::Definition("make"),
+                anchor: rue_rir::RirStructuralAnchor::new(vec![
+                    rue_rir::RirStructuralPathSegment::Body,
+                    rue_rir::RirStructuralPathSegment::AnonymousType(0),
+                ]),
+                arguments: crate::CanonicalArguments::default(),
+            }),
         ];
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum Tag {
@@ -1529,6 +1587,7 @@ mod tests {
             PtrMut,
             Module,
             Generic,
+            AnonymousNominal,
         }
         let expected = [
             Tag::I8,
@@ -1550,6 +1609,7 @@ mod tests {
             Tag::PtrMut,
             Tag::Module,
             Tag::Generic,
+            Tag::AnonymousNominal,
         ];
         for (ty, expected) in types.into_iter().zip(expected) {
             use SemanticImportTypeFold as F;
@@ -1575,6 +1635,7 @@ mod tests {
                         F::PtrMut(_) => Tag::PtrMut,
                         F::Module(_) => Tag::Module,
                         F::GenericParameter(_) => Tag::Generic,
+                        F::AnonymousNominal(_) => Tag::AnonymousNominal,
                     })
                 })
                 .unwrap();
@@ -1995,6 +2056,7 @@ mod tests {
                 .into(),
             places: Arc::new([]),
             strings: Arc::new([]),
+            local_atoms: Arc::new([]),
             param_drops: Arc::new([]),
             borrow_slots: Arc::new([]),
             num_locals: 0,
@@ -2016,7 +2078,7 @@ mod tests {
             D::Const(22),
             D::Add(0, 1),
             D::Call {
-                function: "callee",
+                function: FunctionInstanceKey::Definition("callee"),
                 args: vec![crate::SemanticBodyCallArg {
                     value: 2,
                     mode: crate::AirArgMode::Normal,

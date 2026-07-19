@@ -60,12 +60,12 @@ pub use binding_manifest::{
 pub use context::ConstValue;
 pub use declaration_index::RirDeclarationIndexWork;
 pub use inference_ctx::InferenceContext;
-pub use info::{AnonMethodSig, ConstInfo, FunctionInfo, MethodInfo};
+pub use info::{AnonMethodSig, AnonMethodType, ConstInfo, FunctionInfo, MethodInfo};
 pub use known_symbols::KnownSymbols;
 pub use metadata::SemaMetadata;
 pub use output::{
-    AnalyzedBodyOwnerEvent, AnalyzedFunction, BodyAnalysisFailure, BodyAnalysisWork,
-    BodyNamedDependencyEvent, BodyOwnerEndpoint, BodyOwnerKind, BodyOwnerToken,
+    AnalyzedBodyOwnerEvent, AnalyzedCallableKind, AnalyzedFunction, BodyAnalysisFailure,
+    BodyAnalysisWork, BodyNamedDependencyEvent, BodyOwnerEndpoint, BodyOwnerKind, BodyOwnerToken,
     BuiltinTypeCallHead, DeclarationBuiltinTypeCallHeadDependencyEvent,
     DeclarationTypeCallHeadDependencyEvent, DeclarationTypeDependencyEvent,
     DeclarationTypeDependencyKind, DeclarationTypeDependencySourceKind,
@@ -235,6 +235,26 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     /// Body-created synthetic and anonymous type-name overlays.
     pub(crate) generated_structs: HashMap<Spur, StructId>,
     pub(crate) generated_enums: HashMap<Spur, EnumId>,
+    /// Producer-relative identities issued before anonymous pool allocation.
+    pub(crate) anon_struct_identities: HashMap<anon_structs::IssuedAnonymousNominalKey, StructId>,
+    pub(crate) anon_enum_identities: HashMap<anon_structs::IssuedAnonymousNominalKey, EnumId>,
+    /// O(1) reverse membership for source anonymous nominal compatibility.
+    pub(crate) anonymous_struct_ids: HashSet<StructId>,
+    pub(crate) anonymous_enum_ids: HashSet<EnumId>,
+    /// Reverse canonical identity for live anonymous types. This is the only
+    /// bridge used while recursively canonicalizing type arguments; retained
+    /// keys never contain the live `Type` values used as lookup keys here.
+    pub(crate) canonical_anonymous_types: HashMap<Type, anon_structs::IssuedAnonymousNominalKey>,
+    /// Every producer identity which is structurally represented by a live
+    /// anonymous type. The set always contains the representative above.
+    pub(crate) canonical_anonymous_aliases:
+        HashMap<Type, std::collections::BTreeSet<anon_structs::IssuedAnonymousNominalKey>>,
+    /// Canonical producer currently issuing identities during body analysis.
+    /// Entry-point wrappers scope this value around the shared body engine.
+    pub(crate) active_anonymous_producer: Option<(
+        anon_structs::IssuedStableProducerId,
+        anon_structs::IssuedCanonicalArguments,
+    )>,
     pub(crate) body_analysis_work: BodyAnalysisWork,
     pub(crate) analyzed_body_owners: Vec<AnalyzedBodyOwnerEvent>,
     pub(crate) ordinary_body_exports: Vec<crate::SemanticBodyExport>,
@@ -394,6 +414,13 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             anonymous_methods,
             generated_structs,
             generated_enums,
+            anon_struct_identities,
+            anon_enum_identities,
+            anonymous_struct_ids,
+            anonymous_enum_ids,
+            canonical_anonymous_types,
+            canonical_anonymous_aliases,
+            active_anonymous_producer,
             body_analysis_work,
             analyzed_body_owners,
             ordinary_body_exports,
@@ -452,6 +479,13 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             anonymous_methods,
             generated_structs,
             generated_enums,
+            anon_struct_identities,
+            anon_enum_identities,
+            anonymous_struct_ids,
+            anonymous_enum_ids,
+            canonical_anonymous_types,
+            canonical_anonymous_aliases,
+            active_anonymous_producer,
             body_analysis_work,
             analyzed_body_owners,
             ordinary_body_exports,
@@ -790,6 +824,13 @@ impl<'a> Sema<'a> {
             anonymous_methods: HashMap::new(),
             generated_structs: HashMap::new(),
             generated_enums: HashMap::new(),
+            anon_struct_identities: HashMap::new(),
+            anon_enum_identities: HashMap::new(),
+            anonymous_struct_ids: HashSet::new(),
+            anonymous_enum_ids: HashSet::new(),
+            canonical_anonymous_types: HashMap::new(),
+            canonical_anonymous_aliases: HashMap::new(),
+            active_anonymous_producer: None,
             body_analysis_work: BodyAnalysisWork::default(),
             analyzed_body_owners: Vec::new(),
             ordinary_body_exports: Vec::new(),

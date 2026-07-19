@@ -325,6 +325,20 @@ impl Specializer {
             // substitution. Newly created bodies are scanned next round.
             for key in &pending {
                 let info = &self.specializations[key];
+                let function_identity = sema
+                    .canonical_specialization_instance(
+                        key.base_name,
+                        &key.type_args,
+                        &key.value_args,
+                    )
+                    .map_err(|failure| {
+                        CompileError::new(
+                            ErrorKind::InternalError(format!(
+                                "failed to issue canonical specialization identity: {failure:?}"
+                            )),
+                            info.call_site_span,
+                        )
+                    })?;
                 let base_info = match sema.function_info(key.base_name) {
                     Some(info) => info.clone(),
                     None => {
@@ -356,6 +370,8 @@ impl Specializer {
                                 crate::sema::analysis::imported_body_references(sema, &imported.air);
                             Some(SpecializedBody {
                                 function: AnalyzedFunction {
+                                    identity: function_identity.clone(),
+                                    callable_kind: crate::AnalyzedCallableKind::Ordinary,
                                     ordinary_owner: None,
                                     name: interner.resolve(&info.mangled_name).to_string(),
                                     implicit_drop_source: Some(
@@ -364,6 +380,7 @@ impl Specializer {
                                         },
                                     ),
                                     air: imported.air,
+                                    local_atoms: imported.local_atoms,
                                     num_locals: imported.num_locals,
                                     num_param_slots: imported.num_param_slots,
                                     param_modes: imported.param_modes,
@@ -803,6 +820,21 @@ fn create_specialized_function(
         crate::sema::DeclarationTypeDependencyKind::Body,
     ));
 
+    let producer = sema
+        .canonical_function_producer(key.base_name, &type_subst, &value_subst)
+        .map_err(|failure| {
+            CompileError::new(
+                ErrorKind::InternalError(format!(
+                    "failed to issue canonical specialization producer: {failure:?}"
+                )),
+                base_info.span,
+            )
+        })?;
+    let crate::StableProducerId::Function(function_identity) = &producer.0 else {
+        unreachable!("a specialization producer is always a function")
+    };
+    let function_identity = (**function_identity).clone();
+    let previous_producer = sema.active_anonymous_producer.replace(producer);
     let analysis = sema.analyze_specialized_function(
         infer_ctx,
         return_type,
@@ -813,6 +845,7 @@ fn create_specialized_function(
         // Specialization covers free functions; they have no receiver.
         false,
     );
+    sema.active_anonymous_producer = previous_producer;
     sema.body_dependency_observer = previous_body_observer;
     sema.declaration_type_observer = previous_type_observer;
     let (
@@ -822,6 +855,7 @@ fn create_specialized_function(
         param_modes,
         warnings,
         local_strings,
+        local_atoms,
         referenced_functions,
         referenced_methods,
     ) = analysis?;
@@ -913,6 +947,8 @@ fn create_specialized_function(
 
     Ok(SpecializedBody {
         function: AnalyzedFunction {
+            identity: function_identity,
+            callable_kind: crate::AnalyzedCallableKind::Ordinary,
             ordinary_owner: None,
             name: specialized_name_str,
             implicit_drop_source: Some(Specializer::stable_identity(key, sema).map_or(
@@ -926,6 +962,7 @@ fn create_specialized_function(
                 &sema.type_pool,
                 sema.interner,
             )?,
+            local_atoms,
             num_locals,
             num_param_slots,
             param_modes,

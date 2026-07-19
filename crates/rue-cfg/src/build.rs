@@ -3,11 +3,11 @@
 //! This module converts the structured control flow in AIR (Branch, Loop)
 //! into explicit basic blocks with terminators.
 
-use lasso::ThreadedRodeo;
+use lasso::{Spur, ThreadedRodeo};
 use rue_air::{
     AirArgMode, AirInstData, AirPattern, AirPlaceBase, AirPlaceRef, AirProjection, AirRef,
-    ArgConvention, FrozenTypeInternPool, NativeCallAbi, ParamSlotModes, SourceParamAbi, StructId,
-    Type, TypeKind, ValidatedAir,
+    AnalyzedCallableKind, ArgConvention, FrozenTypeInternPool, NativeCallAbi, ParamSlotModes,
+    SourceParamAbi, StructId, Type, TypeKind, ValidatedAir,
 };
 use rue_error::{CompileError, CompileWarning, ErrorKind, WarningKind};
 
@@ -189,6 +189,9 @@ pub struct CfgBuilder<'a> {
     type_pool: &'a FrozenTypeInternPool,
     /// Interner for resolving symbols to strings
     interner: &'a ThreadedRodeo,
+    /// Compiler-owned projection of legacy live callable names to canonical
+    /// machine symbols. Cleanup lowering consumes this same authority as AIR.
+    source_symbol_resolver: Box<dyn Fn(&str) -> Option<Spur> + 'a>,
     /// Current block we're building
     current_block: BlockId,
     /// Stack of loop contexts for nested loops
@@ -251,15 +254,7 @@ pub struct CfgBuilder<'a> {
     /// of the reachable type graph rather than rewalking the same subgraphs.
     implicit_destructor_types: std::collections::HashSet<Type>,
     anonymous_destructor_dependency_incomplete: bool,
-}
-
-/// Whether `fn_name` is a cleanup callee reached only through the direct
-/// flattened-slot drop convention (`CallPlan::from_slot_values`): synthesized
-/// drop glue (`__rue_drop_*`) or a user/anon destructor (`<Type>.__drop`).
-/// These reserved synthetic symbols cannot collide with a source function, and
-/// codegen already resolves the same names for cleanup calls (RUE-1035).
-fn is_cleanup_slot_callee(fn_name: &str) -> bool {
-    fn_name.starts_with("__rue_drop_") || fn_name.ends_with(".__drop")
+    callable_kind: AnalyzedCallableKind,
 }
 
 /// Derive the grouped per-source-parameter ABI descriptors (ADR-0052 phase 5.8,
@@ -296,7 +291,7 @@ fn derive_source_param_abi(builder: &CfgBuilder<'_>) -> Vec<SourceParamAbi> {
     // (`__rue_drop_*` glue, `<Type>.__drop` destructors), so this is the same
     // identity codegen already resolves them by. Gate-off the classifier is
     // already Direct, so this is inert there.
-    let direct_slot_abi = is_cleanup_slot_callee(builder.cfg.fn_name());
+    let direct_slot_abi = builder.callable_kind.uses_direct_slot_abi();
 
     // Slot -> source type. `param_drops` covers every Normal by-value parameter
     // (including unused ones); `Param` instructions supplement any used
@@ -494,6 +489,33 @@ impl<'a> CfgBuilder<'a> {
         param_modes: impl Into<ParamSlotModes>,
         interner: &'a ThreadedRodeo,
         allow_unreachable_code: bool,
+        callable_kind: AnalyzedCallableKind,
+    ) -> CfgOutput {
+        Self::build_with_symbol_resolver(
+            air,
+            num_locals,
+            num_params,
+            fn_name,
+            type_pool,
+            param_modes,
+            interner,
+            allow_unreachable_code,
+            callable_kind,
+            |name| Some(interner.get_or_intern(name)),
+        )
+    }
+
+    pub fn build_with_symbol_resolver(
+        air: &'a ValidatedAir,
+        num_locals: u32,
+        num_params: u32,
+        fn_name: &str,
+        type_pool: &'a FrozenTypeInternPool,
+        param_modes: impl Into<ParamSlotModes>,
+        interner: &'a ThreadedRodeo,
+        allow_unreachable_code: bool,
+        callable_kind: AnalyzedCallableKind,
+        source_symbol_resolver: impl Fn(&str) -> Option<Spur> + 'a,
     ) -> CfgOutput {
         let mut builder = CfgBuilder {
             air,
@@ -506,6 +528,7 @@ impl<'a> CfgBuilder<'a> {
             ),
             type_pool,
             interner,
+            source_symbol_resolver: Box::new(source_symbol_resolver),
             current_block: BlockId(0),
             loop_stack: Vec::new(),
             value_cache: vec![None; air.len()],
@@ -521,6 +544,7 @@ impl<'a> CfgBuilder<'a> {
             implicit_named_destructors: std::collections::HashSet::new(),
             implicit_destructor_types: std::collections::HashSet::new(),
             anonymous_destructor_dependency_incomplete: false,
+            callable_kind,
         };
 
         // Create entry block
@@ -3014,7 +3038,15 @@ impl<'a> CfgBuilder<'a> {
                 );
                 self.emit(CfgInstData::PlaceRead { place }, ty, span)
             };
-            let name = self.interner.get_or_intern(destructor_name);
+            let Some(name) = (self.source_symbol_resolver)(destructor_name) else {
+                self.errors.push(CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "cleanup destructor '{destructor_name}' has no canonical symbol mapping"
+                    )),
+                    span,
+                ));
+                return;
+            };
             let args_result = self.cfg.push_call_args(std::iter::once(CfgCallArg {
                 value: whole_val,
                 mode: CfgArgMode::Normal,
@@ -3319,21 +3351,6 @@ mod tests {
         build_cfg_for(source, 0)
     }
 
-    #[test]
-    fn cleanup_slot_callees_are_the_reserved_drop_symbols() {
-        // Drop glue and destructors are reached only through the direct
-        // flattened-slot cleanup convention, so their by-value params must home
-        // directly under compact layout (RUE-1035 M3).
-        assert!(is_cleanup_slot_callee("__rue_drop_D"));
-        assert!(is_cleanup_slot_callee("__rue_drop_array_D_3"));
-        assert!(is_cleanup_slot_callee("D.__drop"));
-        assert!(is_cleanup_slot_callee("__anon_struct_7.__drop"));
-        // Ordinary user functions keep the standard call ABI.
-        assert!(!is_cleanup_slot_callee("main"));
-        assert!(!is_cleanup_slot_callee("consume"));
-        assert!(!is_cleanup_slot_callee("drop_helper"));
-    }
-
     /// Build the CFG for the `index`-th analyzed function in `source`
     /// (functions are analyzed in declaration order).
     fn build_cfg_for(source: &str, index: usize) -> Cfg {
@@ -3384,6 +3401,7 @@ mod tests {
             func.param_modes.clone(),
             &interner,
             func.allow_unreachable_code,
+            func.callable_kind,
         )
         .cfg
         .unwrap()
@@ -4110,9 +4128,19 @@ mod tests {
             let air = air
                 .finish(AirValidationContext::Canonical(&type_pool))
                 .expect("test AIR must validate");
-            let cfg = CfgBuilder::build(&air, 1, 0, "probe", &type_pool, vec![], &interner, false)
-                .cfg
-                .unwrap();
+            let cfg = CfgBuilder::build(
+                &air,
+                1,
+                0,
+                "probe",
+                &type_pool,
+                vec![],
+                &interner,
+                false,
+                AnalyzedCallableKind::Ordinary,
+            )
+            .cfg
+            .unwrap();
             let instructions = cfg
                 .blocks()
                 .iter()
@@ -4187,6 +4215,7 @@ mod tests {
             vec![],
             &interner,
             false,
+            AnalyzedCallableKind::Ordinary,
         );
 
         assert!(

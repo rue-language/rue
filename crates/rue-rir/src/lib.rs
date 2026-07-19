@@ -35,5 +35,6 @@ pub use inst::{
     RirInternalIntrinsicArgsRange, RirIntrinsicArgsRange, RirMatchArmsRange, RirParam,
     RirParamMode, RirParamsRange, RirPattern, RirPatternView, RirPayloadBuildError,
     RirPayloadError, RirPayloadStorageStats, RirPrinter, RirStructFieldsRange,
-    RirStructMethodsRange, RirValidationContext, ValidatedRir,
+    RirStructMethodsRange, RirStructuralAnchor, RirStructuralPathSegment, RirValidationContext,
+    ValidatedRir,
 };

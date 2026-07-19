@@ -332,6 +332,33 @@ pub struct DeclarationShells<'a> {
 }
 
 impl<'a> DeclarationShells<'a> {
+    pub fn install_stable_identity_endpoints(
+        mut self,
+        definitions: &[crate::SemanticDefinitionEndpoint],
+        modules: &[crate::SemanticModuleEndpoint],
+    ) -> Result<Self, crate::SemanticStableResolutionFailure> {
+        let expected_definitions = self
+            .declaration_shells()
+            .map(|shell| {
+                (
+                    shell.declaration_span.file_id.index(),
+                    shell.identity.name.to_string(),
+                    shell.identity.owner.as_deref().map(str::to_owned),
+                    shell.identity.kind,
+                )
+            })
+            .collect::<Vec<_>>();
+        let expected_modules = stable_module_files(&self.sema);
+        install_stable_identity_endpoints(
+            &mut self.sema,
+            definitions,
+            modules,
+            &expected_definitions,
+            &expected_modules,
+        )?;
+        Ok(self)
+    }
+
     /// Work completed before declaration payload resolution.
     pub fn binding_work(&self) -> DeclarationBindingWork {
         self.binding_work
@@ -919,58 +946,237 @@ impl Sema<'_> {
     }
 }
 
+fn install_stable_identity_endpoints<D: super::DeclarationPhase>(
+    sema: &mut super::Sema<'_, D>,
+    definitions: &[crate::SemanticDefinitionEndpoint],
+    modules: &[crate::SemanticModuleEndpoint],
+    expected_definitions: &[(u32, String, Option<String>, StableDefinitionKind)],
+    expected_modules: &[FileId],
+) -> Result<(), crate::SemanticStableResolutionFailure> {
+    let issuer = definitions
+        .first()
+        .map(|endpoint| endpoint.token.issuer())
+        .or_else(|| modules.first().map(|endpoint| endpoint.token.issuer()))
+        .ok_or(crate::SemanticStableResolutionFailure::Missing)?;
+    let mut definition_tokens = HashMap::new();
+    let mut definition_endpoints = HashMap::new();
+    for endpoint in definitions {
+        if endpoint.token.issuer() != issuer {
+            return Err(crate::SemanticStableResolutionFailure::ForeignIssuer);
+        }
+        if endpoint.kind.requires_owner() != endpoint.owner.is_some() {
+            return Err(crate::SemanticStableResolutionFailure::WrongKind);
+        }
+        let key = (
+            endpoint.file,
+            endpoint.name.to_string(),
+            endpoint.owner.as_deref().map(str::to_owned),
+            endpoint.kind,
+        );
+        if definition_tokens.insert(key, endpoint.token).is_some()
+            || definition_endpoints
+                .insert(endpoint.token, endpoint.clone())
+                .is_some()
+        {
+            return Err(crate::SemanticStableResolutionFailure::Ambiguous);
+        }
+    }
+    let actual_definition_keys = definition_tokens
+        .keys()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected_definition_keys = expected_definitions
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    if actual_definition_keys != expected_definition_keys {
+        let wrong_kind = actual_definition_keys.iter().any(|actual| {
+            expected_definition_keys.iter().any(|expected| {
+                actual.0 == expected.0
+                    && actual.1 == expected.1
+                    && actual.2 == expected.2
+                    && actual.3 != expected.3
+            })
+        });
+        return Err(if wrong_kind {
+            crate::SemanticStableResolutionFailure::WrongKind
+        } else {
+            crate::SemanticStableResolutionFailure::Missing
+        });
+    }
+    let mut module_tokens = HashMap::new();
+    let mut module_endpoints = HashMap::new();
+    for endpoint in modules {
+        if endpoint.token.issuer() != issuer {
+            return Err(crate::SemanticStableResolutionFailure::ForeignIssuer);
+        }
+        if module_tokens
+            .insert(FileId::new(endpoint.file), endpoint.token)
+            .is_some()
+            || module_endpoints.insert(endpoint.token, *endpoint).is_some()
+        {
+            return Err(crate::SemanticStableResolutionFailure::Ambiguous);
+        }
+    }
+    let actual_module_files = module_tokens
+        .keys()
+        .map(|file| file.index())
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected_module_files = expected_modules
+        .iter()
+        .map(|file| file.index())
+        .collect::<std::collections::BTreeSet<_>>();
+    if actual_module_files != expected_module_files {
+        return Err(crate::SemanticStableResolutionFailure::Missing);
+    }
+
+    // Declaration resolution can materialize anonymous nominals while using
+    // the provisional endpoint issuer. Reissuing the same exact manifest for
+    // the authoritative body epoch must relocate those retained identities;
+    // otherwise a declaration-signature anonymous type becomes foreign to
+    // its own request. This changes identity tokens only, never AIR types or
+    // structural representatives.
+    if !sema.stable_definition_endpoints.is_empty()
+        && sema
+            .stable_definition_endpoints
+            .keys()
+            .next()
+            .is_some_and(|token| token.issuer() != issuer)
+    {
+        fn remap_key(
+            key: &crate::AnonymousNominalKey<
+                crate::SemanticDefinitionToken,
+                crate::SemanticModuleToken,
+            >,
+            old_definitions: &HashMap<
+                crate::SemanticDefinitionToken,
+                crate::SemanticDefinitionEndpoint,
+            >,
+            new_definitions: &HashMap<
+                (u32, String, Option<String>, StableDefinitionKind),
+                crate::SemanticDefinitionToken,
+            >,
+            old_modules: &HashMap<crate::SemanticModuleToken, crate::SemanticModuleEndpoint>,
+            new_modules: &HashMap<FileId, crate::SemanticModuleToken>,
+        ) -> Result<
+            crate::AnonymousNominalKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
+            crate::SemanticStableResolutionFailure,
+        > {
+            key.try_map_identities(
+                &|token| {
+                    let endpoint = old_definitions
+                        .get(token)
+                        .ok_or(crate::SemanticStableResolutionFailure::ForeignIssuer)?;
+                    new_definitions
+                        .get(&(
+                            endpoint.file,
+                            endpoint.name.to_string(),
+                            endpoint.owner.as_deref().map(str::to_owned),
+                            endpoint.kind,
+                        ))
+                        .copied()
+                        .ok_or(crate::SemanticStableResolutionFailure::Missing)
+                },
+                &|token| {
+                    let endpoint = old_modules
+                        .get(token)
+                        .ok_or(crate::SemanticStableResolutionFailure::ForeignIssuer)?;
+                    new_modules
+                        .get(&FileId::new(endpoint.file))
+                        .copied()
+                        .ok_or(crate::SemanticStableResolutionFailure::Missing)
+                },
+            )
+        }
+
+        let old_definition_endpoints = sema.stable_definition_endpoints.clone();
+        let old_module_endpoints = sema.stable_module_endpoints.clone();
+        let remap = |key| {
+            remap_key(
+                key,
+                &old_definition_endpoints,
+                &definition_tokens,
+                &old_module_endpoints,
+                &module_tokens,
+            )
+        };
+        let anon_struct_identities = sema
+            .anon_struct_identities
+            .iter()
+            .map(|(key, id)| Ok((remap(key)?, *id)))
+            .collect::<Result<_, crate::SemanticStableResolutionFailure>>()?;
+        let anon_enum_identities = sema
+            .anon_enum_identities
+            .iter()
+            .map(|(key, id)| Ok((remap(key)?, *id)))
+            .collect::<Result<_, crate::SemanticStableResolutionFailure>>()?;
+        let canonical_anonymous_types = sema
+            .canonical_anonymous_types
+            .iter()
+            .map(|(ty, key)| Ok((*ty, remap(key)?)))
+            .collect::<Result<_, crate::SemanticStableResolutionFailure>>()?;
+        let canonical_anonymous_aliases = sema
+            .canonical_anonymous_aliases
+            .iter()
+            .map(|(ty, aliases)| {
+                Ok((
+                    *ty,
+                    aliases
+                        .iter()
+                        .map(remap)
+                        .collect::<Result<_, crate::SemanticStableResolutionFailure>>()?,
+                ))
+            })
+            .collect::<Result<_, crate::SemanticStableResolutionFailure>>()?;
+        sema.anon_struct_identities = anon_struct_identities;
+        sema.anon_enum_identities = anon_enum_identities;
+        sema.canonical_anonymous_types = canonical_anonymous_types;
+        sema.canonical_anonymous_aliases = canonical_anonymous_aliases;
+    }
+    sema.stable_definition_tokens = definition_tokens;
+    sema.stable_definition_endpoints = definition_endpoints;
+    sema.stable_module_tokens = module_tokens;
+    sema.stable_module_endpoints = module_endpoints;
+    Ok(())
+}
+
+fn stable_module_files<D: super::DeclarationPhase>(sema: &super::Sema<'_, D>) -> Vec<FileId> {
+    (0..sema.module_registry.len())
+        .map(|index| {
+            sema.module_registry
+                .get_def(crate::ModuleId::new(index as u32))
+                .file_id
+        })
+        .collect()
+}
+
 impl<'a> BoundSema<'a> {
     pub fn install_stable_identity_endpoints(
         mut self,
         definitions: &[crate::SemanticDefinitionEndpoint],
         modules: &[crate::SemanticModuleEndpoint],
     ) -> Result<Self, crate::SemanticStableResolutionFailure> {
-        let issuer = definitions
-            .first()
-            .map(|endpoint| endpoint.token.issuer())
-            .or_else(|| modules.first().map(|endpoint| endpoint.token.issuer()))
-            .ok_or(crate::SemanticStableResolutionFailure::Missing)?;
-        let mut definition_tokens = HashMap::new();
-        let mut definition_endpoints = HashMap::new();
-        for endpoint in definitions {
-            if endpoint.token.issuer() != issuer {
-                return Err(crate::SemanticStableResolutionFailure::ForeignIssuer);
-            }
-            if endpoint.kind.requires_owner() != endpoint.owner.is_some() {
-                return Err(crate::SemanticStableResolutionFailure::WrongKind);
-            }
-            let key = (
-                endpoint.file,
-                endpoint.name.to_string(),
-                endpoint.owner.as_deref().map(str::to_owned),
-                endpoint.kind,
-            );
-            if definition_tokens.insert(key, endpoint.token).is_some()
-                || definition_endpoints
-                    .insert(endpoint.token, endpoint.clone())
-                    .is_some()
-            {
-                return Err(crate::SemanticStableResolutionFailure::Ambiguous);
-            }
-        }
-        let mut module_tokens = HashMap::new();
-        let mut module_endpoints = HashMap::new();
-        for endpoint in modules {
-            if endpoint.token.issuer() != issuer {
-                return Err(crate::SemanticStableResolutionFailure::ForeignIssuer);
-            }
-            if module_tokens
-                .insert(FileId::new(endpoint.file), endpoint.token)
-                .is_some()
-                || module_endpoints.insert(endpoint.token, *endpoint).is_some()
-            {
-                return Err(crate::SemanticStableResolutionFailure::Ambiguous);
-            }
-        }
-        self.sema.stable_definition_tokens = definition_tokens;
-        self.sema.stable_definition_endpoints = definition_endpoints;
-        self.sema.stable_module_tokens = module_tokens;
-        self.sema.stable_module_endpoints = module_endpoints;
+        let expected_definitions = self
+            .binding_manifest()
+            .bindings()
+            .iter()
+            .map(|binding| {
+                (
+                    binding.file_id.index(),
+                    binding.name.to_string(),
+                    binding.owner.as_deref().map(str::to_owned),
+                    binding.kind,
+                )
+            })
+            .collect::<Vec<_>>();
+        let expected_modules = stable_module_files(&self.sema);
+        install_stable_identity_endpoints(
+            &mut self.sema,
+            definitions,
+            modules,
+            &expected_definitions,
+            &expected_modules,
+        )?;
         Ok(self)
     }
 
@@ -2019,6 +2225,11 @@ mod tests {
             kind: StableDefinitionKind::Function,
             owner: None,
         };
+        let module = crate::SemanticModuleEndpoint {
+            token: crate::SemanticModuleToken::new(7, 0),
+            file: 0,
+        };
+        assert_eq!(install_stable_endpoints(&[endpoint.clone()], &[]), Ok(()));
         assert_eq!(install_stable_endpoints(&[], &[]), Err(F::Missing));
 
         let mut duplicate = endpoint.clone();
@@ -2029,10 +2240,28 @@ mod tests {
         );
 
         let mut wrong_kind = endpoint.clone();
-        wrong_kind.kind = StableDefinitionKind::Method;
+        // `ValueConst` has the same owner shape as `Function`, so this checks
+        // exact manifest membership rather than the coarse shape gate.
+        wrong_kind.kind = StableDefinitionKind::ValueConst;
         assert_eq!(
             install_stable_endpoints(&[wrong_kind], &[]),
             Err(F::WrongKind)
+        );
+
+        let mut nonexistent = endpoint.clone();
+        nonexistent.name = Arc::from("other");
+        assert_eq!(
+            install_stable_endpoints(&[nonexistent], &[]),
+            Err(F::Missing)
+        );
+        assert_eq!(install_stable_endpoints(&[], &[]), Err(F::Missing));
+        let extra_module = crate::SemanticModuleEndpoint {
+            token: crate::SemanticModuleToken::new(7, 1),
+            file: 99,
+        };
+        assert_eq!(
+            install_stable_endpoints(&[endpoint.clone()], &[module, extra_module]),
+            Err(F::Missing)
         );
 
         let foreign_module = crate::SemanticModuleEndpoint {
@@ -2043,6 +2272,30 @@ mod tests {
             install_stable_endpoints(&[endpoint], &[foreign_module]),
             Err(F::ForeignIssuer)
         );
+    }
+
+    #[test]
+    fn declaration_shell_endpoint_install_checks_the_unresolved_shell_universe() {
+        use crate::SemanticStableResolutionFailure as F;
+        let (tokens, interner) = Lexer::new("struct S {} fn main() {}").tokenize().unwrap();
+        let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
+        let shells = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
+            .predeclare_declaration_shells()
+            .unwrap();
+        let only_main = crate::SemanticDefinitionEndpoint {
+            token: crate::SemanticDefinitionToken::new(11, 0),
+            file: 0,
+            name: Arc::from("main"),
+            kind: StableDefinitionKind::Function,
+            owner: None,
+        };
+        assert!(matches!(
+            shells.install_stable_identity_endpoints(&[only_main], &[]),
+            Err(F::Missing)
+        ));
     }
 
     fn lower_files(files: &[(&str, FileId)]) -> (Rir, ThreadedRodeo) {

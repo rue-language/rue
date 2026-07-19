@@ -605,8 +605,17 @@ mod tests {
         let air = air
             .finish(AirValidationContext::Canonical(&type_pool))
             .expect("test AIR must validate");
-        let cfg_output =
-            CfgBuilder::build(&air, 0, 0, "test", &type_pool, vec![], &interner, false);
+        let cfg_output = CfgBuilder::build(
+            &air,
+            0,
+            0,
+            "test",
+            &type_pool,
+            vec![],
+            &interner,
+            false,
+            rue_air::AnalyzedCallableKind::Ordinary,
+        );
         (cfg_output.cfg.unwrap(), type_pool, interner)
     }
 
@@ -698,6 +707,7 @@ mod tests {
             func.param_modes.clone(),
             &interner,
             func.allow_unreachable_code,
+            func.callable_kind,
         )
         .cfg
         .expect("test function CFG must build");

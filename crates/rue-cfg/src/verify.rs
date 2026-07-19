@@ -83,7 +83,11 @@ impl Cfg {
         Ok(ValidatedCfg(self))
     }
 
-    pub(crate) fn finish_after_optimization(
+    /// Publish a domain-remapped optimized graph. Optimization deliberately
+    /// retains detached dead arena values after removing their block
+    /// attachments, so durable import must use the same post-optimization
+    /// verification contract as the optimizer itself.
+    pub fn finish_after_optimization(
         self,
         type_pool: &FrozenTypeInternPool,
     ) -> Result<ValidatedCfg, CfgVerificationError> {

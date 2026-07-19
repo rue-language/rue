@@ -4,7 +4,7 @@
 //! request-independent body algebra stored inside it. Compact live AIR remains
 //! separate and is relocated only at export and import boundaries.
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::{cell::RefCell, collections::BTreeSet, sync::Arc};
 
 use rue_air::{
     SemanticBodyInstData, SemanticBodyPattern, SemanticBodyProjection, SemanticDefinitionToken,
@@ -16,8 +16,8 @@ use crate::{
     StableDefinitionKey, StableDefinitionKind,
 };
 
-pub const DURABLE_ORDINARY_BODY_SCHEMA_VERSION: u32 = 6;
-pub const DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION: u32 = 5;
+pub const DURABLE_ORDINARY_BODY_SCHEMA_VERSION: u32 = 9;
+pub const DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION: u32 = 8;
 
 /// Durable specialization of AIR's canonical body algebra. These aliases keep
 /// compiler consumers explicit about the stable identity domain.
@@ -325,6 +325,26 @@ fn canonical_type(
             }
             SemanticImportType::Nominal(key.clone())
         }
+        SemanticImportType::AnonymousNominal(identity) => {
+            let work = RefCell::new(work);
+            let identity = identity.try_map_identities(
+                &|token| Ok(join_definition(token, index, &mut work.borrow_mut())?.clone()),
+                &|token| {
+                    index
+                        .definitions
+                        .module_for_semantic_token(merged, *token)
+                        .cloned()
+                        .map_err(|failure| match failure {
+                            rue_air::SemanticStableResolutionFailure::ForeignIssuer => {
+                                DurableBodyConversionFailure::ForeignOwnerToken
+                            }
+                            _ => DurableBodyConversionFailure::UnresolvedModule,
+                        })
+                },
+            )?;
+            validate_anonymous_identity(&identity)?;
+            SemanticImportType::AnonymousNominal(identity)
+        }
         SemanticImportType::Array { element, len } => SemanticImportType::Array {
             element: Box::new(canonical_type(element, merged, index, work)?),
             len: *len,
@@ -349,6 +369,70 @@ fn canonical_type(
         ),
         SemanticImportType::GenericParameter(index) => SemanticImportType::GenericParameter(*index),
     })
+}
+
+fn validate_anonymous_identity(
+    identity: &rue_air::AnonymousNominalKey<StableDefinitionKey, crate::ModuleId>,
+) -> Result<(), DurableBodyConversionFailure> {
+    use rue_air::{CanonicalArgumentValue as V, StableProducerId as P};
+
+    fn type_key(
+        value: &rue_air::TypeInstanceKey<StableDefinitionKey, crate::ModuleId>,
+    ) -> Result<(), DurableBodyConversionFailure> {
+        use rue_air::{NominalInstanceKey as N, TypeInstanceKey as T};
+        match value {
+            T::Nominal(N::Named(key))
+                if !matches!(
+                    key.kind(),
+                    StableDefinitionKind::Struct | StableDefinitionKind::Enum
+                ) =>
+            {
+                Err(DurableBodyConversionFailure::WrongDefinitionKind)
+            }
+            T::Nominal(N::Anonymous(key)) => validate_anonymous_identity(key),
+            T::Array { element, .. } | T::PtrConst(element) | T::PtrMut(element) => {
+                type_key(element)
+            }
+            _ => Ok(()),
+        }
+    }
+    fn function_key(
+        value: &rue_air::FunctionInstanceKey<StableDefinitionKey, crate::ModuleId>,
+    ) -> Result<(), DurableBodyConversionFailure> {
+        use rue_air::FunctionInstanceKey as F;
+        match value {
+            F::Definition(key) if !key.kind().owns_body() => {
+                Err(DurableBodyConversionFailure::WrongDefinitionKind)
+            }
+            F::Specialization { base, arguments } => {
+                function_key(base)?;
+                arguments_key(arguments)
+            }
+            F::AnonymousMember { owner, .. } | F::DropGlue(owner) => type_key(owner),
+            _ => Ok(()),
+        }
+    }
+    fn arguments_key(
+        arguments: &rue_air::CanonicalArguments<StableDefinitionKey, crate::ModuleId>,
+    ) -> Result<(), DurableBodyConversionFailure> {
+        for value in arguments.types.iter() {
+            type_key(value)?;
+        }
+        for value in arguments.values.iter() {
+            match value {
+                V::Type(value) => type_key(value)?,
+                V::Function(value) => function_key(value)?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    match &identity.producer {
+        P::Definition(_) => {}
+        P::Function(value) => function_key(value)?,
+    }
+    arguments_key(&identity.arguments)
 }
 
 fn canonical_builtin_nominal(
@@ -461,6 +545,9 @@ fn canonical_identity_dependency_keys(
             SemanticImportType::Nominal(key) => {
                 keys.insert(key.clone());
             }
+            SemanticImportType::AnonymousNominal(identity) => {
+                collect_anonymous_definition_keys(identity, keys);
+            }
             SemanticImportType::Array { element, .. }
             | SemanticImportType::PtrConst(element)
             | SemanticImportType::PtrMut(element) => visit_type(element, keys),
@@ -481,6 +568,52 @@ fn canonical_identity_dependency_keys(
         }
     }
     keys
+}
+
+fn collect_anonymous_definition_keys(
+    identity: &rue_air::AnonymousNominalKey<StableDefinitionKey, crate::ModuleId>,
+    keys: &mut BTreeSet<StableDefinitionKey>,
+) {
+    let keys = RefCell::new(keys);
+    identity
+        .try_map_identities(
+            &|key| {
+                keys.borrow_mut().insert(key.clone());
+                Ok::<_, std::convert::Infallible>(key.clone())
+            },
+            &|module| Ok::<_, std::convert::Infallible>(module.clone()),
+        )
+        .expect("identity-preserving anonymous dependency traversal is infallible");
+}
+
+fn collect_nominal_definition_keys(
+    identity: &rue_air::NominalInstanceKey<StableDefinitionKey, crate::ModuleId>,
+    keys: &mut BTreeSet<StableDefinitionKey>,
+) {
+    match identity {
+        rue_air::NominalInstanceKey::Named(key) => {
+            keys.insert(key.clone());
+        }
+        rue_air::NominalInstanceKey::Anonymous(key) => {
+            collect_anonymous_definition_keys(key, keys);
+        }
+    }
+}
+
+fn collect_function_definition_keys(
+    identity: &rue_air::FunctionInstanceKey<StableDefinitionKey, crate::ModuleId>,
+    keys: &mut BTreeSet<StableDefinitionKey>,
+) {
+    let keys = RefCell::new(keys);
+    identity
+        .try_map_identities(
+            &|key| {
+                keys.borrow_mut().insert(key.clone());
+                Ok::<_, std::convert::Infallible>(key.clone())
+            },
+            &|module| Ok::<_, std::convert::Infallible>(module.clone()),
+        )
+        .expect("identity-preserving function dependency traversal is infallible");
 }
 
 fn record_specialized_conversion_failure(
@@ -801,6 +934,9 @@ impl DurableOrdinaryBodyPayload {
                 SemanticImportType::Nominal(key) => {
                     keys.insert(key.clone());
                 }
+                SemanticImportType::AnonymousNominal(identity) => {
+                    collect_anonymous_definition_keys(identity, keys);
+                }
                 SemanticImportType::Array { element, .. }
                 | SemanticImportType::PtrConst(element)
                 | SemanticImportType::PtrMut(element) => visit_type(element, keys),
@@ -840,22 +976,22 @@ impl DurableOrdinaryBodyPayload {
                     visit_type(value, &mut keys);
                 }
                 SemanticBodyInstData::Call { function, .. } => {
-                    keys.insert(function.clone());
+                    collect_function_definition_keys(function, &mut keys);
                 }
                 SemanticBodyInstData::CallSpecialized { identity, .. } => {
                     visit_specialization(identity, &mut keys);
                 }
                 SemanticBodyInstData::StructInit { struct_key, .. } => {
-                    keys.insert(struct_key.clone());
+                    collect_nominal_definition_keys(struct_key, &mut keys);
                 }
                 SemanticBodyInstData::EnumVariant { enum_key, .. }
                 | SemanticBodyInstData::EnumPayloadGet { enum_key, .. } => {
-                    keys.insert(enum_key.clone());
+                    collect_nominal_definition_keys(enum_key, &mut keys);
                 }
                 SemanticBodyInstData::Match { arms, .. } => {
                     for arm in arms.iter() {
                         if let SemanticBodyPattern::EnumVariant { enum_key, .. } = &arm.pattern {
-                            keys.insert(enum_key.clone());
+                            collect_nominal_definition_keys(enum_key, &mut keys);
                         }
                     }
                 }
@@ -867,7 +1003,7 @@ impl DurableOrdinaryBodyPayload {
             for projection in place.projections.iter() {
                 match projection {
                     SemanticBodyProjection::Field { struct_key, .. } => {
-                        keys.insert(struct_key.clone());
+                        collect_nominal_definition_keys(struct_key, &mut keys);
                     }
                     SemanticBodyProjection::Index { array_type, .. } => {
                         visit_type(array_type, &mut keys);
@@ -1117,6 +1253,7 @@ mod tests {
                 instructions: instructions.into(),
                 places: Arc::from([]),
                 strings: Arc::from([]),
+                local_atoms: Arc::from([]),
                 param_drops: Arc::from([]),
                 borrow_slots: Arc::from([]),
                 num_locals: 0,
@@ -1260,13 +1397,13 @@ mod tests {
         let candidate = payload(vec![
             instruction(DurableAirInstData::UnitConst),
             instruction(DurableAirInstData::StructInit {
-                struct_key: StableDefinitionKey::for_test(
+                struct_key: rue_air::NominalInstanceKey::Named(StableDefinitionKey::for_test(
                     ModuleId::from_logical_path("main.rue").unwrap(),
                     StableDefinitionNamespace::Type,
                     StableDefinitionKind::Struct,
                     "S",
                     None,
-                ),
+                )),
                 fields: Arc::from([0]),
                 source_order: Arc::from([1]),
             }),

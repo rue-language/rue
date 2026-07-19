@@ -332,7 +332,7 @@ impl<'a> BodySema<'a> {
 
         // Comparisons read values without consuming them (like projections).
         // This matches Rust's PartialEq trait which takes references.
-        let lhs_is_literal = matches!(self.rir.get(lhs).data, InstData::StringConst(_));
+        let lhs_is_literal = matches!(self.rir.get(lhs).data, InstData::StringConst { .. });
         let (lhs_result, rhs_result) = if lhs_is_literal {
             let rhs_result = self.analyze_inst_for_projection(air, rhs, ctx)?;
             let expected = (self.is_strbuf(rhs_result.ty) || self.is_str_like(rhs_result.ty))
@@ -402,7 +402,7 @@ impl<'a> BodySema<'a> {
     /// This is used when validating comptime arguments to detect variables
     /// that hold comptime type values (e.g., `let P = Point(); ... Line(P)`).
     pub(crate) fn is_comptime_type_var(&self, inst_ref: InstRef, ctx: &AnalysisContext) -> bool {
-        if let InstData::VarRef { name } = &self.rir.get(inst_ref).data {
+        if let InstData::VarRef { name, .. } = &self.rir.get(inst_ref).data {
             ctx.comptime_type_vars.contains_key(name)
         } else {
             false
@@ -412,7 +412,7 @@ impl<'a> BodySema<'a> {
     /// Resolve the type of a place without emitting AIR or recording a move.
     pub(crate) fn peek_place_type(&self, inst_ref: InstRef, ctx: &AnalysisContext) -> Option<Type> {
         match &self.rir.get(inst_ref).data {
-            InstData::VarRef { name } => {
+            InstData::VarRef { name, .. } => {
                 if let Some(local) = ctx.locals.get(name) {
                     return Some(local.ty);
                 }

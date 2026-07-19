@@ -379,7 +379,7 @@ macro_rules! runtime_helpers {
         ),+ $(,)?
     ) => {
         /// Exhaustive typed identity for compiler-callable runtime helpers.
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
         #[repr(u8)]
         pub enum RuntimeHelperId {
             $($variant),+
@@ -972,7 +972,7 @@ macro_rules! define_reserved_export_ids {
         ),+ $(,)?
     ) => {
         /// Exhaustive identity for intentionally visible, non-helper runtime exports.
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
         #[repr(u8)]
         pub enum ReservedExportId {
             $($variant),+

@@ -143,7 +143,7 @@ impl<'a> BodySema<'a> {
             let arg_result = ctx
                 .with_expected_type(Some(expected), |ctx| self.analyze_inst(air, arg.value, ctx))?;
             let actual = arg_result.ty;
-            if actual != expected && !actual.can_coerce_to(&expected) && actual != Type::ERROR {
+            if !self.types_compatible(actual, expected) && actual != Type::ERROR {
                 return Err(self.type_mismatch_error(
                     expected,
                     actual,
@@ -568,7 +568,7 @@ impl<'a> BodySema<'a> {
             }
 
             // Type check the field value against the expected type
-            if field_result.ty != expected_field_type {
+            if !self.types_compatible(field_result.ty, expected_field_type) {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: expected_field_type.safe_name_with_pool(Some(&self.type_pool)),
@@ -625,6 +625,7 @@ impl<'a> BodySema<'a> {
         air: &mut Air,
         module_id: crate::types::ModuleId,
         member_name: Spur,
+        atom_anchor: Option<rue_rir::RirStructuralAnchor>,
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
@@ -798,7 +799,13 @@ impl<'a> BodySema<'a> {
             // A value const (e.g. `pub const ANSWER = ...`) accessed as a
             // module member: materialize the value that was evaluated at
             // declaration time, typed as declared (RUE-160).
-            let (data, ty) = self.materialize_const_value(ctx, const_info.value, const_info.ty);
+            let (data, ty) = self.materialize_const_value(
+                ctx,
+                const_info.value,
+                const_info.ty,
+                atom_anchor,
+                span,
+            )?;
             let air_ref = air.add_inst(AirInst { data, ty, span });
             return Ok(AnalysisResult::new(air_ref, ty));
         }
@@ -910,7 +917,7 @@ impl<'a> BodySema<'a> {
         ctx: &AnalysisContext,
     ) -> Option<crate::types::ModuleId> {
         match self.rir.get(inst_ref).data {
-            InstData::VarRef { name } => {
+            InstData::VarRef { name, .. } => {
                 if let Some(local) = ctx.locals.get(&name) {
                     if let Some(module_id) = local.ty.as_module() {
                         return Some(module_id);

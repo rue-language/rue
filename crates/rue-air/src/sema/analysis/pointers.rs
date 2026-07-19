@@ -68,7 +68,7 @@ impl<'a> BodySema<'a> {
         // resolved type is unconstrained (`<error>` — e.g. no annotation) or
         // never; those carry no expectation to check against.
         if let Some(&expected) = ctx.resolved_types.get(&inst_ref)
-            && expected != pointee_type
+            && !self.types_equivalent(expected, pointee_type)
             && !expected.is_error()
             && !expected.is_never()
             && !pointee_type.is_error()
@@ -174,7 +174,7 @@ impl<'a> BodySema<'a> {
         let value_type = value_result.ty;
 
         // Check that value type matches pointee type
-        if value_type != pointee_type && !value_type.is_error() && !value_type.is_never() {
+        if !self.types_compatible(value_type, pointee_type) {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: self.format_type_name(pointee_type),
@@ -599,7 +599,7 @@ impl<'a> BodySema<'a> {
         self.require_power_of_two_align("alloc_bytes", args[1].value, span, ctx)?;
         let result_ty = Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
         if let Some(&expected) = ctx.resolved_types.get(&inst_ref)
-            && expected != result_ty
+            && !self.types_equivalent(expected, result_ty)
             && !expected.is_error()
             && !expected.is_never()
         {
@@ -864,7 +864,7 @@ impl<'a> BodySema<'a> {
         expected: Type,
         span: Span,
     ) -> CompileResult<()> {
-        if found == expected || found.is_error() || found.is_never() {
+        if self.types_compatible(found, expected) {
             return Ok(());
         }
         Err(CompileError::new(
