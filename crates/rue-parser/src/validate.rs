@@ -25,7 +25,17 @@ use rue_error::{CompileError, ErrorKind};
 /// - `allow`  — suppresses lints, e.g. `@allow(unused_variable)` on `let`
 ///   (see `has_allow_directive` in rue-air)
 /// - `copy`   — marks a struct as a copy type (see `has_copy_directive`)
-pub const KNOWN_DIRECTIVES: &[&str] = &["allow", "copy"];
+/// - `repr`   — the C representation guarantee marker `@repr(c)` on a struct
+///   (ADR-0064 Amendment 1; see `has_repr_c_directive` in rue-air)
+pub const KNOWN_DIRECTIVES: &[&str] = &["allow", "copy", "repr"];
+
+/// Representation arguments accepted by `@repr(...)`.
+///
+/// Only `c` is accepted in v0 (ADR-0064 Amendment 1). The parameterized grammar
+/// stays open for future `@repr(packed)` / `@repr(align(n))`; parsing validates
+/// the argument so `@repr(packed)` fails loudly with the accepted set named,
+/// rather than being silently ignored.
+pub const KNOWN_REPR_ARGS: &[&str] = &["c"];
 
 /// Warning names accepted by `@allow(...)`.
 ///
@@ -81,7 +91,7 @@ impl Validator<'_> {
             if !KNOWN_DIRECTIVES.contains(&name) {
                 self.errors.push(CompileError::new(
                     ErrorKind::ParseError(format!(
-                        "unknown directive '@{}'; known directives are @allow and @copy",
+                        "unknown directive '@{}'; known directives are @allow, @copy, and @repr",
                         name
                     )),
                     directive.span,
@@ -106,6 +116,44 @@ impl Validator<'_> {
                             ErrorKind::ParseError("@copy takes no arguments".to_string()),
                             directive.span,
                         ));
+                    }
+                }
+                "repr" => {
+                    // `@repr(c)` is the C representation guarantee marker
+                    // (ADR-0064 Amendment 1). It applies only to structs, and
+                    // is parameterized: exactly one argument, `c` in v0. Unknown
+                    // arguments (e.g. `@repr(packed)`) fail loudly here naming
+                    // the accepted set, leaving the grammar open for future
+                    // packed/align representations.
+                    if !matches!(site, DirectiveSite::Struct) {
+                        self.errors.push(CompileError::new(
+                            ErrorKind::ParseError(format!(
+                                "@repr can only be applied to structs, not {}",
+                                site.description()
+                            )),
+                            directive.span,
+                        ));
+                    } else if directive.args.len() != 1 {
+                        self.errors.push(CompileError::new(
+                            ErrorKind::ParseError(format!(
+                                "@repr takes exactly one representation argument; \
+                                 accepted arguments are {}",
+                                KNOWN_REPR_ARGS.join(", ")
+                            )),
+                            directive.span,
+                        ));
+                    } else {
+                        let crate::ast::DirectiveArg::Ident(ident) = &directive.args[0];
+                        let arg = self.interner.resolve(&ident.name);
+                        if !KNOWN_REPR_ARGS.contains(&arg) {
+                            self.errors.push(CompileError::new(
+                                ErrorKind::ParseError(format!(
+                                    "unknown @repr argument '{arg}'; accepted arguments are {}",
+                                    KNOWN_REPR_ARGS.join(", ")
+                                )),
+                                ident.span,
+                            ));
+                        }
                     }
                 }
                 "allow" => {

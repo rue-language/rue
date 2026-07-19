@@ -380,6 +380,9 @@ impl ErrorCode {
     // ========================================================================
     pub const PREVIEW_FEATURE_REQUIRED: Self = Self(1100);
     pub const EXTERN_SIGNATURE_TYPE_UNSUPPORTED: Self = Self(1101);
+    pub const EXTERN_AGGREGATE_NOT_REPR_C: Self = Self(1102);
+    pub const EXTERN_ARRAY_BY_VALUE: Self = Self(1103);
+    pub const REPR_C_STRUCT_INELIGIBLE: Self = Self(1104);
 
     // ========================================================================
     // Comptime errors (E1200-E1299)
@@ -478,6 +481,25 @@ pub struct CopyStructNonCopyFieldError {
     pub struct_name: String,
     pub field_name: String,
     pub field_type: String,
+}
+
+/// Payload for `ErrorKind::ReprCStructIneligible`.
+///
+/// A `@repr(c)` struct failed the reject-don't-guess eligibility check
+/// (ADR-0064 Amendment 1). The structured `field_path` mirrors the failing
+/// predicate's field path (the RUE-504 machine-readable exposure direction);
+/// `reason` is the rendered human explanation naming the reject-list entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReprCIneligibleError {
+    /// The `@repr(c)` struct that is not FFI-eligible.
+    pub struct_name: String,
+    /// Dotted field path to the offending field, empty when the struct body
+    /// itself is the problem (e.g. an empty struct).
+    pub field_path: String,
+    /// The offending type as rendered for the user.
+    pub failing_type: String,
+    /// Human phrase naming the reject-list reason.
+    pub reason: String,
 }
 
 /// Payload for `ErrorKind::LinearFieldDroppedByDestructure`.
@@ -1583,6 +1605,41 @@ pub enum ErrorKind {
         ty: String,
     },
 
+    /// An aggregate type appeared in an `extern "C"` signature without the
+    /// `@repr(c)` guarantee marker (ADR-0064 Amendment 1). The marker is the
+    /// guarantee trigger: any aggregate crossing the C boundary must opt in
+    /// explicitly, never be silently promoted to C layout.
+    #[error(
+        "aggregate type `{ty}` in an `extern \"C\"` signature must be marked \
+         `@repr(c)`: aggregates crossing the C boundary opt in to C layout \
+         explicitly (ADR-0064)"
+    )]
+    ExternAggregateNotReprC {
+        /// The unmarked aggregate type, as rendered for the user.
+        ty: String,
+    },
+
+    /// A fixed-size array appeared directly as an `extern "C"` parameter or
+    /// return type (ADR-0064 Amendment 1). C decays an array argument to a
+    /// pointer and has no by-value array parameter, so a fixed array is only
+    /// eligible as a struct *field*, never as a direct signature type.
+    #[error(
+        "fixed-size array `{ty}` cannot appear directly in an `extern \"C\"` \
+         signature: C decays arrays to pointers — pass a pointer (`ptr const T`) \
+         instead, or wrap the array in a `@repr(c)` struct (ADR-0064)"
+    )]
+    ExternArrayByValue {
+        /// The rejected array type, as rendered for the user.
+        ty: String,
+    },
+
+    /// A `@repr(c)` struct failed the reject-don't-guess eligibility check
+    /// (ADR-0064 Amendment 1): an empty struct, an enum/aggregate field without
+    /// its own `@repr(c)` marker, or a linear / destructor-bearing field. The
+    /// marker is rejected rather than guessing a C representation.
+    #[error("`@repr(c)` struct `{}` is not FFI-eligible: {}", .0.struct_name, .0.reason)]
+    ReprCStructIneligible(Box<ReprCIneligibleError>),
+
     /// A slice type / range-slice was used under `--preview slices` but the
     /// fat-pointer runtime is not implemented yet (ADR-0043 Phase 1, RUE-322).
     #[error("slice types are not yet fully implemented (ADR-0043 Phase 1, RUE-322)")]
@@ -1823,6 +1880,9 @@ impl ErrorKind {
             ErrorKind::ExternSignatureTypeUnsupported { .. } => {
                 ErrorCode::EXTERN_SIGNATURE_TYPE_UNSUPPORTED
             }
+            ErrorKind::ExternAggregateNotReprC { .. } => ErrorCode::EXTERN_AGGREGATE_NOT_REPR_C,
+            ErrorKind::ExternArrayByValue { .. } => ErrorCode::EXTERN_ARRAY_BY_VALUE,
+            ErrorKind::ReprCStructIneligible(_) => ErrorCode::REPR_C_STRUCT_INELIGIBLE,
             ErrorKind::SliceNotYetImplemented => ErrorCode::SLICE_NOT_YET_IMPLEMENTED,
             ErrorKind::SliceReturnNotAllowed => ErrorCode::SLICE_RETURN_NOT_ALLOWED,
             ErrorKind::SliceInAggregateField => ErrorCode::SLICE_IN_AGGREGATE_FIELD,

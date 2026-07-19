@@ -40,6 +40,7 @@ struct PrimitiveTypeSpurs {
     drop_marker: Spur,
     allow_directive: Spur,
     copy_directive: Spur,
+    repr_directive: Spur,
 }
 
 impl PrimitiveTypeSpurs {
@@ -62,6 +63,7 @@ impl PrimitiveTypeSpurs {
             drop_marker: interner.get_or_intern("__drop"),
             allow_directive: interner.get_or_intern("allow"),
             copy_directive: interner.get_or_intern("copy"),
+            repr_directive: interner.get_or_intern("repr"),
             underscore: interner.get_or_intern("_"),
         }
     }
