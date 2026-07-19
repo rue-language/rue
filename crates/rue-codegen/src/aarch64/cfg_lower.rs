@@ -123,6 +123,29 @@ impl crate::call_plan::CallMaterializer for CfgLower<'_> {
         crate::agg_slots::store_enum_slots_through_ptr(self, &slots, pointer, image, padding);
         pointer
     }
+
+    fn materialize_indirect_value_arg_dispatch(
+        &mut self,
+        value: CfgValue,
+        image: &crate::types::DispatchImage,
+        storage_bytes: u32,
+    ) -> VReg {
+        // As `materialize_indirect_value_arg`, but the caller-owned buffer is
+        // written with a per-variant tag dispatch (RUE-1037).
+        self.mir.push(Aarch64Inst::SubImm {
+            dst: Operand::Physical(Reg::Sp),
+            src: Operand::Physical(Reg::Sp),
+            imm: storage_bytes as i32,
+        });
+        let pointer = self.mir.alloc_vreg();
+        self.mir.push(Aarch64Inst::MovRR {
+            dst: Operand::Virtual(pointer),
+            src: Operand::Physical(Reg::Sp),
+        });
+        let slots = self.require_aggregate_slots(value);
+        crate::agg_slots::store_dispatch_image(self, &slots, pointer, image);
+        pointer
+    }
 }
 
 impl<'a> CfgLower<'a> {
@@ -797,6 +820,15 @@ impl<'a> CfgLower<'a> {
                         src: Operand::Physical(Reg::Sp),
                     });
                     crate::agg_slots::load_enum_slots_through_ptr(self, base, map)
+                } else if let Some(image) = &plan.compact_return_dispatch {
+                    // Heterogeneous compact aggregate return (RUE-1037): dispatch on
+                    // the tag and read the active variant's image from the sret buffer.
+                    let base = self.mir.alloc_vreg();
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Virtual(base),
+                        src: Operand::Physical(Reg::Sp),
+                    });
+                    crate::agg_slots::load_dispatch_image(self, base, image)
                 } else {
                     (0..slot_count)
                         .map(|index| {
@@ -1545,6 +1577,11 @@ impl<'a> CfgLower<'a> {
                     // (RUE-1000).
                     slots = crate::agg_slots::load_enum_slots_through_ptr(self, ptr, map);
                     slots[0]
+                } else if let Some(image) = &plan.dispatch_image {
+                    // A heterogeneous compact aggregate pointee: dispatch on the
+                    // runtime tag and load the active variant's image (RUE-1037).
+                    slots = crate::agg_slots::load_dispatch_image(self, ptr, image);
+                    slots[0]
                 } else if count > 1 {
                     slots = crate::agg_slots::load_slots_through_ptr(self, ptr, count);
                     slots[0]
@@ -1593,6 +1630,16 @@ impl<'a> CfgLower<'a> {
                         map,
                         &plan.image_padding,
                     );
+                } else if let Some(image) = &plan.dispatch_image {
+                    // A heterogeneous compact aggregate value: zero the full image
+                    // extent, then dispatch on the tag and store the active
+                    // variant's leaves (RUE-1037).
+                    let vals = if value.slots.is_empty() {
+                        vec![value.primary]
+                    } else {
+                        value.slots.clone()
+                    };
+                    crate::agg_slots::store_dispatch_image(self, &vals, ptr, image);
                 } else if value.slot_count == 0 {
                     // Zero-sized values have no bytes to write.
                 } else if !value.slots.is_empty() {
@@ -2636,7 +2683,17 @@ impl<'a> CfgLower<'a> {
                                         self, &slots, &map, &padding,
                                     )
                                 }
-                                None => crate::agg_slots::store_slots_to_sret(self, &slots),
+                                None => match crate::types::aggregate_dispatch_image(
+                                    self.ctx.type_pool,
+                                    return_ty,
+                                ) {
+                                    // Heterogeneous compact aggregate return (RUE-1037):
+                                    // write the sret image with a per-variant tag dispatch.
+                                    Some(image) => crate::agg_slots::store_dispatch_image_to_sret(
+                                        self, &slots, &image,
+                                    ),
+                                    None => crate::agg_slots::store_slots_to_sret(self, &slots),
+                                },
                             }
                         } else {
                             for (index, slot) in slots.iter().enumerate() {
@@ -2738,6 +2795,11 @@ impl crate::terminator_plan::CfgLowerAdapter for CfgLower<'_> {
         // projection and whole-value reads see the correct decomposition.
         for (base_slot, map) in crate::value_plan::indirect_value_params(&self.ctx) {
             crate::agg_slots::unmarshal_indirect_value_param(self, base_slot, &map);
+        }
+        // Heterogeneous by-value indirect params unmarshal with a tag dispatch
+        // (RUE-1037).
+        for (base_slot, image) in crate::value_plan::indirect_value_params_dispatch(&self.ctx) {
+            crate::agg_slots::unmarshal_indirect_value_param_dispatch(self, base_slot, &image);
         }
     }
 
@@ -2953,6 +3015,31 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
             imm: 0,
         });
         dst
+    }
+    fn emit_set_zero(&mut self, dst: VReg) {
+        self.mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Virtual(dst),
+            imm: 0,
+        });
+    }
+    fn alloc_marshal_label(&mut self) -> LabelId {
+        self.mir.alloc_label()
+    }
+    fn emit_marshal_branch_if_tag_ne(&mut self, tag: VReg, discriminant: u64, label: LabelId) {
+        self.mir.push(Aarch64Inst::CmpImm {
+            src: Operand::Virtual(tag),
+            imm: discriminant as i32,
+        });
+        self.mir.push(Aarch64Inst::BCond {
+            cond: Cond::Ne,
+            label,
+        });
+    }
+    fn emit_marshal_jump(&mut self, label: LabelId) {
+        self.mir.push(Aarch64Inst::B { label });
+    }
+    fn emit_marshal_label(&mut self, label: LabelId) {
+        self.mir.push(Aarch64Inst::Label { id: label });
     }
 }
 
@@ -3399,6 +3486,45 @@ mod tests {
         );
     }
 
+    /// RUE-1037: on AArch64, a HETEROGENEOUS enum (variants whose payload layouts
+    /// disagree) is marshalled through a pointer by dispatching on the runtime tag
+    /// — the store emits a tag compare per variant plus narrow field stores.
+    /// Gate-off the same `@ptr_write` stores eight-byte slots with no tag dispatch
+    /// and no narrow store.
+    #[test]
+    fn aggregate_layout_heterogeneous_enum_ptr_write_tag_dispatches() {
+        let source = "enum R { Ok(Point), Err(i64) } \
+                      struct Point { x: i32, y: i32, z: i32 } \
+                      fn store_it(p: ptr mut R) { checked { @ptr_write(p, R.Ok(Point { x: 1, y: 2, z: 3 })); }; } \
+                      fn main() -> i32 { checked { let p: ptr mut R = @alloc(1); store_it(p); @free(p, 1); }; 0 }";
+        let mut preview = PreviewFeatures::new();
+        preview.insert(PreviewFeature::AggregateLayout);
+        let mir = try_lower_named_fn(source, preview, Some("store_it"))
+            .expect("a heterogeneous enum @ptr_write must lower via tag dispatch");
+        assert!(
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, Aarch64Inst::CmpImm { .. })),
+            "the heterogeneous store must compare the tag to dispatch on the variant"
+        );
+        assert!(
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, Aarch64Inst::NarrowStoreIndexed { .. })),
+            "the active variant's narrow leaves must be stored narrow"
+        );
+
+        let off = try_lower_named_fn(source, PreviewFeatures::new(), Some("store_it"))
+            .expect("the same program lowers under the default slot model");
+        assert!(
+            off.instructions().iter().all(|inst| !matches!(
+                inst,
+                Aarch64Inst::CmpImm { .. } | Aarch64Inst::NarrowStoreIndexed { .. }
+            )),
+            "gate-off must store eight-byte slots with no tag dispatch and no narrow store"
+        );
+    }
+
     /// RUE-987: a whole compact struct round-trips through a typed pointer on
     /// AArch64, reusing the enum-image slot machinery — `@ptr_write` stores each
     /// field narrow at its compact offset and `@ptr_read` reloads it. Gate-off
@@ -3491,21 +3617,24 @@ mod tests {
         );
     }
 
-    /// RUE-1014: a struct WITHOUT a variant-independent compact image — it embeds
-    /// an enum whose union payloads overlap (`A(i64)` versus `B(i32, i32)`) — is
-    /// still refused loudly through a pointer on AArch64, not miscompiled.
+    /// RUE-1037: a struct embedding a HETEROGENEOUS enum (`A(i64)` versus
+    /// `B(i32, i32)`, whose payload layouts disagree) marshals through a pointer
+    /// on AArch64 via a nested tag dispatch — the store compares the embedded tag
+    /// and stores the active variant's leaves. (Previously refused as imageless.)
     #[test]
-    fn aggregate_layout_refuses_image_less_struct_memory() {
+    fn aggregate_layout_marshals_struct_embedding_heterogeneous_enum() {
         let source = "enum Bad { A(i64), B(i32, i32) } struct HasBad { b: Bad } \
                       fn main() -> i32 { checked { let p: ptr mut HasBad = @alloc(1); \
-                      @ptr_write(p, HasBad { b: Bad.A(5) }); }; 0 }";
+                      @ptr_write(p, HasBad { b: Bad.A(5) }); @free(p, 1); }; 0 }";
         let mut preview = PreviewFeatures::new();
         preview.insert(PreviewFeature::AggregateLayout);
-        let err = try_lower_first_fn(source, preview)
-            .expect_err("a struct embedding an imageless enum must refuse, not miscompile");
+        let mir = try_lower_first_fn(source, preview)
+            .expect("a struct embedding a heterogeneous enum must lower via nested tag dispatch");
         assert!(
-            format!("{err:?}").contains("aggregate_layout"),
-            "refusal must name the feature, got: {err:?}"
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, Aarch64Inst::CmpImm { .. })),
+            "the nested heterogeneous enum store must dispatch on the embedded tag"
         );
     }
 
@@ -3613,23 +3742,25 @@ mod tests {
         );
     }
 
-    /// RUE-1000 keeps refusing a compact enum whose union payload slots would
-    /// overlap (`A(i64)` versus `B(i32, i32)`) on AArch64: no
-    /// variant-independent slot→byte image, so it fails loudly.
+    /// RUE-1037: a compact enum whose union payload slots overlap (`A(i64)`
+    /// versus `B(i32, i32)`, no variant-independent image) now marshals through a
+    /// pointer on AArch64 via per-variant tag dispatch rather than being refused.
     #[test]
-    fn aggregate_layout_refuses_variant_dependent_enum_memory() {
+    fn aggregate_layout_marshals_variant_dependent_enum_memory() {
         let mut preview = PreviewFeatures::new();
         preview.insert(PreviewFeature::AggregateLayout);
-        let err = try_lower_first_fn(
+        let mir = try_lower_first_fn(
             "enum Bad { A(i64), B(i32, i32) } \
              fn main() -> i32 { checked { let p: ptr mut Bad = @alloc(1); \
-             @ptr_write(p, Bad.A(5)); }; 0 }",
+             @ptr_write(p, Bad.A(5)); @free(p, 1); }; 0 }",
             preview,
         )
-        .expect_err("a variant-dependent enum memory image must be refused");
+        .expect("a variant-dependent enum memory image must lower via tag dispatch");
         assert!(
-            format!("{err:?}").contains("aggregate_layout"),
-            "refusal must name the feature, got: {err:?}"
+            mir.instructions()
+                .iter()
+                .any(|inst| matches!(inst, Aarch64Inst::CmpImm { .. })),
+            "the heterogeneous enum store must dispatch on the tag"
         );
     }
 

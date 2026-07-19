@@ -536,25 +536,37 @@ fn main() -> i32 {
 stdout = ""
 exit_code = 0
 
-# RUE-1000 keeps refusing enums whose compact memory image is variant-dependent:
-# A(i64) and B(i32,i32) would need overlapping union slots (the i64 field spans
-# both i32 positions), so there is no single slot->byte map. Refused loudly.
+# RUE-1037: an enum whose per-variant payload layouts DISAGREE (A(i64) overlaps
+# B's two i32 positions, so the flatten-merge finds no single slot->byte map) now
+# marshals through a pointer by dispatching on the tag and running the ACTIVE
+# variant's own map. Both variants round-trip through the heap.
 [[case]]
-name = "compact_enum_overlapping_union_still_fails"
-description = "An enum whose union payload slots overlap (i64 vs two i32) has no variant-independent memory image and is refused."
+name = "compact_enum_overlapping_union_roundtrip"
+description = "A heterogeneous enum (i64 vs two i32, overlapping union positions) round-trips through a heap pointer via per-variant tag dispatch (RUE-1037)."
+differential_opt = true
 args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Bad { A(i64), B(i32, i32) }
+fn first(v: Bad) -> i64 {
+    match v { Bad.A(x) => x, Bad.B(y, z) => @intCast(y + z), }
+}
 fn main() -> i32 {
-    checked {
+    let r = checked {
         let p: ptr mut Bad = @alloc(1);
-        @ptr_write(p, Bad.A(5));
+        @ptr_write(p, Bad.A(0 - 3));
+        let a: Bad = @ptr_read(p);
+        @ptr_write(p, Bad.B(40, 2));
+        let b: Bad = @ptr_read(p);
+        @free(p, 1);
+        first(a) * 100 + first(b)
     };
+    let t: i32 = @intCast(r);
+    @dbg(t);
     0
 }
 """ }]
-compile_fail = true
-error_contains = ["aggregate_layout", "not yet implemented"]
+stdout = "-258\n"
+exit_code = 0
 
 # RUE-1000 keeps refusing a nested-aggregate enum payload through a pointer:
 # a struct payload has no single-slot scalar memory image in this phase.
@@ -585,14 +597,14 @@ fn main() -> i32 {
 stdout = "69\n"
 exit_code = 0
 
-# An IMAGELESS compact enum crossing a CALL boundary by value stays refused
-# (RUE-1005): overlapping union payload slots (`A(i64)` versus `B(i32, i32)`)
-# give no variant-independent memory image, so the caller cannot build a compact
-# buffer and the callee cannot unmarshal one. A compact enum WITH an image now
-# crosses by value (see `compact_enum_by_value_match`).
+# RUE-1037: a heterogeneous compact enum crossing a CALL boundary by value now
+# marshals through its per-variant tag-dispatched image — the caller writes the
+# active variant's image into its buffer, the callee unmarshals it in the
+# prologue. (Previously refused as "imageless" under RUE-1005.)
 [[case]]
-name = "imageless_enum_crossing_call_still_fails"
-description = "A variant-dependent (imageless) compact enum passed by value across a call is still refused under --preview aggregate_layout (RUE-1005)."
+name = "compact_heterogeneous_enum_crossing_call_by_value"
+description = "A heterogeneous compact enum (i64 vs two i32) passed by value across a call marshals through its tag-dispatched image (RUE-1037)."
+differential_opt = true
 args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 enum Bad { A(i64), B(i32, i32) }
@@ -600,11 +612,14 @@ fn first(v: Bad) -> i64 {
     match v { Bad.A(x) => x, Bad.B(y, z) => @intCast(y + z), }
 }
 fn main() -> i32 {
-    @intCast(first(Bad.A(5)))
+    let s: i64 = first(Bad.A(5)) + first(Bad.B(30, 12));
+    let t: i32 = @intCast(s);
+    @dbg(t);
+    0
 }
 """ }]
-compile_fail = true
-error_contains = ["aggregate_layout", "not yet implemented"]
+stdout = "47\n"
+exit_code = 0
 
 # RUE-1004 (ADR-0052 phase 5.7): call-boundary marshalling for compact
 # aggregates. A non-slot-identical aggregate the preserved slot convention
@@ -1232,3 +1247,113 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = ["raw pointer", "frame-resident aggregate"]
+
+# --- RUE-1037: heterogeneous enum images via per-variant tag dispatch ---------
+# An enum whose variants' payload layouts DISAGREE (e.g. Ok(struct{i32,i32,i32})
+# vs Err(i64)) has no single variant-independent compact image, so the merge in
+# `enum_physical_slot_map` returns None. Each variant's own slot->byte map still
+# exists, so marshalling dispatches on the tag (slot 0 / offset 0) and runs the
+# active variant's map. This is the last construct blocking the compact default.
+
+# Constructed, returned by value (sret), passed by value as an argument, and
+# matched on BOTH variants. exit via @dbg: Ok payload sum 60, Err payload 77.
+[[case]]
+name = "compact_heterogeneous_enum_construct_return_match"
+description = "A heterogeneous enum { Ok(struct{i32,i32,i32}), Err(i64) } is constructed, sret-returned, passed by value, and matched on both variants (RUE-1037)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum R { Ok(Point), Err(i64) }
+struct Point { x: i32, y: i32, z: i32 }
+fn make_ok() -> R { R.Ok(Point { x: 10, y: 20, z: 30 }) }
+fn make_err() -> R { R.Err(77) }
+fn sum(r: R) -> i64 {
+    match r {
+        R.Ok(p) => @intCast(p.x + p.y + p.z),
+        R.Err(e) => e,
+    }
+}
+fn main() -> i32 {
+    let a = sum(make_ok());
+    let b = sum(make_err());
+    let t: i32 = @intCast(a + b);
+    @dbg(t);
+    0
+}
+""" }]
+stdout = "137\n"
+exit_code = 0
+
+# Heap round-trip with variant overwrite + poison read (RUE-1007 ruling 5): write
+# the wider Ok payload, overwrite with the shorter Err, then read a byte where
+# Ok's third field lived — the full-extent zero on the Err store leaves it 0, so
+# no residue. classify(Err) = -5, poison byte = 0, sum = -5.
+[[case]]
+name = "compact_heterogeneous_enum_heap_overwrite_no_residue"
+description = "Overwriting a heap heterogeneous enum with a shorter variant zeroes the wider variant's payload bytes; the round-tripped value classifies correctly (RUE-1037 / RUE-1007)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum R { Ok(Point), Err(i64) }
+struct Point { x: i32, y: i32, z: i32 }
+fn classify(r: R) -> i64 {
+    match r {
+        R.Ok(p) => @intCast(p.x + p.y + p.z),
+        R.Err(e) => e,
+    }
+}
+fn main() -> i32 {
+    let out = checked {
+        let p: ptr mut R = @alloc(1);
+        @ptr_write(p, R.Ok(Point { x: 11, y: 22, z: 33 }));
+        @ptr_write(p, R.Err(0 - 5));
+        let bytes: ptr mut u8 = @int_to_ptr(@ptr_to_int(p));
+        let poison: u8 = @ptr_read(@ptr_offset(bytes, 16));
+        let r: R = @ptr_read(p);
+        @free(p, 1);
+        let z: i32 = @intCast(classify(r)) + @intCast(poison);
+        z
+    };
+    @dbg(out);
+    0
+}
+""" }]
+stdout = "-5\n"
+exit_code = 0
+
+# A heterogeneous enum nested inside a struct that crosses a call boundary both
+# ways (returned by value from `mk`, passed by value into `consume`). The struct
+# image is flat leaves for `tag`/`extra` plus a tag-dispatched region for `r`.
+[[case]]
+name = "compact_heterogeneous_enum_in_struct_across_call"
+description = "A struct containing a heterogeneous enum crosses a call boundary in both directions, marshalled via a nested tag dispatch (RUE-1037)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+enum R { Ok(Point), Err(i64) }
+struct Point { x: i32, y: i32, z: i32 }
+struct Wrap { tag: i32, r: R, extra: i64 }
+fn mk(v: i32) -> Wrap {
+    if v > 0 {
+        Wrap { tag: 1, r: R.Ok(Point { x: v, y: v * 2, z: v * 3 }), extra: 100 }
+    } else {
+        Wrap { tag: 2, r: R.Err(0 - 9), extra: 200 }
+    }
+}
+fn consume(w: Wrap) -> i64 {
+    let rv = match w.r {
+        R.Ok(p) => @intCast(p.x + p.y + p.z),
+        R.Err(e) => e,
+    };
+    rv + @intCast(w.tag) + w.extra
+}
+fn main() -> i32 {
+    let a = consume(mk(5));
+    let b = consume(mk(0 - 1));
+    let t: i32 = @intCast(a + b);
+    @dbg(t);
+    0
+}
+""" }]
+stdout = "324\n"
+exit_code = 0

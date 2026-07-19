@@ -229,7 +229,7 @@ impl RuntimeCallPlan {
                 // for a Rue-target call under `aggregate_layout`; the register-
                 // only TargetC memory builtins take scalars and pointers, never a
                 // by-value compact aggregate, so it cannot reach a runtime call.
-                CallArgInput::IndirectValue { .. } => {
+                CallArgInput::IndirectValue { .. } | CallArgInput::IndirectValueDispatch { .. } => {
                     unreachable!(
                         "a compiler-built memory routine cannot take a by-value indirect \
                          compact aggregate argument"

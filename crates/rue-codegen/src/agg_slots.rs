@@ -85,6 +85,32 @@ pub(crate) trait SlotBackend: BoundsCheckBackend {
     /// Allocate a fresh vreg holding the constant zero, used to clear a compact
     /// image's padding bytes (ADR-0052 ruling 5).
     fn emit_zero_vreg(&mut self) -> VReg;
+
+    /// Set the existing vreg `dst` to the constant zero (RUE-1037). Used on a
+    /// tag-dispatched image load to clear the payload slots the active variant
+    /// does not write, so the loaded value matches the zeroed decomposition of a
+    /// shorter variant.
+    fn emit_set_zero(&mut self, dst: VReg);
+
+    /// Allocate a fresh label for a tag-dispatch marshalling edge (RUE-1037).
+    fn alloc_marshal_label(&mut self) -> crate::vreg::LabelId;
+
+    /// Compare the discriminant in `tag` against `discriminant` and branch to
+    /// `label` when they are NOT equal (RUE-1037): the fall-through path runs the
+    /// matched variant's arm, the branch skips to the next arm.
+    fn emit_marshal_branch_if_tag_ne(
+        &mut self,
+        tag: VReg,
+        discriminant: u64,
+        label: crate::vreg::LabelId,
+    );
+
+    /// Emit an unconditional jump to `label` (RUE-1037), used to leave a matched
+    /// variant's arm for the dispatch's merge point.
+    fn emit_marshal_jump(&mut self, label: crate::vreg::LabelId);
+
+    /// Bind `label` at the current position (RUE-1037).
+    fn emit_marshal_label(&mut self, label: crate::vreg::LabelId);
 }
 
 /// Zero the padding byte `ranges` of a compact memory image reached through
@@ -372,6 +398,170 @@ pub(crate) fn store_slots_to_sret_compact<B: SlotBackend>(
     let sret_slot = b.ctx().sret_ptr_slot();
     b.emit_load_slot(ptr, sret_slot);
     store_enum_slots_through_ptr(b, vals, ptr, map, padding);
+}
+
+// ============================================================================
+// Heterogeneous-enum tag-dispatched image marshalling (ADR-0052 phase 5.12,
+// RUE-1037).
+//
+// A heterogeneous enum (or an aggregate containing one) has no single
+// variant-independent slot->byte map, but its value decomposition IS
+// variant-independent. So marshalling branches on the runtime tag at each
+// dispatched region and runs the ACTIVE variant's leaf stores/loads — reusing
+// the same per-leaf narrow/full emission the single-map path uses. A store
+// zeros the whole image extent first, then writes the active variant's leaves,
+// so every byte outside them is deterministically zero (RUE-1007).
+// ============================================================================
+
+/// Store a whole heterogeneous aggregate value's `vals` (one vreg per internal
+/// slot, slot 0 first) through `ptr` as its tag-dispatched compact image
+/// (RUE-1037). The full image extent is zeroed first, then each `Switch` region
+/// branches on the value's tag slot and stores only the matched variant's leaves.
+pub(crate) fn store_dispatch_image<B: SlotBackend>(
+    b: &mut B,
+    vals: &[VReg],
+    ptr: VReg,
+    image: &crate::types::DispatchImage,
+) {
+    zero_padding_through_ptr(
+        b,
+        ptr,
+        &[PaddingRange {
+            start: 0,
+            end: u64::from(image.image_size),
+        }],
+    );
+    store_image_segs(b, vals, ptr, &image.segs);
+}
+
+fn store_image_segs<B: SlotBackend>(
+    b: &mut B,
+    vals: &[VReg],
+    ptr: VReg,
+    segs: &[crate::types::ImageSeg],
+) {
+    for seg in segs {
+        match seg {
+            crate::types::ImageSeg::Leaf { slot, phys } => {
+                store_leaf(b, vals[*slot as usize], ptr, phys);
+            }
+            crate::types::ImageSeg::Switch(region) => {
+                let tag = vals[region.tag_slot as usize];
+                // The discriminant is a common leaf across every variant.
+                b.emit_narrow_store_through_ptr(tag, ptr, region.tag_offset, region.tag_access);
+                let end = b.alloc_marshal_label();
+                for arm in &region.arms {
+                    let next = b.alloc_marshal_label();
+                    b.emit_marshal_branch_if_tag_ne(tag, arm.discriminant, next);
+                    store_image_segs(b, vals, ptr, &arm.segs);
+                    b.emit_marshal_jump(end);
+                    b.emit_marshal_label(next);
+                }
+                b.emit_marshal_label(end);
+            }
+        }
+    }
+}
+
+fn store_leaf<B: SlotBackend>(
+    b: &mut B,
+    val: VReg,
+    ptr: VReg,
+    phys: &crate::types::PhysicalEnumSlot,
+) {
+    match phys.access {
+        None => b.emit_store_through_ptr(val, ptr, phys.byte_offset),
+        Some(access) => b.emit_narrow_store_through_ptr(val, ptr, phys.byte_offset, access),
+    }
+}
+
+/// Load a whole heterogeneous aggregate value's internal slots from `ptr` as its
+/// tag-dispatched compact image (RUE-1037), returning `total_slots` vregs in
+/// internal slot order. Each `Switch` region reads the tag, zeros its payload
+/// slots, then branches on the tag to load only the matched variant's leaves —
+/// so the unused payload slots read back zero, matching the value decomposition.
+pub(crate) fn load_dispatch_image<B: SlotBackend>(
+    b: &mut B,
+    ptr: VReg,
+    image: &crate::types::DispatchImage,
+) -> Vec<VReg> {
+    let result: Vec<VReg> = (0..image.total_slots).map(|_| b.alloc_vreg()).collect();
+    load_image_segs(b, ptr, &result, &image.segs);
+    result
+}
+
+fn load_image_segs<B: SlotBackend>(
+    b: &mut B,
+    ptr: VReg,
+    result: &[VReg],
+    segs: &[crate::types::ImageSeg],
+) {
+    for seg in segs {
+        match seg {
+            crate::types::ImageSeg::Leaf { slot, phys } => {
+                load_leaf(b, result[*slot as usize], ptr, phys);
+            }
+            crate::types::ImageSeg::Switch(region) => {
+                let tag = result[region.tag_slot as usize];
+                b.emit_narrow_load_through_ptr(tag, ptr, region.tag_offset, region.tag_access);
+                // Zero the payload slots so a shorter variant's unwritten slots
+                // read back zero on every path (matching the value model, and
+                // giving every result slot a definition on all branches).
+                for slot in (region.tag_slot + 1)..(region.tag_slot + region.span) {
+                    b.emit_set_zero(result[slot as usize]);
+                }
+                let end = b.alloc_marshal_label();
+                for arm in &region.arms {
+                    let next = b.alloc_marshal_label();
+                    b.emit_marshal_branch_if_tag_ne(tag, arm.discriminant, next);
+                    load_image_segs(b, ptr, result, &arm.segs);
+                    b.emit_marshal_jump(end);
+                    b.emit_marshal_label(next);
+                }
+                b.emit_marshal_label(end);
+            }
+        }
+    }
+}
+
+fn load_leaf<B: SlotBackend>(
+    b: &mut B,
+    dst: VReg,
+    ptr: VReg,
+    phys: &crate::types::PhysicalEnumSlot,
+) {
+    match phys.access {
+        None => b.emit_load_through_ptr(dst, ptr, phys.byte_offset),
+        Some(access) => b.emit_narrow_load_through_ptr(dst, ptr, phys.byte_offset, access),
+    }
+}
+
+/// Tag-dispatched counterpart of [`store_slots_to_sret_compact`] (RUE-1037):
+/// load the sret buffer pointer and store the return value as its tag-dispatched
+/// compact image.
+pub(crate) fn store_dispatch_image_to_sret<B: SlotBackend>(
+    b: &mut B,
+    vals: &[VReg],
+    image: &crate::types::DispatchImage,
+) {
+    let ptr = b.alloc_vreg();
+    let sret_slot = b.ctx().sret_ptr_slot();
+    b.emit_load_slot(ptr, sret_slot);
+    store_dispatch_image(b, vals, ptr, image);
+}
+
+/// Tag-dispatched counterpart of [`unmarshal_indirect_value_param`] (RUE-1037):
+/// read the homed pointer, load the aggregate's tag-dispatched compact image
+/// through it, and store the slot-shaped values into the parameter's frame region.
+pub(crate) fn unmarshal_indirect_value_param_dispatch<B: SlotBackend>(
+    b: &mut B,
+    base_slot: u32,
+    image: &crate::types::DispatchImage,
+) {
+    let ptr = b.alloc_vreg();
+    b.emit_load_slot(ptr, base_slot);
+    let vals = load_dispatch_image(b, ptr, image);
+    store_slots(b, &vals, base_slot);
 }
 
 /// Load `count` slots through `ptr` at ASCENDING byte offsets (slot k at
