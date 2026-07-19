@@ -90,6 +90,7 @@ impl ErrorCode {
     pub const UPPERCASE_BASE_PREFIX: Self = Self(6);
     pub const EMPTY_BASED_LITERAL: Self = Self(7);
     pub const INVALID_DIGIT_FOR_BASE: Self = Self(8);
+    pub const MALFORMED_BYTE_LITERAL: Self = Self(9);
 
     // ========================================================================
     // Parser errors (E0100-E0199)
@@ -1052,6 +1053,12 @@ pub enum ErrorKind {
     /// `0xG`). (RUE-177)
     #[error("invalid digit `{digit}` in {base} integer literal")]
     InvalidDigitForBase { digit: char, base: &'static str },
+    /// A malformed byte literal (`b'ab'`, `b''`, `b'\q'`, `b'é'`, an
+    /// unterminated `b'a`). Carries a specific, already-rendered reason built
+    /// by the lexer. Byte literals (`b'a'`) are readable `u8` spellings of a
+    /// single ASCII byte (RUE-1042).
+    #[error("{0}")]
+    MalformedByteLiteral(String),
 
     // Parser errors
     #[error("expected {expected}, found {found}")]
@@ -1622,6 +1629,7 @@ impl ErrorKind {
             ErrorKind::UnterminatedString => ErrorCode::UNTERMINATED_STRING,
             ErrorKind::UppercaseBasePrefix(_) => ErrorCode::UPPERCASE_BASE_PREFIX,
             ErrorKind::EmptyBasedLiteral { .. } => ErrorCode::EMPTY_BASED_LITERAL,
+            ErrorKind::MalformedByteLiteral(_) => ErrorCode::MALFORMED_BYTE_LITERAL,
             ErrorKind::InvalidDigitForBase { .. } => ErrorCode::INVALID_DIGIT_FOR_BASE,
 
             // Parser errors (E0100-E0199)

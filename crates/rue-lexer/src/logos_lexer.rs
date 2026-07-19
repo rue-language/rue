@@ -47,6 +47,9 @@ pub enum LexError {
         base: &'static str,
         offset: u32,
     },
+    /// A malformed byte literal (`b'ab'`, `b''`, `b'\q'`, non-ASCII `b'é'`, or
+    /// an unterminated `b'a`). Carries an already-rendered reason. (RUE-1042)
+    MalformedByteLiteral(String),
 }
 
 /// Process a string literal starting from an opening quote.
@@ -246,6 +249,116 @@ fn parse_based_literal(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Result<u64
     Ok(value)
 }
 
+/// Callback for byte literals `b'a'` (RUE-1042), triggered on the `b'` prefix.
+///
+/// A byte literal is a readable `u8` spelling of a single ASCII byte: `b'a'`
+/// lexes to exactly the integer literal `97`, so it flows through the parser
+/// and contextual integer typing like any other integer literal (it becomes a
+/// `u8` in a `u8` comparison, an `i64` where one is expected, etc.). This keeps
+/// the feature lexer-only: no new token, type, or inference rule.
+///
+/// The content is one of: a single printable ASCII character, or an escape
+/// from the same set the string lexer accepts (`\\ \" \n \t \r \0`) plus `\'`.
+/// Non-ASCII characters, an empty literal, more than one byte, an unknown
+/// escape, or a missing closing quote are rejected. On any error the token is
+/// bumped to cover the offending text (to the closing quote, or to
+/// end-of-line) so the lexer resyncs cleanly, mirroring the string path.
+fn process_byte_literal(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Result<u64, LexError> {
+    let rest = lex.remainder();
+    let mut chars = rest.char_indices();
+
+    // Parse the byte content, tracking how many bytes of `rest` it spans.
+    let (value, content_len) = match chars.next() {
+        None => {
+            return Err(LexError::MalformedByteLiteral(
+                "unterminated byte literal: expected a byte then a closing `'`".to_string(),
+            ));
+        }
+        Some((_, '\'')) => {
+            lex.bump(1);
+            return Err(LexError::MalformedByteLiteral(
+                "empty byte literal `b''`: a byte literal must contain exactly one byte"
+                    .to_string(),
+            ));
+        }
+        Some((_, '\n')) | Some((_, '\r')) => {
+            return Err(LexError::MalformedByteLiteral(
+                "unterminated byte literal (line ended before the closing `'`)".to_string(),
+            ));
+        }
+        Some((_, '\\')) => match chars.next() {
+            None => {
+                lex.bump(1);
+                return Err(LexError::MalformedByteLiteral(
+                    "unterminated escape in byte literal".to_string(),
+                ));
+            }
+            Some((_, escape)) => {
+                let byte = match escape {
+                    '\\' => b'\\',
+                    '\'' => b'\'',
+                    '"' => b'"',
+                    'n' => b'\n',
+                    't' => b'\t',
+                    'r' => b'\r',
+                    '0' => 0,
+                    other => {
+                        lex.bump(1 + other.len_utf8());
+                        return Err(LexError::MalformedByteLiteral(format!(
+                            "unknown escape `\\{}` in byte literal",
+                            other.escape_debug()
+                        )));
+                    }
+                };
+                (u64::from(byte), 1 + escape.len_utf8())
+            }
+        },
+        Some((_, c)) => {
+            if !c.is_ascii() {
+                lex.bump(c.len_utf8());
+                return Err(LexError::MalformedByteLiteral(format!(
+                    "byte literal must be a single ASCII byte, found `{}`",
+                    c.escape_debug()
+                )));
+            }
+            (u64::from(c as u8), 1)
+        }
+    };
+
+    // Expect the closing quote immediately after the single byte's content.
+    match rest[content_len..].chars().next() {
+        Some('\'') => {
+            lex.bump(content_len + 1);
+            Ok(value)
+        }
+        Some(_) => {
+            // More than one byte before the quote (`b'ab'`). Resync to the
+            // closing quote if there is one on this line, else to line end.
+            let tail = &rest[content_len..];
+            let stop = tail
+                .find(['\'', '\n', '\r'])
+                .map(|i| {
+                    if tail.as_bytes()[i] == b'\'' {
+                        i + 1
+                    } else {
+                        i
+                    }
+                })
+                .unwrap_or(tail.len());
+            lex.bump(content_len + stop);
+            Err(LexError::MalformedByteLiteral(
+                "a byte literal must contain exactly one byte".to_string(),
+            ))
+        }
+        None => {
+            lex.bump(content_len);
+            Err(LexError::MalformedByteLiteral(
+                "unterminated byte literal (missing closing `'`)".to_string(),
+            ))
+        }
+    }
+}
+
 /// Token kinds in the Rue language, using logos derive macro.
 #[derive(Logos, Debug, Clone, PartialEq, Eq)]
 #[logos(error = LexError)]
@@ -366,6 +479,9 @@ pub enum LogosTokenKind {
     // (RUE-133, RUE-177)
     #[regex(r"[0-9][0-9_]*", parse_decimal_literal)]
     #[regex(r"0[xXbBoO][0-9a-zA-Z_]*", parse_based_literal)]
+    // Byte literals `b'a'` are `u8` spellings of a single ASCII byte and lex to
+    // the same untyped integer literal as the byte's decimal code (RUE-1042).
+    #[token("b'", process_byte_literal)]
     Int(u64),
 
     // String literals - match opening quote and process content manually
@@ -688,6 +804,14 @@ impl<'a> LogosLexer<'a> {
                                 ),
                                 LexError::EmptyBasedLiteral { base } => (
                                     ErrorKind::EmptyBasedLiteral { base },
+                                    Span::with_file(
+                                        self.file_id,
+                                        span.start as u32,
+                                        span.end as u32,
+                                    ),
+                                ),
+                                LexError::MalformedByteLiteral(message) => (
+                                    ErrorKind::MalformedByteLiteral(message),
                                     Span::with_file(
                                         self.file_id,
                                         span.start as u32,
@@ -1169,6 +1293,58 @@ mod tests {
         // `_1` is an identifier, not an integer literal (RUE-177).
         let (tokens, interner) = LogosLexer::new("_1").tokenize().unwrap();
         assert_eq!(get_ident_str(&tokens[0].kind, &interner), Some("_1"));
+    }
+
+    #[test]
+    fn test_byte_literal_values() {
+        // RUE-1042: `b'a'` lexes to the same integer literal as the byte's
+        // decimal code — a readable u8 spelling.
+        assert_eq!(lex_int("b'a'"), 97);
+        assert_eq!(lex_int("b'A'"), 65);
+        assert_eq!(lex_int("b'0'"), 48);
+        assert_eq!(lex_int("b' '"), 32);
+        assert_eq!(lex_int("b'~'"), 126);
+        // A double-quote needs no escape inside a byte literal.
+        assert_eq!(lex_int("b'\"'"), 34);
+        // Escapes: same set as strings, plus `\'`.
+        assert_eq!(lex_int(r"b'\n'"), 10);
+        assert_eq!(lex_int(r"b'\t'"), 9);
+        assert_eq!(lex_int(r"b'\r'"), 13);
+        assert_eq!(lex_int(r"b'\0'"), 0);
+        assert_eq!(lex_int(r"b'\\'"), 92);
+        assert_eq!(lex_int(r"b'\''"), 39);
+    }
+
+    #[test]
+    fn test_byte_literal_bare_b_is_still_an_identifier() {
+        // The `b'` rule must not steal a bare `b` identifier or a `b`-prefixed
+        // name — only `b` immediately followed by `'` is a byte literal.
+        let (tokens, interner) = LogosLexer::new("b").tokenize().unwrap();
+        assert_eq!(get_ident_str(&tokens[0].kind, &interner), Some("b"));
+        let (tokens, interner) = LogosLexer::new("byte").tokenize().unwrap();
+        assert_eq!(get_ident_str(&tokens[0].kind, &interner), Some("byte"));
+        // `b + 1`: identifier, operator, integer — not a byte literal.
+        let (tokens, _) = LogosLexer::new("b + 1").tokenize().unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Ident(_)));
+        assert!(matches!(tokens[2].kind, TokenKind::Int(1)));
+    }
+
+    #[test]
+    fn test_byte_literal_errors() {
+        for src in [
+            "b''",    // empty
+            "b'ab'",  // more than one byte
+            "b'a",    // unterminated (missing close)
+            r"b'\q'", // unknown escape
+            "b'é'",   // non-ASCII
+        ] {
+            let err = LogosLexer::new(src).tokenize().unwrap_err();
+            assert!(
+                matches!(err.kind, ErrorKind::MalformedByteLiteral(_)),
+                "expected MalformedByteLiteral for {src:?}, got {:?}",
+                err.kind
+            );
+        }
     }
 
     #[test]

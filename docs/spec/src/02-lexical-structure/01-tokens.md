@@ -21,6 +21,7 @@ Rue tokens fall into the following categories:
 | Keywords | `fn`, `let`, `mut`, `if`, `else`, `while`, `match`, `return`, `break`, `continue`, `true`, `false` |
 | Identifiers | `main`, `x`, `my_var`, `_unused` |
 | Integer literals | `0`, `42`, `1_000_000`, `0xFF`, `0o17`, `0b1010` |
+| Byte literals | `b'a'`, `b'0'`, `b'\n'`, `b'\''` |
 | String literals | `"hello"`, `"world"`, `"with \"escapes\""` |
 | Operators | `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `>`, `<=`, `>=`, `&&`, `\|\|`, `!`, `&`, `\|`, `^`, `~`, `<<`, `>>` |
 | Delimiters | `(`, `)`, `{`, `}`, `[`, `]`, `,`, `;`, `:`, `->`, `=>` |
@@ -75,6 +76,35 @@ fn main() -> i32 {
     0x_FF_       // underscores legal after the prefix and trailing
     0o17         // octal, value 15
     0b1010       // binary, value 10
+}
+```
+
+## Byte Literals
+
+{{ rule(id="2.1:26", cat="normative") }}
+
+A byte literal is written `b'c'`, where `c` is a single ASCII character (other than `'` or `\`) or an escape sequence, and denotes the integer value of that byte (0–255). A byte literal *is* an integer literal: the integer-literal typing and representability rules (2.1:4) apply, so `b'a'` and `97` are interchangeable and a byte literal is typically written where a `u8` is expected. Byte literals accept the string-literal escape sequences (2.1:7) and additionally `\'` (a single quote).
+
+```ebnf
+byte_literal = "b'" ( byte_char | escape_sequence | "\'" ) "'" ;
+byte_char = ? any ASCII character except "'" or "\" ? ;
+```
+
+{{ rule(id="2.1:27", cat="legality-rule") }}
+
+A byte literal that is empty (`b''`), contains more than one byte, contains a non-ASCII character, uses an unknown escape sequence, or is unterminated (reaching end-of-file or end-of-line before the closing `'`) is a compile-time error.
+
+{{ rule(id="2.1:28") }}
+
+```rue
+fn is_digit(c: u8) -> bool {
+    c >= b'0' && c <= b'9'   // b'0' is 48, b'9' is 57
+}
+
+fn main() -> i32 {
+    let newline: u8 = b'\n';   // 10
+    let quote: u8 = b'\'';     // 39
+    0
 }
 ```
 
