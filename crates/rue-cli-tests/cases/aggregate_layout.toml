@@ -1121,3 +1121,114 @@ fn main() -> i32 {
 """ }]
 stdout = "0\n"
 exit_code = 0
+
+# --- RUE-1035: single-slot by-value, array drop glue, and frame @raw ---------
+# Three compact-codegen miscompiles reachable under --preview aggregate_layout,
+# each reproduced then fixed. M1/M3 now execute correctly across optimization
+# levels; M2 converts a silent miscompile into a loud construct-level refusal.
+
+# M1: a single-narrow-field struct passed BY VALUE. The classifier used to force
+# ANY non-slot-identical aggregate indirect; a one-slot struct went through the
+# not-yet-correct single-slot indirect marshalling and returned garbage
+# (nondeterministic). A single-slot compact aggregate now classifies Direct (its
+# whole value rides one register in the slot's low bytes), exactly as gate-off.
+[[case]]
+name = "compact_single_field_struct_by_value"
+description = "A single-i32-field struct passed by value returns its field, not garbage (RUE-1035 M1)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+fn c(d: D) -> i32 { d.v }
+fn main() -> i32 {
+    let d = D { v: 42 };
+    @dbg(c(d));
+    0
+}
+""" }]
+stdout = "42\n"
+exit_code = 0
+
+# M1 return side: a single-slot struct returned by value stays a one-register
+# `Registers` return (never sret), so no caller-side image read-back is implied.
+[[case]]
+name = "compact_single_field_struct_returned"
+description = "A single-i32-field struct returned by value round-trips (RUE-1035 M1, return side)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct D { v: i32 }
+fn mk() -> D { D { v: 7 } }
+fn main() -> i32 {
+    let d = mk();
+    @dbg(d.v);
+    0
+}
+""" }]
+stdout = "7\n"
+exit_code = 0
+
+# M3: drop glue over an array of a non-slot-identical struct with a destructor.
+# The array drop glue is called with the array's flattened slots DIRECTLY, but
+# its element parameters were classified indirect (RUE-1005) and dereferenced
+# their by-value element data as pointers, overflowing the stack. Cleanup-slot
+# callees now home every slot directly, matching the direct-slot drop call.
+[[case]]
+name = "compact_array_element_drop_glue"
+description = "Array-element drop glue over a struct with a destructor drops each element in order (RUE-1035 M3)."
+differential_opt = true
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct D { a: i32, b: i32 }
+drop fn D(self) { @dbg(self.a); @dbg(self.b); }
+fn main() -> i32 {
+    let _arr: [D; 3] = [D{a:10,b:11}, D{a:20,b:21}, D{a:30,b:31}];
+    0
+}
+""" }]
+stdout = "10\n11\n20\n21\n30\n31\n"
+exit_code = 0
+
+# M2 (refuse): @raw_mut of a whole non-slot-identical FRAME struct. The frame
+# stores the struct slot-shaped while @ptr_write/@ptr_read address it by the
+# compact image, so a whole-value round trip scrambled the fields (printed
+# 5 0 7 40 60 9). Frames are not yet compact; the construct is refused loudly.
+[[case]]
+name = "compact_frame_raw_whole_struct_refused"
+description = "@raw_mut of a non-slot-identical frame struct is refused with a construct-level error (RUE-1035 M2)."
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+struct P { x: i32, y: i32, z: i32 }
+fn main() -> i32 {
+    let mut v: P = P { x: 5, y: 7, z: 9 };
+    checked {
+        let p: ptr mut P = @raw_mut(v);
+        @ptr_write(p, P { x: 40, y: 50, z: 60 });
+    };
+    @dbg(v.x);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["raw pointer", "frame-resident aggregate", "@alloc"]
+
+# M2 (refuse): @raw of an element of a non-slot-identical FRAME array. The frame
+# array strides 8 while @ptr_offset strides the compact size 4, so an element
+# walk read 0 instead of 20. Refused loudly; the heap alternative (@alloc) works.
+[[case]]
+name = "compact_frame_raw_array_element_refused"
+description = "@raw of a frame array element (a non-slot-identical array) is refused (RUE-1035 M2)."
+args = ["main.rue", "--preview", "aggregate_layout", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut arr: [i32; 3] = [10, 20, 30];
+    checked {
+        let base: ptr const i32 = @raw(arr[0]);
+        let p1: ptr const i32 = @ptr_offset(base, 1);
+        @dbg(@ptr_read(p1));
+    };
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["raw pointer", "frame-resident aggregate"]

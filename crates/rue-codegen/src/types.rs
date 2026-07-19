@@ -817,6 +817,90 @@ pub(crate) fn compact_physical_access_unsupported(
     None
 }
 
+/// Under the compact layout, an `@raw`/`@raw_mut`/`@field_ptr` pointer into a
+/// **frame** aggregate that would then be accessed as a whole non-slot-identical
+/// aggregate, or strided across a non-slot-identical array, is unsupported and
+/// must be refused loudly (RUE-1035 M2).
+///
+/// `@raw`-family intrinsics take the address of a place, whose base is always a
+/// frame local or a parameter (never a heap block — a `Place` base is only
+/// `Local`/`Param`). Frames stay slot-shaped (RUE-975): a struct/array/enum sits
+/// one eight-byte slot per leaf. But `@ptr_read`/`@ptr_write` address a whole
+/// aggregate by its packed *compact image*, and `@ptr_offset` strides by the
+/// compact element size. For a non-slot-identical aggregate the two disagree, so
+/// the raw pointer silently mixes representations. Exactly two shapes break:
+///
+/// - the pointer's **pointee is a non-slot-identical aggregate** (`@raw_mut(v)`
+///   of a whole struct/array): a whole-value round trip through it scrambles
+///   fields (M2a); and
+/// - the addressed place **indexes into a non-slot-identical array**
+///   (`@raw(arr[i])` of a frame array element): the resulting element pointer
+///   strides by the compact size while the frame array strides by the slot size
+///   (M2b).
+///
+/// Everything else stays allowed and correct: a **narrow scalar field** pointer
+/// (`@field_ptr(p.b)` → `ptr i32`) addresses the field's slot and hits its low
+/// bytes (RUE-989); a **bare scalar local** (`@raw_mut(n)` on `i32`) is not an
+/// aggregate; a **slot-identical** array/struct strides and round-trips
+/// identically to the slot model. Heap provenance is untouched: `@alloc` never
+/// flows through `@raw`, so every heap `@ptr_read`/`@ptr_write` round trip keeps
+/// working. Returns the offending frame aggregate type, or `None`.
+fn frame_raw_aggregate_pointer_unsupported(
+    cfg: &Cfg,
+    type_pool: &FrozenTypeInternPool,
+    interner: &ThreadedRodeo,
+) -> Option<Type> {
+    if !type_pool.compact_layout() {
+        return None;
+    }
+
+    let non_slot_identical_aggregate = |ty: Type| -> bool {
+        matches!(
+            ty.kind(),
+            TypeKind::Struct(_) | TypeKind::Array(_) | TypeKind::Enum(_)
+        ) && !is_slot_identical_layout(type_pool, ty)
+    };
+
+    for raw in 0..cfg.value_count() {
+        let value = CfgValue::from_raw(raw as u32);
+        let inst = cfg.get_inst(value);
+        let CfgInstData::Intrinsic { name, .. } = &inst.data else {
+            continue;
+        };
+        if !matches!(interner.resolve(name), "raw" | "raw_mut" | "field_ptr") {
+            continue;
+        }
+
+        // (a) The pointer addresses a whole non-slot-identical aggregate: reading
+        // or writing it through the pointer marshals the compact image against
+        // slot-shaped frame storage (M2a). A narrow scalar field pointer has a
+        // scalar pointee and is not caught here (RUE-989 handles it).
+        let pointee = pointee_or_self(type_pool, inst.ty);
+        if non_slot_identical_aggregate(pointee) {
+            return Some(pointee);
+        }
+
+        // (b) The addressed place indexes into a non-slot-identical frame array:
+        // the element pointer would stride by the compact element size while the
+        // frame array strides by the slot size (M2b). A field projection into a
+        // struct is not an array stride and stays allowed.
+        let Some(&operand) = cfg.get_intrinsic_args(&inst.data).first() else {
+            continue;
+        };
+        if let CfgInstData::PlaceRead { place } = &cfg.get_inst(operand).data {
+            for projection in cfg.get_place_projections(place) {
+                if let rue_cfg::Projection::Index { array_type, .. } = projection
+                    && non_slot_identical_aggregate(*array_type)
+                {
+                    return Some(*array_type);
+                }
+            }
+        }
+    }
+
+    None
+}
+
 /// Refuse code generation with a clear diagnostic when the compact physical
 /// layout is active but the function needs narrow physical memory access that is
 /// not yet implemented (see [`compact_physical_access_unsupported`]). Both
@@ -827,6 +911,25 @@ pub(crate) fn ensure_compact_layout_codegen_supported(
     type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,
 ) -> rue_error::CompileResult<()> {
+    // A raw pointer into a non-slot-identical frame aggregate mixes the frame's
+    // slot layout with compact-image pointer semantics (RUE-1035 M2). Name the
+    // construct — not the preview — and point at the working heap alternative.
+    if let Some(ty) = frame_raw_aggregate_pointer_unsupported(cfg, type_pool, interner) {
+        let name = type_name(ty, type_pool);
+        return Err(rue_error::CompileError::without_span(
+            rue_error::ErrorKind::InternalCodegenError(format!(
+                "taking a raw pointer with `@raw`/`@raw_mut`/`@field_ptr` into the \
+                 frame-resident aggregate `{name}` (in function `{}`) is not supported: the \
+                 stack frame stores the aggregate slot-shaped (one eight-byte slot per leaf), \
+                 while `@ptr_read`/`@ptr_write`/`@ptr_offset` address memory by its packed \
+                 compact image, so the pointer would stride across mismatched field and element \
+                 layouts. Allocate the aggregate on the heap with `@alloc`, whose storage is the \
+                 compact image, to round-trip it through a raw pointer.",
+                cfg.fn_name()
+            )),
+        ));
+    }
+
     if let Some(ty) = compact_physical_access_unsupported(cfg, type_pool, interner) {
         let name = type_name(ty, type_pool);
         return Err(rue_error::CompileError::without_span(
