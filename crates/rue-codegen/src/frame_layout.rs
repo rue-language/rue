@@ -53,6 +53,34 @@ pub fn slot_region_bytes(num_slots: u32) -> i32 {
     frame_cell_bytes() as i32 * num_slots as i32
 }
 
+/// FP-relative byte offset of frame slot `slot` on AArch64, matching the
+/// backend prologue exactly.
+///
+/// AArch64 sets its frame pointer *at* the saved FP/LR pair
+/// (`stp x29, x30, [sp, #-16]!; mov x29, sp`), so the FP/LR bytes sit at and
+/// above `fp`; only the callee-saved pair region lies between `fp` and the slot
+/// region. Unlike [`FrameLayout::slot_offset`], the FP/LR 16 bytes are therefore
+/// *not* subtracted here. The emitter's parameter homing / sret store and the
+/// `--emit stackframe` reporter both derive slot locations from this one
+/// function so they cannot drift (RUE-774).
+#[inline]
+pub fn aarch64_slot_offset(num_callee_saved: usize, slot: u32) -> i32 {
+    -(aarch64_callee_saved_pairs_bytes(num_callee_saved) as i32) + slot_offset_pre_saved(slot)
+}
+
+/// FP-relative byte offset of the low register of callee-saved pair
+/// `pair_index` (0-based) on AArch64.
+///
+/// The prologue stores the first pair at `[fp, #-16]` via `stp .., [sp, #-16]!`
+/// (after `fp` is set) and each subsequent pair another 16 bytes down; the high
+/// register of a pair sits 8 bytes above this offset, and a trailing odd
+/// register occupies the low half of the next 16-byte pair slot. Shared by the
+/// emitter's prologue and the `--emit stackframe` reporter (RUE-774).
+#[inline]
+pub fn aarch64_callee_saved_pair_offset(pair_index: usize) -> i32 {
+    -(STACK_FRAME_ALIGNMENT as i32) * (pair_index as i32 + 1)
+}
+
 /// Round a frame byte size up to [`STACK_FRAME_ALIGNMENT`].
 #[inline]
 pub fn align_frame_size(bytes: i32) -> i32 {
@@ -197,6 +225,33 @@ mod tests {
         // saved = 8, slots = 16 -> round16(24) = 32.
         assert_eq!(layout.frame_size(), 32);
         assert_eq!(layout.slot_offset(0), -8 - 8);
+    }
+
+    #[test]
+    fn aarch64_slot_offset_excludes_the_fp_lr_pair() {
+        // The emitter homes slots at `-callee_saved_pairs_bytes + -(slot+1)*8`;
+        // the FP/LR 16 is NOT subtracted (FP points at the FP/LR save). These
+        // are the offsets observed in gcd's emitted prologue (4 callee-saved
+        // regs -> 32 pair bytes): locals at -40/-48/-56, params at -64/-72.
+        assert_eq!(aarch64_slot_offset(4, 0), -40);
+        assert_eq!(aarch64_slot_offset(4, 1), -48);
+        assert_eq!(aarch64_slot_offset(4, 2), -56);
+        assert_eq!(aarch64_slot_offset(4, 3), -64);
+        assert_eq!(aarch64_slot_offset(4, 4), -72);
+        // No callee-saved registers: only the slot region sits below FP.
+        assert_eq!(aarch64_slot_offset(0, 0), -8);
+        assert_eq!(aarch64_slot_offset(0, 1), -16);
+        // Odd callee-saved count still reserves a full 16-byte pair slot.
+        assert_eq!(aarch64_slot_offset(1, 0), -16 - 8);
+        assert_eq!(aarch64_slot_offset(3, 0), -32 - 8);
+    }
+
+    #[test]
+    fn aarch64_callee_saved_pairs_descend_from_minus_sixteen() {
+        // First pair at [fp -16]/[fp -8], each subsequent pair another 16 down.
+        assert_eq!(aarch64_callee_saved_pair_offset(0), -16);
+        assert_eq!(aarch64_callee_saved_pair_offset(1), -32);
+        assert_eq!(aarch64_callee_saved_pair_offset(2), -48);
     }
 
     #[test]
