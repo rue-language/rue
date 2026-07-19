@@ -291,8 +291,8 @@ fn print_help() {
 
 /// Result of parsing command-line arguments.
 enum ParseResult {
-    /// Successfully parsed options.
-    Options(Options),
+    /// Successfully parsed options (boxed: Options dwarfs the other variants).
+    Options(Box<Options>),
     /// Parsing failed with an error.
     Error,
     /// User requested help or version (already printed, should exit 0).
@@ -641,7 +641,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         return ParseResult::Error;
     };
 
-    ParseResult::Options(Options {
+    ParseResult::Options(Box::new(Options {
         source_path,
         source_manifest_path,
         output_path: final_output_path,
@@ -657,7 +657,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         time_passes,
         benchmark_json,
         jobs: jobs.unwrap_or(0),
-    })
+    }))
 }
 
 fn parse_args() -> Option<Options> {
@@ -665,7 +665,7 @@ fn parse_args() -> Option<Options> {
     let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
     match parse_args_from(&args_refs) {
-        ParseResult::Options(opts) => Some(opts),
+        ParseResult::Options(opts) => Some(*opts),
         ParseResult::Error => None,
         ParseResult::Exit => std::process::exit(0),
     }
@@ -1432,7 +1432,7 @@ mod tests {
     /// Helper to extract Options from ParseResult, panicking if not Options.
     fn unwrap_options(result: ParseResult) -> Options {
         match result {
-            ParseResult::Options(opts) => opts,
+            ParseResult::Options(opts) => *opts,
             ParseResult::Error => panic!("Expected Options, got Error"),
             ParseResult::Exit => panic!("Expected Options, got Exit"),
         }
