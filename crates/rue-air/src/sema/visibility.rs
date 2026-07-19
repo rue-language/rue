@@ -4,8 +4,6 @@
 //! - `pub` items are always accessible
 //! - Private items are accessible if the files are in the same directory module
 
-use std::path::{Path, PathBuf};
-
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_span::FileId;
 
@@ -32,28 +30,11 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         target_file_id: FileId,
         is_pub: bool,
     ) -> bool {
-        // Public items are always accessible
-        if is_pub {
-            return true;
-        }
-
-        // Get paths for both files
-        let accessing_path = self.get_file_path(accessing_file_id);
-        let target_path = self.get_file_path(target_file_id);
-
-        // If we can't determine the paths, be permissive (for single-file mode or tests)
-        match (accessing_path, target_path) {
-            (Some(acc), Some(tgt)) => {
-                // Get the "module identity" for each file: its parent
-                // directory (the facade included — it lives in-directory).
-                let acc_module = get_module_identity(Path::new(acc));
-                let tgt_module = get_module_identity(Path::new(tgt));
-
-                acc_module == tgt_module
-            }
-            // If either path is unknown, allow access (e.g., synthetic types, single-file mode)
-            _ => true,
-        }
+        let accessing =
+            crate::SemanticVisibilityDomain::from_file_path(self.get_file_path(accessing_file_id));
+        let defining =
+            crate::SemanticVisibilityDomain::from_file_path(self.get_file_path(target_file_id));
+        defining.is_visible_from(&accessing, is_pub)
     }
 
     /// Check that an *unqualified* reference may reach the item (RUE-37,
@@ -180,14 +161,4 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         let module_def = self.module_registry.get_def(module_id);
         Some(module_def.file_id)
     }
-}
-
-/// Get the module identity for a file path: its parent directory.
-///
-/// Since RUE-137 the directory-module facade lives INSIDE its directory
-/// (`utils/_utils.rue`), so the facade's module is simply its parent — the
-/// same rule as every other file. (The old sibling layout needed a special
-/// case mapping `_utils.rue` to `utils/`; that layout no longer exists.)
-pub(crate) fn get_module_identity(path: &Path) -> Option<PathBuf> {
-    path.parent().map(Path::to_path_buf)
 }

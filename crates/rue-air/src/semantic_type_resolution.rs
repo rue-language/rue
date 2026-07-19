@@ -1,0 +1,1549 @@
+//! Canonical, value-only type-syntax resolution policy.
+//!
+//! Providers expose orthogonal declaration facts and materialization hooks.
+//! This module alone owns syntax routing, namespace precedence, recursive
+//! structural resolution, qualified-path walking, visibility, and constructor
+//! argument binding.
+
+use std::path::Path;
+use std::sync::Arc;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SemanticVisibilityDomain(Option<Arc<str>>);
+
+impl SemanticVisibilityDomain {
+    pub fn from_file_path(path: Option<&str>) -> Self {
+        Self(path.and_then(|path| {
+            Path::new(path)
+                .parent()
+                .map(|parent| Arc::<str>::from(parent.to_string_lossy().as_ref()))
+        }))
+    }
+
+    pub fn is_visible_from(&self, accessing: &Self, is_public: bool) -> bool {
+        is_public || accessing.0.is_none() || self.0.is_none() || accessing.0 == self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticModuleBinding<M, A> {
+    pub target: M,
+    pub site: A,
+    pub is_public: bool,
+    pub defining_domain: SemanticVisibilityDomain,
+    pub defining_file: Arc<str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticTypeFact<T, A> {
+    pub value: T,
+    pub site: A,
+    pub is_public: bool,
+    pub defining_domain: SemanticVisibilityDomain,
+    pub defining_file: Arc<str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SemanticTypeFactKind {
+    Struct,
+    Enum,
+    Constant,
+    Function,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SemanticProviderError<E, F> {
+    Abort(E),
+    Failure(F),
+}
+
+impl SemanticTypeFactKind {
+    pub fn diagnostic_name(self) -> &'static str {
+        match self {
+            Self::Struct => "struct",
+            Self::Enum => "enum",
+            Self::Constant => "constant",
+            Self::Function => "function",
+        }
+    }
+}
+
+pub trait SemanticModulePathProvider<S, M, A> {
+    type Abort;
+    type Failure;
+
+    fn root_module_binding(
+        &mut self,
+        scope: &S,
+        name: &str,
+    ) -> Result<
+        Option<SemanticModuleBinding<M, A>>,
+        SemanticProviderError<Self::Abort, Self::Failure>,
+    >;
+
+    fn module_binding(
+        &mut self,
+        module: &M,
+        name: &str,
+    ) -> Result<
+        Option<SemanticModuleBinding<M, A>>,
+        SemanticProviderError<Self::Abort, Self::Failure>,
+    >;
+
+    fn module_display_name(&self, module: &M) -> Arc<str>;
+
+    fn accessing_domain(&self, scope: &S) -> SemanticVisibilityDomain;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticResolvedModule<M, A> {
+    pub module: M,
+    pub site: A,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SemanticModulePathFailure<A> {
+    Empty,
+    UnknownRoot {
+        name: Arc<str>,
+    },
+    UnknownMember {
+        module: Arc<str>,
+        module_site: A,
+        member: Arc<str>,
+    },
+    PrivateMember {
+        member: Arc<str>,
+        site: A,
+        defining_file: Arc<str>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SemanticResolutionError<E, P, F> {
+    ProviderAbort(E),
+    ProviderFailure(P),
+    Semantic(F),
+    ComptimeCallTypeArgument {
+        constructor: Arc<str>,
+        argument_index: usize,
+        argument: Arc<str>,
+        error: Box<SemanticResolutionError<E, P, F>>,
+    },
+}
+
+impl<E, P, F> SemanticResolutionError<E, P, F> {
+    fn map_semantic<G>(self, map: impl Fn(F) -> G + Copy) -> SemanticResolutionError<E, P, G> {
+        match self {
+            Self::ProviderAbort(error) => SemanticResolutionError::ProviderAbort(error),
+            Self::ProviderFailure(error) => SemanticResolutionError::ProviderFailure(error),
+            Self::Semantic(error) => SemanticResolutionError::Semantic(map(error)),
+            Self::ComptimeCallTypeArgument {
+                constructor,
+                argument_index,
+                argument,
+                error,
+            } => SemanticResolutionError::ComptimeCallTypeArgument {
+                constructor,
+                argument_index,
+                argument,
+                error: Box::new(error.map_semantic(map)),
+            },
+        }
+    }
+}
+
+fn lift_provider<T, E, P, F>(
+    result: Result<T, SemanticProviderError<E, P>>,
+) -> Result<T, SemanticResolutionError<E, P, F>> {
+    result.map_err(|error| match error {
+        SemanticProviderError::Abort(error) => SemanticResolutionError::ProviderAbort(error),
+        SemanticProviderError::Failure(error) => SemanticResolutionError::ProviderFailure(error),
+    })
+}
+
+pub fn resolve_semantic_module_path<S, M, A, P>(
+    provider: &mut P,
+    root_scope: &S,
+    segments: &[&str],
+) -> Result<
+    SemanticResolvedModule<M, A>,
+    SemanticResolutionError<P::Abort, P::Failure, SemanticModulePathFailure<A>>,
+>
+where
+    M: Clone,
+    A: Clone,
+    P: SemanticModulePathProvider<S, M, A>,
+{
+    use SemanticModulePathFailure as F;
+    use SemanticResolutionError as E;
+
+    let Some((first_name, rest)) = segments.split_first() else {
+        return Err(E::Semantic(F::Empty));
+    };
+    let first =
+        lift_provider(provider.root_module_binding(root_scope, first_name))?.ok_or_else(|| {
+            E::Semantic(F::UnknownRoot {
+                name: Arc::from(*first_name),
+            })
+        })?;
+    let accessing = provider.accessing_domain(root_scope);
+    if !first
+        .defining_domain
+        .is_visible_from(&accessing, first.is_public)
+    {
+        return Err(E::Semantic(F::PrivateMember {
+            member: Arc::from(*first_name),
+            site: first.site,
+            defining_file: first.defining_file,
+        }));
+    }
+
+    let mut resolved = SemanticResolvedModule {
+        module: first.target,
+        site: first.site,
+    };
+    for segment in rest {
+        let display = provider.module_display_name(&resolved.module);
+        let binding = lift_provider(provider.module_binding(&resolved.module, segment))?
+            .ok_or_else(|| {
+                E::Semantic(F::UnknownMember {
+                    module: display,
+                    module_site: resolved.site.clone(),
+                    member: Arc::from(*segment),
+                })
+            })?;
+        if !binding
+            .defining_domain
+            .is_visible_from(&accessing, binding.is_public)
+        {
+            return Err(E::Semantic(F::PrivateMember {
+                member: Arc::from(*segment),
+                site: binding.site,
+                defining_file: binding.defining_file,
+            }));
+        }
+        resolved = SemanticResolvedModule {
+            module: binding.target,
+            site: binding.site,
+        };
+    }
+    Ok(resolved)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticTypeConstructorParameter<N> {
+    pub name: N,
+    pub is_comptime: bool,
+    pub is_type: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticTypeConstructorHead<K, N, A> {
+    pub key: K,
+    pub site: A,
+    pub parameters: Arc<[SemanticTypeConstructorParameter<N>]>,
+    pub returns_type: bool,
+    pub is_public: bool,
+    pub defining_domain: SemanticVisibilityDomain,
+    pub defining_file: Arc<str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SemanticComptimeCallResult<T, V> {
+    Type(T),
+    Value(V),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemanticComptimeCallExpectation {
+    Type,
+    Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticResolvedComptimeCall<K, N, A, T, V> {
+    pub head: SemanticTypeConstructorHead<K, N, A>,
+    pub type_arguments: Vec<(N, T)>,
+    pub value_arguments: Vec<(N, V)>,
+    pub result: SemanticComptimeCallResult<T, V>,
+}
+
+pub type SemanticProviderResult<T, E, F> = Result<T, SemanticProviderError<E, F>>;
+
+pub trait SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>:
+    SemanticModulePathProvider<S, M, A>
+{
+    fn substituted_type(
+        &mut self,
+        scope: &S,
+        name: &str,
+    ) -> SemanticProviderResult<Option<T>, Self::Abort, Self::Failure>;
+
+    fn primitive_type(
+        &mut self,
+        name: &str,
+    ) -> SemanticProviderResult<Option<T>, Self::Abort, Self::Failure>;
+
+    fn builtin_type(
+        &mut self,
+        scope: &S,
+        name: &str,
+    ) -> SemanticProviderResult<Option<T>, Self::Abort, Self::Failure>;
+
+    fn root_struct_type(
+        &mut self,
+        scope: &S,
+        name: &str,
+    ) -> SemanticProviderResult<Option<SemanticTypeFact<T, A>>, Self::Abort, Self::Failure>;
+
+    fn root_enum_type(
+        &mut self,
+        scope: &S,
+        name: &str,
+    ) -> SemanticProviderResult<Option<SemanticTypeFact<T, A>>, Self::Abort, Self::Failure>;
+
+    fn root_type_alias(
+        &mut self,
+        scope: &S,
+        name: &str,
+    ) -> SemanticProviderResult<Option<SemanticTypeFact<T, A>>, Self::Abort, Self::Failure>;
+
+    fn module_struct_type(
+        &mut self,
+        module: &M,
+        name: &str,
+    ) -> SemanticProviderResult<Option<SemanticTypeFact<T, A>>, Self::Abort, Self::Failure>;
+
+    fn module_enum_type(
+        &mut self,
+        module: &M,
+        name: &str,
+    ) -> SemanticProviderResult<Option<SemanticTypeFact<T, A>>, Self::Abort, Self::Failure>;
+
+    fn module_type_alias(
+        &mut self,
+        module: &M,
+        name: &str,
+    ) -> SemanticProviderResult<Option<SemanticTypeFact<T, A>>, Self::Abort, Self::Failure>;
+
+    fn observe_selected_named_type(
+        &mut self,
+        _name: &str,
+        _kind: SemanticTypeFactKind,
+        _fact: &SemanticTypeFact<T, A>,
+    ) -> SemanticProviderResult<(), Self::Abort, Self::Failure> {
+        Ok(())
+    }
+
+    fn observe_materialized_type(
+        &mut self,
+        _ty: &T,
+    ) -> SemanticProviderResult<(), Self::Abort, Self::Failure> {
+        Ok(())
+    }
+
+    fn allows_qualified_paths(&self, _scope: &S) -> bool {
+        true
+    }
+
+    fn allows_qualified_comptime_call_head(
+        &self,
+        scope: &S,
+        _expectation: SemanticComptimeCallExpectation,
+    ) -> bool {
+        self.allows_qualified_paths(scope)
+    }
+
+    fn resolve_array_length(
+        &mut self,
+        scope: &S,
+        length: &crate::ArrayLen,
+    ) -> SemanticProviderResult<Option<u64>, Self::Abort, Self::Failure>;
+
+    fn array_type(
+        &mut self,
+        element: T,
+        length: Option<u64>,
+    ) -> SemanticProviderResult<T, Self::Abort, Self::Failure>;
+
+    fn ptr_const_type(
+        &mut self,
+        pointee: T,
+    ) -> SemanticProviderResult<T, Self::Abort, Self::Failure>;
+
+    fn ptr_mut_type(&mut self, pointee: T)
+    -> SemanticProviderResult<T, Self::Abort, Self::Failure>;
+
+    fn preflight_slice(
+        &mut self,
+        scope: &S,
+        syntax: &str,
+    ) -> SemanticProviderResult<(), Self::Abort, Self::Failure>;
+
+    fn slice_type(
+        &mut self,
+        scope: &S,
+        syntax: &str,
+        element: T,
+    ) -> SemanticProviderResult<T, Self::Abort, Self::Failure>;
+
+    fn builtin_type_call(
+        &mut self,
+        scope: &S,
+        name: &str,
+        arguments: &[String],
+    ) -> SemanticProviderResult<Option<T>, Self::Abort, Self::Failure>;
+
+    fn root_constructor(
+        &mut self,
+        scope: &S,
+        name: &str,
+    ) -> SemanticProviderResult<
+        Option<SemanticTypeConstructorHead<K, N, A>>,
+        Self::Abort,
+        Self::Failure,
+    >;
+
+    fn module_constructor(
+        &mut self,
+        module: &M,
+        name: &str,
+    ) -> SemanticProviderResult<
+        Option<SemanticTypeConstructorHead<K, N, A>>,
+        Self::Abort,
+        Self::Failure,
+    >;
+
+    fn resolve_value_argument(
+        &mut self,
+        scope: &S,
+        constructor: &str,
+        head: &SemanticTypeConstructorHead<K, N, A>,
+        parameter_index: usize,
+        type_arguments: &[(N, T)],
+        value_arguments: &[(N, V)],
+        syntax: &str,
+    ) -> SemanticProviderResult<V, Self::Abort, Self::Failure>;
+
+    fn reduce_comptime_call(
+        &mut self,
+        head: &SemanticTypeConstructorHead<K, N, A>,
+        type_arguments: &[(N, T)],
+        value_arguments: &[(N, V)],
+    ) -> SemanticProviderResult<Option<SemanticComptimeCallResult<T, V>>, Self::Abort, Self::Failure>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SemanticTypeSyntaxFailure<A, N> {
+    Path(SemanticModulePathFailure<A>),
+    UnknownType {
+        syntax: Arc<str>,
+    },
+    UnknownModuleMember {
+        module: Arc<str>,
+        module_site: A,
+        member: Arc<str>,
+    },
+    PrivateItem {
+        kind: SemanticTypeFactKind,
+        name: Arc<str>,
+        site: A,
+        defining_file: Arc<str>,
+    },
+    AmbiguousItem {
+        name: Arc<str>,
+        sites: Arc<[A]>,
+    },
+    NotTypeConstructor {
+        constructor: Arc<str>,
+        site: A,
+    },
+    TypeWhereValueExpected {
+        constructor: Arc<str>,
+        site: A,
+    },
+    InvalidConstructorArity {
+        constructor: Arc<str>,
+        site: A,
+        expected: usize,
+        found: usize,
+    },
+    RuntimeConstructorParameter {
+        constructor: Arc<str>,
+        site: A,
+        expected: usize,
+        found: usize,
+    },
+    ValueWhereTypeExpected {
+        constructor: Arc<str>,
+        site: A,
+        argument: Arc<str>,
+        parameter: N,
+    },
+    ConstructorDidNotReduce {
+        constructor: Arc<str>,
+        site: A,
+    },
+}
+
+pub type SemanticTypeSyntaxError<E, P, A, N> =
+    SemanticResolutionError<E, P, SemanticTypeSyntaxFailure<A, N>>;
+
+fn visible_type<T, A, N, E, P>(
+    fact: SemanticTypeFact<T, A>,
+    kind: SemanticTypeFactKind,
+    name: &str,
+    accessing: &SemanticVisibilityDomain,
+) -> Result<SemanticTypeFact<T, A>, SemanticTypeSyntaxError<E, P, A, N>> {
+    if fact
+        .defining_domain
+        .is_visible_from(accessing, fact.is_public)
+    {
+        Ok(fact)
+    } else {
+        Err(SemanticResolutionError::Semantic(
+            SemanticTypeSyntaxFailure::PrivateItem {
+                kind,
+                name: Arc::from(name),
+                site: fact.site,
+                defining_file: fact.defining_file,
+            },
+        ))
+    }
+}
+
+fn is_slice_syntax(syntax: &str) -> Option<&str> {
+    (syntax.starts_with('[')
+        && syntax.ends_with(']')
+        && crate::parse_array_type_syntax(syntax).is_none())
+    .then(|| syntax[1..syntax.len() - 1].trim())
+}
+
+fn is_unqualified_name_syntax(syntax: &str) -> bool {
+    if matches!(syntax, "()" | "!") {
+        return true;
+    }
+    let mut characters = syntax.chars();
+    characters
+        .next()
+        .is_some_and(|character| character == '_' || character.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
+fn select_named_type<S, M, A, K, N, T, V, P>(
+    provider: &mut P,
+    fact: SemanticTypeFact<T, A>,
+    kind: SemanticTypeFactKind,
+    name: &str,
+    accessing: &SemanticVisibilityDomain,
+) -> Result<T, SemanticTypeSyntaxError<P::Abort, P::Failure, A, N>>
+where
+    P: SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>,
+{
+    let fact = visible_type(fact, kind, name, accessing)?;
+    lift_provider(provider.observe_selected_named_type(name, kind, &fact))?;
+    if kind == SemanticTypeFactKind::Constant {
+        lift_provider(provider.observe_materialized_type(&fact.value))?;
+    }
+    Ok(fact.value)
+}
+
+pub fn resolve_semantic_comptime_call<S, M, A, K, N, T, V, P>(
+    provider: &mut P,
+    root_scope: &S,
+    call_path: &str,
+    arguments: &[String],
+    expectation: SemanticComptimeCallExpectation,
+) -> Result<
+    SemanticResolvedComptimeCall<K, N, A, T, V>,
+    SemanticTypeSyntaxError<P::Abort, P::Failure, A, N>,
+>
+where
+    M: Clone,
+    A: Clone,
+    N: Clone,
+    P: SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>,
+{
+    use SemanticResolutionError as E;
+    use SemanticTypeSyntaxFailure as F;
+
+    let accessing = provider.accessing_domain(root_scope);
+    let segments = call_path.split('.').collect::<Vec<_>>();
+    if segments.iter().any(|segment| segment.is_empty())
+        || (segments.len() > 1
+            && !provider.allows_qualified_comptime_call_head(root_scope, expectation))
+    {
+        return Err(E::Semantic(F::UnknownType {
+            syntax: Arc::from(format!("{}({})", call_path, arguments.join(", "))),
+        }));
+    }
+    let name = *segments.last().expect("type call always has a name");
+    let head = if segments.len() == 1 {
+        lift_provider(provider.root_constructor(root_scope, name))?
+    } else {
+        let resolved =
+            resolve_semantic_module_path(provider, root_scope, &segments[..segments.len() - 1])
+                .map_err(|error| error.map_semantic(F::Path))?;
+        lift_provider(provider.module_constructor(&resolved.module, name))?
+    }
+    .ok_or_else(|| {
+        E::Semantic(F::UnknownType {
+            syntax: Arc::from(format!("{}({})", call_path, arguments.join(", "))),
+        })
+    })?;
+    if !head
+        .defining_domain
+        .is_visible_from(&accessing, head.is_public)
+    {
+        return Err(E::Semantic(F::PrivateItem {
+            kind: SemanticTypeFactKind::Function,
+            name: Arc::from(name),
+            site: head.site,
+            defining_file: head.defining_file,
+        }));
+    }
+    if expectation == SemanticComptimeCallExpectation::Type && !head.returns_type {
+        return Err(E::Semantic(F::NotTypeConstructor {
+            constructor: Arc::from(call_path),
+            site: head.site,
+        }));
+    }
+    if expectation == SemanticComptimeCallExpectation::Value && head.returns_type {
+        return Err(E::Semantic(F::TypeWhereValueExpected {
+            constructor: Arc::from(call_path),
+            site: head.site,
+        }));
+    }
+    if head.parameters.len() != arguments.len() {
+        return Err(E::Semantic(F::InvalidConstructorArity {
+            constructor: Arc::from(call_path),
+            site: head.site,
+            expected: head.parameters.len(),
+            found: arguments.len(),
+        }));
+    }
+    let eligible = head
+        .parameters
+        .iter()
+        .all(|parameter| parameter.is_comptime)
+        && (head.returns_type || !head.parameters.is_empty());
+    if !eligible {
+        return Err(E::Semantic(F::RuntimeConstructorParameter {
+            constructor: Arc::from(call_path),
+            site: head.site,
+            expected: head.parameters.len(),
+            found: arguments.len(),
+        }));
+    }
+
+    let constructor_site = head.site.clone();
+    let mut type_arguments = Vec::new();
+    let mut value_arguments = Vec::new();
+    for (parameter_index, (parameter, argument)) in
+        head.parameters.iter().zip(arguments).enumerate()
+    {
+        if parameter.is_type {
+            if argument.trim().parse::<i128>().is_ok() {
+                return Err(E::Semantic(F::ValueWhereTypeExpected {
+                    constructor: Arc::from(call_path),
+                    site: constructor_site,
+                    argument: Arc::from(argument.as_str()),
+                    parameter: parameter.name.clone(),
+                }));
+            }
+            let resolved =
+                resolve_semantic_type_syntax(provider, root_scope, argument).map_err(|error| {
+                    E::ComptimeCallTypeArgument {
+                        constructor: Arc::from(call_path),
+                        argument_index: parameter_index,
+                        argument: Arc::from(argument.as_str()),
+                        error: Box::new(error),
+                    }
+                })?;
+            type_arguments.push((parameter.name.clone(), resolved));
+        } else {
+            value_arguments.push((
+                parameter.name.clone(),
+                lift_provider(provider.resolve_value_argument(
+                    root_scope,
+                    call_path,
+                    &head,
+                    parameter_index,
+                    &type_arguments,
+                    &value_arguments,
+                    argument,
+                ))?,
+            ));
+        }
+    }
+    let result =
+        lift_provider(provider.reduce_comptime_call(&head, &type_arguments, &value_arguments))?
+            .ok_or_else(|| {
+                E::Semantic(F::ConstructorDidNotReduce {
+                    constructor: Arc::from(call_path),
+                    site: constructor_site,
+                })
+            })?;
+    if expectation == SemanticComptimeCallExpectation::Type
+        && !matches!(result, SemanticComptimeCallResult::Type(_))
+    {
+        return Err(E::Semantic(F::ConstructorDidNotReduce {
+            constructor: Arc::from(call_path),
+            site: head.site,
+        }));
+    }
+    Ok(SemanticResolvedComptimeCall {
+        head,
+        type_arguments,
+        value_arguments,
+        result,
+    })
+}
+
+pub fn resolve_semantic_type_syntax<S, M, A, K, N, T, V, P>(
+    provider: &mut P,
+    root_scope: &S,
+    syntax: &str,
+) -> Result<T, SemanticTypeSyntaxError<P::Abort, P::Failure, A, N>>
+where
+    M: Clone,
+    A: Clone,
+    N: Clone,
+    P: SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>,
+{
+    use SemanticResolutionError as E;
+    use SemanticTypeSyntaxFailure as F;
+
+    let accessing = provider.accessing_domain(root_scope);
+    if is_unqualified_name_syntax(syntax) {
+        if let Some(ty) = lift_provider(provider.substituted_type(root_scope, syntax))? {
+            lift_provider(provider.observe_materialized_type(&ty))?;
+            return Ok(ty);
+        }
+        if let Some(ty) = lift_provider(provider.primitive_type(syntax))? {
+            return Ok(ty);
+        }
+        if let Some(ty) = lift_provider(provider.builtin_type(root_scope, syntax))? {
+            return Ok(ty);
+        }
+        if let Some(fact) = lift_provider(provider.root_struct_type(root_scope, syntax))? {
+            return select_named_type(
+                provider,
+                fact,
+                SemanticTypeFactKind::Struct,
+                syntax,
+                &accessing,
+            );
+        }
+        if let Some(fact) = lift_provider(provider.root_enum_type(root_scope, syntax))? {
+            return select_named_type(
+                provider,
+                fact,
+                SemanticTypeFactKind::Enum,
+                syntax,
+                &accessing,
+            );
+        }
+        if let Some(fact) = lift_provider(provider.root_type_alias(root_scope, syntax))? {
+            return select_named_type(
+                provider,
+                fact,
+                SemanticTypeFactKind::Constant,
+                syntax,
+                &accessing,
+            );
+        }
+    }
+
+    if let Some((element, length)) = crate::parse_array_type_syntax(syntax) {
+        let element = resolve_semantic_type_syntax(provider, root_scope, &element)?;
+        let length = lift_provider(provider.resolve_array_length(root_scope, &length))?;
+        return lift_provider(provider.array_type(element, length));
+    }
+    if let Some((pointee, mutability)) = crate::parse_pointer_type_syntax(syntax) {
+        let pointee = resolve_semantic_type_syntax(provider, root_scope, &pointee)?;
+        return lift_provider(match mutability {
+            crate::PtrMutability::Const => provider.ptr_const_type(pointee),
+            crate::PtrMutability::Mut => provider.ptr_mut_type(pointee),
+        });
+    }
+
+    if let Some((call_path, arguments)) = crate::types::parse_type_call_syntax(syntax) {
+        if !call_path.contains('.')
+            && let Some(ty) =
+                lift_provider(provider.builtin_type_call(root_scope, &call_path, &arguments))?
+        {
+            return Ok(ty);
+        }
+        let SemanticComptimeCallResult::Type(ty) = resolve_semantic_comptime_call(
+            provider,
+            root_scope,
+            &call_path,
+            &arguments,
+            SemanticComptimeCallExpectation::Type,
+        )?
+        .result
+        else {
+            unreachable!("type call expectation accepts only type results")
+        };
+        lift_provider(provider.observe_materialized_type(&ty))?;
+        return Ok(ty);
+    }
+
+    if let Some(element) = is_slice_syntax(syntax) {
+        lift_provider(provider.preflight_slice(root_scope, syntax))?;
+        let element = resolve_semantic_type_syntax(provider, root_scope, element)?;
+        return lift_provider(provider.slice_type(root_scope, syntax, element));
+    }
+
+    if syntax.contains('.') {
+        if !provider.allows_qualified_paths(root_scope) {
+            return Err(E::Semantic(F::UnknownType {
+                syntax: Arc::from(syntax),
+            }));
+        }
+        let segments = syntax.split('.').collect::<Vec<_>>();
+        let Some((name, prefix)) = segments.split_last() else {
+            return Err(E::Semantic(F::UnknownType {
+                syntax: Arc::from(syntax),
+            }));
+        };
+        if prefix.is_empty() || segments.iter().any(|segment| segment.is_empty()) {
+            return Err(E::Semantic(F::UnknownType {
+                syntax: Arc::from(syntax),
+            }));
+        }
+        let resolved = resolve_semantic_module_path(provider, root_scope, prefix)
+            .map_err(|error| error.map_semantic(F::Path))?;
+        if let Some(fact) = lift_provider(provider.module_struct_type(&resolved.module, name))? {
+            return select_named_type(
+                provider,
+                fact,
+                SemanticTypeFactKind::Struct,
+                name,
+                &accessing,
+            );
+        }
+        if let Some(fact) = lift_provider(provider.module_enum_type(&resolved.module, name))? {
+            return select_named_type(provider, fact, SemanticTypeFactKind::Enum, name, &accessing);
+        }
+        if let Some(fact) = lift_provider(provider.module_type_alias(&resolved.module, name))? {
+            return select_named_type(
+                provider,
+                fact,
+                SemanticTypeFactKind::Constant,
+                name,
+                &accessing,
+            );
+        }
+        return Err(E::Semantic(F::UnknownModuleMember {
+            module: provider.module_display_name(&resolved.module),
+            module_site: resolved.site,
+            member: Arc::from(*name),
+        }));
+    }
+
+    Err(E::Semantic(F::UnknownType {
+        syntax: Arc::from(syntax),
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    type Fact = SemanticTypeFact<&'static str, &'static str>;
+    type Binding = SemanticModuleBinding<&'static str, &'static str>;
+    type Head = SemanticTypeConstructorHead<&'static str, &'static str, &'static str>;
+    type FixtureResult<T> = SemanticProviderResult<T, &'static str, &'static str>;
+
+    #[derive(Default)]
+    struct Fixture {
+        calls: Vec<String>,
+        bindings: BTreeMap<(&'static str, &'static str), Binding>,
+        root_structs: BTreeMap<(&'static str, &'static str), Fact>,
+        root_enums: BTreeMap<(&'static str, &'static str), Fact>,
+        root_aliases: BTreeMap<(&'static str, &'static str), Fact>,
+        module_structs: BTreeMap<(&'static str, &'static str), Fact>,
+        module_enums: BTreeMap<(&'static str, &'static str), Fact>,
+        module_aliases: BTreeMap<(&'static str, &'static str), Fact>,
+        constructors: BTreeMap<(&'static str, &'static str), Head>,
+        primitive_error: Option<SemanticProviderError<&'static str, &'static str>>,
+        slice_preflight_error: Option<SemanticProviderError<&'static str, &'static str>>,
+        allow_qualified_paths: Option<bool>,
+        allow_qualified_value_heads: Option<bool>,
+    }
+
+    impl Fixture {
+        fn call(&mut self, operation: &str, scope: &str, name: &str) {
+            self.calls.push(format!("{operation}:{scope}:{name}"));
+        }
+    }
+
+    impl SemanticModulePathProvider<&'static str, &'static str, &'static str> for Fixture {
+        type Abort = &'static str;
+        type Failure = &'static str;
+
+        fn root_module_binding(
+            &mut self,
+            scope: &&'static str,
+            name: &str,
+        ) -> FixtureResult<Option<Binding>> {
+            self.call("root_module", scope, name);
+            Ok(self.bindings.get(&(*scope, name)).cloned())
+        }
+
+        fn module_binding(
+            &mut self,
+            module: &&'static str,
+            name: &str,
+        ) -> FixtureResult<Option<Binding>> {
+            self.call("module", module, name);
+            Ok(self.bindings.get(&(*module, name)).cloned())
+        }
+
+        fn module_display_name(&self, module: &&'static str) -> Arc<str> {
+            Arc::from(*module)
+        }
+
+        fn accessing_domain(&self, scope: &&'static str) -> SemanticVisibilityDomain {
+            SemanticVisibilityDomain::from_file_path(Some(scope))
+        }
+    }
+
+    impl
+        SemanticTypeSyntaxProvider<
+            &'static str,
+            &'static str,
+            &'static str,
+            &'static str,
+            &'static str,
+            &'static str,
+            i64,
+        > for Fixture
+    {
+        fn substituted_type(
+            &mut self,
+            scope: &&'static str,
+            name: &str,
+        ) -> FixtureResult<Option<&'static str>> {
+            self.call("substitution", scope, name);
+            Ok(None)
+        }
+
+        fn primitive_type(&mut self, name: &str) -> FixtureResult<Option<&'static str>> {
+            self.call("primitive", "-", name);
+            if let Some(error) = self.primitive_error.take() {
+                return Err(error);
+            }
+            Ok((name == "i32").then_some("primitive:i32"))
+        }
+
+        fn builtin_type(
+            &mut self,
+            scope: &&'static str,
+            name: &str,
+        ) -> FixtureResult<Option<&'static str>> {
+            self.call("builtin", scope, name);
+            Ok((name == "str").then_some("builtin:str"))
+        }
+
+        fn root_struct_type(
+            &mut self,
+            scope: &&'static str,
+            name: &str,
+        ) -> FixtureResult<Option<Fact>> {
+            self.call("root_struct", scope, name);
+            Ok(self.root_structs.get(&(*scope, name)).cloned())
+        }
+
+        fn root_enum_type(
+            &mut self,
+            scope: &&'static str,
+            name: &str,
+        ) -> FixtureResult<Option<Fact>> {
+            self.call("root_enum", scope, name);
+            Ok(self.root_enums.get(&(*scope, name)).cloned())
+        }
+
+        fn root_type_alias(
+            &mut self,
+            scope: &&'static str,
+            name: &str,
+        ) -> FixtureResult<Option<Fact>> {
+            self.call("root_alias", scope, name);
+            Ok(self.root_aliases.get(&(*scope, name)).cloned())
+        }
+
+        fn module_struct_type(
+            &mut self,
+            module: &&'static str,
+            name: &str,
+        ) -> FixtureResult<Option<Fact>> {
+            self.call("module_struct", module, name);
+            Ok(self.module_structs.get(&(*module, name)).cloned())
+        }
+
+        fn module_enum_type(
+            &mut self,
+            module: &&'static str,
+            name: &str,
+        ) -> FixtureResult<Option<Fact>> {
+            self.call("module_enum", module, name);
+            Ok(self.module_enums.get(&(*module, name)).cloned())
+        }
+
+        fn module_type_alias(
+            &mut self,
+            module: &&'static str,
+            name: &str,
+        ) -> FixtureResult<Option<Fact>> {
+            self.call("module_alias", module, name);
+            Ok(self.module_aliases.get(&(*module, name)).cloned())
+        }
+
+        fn allows_qualified_paths(&self, _scope: &&'static str) -> bool {
+            self.allow_qualified_paths.unwrap_or(true)
+        }
+
+        fn allows_qualified_comptime_call_head(
+            &self,
+            scope: &&'static str,
+            expectation: SemanticComptimeCallExpectation,
+        ) -> bool {
+            if expectation == SemanticComptimeCallExpectation::Value {
+                self.allow_qualified_value_heads.unwrap_or(true)
+            } else {
+                self.allows_qualified_paths(scope)
+            }
+        }
+
+        fn resolve_array_length(
+            &mut self,
+            scope: &&'static str,
+            length: &crate::ArrayLen,
+        ) -> FixtureResult<Option<u64>> {
+            self.call("array_length", scope, &format!("{length:?}"));
+            match length {
+                crate::ArrayLen::Literal(value) => Ok(Some(*value)),
+                crate::ArrayLen::Named(_) => Err(SemanticProviderError::Failure("unknown length")),
+            }
+        }
+
+        fn array_type(
+            &mut self,
+            _element: &'static str,
+            _length: Option<u64>,
+        ) -> FixtureResult<&'static str> {
+            self.calls.push("array_type".to_string());
+            Ok("array")
+        }
+
+        fn ptr_const_type(&mut self, _pointee: &'static str) -> FixtureResult<&'static str> {
+            self.calls.push("ptr_const".to_string());
+            Ok("ptr const")
+        }
+
+        fn ptr_mut_type(&mut self, _pointee: &'static str) -> FixtureResult<&'static str> {
+            self.calls.push("ptr_mut".to_string());
+            Ok("ptr mut")
+        }
+
+        fn preflight_slice(&mut self, scope: &&'static str, syntax: &str) -> FixtureResult<()> {
+            self.call("slice_preflight", scope, syntax);
+            if let Some(error) = self.slice_preflight_error.clone() {
+                return Err(error);
+            }
+            Ok(())
+        }
+
+        fn slice_type(
+            &mut self,
+            scope: &&'static str,
+            syntax: &str,
+            _element: &'static str,
+        ) -> FixtureResult<&'static str> {
+            self.call("slice", scope, syntax);
+            Ok("slice")
+        }
+
+        fn builtin_type_call(
+            &mut self,
+            scope: &&'static str,
+            name: &str,
+            _arguments: &[String],
+        ) -> FixtureResult<Option<&'static str>> {
+            self.call("builtin_call", scope, name);
+            Ok(None)
+        }
+
+        fn root_constructor(
+            &mut self,
+            scope: &&'static str,
+            name: &str,
+        ) -> FixtureResult<Option<Head>> {
+            self.call("root_constructor", scope, name);
+            Ok(self.constructors.get(&(*scope, name)).cloned())
+        }
+
+        fn module_constructor(
+            &mut self,
+            module: &&'static str,
+            name: &str,
+        ) -> FixtureResult<Option<Head>> {
+            self.call("module_constructor", module, name);
+            Ok(self.constructors.get(&(*module, name)).cloned())
+        }
+
+        fn resolve_value_argument(
+            &mut self,
+            scope: &&'static str,
+            constructor: &str,
+            _head: &Head,
+            _parameter_index: usize,
+            _type_arguments: &[(&'static str, &'static str)],
+            _value_arguments: &[(&'static str, i64)],
+            syntax: &str,
+        ) -> FixtureResult<i64> {
+            self.call("value", scope, constructor);
+            syntax
+                .parse()
+                .map_err(|_| SemanticProviderError::Failure("unknown value"))
+        }
+
+        fn reduce_comptime_call(
+            &mut self,
+            head: &Head,
+            _type_arguments: &[(&'static str, &'static str)],
+            _value_arguments: &[(&'static str, i64)],
+        ) -> FixtureResult<Option<SemanticComptimeCallResult<&'static str, i64>>> {
+            self.calls.push(format!("reduce:{}", head.key));
+            Ok(Some(if head.returns_type {
+                SemanticComptimeCallResult::Type("constructed")
+            } else {
+                SemanticComptimeCallResult::Value(2)
+            }))
+        }
+    }
+
+    fn fact(value: &'static str, site: &'static str, public: bool, file: &'static str) -> Fact {
+        SemanticTypeFact {
+            value,
+            site,
+            is_public: public,
+            defining_domain: SemanticVisibilityDomain::from_file_path(Some(file)),
+            defining_file: Arc::from(file),
+        }
+    }
+
+    fn binding(
+        target: &'static str,
+        site: &'static str,
+        public: bool,
+        file: &'static str,
+    ) -> Binding {
+        SemanticModuleBinding {
+            target,
+            site,
+            is_public: public,
+            defining_domain: SemanticVisibilityDomain::from_file_path(Some(file)),
+            defining_file: Arc::from(file),
+        }
+    }
+
+    fn head(
+        site: &'static str,
+        public: bool,
+        returns_type: bool,
+        parameters: Vec<SemanticTypeConstructorParameter<&'static str>>,
+    ) -> Head {
+        SemanticTypeConstructorHead {
+            key: "ctor-key",
+            site,
+            parameters: parameters.into(),
+            returns_type,
+            is_public: public,
+            defining_domain: SemanticVisibilityDomain::from_file_path(Some("lib/ctor.rue")),
+            defining_file: Arc::from("lib/ctor.rue"),
+        }
+    }
+
+    fn type_parameter(comptime: bool) -> SemanticTypeConstructorParameter<&'static str> {
+        SemanticTypeConstructorParameter {
+            name: "T",
+            is_comptime: comptime,
+            is_type: true,
+        }
+    }
+
+    #[test]
+    fn unqualified_nominal_precedes_alias_and_stops_discovery_exactly() {
+        let mut fixture = Fixture::default();
+        fixture.root_structs.insert(
+            ("app/main.rue", "Thing"),
+            fact("struct", "struct-site", true, "app/types.rue"),
+        );
+        fixture.root_aliases.insert(
+            ("app/main.rue", "Thing"),
+            fact("alias", "alias-site", true, "app/aliases.rue"),
+        );
+
+        assert_eq!(
+            resolve_semantic_type_syntax(&mut fixture, &"app/main.rue", "Thing"),
+            Ok("struct")
+        );
+        assert_eq!(
+            fixture.calls,
+            [
+                "substitution:app/main.rue:Thing",
+                "primitive:-:Thing",
+                "builtin:app/main.rue:Thing",
+                "root_struct:app/main.rue:Thing",
+            ]
+        );
+    }
+
+    #[test]
+    fn qualified_alias_visibility_and_same_directory_private_are_canonical() {
+        let mut fixture = Fixture::default();
+        fixture.bindings.insert(
+            ("app/main.rue", "api"),
+            binding("api", "api-binding", true, "app/main.rue"),
+        );
+        fixture.module_aliases.insert(
+            ("api", "PublicAlias"),
+            fact("public-alias", "public-site", true, "lib/api.rue"),
+        );
+        fixture.module_aliases.insert(
+            ("api", "PrivateAlias"),
+            fact("private-alias", "private-site", false, "lib/api.rue"),
+        );
+        fixture.root_structs.insert(
+            ("app/main.rue", "Local"),
+            fact("local", "local-site", false, "app/private.rue"),
+        );
+
+        assert_eq!(
+            resolve_semantic_type_syntax(&mut fixture, &"app/main.rue", "api.PublicAlias"),
+            Ok("public-alias")
+        );
+        assert!(matches!(
+            resolve_semantic_type_syntax(&mut fixture, &"app/main.rue", "api.PrivateAlias"),
+            Err(SemanticResolutionError::Semantic(
+                SemanticTypeSyntaxFailure::PrivateItem {
+                    kind: SemanticTypeFactKind::Constant,
+                    site: "private-site",
+                    ..
+                }
+            ))
+        ));
+        assert_eq!(
+            resolve_semantic_type_syntax(&mut fixture, &"app/main.rue", "Local"),
+            Ok("local")
+        );
+    }
+
+    #[test]
+    fn qualified_alias_trace_has_no_constructor_or_extra_discovery() {
+        let mut fixture = Fixture::default();
+        fixture.bindings.insert(
+            ("app/main.rue", "api"),
+            binding("api", "api-binding", true, "app/main.rue"),
+        );
+        fixture.module_aliases.insert(
+            ("api", "Alias"),
+            fact("alias", "alias-site", true, "lib/api.rue"),
+        );
+
+        assert_eq!(
+            resolve_semantic_type_syntax(&mut fixture, &"app/main.rue", "api.Alias"),
+            Ok("alias")
+        );
+        assert_eq!(
+            fixture.calls,
+            [
+                "root_module:app/main.rue:api",
+                "module_struct:api:Alias",
+                "module_enum:api:Alias",
+                "module_alias:api:Alias",
+            ]
+        );
+    }
+
+    #[test]
+    fn lexical_shapes_issue_only_their_required_provider_calls() {
+        let cases: &[(&str, &[&str])] = &[
+            (
+                "[i32; 2]",
+                &[
+                    "substitution:app/main.rue:i32",
+                    "primitive:-:i32",
+                    "array_length:app/main.rue:Literal(2)",
+                    "array_type",
+                ],
+            ),
+            (
+                "ptr const i32",
+                &[
+                    "substitution:app/main.rue:i32",
+                    "primitive:-:i32",
+                    "ptr_const",
+                ],
+            ),
+            (
+                "Make(i32)",
+                &[
+                    "builtin_call:app/main.rue:Make",
+                    "root_constructor:app/main.rue:Make",
+                    "substitution:app/main.rue:i32",
+                    "primitive:-:i32",
+                    "reduce:ctor-key",
+                ],
+            ),
+            (
+                "[i32]",
+                &[
+                    "slice_preflight:app/main.rue:[i32]",
+                    "substitution:app/main.rue:i32",
+                    "primitive:-:i32",
+                    "slice:app/main.rue:[i32]",
+                ],
+            ),
+        ];
+
+        for &(syntax, expected) in cases {
+            let mut fixture = Fixture::default();
+            fixture.constructors.insert(
+                ("app/main.rue", "Make"),
+                head("make-site", true, true, vec![type_parameter(true)]),
+            );
+            resolve_semantic_type_syntax(&mut fixture, &"app/main.rue", syntax).unwrap();
+            assert_eq!(fixture.calls, expected, "unexpected trace for '{syntax}'");
+        }
+    }
+
+    #[test]
+    fn slice_preflight_failure_stops_before_child_resolution() {
+        let mut fixture = Fixture {
+            slice_preflight_error: Some(SemanticProviderError::Failure("preview required")),
+            ..Fixture::default()
+        };
+        assert_eq!(
+            resolve_semantic_type_syntax(&mut fixture, &"app/main.rue", "[Unknown]"),
+            Err(SemanticResolutionError::ProviderFailure("preview required"))
+        );
+        assert_eq!(fixture.calls, ["slice_preflight:app/main.rue:[Unknown]"]);
+    }
+
+    #[test]
+    fn value_call_head_restriction_does_not_restrict_qualified_type_arguments() {
+        let mut fixture = Fixture {
+            allow_qualified_paths: Some(true),
+            allow_qualified_value_heads: Some(false),
+            ..Fixture::default()
+        };
+        fixture.constructors.insert(
+            ("app/main.rue", "Width"),
+            head("width-site", true, false, vec![type_parameter(true)]),
+        );
+        fixture.bindings.insert(
+            ("app/main.rue", "lib"),
+            binding("lib", "lib-site", true, "app/main.rue"),
+        );
+        fixture.module_structs.insert(
+            ("lib", "Leaf"),
+            fact("leaf", "leaf-site", true, "lib/types.rue"),
+        );
+
+        let call = resolve_semantic_comptime_call(
+            &mut fixture,
+            &"app/main.rue",
+            "Width",
+            &["lib.Leaf".to_string()],
+            SemanticComptimeCallExpectation::Value,
+        )
+        .expect("the unqualified value callee may receive a qualified type argument");
+        assert_eq!(call.result, SemanticComptimeCallResult::Value(2));
+        assert!(
+            resolve_semantic_comptime_call(
+                &mut fixture,
+                &"app/main.rue",
+                "lib.Width",
+                &["lib.Leaf".to_string()],
+                SemanticComptimeCallExpectation::Value,
+            )
+            .is_err(),
+            "the value-call head restriction remains independently enforced"
+        );
+    }
+
+    #[test]
+    fn malformed_leaves_and_disallowed_qualified_paths_issue_no_fact_queries() {
+        for syntax in ["2", "-3", "true?", "@x"] {
+            let mut fixture = Fixture::default();
+            assert!(resolve_semantic_type_syntax(&mut fixture, &"app/main.rue", syntax).is_err());
+            assert!(fixture.calls.is_empty(), "unexpected trace for '{syntax}'");
+        }
+
+        for syntax in ["api.Type", "api.Make(i32)"] {
+            let mut fixture = Fixture {
+                allow_qualified_paths: Some(false),
+                ..Fixture::default()
+            };
+            assert!(resolve_semantic_type_syntax(&mut fixture, &"app/main.rue", syntax).is_err());
+            assert!(fixture.calls.is_empty(), "unexpected trace for '{syntax}'");
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum FailureCase {
+        UnknownRoot,
+        UnknownIntermediate,
+        NonTypeConstructor,
+        Arity,
+        RuntimeParameter,
+        ValueWhereTypeExpected,
+        PrivateConstructor,
+    }
+
+    #[test]
+    fn table_driven_path_and_constructor_failures_retain_selected_sites() {
+        let cases = [
+            FailureCase::UnknownRoot,
+            FailureCase::UnknownIntermediate,
+            FailureCase::NonTypeConstructor,
+            FailureCase::Arity,
+            FailureCase::RuntimeParameter,
+            FailureCase::ValueWhereTypeExpected,
+            FailureCase::PrivateConstructor,
+        ];
+
+        for case in cases {
+            let mut fixture = Fixture::default();
+            let (syntax, expected_site) = match case {
+                FailureCase::UnknownRoot => ("missing.Type", None),
+                FailureCase::UnknownIntermediate => {
+                    fixture.bindings.insert(
+                        ("app/main.rue", "api"),
+                        binding("api", "api-site", true, "app/main.rue"),
+                    );
+                    ("api.missing.Type", Some("api-site"))
+                }
+                FailureCase::NonTypeConstructor => {
+                    fixture.constructors.insert(
+                        ("app/main.rue", "Make"),
+                        head("non-type-site", true, false, Vec::new()),
+                    );
+                    ("Make()", Some("non-type-site"))
+                }
+                FailureCase::Arity => {
+                    fixture.constructors.insert(
+                        ("app/main.rue", "Make"),
+                        head("arity-site", true, true, vec![type_parameter(true)]),
+                    );
+                    ("Make()", Some("arity-site"))
+                }
+                FailureCase::RuntimeParameter => {
+                    fixture.constructors.insert(
+                        ("app/main.rue", "Make"),
+                        head("runtime-site", true, true, vec![type_parameter(false)]),
+                    );
+                    ("Make(i32)", Some("runtime-site"))
+                }
+                FailureCase::ValueWhereTypeExpected => {
+                    fixture.constructors.insert(
+                        ("app/main.rue", "Make"),
+                        head("kind-site", true, true, vec![type_parameter(true)]),
+                    );
+                    ("Make(2)", Some("kind-site"))
+                }
+                FailureCase::PrivateConstructor => {
+                    fixture.constructors.insert(
+                        ("app/main.rue", "Make"),
+                        head("private-ctor-site", false, true, Vec::new()),
+                    );
+                    ("Make()", Some("private-ctor-site"))
+                }
+            };
+
+            let error = resolve_semantic_type_syntax(&mut fixture, &"app/main.rue", syntax)
+                .expect_err("case must fail semantically");
+            match (case, error) {
+                (
+                    FailureCase::UnknownRoot,
+                    SemanticResolutionError::Semantic(SemanticTypeSyntaxFailure::Path(
+                        SemanticModulePathFailure::UnknownRoot { name },
+                    )),
+                ) => assert_eq!(&*name, "missing"),
+                (
+                    FailureCase::UnknownIntermediate,
+                    SemanticResolutionError::Semantic(SemanticTypeSyntaxFailure::Path(
+                        SemanticModulePathFailure::UnknownMember { module_site, .. },
+                    )),
+                ) => assert_eq!(Some(module_site), expected_site),
+                (
+                    FailureCase::NonTypeConstructor,
+                    SemanticResolutionError::Semantic(
+                        SemanticTypeSyntaxFailure::NotTypeConstructor { site, .. },
+                    ),
+                )
+                | (
+                    FailureCase::Arity,
+                    SemanticResolutionError::Semantic(
+                        SemanticTypeSyntaxFailure::InvalidConstructorArity { site, .. },
+                    ),
+                )
+                | (
+                    FailureCase::RuntimeParameter,
+                    SemanticResolutionError::Semantic(
+                        SemanticTypeSyntaxFailure::RuntimeConstructorParameter { site, .. },
+                    ),
+                )
+                | (
+                    FailureCase::ValueWhereTypeExpected,
+                    SemanticResolutionError::Semantic(
+                        SemanticTypeSyntaxFailure::ValueWhereTypeExpected { site, .. },
+                    ),
+                )
+                | (
+                    FailureCase::PrivateConstructor,
+                    SemanticResolutionError::Semantic(SemanticTypeSyntaxFailure::PrivateItem {
+                        site,
+                        ..
+                    }),
+                ) => assert_eq!(Some(site), expected_site),
+                _ => panic!("unexpected failure shape for table case"),
+            }
+        }
+    }
+
+    #[test]
+    fn provider_failure_and_abort_remain_distinct_and_stop_policy_immediately() {
+        for (provider_error, expected) in [
+            (
+                SemanticProviderError::Failure("bad source"),
+                SemanticResolutionError::ProviderFailure("bad source"),
+            ),
+            (
+                SemanticProviderError::Abort("cancelled"),
+                SemanticResolutionError::ProviderAbort("cancelled"),
+            ),
+        ] {
+            let mut fixture = Fixture {
+                primitive_error: Some(provider_error),
+                ..Fixture::default()
+            };
+            assert_eq!(
+                resolve_semantic_type_syntax(&mut fixture, &"app/main.rue", "i32"),
+                Err(expected)
+            );
+            assert_eq!(
+                fixture.calls,
+                ["substitution:app/main.rue:i32", "primitive:-:i32"]
+            );
+        }
+    }
+}

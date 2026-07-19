@@ -7,6 +7,7 @@
 //! - Type conversions between AIR types and inference types
 
 use std::collections::HashMap;
+use std::convert::Infallible;
 
 use lasso::Spur;
 use rue_error::{CompileError, CompileResult, ErrorKind, PreviewFeature};
@@ -28,6 +29,1453 @@ use crate::types::{
     ArrayLen, ArrayTypeId, StructId, Type, TypeKind, parse_array_type_syntax,
     parse_type_call_syntax,
 };
+
+struct SemaTypeSyntaxProvider<'s, 'a, 'c, D: DeclarationPhase> {
+    sema: &'s mut Sema<'a, D>,
+    span: Span,
+    root_authority: SemaTypeRootAuthority,
+    resolution_context: SemaTypeResolutionContext,
+    type_substitutions: Option<&'c HashMap<Spur, Type>>,
+    value_substitutions: Option<&'c HashMap<Spur, ConstValue>>,
+    observed_type_dependencies: Vec<(FileId, String, super::DeclarationTypeDependencyTargetKind)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SemaTypeRootAuthority {
+    KnownFile(FileId),
+    GlobalSpeculative,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SemaTypeResolutionContext {
+    Type,
+    ArrayLength,
+}
+
+type SemaProviderResult<T> = crate::SemanticProviderResult<T, Infallible, CompileError>;
+
+fn provider_failure<T>(result: CompileResult<T>) -> SemaProviderResult<T> {
+    result.map_err(crate::SemanticProviderError::Failure)
+}
+
+impl<D: DeclarationPhase> crate::SemanticModulePathProvider<FileId, crate::types::ModuleId, FileId>
+    for SemaTypeSyntaxProvider<'_, '_, '_, D>
+{
+    type Abort = Infallible;
+    type Failure = CompileError;
+
+    fn root_module_binding(
+        &mut self,
+        _scope: &FileId,
+        name: &str,
+    ) -> SemaProviderResult<Option<crate::SemanticModuleBinding<crate::types::ModuleId, FileId>>>
+    {
+        let SemaTypeRootAuthority::KnownFile(root_file) = self.root_authority else {
+            return Ok(None);
+        };
+        let name = self.sema.interner.get_or_intern(name);
+        let binding = provider_failure(self.sema.resolve_module_binding_in_file(root_file, name))?;
+        Ok(binding.and_then(|binding| self.module_binding_fact(binding)))
+    }
+
+    fn module_binding(
+        &mut self,
+        module: &crate::types::ModuleId,
+        name: &str,
+    ) -> SemaProviderResult<Option<crate::SemanticModuleBinding<crate::types::ModuleId, FileId>>>
+    {
+        if self.root_authority == SemaTypeRootAuthority::GlobalSpeculative {
+            return Ok(None);
+        }
+        let file = self.sema.module_registry.get_def(*module).file_id;
+        let name = self.sema.interner.get_or_intern(name);
+        let binding = provider_failure(self.sema.resolve_module_binding_in_file(file, name))?;
+        Ok(binding.and_then(|binding| self.module_binding_fact(binding)))
+    }
+
+    fn module_display_name(&self, module: &crate::types::ModuleId) -> std::sync::Arc<str> {
+        std::sync::Arc::from(
+            self.sema
+                .module_registry
+                .get_def(*module)
+                .import_path
+                .as_str(),
+        )
+    }
+
+    fn accessing_domain(&self, _scope: &FileId) -> crate::SemanticVisibilityDomain {
+        match self.root_authority {
+            SemaTypeRootAuthority::KnownFile(root_file) => {
+                crate::SemanticVisibilityDomain::from_file_path(self.sema.get_file_path(root_file))
+            }
+            SemaTypeRootAuthority::GlobalSpeculative => {
+                crate::SemanticVisibilityDomain::from_file_path(None)
+            }
+        }
+    }
+}
+
+impl<D: DeclarationPhase>
+    crate::SemanticTypeSyntaxProvider<
+        FileId,
+        crate::types::ModuleId,
+        FileId,
+        Spur,
+        Spur,
+        Type,
+        ConstValue,
+    > for SemaTypeSyntaxProvider<'_, '_, '_, D>
+{
+    fn substituted_type(
+        &mut self,
+        _scope: &FileId,
+        name: &str,
+    ) -> SemaProviderResult<Option<Type>> {
+        let Some(type_substitutions) = self.type_substitutions else {
+            return Ok(None);
+        };
+        let symbol = self.sema.interner.get_or_intern(name);
+        Ok(type_substitutions.get(&symbol).copied())
+    }
+
+    fn primitive_type(&mut self, name: &str) -> SemaProviderResult<Option<Type>> {
+        Ok(Type::from_primitive_name(name))
+    }
+
+    fn builtin_type(&mut self, _scope: &FileId, name: &str) -> SemaProviderResult<Option<Type>> {
+        if name == "str" && self.root_authority != SemaTypeRootAuthority::GlobalSpeculative {
+            provider_failure(self.sema.get_or_create_str_struct(self.span).map(Some))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn root_struct_type(
+        &mut self,
+        _scope: &FileId,
+        name: &str,
+    ) -> SemaProviderResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
+        let symbol = self.sema.interner.get_or_intern(name);
+        let (id, bypass_visibility) = match self.root_authority {
+            SemaTypeRootAuthority::KnownFile(root_file) => (
+                self.sema
+                    .structs_by_file_name
+                    .get(&(root_file, symbol))
+                    .copied()
+                    .or_else(|| self.sema.resolve_builtin_struct_name(symbol)),
+                false,
+            ),
+            SemaTypeRootAuthority::GlobalSpeculative => (
+                self.sema
+                    .struct_id_for_name(symbol)
+                    .or_else(|| self.sema.resolve_builtin_struct_name(symbol)),
+                true,
+            ),
+        };
+        let Some(id) = id else {
+            return Ok(None);
+        };
+        let metadata = self
+            .sema
+            .type_pool
+            .struct_metadata(id)
+            .expect("type lookup names a registered struct identity");
+        Ok(Some(self.type_fact(
+            Type::new_struct(id),
+            metadata.file_id,
+            metadata.is_pub || bypass_visibility,
+        )))
+    }
+
+    fn root_enum_type(
+        &mut self,
+        _scope: &FileId,
+        name: &str,
+    ) -> SemaProviderResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
+        let symbol = self.sema.interner.get_or_intern(name);
+        let (id, bypass_visibility) = match self.root_authority {
+            SemaTypeRootAuthority::KnownFile(root_file) => (
+                self.sema
+                    .enums_by_file_name
+                    .get(&(root_file, symbol))
+                    .copied()
+                    .or_else(|| self.sema.resolve_builtin_enum_name(symbol)),
+                false,
+            ),
+            SemaTypeRootAuthority::GlobalSpeculative => (
+                self.sema
+                    .enum_id_for_name(symbol)
+                    .or_else(|| self.sema.resolve_builtin_enum_name(symbol)),
+                true,
+            ),
+        };
+        let Some(id) = id else {
+            return Ok(None);
+        };
+        let metadata = self
+            .sema
+            .type_pool
+            .enum_metadata(id)
+            .expect("type lookup names a registered enum identity");
+        Ok(Some(self.type_fact(
+            Type::new_enum(id),
+            metadata.file_id,
+            metadata.is_pub || bypass_visibility,
+        )))
+    }
+
+    fn root_type_alias(
+        &mut self,
+        _scope: &FileId,
+        name: &str,
+    ) -> SemaProviderResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
+        let SemaTypeRootAuthority::KnownFile(root_file) = self.root_authority else {
+            return Ok(None);
+        };
+        let symbol = self.sema.interner.get_or_intern(name);
+        let mut value = self
+            .sema
+            .resolve_const_info_in_file(symbol, root_file)
+            .map(|info| info.value);
+        if value.is_none() && self.sema.declaration_binding_active {
+            value = provider_failure(
+                self.sema
+                    .try_resolve_indexed_const_during_binding(symbol, root_file),
+            )?;
+        }
+        let Some(ConstValue::Type(value)) = value else {
+            return Ok(None);
+        };
+        let Some(info) = self.sema.resolve_const_info_in_file(symbol, root_file) else {
+            return Ok(Some(self.type_fact(value, root_file, true)));
+        };
+        let (defining_file, is_public) = (info.span.file_id, info.is_pub);
+        Ok(Some(self.type_fact(value, defining_file, is_public)))
+    }
+
+    fn module_struct_type(
+        &mut self,
+        module: &crate::types::ModuleId,
+        name: &str,
+    ) -> SemaProviderResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
+        let file = self.sema.module_registry.get_def(*module).file_id;
+        let symbol = self.sema.interner.get_or_intern(name);
+        let Some(id) = self.sema.structs_by_file_name.get(&(file, symbol)).copied() else {
+            return Ok(None);
+        };
+        let metadata = self
+            .sema
+            .type_pool
+            .struct_metadata(id)
+            .expect("qualified type lookup names a registered struct identity");
+        Ok(Some(self.type_fact(
+            Type::new_struct(id),
+            metadata.file_id,
+            metadata.is_pub,
+        )))
+    }
+
+    fn module_enum_type(
+        &mut self,
+        module: &crate::types::ModuleId,
+        name: &str,
+    ) -> SemaProviderResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
+        let file = self.sema.module_registry.get_def(*module).file_id;
+        let symbol = self.sema.interner.get_or_intern(name);
+        let Some(id) = self.sema.enums_by_file_name.get(&(file, symbol)).copied() else {
+            return Ok(None);
+        };
+        let metadata = self
+            .sema
+            .type_pool
+            .enum_metadata(id)
+            .expect("qualified type lookup names a registered enum identity");
+        Ok(Some(self.type_fact(
+            Type::new_enum(id),
+            metadata.file_id,
+            metadata.is_pub,
+        )))
+    }
+
+    fn module_type_alias(
+        &mut self,
+        module: &crate::types::ModuleId,
+        name: &str,
+    ) -> SemaProviderResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
+        let file = self.sema.module_registry.get_def(*module).file_id;
+        let symbol = self.sema.interner.get_or_intern(name);
+        if self.sema.declaration_binding_active
+            && self
+                .sema
+                .constants_by_file_name
+                .get(&(file, symbol))
+                .is_none()
+        {
+            provider_failure(
+                self.sema
+                    .try_resolve_indexed_const_during_binding(symbol, file),
+            )?;
+        }
+        let Some(info) = self.sema.constants_by_file_name.get(&(file, symbol)) else {
+            return Ok(None);
+        };
+        let ConstValue::Type(value) = info.value else {
+            return Ok(None);
+        };
+        Ok(Some(self.type_fact(value, info.span.file_id, info.is_pub)))
+    }
+
+    fn observe_selected_named_type(
+        &mut self,
+        name: &str,
+        kind: crate::SemanticTypeFactKind,
+        fact: &crate::SemanticTypeFact<Type, FileId>,
+    ) -> SemaProviderResult<()> {
+        match kind {
+            crate::SemanticTypeFactKind::Struct | crate::SemanticTypeFactKind::Enum => {
+                self.observe_materialized_type_fact(fact.value);
+            }
+            crate::SemanticTypeFactKind::Constant => {
+                self.observe_type_dependency(
+                    fact.site,
+                    name.to_string(),
+                    super::DeclarationTypeDependencyTargetKind::ValueConst,
+                );
+            }
+            crate::SemanticTypeFactKind::Function => {}
+        }
+        Ok(())
+    }
+
+    fn observe_materialized_type(&mut self, ty: &Type) -> SemaProviderResult<()> {
+        self.observe_materialized_type_fact(*ty);
+        Ok(())
+    }
+
+    fn allows_qualified_paths(&self, _scope: &FileId) -> bool {
+        self.root_authority != SemaTypeRootAuthority::GlobalSpeculative
+    }
+
+    fn allows_qualified_comptime_call_head(
+        &self,
+        _scope: &FileId,
+        expectation: crate::SemanticComptimeCallExpectation,
+    ) -> bool {
+        self.root_authority != SemaTypeRootAuthority::GlobalSpeculative
+            && !(self.resolution_context == SemaTypeResolutionContext::ArrayLength
+                && expectation == crate::SemanticComptimeCallExpectation::Value)
+    }
+
+    fn resolve_array_length(
+        &mut self,
+        scope: &FileId,
+        length: &ArrayLen,
+    ) -> SemaProviderResult<Option<u64>> {
+        provider_failure(self.resolve_array_length_fact(*scope, length)).map(Some)
+    }
+
+    fn array_type(&mut self, element: Type, length: Option<u64>) -> SemaProviderResult<Type> {
+        Ok(Type::new_array(self.sema.get_or_create_array_type(
+            element,
+            length.expect("concrete type resolution always resolves array lengths"),
+        )))
+    }
+
+    fn ptr_const_type(&mut self, pointee: Type) -> SemaProviderResult<Type> {
+        Ok(Type::new_ptr_const(
+            self.sema.type_pool.intern_ptr_const_from_type(pointee),
+        ))
+    }
+
+    fn ptr_mut_type(&mut self, pointee: Type) -> SemaProviderResult<Type> {
+        Ok(Type::new_ptr_mut(
+            self.sema.type_pool.intern_ptr_mut_from_type(pointee),
+        ))
+    }
+
+    fn preflight_slice(&mut self, _scope: &FileId, _syntax: &str) -> SemaProviderResult<()> {
+        provider_failure(self.sema.require_preview(
+            PreviewFeature::Slices,
+            "the slice type `[T]`",
+            self.span,
+        ))
+    }
+
+    fn slice_type(
+        &mut self,
+        _scope: &FileId,
+        syntax: &str,
+        element: Type,
+    ) -> SemaProviderResult<Type> {
+        provider_failure(
+            self.sema
+                .get_or_create_slice_struct_from_element(syntax, element, self.span),
+        )
+    }
+
+    fn builtin_type_call(
+        &mut self,
+        scope: &FileId,
+        name: &str,
+        arguments: &[String],
+    ) -> SemaProviderResult<Option<Type>> {
+        if name == "Str" {
+            let capacity = match arguments {
+                [argument] => provider_failure(
+                    self.resolve_array_length_fact(*scope, &ArrayLen::Named(argument.to_string())),
+                )?,
+                _ => {
+                    return provider_failure(Err(CompileError::new(
+                        ErrorKind::UnknownType(format!("{}({})", name, arguments.join(", "))),
+                        self.span,
+                    )));
+                }
+            };
+            self.sema.record_declaration_builtin_type_call_head(
+                super::BuiltinTypeCallHead::FixedCapacityString,
+            );
+            provider_failure(
+                self.sema
+                    .get_or_create_str_fixed_struct(capacity, self.span)
+                    .map(Some),
+            )
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn root_constructor(
+        &mut self,
+        _scope: &FileId,
+        name: &str,
+    ) -> SemaProviderResult<Option<crate::SemanticTypeConstructorHead<Spur, Spur, FileId>>> {
+        let symbol = self.sema.interner.get_or_intern(name);
+        let mut key = match self.root_authority {
+            SemaTypeRootAuthority::KnownFile(root_file) => {
+                self.sema.resolve_function_name_local(symbol, root_file)
+            }
+            SemaTypeRootAuthority::GlobalSpeculative => Some(symbol),
+        };
+        if key.is_none()
+            && self.sema.declaration_binding_active
+            && let SemaTypeRootAuthority::KnownFile(root_file) = self.root_authority
+        {
+            let observer = self.sema.declaration_type_observer.clone();
+            provider_failure(
+                self.sema
+                    .collect_free_function_signature_during_binding(symbol, Some(root_file)),
+            )?;
+            self.sema.declaration_type_observer = observer;
+            key = self.sema.resolve_function_name_local(symbol, root_file);
+        }
+        let Some(key) = key else {
+            return Ok(None);
+        };
+        let Some(info) = self.sema.functions.get(&key).copied() else {
+            return Ok(None);
+        };
+        self.sema.record_declaration_type_call_head(key, info);
+        let mut fact = self.constructor_fact(key, info);
+        if self.root_authority == SemaTypeRootAuthority::GlobalSpeculative {
+            fact.is_public = true;
+        }
+        Ok(Some(fact))
+    }
+
+    fn module_constructor(
+        &mut self,
+        module: &crate::types::ModuleId,
+        name: &str,
+    ) -> SemaProviderResult<Option<crate::SemanticTypeConstructorHead<Spur, Spur, FileId>>> {
+        let file = self.sema.module_registry.get_def(*module).file_id;
+        let symbol = self.sema.interner.get_or_intern(name);
+        if self.sema.declaration_binding_active {
+            let observer = self.sema.declaration_type_observer.clone();
+            provider_failure(
+                self.sema
+                    .collect_free_function_signature_during_binding(symbol, Some(file)),
+            )?;
+            self.sema.declaration_type_observer = observer;
+        }
+        let Some(key) = self.sema.resolve_function_name_local(symbol, file) else {
+            return Ok(None);
+        };
+        let Some(info) = self
+            .sema
+            .functions
+            .get(&key)
+            .copied()
+            .filter(|info| info.file_id == file)
+        else {
+            return Ok(None);
+        };
+        self.sema.record_declaration_type_call_head(key, info);
+        Ok(Some(self.constructor_fact(key, info)))
+    }
+
+    fn resolve_value_argument(
+        &mut self,
+        scope: &FileId,
+        constructor: &str,
+        _head: &crate::SemanticTypeConstructorHead<Spur, Spur, FileId>,
+        _parameter_index: usize,
+        _type_arguments: &[(Spur, Type)],
+        _value_arguments: &[(Spur, ConstValue)],
+        syntax: &str,
+    ) -> SemaProviderResult<ConstValue> {
+        match self.resolve_value_argument_fact(*scope, constructor, syntax) {
+            Ok(value) => Ok(value),
+            Err(error) if self.resolution_context == SemaTypeResolutionContext::ArrayLength => {
+                let length = syntax
+                    .parse::<u64>()
+                    .map(ArrayLen::Literal)
+                    .unwrap_or_else(|_| ArrayLen::Named(syntax.to_string()));
+                provider_failure(
+                    self.resolve_array_length_fact(*scope, &length)
+                        .map(|value| ConstValue::Integer(value as i128)),
+                )
+            }
+            Err(error) => provider_failure(Err(error)),
+        }
+    }
+
+    fn reduce_comptime_call(
+        &mut self,
+        head: &crate::SemanticTypeConstructorHead<Spur, Spur, FileId>,
+        type_arguments: &[(Spur, Type)],
+        value_arguments: &[(Spur, ConstValue)],
+    ) -> SemaProviderResult<Option<crate::SemanticComptimeCallResult<Type, ConstValue>>> {
+        let type_arguments = type_arguments.iter().copied().collect::<HashMap<_, _>>();
+        let value_arguments = value_arguments.iter().copied().collect::<HashMap<_, _>>();
+        provider_failure(
+            self.sema
+                .reduce_type_ctor_body(head.key, &type_arguments, &value_arguments)
+                .map_err(|error| Sema::<D>::label_ctor_instantiation_site(error, self.span))
+                .map(|result| match (head.returns_type, result) {
+                    (_, None) => None,
+                    (true, Some(ConstValue::Type(ty))) => {
+                        Some(crate::SemanticComptimeCallResult::Type(ty))
+                    }
+                    (false, Some(value)) => Some(crate::SemanticComptimeCallResult::Value(value)),
+                    (true, Some(_)) => None,
+                }),
+        )
+    }
+}
+
+impl<D: DeclarationPhase> SemaTypeSyntaxProvider<'_, '_, '_, D> {
+    fn resolve_array_length_fact(
+        &mut self,
+        scope: FileId,
+        length: &ArrayLen,
+    ) -> CompileResult<u64> {
+        let previous_context = self.resolution_context;
+        self.resolution_context = SemaTypeResolutionContext::ArrayLength;
+        let result = self.resolve_array_length_fact_inner(scope, length);
+        self.resolution_context = previous_context;
+        result
+    }
+
+    fn resolve_array_length_fact_inner(
+        &mut self,
+        scope: FileId,
+        length: &ArrayLen,
+    ) -> CompileResult<u64> {
+        let ArrayLen::Named(name) = length else {
+            let ArrayLen::Literal(value) = length else {
+                unreachable!()
+            };
+            return Ok(*value);
+        };
+        if let Ok(value) = name.parse::<u64>() {
+            return Ok(value);
+        }
+        if let Some((callee, arguments)) = parse_type_call_syntax(name) {
+            return self.resolve_array_length_call_fact(scope, &callee, &arguments);
+        }
+
+        let symbol = self.sema.interner.get_or_intern(name);
+        let value = if let Some(value) = self
+            .value_substitutions
+            .and_then(|substitutions| substitutions.get(&symbol))
+        {
+            *value
+        } else if let SemaTypeRootAuthority::KnownFile(root_file) = self.root_authority {
+            if let Some(info) = self.sema.resolve_const_info_in_file(symbol, root_file) {
+                info.value
+            } else if self.sema.declaration_binding_active
+                && let Some(value) = self
+                    .sema
+                    .try_resolve_indexed_const_during_binding(symbol, root_file)?
+            {
+                value
+            } else {
+                return Err(self.invalid_array_length(format!(
+                    "'{name}' is not a compile-time constant; array lengths must be an integer literal, a `const`, or a `comptime` value parameter"
+                )));
+            }
+        } else {
+            return Err(self.invalid_array_length(format!(
+                "'{name}' is not a compile-time constant; array lengths must be an integer literal, a `const`, or a `comptime` value parameter"
+            )));
+        };
+
+        match value.as_int_value() {
+            Some(value) if value >= 0 => u64::try_from(value).map_err(|_| {
+                self.invalid_array_length(format!("array length '{name}' ({value}) is too large"))
+            }),
+            Some(value) => {
+                Err(self
+                    .invalid_array_length(format!("array length '{name}' is negative ({value})")))
+            }
+            None => {
+                Err(self.invalid_array_length(format!("array length '{name}' is not an integer")))
+            }
+        }
+    }
+
+    fn resolve_array_length_call_fact(
+        &mut self,
+        scope: FileId,
+        callee: &str,
+        arguments: &[String],
+    ) -> CompileResult<u64> {
+        let call = crate::resolve_semantic_comptime_call(
+            self,
+            &scope,
+            callee,
+            arguments,
+            crate::SemanticComptimeCallExpectation::Value,
+        )
+        .map_err(|failure| self.array_length_call_failure(callee, failure))?;
+        match call.result {
+            crate::SemanticComptimeCallResult::Value(ConstValue::Integer(value)) if value >= 0 => {
+                u64::try_from(value).map_err(|_| {
+                    self.invalid_array_length(format!(
+                        "array length '{callee}(...)' ({value}) is too large"
+                    ))
+                })
+            }
+            crate::SemanticComptimeCallResult::Value(ConstValue::Integer(value)) => Err(self
+                .invalid_array_length(format!(
+                    "array length '{callee}(...)' is negative ({value})"
+                ))),
+            crate::SemanticComptimeCallResult::Value(_) => Err(self.invalid_array_length(format!(
+                "array length call '{callee}(...)' did not evaluate to a compile-time integer"
+            ))),
+            crate::SemanticComptimeCallResult::Type(_) => {
+                unreachable!("value call expectation rejects type-returning callees")
+            }
+        }
+    }
+
+    fn array_length_call_failure(
+        &self,
+        callee: &str,
+        failure: crate::SemanticTypeSyntaxError<Infallible, CompileError, FileId, Spur>,
+    ) -> CompileError {
+        use crate::SemanticResolutionError as E;
+        use crate::SemanticTypeSyntaxFailure as F;
+
+        match failure {
+            E::ProviderAbort(error) => match error {},
+            E::ProviderFailure(error) => error,
+            E::Semantic(F::TypeWhereValueExpected { .. }) => self.invalid_array_length(format!(
+                "array length call '{callee}(...)' must return a value, not a type"
+            )),
+            E::Semantic(F::InvalidConstructorArity { .. })
+            | E::Semantic(F::RuntimeConstructorParameter { .. }) => self.invalid_array_length(
+                format!(
+                    "array length call '{callee}(...)' is not a compile-time constant; its callee must be a value-returning function whose parameters are all `comptime`"
+                ),
+            ),
+            E::Semantic(F::ConstructorDidNotReduce { .. }) => self.invalid_array_length(format!(
+                "array length call '{callee}(...)' did not evaluate to a compile-time integer"
+            )),
+            E::ComptimeCallTypeArgument { error, .. } => {
+                self.sema.type_syntax_compile_error(*error, self.span)
+            }
+            E::Semantic(F::Path(_))
+            | E::Semantic(F::UnknownType { .. })
+            | E::Semantic(F::UnknownModuleMember { .. })
+            | E::Semantic(F::PrivateItem { .. })
+            | E::Semantic(F::AmbiguousItem { .. })
+            | E::Semantic(F::NotTypeConstructor { .. }) => self.invalid_array_length(format!(
+                "'{callee}' is not a function; array lengths must be an integer literal, a `const`, a `comptime` value parameter, or a call to a comptime function"
+            )),
+            E::Semantic(F::ValueWhereTypeExpected { argument, .. }) => self
+                .invalid_array_length(format!(
+                    "array length call '{callee}(...)' has non-type argument '{argument}' for a `type` parameter"
+                )),
+        }
+    }
+
+    fn invalid_array_length(&self, reason: String) -> CompileError {
+        CompileError::new(ErrorKind::InvalidArrayLength { reason }, self.span)
+    }
+
+    fn observe_materialized_type_fact(&mut self, ty: Type) {
+        match ty.kind() {
+            TypeKind::Struct(id) => {
+                let def = self
+                    .sema
+                    .type_pool
+                    .struct_metadata(id)
+                    .expect("resolved declaration type names a registered struct identity");
+                if !def.is_builtin && !def.name.starts_with("__anon_struct_") {
+                    self.observe_type_dependency(
+                        def.file_id,
+                        def.name,
+                        super::DeclarationTypeDependencyTargetKind::Struct,
+                    );
+                }
+            }
+            TypeKind::Enum(id) => {
+                let def = self
+                    .sema
+                    .type_pool
+                    .enum_metadata(id)
+                    .expect("resolved declaration type names a registered enum identity");
+                self.observe_type_dependency(
+                    def.file_id,
+                    def.name,
+                    super::DeclarationTypeDependencyTargetKind::Enum,
+                );
+            }
+            TypeKind::Array(id) => {
+                self.observe_materialized_type_fact(self.sema.type_pool.array_def(id).0)
+            }
+            TypeKind::PtrConst(id) => {
+                self.observe_materialized_type_fact(self.sema.type_pool.ptr_const_def(id));
+            }
+            TypeKind::PtrMut(id) => {
+                self.observe_materialized_type_fact(self.sema.type_pool.ptr_mut_def(id));
+            }
+            _ => {}
+        }
+    }
+
+    fn flush_observed_type_dependencies(&mut self) {
+        for (file, name, kind) in std::mem::take(&mut self.observed_type_dependencies) {
+            self.sema
+                .record_resolved_declaration_type_target(file, name, kind);
+        }
+    }
+
+    fn observe_type_dependency(
+        &mut self,
+        file: FileId,
+        name: String,
+        kind: super::DeclarationTypeDependencyTargetKind,
+    ) {
+        let dependency = (file, name, kind);
+        if !self.observed_type_dependencies.contains(&dependency) {
+            self.observed_type_dependencies.push(dependency);
+        }
+    }
+
+    fn resolve_value_argument_fact(
+        &mut self,
+        _scope: FileId,
+        constructor: &str,
+        syntax: &str,
+    ) -> CompileResult<ConstValue> {
+        let text = syntax.trim();
+        if let Ok(value) = text.parse::<i128>() {
+            return Ok(ConstValue::Integer(value));
+        }
+        if text == "true" {
+            return Ok(ConstValue::Bool(true));
+        }
+        if text == "false" {
+            return Ok(ConstValue::Bool(false));
+        }
+        let symbol = self.sema.interner.get_or_intern(text);
+        if let Some(value_substitutions) = self.value_substitutions
+            && let Some(value) = value_substitutions.get(&symbol)
+        {
+            return Ok(*value);
+        }
+        if let Some(type_substitutions) = self.type_substitutions
+            && let Some(ty) = type_substitutions.get(&symbol)
+        {
+            return Ok(ConstValue::Type(*ty));
+        }
+        if let SemaTypeRootAuthority::KnownFile(root_file) = self.root_authority
+            && let Some(info) = self.sema.resolve_const_info_in_file(symbol, root_file)
+        {
+            return Ok(info.value);
+        }
+        Err(CompileError::new(
+            ErrorKind::ComptimeEvaluationFailed {
+                reason: format!(
+                    "argument '{}' of type constructor '{}' must be a compile-time known value (an integer or bool literal, a comptime parameter, or a constant)",
+                    text, constructor
+                ),
+            },
+            self.span,
+        ))
+    }
+    fn module_binding_fact(
+        &self,
+        binding: super::info::ConstInfo,
+    ) -> Option<crate::SemanticModuleBinding<crate::types::ModuleId, FileId>> {
+        let target = binding.ty.as_module()?;
+        let defining_file = self
+            .sema
+            .get_file_path(binding.span.file_id)
+            .unwrap_or("<unknown>");
+        Some(crate::SemanticModuleBinding {
+            target,
+            site: binding.span.file_id,
+            is_public: binding.is_pub,
+            defining_domain: crate::SemanticVisibilityDomain::from_file_path(
+                self.sema.get_file_path(binding.span.file_id),
+            ),
+            defining_file: std::sync::Arc::from(defining_file),
+        })
+    }
+
+    fn type_fact(
+        &self,
+        value: Type,
+        defining_file_id: FileId,
+        is_public: bool,
+    ) -> crate::SemanticTypeFact<Type, FileId> {
+        let defining_file = self
+            .sema
+            .get_file_path(defining_file_id)
+            .unwrap_or("<unknown>");
+        crate::SemanticTypeFact {
+            value,
+            site: defining_file_id,
+            is_public,
+            defining_domain: crate::SemanticVisibilityDomain::from_file_path(
+                self.sema.get_file_path(defining_file_id),
+            ),
+            defining_file: std::sync::Arc::from(defining_file),
+        }
+    }
+
+    fn constructor_fact(
+        &self,
+        key: Spur,
+        info: FunctionInfo,
+    ) -> crate::SemanticTypeConstructorHead<Spur, Spur, FileId> {
+        let names = self.sema.param_arena.names(info.params);
+        let comptime = self.sema.param_arena.comptime(info.params);
+        let type_parameters = self.sema.comptime_type_param_flags(&info);
+        let parameters = names
+            .iter()
+            .zip(comptime)
+            .zip(type_parameters)
+            .map(
+                |((&name, &is_comptime), is_type)| crate::SemanticTypeConstructorParameter {
+                    name,
+                    is_comptime,
+                    is_type,
+                },
+            )
+            .collect::<Vec<_>>();
+        let defining_file = self.sema.get_file_path(info.file_id).unwrap_or("<unknown>");
+        crate::SemanticTypeConstructorHead {
+            key,
+            site: info.file_id,
+            parameters: parameters.into(),
+            returns_type: self.sema.function_returns_type(&info),
+            is_public: info.is_pub,
+            defining_domain: crate::SemanticVisibilityDomain::from_file_path(
+                self.sema.get_file_path(info.file_id),
+            ),
+            defining_file: std::sync::Arc::from(defining_file),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DeferredTypeResolution {
+    Resolved(Type),
+    Pending,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DeferredValueResolution {
+    Resolved(ConstValue),
+    Pending,
+}
+
+struct DeferredSemaTypeSyntaxProvider<'s, 'a, 'c, D: DeclarationPhase> {
+    inner: SemaTypeSyntaxProvider<'s, 'a, 'c, D>,
+    type_params: &'c [Spur],
+    value_params: &'c [Spur],
+    value_param_type_syms: &'c [(Spur, Spur)],
+}
+
+impl<D: DeclarationPhase> crate::SemanticModulePathProvider<FileId, crate::types::ModuleId, FileId>
+    for DeferredSemaTypeSyntaxProvider<'_, '_, '_, D>
+{
+    type Abort = Infallible;
+    type Failure = CompileError;
+
+    fn root_module_binding(
+        &mut self,
+        scope: &FileId,
+        name: &str,
+    ) -> SemaProviderResult<Option<crate::SemanticModuleBinding<crate::types::ModuleId, FileId>>>
+    {
+        self.inner.root_module_binding(scope, name)
+    }
+
+    fn module_binding(
+        &mut self,
+        module: &crate::types::ModuleId,
+        name: &str,
+    ) -> SemaProviderResult<Option<crate::SemanticModuleBinding<crate::types::ModuleId, FileId>>>
+    {
+        self.inner.module_binding(module, name)
+    }
+
+    fn module_display_name(&self, module: &crate::types::ModuleId) -> std::sync::Arc<str> {
+        self.inner.module_display_name(module)
+    }
+
+    fn accessing_domain(&self, scope: &FileId) -> crate::SemanticVisibilityDomain {
+        self.inner.accessing_domain(scope)
+    }
+}
+
+impl<D: DeclarationPhase>
+    crate::SemanticTypeSyntaxProvider<
+        FileId,
+        crate::types::ModuleId,
+        FileId,
+        Spur,
+        Spur,
+        DeferredTypeResolution,
+        DeferredValueResolution,
+    > for DeferredSemaTypeSyntaxProvider<'_, '_, '_, D>
+{
+    fn substituted_type(
+        &mut self,
+        _scope: &FileId,
+        name: &str,
+    ) -> SemaProviderResult<Option<DeferredTypeResolution>> {
+        let Some(symbol) = self.inner.sema.interner.get(name) else {
+            return Ok(None);
+        };
+        if self.type_params.contains(&symbol) {
+            return Ok(Some(DeferredTypeResolution::Pending));
+        }
+        if self.value_params.contains(&symbol) {
+            return provider_failure(Err(CompileError::new(
+                ErrorKind::UnknownType(name.to_string()),
+                self.inner.span,
+            )));
+        }
+        Ok(None)
+    }
+
+    fn primitive_type(&mut self, name: &str) -> SemaProviderResult<Option<DeferredTypeResolution>> {
+        self.inner
+            .primitive_type(name)
+            .map(|value| value.map(DeferredTypeResolution::Resolved))
+    }
+
+    fn builtin_type(
+        &mut self,
+        scope: &FileId,
+        name: &str,
+    ) -> SemaProviderResult<Option<DeferredTypeResolution>> {
+        self.inner
+            .builtin_type(scope, name)
+            .map(|value| value.map(DeferredTypeResolution::Resolved))
+    }
+
+    fn root_struct_type(
+        &mut self,
+        scope: &FileId,
+        name: &str,
+    ) -> SemaProviderResult<Option<crate::SemanticTypeFact<DeferredTypeResolution, FileId>>> {
+        self.inner.root_struct_type(scope, name).map(|fact| {
+            fact.map(|fact| crate::SemanticTypeFact {
+                value: DeferredTypeResolution::Resolved(fact.value),
+                site: fact.site,
+                is_public: fact.is_public,
+                defining_domain: fact.defining_domain,
+                defining_file: fact.defining_file,
+            })
+        })
+    }
+
+    fn root_enum_type(
+        &mut self,
+        scope: &FileId,
+        name: &str,
+    ) -> SemaProviderResult<Option<crate::SemanticTypeFact<DeferredTypeResolution, FileId>>> {
+        self.inner.root_enum_type(scope, name).map(|fact| {
+            fact.map(|fact| crate::SemanticTypeFact {
+                value: DeferredTypeResolution::Resolved(fact.value),
+                site: fact.site,
+                is_public: fact.is_public,
+                defining_domain: fact.defining_domain,
+                defining_file: fact.defining_file,
+            })
+        })
+    }
+
+    fn root_type_alias(
+        &mut self,
+        scope: &FileId,
+        name: &str,
+    ) -> SemaProviderResult<Option<crate::SemanticTypeFact<DeferredTypeResolution, FileId>>> {
+        self.inner.root_type_alias(scope, name).map(|fact| {
+            fact.map(|fact| crate::SemanticTypeFact {
+                value: DeferredTypeResolution::Resolved(fact.value),
+                site: fact.site,
+                is_public: fact.is_public,
+                defining_domain: fact.defining_domain,
+                defining_file: fact.defining_file,
+            })
+        })
+    }
+
+    fn module_struct_type(
+        &mut self,
+        module: &crate::types::ModuleId,
+        name: &str,
+    ) -> SemaProviderResult<Option<crate::SemanticTypeFact<DeferredTypeResolution, FileId>>> {
+        self.inner.module_struct_type(module, name).map(|fact| {
+            fact.map(|fact| crate::SemanticTypeFact {
+                value: DeferredTypeResolution::Resolved(fact.value),
+                site: fact.site,
+                is_public: fact.is_public,
+                defining_domain: fact.defining_domain,
+                defining_file: fact.defining_file,
+            })
+        })
+    }
+
+    fn module_enum_type(
+        &mut self,
+        module: &crate::types::ModuleId,
+        name: &str,
+    ) -> SemaProviderResult<Option<crate::SemanticTypeFact<DeferredTypeResolution, FileId>>> {
+        self.inner.module_enum_type(module, name).map(|fact| {
+            fact.map(|fact| crate::SemanticTypeFact {
+                value: DeferredTypeResolution::Resolved(fact.value),
+                site: fact.site,
+                is_public: fact.is_public,
+                defining_domain: fact.defining_domain,
+                defining_file: fact.defining_file,
+            })
+        })
+    }
+
+    fn module_type_alias(
+        &mut self,
+        module: &crate::types::ModuleId,
+        name: &str,
+    ) -> SemaProviderResult<Option<crate::SemanticTypeFact<DeferredTypeResolution, FileId>>> {
+        self.inner.module_type_alias(module, name).map(|fact| {
+            fact.map(|fact| crate::SemanticTypeFact {
+                value: DeferredTypeResolution::Resolved(fact.value),
+                site: fact.site,
+                is_public: fact.is_public,
+                defining_domain: fact.defining_domain,
+                defining_file: fact.defining_file,
+            })
+        })
+    }
+
+    fn observe_selected_named_type(
+        &mut self,
+        name: &str,
+        kind: crate::SemanticTypeFactKind,
+        fact: &crate::SemanticTypeFact<DeferredTypeResolution, FileId>,
+    ) -> SemaProviderResult<()> {
+        if let DeferredTypeResolution::Resolved(value) = fact.value {
+            let resolved = crate::SemanticTypeFact {
+                value,
+                site: fact.site,
+                is_public: fact.is_public,
+                defining_domain: fact.defining_domain.clone(),
+                defining_file: fact.defining_file.clone(),
+            };
+            self.inner
+                .observe_selected_named_type(name, kind, &resolved)?;
+        }
+        Ok(())
+    }
+
+    fn observe_materialized_type(&mut self, ty: &DeferredTypeResolution) -> SemaProviderResult<()> {
+        if let DeferredTypeResolution::Resolved(ty) = ty {
+            self.inner.observe_materialized_type(ty)?;
+        }
+        Ok(())
+    }
+
+    fn allows_qualified_paths(&self, scope: &FileId) -> bool {
+        self.inner.allows_qualified_paths(scope)
+    }
+
+    fn allows_qualified_comptime_call_head(
+        &self,
+        scope: &FileId,
+        expectation: crate::SemanticComptimeCallExpectation,
+    ) -> bool {
+        expectation != crate::SemanticComptimeCallExpectation::Value
+            && self
+                .inner
+                .allows_qualified_comptime_call_head(scope, expectation)
+    }
+
+    fn resolve_array_length(
+        &mut self,
+        _scope: &FileId,
+        length: &ArrayLen,
+    ) -> SemaProviderResult<Option<u64>> {
+        if let ArrayLen::Literal(length) = length {
+            return Ok(Some(*length));
+        }
+        let ArrayLen::Named(name) = length else {
+            unreachable!()
+        };
+        let value = provider_failure(self.inner.sema.validate_deferred_value_position(
+            name,
+            self.type_params,
+            self.value_params,
+            self.value_param_type_syms,
+            None,
+            None,
+            true,
+            self.inner.span,
+        ))?;
+        match value {
+            None => Ok(None),
+            Some(ConstValue::Integer(value)) => u64::try_from(value).map(Some).map_err(|_| {
+                crate::SemanticProviderError::Failure(CompileError::new(
+                    ErrorKind::InvalidArrayLength {
+                        reason: format!("array length must be non-negative, got {value}"),
+                    },
+                    self.inner.span,
+                ))
+            }),
+            Some(_) => provider_failure(Err(CompileError::new(
+                ErrorKind::InvalidArrayLength {
+                    reason: "array length must be an integer".to_string(),
+                },
+                self.inner.span,
+            ))),
+        }
+    }
+
+    fn array_type(
+        &mut self,
+        element: DeferredTypeResolution,
+        length: Option<u64>,
+    ) -> SemaProviderResult<DeferredTypeResolution> {
+        match (element, length) {
+            (DeferredTypeResolution::Resolved(element), Some(length)) => self
+                .inner
+                .array_type(element, Some(length))
+                .map(DeferredTypeResolution::Resolved),
+            _ => Ok(DeferredTypeResolution::Pending),
+        }
+    }
+
+    fn ptr_const_type(
+        &mut self,
+        pointee: DeferredTypeResolution,
+    ) -> SemaProviderResult<DeferredTypeResolution> {
+        match pointee {
+            DeferredTypeResolution::Resolved(pointee) => self
+                .inner
+                .ptr_const_type(pointee)
+                .map(DeferredTypeResolution::Resolved),
+            DeferredTypeResolution::Pending => Ok(DeferredTypeResolution::Pending),
+        }
+    }
+
+    fn ptr_mut_type(
+        &mut self,
+        pointee: DeferredTypeResolution,
+    ) -> SemaProviderResult<DeferredTypeResolution> {
+        match pointee {
+            DeferredTypeResolution::Resolved(pointee) => self
+                .inner
+                .ptr_mut_type(pointee)
+                .map(DeferredTypeResolution::Resolved),
+            DeferredTypeResolution::Pending => Ok(DeferredTypeResolution::Pending),
+        }
+    }
+
+    fn preflight_slice(&mut self, scope: &FileId, syntax: &str) -> SemaProviderResult<()> {
+        self.inner.preflight_slice(scope, syntax)
+    }
+
+    fn slice_type(
+        &mut self,
+        scope: &FileId,
+        syntax: &str,
+        element: DeferredTypeResolution,
+    ) -> SemaProviderResult<DeferredTypeResolution> {
+        match element {
+            DeferredTypeResolution::Resolved(element) => self
+                .inner
+                .slice_type(scope, syntax, element)
+                .map(DeferredTypeResolution::Resolved),
+            DeferredTypeResolution::Pending => Ok(DeferredTypeResolution::Pending),
+        }
+    }
+
+    fn builtin_type_call(
+        &mut self,
+        scope: &FileId,
+        name: &str,
+        arguments: &[String],
+    ) -> SemaProviderResult<Option<DeferredTypeResolution>> {
+        self.inner
+            .builtin_type_call(scope, name, arguments)
+            .map(|value| value.map(DeferredTypeResolution::Resolved))
+    }
+
+    fn root_constructor(
+        &mut self,
+        scope: &FileId,
+        name: &str,
+    ) -> SemaProviderResult<Option<crate::SemanticTypeConstructorHead<Spur, Spur, FileId>>> {
+        self.inner.root_constructor(scope, name)
+    }
+
+    fn module_constructor(
+        &mut self,
+        module: &crate::types::ModuleId,
+        name: &str,
+    ) -> SemaProviderResult<Option<crate::SemanticTypeConstructorHead<Spur, Spur, FileId>>> {
+        self.inner.module_constructor(module, name)
+    }
+
+    fn resolve_value_argument(
+        &mut self,
+        _scope: &FileId,
+        constructor: &str,
+        head: &crate::SemanticTypeConstructorHead<Spur, Spur, FileId>,
+        parameter_index: usize,
+        type_arguments: &[(Spur, DeferredTypeResolution)],
+        value_arguments: &[(Spur, DeferredValueResolution)],
+        syntax: &str,
+    ) -> SemaProviderResult<DeferredValueResolution> {
+        let function = *self
+            .inner
+            .sema
+            .functions
+            .get(&head.key)
+            .expect("selected constructor has function metadata");
+        let param_types = self.inner.sema.param_arena.types(function.params);
+        let rir_param_types = self
+            .inner
+            .sema
+            .rir
+            .params(function.rir_params(self.inner.sema.rir))
+            .iter()
+            .map(|parameter| parameter.ty)
+            .collect::<Vec<_>>();
+        let callee_types = type_arguments
+            .iter()
+            .filter_map(|(name, value)| match value {
+                DeferredTypeResolution::Resolved(value) => Some((*name, *value)),
+                DeferredTypeResolution::Pending => None,
+            })
+            .collect::<HashMap<_, _>>();
+        let callee_values = value_arguments
+            .iter()
+            .filter_map(|(name, value)| match value {
+                DeferredValueResolution::Resolved(value) => Some((*name, *value)),
+                DeferredValueResolution::Pending => None,
+            })
+            .collect::<HashMap<_, _>>();
+        let expected = if param_types[parameter_index] != Type::COMPTIME_TYPE {
+            Some(param_types[parameter_index])
+        } else if let Some(bound) = callee_types.get(&rir_param_types[parameter_index]) {
+            Some(*bound)
+        } else {
+            let callee_type_params = head
+                .parameters
+                .iter()
+                .filter_map(|parameter| parameter.is_type.then_some(parameter.name))
+                .collect::<Vec<_>>();
+            let callee_value_params = head
+                .parameters
+                .iter()
+                .filter_map(|parameter| (!parameter.is_type).then_some(parameter.name))
+                .collect::<Vec<_>>();
+            let parameter_type_name = self
+                .inner
+                .sema
+                .interner
+                .resolve(&rir_param_types[parameter_index]);
+            if self.inner.sema.deferred_signature_substitutions_are_ready(
+                parameter_type_name,
+                &callee_type_params,
+                &callee_value_params,
+                &callee_types,
+                &callee_values,
+            ) {
+                Some(provider_failure(
+                    self.inner.sema.resolve_substituted_param_type(
+                        &function,
+                        parameter_index,
+                        param_types[parameter_index],
+                        &callee_types,
+                        &callee_values,
+                    ),
+                )?)
+            } else {
+                None
+            }
+        };
+        let contract = Some((
+            self.inner.sema.interner.get_or_intern(constructor),
+            head.parameters[parameter_index].name,
+        ));
+        provider_failure(self.inner.sema.validate_deferred_value_position(
+            syntax,
+            self.type_params,
+            self.value_params,
+            self.value_param_type_syms,
+            expected,
+            contract,
+            false,
+            self.inner.span,
+        ))
+        .map(|value| match value {
+            Some(value) => DeferredValueResolution::Resolved(value),
+            None => DeferredValueResolution::Pending,
+        })
+    }
+
+    fn reduce_comptime_call(
+        &mut self,
+        head: &crate::SemanticTypeConstructorHead<Spur, Spur, FileId>,
+        type_arguments: &[(Spur, DeferredTypeResolution)],
+        value_arguments: &[(Spur, DeferredValueResolution)],
+    ) -> SemaProviderResult<
+        Option<crate::SemanticComptimeCallResult<DeferredTypeResolution, DeferredValueResolution>>,
+    > {
+        if type_arguments
+            .iter()
+            .any(|(_, value)| *value == DeferredTypeResolution::Pending)
+            || value_arguments
+                .iter()
+                .any(|(_, value)| *value == DeferredValueResolution::Pending)
+        {
+            return Ok(Some(if head.returns_type {
+                crate::SemanticComptimeCallResult::Type(DeferredTypeResolution::Pending)
+            } else {
+                crate::SemanticComptimeCallResult::Value(DeferredValueResolution::Pending)
+            }));
+        }
+        let resolved_types = type_arguments
+            .iter()
+            .map(|(name, value)| match value {
+                DeferredTypeResolution::Resolved(value) => (*name, *value),
+                DeferredTypeResolution::Pending => unreachable!(),
+            })
+            .collect::<Vec<_>>();
+        let resolved_values = value_arguments
+            .iter()
+            .map(|(name, value)| match value {
+                DeferredValueResolution::Resolved(value) => (*name, *value),
+                DeferredValueResolution::Pending => unreachable!(),
+            })
+            .collect::<Vec<_>>();
+        self.inner
+            .reduce_comptime_call(head, &resolved_types, &resolved_values)
+            .map(|result| {
+                result.map(|result| match result {
+                    crate::SemanticComptimeCallResult::Type(value) => {
+                        crate::SemanticComptimeCallResult::Type(DeferredTypeResolution::Resolved(
+                            value,
+                        ))
+                    }
+                    crate::SemanticComptimeCallResult::Value(value) => {
+                        crate::SemanticComptimeCallResult::Value(DeferredValueResolution::Resolved(
+                            value,
+                        ))
+                    }
+                })
+            })
+    }
+}
+
+fn module_path_compile_error(
+    failure: crate::SemanticModulePathFailure<FileId>,
+    span: Span,
+) -> CompileError {
+    match failure {
+        crate::SemanticModulePathFailure::Empty => {
+            CompileError::new(ErrorKind::UnknownType(String::new()), span)
+        }
+        crate::SemanticModulePathFailure::UnknownRoot { name } => {
+            CompileError::new(ErrorKind::UnknownType(name.to_string()), span)
+        }
+        crate::SemanticModulePathFailure::UnknownMember { module, member, .. } => {
+            CompileError::new(
+                ErrorKind::UnknownModuleMember {
+                    module_name: module.to_string(),
+                    member_name: member.to_string(),
+                },
+                span,
+            )
+        }
+        crate::SemanticModulePathFailure::PrivateMember {
+            member,
+            defining_file,
+            ..
+        } => private_qualified_item_error("constant", &member, &defining_file, span),
+    }
+}
+
+fn module_path_resolution_compile_error(
+    failure: crate::SemanticResolutionError<
+        Infallible,
+        CompileError,
+        crate::SemanticModulePathFailure<FileId>,
+    >,
+    span: Span,
+) -> CompileError {
+    match failure {
+        crate::SemanticResolutionError::ProviderAbort(error) => match error {},
+        crate::SemanticResolutionError::ProviderFailure(error) => error,
+        crate::SemanticResolutionError::Semantic(failure) => {
+            module_path_compile_error(failure, span)
+        }
+        crate::SemanticResolutionError::ComptimeCallTypeArgument { error, .. } => {
+            module_path_resolution_compile_error(*error, span)
+        }
+    }
+}
+
+fn private_qualified_item_error(
+    item_kind: &str,
+    member: &str,
+    defining_file: &str,
+    span: Span,
+) -> CompileError {
+    CompileError::new(
+        ErrorKind::PrivateUnqualifiedAccess(Box::new(
+            rue_error::PrivateUnqualifiedAccessData {
+                item_kind: item_kind.to_string(),
+                name: member.to_string(),
+                defining_file: defining_file.to_string(),
+            },
+        )),
+        span,
+    )
+    .with_help(format!(
+        "`{member}` is not marked `pub`; private items are only visible within their defining directory"
+    ))
+}
 
 impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// Get a human-readable name for a type.
@@ -199,40 +1647,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             _ => InferType::Concrete(ty),
         }
     }
-    /// Resolve a type symbol to a Type.
-    ///
-    /// Handles array types with the syntax "[T; N]".
-    /// Recognize slice type syntax `[T]` (ADR-0043, RUE-322).
-    ///
-    /// A slice is a bracketed type that is *not* a fixed array `[T; N]` (which
-    /// [`parse_array_type_syntax`] handles). Returns `Some(result)` when the
-    /// canonical type string is slice syntax so the caller short-circuits;
-    /// `None` otherwise (a genuinely unknown type falls through to E0204).
-    ///
-    /// This gates the surface behind `--preview slices` and, when enabled,
-    /// resolves the slice to its synthetic fat-pointer struct
-    /// (see [`Self::get_or_create_slice_struct`]) so it flows through the
-    /// existing aggregate ABI, field, and pointer codegen paths (ADR-0043
-    /// Phase 1 runtime, RUE-322). Escape positions (return / field / binding)
-    /// are rejected by [`Self::reject_slice_escape`] before reaching here.
-    fn try_resolve_slice_type(
-        &mut self,
-        type_name: &str,
-        span: Span,
-    ) -> Option<CompileResult<Type>> {
-        if type_name.starts_with('[')
-            && type_name.ends_with(']')
-            && parse_array_type_syntax(type_name).is_none()
-        {
-            Some(
-                self.require_preview(PreviewFeature::Slices, "the slice type `[T]`", span)
-                    .and_then(|()| self.get_or_create_slice_struct(type_name, span)),
-            )
-        } else {
-            None
-        }
-    }
-
     /// Get (or lazily create) the synthetic 2-field struct that represents the
     /// second-class slice type `[T]` (ADR-0043, RUE-322).
     ///
@@ -243,10 +1657,15 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// like the builtin `String` fat pointer. The struct is keyed by its slice
     /// syntax name (`[i32]`), so repeated references share one `StructId`.
     ///
-    /// The element type is parsed out of the bracket syntax and resolved first;
-    /// the pointer field is `ptr const T` so that `s[i]` can lower to
+    /// The shared syntax driver resolves the element before invoking this
+    /// materializer. The pointer field is `ptr const T` so that `s[i]` can lower to
     /// `@ptr_read(@ptr_offset(ptr, i))` with the correct element stride.
-    fn get_or_create_slice_struct(&mut self, type_name: &str, span: Span) -> CompileResult<Type> {
+    fn get_or_create_slice_struct_from_element(
+        &mut self,
+        type_name: &str,
+        element_ty: Type,
+        _span: Span,
+    ) -> CompileResult<Type> {
         use crate::types::{StructDef, StructField};
 
         let type_sym = self.interner.get_or_intern(type_name);
@@ -254,10 +1673,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             return Ok(Type::new_struct(struct_id));
         }
 
-        // Parse `[T]` -> element type name `T` and resolve it.
-        let element_name = type_name[1..type_name.len() - 1].trim().to_string();
-        let element_sym = self.interner.get_or_intern(&element_name);
-        let element_ty = self.resolve_type(element_sym, span)?;
         let ptr_type_id = self.type_pool.intern_ptr_const_from_type(element_ty);
         let ptr_ty = Type::new_ptr_const(ptr_type_id);
 
@@ -551,182 +1966,208 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         Ok(())
     }
 
-    /// Resolve a type-name symbol that may be a comptime-type alias
-    /// (`const A = Pair(i32);` used as a type). Returns the aliased type, or
-    /// `None` if the name is not a `type`-valued constant.
-    ///
-    /// During declaration binding, an indexed dependency may be resolved before
-    /// the source-order sweep reaches it. Body analysis only reads the completed
-    /// constant namespace.
-    pub(crate) fn resolve_const_type_alias(
-        &mut self,
-        type_sym: Spur,
-        span: Span,
-    ) -> CompileResult<Option<Type>> {
-        let mut value = self
-            .resolve_const_info_in_file(type_sym, span.file_id)
-            .map(|info| info.value);
-        if value.is_none() && self.declaration_binding_active {
-            value = self.try_resolve_indexed_const_during_binding(type_sym, span.file_id)?;
-        }
-        let Some(ConstValue::Type(alias_ty)) = value else {
-            return Ok(None);
-        };
-        // Privacy (E0460): an unqualified alias must not reach a private constant
-        // in another directory. Re-read the (now-collected) info for its origin.
-        if let Some(info) = self.resolve_const_info_in_file(type_sym, span.file_id) {
-            let (file_id, is_pub) = (info.span.file_id, info.is_pub);
-            let type_name = self.interner.resolve(&type_sym).to_string();
-            self.check_unqualified_visibility("constant", &type_name, file_id, is_pub, span)?;
-            self.record_resolved_declaration_type_target(
-                file_id,
-                type_name,
-                super::DeclarationTypeDependencyTargetKind::ValueConst,
-            );
-        }
-        Ok(Some(alias_ty))
-    }
-
     pub(crate) fn resolve_type(&mut self, type_sym: Spur, span: Span) -> CompileResult<Type> {
-        let ty = self.resolve_type_inner(type_sym, span)?;
-        self.record_resolved_declaration_type(ty);
-        Ok(ty)
+        self.resolve_type_inner(type_sym, span)
     }
 
     fn resolve_type_inner(&mut self, type_sym: Spur, span: Span) -> CompileResult<Type> {
-        // Own the name so the read-only branches below borrow this local rather
-        // than `self.interner`, leaving `self` free for the `&mut self` slice
-        // path (`try_resolve_slice_type` lazily registers a synthetic struct).
-        let type_name_owned = self.interner.resolve(&type_sym).to_string();
-        let type_name = type_name_owned.as_str();
+        let syntax = self.interner.resolve(&type_sym).to_string();
+        self.resolve_type_syntax_in_scope(&syntax, span.file_id, span, None)
+    }
 
-        // Check primitive types first (single shared table, RUE-155).
-        // Note: String is handled below via struct lookup (it's a builtin struct).
-        if let Some(ty) = Type::from_primitive_name(type_name) {
-            return Ok(ty);
-        }
+    fn resolve_type_syntax_in_scope(
+        &mut self,
+        syntax: &str,
+        root_file: FileId,
+        span: Span,
+        context: Option<&AnalysisContext>,
+    ) -> CompileResult<Type> {
+        let (type_substitutions, value_substitutions) = context
+            .map(|context| (&context.comptime_type_vars, &context.comptime_value_vars))
+            .unzip();
+        self.resolve_type_syntax_with_substitutions(
+            syntax,
+            root_file,
+            SemaTypeRootAuthority::KnownFile(root_file),
+            span,
+            type_substitutions,
+            value_substitutions,
+        )
+        .map_err(|failure| self.type_syntax_compile_error(failure, span))
+    }
 
-        // The `str` string type (ADR-0043): `[u8]` + UTF-8, represented as a
-        // first-class 2-word fat-pointer struct.
-        if type_name == "str" {
-            return self.get_or_create_str_struct(span);
-        }
+    #[cfg(test)]
+    pub(crate) fn resolve_type_syntax_for_testing(
+        &mut self,
+        syntax: &str,
+        span: Span,
+    ) -> CompileResult<Type> {
+        self.resolve_type_syntax_in_scope(syntax, span.file_id, span, None)
+    }
 
-        if let Some(struct_id) = self
-            .structs_by_file_name
-            .get(&(span.file_id, type_sym))
-            .copied()
-            .or_else(|| self.resolve_builtin_struct_name(type_sym))
-        {
-            // Privacy (E0460, RUE-183): an unqualified type reference must
-            // not reach a private struct defined in another directory —
-            // privacy is uniform across item kinds (spec 10.3:1, 10.3:7).
-            // Spans here are always the reference site (annotation,
-            // signature, struct literal), so `span.file_id` is the
-            // referencing file.
-            let struct_def = self
-                .type_pool
-                .struct_metadata(struct_id)
-                .expect("type lookup names a registered struct identity");
-            self.check_unqualified_visibility(
-                "struct",
-                type_name,
-                struct_def.file_id,
-                struct_def.is_pub,
-                span,
-            )?;
-            Ok(Type::new_struct(struct_id))
-        } else if let Some(enum_id) = self
-            .enums_by_file_name
-            .get(&(span.file_id, type_sym))
-            .copied()
-            .or_else(|| self.resolve_builtin_enum_name(type_sym))
-        {
-            // Privacy (E0460, RUE-185): same rule for enums — an unqualified
-            // type reference must not reach a private enum defined in another
-            // directory.
-            let enum_def = self
-                .type_pool
-                .enum_metadata(enum_id)
-                .expect("type lookup names a registered enum identity");
-            self.check_unqualified_visibility(
-                "enum",
-                type_name,
-                enum_def.file_id,
-                enum_def.is_pub,
-                span,
-            )?;
-            Ok(Type::new_enum(enum_id))
-        } else if let Some(alias_ty) = self.resolve_const_type_alias(type_sym, span)? {
-            Ok(alias_ty)
-        } else {
-            // Check for array type syntax: [T; N]
-            if let Some((element_type, len)) = parse_array_type_syntax(type_name) {
-                // Resolve the element type first
-                let element_sym = self.interner.get_or_intern(&element_type);
-                let element_ty = self.resolve_type(element_sym, span)?;
-                // Resolve the length (literal, or a `const` / `comptime` value
-                // parameter name) to a concrete value (RUE-16). No comptime
-                // value substitution is available on this path; named lengths
-                // resolve against file-level constants only.
-                let length = self.resolve_array_length(&len, span, None)?;
-                // Get or create the array type
-                let array_type_id = self.get_or_create_array_type(element_ty, length);
-                Ok(Type::new_array(array_type_id))
-            } else if let Some(pointee_type_str) = type_name.strip_prefix("ptr const ") {
-                // Pointer type syntax: ptr const T
-                let pointee_sym = self.interner.get_or_intern(pointee_type_str);
-                let pointee_ty = self.resolve_type(pointee_sym, span)?;
-                let ptr_type_id = self.type_pool.intern_ptr_const_from_type(pointee_ty);
-                Ok(Type::new_ptr_const(ptr_type_id))
-            } else if let Some(pointee_type_str) = type_name.strip_prefix("ptr mut ") {
-                // Pointer type syntax: ptr mut T
-                let pointee_sym = self.interner.get_or_intern(pointee_type_str);
-                let pointee_ty = self.resolve_type(pointee_sym, span)?;
-                let ptr_type_id = self.type_pool.intern_ptr_mut_from_type(pointee_ty);
-                Ok(Type::new_ptr_mut(ptr_type_id))
-            } else if let Some((call_name, arg_strs)) = parse_type_call_syntax(type_name) {
-                // Fixed-capacity string `Str(N)` (ADR-0043 Phase 5, RUE-326):
-                // the stable fixed string rung, `[u8; N]` + UTF-8. The capacity `N`
-                // is a literal (`Str(8)`, produced by `TypeExpr::StrFixed`) or a
-                // `const` name that resolved to a literal on the `TypeCall`
-                // path; either way it arrives here as the single argument
-                // string. It is reduced to a 2-word fat-pointer struct so it
-                // flows through the existing `str`/slice paths.
-                if call_name == "Str" {
-                    return self.resolve_str_fixed_type(&call_name, &arg_strs, span);
-                }
-                if call_name.contains('.') {
-                    return self
-                        .resolve_qualified_type_function_call(&call_name, &arg_strs, span, None);
-                }
-                // A type-function application written directly in type position
-                // (`Result(i32, i32)`; RUE-241). Reduce the comptime type call
-                // to its monomorphized concrete type. No analysis context is
-                // available on this context-free path, so arguments resolve
-                // context-free (a signature/return position collected before any
-                // body context exists).
-                self.resolve_type_function_call(&call_name, &arg_strs, span, None)
-            } else if let Some(result) = self.try_resolve_slice_type(type_name, span) {
-                // Slice type `[T]` (ADR-0043, RUE-322): gated + not-yet-runnable.
-                result
-            } else if type_name.contains('.') {
-                self.resolve_qualified_type_name(type_name, span)
-            } else if let Some(alias_ty) = self.resolve_const_type_alias(type_sym, span)? {
-                // A module-level `const Alias = SomeType;` used as a plain type
-                // name — e.g. the field type of a top-level named struct in its
-                // defining file (RUE-706). The struct/enum tables above don't
-                // include const aliases, so consult the declaration-bound
-                // constant namespace as well. The context-aware
-                // `resolve_type_with_ctx` already does this; this brings the
-                // context-free path to parity.
-                Ok(alias_ty)
-            } else {
-                Err(CompileError::new(
-                    ErrorKind::UnknownType(type_name.to_string()),
-                    span,
-                ))
+    fn resolve_type_syntax_with_substitutions(
+        &mut self,
+        syntax: &str,
+        root_file: FileId,
+        root_authority: SemaTypeRootAuthority,
+        span: Span,
+        type_substitutions: Option<&HashMap<Spur, Type>>,
+        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
+    ) -> Result<Type, crate::SemanticTypeSyntaxError<Infallible, CompileError, FileId, Spur>> {
+        let mut provider = SemaTypeSyntaxProvider {
+            sema: self,
+            span,
+            root_authority,
+            resolution_context: SemaTypeResolutionContext::Type,
+            type_substitutions,
+            value_substitutions,
+            observed_type_dependencies: Vec::new(),
+        };
+        let result = crate::resolve_semantic_type_syntax(&mut provider, &root_file, syntax);
+        provider.flush_observed_type_dependencies();
+        result
+    }
+
+    fn type_syntax_compile_error(
+        &self,
+        failure: crate::SemanticTypeSyntaxError<Infallible, CompileError, FileId, Spur>,
+        span: Span,
+    ) -> CompileError {
+        use crate::SemanticResolutionError as E;
+        use crate::SemanticTypeSyntaxFailure as F;
+
+        match failure {
+            E::ProviderAbort(error) => match error {},
+            E::ProviderFailure(error) => error,
+            E::Semantic(F::Path(failure)) => module_path_compile_error(failure, span),
+            E::Semantic(F::UnknownType { syntax }) => {
+                let display = parse_type_call_syntax(&syntax)
+                    .map(|(call, _)| format!("{call}(...)"))
+                    .unwrap_or_else(|| syntax.to_string());
+                CompileError::new(ErrorKind::UnknownType(display), span)
             }
+            E::Semantic(F::UnknownModuleMember { module, member, .. }) => CompileError::new(
+                ErrorKind::UnknownModuleMember {
+                    module_name: module.to_string(),
+                    member_name: member.to_string(),
+                },
+                span,
+            ),
+            E::Semantic(F::PrivateItem {
+                kind,
+                name,
+                defining_file,
+                ..
+            }) => private_qualified_item_error(kind.diagnostic_name(), &name, &defining_file, span),
+            E::Semantic(F::AmbiguousItem { name, .. }) => CompileError::new(
+                ErrorKind::InternalError(format!(
+                    "type resolution produced an ambiguous item for '{}'",
+                    name
+                )),
+                span,
+            ),
+            E::Semantic(F::NotTypeConstructor { constructor, .. }) => CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "'{}' is not a type: only a function returning `type` (a type constructor) can be applied as a type here",
+                        constructor
+                    ),
+                },
+                span,
+            ),
+            E::Semantic(F::TypeWhereValueExpected { constructor, .. }) => CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "'{}' returns `type` and cannot be used where a compile-time value is required",
+                        constructor
+                    ),
+                },
+                span,
+            ),
+            E::Semantic(F::InvalidConstructorArity {
+                constructor,
+                expected,
+                found,
+                ..
+            })
+            | E::Semantic(F::RuntimeConstructorParameter {
+                constructor,
+                expected,
+                found,
+                ..
+            }) => CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "type constructor '{}' expects {} comptime type argument(s), but {} were provided",
+                        constructor, expected, found
+                    ),
+                },
+                span,
+            ),
+            E::Semantic(F::ValueWhereTypeExpected {
+                constructor,
+                argument,
+                parameter,
+                ..
+            }) => CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "argument '{}' of type constructor '{}' must be a type (this parameter is `comptime {}: type`)",
+                        argument,
+                        constructor,
+                        self.interner.resolve(&parameter)
+                    ),
+                },
+                span,
+            ),
+            E::ComptimeCallTypeArgument { error, .. } => {
+                self.type_syntax_compile_error(*error, span)
+            }
+            E::Semantic(F::ConstructorDidNotReduce { constructor, .. }) => CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "the type constructor '{}' did not reduce to a concrete type at compile time",
+                        constructor
+                    ),
+                },
+                span,
+            ),
+        }
+    }
+
+    fn deferred_value_syntax_compile_error(
+        &self,
+        failure: crate::SemanticTypeSyntaxError<Infallible, CompileError, FileId, Spur>,
+        span: Span,
+    ) -> CompileError {
+        use crate::SemanticResolutionError as E;
+        use crate::SemanticTypeSyntaxFailure as F;
+
+        match failure {
+            E::Semantic(F::InvalidConstructorArity {
+                constructor,
+                expected,
+                found,
+                ..
+            }) => CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "compile-time function '{}' expects {} comptime argument(s), but {} were provided",
+                        constructor, expected, found
+                    ),
+                },
+                span,
+            ),
+            E::Semantic(F::RuntimeConstructorParameter { constructor, .. }) => CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "call '{}' is not a compile-time value; all of its parameters must be comptime",
+                        constructor
+                    ),
+                },
+                span,
+            ),
+            failure => self.type_syntax_compile_error(failure, span),
         }
     }
 
@@ -780,21 +2221,24 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         else {
             return;
         };
-        self.declaration_type_dependencies
-            .push(super::DeclarationTypeDependencyEvent {
-                source_token: self
-                    .body_dependency_observer
-                    .as_ref()
-                    .and_then(super::AnalyzedBodyOwnerEvent::token),
-                source_file: source_file.index(),
-                source_name,
-                source_owner_name,
-                source_kind,
-                dependency_kind,
-                target_file: target_file.index(),
-                target_name,
-                target_kind,
-            });
+        let event = super::DeclarationTypeDependencyEvent {
+            source_token: self
+                .body_dependency_observer
+                .as_ref()
+                .and_then(super::AnalyzedBodyOwnerEvent::token),
+            source_file: source_file.index(),
+            source_name,
+            source_owner_name,
+            source_kind,
+            dependency_kind,
+            target_file: target_file.index(),
+            target_name,
+            target_kind,
+        };
+        if self.declaration_type_dependencies.contains(&event) {
+            return;
+        }
+        self.declaration_type_dependencies.push(event);
         self.body_analysis_work.declaration_type_dependency_events += 1;
     }
 
@@ -832,63 +2276,8 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         span: Span,
         ctx: &AnalysisContext,
     ) -> CompileResult<Type> {
-        // A local comptime type variable (`let P = Point();`) or a substituted
-        // comptime type parameter is a type value already — resolve it directly.
-        if let Some(&ty) = ctx.comptime_type_vars.get(&type_sym) {
-            return Ok(ty);
-        }
-        let type_name = self.interner.resolve(&type_sym);
-        if let Some((element_type, len)) = parse_array_type_syntax(type_name) {
-            let element_sym = self.interner.get_or_intern(&element_type);
-            let element_ty = self.resolve_type_with_ctx(element_sym, span, ctx)?;
-            let length = self.resolve_array_length(&len, span, Some(&ctx.comptime_value_vars))?;
-            let array_type_id = self.get_or_create_array_type(element_ty, length);
-            Ok(Type::new_array(array_type_id))
-        } else if let Some(pointee) = type_name.strip_prefix("ptr const ") {
-            let pointee_sym = self.interner.get_or_intern(pointee);
-            let pointee_ty = self.resolve_type_with_ctx(pointee_sym, span, ctx)?;
-            let ptr_type_id = self.type_pool.intern_ptr_const_from_type(pointee_ty);
-            Ok(Type::new_ptr_const(ptr_type_id))
-        } else if let Some(pointee) = type_name.strip_prefix("ptr mut ") {
-            let pointee_sym = self.interner.get_or_intern(pointee);
-            let pointee_ty = self.resolve_type_with_ctx(pointee_sym, span, ctx)?;
-            let ptr_type_id = self.type_pool.intern_ptr_mut_from_type(pointee_ty);
-            Ok(Type::new_ptr_mut(ptr_type_id))
-        } else if let Some((call_name, arg_strs)) = parse_type_call_syntax(type_name) {
-            // Fixed-capacity string `Str(N)` (ADR-0043 Phase 5, RUE-326): the
-            // context-aware annotation path (`let s: Str(8)`). Intercepted here,
-            // as in the context-free `resolve_type`, before the general
-            // type-function reduction so `Str` is not looked up as a `-> type`
-            // constructor.
-            if call_name == "Str" {
-                return self.resolve_str_fixed_type(&call_name, &arg_strs, span);
-            }
-            if call_name.contains('.') {
-                return self.resolve_qualified_type_function_call(
-                    &call_name,
-                    &arg_strs,
-                    span,
-                    Some(ctx),
-                );
-            }
-            // A type-function application in an annotation position whose
-            // arguments may name enclosing comptime type parameters or local
-            // comptime type variables (`let x: Option(T)` / `let x: Option(P)`).
-            // Thread `ctx` so each argument resolves through this same
-            // context-aware resolver rather than context-free — otherwise the
-            // inner `T`/`P` would miss and yield a spurious E0204 (RUE-272).
-            self.resolve_type_function_call(&call_name, &arg_strs, span, Some(ctx))
-        } else {
-            // Non-composite leaf: primitive / struct / enum / unknown. Defer to
-            // the context-free resolver for identical resolution, privacy
-            // checks, and the E0204 on a genuinely-unknown name.
-            self.resolve_type(type_sym, span)
-        }
-    }
-
-    fn resolve_qualified_type_name(&mut self, path: &str, span: Span) -> CompileResult<Type> {
-        let segments: Vec<&str> = path.split('.').collect();
-        self.resolve_qualified_type_name_in_file(span.file_id, &segments, span)
+        let syntax = self.interner.resolve(&type_sym).to_string();
+        self.resolve_type_syntax_in_scope(&syntax, span.file_id, span, Some(ctx))
     }
 
     /// Like [`Self::resolve_qualified_type_name`], but with the file whose
@@ -903,347 +2292,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         segments: &[&str],
         span: Span,
     ) -> CompileResult<Type> {
-        if segments.len() < 2 || segments.iter().any(|s| s.is_empty()) {
-            return Err(CompileError::new(
-                ErrorKind::UnknownType(segments.join(".")),
-                span,
-            ));
-        }
-        let (module_id, module_file_id, _module_file_path) = self
-            .resolve_type_module_prefix_in_file(root_file, &segments[..segments.len() - 1], span)?;
-        let member = segments[segments.len() - 1];
-        let member_sym = self.interner.get_or_intern(member);
-
-        if let Some(struct_id) = module_file_id.and_then(|file_id| {
-            self.structs_by_file_name
-                .get(&(file_id, member_sym))
-                .copied()
-        }) {
-            let struct_def = self
-                .type_pool
-                .struct_metadata(struct_id)
-                .expect("qualified type lookup names a registered struct identity");
-            self.check_unqualified_visibility(
-                "struct",
-                member,
-                struct_def.file_id,
-                struct_def.is_pub,
-                span,
-            )?;
-            return Ok(Type::new_struct(struct_id));
-        }
-        if let Some(enum_id) = module_file_id
-            .and_then(|file_id| self.enums_by_file_name.get(&(file_id, member_sym)).copied())
-        {
-            let enum_def = self
-                .type_pool
-                .enum_metadata(enum_id)
-                .expect("qualified type lookup names a registered enum identity");
-            self.check_unqualified_visibility(
-                "enum",
-                member,
-                enum_def.file_id,
-                enum_def.is_pub,
-                span,
-            )?;
-            return Ok(Type::new_enum(enum_id));
-        }
-        // A type-valued constant member (`module.Alias` where the module has
-        // `pub const Alias = SomeType`). During declaration binding a member
-        // referenced from a type position may not be resolved yet, so resolve
-        // its indexed declaration in the MODULE's file
-        // (`resolve_const_type_alias`); without this the member alias
-        // resolved in value positions but was E0707 in field/param/return
-        // positions (RUE-630).
-        if let Some(file_id) = module_file_id
-            && self.declaration_binding_active
-            && self
-                .constants_by_file_name
-                .get(&(file_id, member_sym))
-                .is_none()
-        {
-            self.try_resolve_indexed_const_during_binding(member_sym, file_id)?;
-        }
-        if let Some(info) = module_file_id
-            .and_then(|file_id| self.constants_by_file_name.get(&(file_id, member_sym)))
-            && let ConstValue::Type(alias_ty) = info.value
-        {
-            self.check_unqualified_visibility(
-                "constant",
-                member,
-                info.span.file_id,
-                info.is_pub,
-                span,
-            )?;
-            return Ok(alias_ty);
-        }
-
-        let module_def = self.module_registry.get_def(module_id);
-        Err(CompileError::new(
-            ErrorKind::UnknownModuleMember {
-                module_name: module_def.import_path.clone(),
-                member_name: member.to_string(),
-            },
-            span,
-        ))
-    }
-
-    fn resolve_qualified_type_function_call(
-        &mut self,
-        call_path: &str,
-        arg_strs: &[String],
-        span: Span,
-        ctx: Option<&AnalysisContext>,
-    ) -> CompileResult<Type> {
-        let declaration_type_observer = self.declaration_type_observer.clone();
-        let segments: Vec<&str> = call_path.split('.').collect();
-        if segments.len() < 2 || segments.iter().any(|s| s.is_empty()) {
-            return Err(CompileError::new(
-                ErrorKind::UnknownType(format!("{}(...)", call_path)),
-                span,
-            ));
-        }
-        let (_module_id, module_file_id, _module_file_path) =
-            self.resolve_type_module_prefix(&segments[..segments.len() - 1], span)?;
-        let member = segments[segments.len() - 1];
-        let member_sym = self.interner.get_or_intern(member);
-        if self.declaration_binding_active
-            && let Some(module_file_id) = module_file_id
-        {
-            self.collect_free_function_signature_during_binding(member_sym, Some(module_file_id))?;
-        }
-        let Some(function_key) = module_file_id
-            .and_then(|file_id| self.resolve_function_name_local(member_sym, file_id))
-        else {
-            return Err(CompileError::new(
-                ErrorKind::UnknownType(format!("{}(...)", call_path)),
-                span,
-            ));
-        };
-
-        let Some(fn_info) = self
-            .functions
-            .get(&function_key)
-            .copied()
-            .filter(|info| module_file_id == Some(info.file_id))
-        else {
-            return Err(CompileError::new(
-                ErrorKind::UnknownType(format!("{}(...)", call_path)),
-                span,
-            ));
-        };
-        self.declaration_type_observer = declaration_type_observer;
-        self.record_declaration_type_call_head(function_key, fn_info);
-        self.check_unqualified_visibility(
-            "function",
-            member,
-            fn_info.file_id,
-            fn_info.is_pub,
-            span,
-        )?;
-        if !self.function_returns_type(&fn_info) {
-            return Err(CompileError::new(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: format!(
-                        "'{}' is not a type: only a function returning `type` (a type \
-                         constructor) can be applied as a type here",
-                        call_path
-                    ),
-                },
-                span,
-            ));
-        }
-
-        let params = fn_info.params;
-        let param_names = self.param_arena.names(params).to_vec();
-        let param_comptime = self.param_arena.comptime(params).to_vec();
-        if arg_strs.len() != param_names.len()
-            || !(param_names.is_empty() || param_comptime.iter().all(|&c| c))
-        {
-            return Err(CompileError::new(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: format!(
-                        "type constructor '{}' expects {} comptime type argument(s), \
-                         but {} were provided",
-                        call_path,
-                        param_names.len(),
-                        arg_strs.len()
-                    ),
-                },
-                span,
-            ));
-        }
-
-        // Kind-aware binding: type args resolve as types, value args as
-        // comptime constants (RUE-552).
-        let (callee_types, callee_values) =
-            self.bind_type_ctor_args(call_path, fn_info, arg_strs, span, ctx)?;
-        match self
-            .reduce_type_ctor_body(function_key, &callee_types, &callee_values)
-            .map_err(|e| Self::label_ctor_instantiation_site(e, span))?
-        {
-            Some(ConstValue::Type(t)) => Ok(t),
-            _ => Err(CompileError::new(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: format!(
-                        "the type constructor '{}' did not reduce to a concrete type \
-                         at compile time",
-                        call_path
-                    ),
-                },
-                span,
-            )),
-        }
-    }
-
-    /// Resolve a module-qualified type-constructor call (`m.Mk(T)`,
-    /// `std.option.Option(T)`) appearing in a *comptime type position* during
-    /// body reduction, under the current comptime substitutions (RUE-511).
-    ///
-    /// This is the comptime-evaluation analogue of
-    /// [`resolve_qualified_type_function_call`]: same module-prefix walk,
-    /// membership check, and visibility rule, but arguments resolve through the
-    /// enclosing `type_subst`/`value_subst` (so `T` inside the constructor binds
-    /// to the concrete element type) and every failure yields `None` rather than
-    /// a diagnostic — the caller reports the comptime failure (E1200).
-    ///
-    /// Member resolution uses the receiver module's defining file. A default
-    /// span carries no file context for the prefix walk, so it is treated as
-    /// non-evaluable.
-    ///
-    /// [`resolve_qualified_type_function_call`]:
-    /// Sema::resolve_qualified_type_function_call
-    /// Comptime-path analogue of [`Self::resolve_type_ctor_value_arg`]
-    /// (RUE-552): resolve one comptime VALUE argument of a type-constructor
-    /// application under the current `value_subst` — an integer/bool literal,
-    /// an enclosing comptime value parameter (`Buffer(M)` inside another
-    /// constructor body), or a file-level constant. `None` (no diagnostics on
-    /// this path) makes the enclosing type non-evaluable; the caller reports
-    /// the comptime failure.
-    fn resolve_comptime_type_ctor_value_arg(
-        &mut self,
-        arg: &str,
-        type_subst: &HashMap<Spur, Type>,
-        value_subst: &HashMap<Spur, ConstValue>,
-        span: Span,
-    ) -> Option<ConstValue> {
-        let text = arg.trim();
-        if let Ok(n) = text.parse::<i128>() {
-            return Some(ConstValue::Integer(n));
-        }
-        if text == "true" {
-            return Some(ConstValue::Bool(true));
-        }
-        if text == "false" {
-            return Some(ConstValue::Bool(false));
-        }
-        let sym = self.interner.get_or_intern(text);
-        if let Some(v) = value_subst.get(&sym) {
-            return Some(*v);
-        }
-        // A source `comptime T: type` parameter is itself a compile-time
-        // value when the callee's dependent value parameter has concretely
-        // resolved to `type` (`Witness(type, T)`). Keep source-kind routing
-        // authoritative, but expose that value through the same binder once
-        // the enclosing type substitution is concrete.
-        if let Some(ty) = type_subst.get(&sym) {
-            return Some(ConstValue::Type(*ty));
-        }
-        (span != Span::default())
-            .then(|| self.resolve_const_info_in_file(sym, span.file_id))
-            .flatten()
-            .map(|info| info.value)
-    }
-
-    fn resolve_qualified_type_call_for_comptime(
-        &mut self,
-        call_path: &str,
-        arg_strs: &[String],
-        type_subst: &HashMap<Spur, Type>,
-        value_subst: &HashMap<Spur, ConstValue>,
-        span: Span,
-    ) -> Option<Type> {
-        if span == Span::default() {
-            return None;
-        }
-        let segments: Vec<&str> = call_path.split('.').collect();
-        if segments.len() < 2 || segments.iter().any(|s| s.is_empty()) {
-            return None;
-        }
-        let (_module_id, module_file_id, _module_file_path) = self
-            .resolve_type_module_prefix(&segments[..segments.len() - 1], span)
-            .ok()?;
-        let module_file_id = module_file_id?;
-        let member = segments[segments.len() - 1];
-        let member_sym = self.interner.get_or_intern(member);
-        if self.declaration_binding_active {
-            self.collect_free_function_signature_during_binding(member_sym, Some(module_file_id))
-                .ok()?;
-        }
-        let function_key = self.resolve_function_name_local(member_sym, module_file_id)?;
-        // Membership (RUE-564 hole guard) + `-> type` + visibility.
-        let fn_info = self
-            .functions
-            .get(&function_key)
-            .copied()
-            .filter(|info| info.file_id == module_file_id)?;
-        if !self.function_returns_type(&fn_info) {
-            return None;
-        }
-        self.check_unqualified_visibility(
-            "function",
-            member,
-            fn_info.file_id,
-            fn_info.is_pub,
-            span,
-        )
-        .ok()?;
-
-        let params = fn_info.params;
-        let param_names = self.param_arena.names(params).to_vec();
-        let param_comptime = self.param_arena.comptime(params).to_vec();
-        if arg_strs.len() != param_names.len()
-            || !(param_names.is_empty() || param_comptime.iter().all(|&c| c))
-        {
-            return None;
-        }
-        // Kind-aware binding (RUE-552): type parameters take type arguments;
-        // comptime VALUE parameters take value arguments resolved under the
-        // enclosing value substitution.
-        let param_comptime_type = self.comptime_type_param_flags(&fn_info);
-        let mut callee_types: HashMap<Spur, Type> = HashMap::new();
-        let mut callee_values: HashMap<Spur, ConstValue> = HashMap::new();
-        for (i, arg) in arg_strs.iter().enumerate() {
-            if param_comptime_type[i] {
-                let arg_sym = self.interner.get_or_intern(arg);
-                let arg_ty = self.resolve_type_for_comptime_with_subst_and_values_at_span(
-                    arg_sym,
-                    type_subst,
-                    value_subst,
-                    span,
-                )?;
-                callee_types.insert(param_names[i], arg_ty);
-            } else {
-                let val =
-                    self.resolve_comptime_type_ctor_value_arg(arg, type_subst, value_subst, span)?;
-                callee_values.insert(param_names[i], val);
-            }
-        }
-        match self
-            .reduce_type_ctor_body(function_key, &callee_types, &callee_values)
-            .ok()?
-        {
-            Some(ConstValue::Type(t)) => Some(t),
-            _ => None,
-        }
-    }
-
-    fn resolve_type_module_prefix(
-        &mut self,
-        segments: &[&str],
-        span: Span,
-    ) -> CompileResult<(crate::types::ModuleId, Option<FileId>, String)> {
-        self.resolve_type_module_prefix_in_file(span.file_id, segments, span)
+        self.resolve_type_syntax_in_scope(&segments.join("."), root_file, span, None)
     }
 
     /// Like [`Self::resolve_type_module_prefix`], but with the file whose
@@ -1257,60 +2306,22 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         segments: &[&str],
         span: Span,
     ) -> CompileResult<(crate::types::ModuleId, Option<FileId>, String)> {
-        let Some((first, rest)) = segments.split_first() else {
-            return Err(CompileError::new(
-                ErrorKind::UnknownType(String::new()),
+        let resolved = crate::resolve_semantic_module_path(
+            &mut SemaTypeSyntaxProvider {
+                sema: self,
                 span,
-            ));
-        };
-        let first_sym = self.interner.get_or_intern(first);
-        let Some(binding) = self.resolve_module_binding_in_file(root_file, first_sym)? else {
-            return Err(CompileError::new(
-                ErrorKind::UnknownType((*first).to_string()),
-                span,
-            ));
-        };
-        let mut module_id = binding
-            .ty
-            .as_module()
-            .expect("module binding holds a module type");
+                root_authority: SemaTypeRootAuthority::KnownFile(root_file),
+                resolution_context: SemaTypeResolutionContext::Type,
+                type_substitutions: None,
+                value_substitutions: None,
+                observed_type_dependencies: Vec::new(),
+            },
+            &root_file,
+            segments,
+        )
+        .map_err(|failure| module_path_resolution_compile_error(failure, span))?;
 
-        for segment in rest {
-            let module_def = self.module_registry.get_def(module_id);
-            let module_file_id = Some(module_def.file_id);
-            let segment_sym = self.interner.get_or_intern(segment);
-            let Some(module_file_id) = module_file_id else {
-                return Err(CompileError::new(
-                    ErrorKind::UnknownModuleMember {
-                        module_name: module_def.import_path.clone(),
-                        member_name: (*segment).to_string(),
-                    },
-                    span,
-                ));
-            };
-            let Some(binding) = self.resolve_module_binding_in_file(module_file_id, segment_sym)?
-            else {
-                return Err(CompileError::new(
-                    ErrorKind::UnknownModuleMember {
-                        module_name: module_def.import_path.clone(),
-                        member_name: (*segment).to_string(),
-                    },
-                    span,
-                ));
-            };
-            let (binding_is_pub, binding_ty) = (binding.is_pub, binding.ty);
-            self.check_unqualified_visibility(
-                "constant",
-                segment,
-                module_file_id,
-                binding_is_pub,
-                span,
-            )?;
-            module_id = binding_ty
-                .as_module()
-                .expect("module binding holds a module type");
-        }
-
+        let module_id = resolved.module;
         let module_def = self.module_registry.get_def(module_id);
         let module_file_id = Some(module_def.file_id);
         let module_file_path = module_file_id
@@ -1342,236 +2353,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
 
         self.try_resolve_indexed_const_during_binding(name, file_id)?;
         Ok(self.module_bindings.get(&(file_id, name)).cloned())
-    }
-
-    /// Resolve a type-function application written directly in type position
-    /// (`Result(i32, i32)`; RUE-241) to its monomorphized concrete type.
-    ///
-    /// The callee must be a comptime `-> type` constructor already collected
-    /// into the function table (constructors are conventionally declared before
-    /// use, the same order the named-const form and value-position use require).
-    /// Each argument string is resolved as a type (so nested calls like
-    /// `Result(Option(i32), i32)` compose), then the constructor body is
-    /// reduced under that substitution — yielding the identical type a
-    /// value-position call (`let R = Result(i32, i32)`) or the named-const form
-    /// (`const R: type = Result(i32, i32)`) produces.
-    ///
-    /// A call to a callee that is not a `-> type` function (a value-returning
-    /// function, `fn f() -> some_value_fn()`), an arity mismatch, or a body
-    /// that does not reduce to a type is reported cleanly as E1200 (an unknown
-    /// callee as E0204), never a crash.
-    ///
-    /// When `ctx` is `Some`, each argument is resolved through
-    /// [`resolve_type_with_ctx`] so an argument naming an enclosing comptime
-    /// type parameter or a local comptime type variable (`Option(T)` inside a
-    /// generic function, `let x: Option(P)` where `P` is a local type alias)
-    /// resolves from the analysis context rather than being reported as an
-    /// unknown type (RUE-272). When `ctx` is `None` (a signature/return
-    /// position, collected before any body context exists) arguments resolve
-    /// context-free, exactly as before.
-    ///
-    /// [`resolve_type_with_ctx`]: Sema::resolve_type_with_ctx
-    /// Bind a type-constructor application's canonical argument strings to
-    /// the callee's comptime parameters (RUE-552). A `comptime T: type`
-    /// parameter takes a TYPE argument, resolved as a type; a comptime VALUE
-    /// parameter (`comptime N: i32`) takes an integer/bool literal, an
-    /// in-scope comptime value parameter, or a file-level constant — so
-    /// `Buffer(2)`, `Buffer(K)`, and `Matrix(i32, 3)` all apply directly in
-    /// type position (spec 4.14:22-23).
-    fn bind_type_ctor_args(
-        &mut self,
-        call_display: &str,
-        function: FunctionInfo,
-        arg_strs: &[String],
-        span: Span,
-        ctx: Option<&AnalysisContext>,
-    ) -> CompileResult<(HashMap<Spur, Type>, HashMap<Spur, ConstValue>)> {
-        let params = function.params;
-        let param_names = self.param_arena.names(params).to_vec();
-        let param_comptime_type = self.comptime_type_param_flags(&function);
-        let mut callee_types: HashMap<Spur, Type> = HashMap::new();
-        let mut callee_values: HashMap<Spur, ConstValue> = HashMap::new();
-        for (i, arg) in arg_strs.iter().enumerate() {
-            if param_comptime_type[i] {
-                // A value where a type is expected gets a targeted message
-                // instead of decaying to "unknown type '2'".
-                if arg.trim().parse::<i128>().is_ok() {
-                    return Err(CompileError::new(
-                        ErrorKind::ComptimeEvaluationFailed {
-                            reason: format!(
-                                "argument '{}' of type constructor '{}' must be a type (this parameter is `comptime {}: type`)",
-                                arg,
-                                call_display,
-                                self.interner.resolve(&param_names[i])
-                            ),
-                        },
-                        span,
-                    ));
-                }
-                let arg_sym = self.interner.get_or_intern(arg);
-                let arg_ty = match ctx {
-                    Some(ctx) => self.resolve_type_with_ctx(arg_sym, span, ctx)?,
-                    None => self.resolve_type(arg_sym, span)?,
-                };
-                callee_types.insert(param_names[i], arg_ty);
-            } else {
-                let val = self.resolve_type_ctor_value_arg(call_display, arg, span, ctx)?;
-                callee_values.insert(param_names[i], val);
-            }
-        }
-        Ok((callee_types, callee_values))
-    }
-
-    /// Resolve one comptime VALUE argument of a type-constructor application
-    /// in type position (RUE-552) from its canonical string: an integer
-    /// literal (`2`, `-3`), a bool literal, an in-scope comptime value
-    /// parameter (`Buffer(M)` inside another constructor body), or a
-    /// file-level constant name. The comptime evaluator range-checks the
-    /// value against the parameter's declared width during reduction, the
-    /// same as a value-position application.
-    fn resolve_type_ctor_value_arg(
-        &mut self,
-        call_display: &str,
-        arg: &str,
-        span: Span,
-        ctx: Option<&AnalysisContext>,
-    ) -> CompileResult<ConstValue> {
-        let text = arg.trim();
-        if let Ok(n) = text.parse::<i128>() {
-            return Ok(ConstValue::Integer(n));
-        }
-        if text == "true" {
-            return Ok(ConstValue::Bool(true));
-        }
-        if text == "false" {
-            return Ok(ConstValue::Bool(false));
-        }
-        let sym = self.interner.get_or_intern(text);
-        if let Some(ctx) = ctx
-            && let Some(v) = ctx.comptime_value_vars.get(&sym)
-        {
-            return Ok(*v);
-        }
-        if let Some(info) = self.resolve_const_info_in_file(sym, span.file_id) {
-            return Ok(info.value);
-        }
-        Err(CompileError::new(
-            ErrorKind::ComptimeEvaluationFailed {
-                reason: format!(
-                    "argument '{}' of type constructor '{}' must be a compile-time known value (an integer or bool literal, a comptime parameter, or a constant)",
-                    text, call_display
-                ),
-            },
-            span,
-        ))
-    }
-
-    fn resolve_type_function_call(
-        &mut self,
-        call_name: &str,
-        arg_strs: &[String],
-        span: Span,
-        ctx: Option<&AnalysisContext>,
-    ) -> CompileResult<Type> {
-        let declaration_type_observer = self.declaration_type_observer.clone();
-        let name_sym = self.interner.get_or_intern(call_name);
-        // During declaration binding, the constructor may not be collected yet: struct-field and
-        // enum-payload types, const initializers, and earlier function
-        // signatures can resolve before the main declaration sweep reaches
-        // the callee's `FnDecl`. Collect the same-file declaration on demand
-        // so `struct S { v: Vec(i32) }` and signatures naming a later-collected
-        // `Vec(i32)` resolve consistently (RUE-603), mirroring the
-        // declaration-time indexed const-alias resolution path.
-        let mut name_key = self.resolve_function_name_local(name_sym, span.file_id);
-        if name_key.is_none() && self.declaration_binding_active {
-            self.collect_free_function_signature_during_binding(name_sym, Some(span.file_id))?;
-            name_key = self.resolve_function_name_local(name_sym, span.file_id);
-        }
-        let Some(name_key) = name_key else {
-            return Err(CompileError::new(
-                ErrorKind::UnknownType(format!("{}(...)", call_name)),
-                span,
-            ));
-        };
-
-        // The callee must be a known `-> type` constructor.
-        let Some(fn_info) = self.functions.get(&name_key).copied() else {
-            return Err(CompileError::new(
-                ErrorKind::UnknownType(format!("{}(...)", call_name)),
-                span,
-            ));
-        };
-        self.declaration_type_observer = declaration_type_observer;
-        self.record_declaration_type_call_head(name_key, fn_info);
-        let is_type_ctor = self.function_returns_type(&fn_info);
-        let params = fn_info.params;
-        let ctor_file_id = fn_info.file_id;
-        let ctor_is_pub = fn_info.is_pub;
-
-        // Privacy (E0460, RUE-283): applying a type constructor in type-
-        // annotation position (`let x: Secret(i32)`, a param/return type) is a
-        // reference to that function and must obey the same uniform-privacy
-        // rule the value/call path enforces (spec 10.3:7) — a non-`pub`
-        // constructor defined in another directory is not usable here. Without
-        // this, a private `-> type` constructor leaked across directories via a
-        // type annotation (a privacy-soundness hole).
-        self.check_unqualified_visibility("function", call_name, ctor_file_id, ctor_is_pub, span)?;
-        if !is_type_ctor {
-            return Err(CompileError::new(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: format!(
-                        "'{}' is not a type: only a function returning `type` (a type \
-                         constructor) can be applied as a type here",
-                        call_name
-                    ),
-                },
-                span,
-            ));
-        }
-
-        let param_names = self.param_arena.names(params).to_vec();
-        let param_comptime = self.param_arena.comptime(params).to_vec();
-        if arg_strs.len() != param_names.len()
-            || !(param_names.is_empty() || param_comptime.iter().all(|&c| c))
-        {
-            return Err(CompileError::new(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: format!(
-                        "type constructor '{}' expects {} comptime type argument(s), \
-                         but {} were provided",
-                        call_name,
-                        param_names.len(),
-                        arg_strs.len()
-                    ),
-                },
-                span,
-            ));
-        }
-
-        // Bind each argument to its parameter by the parameter's declared
-        // kind: type arguments resolve as types, value arguments as comptime
-        // constants (RUE-552).
-        let (callee_types, callee_values) =
-            self.bind_type_ctor_args(call_name, fn_info, arg_strs, span, ctx)?;
-
-        // Reduce the constructor body under the substitution. Shares the exact
-        // reduction path (and E1200 recursion guard) with value-position calls.
-        match self
-            .reduce_type_ctor_body(name_key, &callee_types, &callee_values)
-            .map_err(|e| Self::label_ctor_instantiation_site(e, span))?
-        {
-            Some(ConstValue::Type(t)) => Ok(t),
-            _ => Err(CompileError::new(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: format!(
-                        "the type constructor '{}' did not reduce to a concrete type \
-                         at compile time",
-                        call_name
-                    ),
-                },
-                span,
-            )),
-        }
     }
 
     /// Return one flag per source parameter identifying declarations of the
@@ -1626,28 +2407,8 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             )
         })?;
         let type_sym = param.ty;
-        let param_name = param.name;
 
-        // Speculative comptime callers intentionally collapse errors to
-        // `None`; a concrete specialized signature is authoritative. Validate
-        // it first so malformed source types keep their source diagnostics.
-        self.validate_substituted_signature_type(type_sym, type_subst, value_subst, function.span)?;
-
-        self.resolve_type_for_comptime_with_subst_and_values_at_span(
-            type_sym,
-            type_subst,
-            value_subst,
-            function.span,
-        )
-        .ok_or_else(|| {
-            CompileError::new(
-                ErrorKind::InternalError(format!(
-                    "generic parameter '{}' still has an unresolved runtime type after specialization",
-                    self.interner.resolve(&param_name)
-                )),
-                function.span,
-            )
-        })
+        self.resolve_substituted_signature_type(type_sym, type_subst, value_subst, function.span)
     }
 
     /// Resolve the return half of the same specialized signature contract.
@@ -1663,224 +2424,31 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         if function.return_type != Type::COMPTIME_TYPE {
             return Ok(function.return_type);
         }
-        self.validate_substituted_signature_type(
-            function.return_type_sym,
-            type_subst,
-            value_subst,
-            function.span,
-        )?;
-        self.resolve_type_for_comptime_with_subst_and_values_at_span(
+        self.resolve_substituted_signature_type(
             function.return_type_sym,
             type_subst,
             value_subst,
             function.span,
         )
-        .ok_or_else(|| {
-            CompileError::new(
-                ErrorKind::InternalError(
-                    "generic return type remained unresolved after specialization".to_string(),
-                ),
-                function.span,
-            )
-        })
     }
 
-    fn validate_substituted_signature_type(
+    fn resolve_substituted_signature_type(
         &mut self,
         type_sym: Spur,
         type_subst: &HashMap<Spur, Type>,
         value_subst: &HashMap<Spur, ConstValue>,
         span: Span,
-    ) -> CompileResult<()> {
-        if type_subst.contains_key(&type_sym) {
-            return Ok(());
-        }
-
+    ) -> CompileResult<Type> {
         let type_name = self.interner.resolve(&type_sym).to_string();
-        if let Some((element, len)) = parse_array_type_syntax(&type_name) {
-            let element_sym = self.interner.get_or_intern(&element);
-            self.validate_substituted_signature_type(element_sym, type_subst, value_subst, span)?;
-            self.resolve_array_length(&len, span, Some(value_subst))?;
-        } else if let Some(pointee) = type_name
-            .strip_prefix("ptr const ")
-            .or_else(|| type_name.strip_prefix("ptr mut "))
-        {
-            let pointee_sym = self.interner.get_or_intern(pointee);
-            self.validate_substituted_signature_type(pointee_sym, type_subst, value_subst, span)?;
-        } else if let Some((call_name, arg_strs)) = parse_type_call_syntax(&type_name) {
-            self.resolve_type_call_for_comptime_with_subst_diagnostic(
-                &call_name,
-                &arg_strs,
-                type_subst,
-                value_subst,
-                span,
-            )?;
-        } else {
-            // Resolve concrete leaves in the declaration's file. This keeps
-            // same-named module-local types isolated inside deferred arrays
-            // and pointers.
-            self.resolve_type(type_sym, span)?;
-        }
-        Ok(())
-    }
-
-    /// Resolve a type-constructor application while preserving diagnostics.
-    /// The general comptime resolver is intentionally Option-based because
-    /// many callers probe whether an expression is reducible. Once a generic
-    /// signature is concrete, malformed arity, kind, or constructor-body
-    /// failures are authoritative source errors.
-    fn resolve_type_call_for_comptime_with_subst_diagnostic(
-        &mut self,
-        call_name: &str,
-        arg_strs: &[String],
-        type_subst: &HashMap<Spur, Type>,
-        value_subst: &HashMap<Spur, ConstValue>,
-        span: Span,
-    ) -> CompileResult<Option<Type>> {
-        if call_name == "Str" {
-            return self
-                .resolve_str_fixed_type(call_name, arg_strs, span)
-                .map(Some);
-        }
-        if call_name.contains('.') {
-            return Ok(self.resolve_qualified_type_call_for_comptime(
-                call_name,
-                arg_strs,
-                type_subst,
-                value_subst,
-                span,
-            ));
-        }
-
-        let name_sym = self.interner.get_or_intern(call_name);
-        let function_key = if span == Span::default() {
-            Some(name_sym)
-        } else {
-            let mut key = self.resolve_function_name_local(name_sym, span.file_id);
-            if key.is_none() && self.declaration_binding_active {
-                self.collect_free_function_signature_during_binding(name_sym, Some(span.file_id))?;
-                key = self.resolve_function_name_local(name_sym, span.file_id);
-            }
-            key
-        }
-        .ok_or_else(|| {
-            CompileError::new(
-                ErrorKind::UnknownType(format!("{}({})", call_name, arg_strs.join(", "))),
-                span,
-            )
-        })?;
-        let fn_info = self.functions.get(&function_key).copied().ok_or_else(|| {
-            CompileError::new(
-                ErrorKind::UnknownType(format!("{}({})", call_name, arg_strs.join(", "))),
-                span,
-            )
-        })?;
-        self.check_unqualified_visibility(
-            "function",
-            call_name,
-            fn_info.file_id,
-            fn_info.is_pub,
+        self.resolve_type_syntax_with_substitutions(
+            &type_name,
+            span.file_id,
+            SemaTypeRootAuthority::KnownFile(span.file_id),
             span,
-        )?;
-        if !self.function_returns_type(&fn_info) {
-            return Err(CompileError::new(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: format!(
-                        "'{}' is not a type: only a function returning `type` can be applied here",
-                        call_name
-                    ),
-                },
-                span,
-            ));
-        }
-
-        let params = fn_info.params;
-        let param_names = self.param_arena.names(params).to_vec();
-        let param_comptime = self.param_arena.comptime(params).to_vec();
-        if arg_strs.len() != param_names.len()
-            || !(param_names.is_empty() || param_comptime.iter().all(|&flag| flag))
-        {
-            return Err(CompileError::new(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: format!(
-                        "type constructor '{}' expects {} comptime argument(s), but {} were provided",
-                        call_name,
-                        param_names.len(),
-                        arg_strs.len()
-                    ),
-                },
-                span,
-            ));
-        }
-
-        let param_comptime_type = self.comptime_type_param_flags(&fn_info);
-        let mut callee_types = HashMap::new();
-        let mut callee_values = HashMap::new();
-        for (i, arg) in arg_strs.iter().enumerate() {
-            if param_comptime_type[i] {
-                let arg_ty =
-                    if let Some((nested_name, nested_args)) = parse_type_call_syntax(arg) {
-                        self.resolve_type_call_for_comptime_with_subst_diagnostic(
-                            &nested_name,
-                            &nested_args,
-                            type_subst,
-                            value_subst,
-                            span,
-                        )?
-                    } else {
-                        let arg_sym = self.interner.get_or_intern(arg);
-                        self.resolve_type_for_comptime_with_subst_and_values_at_span(
-                            arg_sym,
-                            type_subst,
-                            value_subst,
-                            span,
-                        )
-                    }
-                    .ok_or_else(|| {
-                        CompileError::new(
-                            ErrorKind::ComptimeEvaluationFailed {
-                                reason: format!(
-                                    "argument '{}' for '{}' did not resolve to a type",
-                                    arg, call_name
-                                ),
-                            },
-                            span,
-                        )
-                    })?;
-                callee_types.insert(param_names[i], arg_ty);
-            } else {
-                let value = self
-                    .resolve_comptime_type_ctor_value_arg(arg, type_subst, value_subst, span)
-                    .ok_or_else(|| {
-                        CompileError::new(
-                            ErrorKind::ComptimeEvaluationFailed {
-                                reason: format!(
-                                    "argument '{}' for '{}' is not a compile-time value",
-                                    arg, call_name
-                                ),
-                            },
-                            span,
-                        )
-                    })?;
-                callee_values.insert(param_names[i], value);
-            }
-        }
-
-        match self
-            .reduce_type_ctor_body(function_key, &callee_types, &callee_values)
-            .map_err(|error| Self::label_ctor_instantiation_site(error, span))?
-        {
-            Some(ConstValue::Type(ty)) => Ok(Some(ty)),
-            _ => Err(CompileError::new(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: format!(
-                        "the type constructor '{}' did not reduce to a concrete type",
-                        call_name
-                    ),
-                },
-                span,
-            )),
-        }
+            Some(type_subst),
+            Some(value_subst),
+        )
+        .map_err(|failure| self.type_syntax_compile_error(failure, span))
     }
 
     /// Resolve a type symbol to a Type, returning None if the type is unknown.
@@ -1921,12 +2489,16 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         type_subst: &std::collections::HashMap<Spur, Type>,
         value_subst: &HashMap<Spur, ConstValue>,
     ) -> Option<Type> {
-        self.resolve_type_for_comptime_with_subst_and_values_at_span(
-            type_sym,
-            type_subst,
-            value_subst,
+        let syntax = self.interner.resolve(&type_sym).to_string();
+        self.resolve_type_syntax_with_substitutions(
+            &syntax,
+            FileId::DEFAULT,
+            SemaTypeRootAuthority::GlobalSpeculative,
             Span::default(),
+            Some(type_subst),
+            Some(value_subst),
         )
+        .ok()
     }
 
     pub(crate) fn resolve_type_for_comptime_with_subst_and_values_at_span(
@@ -1936,119 +2508,16 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         value_subst: &HashMap<Spur, ConstValue>,
         span: Span,
     ) -> Option<Type> {
-        // First check the substitution map for type parameters
-        if let Some(&ty) = type_subst.get(&type_sym) {
-            return Some(ty);
-        }
-
-        let type_name = self.interner.resolve(&type_sym);
-
-        // Check primitive types first (single shared table, RUE-155)
-        if let Some(ty) = Type::from_primitive_name(type_name) {
-            return Some(ty);
-        }
-
-        let is_composite = parse_array_type_syntax(type_name).is_some()
-            || type_name.starts_with("ptr const ")
-            || type_name.starts_with("ptr mut ")
-            || parse_type_call_syntax(type_name).is_some();
-        if span != Span::default() && !is_composite {
-            return self.resolve_type(type_sym, span).ok();
-        }
-
-        if let Some(struct_id) = self.struct_id_for_name(type_sym) {
-            Some(Type::new_struct(struct_id))
-        } else if let Some(enum_id) = self.enum_id_for_name(type_sym) {
-            Some(Type::new_enum(enum_id))
-        } else if let Some((element_type, len)) = parse_array_type_syntax(type_name) {
-            // Resolve the element type first
-            let element_sym = self.interner.get_or_intern(&element_type);
-            let element_ty = self.resolve_type_for_comptime_with_subst_and_values_at_span(
-                element_sym,
-                type_subst,
-                value_subst,
-                span,
-            )?;
-            // Resolve the length via comptime value substitution (a `comptime`
-            // value parameter) or file-level constants. In comptime evaluation
-            // we can't emit a diagnostic, so an unresolvable length just makes
-            // the type non-evaluable (None); the caller reports it (RUE-16).
-            let length = self
-                .resolve_array_length(&len, span, Some(value_subst))
-                .ok()?;
-            // Get or create the array type
-            let array_type_id = self.get_or_create_array_type(element_ty, length);
-            Some(Type::new_array(array_type_id))
-        } else if let Some(pointee_type_str) = type_name.strip_prefix("ptr const ") {
-            // Pointer type syntax: ptr const T
-            let pointee_sym = self.interner.get_or_intern(pointee_type_str);
-            let pointee_ty = self.resolve_type_for_comptime_with_subst_and_values_at_span(
-                pointee_sym,
-                type_subst,
-                value_subst,
-                span,
-            )?;
-            let ptr_type_id = self.type_pool.intern_ptr_const_from_type(pointee_ty);
-            Some(Type::new_ptr_const(ptr_type_id))
-        } else if let Some(pointee_type_str) = type_name.strip_prefix("ptr mut ") {
-            // Pointer type syntax: ptr mut T
-            let pointee_sym = self.interner.get_or_intern(pointee_type_str);
-            let pointee_ty = self.resolve_type_for_comptime_with_subst_and_values_at_span(
-                pointee_sym,
-                type_subst,
-                value_subst,
-                span,
-            )?;
-            let ptr_type_id = self.type_pool.intern_ptr_mut_from_type(pointee_ty);
-            Some(Type::new_ptr_mut(ptr_type_id))
-        } else if let Some((call_name, arg_strs)) = parse_type_call_syntax(type_name) {
-            self.resolve_type_call_for_comptime_with_subst_diagnostic(
-                &call_name,
-                &arg_strs,
-                type_subst,
-                value_subst,
-                span,
-            )
-            .ok()
-            .flatten()
-        } else {
-            None // Unknown type
-        }
-    }
-
-    /// Resolve an array length `[T; N]` to a concrete `u64`.
-    ///
-    /// `N` is either a literal or a name referring to a compile-time constant.
-    /// Named lengths resolve first against the `comptime` value substitution
-    /// map (a `comptime N: i32` parameter, when `value_subst` is provided), then
-    /// against file-level `const`s. The value must be a non-negative integer
-    /// (RUE-16). On the comptime-evaluation path the caller passes a dummy span
-    /// and discards the error; on the diagnostic path (`resolve_type`) the
-    /// error surfaces to the user as E0481.
-    /// Reduce a fixed-capacity string `Str(N)` type-call to its concrete
-    /// 2-word fat-pointer struct (ADR-0043 Phase 5, RUE-326). Shared by the
-    /// context-free (`resolve_type`) and context-aware (`resolve_type_with_ctx`)
-    /// annotation paths so both spellings resolve identically. A non-single-
-    /// argument form (`Str()`, `Str(a, b)`) is a clean unknown-type error.
-    fn resolve_str_fixed_type(
-        &mut self,
-        call_name: &str,
-        arg_strs: &[String],
-        span: Span,
-    ) -> CompileResult<Type> {
-        let capacity = match arg_strs {
-            [arg] => self.resolve_str_fixed_capacity(arg, span)?,
-            _ => {
-                return Err(CompileError::new(
-                    ErrorKind::UnknownType(format!("{}({})", call_name, arg_strs.join(", "))),
-                    span,
-                ));
-            }
-        };
-        self.record_declaration_builtin_type_call_head(
-            super::BuiltinTypeCallHead::FixedCapacityString,
-        );
-        self.get_or_create_str_fixed_struct(capacity, span)
+        let syntax = self.interner.resolve(&type_sym).to_string();
+        self.resolve_type_syntax_with_substitutions(
+            &syntax,
+            span.file_id,
+            SemaTypeRootAuthority::KnownFile(span.file_id),
+            span,
+            Some(type_subst),
+            Some(value_subst),
+        )
+        .ok()
     }
 
     fn record_declaration_builtin_type_call_head(&mut self, builtin: super::BuiltinTypeCallHead) {
@@ -2081,225 +2550,27 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// (`Str(8)`) or a `const` name (`Str(CAP)`). Both routes reuse the array
     /// length machinery, so `Str(N)` and `[u8; N]` accept exactly the same
     /// length forms.
-    fn resolve_str_fixed_capacity(&mut self, arg: &str, span: Span) -> CompileResult<u64> {
-        if let Ok(n) = arg.parse::<u64>() {
-            return Ok(n);
-        }
-        self.resolve_array_length(&ArrayLen::Named(arg.to_string()), span, None)
-    }
-
+    /// Resolve a file-scoped array length through the same provider and shared
+    /// comptime-call policy used by canonical type syntax resolution.
     pub(crate) fn resolve_array_length(
         &mut self,
-        len: &ArrayLen,
+        length: &ArrayLen,
         span: Span,
-        value_subst: Option<&HashMap<Spur, ConstValue>>,
+        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
     ) -> CompileResult<u64> {
-        self.resolve_array_length_with_subst(len, span, None, value_subst)
-    }
-
-    fn resolve_array_length_with_subst(
-        &mut self,
-        len: &ArrayLen,
-        span: Span,
-        type_subst: Option<&HashMap<Spur, Type>>,
-        value_subst: Option<&HashMap<Spur, ConstValue>>,
-    ) -> CompileResult<u64> {
-        match len {
-            ArrayLen::Literal(n) => Ok(*n),
-            ArrayLen::Named(name) => {
-                // A comptime-evaluable call in length position, e.g.
-                // `[i32; fact(4)]` (RUE-309). The interned type string carries
-                // the call syntax verbatim (`fact(4)`); fold it via the same
-                // comptime machinery that reduces value-returning calls
-                // elsewhere (RUE-163). Bare names fall through to the
-                // const/comptime-parameter lookup below.
-                if let Some((callee, args)) = parse_type_call_syntax(name) {
-                    return self.resolve_array_length_call(
-                        &callee,
-                        &args,
-                        span,
-                        type_subst,
-                        value_subst,
-                    );
-                }
-                let sym = self.interner.get_or_intern(name);
-                // 1. A `comptime` value parameter in scope (per specialization).
-                let value = if let Some(v) = value_subst.and_then(|vs| vs.get(&sym)) {
-                    *v
-                } else if let Some(info) = self.resolve_const_info_in_file(sym, span.file_id) {
-                    // 2. A file-level constant, evaluated during declaration
-                    //    gathering.
-                    info.value
-                } else if self.declaration_binding_active
-                    && let Some(v) =
-                        self.try_resolve_indexed_const_during_binding(sym, span.file_id)?
-                {
-                    // 3. A file-level constant whose indexed declaration is
-                    //    being dependency-resolved for a struct field / enum
-                    //    payload before the main declaration walk (RUE-587).
-                    v
-                } else {
-                    return Err(CompileError::new(
-                        ErrorKind::InvalidArrayLength {
-                            reason: format!(
-                                "'{name}' is not a compile-time constant; array lengths must be an \
-                                 integer literal, a `const`, or a `comptime` value parameter"
-                            ),
-                        },
-                        span,
-                    ));
-                };
-                match value.as_int_value() {
-                    Some(n) if n >= 0 => u64::try_from(n).map_err(|_| {
-                        CompileError::new(
-                            ErrorKind::InvalidArrayLength {
-                                reason: format!("array length '{name}' ({n}) is too large"),
-                            },
-                            span,
-                        )
-                    }),
-                    Some(n) => Err(CompileError::new(
-                        ErrorKind::InvalidArrayLength {
-                            reason: format!("array length '{name}' is negative ({n})"),
-                        },
-                        span,
-                    )),
-                    None => Err(CompileError::new(
-                        ErrorKind::InvalidArrayLength {
-                            reason: format!("array length '{name}' is not an integer"),
-                        },
-                        span,
-                    )),
-                }
-            }
-        }
-    }
-
-    /// Fold a comptime-evaluable call in array-length position (`[T; f(args)]`,
-    /// RUE-309) to a concrete `u64`.
-    ///
-    /// The callee must be a value-returning function with at least one
-    /// parameter, all `comptime` — the same implicit-comptime shape
-    /// `eval_comptime_type_call` accepts for value-returning calls (RUE-163,
-    /// spec 4.14:5). A runtime-parametered or nullary callee is a genuine
-    /// runtime call and is not a compile-time-known length, so it errors as
-    /// E0481 rather than being silently accepted.
-    ///
-    /// Arguments arrive as raw substrings of the interned type string; each is
-    /// itself an array-length expression (a literal, a `const`/`comptime`
-    /// name, or a nested call), so it is resolved through
-    /// [`resolve_array_length`] recursively. The resulting integer bindings
-    /// feed [`reduce_type_ctor_body`], which evaluates the callee body under
-    /// that substitution — the identical reducer the value/const-expr paths
-    /// use — so a comptime-recursive `fn fact(comptime n: i32)` yields its
-    /// compile-time length.
-    ///
-    /// [`resolve_array_length`]: Sema::resolve_array_length
-    /// [`reduce_type_ctor_body`]: Sema::reduce_type_ctor_body
-    fn resolve_array_length_call(
-        &mut self,
-        callee: &str,
-        args: &[String],
-        span: Span,
-        type_subst: Option<&HashMap<Spur, Type>>,
-        value_subst: Option<&HashMap<Spur, ConstValue>>,
-    ) -> CompileResult<u64> {
-        let invalid =
-            |reason: String| CompileError::new(ErrorKind::InvalidArrayLength { reason }, span);
-
-        let callee_sym = self.interner.get_or_intern(callee);
-        let Some(callee_key) = self.resolve_function_name_local(callee_sym, span.file_id) else {
-            return Err(invalid(format!(
-                "'{callee}' is not a function; array lengths must be an integer literal, a \
-                 `const`, a `comptime` value parameter, or a call to a comptime function"
-            )));
+        let mut provider = SemaTypeSyntaxProvider {
+            sema: self,
+            span,
+            root_authority: SemaTypeRootAuthority::KnownFile(span.file_id),
+            resolution_context: SemaTypeResolutionContext::Type,
+            type_substitutions: None,
+            value_substitutions,
+            observed_type_dependencies: Vec::new(),
         };
-        let Some(fn_info) = self.functions.get(&callee_key).copied() else {
-            return Err(invalid(format!(
-                "'{callee}' is not a function; array lengths must be an integer literal, a \
-                 `const`, a `comptime` value parameter, or a call to a comptime function"
-            )));
-        };
-        if self.function_returns_type(&fn_info) {
-            return Err(invalid(format!(
-                "array length call '{callee}(...)' must return a value, not a type"
-            )));
-        }
-        let params = fn_info.params;
-        let param_names = self.param_arena.names(params).to_vec();
-        let param_comptime = self.param_arena.comptime(params).to_vec();
-        let param_comptime_type = self.comptime_type_param_flags(&fn_info);
-        // Same implicit-comptime gate as `eval_comptime_type_call`: a value
-        // function reduces only with at least one parameter, every one
-        // `comptime`. A runtime parameter makes this a genuine runtime call.
-        let all_comptime = !param_names.is_empty() && param_comptime.iter().all(|&c| c);
-        if args.len() != param_names.len() || !all_comptime {
-            return Err(invalid(format!(
-                "array length call '{callee}(...)' is not a compile-time constant; its callee \
-                 must be a value-returning function whose parameters are all `comptime`"
-            )));
-        }
-        let empty_type_subst = HashMap::new();
-        let type_subst = type_subst.unwrap_or(&empty_type_subst);
-        let empty_value_subst = HashMap::new();
-        let value_subst = value_subst.unwrap_or(&empty_value_subst);
-        let mut callee_types: HashMap<Spur, Type> = HashMap::new();
-        let mut callee_values: HashMap<Spur, ConstValue> = HashMap::new();
-        for (i, arg) in args.iter().enumerate() {
-            if param_comptime_type[i] {
-                let arg_sym = self.interner.get_or_intern(arg.trim());
-                self.validate_substituted_signature_type(arg_sym, type_subst, value_subst, span)?;
-                let Some(ty) = self.resolve_type_for_comptime_with_subst_and_values_at_span(
-                    arg_sym,
-                    type_subst,
-                    value_subst,
-                    span,
-                ) else {
-                    return Err(invalid(format!(
-                        "argument '{}' for comptime type parameter '{}' of array length call '{}(...)' must be a type",
-                        arg,
-                        self.interner.resolve(&param_names[i]),
-                        callee
-                    )));
-                };
-                callee_types.insert(param_names[i], ty);
-                continue;
-            }
-
-            if let Some(value) =
-                self.resolve_comptime_type_ctor_value_arg(arg, type_subst, value_subst, span)
-            {
-                callee_values.insert(param_names[i], value);
-                continue;
-            }
-
-            // Mirror `parse_array_type_syntax`: a decimal literal is a
-            // `Literal`, anything else (a name or nested call) is a `Named`
-            // resolved recursively.
-            let arg_len = match arg.parse::<u64>() {
-                Ok(n) => ArrayLen::Literal(n),
-                Err(_) => ArrayLen::Named(arg.clone()),
-            };
-            let v = self.resolve_array_length_with_subst(
-                &arg_len,
-                span,
-                Some(type_subst),
-                Some(value_subst),
-            )?;
-            callee_values.insert(param_names[i], ConstValue::Integer(v as i128));
-        }
-        match self.reduce_type_ctor_body(callee_key, &callee_types, &callee_values)? {
-            Some(ConstValue::Integer(n)) if n >= 0 => u64::try_from(n)
-                .map_err(|_| invalid(format!("array length '{callee}(...)' ({n}) is too large"))),
-            Some(ConstValue::Integer(n)) => Err(invalid(format!(
-                "array length '{callee}(...)' is negative ({n})"
-            ))),
-            _ => Err(invalid(format!(
-                "array length call '{callee}(...)' did not evaluate to a compile-time integer"
-            ))),
-        }
+        let result = provider.resolve_array_length_fact(span.file_id, length);
+        provider.flush_observed_type_dependencies();
+        result
     }
-
     /// Check whether a signature type symbol mentions any of the given comptime
     /// type parameters, looking through composite syntax: `[T; N]`,
     /// `ptr const T`, `ptr mut T`, and nestings thereof (RUE-172).
@@ -2429,76 +2700,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         )
     }
 
-    /// Resolve a compile-time callee while validating a deferred signature.
-    ///
-    /// The lookup is deliberately independent of the callee's return kind:
-    /// type position requires `-> type`, while array lengths and nested value
-    /// arguments require an ordinary value. Keeping one lookup path lets the
-    /// position-aware walker make that distinction after it has followed the
-    /// source kinds of the callee's parameters.
-    fn deferred_comptime_function_info(
-        &mut self,
-        call_name: &str,
-        span: Span,
-    ) -> CompileResult<(Spur, FunctionInfo)> {
-        let declaration_type_observer = self.declaration_type_observer.clone();
-        let unknown =
-            || CompileError::new(ErrorKind::UnknownType(format!("{}(...)", call_name)), span);
-
-        let function_key = if call_name.contains('.') {
-            let segments: Vec<&str> = call_name.split('.').collect();
-            if segments.len() < 2 || segments.iter().any(|segment| segment.is_empty()) {
-                return Err(unknown());
-            }
-            let (_module_id, module_file_id, _module_path) =
-                self.resolve_type_module_prefix(&segments[..segments.len() - 1], span)?;
-            let module_file_id = module_file_id.ok_or_else(unknown)?;
-            let member = segments[segments.len() - 1];
-            let member_sym = self.interner.get_or_intern(member);
-            if self.declaration_binding_active {
-                self.collect_free_function_signature_during_binding(
-                    member_sym,
-                    Some(module_file_id),
-                )?;
-            }
-            let key = self
-                .resolve_function_name_local(member_sym, module_file_id)
-                .ok_or_else(unknown)?;
-            let info = self.functions.get(&key).copied().ok_or_else(unknown)?;
-            if info.file_id != module_file_id {
-                return Err(unknown());
-            }
-            self.check_unqualified_visibility("function", member, info.file_id, info.is_pub, span)?;
-            key
-        } else {
-            let name_sym = self.interner.get_or_intern(call_name);
-            let mut key = self.resolve_function_name_local(name_sym, span.file_id);
-            if key.is_none() && self.declaration_binding_active {
-                self.collect_free_function_signature_during_binding(name_sym, Some(span.file_id))?;
-                key = self.resolve_function_name_local(name_sym, span.file_id);
-            }
-            let key = key.ok_or_else(unknown)?;
-            let info = self.functions.get(&key).copied().ok_or_else(unknown)?;
-            self.check_unqualified_visibility(
-                "function",
-                call_name,
-                info.file_id,
-                info.is_pub,
-                span,
-            )?;
-            key
-        };
-
-        let info = self
-            .functions
-            .get(&function_key)
-            .copied()
-            .ok_or_else(unknown)?;
-        self.declaration_type_observer = declaration_type_observer;
-        self.record_declaration_type_call_head(function_key, info);
-        Ok((function_key, info))
-    }
-
     fn record_declaration_type_call_head(&mut self, function_key: Spur, info: FunctionInfo) {
         let Some((source_file, source_name, source_owner_name, source_kind, dependency_kind)) =
             self.declaration_type_observer.clone()
@@ -2566,243 +2767,37 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         value_param_type_syms: &[(Spur, Spur)],
         span: Span,
     ) -> CompileResult<Option<Type>> {
-        if let Some((element_type, len)) = parse_array_type_syntax(&type_name) {
-            if let ArrayLen::Named(name) = &len {
-                self.validate_deferred_value_position(
-                    name,
-                    type_params,
-                    value_params,
-                    value_param_type_syms,
-                    None,
-                    None,
-                    true,
-                    span,
-                )?;
-                let depends_on_param = self.type_name_mentions_type_param(name, type_params)
-                    || self.type_name_mentions_value_param(name, value_params);
-                if !depends_on_param {
-                    self.resolve_array_length(&len, span, None)?;
-                }
-            }
-            self.validate_deferred_type_position(
-                element_type,
-                type_params,
-                value_params,
-                value_param_type_syms,
+        let mut provider = DeferredSemaTypeSyntaxProvider {
+            inner: SemaTypeSyntaxProvider {
+                sema: self,
                 span,
-            )?;
-            return self.resolve_independent_deferred_type(
-                &type_name,
-                type_params,
-                value_params,
-                span,
-            );
+                root_authority: SemaTypeRootAuthority::KnownFile(span.file_id),
+                resolution_context: SemaTypeResolutionContext::Type,
+                type_substitutions: None,
+                value_substitutions: None,
+                observed_type_dependencies: Vec::new(),
+            },
+            type_params,
+            value_params,
+            value_param_type_syms,
+        };
+        let result = crate::resolve_semantic_type_syntax(&mut provider, &span.file_id, &type_name);
+        provider.inner.flush_observed_type_dependencies();
+        match result {
+            Ok(DeferredTypeResolution::Resolved(ty)) => Ok(Some(ty)),
+            Ok(DeferredTypeResolution::Pending) => Ok(None),
+            Err(failure) => Err(self.type_syntax_compile_error(failure, span)),
         }
-
-        if let Some(pointee) = type_name
-            .strip_prefix("ptr const ")
-            .or_else(|| type_name.strip_prefix("ptr mut "))
-        {
-            self.validate_deferred_type_position(
-                pointee.to_string(),
-                type_params,
-                value_params,
-                value_param_type_syms,
-                span,
-            )?;
-            return self.resolve_independent_deferred_type(
-                &type_name,
-                type_params,
-                value_params,
-                span,
-            );
-        }
-
-        if let Some((call_name, arg_strs)) = parse_type_call_syntax(&type_name) {
-            let (function_key, function) =
-                self.deferred_comptime_function_info(&call_name, span)?;
-            if !self.function_returns_type(&function) {
-                return Err(CompileError::new(
-                    ErrorKind::ComptimeEvaluationFailed {
-                        reason: format!(
-                            "'{}' is not a type: only a function returning `type` can be applied here",
-                            call_name
-                        ),
-                    },
-                    span,
-                ));
-            }
-
-            let (callee_types, callee_values) = self.validate_deferred_comptime_call_args(
-                &call_name,
-                function,
-                &arg_strs,
-                type_params,
-                value_params,
-                value_param_type_syms,
-                span,
-            )?;
-            if callee_types.len() + callee_values.len() == arg_strs.len() {
-                return match self.reduce_type_ctor_body(
-                    function_key,
-                    &callee_types,
-                    &callee_values,
-                )? {
-                    Some(ConstValue::Type(ty)) => Ok(Some(ty)),
-                    _ => Err(CompileError::new(
-                        ErrorKind::ComptimeEvaluationFailed {
-                            reason: format!(
-                                "the type constructor '{}' did not reduce to a concrete type",
-                                call_name
-                            ),
-                        },
-                        span,
-                    )),
-                };
-            }
-            return Ok(None);
-        }
-
-        // Only a source `comptime T: type` parameter may stand in type
-        // position. A value parameter that happens to share the semantic
-        // `type` placeholder is still a value, and accepting it here would
-        // defer an intrinsically malformed signature forever.
-        if let Some(sym) = self.interner.get(&type_name) {
-            if type_params.contains(&sym) {
-                return Ok(None);
-            }
-            if value_params.contains(&sym) {
-                return Err(CompileError::new(ErrorKind::UnknownType(type_name), span));
-            }
-        }
-
-        let sym = self.interner.get_or_intern(&type_name);
-        self.resolve_type(sym, span).map(Some)
     }
 
-    fn resolve_independent_deferred_type(
+    #[cfg(test)]
+    pub(crate) fn validate_deferred_type_position_for_testing(
         &mut self,
         type_name: &str,
         type_params: &[Spur],
-        value_params: &[Spur],
         span: Span,
     ) -> CompileResult<Option<Type>> {
-        if self.type_name_mentions_type_param(type_name, type_params)
-            || self.type_name_mentions_value_param(type_name, value_params)
-        {
-            return Ok(None);
-        }
-        let sym = self.interner.get_or_intern(type_name);
-        self.resolve_type(sym, span).map(Some)
-    }
-
-    /// Validate and partially bind a nested compile-time call. Argument
-    /// positions follow the callee's source declaration: type parameters walk
-    /// the type grammar, while value parameters are checked against their
-    /// declared type after applying all preceding concrete substitutions.
-    fn validate_deferred_comptime_call_args(
-        &mut self,
-        call_name: &str,
-        function: FunctionInfo,
-        args: &[String],
-        outer_type_params: &[Spur],
-        outer_value_params: &[Spur],
-        outer_value_param_type_syms: &[(Spur, Spur)],
-        span: Span,
-    ) -> CompileResult<(HashMap<Spur, Type>, HashMap<Spur, ConstValue>)> {
-        let params = function.params;
-        let param_names = self.param_arena.names(params).to_vec();
-        let param_types = self.param_arena.types(params).to_vec();
-        let param_comptime = self.param_arena.comptime(params).to_vec();
-        if args.len() != param_names.len()
-            || !(param_names.is_empty() || param_comptime.iter().all(|&flag| flag))
-        {
-            return Err(CompileError::new(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: format!(
-                        "compile-time function '{}' expects {} comptime argument(s), but {} were provided",
-                        call_name,
-                        param_names.len(),
-                        args.len()
-                    ),
-                },
-                span,
-            ));
-        }
-
-        let param_comptime_type = self.comptime_type_param_flags(&function);
-        let rir_param_types: Vec<Spur> = self
-            .rir
-            .params(function.rir_params(self.rir))
-            .iter()
-            .map(|param| param.ty)
-            .collect();
-        let callee_type_params: Vec<Spur> = param_names
-            .iter()
-            .zip(param_comptime_type.iter())
-            .filter_map(|(name, is_type)| is_type.then_some(*name))
-            .collect();
-        let callee_value_params: Vec<Spur> = param_names
-            .iter()
-            .zip(param_comptime_type.iter())
-            .filter_map(|(name, is_type)| (!is_type).then_some(*name))
-            .collect();
-        let call_display = self.interner.get_or_intern(call_name);
-        let mut callee_types = HashMap::new();
-        let mut callee_values = HashMap::new();
-
-        for (index, arg) in args.iter().enumerate() {
-            if param_comptime_type[index] {
-                if let Some(ty) = self.validate_deferred_type_position(
-                    arg.clone(),
-                    outer_type_params,
-                    outer_value_params,
-                    outer_value_param_type_syms,
-                    span,
-                )? {
-                    callee_types.insert(param_names[index], ty);
-                }
-                continue;
-            }
-
-            let expected = if param_types[index] != Type::COMPTIME_TYPE {
-                Some(param_types[index])
-            } else if let Some(bound) = callee_types.get(&rir_param_types[index]) {
-                Some(*bound)
-            } else if self.deferred_signature_substitutions_are_ready(
-                self.interner.resolve(&rir_param_types[index]),
-                &callee_type_params,
-                &callee_value_params,
-                &callee_types,
-                &callee_values,
-            ) {
-                Some(self.resolve_substituted_param_type(
-                    &function,
-                    index,
-                    param_types[index],
-                    &callee_types,
-                    &callee_values,
-                )?)
-            } else {
-                None
-            };
-
-            let value = self.validate_deferred_value_position(
-                arg,
-                outer_type_params,
-                outer_value_params,
-                outer_value_param_type_syms,
-                expected,
-                Some((call_display, param_names[index])),
-                false,
-                span,
-            )?;
-            if let Some(value) = value {
-                callee_values.insert(param_names[index], value);
-            }
-        }
-
-        Ok((callee_types, callee_values))
+        self.validate_deferred_type_position(type_name.to_string(), type_params, &[], &[], span)
     }
 
     fn deferred_signature_substitutions_are_ready(
@@ -2894,59 +2889,79 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         }
 
         if let Some((call_name, args)) = parse_type_call_syntax(value_name) {
-            let (function_key, function) =
-                self.deferred_comptime_function_info(&call_name, span)?;
-            let param_names = self.param_arena.names(function.params).to_vec();
-            let param_comptime = self.param_arena.comptime(function.params).to_vec();
-            let is_type_function = self.function_returns_type(&function);
-            let eligible = if is_type_function {
-                param_names.is_empty() || param_comptime.iter().all(|&flag| flag)
-            } else {
-                !param_names.is_empty() && param_comptime.iter().all(|&flag| flag)
-            };
-            if !eligible {
-                return Err(CompileError::new(
-                    ErrorKind::ComptimeEvaluationFailed {
-                        reason: format!(
-                            "call '{}' is not a compile-time value; all of its parameters must be comptime",
-                            call_name
-                        ),
-                    },
+            let mut provider = DeferredSemaTypeSyntaxProvider {
+                inner: SemaTypeSyntaxProvider {
+                    sema: self,
                     span,
-                ));
-            }
-
-            let (callee_types, callee_values) = self.validate_deferred_comptime_call_args(
-                &call_name,
-                function,
-                &args,
+                    root_authority: SemaTypeRootAuthority::KnownFile(span.file_id),
+                    resolution_context: SemaTypeResolutionContext::Type,
+                    type_substitutions: None,
+                    value_substitutions: None,
+                    observed_type_dependencies: Vec::new(),
+                },
                 type_params,
                 value_params,
                 value_param_type_syms,
-                span,
-            )?;
-            let fully_bound = callee_types.len() + callee_values.len() == args.len();
-            let concrete = if fully_bound {
-                self.reduce_type_ctor_body(function_key, &callee_types, &callee_values)?
-            } else {
-                None
             };
-            let found = if is_type_function {
+            let call = crate::resolve_semantic_comptime_call(
+                &mut provider,
+                &span.file_id,
+                &call_name,
+                &args,
+                crate::SemanticComptimeCallExpectation::Value,
+            );
+            provider.inner.flush_observed_type_dependencies();
+            let call =
+                call.map_err(|failure| self.deferred_value_syntax_compile_error(failure, span))?;
+            let function = *self
+                .functions
+                .get(&call.head.key)
+                .expect("selected deferred call has function metadata");
+            let callee_types = call
+                .type_arguments
+                .iter()
+                .filter_map(|(name, value)| match value {
+                    DeferredTypeResolution::Resolved(value) => Some((*name, *value)),
+                    DeferredTypeResolution::Pending => None,
+                })
+                .collect::<HashMap<_, _>>();
+            let callee_values = call
+                .value_arguments
+                .iter()
+                .filter_map(|(name, value)| match value {
+                    DeferredValueResolution::Resolved(value) => Some((*name, *value)),
+                    DeferredValueResolution::Pending => None,
+                })
+                .collect::<HashMap<_, _>>();
+            let concrete = match call.result {
+                crate::SemanticComptimeCallResult::Type(DeferredTypeResolution::Resolved(ty)) => {
+                    Some(ConstValue::Type(ty))
+                }
+                crate::SemanticComptimeCallResult::Value(DeferredValueResolution::Resolved(
+                    value,
+                )) => Some(value),
+                crate::SemanticComptimeCallResult::Type(DeferredTypeResolution::Pending)
+                | crate::SemanticComptimeCallResult::Value(DeferredValueResolution::Pending) => {
+                    None
+                }
+            };
+            let found = if call.head.returns_type {
                 Some(Type::COMPTIME_TYPE)
             } else if function.return_type != Type::COMPTIME_TYPE {
                 Some(function.return_type)
             } else {
-                let param_comptime_type = self.comptime_type_param_flags(&function);
-                let callee_type_params: Vec<Spur> = param_names
+                let callee_type_params = call
+                    .head
+                    .parameters
                     .iter()
-                    .zip(param_comptime_type.iter())
-                    .filter_map(|(name, is_type)| is_type.then_some(*name))
-                    .collect();
-                let callee_value_params: Vec<Spur> = param_names
+                    .filter_map(|parameter| parameter.is_type.then_some(parameter.name))
+                    .collect::<Vec<_>>();
+                let callee_value_params = call
+                    .head
+                    .parameters
                     .iter()
-                    .zip(param_comptime_type.iter())
-                    .filter_map(|(name, is_type)| (!is_type).then_some(*name))
-                    .collect();
+                    .filter_map(|parameter| (!parameter.is_type).then_some(parameter.name))
+                    .collect::<Vec<_>>();
                 let return_name = self.interner.resolve(&function.return_type_sym);
                 if self.deferred_signature_substitutions_are_ready(
                     return_name,
@@ -2976,22 +2991,31 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             return Ok(concrete);
         }
 
-        let value =
-            match self.resolve_type_ctor_value_arg("compile-time call", value_name, span, None) {
-                Ok(value) => value,
-                Err(_) if require_integer => {
-                    // This is the outer array-length boundary, not a nested
-                    // comptime-call argument. Preserve its established E0481
-                    // diagnostic for an unknown bare name (`[T; A]`) rather than
-                    // leaking the generic E1200 value-argument diagnostic.
-                    let length = value_name
-                        .parse::<u64>()
-                        .map(ArrayLen::Literal)
-                        .unwrap_or_else(|_| ArrayLen::Named(value_name.to_string()));
-                    ConstValue::Integer(self.resolve_array_length(&length, span, None)? as i128)
-                }
-                Err(error) => return Err(error),
-            };
+        let value = match (SemaTypeSyntaxProvider {
+            sema: self,
+            span,
+            root_authority: SemaTypeRootAuthority::KnownFile(span.file_id),
+            resolution_context: SemaTypeResolutionContext::Type,
+            type_substitutions: None,
+            value_substitutions: None,
+            observed_type_dependencies: Vec::new(),
+        })
+        .resolve_value_argument_fact(span.file_id, "compile-time call", value_name)
+        {
+            Ok(value) => value,
+            Err(_) if require_integer => {
+                // This is the outer array-length boundary, not a nested
+                // comptime-call argument. Preserve its established E0481
+                // diagnostic for an unknown bare name (`[T; A]`) rather than
+                // leaking the generic E1200 value-argument diagnostic.
+                let length = value_name
+                    .parse::<u64>()
+                    .map(ArrayLen::Literal)
+                    .unwrap_or_else(|_| ArrayLen::Named(value_name.to_string()));
+                ConstValue::Integer(self.resolve_array_length(&length, span, None)? as i128)
+            }
+            Err(error) => return Err(error),
+        };
         self.validate_deferred_value_result(
             Some(value),
             Some(value.get_type()),
