@@ -329,11 +329,11 @@ fn main() {
         let spec_dir = find_spec_cases_dir();
 
         match corpus::create_seed_corpus(&spec_dir, &output_dir) {
-            Ok(count) => {
+            Ok(summary) => {
                 eprintln!(
-                    "Created seed corpus with {} files in {}",
-                    count,
-                    output_dir.display()
+                    "Created seed corpus in {}: {}",
+                    output_dir.display(),
+                    summary
                 );
             }
             Err(e) => {
