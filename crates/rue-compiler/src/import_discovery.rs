@@ -1,8 +1,10 @@
 //! Compiler-owned import discovery protocol.
 //!
-//! Candidate policy is pure compiler state. Hosts execute only requests returned
-//! by [`ImportDiscoveryPlan::pending_requests`] and report typed observations;
-//! they never recognize imports or choose resolution precedence.
+//! Candidate policy is pure compiler state. Rooted consumers ask the revisioned
+//! database for an import demand frontier, execute that exact ordered batch,
+//! and publish typed observations into an immutable successor revision. Hosts
+//! never recognize imports or choose resolution precedence. Plans remain a
+//! whole-graph compatibility projection for diagnostics and closure.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
@@ -144,10 +146,57 @@ impl ImportDiscoveryRequest {
     pub fn role(&self) -> ImportCandidateRole {
         self.role
     }
+
+    pub(crate) fn runtime_input_key(&self) -> Arc<str> {
+        fn field(output: &mut String, value: &str) {
+            use std::fmt::Write as _;
+            write!(output, "{}:{value}", value.len()).unwrap();
+        }
+        use std::fmt::Write as _;
+        let mut key = String::new();
+        write!(
+            key,
+            "v1:{}:{}:{}:{}:{}:",
+            self.context.epoch,
+            self.occurrence.source_offset,
+            self.occurrence.source_end,
+            self.group,
+            self.position
+        )
+        .unwrap();
+        field(&mut key, self.context.project_root());
+        field(&mut key, self.context.std_root().unwrap_or(""));
+        field(&mut key, self.context.read_policy_revision());
+        field(&mut key, self.occurrence.importer().as_str());
+        field(&mut key, self.exact_specifier());
+        field(&mut key, self.normalized_specifier());
+        field(&mut key, self.importer_anchor());
+        field(&mut key, self.root_anchor());
+        field(&mut key, self.requested_path());
+        field(
+            &mut key,
+            match self.role {
+                ImportCandidateRole::ExactFile => "exact-file",
+                ImportCandidateRole::FileModule => "file-module",
+                ImportCandidateRole::DirectoryFacade => "directory-facade",
+                ImportCandidateRole::StandardLibraryFacade => "standard-library-facade",
+            },
+        );
+        key.into()
+    }
 }
+
+// RUE-1033 DELETION/REPLACEMENT GATE: retire the entire legacy supported
+// host-driven import path together once a freshness- and speculation-safe
+// replacement is stable. Its exact public bypass surface is inventoried by
+// `legacy_import_authority_is_one_explicit_compatibility_boundary`.
 
 /// Result of one host transaction. Denial and absence are intentionally
 /// distinct from an accepted source read.
+///
+/// Public construction participates in the legacy RUE-1033 compatibility
+/// boundary. New consumers must use the unstable begin/frontier/publish
+/// protocol and construct statuses only for requests emitted by its frontier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ImportObservationStatus {
     Absent,
@@ -225,6 +274,9 @@ impl ImportObservationStatus {
 }
 
 /// Accepted source bytes paired with their transaction observation.
+///
+/// Public construction participates in the legacy RUE-1033 compatibility
+/// boundary and is not independently freshness- or speculation-safe.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AcceptedImportSource {
     requested_path: Arc<str>,
@@ -236,6 +288,11 @@ pub struct AcceptedImportSource {
 }
 
 impl AcceptedImportSource {
+    /// Construct legacy host-observed source evidence.
+    ///
+    /// This constructor is part of the RUE-1033 compatibility boundary. New
+    /// consumers may use it only while answering a request emitted by the
+    /// unstable canonical frontier protocol.
     pub fn new(
         requested_path: impl Into<Arc<str>>,
         canonical_path: impl Into<Arc<str>>,
@@ -283,6 +340,10 @@ pub struct ImportObservation {
 }
 
 impl ImportObservation {
+    /// Construct a legacy absence observation.
+    ///
+    /// This is part of the RUE-1033 compatibility boundary and carries no
+    /// independent freshness authority.
     pub fn absent(request: ImportDiscoveryRequest) -> Self {
         Self {
             request,
@@ -290,6 +351,10 @@ impl ImportObservation {
             accepted_source: None,
         }
     }
+    /// Construct a legacy accepted-source observation.
+    ///
+    /// This is part of the RUE-1033 compatibility boundary and carries no
+    /// independent freshness authority.
     pub fn accepted(
         request: ImportDiscoveryRequest,
         source: AcceptedImportSource,
@@ -310,6 +375,10 @@ impl ImportObservation {
             accepted_source: Some(source),
         })
     }
+    /// Construct a legacy terminal-failure observation.
+    ///
+    /// This is part of the RUE-1033 compatibility boundary and carries no
+    /// independent freshness authority.
     pub fn failure(
         request: ImportDiscoveryRequest,
         status: ImportObservationStatus,
@@ -337,13 +406,37 @@ impl ImportObservation {
     pub fn accepted_source(&self) -> Option<&AcceptedImportSource> {
         self.accepted_source.as_ref()
     }
+
+    pub(crate) fn fanout_to(&self, request: ImportDiscoveryRequest) -> CompileResult<Self> {
+        if request.context() != self.request.context()
+            || request.requested_path() != self.request.requested_path()
+        {
+            return Err(invalid_input(
+                "one host import result can fan out only to the same candidate operation",
+            ));
+        }
+        Ok(Self {
+            request,
+            status: self.status.clone(),
+            accepted_source: self.accepted_source.clone(),
+        })
+    }
 }
 
 /// Deterministically ordered observations from one immutable epoch.
+///
+/// Public `Default` construction and mutation are retained only for the
+/// RUE-1033 legacy compatibility boundary. A freely constructed ledger is not
+/// freshness- or speculation-safe and must not seed a new canonical request.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct ImportObservationLedger(BTreeMap<ImportDiscoveryRequest, ImportObservation>);
 
 impl ImportObservationLedger {
+    /// Record legacy host evidence.
+    ///
+    /// This mutator is part of the RUE-1033 compatibility boundary. New
+    /// consumers publish compiler-ordered batches through the unstable
+    /// canonical protocol instead.
     pub fn record(&mut self, observation: ImportObservation) -> CompileResult<()> {
         let request = observation.request.clone();
         if let Some(previous) = self.0.get(&request) {
@@ -368,6 +461,94 @@ impl ImportObservationLedger {
     }
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+}
+
+/// Authority allowed to expose missing external-input requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ImportDemandMode {
+    /// Observable rooted work may emit one ordered host batch.
+    Rooted,
+    /// Speculative work may consume existing leaves but never emit demands.
+    Speculative,
+}
+
+/// Opaque immutable input revision for one discovery request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ImportInputRevision {
+    pub(crate) revision_id: u64,
+    pub(crate) request_generation: u64,
+    pub(crate) frontier_round: u64,
+}
+
+impl ImportInputRevision {
+    /// Runtime revision publication identity.
+    pub fn id(self) -> u64 {
+        self.revision_id
+    }
+    /// Number of rooted host batches published since the initial request view.
+    pub fn frontier_round(self) -> u64 {
+        self.frontier_round
+    }
+}
+
+/// One compiler-produced, deduplicated external-input frontier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportDemandFrontier {
+    pub(crate) revision: ImportInputRevision,
+    pub(crate) mode: ImportDemandMode,
+    pub(crate) requests: Arc<[ImportDiscoveryRequest]>,
+    /// Per-operation occurrence requests receiving the representative host
+    /// result. Aligned one-to-one with `requests`.
+    pub(crate) fanout: Arc<[Arc<[ImportDiscoveryRequest]>]>,
+    pub(crate) speculative_blocked: bool,
+}
+
+impl ImportDemandFrontier {
+    pub fn revision(&self) -> ImportInputRevision {
+        self.revision
+    }
+    pub fn mode(&self) -> ImportDemandMode {
+        self.mode
+    }
+    /// Exact compiler policy order the host must preserve in its result batch.
+    pub fn requests(&self) -> &[ImportDiscoveryRequest] {
+        &self.requests
+    }
+    /// Whether speculation encountered absent leaves and parked without a host
+    /// request or publishable missing-input failure.
+    pub fn speculative_blocked(&self) -> bool {
+        self.speculative_blocked
+    }
+}
+
+/// Exact parser-owned import occurrences demanded by canonical query
+/// consumers. This type performs no reachability inference.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ImportDemandRoots {
+    occurrences: Arc<[ImportOccurrenceKey]>,
+}
+
+impl ImportDemandRoots {
+    pub fn new(occurrences: impl IntoIterator<Item = ImportOccurrenceKey>) -> Self {
+        let mut occurrences = occurrences.into_iter().collect::<Vec<_>>();
+        occurrences.sort();
+        occurrences.dedup();
+        Self {
+            occurrences: occurrences.into(),
+        }
+    }
+
+    pub fn occurrences(&self) -> &[ImportOccurrenceKey] {
+        &self.occurrences
+    }
+
+    pub(crate) fn whole_plan(plan: &ImportDiscoveryPlan) -> Self {
+        Self::new(
+            plan.groups
+                .iter()
+                .map(|group| group[0].occurrence().clone()),
+        )
     }
 }
 
@@ -406,6 +587,7 @@ impl ImportDiscoveryPlan {
         let root_dir = context.project_root().to_owned();
         let mut groups = Vec::new();
         for site in program.import_directives().iter() {
+            let occurrence = ImportOccurrenceKey::from_directive(site);
             let importer_path = requested_path_for_module(&context, site.importer())?;
             let importer_dir = parent_dir(&importer_path);
             let mut bases = vec![importer_dir];
@@ -414,7 +596,6 @@ impl ImportDiscoveryPlan {
             }
             let candidate_groups =
                 discovery_candidate_groups(site.specifier(), &bases, context.std_root());
-            let occurrence = ImportOccurrenceKey::from_directive(site);
             let normalized_specifier = normalize_path(site.specifier());
             for (group_index, candidates) in candidate_groups.into_iter().enumerate() {
                 let group_index = u32::try_from(group_index)
@@ -457,8 +638,30 @@ impl ImportDiscoveryPlan {
     pub fn context(&self) -> &ImportDiscoveryContext {
         &self.context
     }
+    /// Expose legacy host-driven candidate groups.
+    ///
+    /// This bypass is retained only for the RUE-1033 compatibility boundary.
+    /// It is not freshness- or speculation-safe; new consumers must request a
+    /// compiler-produced frontier through the unstable canonical protocol.
     pub fn groups(&self) -> &[Arc<[ImportDiscoveryRequest]>] {
         &self.groups
+    }
+
+    pub(crate) fn groups_for_demand(
+        &self,
+        module: &ModuleId,
+        roots: &ImportDemandRoots,
+    ) -> Arc<[Arc<[ImportDiscoveryRequest]>]> {
+        let demanded = roots.occurrences.iter().collect::<BTreeSet<_>>();
+        self.groups
+            .iter()
+            .filter(|group| {
+                group[0].occurrence().importer() == module
+                    && demanded.contains(group[0].occurrence())
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+            .into()
     }
 
     pub(crate) fn validate_ledger(&self, ledger: &ImportObservationLedger) -> CompileResult<()> {
@@ -547,7 +750,7 @@ impl ImportDiscoveryPlan {
     }
 
     /// Return exactly the next operations allowed by candidate precedence.
-    pub fn pending_requests(
+    pub(crate) fn pending_requests(
         &self,
         ledger: &ImportObservationLedger,
     ) -> Vec<ImportDiscoveryRequest> {

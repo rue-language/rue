@@ -15,7 +15,61 @@ pub use crate::diagnostic::{
     ColorChoice, DiagnosticFormatter, JsonDiagnostic, JsonDiagnosticFormatter, JsonSpan,
     JsonSuggestion, MultiFileFormatter, MultiFileJsonFormatter, SourceInfo,
 };
-pub use crate::import_discovery::DiscoverySourceAssembler;
+pub use crate::import_discovery::{
+    DiscoverySourceAssembler, ImportDemandFrontier, ImportDemandMode, ImportDemandRoots,
+    ImportInputRevision,
+};
+
+/// Begin a fresh external-input observation generation.
+///
+/// Prior observations can flow only through
+/// [`publish_import_observation_batch`]; no caller ledger can seed freshness.
+pub fn begin_import_input_request(
+    session: &mut crate::CompilerSession,
+    snapshot: &crate::SourceSnapshot,
+    context: crate::ImportDiscoveryContext,
+    accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
+) -> crate::CompileResult<ImportInputRevision> {
+    session.begin_import_input_request(snapshot, context, accepted_reads)
+}
+
+/// Phase-2 full-plan compatibility adapter. RUE-1024/RUE-1026 delete this
+/// once canonical syntax/name queries originate exact occurrence roots.
+pub fn import_demand_frontier(
+    session: &mut crate::CompilerSession,
+    revision: ImportInputRevision,
+    plan: &crate::ImportDiscoveryPlan,
+    mode: ImportDemandMode,
+) -> crate::CompileResult<ImportDemandFrontier> {
+    session.import_demand_frontier(revision, plan, mode)
+}
+
+pub fn import_demand_frontier_for_roots(
+    session: &mut crate::CompilerSession,
+    revision: ImportInputRevision,
+    plan: &crate::ImportDiscoveryPlan,
+    mode: ImportDemandMode,
+    roots: &ImportDemandRoots,
+) -> crate::CompileResult<ImportDemandFrontier> {
+    session.import_demand_frontier_for_roots(revision, plan, mode, roots)
+}
+
+pub fn publish_import_observation_batch(
+    session: &mut crate::CompilerSession,
+    frontier: &ImportDemandFrontier,
+    snapshot: &crate::SourceSnapshot,
+    accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
+    observations: Vec<crate::ImportObservation>,
+) -> crate::CompileResult<ImportInputRevision> {
+    session.publish_import_observation_batch(frontier, snapshot, accepted_reads, observations)
+}
+
+pub fn import_observation_ledger(
+    session: &crate::CompilerSession,
+    revision: ImportInputRevision,
+) -> crate::CompileResult<crate::ImportObservationLedger> {
+    session.import_observation_ledger(revision)
+}
 
 /// Unstable human-readable compiler stages. These are projections of the
 /// canonical session artifacts, never alternate phase entry points.

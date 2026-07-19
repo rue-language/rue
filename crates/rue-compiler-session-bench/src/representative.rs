@@ -6,11 +6,15 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use rue_compiler::unstable::{DiscoverySourceAssembler, committed_import_discovery};
+use rue_compiler::unstable::{
+    DiscoverySourceAssembler, ImportDemandMode, begin_import_input_request,
+    committed_import_discovery, import_demand_frontier, import_observation_ledger,
+    publish_import_observation_batch,
+};
 use rue_compiler::{
     AcceptedImportSource, AcceptedReadManifestEntry, CompileOptions, CompilerSession,
-    FileMetadataFingerprint, ImportDiscoveryContext, ImportObservation, ImportObservationLedger,
-    PhysicalFileIdentity, SemanticView, SourceSnapshot,
+    FileMetadataFingerprint, ImportDiscoveryContext, ImportObservation, PhysicalFileIdentity,
+    SemanticView, SourceSnapshot,
 };
 use serde_json::{Value, json};
 
@@ -140,8 +144,15 @@ fn close_discovery(session: &mut CompilerSession, source: &SourceSnapshot) {
         .collect::<BTreeMap<_, _>>();
     let (discovered, context, accepted_reads) = assemble(&sources);
     assert_eq!(discovered.source_revision(), source.source_revision());
-    let mut ledger = ImportObservationLedger::default();
+    let mut revision = begin_import_input_request(
+        session,
+        &discovered,
+        context.clone(),
+        accepted_reads.clone(),
+    )
+    .unwrap();
     loop {
+        let ledger = import_observation_ledger(session, revision).unwrap();
         let plan = session
             .stage_import_discovery(
                 &discovered,
@@ -150,33 +161,46 @@ fn close_discovery(session: &mut CompilerSession, source: &SourceSnapshot) {
                 ledger.clone(),
             )
             .unwrap();
-        let pending = plan.pending_requests(&ledger);
-        if pending.is_empty() {
+        let frontier =
+            import_demand_frontier(session, revision, &plan, ImportDemandMode::Rooted).unwrap();
+        if frontier.requests().is_empty() {
+            session.close_import_discovery(ledger).unwrap();
             break;
         }
-        for request in pending {
-            let requested_path = request.requested_path().to_owned();
-            let observation = if let Some(source) = sources.get(&requested_path) {
-                let identity = identity_for_path(&requested_path);
-                ImportObservation::accepted(
-                    request,
-                    AcceptedImportSource::new(
-                        requested_path.as_str(),
-                        requested_path.as_str(),
-                        PhysicalFileIdentity::new(901, identity),
-                        FileMetadataFingerprint::new(source.len() as u64, 0, identity),
-                        source.clone(),
+        let observations = frontier
+            .requests()
+            .iter()
+            .cloned()
+            .map(|request| {
+                let requested_path = request.requested_path().to_owned();
+                if let Some(source) = sources.get(&requested_path) {
+                    let identity = identity_for_path(&requested_path);
+                    ImportObservation::accepted(
+                        request,
+                        AcceptedImportSource::new(
+                            requested_path.as_str(),
+                            requested_path.as_str(),
+                            PhysicalFileIdentity::new(901, identity),
+                            FileMetadataFingerprint::new(source.len() as u64, 0, identity),
+                            source.clone(),
+                        )
+                        .unwrap(),
                     )
-                    .unwrap(),
-                )
-                .unwrap()
-            } else {
-                ImportObservation::absent(request)
-            };
-            ledger.record(observation).unwrap();
-        }
+                    .unwrap()
+                } else {
+                    ImportObservation::absent(request)
+                }
+            })
+            .collect();
+        revision = publish_import_observation_batch(
+            session,
+            &frontier,
+            &discovered,
+            accepted_reads.clone(),
+            observations,
+        )
+        .unwrap();
     }
-    session.close_import_discovery(ledger).unwrap();
 }
 
 fn measured_project_semantic(
