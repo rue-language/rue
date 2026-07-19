@@ -379,6 +379,7 @@ impl ErrorCode {
     // Preview feature errors (E1100-E1199)
     // ========================================================================
     pub const PREVIEW_FEATURE_REQUIRED: Self = Self(1100);
+    pub const EXTERN_SIGNATURE_TYPE_UNSUPPORTED: Self = Self(1101);
 
     // ========================================================================
     // Comptime errors (E1200-E1299)
@@ -521,6 +522,10 @@ pub enum PreviewFeature {
     /// collection/string trio. Gated until the fat-pointer ABI lands on both
     /// backends.
     Slices,
+    /// C FFI: `extern "C"` foreign-function declarations and static-archive
+    /// linking (ADR-0064, RUE-1055). Gated until every phase of the guaranteed
+    /// target-C boundary is proven on both backends.
+    CFfi,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -542,6 +547,7 @@ impl PreviewFeature {
         match *self {
             PreviewFeature::TestInfra => "test_infra",
             PreviewFeature::Slices => "slices",
+            PreviewFeature::CFfi => "c_ffi",
         }
     }
 
@@ -551,12 +557,17 @@ impl PreviewFeature {
         match *self {
             PreviewFeature::TestInfra => "ADR-0005",
             PreviewFeature::Slices => "ADR-0043",
+            PreviewFeature::CFfi => "ADR-0064",
         }
     }
 
     /// Get all available preview features.
     pub fn all() -> &'static [PreviewFeature] {
-        &[PreviewFeature::TestInfra, PreviewFeature::Slices]
+        &[
+            PreviewFeature::TestInfra,
+            PreviewFeature::Slices,
+            PreviewFeature::CFfi,
+        ]
     }
 
     /// Get a comma-separated list of all feature names (for help text).
@@ -580,6 +591,7 @@ impl std::str::FromStr for PreviewFeature {
         match s {
             "test_infra" => Ok(PreviewFeature::TestInfra),
             "slices" => Ok(PreviewFeature::Slices),
+            "c_ffi" => Ok(PreviewFeature::CFfi),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -1557,6 +1569,20 @@ pub enum ErrorKind {
         what: String,
     },
 
+    /// A type appeared in an `extern "C"` signature that the current FFI phase
+    /// cannot yet classify. C FFI P1 (ADR-0064, RUE-1055) supports only the
+    /// types whose native and target-C representations coincide: `i64`, `u64`,
+    /// and raw pointers. Other types (narrow integers, `bool`, aggregates,
+    /// floats, enums) await later phases.
+    #[error(
+        "type `{ty}` is not yet supported in an `extern \"C\"` signature: \
+         C FFI P1 (ADR-0064) supports only `i64`, `u64`, and pointer types"
+    )]
+    ExternSignatureTypeUnsupported {
+        /// The rejected type, as rendered for the user.
+        ty: String,
+    },
+
     /// A slice type / range-slice was used under `--preview slices` but the
     /// fat-pointer runtime is not implemented yet (ADR-0043 Phase 1, RUE-322).
     #[error("slice types are not yet fully implemented (ADR-0043 Phase 1, RUE-322)")]
@@ -1794,6 +1820,9 @@ impl ErrorKind {
 
             // Preview feature errors (E1100-E1199)
             ErrorKind::PreviewFeatureRequired { .. } => ErrorCode::PREVIEW_FEATURE_REQUIRED,
+            ErrorKind::ExternSignatureTypeUnsupported { .. } => {
+                ErrorCode::EXTERN_SIGNATURE_TYPE_UNSUPPORTED
+            }
             ErrorKind::SliceNotYetImplemented => ErrorCode::SLICE_NOT_YET_IMPLEMENTED,
             ErrorKind::SliceReturnNotAllowed => ErrorCode::SLICE_RETURN_NOT_ALLOWED,
             ErrorKind::SliceInAggregateField => ErrorCode::SLICE_IN_AGGREGATE_FIELD,
@@ -2626,7 +2655,7 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra, slices");
+        assert_eq!(names, "test_infra, slices, c_ffi");
     }
 
     #[test]

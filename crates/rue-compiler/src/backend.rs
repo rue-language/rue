@@ -2,6 +2,46 @@
 // Backend (code generation and linking)
 // ============================================================================
 
+/// Collect the raw C symbol names of every `extern "C"` foreign declaration in
+/// the lowered program (ADR-0064 C FFI). These are the undefined symbols a call
+/// site references and the linker resolves from a supplied static archive.
+pub(crate) fn collect_foreign_symbols(rir: &rue_rir::Rir, interner: &ThreadedRodeo) -> Vec<String> {
+    rir.iter()
+        .filter_map(|(_, inst)| match &inst.data {
+            rue_rir::InstData::FnDecl {
+                is_extern: true,
+                name,
+                ..
+            } => Some(interner.resolve(name).to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Project live callable legacy names to their machine symbols, plus an
+/// identity mapping for every `extern "C"` foreign declaration.
+///
+/// A foreign symbol maps to itself (no mangling, ADR-0064): a call site resolves
+/// it to the raw C name, the object writer records it as an undefined external,
+/// and the linker satisfies it from a static archive. The identity mapping also
+/// lets `validate_production_call_relocations` recognize the raw name as a
+/// declared foreign call rather than an unresolved glue symbol.
+fn foreign_call_symbol_mappings(
+    functions: &[FunctionWithCfg],
+    foreign_symbols: &[String],
+) -> std::collections::BTreeMap<String, String> {
+    let mut symbol_mappings = functions
+        .iter()
+        .map(|function| (function.legacy_name.clone(), function.machine_name.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for name in foreign_symbols {
+        symbol_mappings
+            .entry(name.clone())
+            .or_insert_with(|| name.clone());
+    }
+    symbol_mappings
+}
+
 /// Compile analyzed functions to a binary.
 ///
 /// This backend handles both architectures. It:
@@ -10,6 +50,7 @@
 /// 3. Links them into an executable
 ///
 /// This function is used by the sole one-shot compilation adapter.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_backend(
     functions: &[FunctionWithCfg],
     type_pool: &FrozenTypeInternPool,
@@ -17,6 +58,10 @@ pub(crate) fn compile_backend(
     interner: &ThreadedRodeo,
     options: &CompileOptions,
     warnings: &[CompileWarning],
+    // Names of `extern "C"` foreign declarations (ADR-0064 C FFI). Each is an
+    // undefined symbol a call site references by its raw (unmangled) name and
+    // that the linker resolves from a supplied static archive.
+    foreign_symbols: &[String],
 ) -> MultiErrorResult<CompileOutput> {
     // Check for main function
     let _main_fn = functions
@@ -53,10 +98,22 @@ pub(crate) fn compile_backend(
 
     // Generate object files based on target architecture
     let object_files = match options.target.arch() {
-        Arch::X86_64 => generate_x86_64_objects(functions, type_pool, strings, interner, options)?,
-        Arch::Aarch64 => {
-            generate_aarch64_objects(functions, type_pool, strings, interner, options)?
-        }
+        Arch::X86_64 => generate_x86_64_objects(
+            functions,
+            type_pool,
+            strings,
+            interner,
+            options,
+            foreign_symbols,
+        )?,
+        Arch::Aarch64 => generate_aarch64_objects(
+            functions,
+            type_pool,
+            strings,
+            interner,
+            options,
+            foreign_symbols,
+        )?,
     };
 
     // Link to executable
@@ -69,18 +126,17 @@ pub(crate) fn compile_backend(
 }
 
 /// Generate x86-64 object files for all functions.
+#[allow(clippy::too_many_arguments)]
 fn generate_x86_64_objects(
     functions: &[FunctionWithCfg],
     type_pool: &FrozenTypeInternPool,
     strings: &[String],
     interner: &ThreadedRodeo,
     options: &CompileOptions,
+    foreign_symbols: &[String],
 ) -> MultiErrorResult<Vec<Vec<u8>>> {
     let _span = info_span!("codegen", arch = "x86_64").entered();
-    let symbol_mappings = functions
-        .iter()
-        .map(|function| (function.legacy_name.clone(), function.machine_name.clone()))
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let symbol_mappings = foreign_call_symbol_mappings(functions, foreign_symbols);
     let symbols = rue_codegen::MachineSymbolResolver::new(&symbol_mappings);
 
     let results: Vec<CompileResult<Vec<u8>>> = functions
@@ -146,18 +202,17 @@ fn generate_x86_64_objects(
 }
 
 /// Generate AArch64 object files for all functions.
+#[allow(clippy::too_many_arguments)]
 fn generate_aarch64_objects(
     functions: &[FunctionWithCfg],
     type_pool: &FrozenTypeInternPool,
     strings: &[String],
     interner: &ThreadedRodeo,
     options: &CompileOptions,
+    foreign_symbols: &[String],
 ) -> MultiErrorResult<Vec<Vec<u8>>> {
     let _span = info_span!("codegen", arch = "aarch64").entered();
-    let symbol_mappings = functions
-        .iter()
-        .map(|function| (function.legacy_name.clone(), function.machine_name.clone()))
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let symbol_mappings = foreign_call_symbol_mappings(functions, foreign_symbols);
     let symbols = rue_codegen::MachineSymbolResolver::new(&symbol_mappings);
 
     let results: Vec<CompileResult<Vec<u8>>> = functions
@@ -750,6 +805,7 @@ drop fn StrBuf(self) { }
                     semantic.strings(),
                     interner,
                     &options,
+                    &[],
                 ),
                 Arch::Aarch64 => generate_aarch64_objects(
                     semantic.functions(),
@@ -757,6 +813,7 @@ drop fn StrBuf(self) { }
                     semantic.strings(),
                     interner,
                     &options,
+                    &[],
                 ),
             }
             .unwrap();
@@ -790,6 +847,7 @@ drop fn StrBuf(self) { }
                     semantic.strings(),
                     interner,
                     &options,
+                    &[],
                 ),
                 Arch::Aarch64 => generate_aarch64_objects(
                     semantic.functions(),
@@ -797,6 +855,7 @@ drop fn StrBuf(self) { }
                     semantic.strings(),
                     interner,
                     &options,
+                    &[],
                 ),
             }
             .unwrap();
@@ -841,6 +900,7 @@ drop fn StrBuf(self) { }
             semantic.strings(),
             interner,
             &options,
+            &[],
             &[],
         )
         .expect("ordinary source-defined StrBuf program must link without obsolete members");

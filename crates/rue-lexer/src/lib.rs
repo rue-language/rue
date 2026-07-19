@@ -50,6 +50,7 @@ pub enum TokenKind {
     Checked,   // checked { } block for unchecked operations
     Unchecked, // unchecked fn modifier
     Ptr,       // ptr const T / ptr mut T pointer types
+    Extern,    // extern "C" { } foreign declaration block (ADR-0064 C FFI)
 
     // Type keywords
     I8,
@@ -153,6 +154,7 @@ impl TokenKind {
             TokenKind::Checked => "'checked'",
             TokenKind::Unchecked => "'unchecked'",
             TokenKind::Ptr => "'ptr'",
+            TokenKind::Extern => "'extern'",
             TokenKind::I8 => "type 'i8'",
             TokenKind::I16 => "type 'i16'",
             TokenKind::I32 => "type 'i32'",
@@ -258,6 +260,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Checked => write!(f, "CHECKED"),
             TokenKind::Unchecked => write!(f, "UNCHECKED"),
             TokenKind::Ptr => write!(f, "PTR"),
+            TokenKind::Extern => write!(f, "EXTERN"),
             TokenKind::I8 => write!(f, "TYPE(i8)"),
             TokenKind::I16 => write!(f, "TYPE(i16)"),
             TokenKind::I32 => write!(f, "TYPE(i32)"),

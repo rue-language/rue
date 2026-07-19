@@ -225,6 +225,8 @@ pub struct SemanticDeclarationShell {
     pub is_generic: bool,
     pub is_public: bool,
     pub is_unchecked: bool,
+    /// Whether this is a foreign `extern "C"` declaration (ADR-0064 C FFI).
+    pub is_extern: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -767,6 +769,7 @@ impl<'a> DeclarationShells<'a> {
                                 is_generic: pending.shell.is_generic,
                                 is_pub: pending.shell.is_public,
                                 is_unchecked: pending.shell.is_unchecked,
+                                is_extern: pending.shell.is_extern,
                                 allow_unused_function,
                                 allow_unused_variable,
                                 allow_unreachable_code,
@@ -1467,6 +1470,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                         is_generic: false,
                         is_public: *is_pub,
                         is_unchecked: false,
+                        is_extern: false,
                     },
                     declaration: inst_ref,
                 });
@@ -1480,11 +1484,13 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                 is_generic,
                 is_public,
                 is_unchecked,
+                is_extern,
                 source,
             ) = match &inst.data {
                 InstData::FnDecl {
                     is_pub,
                     is_unchecked,
+                    is_extern,
                     name,
                     params,
                     body,
@@ -1530,6 +1536,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                         comptime.into_iter().any(|value| value),
                         *is_pub,
                         *is_unchecked,
+                        *is_extern,
                         DeclarationPayloadSource::Callable { body: *body },
                     )
                 }
@@ -1556,6 +1563,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                     false,
                     *is_pub,
                     false,
+                    false,
                     DeclarationPayloadSource::Const { initializer: *init },
                 ),
                 InstData::DropFnDecl { type_name, body } => (
@@ -1576,6 +1584,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                     false,
                     false,
                     false,
+                    false,
                     DeclarationPayloadSource::Destructor { body: *body },
                 ),
                 _ => continue,
@@ -1592,6 +1601,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                     is_generic,
                     is_public,
                     is_unchecked,
+                    is_extern,
                 },
                 declaration: inst_ref,
                 source,

@@ -895,6 +895,29 @@ impl Shapes<'_> {
                 self.expr(&v.init),
                 "_".into(),
             ),
+            Item::Extern(v) => {
+                let members = v.fns.iter().map(|foreign| {
+                    node(
+                        "extern-fn",
+                        "",
+                        foreign
+                            .return_type
+                            .as_ref()
+                            .map_or("_".into(), |t| self.ty(t)),
+                        "_".into(),
+                        "_".into(),
+                        "_".into(),
+                    )
+                });
+                node(
+                    "extern",
+                    &format!(" abi={}", v.abi),
+                    list(members),
+                    "_".into(),
+                    "_".into(),
+                    "_".into(),
+                )
+            }
             Item::Error(_) => leaf("error"),
         }
     }

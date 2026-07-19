@@ -45,6 +45,9 @@ impl Parser {
             TokenKind::Drop if directives.is_empty() && visibility == Visibility::Private => {
                 self.drop_fn(start).map(Item::DropFn)
             }
+            TokenKind::Extern if directives.is_empty() && visibility == Visibility::Private => {
+                self.extern_block(start).map(Item::Extern)
+            }
             TokenKind::Const => self
                 .const_decl(start, directives, visibility)
                 .map(Item::Const),
@@ -79,6 +82,69 @@ impl Parser {
             params,
             return_type,
             body,
+            span: self.span_from(start),
+        })
+    }
+
+    /// Parse a foreign-declaration block: `extern "C" { fn name(...) -> T; }`.
+    ///
+    /// The ABI string is captured verbatim (validated in semantic analysis so
+    /// the diagnostic can name the unsupported ABI). Each member is a body-less
+    /// function signature terminated by `;`.
+    fn extern_block(&mut self, start: u32) -> PResult<ExternBlock> {
+        self.expect(TokenKind::Extern)?;
+        let (abi, abi_span) = match self.kind() {
+            TokenKind::String(spur) => {
+                let span = self.bump().span;
+                (self.interner.resolve(&spur).to_string(), span)
+            }
+            _ => {
+                self.unexpected("an ABI string such as \"C\"");
+                return Err(());
+            }
+        };
+        // `"C"` is the only ABI the current C FFI phase accepts (ADR-0064). The
+        // slot reserves room for later `"C-unwind"` or platform variants.
+        if abi != "C" {
+            self.error_at(
+                format!(
+                    "unsupported extern ABI \"{abi}\": only \"C\" is supported \
+                     (ADR-0064 C FFI)"
+                ),
+                abi_span,
+            );
+        }
+        self.expect(TokenKind::LBrace)?;
+        let mut fns = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            fns.push(self.extern_fn()?);
+        }
+        self.expect(TokenKind::RBrace)?;
+        Ok(ExternBlock {
+            abi,
+            abi_span,
+            fns,
+            span: self.span_from(start),
+        })
+    }
+
+    /// Parse a single body-less foreign function signature inside an `extern`
+    /// block: `fn name(params) -> ret;`.
+    fn extern_fn(&mut self) -> PResult<ExternFn> {
+        let start = self.start();
+        self.expect(TokenKind::Fn)?;
+        let name = self.ident()?;
+        let params = self.params()?;
+        let return_type = if self.eat(TokenKind::Arrow) {
+            Some(self.ty()?)
+        } else {
+            None
+        };
+        self.expect(TokenKind::Semi)?;
+        Ok(ExternFn {
+            name,
+            params,
+            return_type,
             span: self.span_from(start),
         })
     }

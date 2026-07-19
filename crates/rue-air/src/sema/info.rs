@@ -35,6 +35,11 @@ pub struct FunctionInfo {
     /// Whether this function carries the `unchecked` modifier. Calling it
     /// requires a `checked` block at the call site (spec 9.1:1).
     pub is_unchecked: bool,
+    /// Whether this is a foreign `extern "C"` declaration (ADR-0064 C FFI): a
+    /// body-less import with no CFG. Calling it requires the `c_ffi` preview and
+    /// a `checked` block; codegen emits an undefined linker symbol rather than a
+    /// definition.
+    pub is_extern: bool,
     /// Whether `@allow(unused_function)` was applied to this function.
     pub allow_unused_function: bool,
     /// Whether `@allow(unused_variable)` was applied to this function.

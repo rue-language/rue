@@ -47,6 +47,7 @@ The following words are keywords and cannot be used as identifiers:
 | `checked` | Checked block (§9.1) |
 | `unchecked` | Unchecked function modifier |
 | `ptr` | Pointer type constructor (`ptr const T` / `ptr mut T`) |
+| `extern` | Foreign declaration block (`extern "C" { … }`, ADR-0064) |
 
 ## Type Names
 

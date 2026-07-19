@@ -332,6 +332,20 @@ impl<'a> BodySema<'a> {
             .with_help("wrap the call in a `checked { ... }` block"));
         }
 
+        // A foreign `extern "C"` function may only be called inside a `checked`
+        // block (ADR-0064 unchecked-only ruling): the boundary carries no Rue
+        // exclusivity, aliasing, or lifetime guarantee, exactly as `@syscall`
+        // requires a checked context (ADR-0028).
+        if fn_info.is_extern && ctx.checked_depth == 0 {
+            return Err(CompileError::new(
+                ErrorKind::UncheckedOpRequiresChecked {
+                    what: format!("calling foreign function `{fn_name_str}`"),
+                },
+                span,
+            )
+            .with_help("wrap the call in a `checked { ... }` block"));
+        }
+
         // Track this function as referenced (for lazy analysis)
         ctx.referenced_functions.insert(name);
 

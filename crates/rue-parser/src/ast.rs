@@ -82,6 +82,8 @@ pub enum Item {
     Struct(StructDecl),
     Enum(EnumDecl),
     DropFn(DropFn),
+    /// A foreign-declaration block: `extern "C" { fn ...; }` (ADR-0064 C FFI).
+    Extern(ExternBlock),
     /// Constant declaration (e.g., `const math = @import("math");`)
     Const(ConstDecl),
     /// Error node for recovered parse errors at item level.
@@ -270,6 +272,38 @@ pub struct Function {
     /// Function body
     pub body: Expr,
     /// Span covering the entire function
+    pub span: Span,
+}
+
+/// A foreign-declaration block: `extern "C" { fn getpid() -> i32; }`.
+///
+/// Groups body-less foreign function declarations that share an ABI. The ABI
+/// string is a first-class part of the grammar (`"C"` is the only value the
+/// current C FFI phase accepts, ADR-0064). Everything inside the block is a
+/// foreign import lowered to an undefined linker symbol.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternBlock {
+    /// The ABI string as written (e.g. `"C"`).
+    pub abi: String,
+    /// The span of the ABI string literal, for diagnostics.
+    pub abi_span: Span,
+    /// The foreign function declarations in this block.
+    pub fns: Vec<ExternFn>,
+    /// Span covering the entire `extern` block.
+    pub span: Span,
+}
+
+/// A single body-less foreign function declaration inside an [`ExternBlock`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternFn {
+    /// The declared function name; also the undefined C symbol name (no
+    /// mangling is applied to foreign declarations).
+    pub name: Ident,
+    /// Foreign function parameters.
+    pub params: Vec<Param>,
+    /// Return type (None means implicit unit `()`).
+    pub return_type: Option<TypeExpr>,
+    /// Span covering the entire declaration.
     pub span: Span,
 }
 
@@ -1295,6 +1329,20 @@ fn rebind_item(item: &mut Item, file_id: FileId) {
             rebind_expr(&mut drop_fn.body, file_id);
             rebind_span(&mut drop_fn.span, file_id);
         }
+        Item::Extern(extern_block) => {
+            rebind_span(&mut extern_block.abi_span, file_id);
+            for foreign in &mut extern_block.fns {
+                rebind_ident(&mut foreign.name, file_id);
+                for parameter in &mut foreign.params {
+                    rebind_param(parameter, file_id);
+                }
+                if let Some(return_type) = &mut foreign.return_type {
+                    rebind_type(return_type, file_id);
+                }
+                rebind_span(&mut foreign.span, file_id);
+            }
+            rebind_span(&mut extern_block.span, file_id);
+        }
         Item::Const(constant) => {
             rebind_directives(&mut constant.directives, file_id);
             rebind_ident(&mut constant.name, file_id);
@@ -1674,6 +1722,7 @@ impl fmt::Display for Ast {
                 Item::Struct(s) => fmt_struct(f, s, 0)?,
                 Item::Enum(e) => fmt_enum(f, e, 0)?,
                 Item::DropFn(drop_fn) => fmt_drop_fn(f, drop_fn, 0)?,
+                Item::Extern(extern_block) => fmt_extern(f, extern_block, 0)?,
                 Item::Const(c) => fmt_const(f, c, 0)?,
                 Item::Error(span) => writeln!(f, "Error({:?})", span)?,
             }
@@ -1728,6 +1777,16 @@ fn fmt_enum(f: &mut fmt::Formatter<'_>, e: &EnumDecl, level: usize) -> fmt::Resu
                 variant.payload.len()
             )?;
         }
+    }
+    Ok(())
+}
+
+fn fmt_extern(f: &mut fmt::Formatter<'_>, block: &ExternBlock, level: usize) -> fmt::Result {
+    indent(f, level)?;
+    writeln!(f, "Extern \"{}\"", block.abi)?;
+    for foreign in &block.fns {
+        indent(f, level + 1)?;
+        writeln!(f, "ExternFn sym:{}", foreign.name.name.into_usize())?;
     }
     Ok(())
 }

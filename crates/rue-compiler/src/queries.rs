@@ -71,6 +71,11 @@ pub struct CompileOptions {
     pub opt_level: OptLevel,
     /// Enabled preview features.
     pub preview_features: PreviewFeatures,
+    /// Static archives (`.a`) supplied on the command line with
+    /// `--link-archive` (ADR-0064 C FFI). The linker resolves undefined
+    /// `extern "C"` symbols from these members. Linking-only: this does not
+    /// participate in the semantic or codegen cache identity.
+    pub link_archives: Vec<std::path::PathBuf>,
 }
 
 impl Default for CompileOptions {
@@ -81,6 +86,7 @@ impl Default for CompileOptions {
             linker: LinkerMode::Internal,
             opt_level: OptLevel::default(),
             preview_features: PreviewFeatures::new(),
+            link_archives: Vec::new(),
         }
     }
 }
@@ -854,6 +860,8 @@ pub(crate) fn compile_with_session(
     };
     let semantic = session.canonical_semantic(options)?;
     let session_work = session.work();
+    let foreign_symbols =
+        crate::backend::collect_foreign_symbols(rir.rir(), rir.semantic_symbols().interner());
     let mut output = crate::backend::compile_backend(
         semantic.functions(),
         semantic.type_pool(),
@@ -861,6 +869,7 @@ pub(crate) fn compile_with_session(
         rir.semantic_symbols().interner(),
         options,
         semantic.warnings(),
+        &foreign_symbols,
     )?;
     output.source_stats = SourceStats {
         files: snapshot.len(),

@@ -1514,6 +1514,14 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                     continue;
                 }
 
+                // Skip foreign `extern "C"` declarations (ADR-0064 C FFI): they
+                // have no body and no CFG. A call to one lowers to an undefined
+                // linker symbol resolved from a static archive, so the function
+                // is never analyzed or code-generated here.
+                if fn_info.is_extern {
+                    continue;
+                }
+
                 let fn_name_str = sema.interner.resolve(&fn_name).to_string();
 
                 // Bind the body through the exact free-function declaration that

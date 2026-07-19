@@ -198,6 +198,7 @@ impl TokenView {
             Checked => "CHECKED",
             Unchecked => "UNCHECKED",
             Ptr => "PTR",
+            Extern => "EXTERN",
             I8 => "TYPE(i8)",
             I16 => "TYPE(i16)",
             I32 => "TYPE(i32)",
@@ -1074,6 +1075,22 @@ fn syntax_item_record(
                 expr_record(owner, &drop_fn.body),
             ],
         ),
+        rue_parser::Item::Extern(extern_block) => {
+            let children = extern_block
+                .fns
+                .iter()
+                .map(|foreign| {
+                    syntax_record(
+                        "extern_function",
+                        foreign.span,
+                        Some(resolved_ident(owner, foreign.name)),
+                        None,
+                        Vec::new(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            syntax_record("extern", extern_block.span, None, None, children)
+        }
         rue_parser::Item::Const(constant) => {
             let mut children = directive_records(owner, &constant.directives).collect::<Vec<_>>();
             children.push(modifier_record(
