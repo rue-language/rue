@@ -1,0 +1,30 @@
+// Query lineage maps result-producing clauses back to table and column ids.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+
+pub fn audit(borrow database: model.Database) -> metric.Metric {
+    let mut out = metric.new(4701);
+    let mut i: u64 = 0;
+    while i < database.queries.len() {
+        let query = database.queries.get_or(i, model.empty_query());
+        metric.observe(inout out, query.table, i + 1);
+        if query.filter_column != model.NONE() {
+            metric.observe(inout out, query.filter_column, 2);
+        }
+        if query.join_table != model.NONE() {
+            metric.observe(inout out, query.join_table, 3);
+            metric.observe(inout out, query.join_left, 5);
+            metric.observe(inout out, query.join_right, 7);
+        }
+        if query.group_column != model.NONE() {
+            metric.observe(inout out, query.group_column, 11);
+        }
+        if query.order_column != model.NONE() {
+            metric.observe(inout out, query.order_column, 13);
+        }
+        metric.warn(inout out, query.table >= database.tables.len());
+        i = i + 1;
+    }
+    metric.finish(inout out);
+    out
+}

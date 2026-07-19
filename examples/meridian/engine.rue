@@ -1,0 +1,89 @@
+// Deterministic row engine: visibility, filter, join, grouping, ordering, limit,
+// index-choice observation, and aggregate accounting.
+const model = @import("model.rue");
+const result = @import("result.rue");
+
+fn qualifies(borrow database: model.Database, borrow query: model.Query, row_index: u64) -> bool {
+    let row = database.rows.get_or(row_index, model.empty_row());
+    if row.table != query.table || !model.visible(borrow row, database.version) { return false; }
+    if query.filter_column == model.NONE() { return true; }
+    model.cell_number(borrow database, row_index, query.filter_column) >= query.filter_value
+}
+
+fn join_matches(borrow database: model.Database, borrow query: model.Query, row_index: u64) -> u64 {
+    if query.join_table == model.NONE() { return 1; }
+    let key = model.cell_number(borrow database, row_index, query.join_left);
+    let mut matches: u64 = 0;
+    let mut j: u64 = 0;
+    while j < database.rows.len() {
+        let row = database.rows.get_or(j, model.empty_row());
+        if row.table == query.join_table && model.visible(borrow row, database.version) &&
+            model.cell_number(borrow database, j, query.join_right) == key {
+            matches = matches + 1;
+        }
+        j = j + 1;
+    }
+    matches
+}
+
+fn group_seen(borrow value: result.Result, item: u64) -> bool {
+    let mut i: u64 = 0;
+    while i < value.values.len() {
+        if value.values.get_or(i, model.NONE()) == item { return true; }
+        i = i + 1;
+    }
+    false
+}
+
+fn sort(inout values: model.U64s) {
+    let mut i: u64 = 1;
+    while i < values.len() {
+        let value = values.get_or(i, 0);
+        let mut j = i;
+        while j > 0 && values.get_or(j - 1, 0) > value {
+            values.set(j, values.get_or(j - 1, 0));
+            j = j - 1;
+        }
+        values.set(j, value);
+        i = i + 1;
+    }
+}
+
+pub fn execute(borrow database: model.Database, borrow query: model.Query) -> result.Result {
+    let mut out = result.empty();
+    out.used_index = query.filter_column != model.NONE() &&
+        model.has_index(borrow database, query.table, query.filter_column);
+    let mut groups = model.U64s.new();
+    let mut i: u64 = 0;
+    while i < database.rows.len() {
+        if qualifies(borrow database, borrow query, i) {
+            let matches = join_matches(borrow database, borrow query, i);
+            if matches > 0 {
+                let value_column = if query.order_column != model.NONE() { query.order_column }
+                    else if query.filter_column != model.NONE() { query.filter_column }
+                    else { database.tables.get_or(query.table, model.empty_table()).first_column };
+                let value = model.cell_number(borrow database, i, value_column);
+                let mut m: u64 = 0;
+                while m < matches {
+                    result.observe(inout out, value);
+                    out.joined_rows = out.joined_rows + if query.join_table != model.NONE() { 1 } else { 0 };
+                    m = m + 1;
+                }
+                if query.group_column != model.NONE() {
+                    let group = model.cell_number(borrow database, i, query.group_column);
+                    if !group_seen(borrow out, group) { groups.push(group); }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    if query.order_column != model.NONE() { sort(inout out.values); }
+    out.groups = groups.len();
+    if query.limit != model.NONE() && out.rows > query.limit {
+        out.rows = query.limit;
+        out.truncated = true;
+    }
+    result.finish(inout out);
+    out.valid = out.minimum <= out.maximum || out.rows == 0;
+    out
+}

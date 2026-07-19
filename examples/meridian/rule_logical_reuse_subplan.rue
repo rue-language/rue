@@ -1,0 +1,126 @@
+// Meridian optimizer rule: logical reuse subplan.
+// Evaluates plan nodes plus catalog/index evidence, records a deterministic
+// rewrite benefit, and proves that accepted rewrites never increase cost.
+const model = @import("model.rue");
+const plan = @import("plan.rue");
+const rule_result = @import("rule_result.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn RULE() -> u64 { 6022 }
+pub fn FOCUS() -> u64 { 22 }
+
+fn eligible(borrow node: plan.Node, borrow query: model.Query) -> bool {
+    if FOCUS() % 8 == 0 {
+        node.kind == plan.FILTER() && query.filter_column != model.NONE()
+    } else if FOCUS() % 8 == 1 {
+        node.kind == plan.SCAN() || node.kind == plan.INDEX_SCAN()
+    } else if FOCUS() % 8 == 2 {
+        node.kind == plan.NESTED_JOIN() || node.kind == plan.HASH_JOIN()
+    } else if FOCUS() % 8 == 3 {
+        node.kind == plan.GROUP() && query.group_column != model.NONE()
+    } else if FOCUS() % 8 == 4 {
+        node.kind == plan.SORT() && query.order_column != model.NONE()
+    } else if FOCUS() % 8 == 5 {
+        node.kind == plan.LIMIT() && query.limit != model.NONE()
+    } else if FOCUS() % 8 == 6 {
+        node.estimated_rows > 0 && node.cost > node.estimated_rows
+    } else {
+        node.left != model.NONE() || node.right != model.NONE()
+    }
+}
+
+fn node_benefit(borrow node: plan.Node) -> u64 {
+    if node.cost <= 1 { return 0; }
+    let divisor = (FOCUS() % 5) + 2;
+    let raw = node.cost / divisor;
+    if raw == 0 { 1 } else { raw }
+}
+
+fn catalog_fingerprint(borrow database: model.Database, borrow query: model.Query) -> u64 {
+    let table = database.tables.get_or(query.table, model.empty_table());
+    let mut value = database.strings.hash(table.name);
+    value = @import("metric.rue").mix(value, table.row_count);
+    value = @import("metric.rue").mix(value, table.column_count);
+    value = @import("metric.rue").mix(value, database.indexes.len());
+    value = @import("metric.rue").mix(value, FOCUS());
+    value
+}
+
+fn inspect_indexes(inout out: rule_result.Decision, borrow database: model.Database,
+    borrow query: model.Query) {
+    let mut i: u64 = 0;
+    while i < database.indexes.len() {
+        let index = database.indexes.get_or(i, model.empty_index());
+        out.inspected = out.inspected + 1;
+        if index.table == query.table &&
+            (index.column == query.filter_column || index.column == query.order_column) {
+            let benefit = if index.unique { (FOCUS() % 7) + 1 } else { (FOCUS() % 3) + 1 };
+            rule_result.record(inout out, benefit, index.entries + index.column + FOCUS());
+        }
+        i = i + 1;
+    }
+}
+
+fn inspect_columns(inout out: rule_result.Decision, borrow database: model.Database,
+    borrow query: model.Query) {
+    let table = database.tables.get_or(query.table, model.empty_table());
+    let mut i: u64 = 0;
+    while i < table.column_count {
+        let column = database.columns.get_or(table.first_column + i, model.empty_column());
+        out.inspected = out.inspected + 1;
+        let selected = (column.ordinal + FOCUS()) % 5 == 0 ||
+            column.name == query.filter_column_name ||
+            column.name == query.group_column_name ||
+            column.name == query.order_column_name;
+        if selected {
+            let benefit = if column.unique { 2 } else { 1 };
+            rule_result.record(inout out, benefit,
+                database.strings.hash(column.name) + column.kind + column.ordinal);
+        }
+        i = i + 1;
+    }
+}
+
+pub fn evaluate(borrow database: model.Database, borrow query: model.Query,
+    borrow input: plan.Plan) -> rule_result.Decision {
+    let mut out = rule_result.empty(RULE(), input.cost);
+    let fingerprint = catalog_fingerprint(borrow database, borrow query);
+    let mut i: u64 = 0;
+    while i < input.nodes.len() {
+        let node = input.nodes.get_or(i, plan.empty_node());
+        out.inspected = out.inspected + 1;
+        if eligible(borrow node, borrow query) {
+            rule_result.record(inout out, node_benefit(borrow node),
+                fingerprint + node.kind * 17 + node.estimated_rows + i);
+        }
+        i = i + 1;
+    }
+    inspect_indexes(inout out, borrow database, borrow query);
+    inspect_columns(inout out, borrow database, borrow query);
+    rule_result.finish(inout out);
+    out
+}
+
+pub fn verify(borrow input: plan.Plan, borrow value: rule_result.Decision) -> bool {
+    value.rule == RULE() && value.inspected >= input.nodes.len() && value.valid &&
+        value.rewrites <= value.matches && value.cost_after <= value.cost_before
+}
+
+pub fn render(borrow database: model.Database, borrow query: model.Query,
+    borrow input: plan.Plan) -> StrBuf {
+    let value = evaluate(borrow database, borrow query, borrow input);
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "logical_reuse_subplan\n");
+    text.line(inout out, "rule=", value.rule);
+    text.line(inout out, "inspected=", value.inspected);
+    text.line(inout out, "matches=", value.matches);
+    text.line(inout out, "rewrites=", value.rewrites);
+    text.line(inout out, "cost_before=", value.cost_before);
+    text.line(inout out, "cost_after=", value.cost_after);
+    text.line(inout out, "benefit=", value.benefit);
+    text.line(inout out, "digest=", value.digest);
+    text.bool_line(inout out, "verified=", verify(borrow input, borrow value));
+    out
+}

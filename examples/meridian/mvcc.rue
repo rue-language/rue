@@ -1,0 +1,23 @@
+// Snapshot visibility oracle over committed, deleted, and uncommitted rows.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+
+pub fn audit(borrow database: model.Database) -> metric.Metric {
+    let mut out = metric.new(4101);
+    let mut snapshot: u64 = 0;
+    while snapshot <= database.version + 1 {
+        let mut visible_rows: u64 = 0;
+        let mut i: u64 = 0;
+        while i < database.rows.len() {
+            let row = database.rows.get_or(i, model.empty_row());
+            if model.visible(borrow row, snapshot) { visible_rows = visible_rows + 1; }
+            metric.warn(inout out, row.version_deleted != model.NONE() &&
+                row.version_deleted < row.version_created);
+            i = i + 1;
+        }
+        metric.observe(inout out, visible_rows, snapshot + 1);
+        snapshot = snapshot + 1;
+    }
+    metric.finish(inout out);
+    out
+}

@@ -1,0 +1,40 @@
+// Result of evaluating one logical or physical optimizer rule.
+const metric = @import("metric.rue");
+
+pub struct Decision {
+    rule: u64,
+    inspected: u64,
+    matches: u64,
+    rewrites: u64,
+    cost_before: u64,
+    cost_after: u64,
+    benefit: u64,
+    digest: u64,
+    valid: bool,
+}
+
+pub fn empty(rule: u64, cost: u64) -> Decision {
+    Decision { rule: rule, inspected: 0, matches: 0, rewrites: 0,
+        cost_before: cost, cost_after: cost, benefit: 0,
+        digest: metric.mix(14695981039346656037, rule), valid: true }
+}
+
+pub fn record(inout value: Decision, benefit: u64, fingerprint: u64) {
+    value.matches = value.matches + 1;
+    value.digest = metric.mix(value.digest, fingerprint);
+    if benefit > 0 && benefit <= value.cost_after {
+        value.rewrites = value.rewrites + 1;
+        value.benefit = value.benefit + benefit;
+        value.cost_after = value.cost_after - benefit;
+    }
+}
+
+pub fn finish(inout value: Decision) {
+    value.digest = metric.mix(value.digest, value.inspected);
+    value.digest = metric.mix(value.digest, value.matches);
+    value.digest = metric.mix(value.digest, value.rewrites);
+    value.digest = metric.mix(value.digest, value.cost_after);
+    value.valid = value.rewrites <= value.matches &&
+        value.cost_after <= value.cost_before &&
+        value.cost_before - value.cost_after == value.benefit;
+}

@@ -1,0 +1,48 @@
+// Query result summary retained independently of any presentation format.
+const std = @import("std");
+
+pub const U64s = std.arraybuf.ArrayBuf(u64);
+
+pub struct Result {
+    rows: u64,
+    joined_rows: u64,
+    groups: u64,
+    sum: u64,
+    minimum: u64,
+    maximum: u64,
+    checksum: u64,
+    used_index: bool,
+    truncated: bool,
+    values: U64s,
+    valid: bool,
+}
+
+pub fn empty() -> Result {
+    Result {
+        rows: 0, joined_rows: 0, groups: 0, sum: 0,
+        minimum: 18446744073709551615, maximum: 0,
+        checksum: 14695981039346656037, used_index: false,
+        truncated: false, values: U64s.new(), valid: true,
+    }
+}
+
+pub fn mix(hash: u64, value: u64) -> u64 {
+    @wrapping_mul(hash ^ value, 1099511628211)
+}
+
+pub fn observe(inout value: Result, item: u64) {
+    value.rows = value.rows + 1;
+    value.sum = value.sum + item;
+    if item < value.minimum { value.minimum = item; }
+    if item > value.maximum { value.maximum = item; }
+    value.checksum = mix(value.checksum, item);
+    value.values.push(item);
+}
+
+pub fn finish(inout value: Result) {
+    if value.rows == 0 { value.minimum = 0; }
+    value.checksum = mix(value.checksum, value.rows);
+    value.checksum = mix(value.checksum, value.joined_rows);
+    value.checksum = mix(value.checksum, value.groups);
+    value.checksum = mix(value.checksum, value.sum);
+}
