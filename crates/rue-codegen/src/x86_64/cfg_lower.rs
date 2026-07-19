@@ -57,6 +57,7 @@ pub struct CfgLower<'a> {
     ctx: CfgLowerContext<'a>,
     /// Interner for resolving Spur to string
     interner: &'a ThreadedRodeo,
+    symbols: crate::MachineSymbolResolver<'a>,
     mir: X86Mir,
     /// Maps CFG values to vregs
     value_map: HashMap<CfgValue, VReg>,
@@ -159,7 +160,21 @@ impl<'a> CfgLower<'a> {
         type_pool: &'a FrozenTypeInternPool,
         interner: &'a ThreadedRodeo,
     ) -> Self {
-        Self::new_inner(cfg, type_pool, interner)
+        Self::new_inner(
+            cfg,
+            type_pool,
+            interner,
+            crate::MachineSymbolResolver::default(),
+        )
+    }
+
+    pub fn new_with_symbols(
+        cfg: &'a ValidatedCfg,
+        type_pool: &'a FrozenTypeInternPool,
+        interner: &'a ThreadedRodeo,
+        symbols: crate::MachineSymbolResolver<'a>,
+    ) -> Self {
+        Self::new_inner(cfg, type_pool, interner, symbols)
     }
 
     #[cfg(test)]
@@ -168,13 +183,19 @@ impl<'a> CfgLower<'a> {
         type_pool: &'a FrozenTypeInternPool,
         interner: &'a ThreadedRodeo,
     ) -> Self {
-        Self::new_inner(cfg, type_pool, interner)
+        Self::new_inner(
+            cfg,
+            type_pool,
+            interner,
+            crate::MachineSymbolResolver::default(),
+        )
     }
 
     fn new_inner(
         cfg: &'a Cfg,
         type_pool: &'a FrozenTypeInternPool,
         interner: &'a ThreadedRodeo,
+        symbols: crate::MachineSymbolResolver<'a>,
     ) -> Self {
         let num_params = cfg.num_params();
 
@@ -191,6 +212,7 @@ impl<'a> CfgLower<'a> {
         Self {
             ctx: CfgLowerContext::new(cfg, type_pool),
             interner,
+            symbols,
             mir: X86Mir::new(),
             value_map: HashMap::with_capacity(num_values),
             block_param_vregs: HashMap::with_capacity(estimated_block_params),
@@ -2685,7 +2707,13 @@ impl crate::value_plan::ValueLowerAdapter for CfgLower<'_> {
         self.mir.alloc_vreg()
     }
     fn resolve_symbol(&self, symbol: lasso::Spur) -> String {
+        self.symbols.resolve(self.interner.resolve(&symbol))
+    }
+    fn resolve_intrinsic_symbol(&self, symbol: lasso::Spur) -> String {
         self.interner.resolve(&symbol).to_owned()
+    }
+    fn resolve_named_symbol(&self, symbol: &str) -> String {
+        self.symbols.resolve(symbol)
     }
     fn call_arg_register_budget(&self) -> usize {
         ARG_REGS.len()
@@ -3175,6 +3203,7 @@ mod tests {
             func.param_modes.clone(),
             &interner,
             func.allow_unreachable_code,
+            func.callable_kind,
         );
 
         CfgLower::new(cfg_output.cfg.as_ref().unwrap(), type_pool, &interner)
@@ -3224,6 +3253,7 @@ mod tests {
             func.param_modes.clone(),
             &interner,
             func.allow_unreachable_code,
+            func.callable_kind,
         );
         CfgLower::new(cfg_output.cfg.as_ref().unwrap(), type_pool, &interner).lower()
     }
@@ -3512,6 +3542,7 @@ mod tests {
                 func.param_modes.clone(),
                 &interner,
                 func.allow_unreachable_code,
+                func.callable_kind,
             )
             .cfg
             .unwrap();

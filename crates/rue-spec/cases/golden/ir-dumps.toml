@@ -169,6 +169,13 @@ fn main() -> i32 {
 """
 target = "x86-64-linux"
 expected_mir = """
+function set:
+    mov v0, [rbp-8]
+    mov v1, 42
+    mov [v0], v1
+    mov v2, 0
+    ret
+
 function main:
     mov v0, 0
     mov [rbp-8], v0
@@ -184,13 +191,6 @@ function main:
     mov v5, [rbp-8]
     mov rdi, v5
     call __rue_exit
-
-function set:
-    mov v0, [rbp-8]
-    mov v1, 42
-    mov [v0], v1
-    mov v2, 0
-    ret
 """
 
 [[case]]
@@ -209,6 +209,13 @@ fn main() -> i32 {
 """
 target = "aarch64-macos"
 expected_mir = """
+function set:
+    ldr v0, [fp, #-8]
+    mov v1, #42
+    str v1, [v0]
+    mov v2, #0
+    ret
+
 function main:
     mov v0, #0
     str v0, [fp, #-8]
@@ -222,13 +229,6 @@ function main:
     ldr v5, [fp, #-8]
     mov x0, v5
     bl __rue_exit
-
-function set:
-    ldr v0, [fp, #-8]
-    mov v1, #42
-    str v1, [v0]
-    mov v2, #0
-    ret
 """
 
 [[case]]

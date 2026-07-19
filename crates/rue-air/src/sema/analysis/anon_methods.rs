@@ -378,9 +378,65 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
     /// This is intentional: for structural equality, we compare type symbols directly
     /// so that `Self` matches `Self` even before we know the concrete StructId.
     pub(crate) fn extract_anon_method_sigs(
-        &self,
+        &mut self,
         methods: &rue_rir::RirAnonStructMethodsRange,
+        type_subst: &std::collections::HashMap<Spur, Type>,
+        value_subst: &std::collections::HashMap<Spur, ConstValue>,
     ) -> Vec<super::super::AnonMethodSig> {
+        fn resolve(
+            sema: &mut crate::sema::Sema<'_, impl crate::sema::DeclarationPhase>,
+            symbol: Spur,
+            type_subst: &std::collections::HashMap<Spur, Type>,
+            value_subst: &std::collections::HashMap<Spur, ConstValue>,
+            span: Span,
+        ) -> crate::sema::AnonMethodType {
+            use crate::sema::AnonMethodType as T;
+            let spelling = sema.interner.resolve(&symbol).to_owned();
+            if spelling == "Self" {
+                return T::SelfType;
+            }
+            if let Some((element, len)) = crate::types::parse_array_type_syntax(&spelling) {
+                let element = sema.interner.get_or_intern(&element);
+                let len = sema
+                    .resolve_array_length(&len, span, Some(value_subst))
+                    .ok();
+                return len.map_or_else(
+                    || T::Syntax(spelling.into()),
+                    |len| T::Array {
+                        element: Box::new(resolve(sema, element, type_subst, value_subst, span)),
+                        len,
+                    },
+                );
+            }
+            if let Some(pointee) = spelling.strip_prefix("ptr const ") {
+                let pointee = sema.interner.get_or_intern(pointee);
+                return T::PtrConst(Box::new(resolve(
+                    sema,
+                    pointee,
+                    type_subst,
+                    value_subst,
+                    span,
+                )));
+            }
+            if let Some(pointee) = spelling.strip_prefix("ptr mut ") {
+                let pointee = sema.interner.get_or_intern(pointee);
+                return T::PtrMut(Box::new(resolve(
+                    sema,
+                    pointee,
+                    type_subst,
+                    value_subst,
+                    span,
+                )));
+            }
+            sema.resolve_type_for_comptime_with_subst_and_values_at_span(
+                symbol,
+                type_subst,
+                value_subst,
+                span,
+            )
+            .map_or_else(|| T::Syntax(spelling.into()), T::Concrete)
+        }
+
         let method_refs = self.rir.anon_struct_methods(methods);
         let mut sigs = Vec::with_capacity(method_refs.len());
 
@@ -400,7 +456,10 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
                 // types do, so anonymous types that differ in any of them must
                 // not share one StructId/method body (RUE-634).
                 let params = self.rir.params(params);
-                let param_types: Vec<Spur> = params.iter().map(|p| p.ty).collect();
+                let param_types = params
+                    .iter()
+                    .map(|p| resolve(self, p.ty, type_subst, value_subst, method_inst.span))
+                    .collect();
                 let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
                 let param_comptime: Vec<bool> = params.iter().map(|p| p.is_comptime).collect();
 
@@ -411,7 +470,13 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
                     param_types,
                     param_modes,
                     param_comptime,
-                    return_type: *return_type,
+                    return_type: resolve(
+                        self,
+                        *return_type,
+                        type_subst,
+                        value_subst,
+                        method_inst.span,
+                    ),
                 });
             }
         }

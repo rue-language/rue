@@ -779,7 +779,10 @@ mod durable_body_integration_tests {
             .iter()
             .flat_map(|body| body.payload.instructions.iter())
             .filter_map(|instruction| match &instruction.data {
-                crate::DurableAirInstData::Call { function, .. } => Some(function.name()),
+                crate::DurableAirInstData::Call {
+                    function: rue_air::FunctionInstanceKey::Definition(function),
+                    ..
+                } => Some(function.name()),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -979,6 +982,7 @@ mod durable_body_integration_tests {
                 imported.param_modes,
                 epoch.interner(),
                 imported.allow_unreachable_code,
+                ordinary.analyzed.callable_kind,
             );
             assert!(cfg_output.errors.is_empty());
             let cfg = cfg_output.cfg.take().unwrap();
@@ -9038,7 +9042,9 @@ mod tests {
                 1,
                 "/p/main.rue",
                 "main.rue",
-                "fn a() -> i32 { 1 }\nfn b() -> i32 { 2 }\nfn main() -> i32 { a() + b() }",
+                "fn a() -> i32 { @dbg(\"same\"); @dbg(\"same\"); @dbg(\"alpha\"); 1 }\n\
+                 fn b() -> i32 { @dbg(\"beta\"); 2 }\n\
+                 fn main() -> i32 { @dbg(\"gamma\"); a() + b() }",
             )],
             1,
         );
@@ -9047,7 +9053,10 @@ mod tests {
                 1,
                 "/p/main.rue",
                 "main.rue",
-                "fn a() -> i32 { 1 }\nfn b() -> i32 { 3 }\nfn main() -> i32 { a() + b() }",
+                "// move every retained body and perturb another body's string projection\n\
+                 fn a() -> i32 { @dbg(\"same\"); @dbg(\"same\"); @dbg(\"alpha\"); 1 }\n\
+                 fn b() -> i32 { @dbg(\"delta\"); @dbg(\"beta\"); 3 }\n\
+                 fn main() -> i32 { @dbg(\"gamma\"); a() + b() }",
             )],
             1,
         );
@@ -9060,13 +9069,42 @@ mod tests {
         let cold = session.canonical_semantic(&options).unwrap();
         assert_eq!(cold.work().cfg.cfg_builds_attempted, 3);
         assert_eq!(cold.work().cfg.optimization_attempts, 3);
+        let cold_atoms = cold
+            .functions()
+            .iter()
+            .flat_map(|function| function.local_atoms.iter())
+            .collect::<Vec<_>>();
+        assert_eq!(cold_atoms.len(), 5);
+        assert_eq!(
+            cold_atoms
+                .iter()
+                .filter(|atom| atom.content.as_ref() == "same")
+                .count(),
+            2
+        );
+        assert!(cold_atoms.iter().any(|atom| atom.dense_id > 1));
         session.update(&second).into_result().unwrap();
         let warm = session.canonical_semantic(&options).unwrap();
-        assert_eq!(warm.work().cfg.cfg_reuses, 2);
+        assert_eq!(
+            warm.work().cfg.cfg_reuses,
+            2,
+            "cfg work: {:?}",
+            warm.work().cfg
+        );
         assert_eq!(warm.work().cfg.cfg_import_successes, 2);
         assert_eq!(warm.work().cfg.cfg_builds_attempted, 1);
         assert_eq!(warm.work().cfg.optimization_attempts, 1);
         assert_eq!(warm.work().cfg.optimized_level_attempts, 1);
+        for function in warm.functions() {
+            for atom in &function.local_atoms {
+                assert_eq!(
+                    warm.strings()
+                        .get(atom.dense_id as usize)
+                        .map(String::as_str),
+                    Some(atom.content.as_ref())
+                );
+            }
+        }
 
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
@@ -9120,7 +9158,12 @@ mod tests {
         let cache = Arc::make_mut(session.last_successful_cfg_cache.as_mut().unwrap());
         let specialization = cache
             .iter_mut()
-            .find(|candidate| candidate.input.specialization.is_some())
+            .find(|candidate| {
+                matches!(
+                    candidate.input.function,
+                    crate::FunctionInstanceKey::Specialization { .. }
+                )
+            })
             .unwrap();
         specialization.semantic_schema_version.implementation_epoch += 1;
         session.update(&second).into_result().unwrap();
@@ -9638,7 +9681,7 @@ mod tests {
     }
 
     #[test]
-    fn anonymous_structural_body_reuse_fails_closed_after_declaration_reuse() {
+    fn anonymous_structural_body_operations_export_durably_after_declaration_reuse() {
         let first = snapshot(
             &[(
                 1,
@@ -9674,6 +9717,8 @@ mod tests {
         assert_eq!(ordinary.work().binding.durable_payloads_installed, 2);
         assert_eq!(ordinary.work().declaration_reuse.durable_records_reused, 2);
         assert_eq!(ordinary.work().declaration_reuse.fallback_epochs_started, 0);
+        assert_eq!(ordinary.work().durable_bodies.export_successes, 1);
+        assert_eq!(ordinary.work().durable_bodies.export_rejections, 0);
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
         let expected = fresh.canonical_semantic(&options).unwrap();
@@ -13821,7 +13866,8 @@ fn main() -> i32 { selected.value() }"#,
                 41,
                 "/relocated/main.rue",
                 "main.rue",
-                "fn helper(x: i32) -> i32 { x + 1 }\nfn main() -> i32 { helper(41) }",
+                "fn helper(x: i32) -> i32 { let message: str = \"same\"; @dbg(message); x + 1 }\n\
+                 fn main() -> i32 { let message: str = \"same\"; @dbg(message); helper(41) }",
             )],
             41,
         );
@@ -13831,6 +13877,18 @@ fn main() -> i32 { selected.value() }"#,
             .semantic_dependency_inputs(&CompileOptions::default(), None)
             .unwrap();
         assert_eq!(manifest.durable_ordinary_bodies().len(), 2);
+        let retained_atoms = manifest
+            .durable_ordinary_bodies()
+            .iter()
+            .flat_map(|body| body.payload.body.local_atoms.iter())
+            .collect::<Vec<_>>();
+        assert_eq!(retained_atoms.len(), 2);
+        assert_eq!(retained_atoms[0].content.as_ref(), "same");
+        assert_eq!(retained_atoms[1].content.as_ref(), "same");
+        assert_ne!(
+            retained_atoms[0].identity.producer,
+            retained_atoms[1].identity.producer
+        );
         let work = manifest.work().durable_bodies;
         assert_eq!(work.finalization_attempts, 2);
         assert_eq!(work.finalization_completions, 2);
@@ -13858,6 +13916,14 @@ fn main() -> i32 { selected.value() }"#,
             ..CompileOptions::default()
         };
         let reused = session.canonical_semantic(&optimized_options).unwrap();
+        assert_eq!(
+            reused
+                .functions()
+                .iter()
+                .map(|function| function.local_atoms.len())
+                .sum::<usize>(),
+            2
+        );
         let reused_work = reused.work();
         assert_eq!(reused_work.body_analysis.bodies_attempted, 0);
         assert_eq!(reused_work.body_analysis.bodies_succeeded, 0);
@@ -14965,6 +15031,9 @@ fn main() -> i32 { selected.value() }"#,
         else {
             unreachable!();
         };
+        let rue_air::FunctionInstanceKey::Definition(helper) = helper else {
+            panic!("named helper call must retain its definition identity");
+        };
         assert_eq!(helper.name(), "helper");
         let helper_owner = helper.owner().unwrap();
         let spare = StableDefinitionKey::for_test(
@@ -14977,7 +15046,7 @@ fn main() -> i32 { selected.value() }"#,
         let crate::DurableAirInstData::Call { function, .. } = &mut instructions[call].data else {
             unreachable!();
         };
-        *function = spare;
+        *function = rue_air::FunctionInstanceKey::Definition(spare);
         let later = instructions.len() - 1;
         assert!(later > call);
         instructions[later].anchor.end = u32::MAX;

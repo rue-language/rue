@@ -20,15 +20,14 @@ use crate::*;
 const REVIEWED_SEMANTIC_SCHEMA: DurableSemanticSchemaVersion = DurableSemanticSchemaVersion {
     major: 1,
     minor: 0,
-    // Epoch 3: const string values and canonical module bindings joined the
-    // durable declaration payloads (RUE-957, RUE-727).
-    implementation_epoch: 3,
+    // Epoch 5: durable local atoms exclude request-local dense indices.
+    implementation_epoch: 5,
 };
-const REVIEWED_ORDINARY_BODY_SCHEMA: u32 = 6;
-const REVIEWED_SPECIALIZED_BODY_SCHEMA: u32 = 5;
-const REVIEWED_CFG_SCHEMA: u32 = 1;
+const REVIEWED_ORDINARY_BODY_SCHEMA: u32 = 9;
+const REVIEWED_SPECIALIZED_BODY_SCHEMA: u32 = 8;
+const REVIEWED_CFG_SCHEMA: u32 = 4;
 const REVIEWED_BODY_KINDS: usize = 58;
-const REVIEWED_TYPE_KINDS: usize = 19;
+const REVIEWED_TYPE_KINDS: usize = 20;
 const REVIEWED_CONST_KINDS: usize = 6;
 const REVIEWED_DECLARATION_PAYLOAD_KINDS: usize = 6;
 const REVIEWED_DEFINITION_KINDS: usize = 8;
@@ -81,6 +80,7 @@ fn body_payload(data: D<StableDefinitionKey, ModuleId>) -> DurableOrdinaryBodyPa
             }]),
             places: Arc::from([]),
             strings: Arc::from([]),
+            local_atoms: Arc::from([]),
             param_drops: Arc::from([]),
             borrow_slots: Arc::from([]),
             num_locals: 0,
@@ -201,8 +201,29 @@ fn every_type_const_and_specialization_identity_round_trips_same_version() {
         },
         T::PtrConst(Box::new(T::I32)),
         T::PtrMut(Box::new(T::I32)),
-        T::Module(dependency),
+        T::Module(dependency.clone()),
         T::GenericParameter(0),
+        T::AnonymousNominal(rue_air::AnonymousNominalKey {
+            kind: rue_air::AnonymousNominalKind::Struct,
+            producer: rue_air::StableProducerId::Function(Box::new(
+                rue_air::FunctionInstanceKey::Specialization {
+                    base: Box::new(rue_air::FunctionInstanceKey::Definition(function.clone())),
+                    arguments: rue_air::CanonicalArguments {
+                        types: Arc::from([rue_air::TypeInstanceKey::Nominal(
+                            rue_air::NominalInstanceKey::Named(structure.clone()),
+                        )]),
+                        values: Arc::from([rue_air::CanonicalArgumentValue::Type(Box::new(
+                            rue_air::TypeInstanceKey::Module(dependency.clone()),
+                        ))]),
+                    },
+                },
+            )),
+            anchor: rue_rir::RirStructuralAnchor::new(vec![
+                rue_rir::RirStructuralPathSegment::Body,
+                rue_rir::RirStructuralPathSegment::AnonymousType(0),
+            ]),
+            arguments: rue_air::CanonicalArguments::default(),
+        }),
     ];
     assert_eq!(
         types.iter().map(T::kind).collect::<BTreeSet<_>>(),
@@ -488,7 +509,7 @@ fn valid_source_order_permutations_remain_distinct_and_projectable() {
             },
             rue_air::SemanticBodyInst {
                 data: D::StructInit {
-                    struct_key: structure.clone(),
+                    struct_key: rue_air::NominalInstanceKey::Named(structure.clone()),
                     fields: Arc::from([0, 1]),
                     source_order,
                 },
@@ -576,7 +597,7 @@ fn every_body_instruction_variant_preserves_kind_and_identity_on_roundtrip() {
             scrutinee: 0,
             arms: Arc::from([SemanticBodyMatchArm {
                 pattern: SemanticBodyPattern::EnumVariant {
-                    enum_key: enumeration.clone(),
+                    enum_key: rue_air::NominalInstanceKey::Named(enumeration.clone()),
                     variant_index: 0,
                 },
                 body: 0,
@@ -593,7 +614,7 @@ fn every_body_instruction_variant_preserves_kind_and_identity_on_roundtrip() {
         },
         D::Ret(Some(0)),
         D::Call {
-            function: function.clone(),
+            function: rue_air::FunctionInstanceKey::Definition(function.clone()),
             args: args.clone(),
         },
         D::RuntimeCall {
@@ -616,7 +637,7 @@ fn every_body_instruction_variant_preserves_kind_and_identity_on_roundtrip() {
             value: 0,
         },
         D::StructInit {
-            struct_key: structure.clone(),
+            struct_key: rue_air::NominalInstanceKey::Named(structure.clone()),
             fields: Arc::from([0]),
             source_order: Arc::from([0]),
         },
@@ -626,13 +647,13 @@ fn every_body_instruction_variant_preserves_kind_and_identity_on_roundtrip() {
         D::PlaceRead { place: 0 },
         D::PlaceWrite { place: 0, value: 0 },
         D::EnumVariant {
-            enum_key: enumeration.clone(),
+            enum_key: rue_air::NominalInstanceKey::Named(enumeration.clone()),
             variant_index: 0,
             payload: Arc::from([0]),
         },
         D::EnumPayloadGet {
             base: 0,
-            enum_key: enumeration,
+            enum_key: rue_air::NominalInstanceKey::Named(enumeration),
             variant_index: 0,
             field_index: 0,
         },
@@ -693,11 +714,11 @@ fn corrupt_truncated_unknown_and_unsupported_bodies_fail_closed_individually() {
         ),
         (
             D::StructInit {
-                struct_key: key(
+                struct_key: rue_air::NominalInstanceKey::Named(key(
                     StableDefinitionKind::Struct,
                     StableDefinitionNamespace::Type,
                     "S",
-                ),
+                )),
                 fields: Arc::from([]),
                 source_order: Arc::from([0]),
             },

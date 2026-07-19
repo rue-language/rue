@@ -696,6 +696,10 @@ pub(crate) fn compare_canonical_durable_declaration_install(
     let installed_bodies = installed.analyze_all_bodies();
     match (ordinary_bodies, installed_bodies) {
         (Ok(ordinary), Ok(installed)) => {
+            let ordinary_identities =
+                crate::queries::synthetic_projected_function_identities(&ordinary);
+            let installed_identities =
+                crate::queries::synthetic_projected_function_identities(&installed);
             let ordinary = crate::build_functions_and_cfgs(
                 ordinary,
                 crate::OptLevel::default(),
@@ -703,6 +707,7 @@ pub(crate) fn compare_canonical_durable_declaration_install(
                 rir.semantic_symbols().interner(),
                 &[],
                 &[],
+                &ordinary_identities,
             )
             .map_err(|failure| failure.errors)?;
             let installed = crate::build_functions_and_cfgs(
@@ -712,6 +717,7 @@ pub(crate) fn compare_canonical_durable_declaration_install(
                 rir.semantic_symbols().interner(),
                 &[],
                 &[],
+                &installed_identities,
             )
             .map_err(|failure| failure.errors)?;
             if format!("{:?}", ordinary.functions) != format!("{:?}", installed.functions)

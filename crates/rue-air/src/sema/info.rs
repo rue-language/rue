@@ -96,6 +96,22 @@ pub struct MethodInfo {
 /// because at comparison time, `Self` hasn't been resolved to a concrete StructId yet.
 /// Two methods using `Self` in the same positions are considered structurally equal.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnonMethodType {
+    SelfType,
+    Concrete(Type),
+    Array {
+        element: Box<AnonMethodType>,
+        len: u64,
+    },
+    PtrConst(Box<AnonMethodType>),
+    PtrMut(Box<AnonMethodType>),
+    /// Unsupported syntax is retained as a deterministic fail-closed shape;
+    /// equal spelling may match, but it cannot alias a differently spelled
+    /// semantic type by accident.
+    Syntax(std::sync::Arc<str>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnonMethodSig {
     /// Method name
     pub name: Spur,
@@ -105,13 +121,13 @@ pub struct AnonMethodSig {
     /// functions carry Normal.
     pub self_mode: rue_rir::RirParamMode,
     /// Parameter type symbols (excluding self parameter)
-    pub param_types: Vec<Spur>,
+    pub param_types: Vec<AnonMethodType>,
     /// Explicit parameter passing modes, parallel to `param_types`.
     pub param_modes: Vec<rue_rir::RirParamMode>,
     /// Explicit parameter comptime flags, parallel to `param_types`.
     pub param_comptime: Vec<bool>,
     /// Return type symbol
-    pub return_type: Spur,
+    pub return_type: AnonMethodType,
 }
 
 /// Information about a constant declaration.

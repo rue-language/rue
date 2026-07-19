@@ -389,6 +389,7 @@ mod tests {
                 function.param_modes.clone(),
                 &interner,
                 function.allow_unreachable_code,
+                function.callable_kind,
             )
             .cfg
             .unwrap()
@@ -744,6 +745,7 @@ mod tests {
             function.param_modes.clone(),
             &interner,
             function.allow_unreachable_code,
+            function.callable_kind,
         )
         .cfg
         .unwrap();

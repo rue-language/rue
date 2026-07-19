@@ -656,6 +656,41 @@ impl<T> ExactSizeIterator for RirSliceIter<'_, T> {}
 
 pub type RirSymbols<'a> = RirSlice<'a, Spur>;
 
+/// One typed step in a definition-relative structural path. Indices are local
+/// to the immediately enclosing syntax node, never absolute source positions
+/// or global RIR instruction indices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RirStructuralPathSegment {
+    Body,
+    ParameterType(u32),
+    ReturnType,
+    Statement(u32),
+    Operand(u32),
+    Branch(u32),
+    MatchArm(u32),
+    FieldType(u32),
+    VariantPayload { variant: u32, payload: u32 },
+    Method(u32),
+    AnonymousType(u32),
+    StringLiteral(u32),
+    ReadOnlyData(u32),
+}
+
+/// Trivia- and absolute-position-insensitive identity of a structural source
+/// site, relative to the semantic definition that owns it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RirStructuralAnchor(std::sync::Arc<[RirStructuralPathSegment]>);
+
+impl RirStructuralAnchor {
+    pub fn new(segments: impl Into<std::sync::Arc<[RirStructuralPathSegment]>>) -> Self {
+        Self(segments.into())
+    }
+
+    pub fn segments(&self) -> &[RirStructuralPathSegment] {
+        &self.0
+    }
+}
+
 /// A borrowing directive view. Arguments are decoded lazily from RIR.
 #[derive(Debug, Clone)]
 pub struct RirDirectiveView<'a> {
@@ -1338,13 +1373,18 @@ impl RirEditor {
         &mut self,
         fields: &[(Spur, Spur)],
         methods: &[InstRef],
+        anchor: RirStructuralAnchor,
         span: Span,
     ) -> Result<InstRef, RirPayloadBuildError> {
         self.atomic(|rir| {
             let fields = rir.add_anon_struct_fields(fields)?;
             let methods = rir.add_anon_struct_methods(methods)?;
             Ok(rir.add_inst(Inst {
-                data: InstData::AnonStructType { fields, methods },
+                data: InstData::AnonStructType {
+                    fields,
+                    methods,
+                    anchor,
+                },
                 span,
             }))
         })
@@ -1354,6 +1394,7 @@ impl RirEditor {
         &mut self,
         variants: &[Spur],
         payloads: &[Vec<Spur>],
+        anchor: RirStructuralAnchor,
         span: Span,
     ) -> Result<InstRef, RirPayloadBuildError> {
         self.atomic(|rir| {
@@ -1366,7 +1407,11 @@ impl RirEditor {
             let variants = rir.add_anon_enum_variants(variants)?;
             let payloads = rir.add_anon_enum_payloads(payloads)?;
             Ok(rir.add_inst(Inst {
-                data: InstData::AnonEnumType { variants, payloads },
+                data: InstData::AnonEnumType {
+                    variants,
+                    payloads,
+                    anchor,
+                },
                 span,
             }))
         })
@@ -1442,8 +1487,11 @@ impl RirEditor {
                     InstData::BoolConst(value) => {
                         self.add_inst(payload_free(InstData::BoolConst(*value)))
                     }
-                    InstData::StringConst(value) => {
-                        self.add_inst(payload_free(InstData::StringConst(symbol(*value))))
+                    InstData::StringConst { content, anchor } => {
+                        self.add_inst(payload_free(InstData::StringConst {
+                            content: symbol(*content),
+                            anchor: anchor.clone(),
+                        }))
                     }
                     InstData::UnitConst => self.add_inst(payload_free(InstData::UnitConst)),
                     InstData::Add { lhs, rhs } => self.add_inst(payload_free(InstData::Add {
@@ -1718,9 +1766,12 @@ impl RirEditor {
                             span,
                         )?
                     }
-                    InstData::VarRef { name } => self.add_inst(payload_free(InstData::VarRef {
-                        name: symbol(*name),
-                    })),
+                    InstData::VarRef { name, anchor } => {
+                        self.add_inst(payload_free(InstData::VarRef {
+                            name: symbol(*name),
+                            anchor: anchor.clone(),
+                        }))
+                    }
                     InstData::Assign { name, value } => {
                         self.add_inst(payload_free(InstData::Assign {
                             name: symbol(*name),
@@ -1874,7 +1925,11 @@ impl RirEditor {
                             type_name: symbol(*type_name),
                         }))
                     }
-                    InstData::AnonStructType { fields, methods } => {
+                    InstData::AnonStructType {
+                        fields,
+                        methods,
+                        anchor,
+                    } => {
                         let fields = source
                             .anon_struct_fields(fields)
                             .values()
@@ -1885,11 +1940,12 @@ impl RirEditor {
                             .values()
                             .map(remap_ref)
                             .collect::<Vec<_>>();
-                        self.add_anon_struct_type(&fields, &methods, span)?
+                        self.add_anon_struct_type(&fields, &methods, anchor.clone(), span)?
                     }
                     InstData::AnonEnumType {
                         variants: variant_range,
                         payloads,
+                        anchor,
                     } => {
                         let variants = source
                             .anon_enum_variants(variant_range)
@@ -1900,7 +1956,7 @@ impl RirEditor {
                             .anon_enum_payloads(payloads, variant_range)
                             .map(|payload| payload.values().map(&mut symbol).collect())
                             .collect::<Vec<Vec<_>>>();
-                        self.add_anon_enum_type(&variants, &payloads, span)?
+                        self.add_anon_enum_type(&variants, &payloads, anchor.clone(), span)?
                     }
                 };
             }
@@ -2410,7 +2466,9 @@ impl Rir {
                         (r.start(), r.extent(), RirArrayElemsRange::FAMILY)
                     })?
                 }
-                InstData::AnonStructType { fields, methods } => {
+                InstData::AnonStructType {
+                    fields, methods, ..
+                } => {
                     self.validate_fixed_symbols(fields, FIELD_DECL_SCHEMA, |r| {
                         (r.start(), r.extent(), RirAnonStructFieldsRange::FAMILY)
                     })?;
@@ -2418,7 +2476,9 @@ impl Rir {
                         (r.start(), r.extent(), RirAnonStructMethodsRange::FAMILY)
                     })?;
                 }
-                InstData::AnonEnumType { variants, payloads } => {
+                InstData::AnonEnumType {
+                    variants, payloads, ..
+                } => {
                     self.validate_fixed_symbols(variants, SYMBOL_SCHEMA, |r| {
                         (r.start(), r.extent(), RirAnonEnumVariantsRange::FAMILY)
                     })?;
@@ -2580,8 +2640,10 @@ impl Rir {
                 | InstData::BoolConst(_)
                 | InstData::UnitConst
                 | InstData::Continue => {}
-                InstData::StringConst(symbol)
-                | InstData::VarRef { name: symbol }
+                InstData::StringConst {
+                    content: symbol, ..
+                }
+                | InstData::VarRef { name: symbol, .. }
                 | InstData::TypeConst { type_name: symbol } => symbols!(*symbol),
                 InstData::Add { lhs, rhs }
                 | InstData::Sub { lhs, rhs }
@@ -2861,7 +2923,9 @@ impl Rir {
                     symbols!(*type_name);
                     refs!(*body);
                 }
-                InstData::AnonStructType { fields, methods } => {
+                InstData::AnonStructType {
+                    fields, methods, ..
+                } => {
                     for (field, ty) in self.anon_struct_fields(fields) {
                         symbols!(field, ty);
                     }
@@ -2869,7 +2933,9 @@ impl Rir {
                         refs!(reference);
                     }
                 }
-                InstData::AnonEnumType { variants, payloads } => {
+                InstData::AnonEnumType {
+                    variants, payloads, ..
+                } => {
                     for variant in self.anon_enum_variants(variants) {
                         symbols!(variant);
                     }
@@ -3990,8 +4056,11 @@ pub enum InstData {
     /// Boolean constant
     BoolConst(bool),
 
-    /// String constant (interned string content)
-    StringConst(Spur),
+    /// String constant with its definition-relative structural source site.
+    StringConst {
+        content: Spur,
+        anchor: RirStructuralAnchor,
+    },
 
     /// Unit constant (for blocks that produce unit type)
     UnitConst,
@@ -4228,6 +4297,9 @@ pub enum InstData {
     VarRef {
         /// Variable name
         name: Spur,
+        /// Stable source occurrence for named read-only data materialized at
+        /// this reference. Synthesized references do not carry one.
+        anchor: Option<RirStructuralAnchor>,
     },
 
     /// Assignment: stores a value into a mutable variable
@@ -4416,6 +4488,8 @@ pub enum InstData {
         fields: RirAnonStructFieldsRange,
         /// Index into extra data where method InstRefs start
         methods: RirAnonStructMethodsRange,
+        /// Structural occurrence relative to the producing definition body.
+        anchor: RirStructuralAnchor,
     },
 
     /// Anonymous enum type: an enum (sum) type used as a value expression
@@ -4431,6 +4505,8 @@ pub enum InstData {
         /// encoded as in [`InstData::EnumDecl`]: a self-describing flat
         /// sequence of `count` + `count` type-name symbols per variant.
         payloads: RirAnonEnumPayloadsRange,
+        /// Structural occurrence relative to the producing definition body.
+        anchor: RirStructuralAnchor,
     },
 }
 
@@ -4630,8 +4706,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 // Constants
                 InstData::IntConst(v) => writeln!(out, "const {}", v).unwrap(),
                 InstData::BoolConst(v) => writeln!(out, "const {}", v).unwrap(),
-                InstData::StringConst(s) => {
-                    writeln!(out, "const {:?}", self.interner.resolve(&*s)).unwrap()
+                InstData::StringConst { content, .. } => {
+                    writeln!(out, "const {:?}", self.interner.resolve(&*content)).unwrap()
                 }
                 InstData::UnitConst => writeln!(out, "const ()").unwrap(),
 
@@ -5012,7 +5088,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     )
                     .unwrap();
                 }
-                InstData::VarRef { name } => {
+                InstData::VarRef { name, .. } => {
                     writeln!(out, "var_ref {}", self.interner.resolve(&*name)).unwrap();
                 }
                 InstData::Assign { name, value } => {
@@ -5268,7 +5344,9 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 }
 
                 // Anonymous struct type
-                InstData::AnonStructType { fields, methods } => {
+                InstData::AnonStructType {
+                    fields, methods, ..
+                } => {
                     write!(out, "struct {{ ").unwrap();
                     let fields = self.rir.anon_struct_fields(fields);
                     for (i, (name, ty)) in fields.values().enumerate() {
@@ -5295,7 +5373,9 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 }
 
                 // Anonymous enum type
-                InstData::AnonEnumType { variants, payloads } => {
+                InstData::AnonEnumType {
+                    variants, payloads, ..
+                } => {
                     let payload_arities: Vec<usize> = self
                         .rir
                         .anon_enum_payloads(payloads, variants)
@@ -5566,9 +5646,21 @@ mod typed_payload_tests {
             .unwrap();
         editor.add_array_init(&[value, block], span()).unwrap();
         editor
-            .add_anon_struct_type(&[(b, a)], &[function], span())
+            .add_anon_struct_type(
+                &[(b, a)],
+                &[function],
+                RirStructuralAnchor::new(vec![RirStructuralPathSegment::AnonymousType(0)]),
+                span(),
+            )
             .unwrap();
-        editor.add_anon_enum_type(&[b], &[vec![a]], span()).unwrap();
+        editor
+            .add_anon_enum_type(
+                &[b],
+                &[vec![a]],
+                RirStructuralAnchor::new(vec![RirStructuralPathSegment::AnonymousType(1)]),
+                span(),
+            )
+            .unwrap();
         let context = RirValidationContext {
             symbol_count: interner.len(),
             source_lengths: &[(FileId::new(7), 100)],
@@ -5669,6 +5761,78 @@ mod typed_payload_tests {
             }
             _ => panic!("expected remapped path pattern"),
         }
+        let remapped_anchors = destination
+            .iter()
+            .skip(instruction_offset as usize)
+            .filter_map(|(_, instruction)| match &instruction.data {
+                InstData::AnonStructType { anchor, .. } | InstData::AnonEnumType { anchor, .. } => {
+                    Some(anchor.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            remapped_anchors,
+            [
+                RirStructuralAnchor::new(vec![RirStructuralPathSegment::AnonymousType(0)]),
+                RirStructuralAnchor::new(vec![RirStructuralPathSegment::AnonymousType(1)]),
+            ]
+        );
+    }
+
+    #[test]
+    fn append_remapped_preserves_string_anchor_across_symbol_and_file_domains() {
+        let interner = ThreadedRodeo::new();
+        let source_symbol = interner.get_or_intern("source");
+        let destination_symbol = interner.get_or_intern("destination");
+        let anchor = RirStructuralAnchor::new(vec![
+            RirStructuralPathSegment::Body,
+            RirStructuralPathSegment::Statement(2),
+            RirStructuralPathSegment::StringLiteral(0),
+        ]);
+        let mut source = RirEditor::new();
+        source.add_inst(Inst {
+            data: InstData::StringConst {
+                content: source_symbol,
+                anchor: anchor.clone(),
+            },
+            span: Span::with_file(FileId::new(7), 3, 11),
+        });
+        let source = ValidatedRir::finish(
+            source,
+            &RirValidationContext {
+                symbol_count: interner.len(),
+                source_lengths: &[(FileId::new(7), 20)],
+            },
+        )
+        .unwrap();
+        let mut destination = RirEditor::new();
+        destination
+            .append_remapped_with_spans(
+                &source,
+                |_| destination_symbol,
+                |span| Span::with_file(FileId::new(9), span.start + 20, span.end + 20),
+            )
+            .unwrap();
+        let destination = ValidatedRir::finish(
+            destination,
+            &RirValidationContext {
+                symbol_count: interner.len(),
+                source_lengths: &[(FileId::new(9), 100)],
+            },
+        )
+        .unwrap();
+        let (_, instruction) = destination.iter().next().unwrap();
+        let InstData::StringConst {
+            content,
+            anchor: remapped_anchor,
+        } = &instruction.data
+        else {
+            panic!("expected string const")
+        };
+        assert_eq!(*content, destination_symbol);
+        assert_eq!(*remapped_anchor, anchor);
+        assert_eq!(instruction.span, Span::with_file(FileId::new(9), 23, 31));
     }
 
     #[test]
@@ -5999,7 +6163,10 @@ mod typed_payload_tests {
 
         let mut bad_symbol = RirEditor::new();
         bad_symbol.add_inst(Inst {
-            data: InstData::StringConst(Spur::try_from_usize(77).unwrap()),
+            data: InstData::StringConst {
+                content: Spur::try_from_usize(77).unwrap(),
+                anchor: RirStructuralAnchor::new(vec![RirStructuralPathSegment::StringLiteral(0)]),
+            },
             span: span(),
         });
         assert_eq!(
@@ -6240,6 +6407,7 @@ mod typed_payload_tests {
             |fields| InstData::AnonStructType {
                 fields,
                 methods: RirAnonStructMethodsRange::payload_fallback(),
+                anchor: RirStructuralAnchor::new(vec![RirStructuralPathSegment::AnonymousType(0),]),
             }
         );
         fixed_symbol_case!(
@@ -6256,6 +6424,7 @@ mod typed_payload_tests {
             |variants| InstData::AnonEnumType {
                 variants,
                 payloads: RirAnonEnumPayloadsRange::payload_fallback(),
+                anchor: RirStructuralAnchor::new(vec![RirStructuralPathSegment::AnonymousType(0),]),
             }
         );
 
@@ -6279,6 +6448,7 @@ mod typed_payload_tests {
             InstData::AnonEnumType {
                 variants: RirAnonEnumVariantsRange::from_parts(0, 1),
                 payloads,
+                anchor: RirStructuralAnchor::new(vec![RirStructuralPathSegment::AnonymousType(0)]),
             },
         );
     }

@@ -90,7 +90,7 @@ impl<'a> BodySema<'a> {
             // Literals
             InstData::IntConst(_)
             | InstData::BoolConst(_)
-            | InstData::StringConst(_)
+            | InstData::StringConst { .. }
             | InstData::UnitConst => self.analyze_literal(air, inst_ref, ctx),
 
             // Binary arithmetic operations (Add also covers String + String
@@ -331,7 +331,11 @@ impl<'a> BodySema<'a> {
 
             // Anonymous struct type: a struct type constructed at comptime
             // (e.g., `struct { first: T, second: T, fn get(self) -> T { ... } }` in a comptime function)
-            InstData::AnonStructType { fields, methods } => {
+            InstData::AnonStructType {
+                fields,
+                methods,
+                anchor,
+            } => {
                 // Get the field declarations from the RIR
                 let field_decls = self.rir.anon_struct_fields(fields);
 
@@ -353,12 +357,22 @@ impl<'a> BodySema<'a> {
 
                 // Extract method signatures for structural equality comparison
                 // (uses type symbols, not resolved Types, so Self matches Self)
-                let method_sigs = self.extract_anon_method_sigs(methods);
+                let method_sigs =
+                    self.extract_anon_method_sigs(methods, &HashMap::new(), &HashMap::new());
 
                 // Check if an equivalent anonymous struct already exists (structural equality)
                 // This now compares fields, method signatures, AND captured comptime values
-                let (struct_ty, _is_new) =
-                    self.find_or_create_anon_struct(&struct_fields, &method_sigs, &HashMap::new());
+                let (struct_ty, _is_new) = self.find_or_create_anon_struct(
+                    crate::AnonymousNominalKey {
+                        kind: crate::AnonymousNominalKind::Struct,
+                        producer: ctx.canonical_producer.clone(),
+                        anchor: anchor.clone(),
+                        arguments: ctx.canonical_producer_arguments.clone(),
+                    },
+                    &struct_fields,
+                    &method_sigs,
+                    &HashMap::new(),
+                );
 
                 // DON'T register methods here - they should be registered during const evaluation
                 // (the comptime evaluator's AnonStructType arm in sema::comptime_eval).
@@ -391,7 +405,11 @@ impl<'a> BodySema<'a> {
             // (payloads mentioning a `comptime T`) are comptime-evaluated, not
             // analyzed here — this path resolves a concrete anon enum, exactly
             // as the struct arm does (ADR-0038, RUE-6 phase 2).
-            InstData::AnonEnumType { variants, payloads } => {
+            InstData::AnonEnumType {
+                variants,
+                payloads,
+                anchor,
+            } => {
                 let variant_syms = self.rir.anon_enum_variants(variants).to_vec();
                 let payload_symbols: Vec<Vec<Spur>> = self
                     .rir
@@ -422,7 +440,16 @@ impl<'a> BodySema<'a> {
                     variant_payloads.push(tys);
                 }
 
-                let enum_ty = self.find_or_create_anon_enum(&variant_names, &variant_payloads);
+                let enum_ty = self.find_or_create_anon_enum(
+                    crate::AnonymousNominalKey {
+                        kind: crate::AnonymousNominalKind::Enum,
+                        producer: ctx.canonical_producer.clone(),
+                        anchor: anchor.clone(),
+                        arguments: ctx.canonical_producer_arguments.clone(),
+                    },
+                    &variant_names,
+                    &variant_payloads,
+                );
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::TypeConst(enum_ty),

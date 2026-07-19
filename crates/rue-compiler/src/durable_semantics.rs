@@ -225,9 +225,9 @@ pub const DURABLE_SEMANTIC_SCHEMA_VERSION: DurableSemanticSchemaVersion =
     DurableSemanticSchemaVersion {
         major: 1,
         minor: 0,
-        // Epoch 3: const string values and canonical module bindings are part
-        // of the durable declaration algebra (RUE-957, RUE-727).
-        implementation_epoch: 3,
+        // Epoch 5: durable local atoms carry stable occurrence identity and
+        // content only; request-local dense string indices are reconstructed.
+        implementation_epoch: 5,
     };
 
 const DURABLE_SEMANTIC_COMPATIBLE_MINORS: &[u16] = &[0];
@@ -620,6 +620,13 @@ fn project_type(
             F::GenericParameter(index) => SemanticExportType::GenericParameter(index),
             F::Nominal(key) => {
                 SemanticExportType::Nominal(current_nominal(key, definitions, module_files)?)
+            }
+            // Durable declaration shells never publish request-local
+            // anonymous nominals. Their identity is supported by body and
+            // specialization payloads, whose current-request importer owns
+            // the exact materialization join.
+            F::AnonymousNominal(_) => {
+                return Err(DurableSemanticProjectionFailure::KindMismatch);
             }
             F::Array { element, len } => SemanticExportType::Array {
                 element: Box::new(element),

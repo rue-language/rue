@@ -70,6 +70,12 @@ static EMPTY_MODULE_MEMBERS: LazyLock<HashMap<InstRef, ConstValue>> = LazyLock::
 
 /// The environment a compile-time expression is evaluated in.
 pub(crate) struct ComptimeEnv<'a> {
+    /// Definition-relative producer root for anonymous identity issuance.
+    producer: Option<InstRef>,
+    canonical_identity: Option<(
+        super::anon_structs::IssuedStableProducerId,
+        super::anon_structs::IssuedCanonicalArguments,
+    )>,
     /// Comptime type parameters in scope (e.g. `T` -> `i32`).
     type_subst: &'a HashMap<Spur, Type>,
     /// Comptime value parameters in scope (e.g. `N` -> `42`).
@@ -141,6 +147,8 @@ impl<'a> ComptimeEnv<'a> {
     /// An environment with no substitutions and no type information.
     pub(crate) fn new() -> Self {
         Self {
+            producer: None,
+            canonical_identity: None,
             type_subst: &EMPTY_TYPE_SUBST,
             value_subst: &EMPTY_VALUE_SUBST,
             resolved_types: None,
@@ -160,6 +168,8 @@ impl<'a> ComptimeEnv<'a> {
         value_subst: &'a HashMap<Spur, ConstValue>,
     ) -> Self {
         Self {
+            producer: None,
+            canonical_identity: None,
             type_subst,
             value_subst,
             resolved_types: None,
@@ -176,6 +186,11 @@ impl<'a> ComptimeEnv<'a> {
     /// analyzed: comptime parameters in scope plus HM-resolved types.
     pub(crate) fn for_analysis(ctx: &'a AnalysisContext) -> Self {
         Self {
+            producer: Some(ctx.producer),
+            canonical_identity: Some((
+                ctx.canonical_producer.clone(),
+                ctx.canonical_producer_arguments.clone(),
+            )),
             type_subst: &ctx.comptime_type_vars,
             value_subst: &ctx.comptime_value_vars,
             resolved_types: Some(ctx.resolved_types),
@@ -207,8 +222,14 @@ impl<'a> ComptimeEnv<'a> {
         resolved_types: &'a HashMap<InstRef, Type>,
         const_module_members: &'a HashMap<InstRef, ConstValue>,
         defining_file: FileId,
+        canonical_identity: Option<(
+            super::anon_structs::IssuedStableProducerId,
+            super::anon_structs::IssuedCanonicalArguments,
+        )>,
     ) -> Self {
         Self {
+            producer: None,
+            canonical_identity,
             type_subst: &EMPTY_TYPE_SUBST,
             value_subst: &EMPTY_VALUE_SUBST,
             resolved_types: Some(resolved_types),
@@ -333,6 +354,8 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         value_subst: &HashMap<Spur, ConstValue>,
     ) -> Option<ConstValue> {
         let mut env = ComptimeEnv::with_subst(type_subst, value_subst);
+        env.producer = Some(inst_ref);
+        env.canonical_identity = self.active_anonymous_producer.clone();
         // A module-qualified comptime call in the evaluated expression resolves
         // its receiver against the expression's own file's imports (RUE-511).
         env.defining_file = Some(self.rir.get(inst_ref).span.file_id);
@@ -400,7 +423,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         inst_ref: InstRef,
         ctx: &AnalysisContext,
     ) -> bool {
-        if let InstData::VarRef { name } = &self.rir.get(inst_ref).data {
+        if let InstData::VarRef { name, .. } = &self.rir.get(inst_ref).data {
             // A runtime local of the same name shadows the parameter.
             !ctx.locals.contains_key(name)
                 && ctx.params.iter().any(|p| p.name == *name && p.is_comptime)
@@ -862,7 +885,11 @@ impl<D: DeclarationPhase> Sema<'_, D> {
 
             // Anonymous struct type: evaluate to a comptime type value,
             // resolving field types through the type substitution.
-            InstData::AnonStructType { fields, methods } => {
+            InstData::AnonStructType {
+                fields,
+                methods,
+                anchor,
+            } => {
                 let field_decls = self.rir.anon_struct_fields(fields);
 
                 // Comptime `let` locals in scope participate in field-type
@@ -894,9 +921,19 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                 }
 
                 // Extract method signatures for structural equality comparison
-                let method_sigs = self.extract_anon_method_sigs(methods);
+                let method_sigs =
+                    self.extract_anon_method_sigs(methods, &local_type_subst, &local_value_subst);
 
+                let Some((producer, arguments)) = env.canonical_identity.clone() else {
+                    return Ok(None);
+                };
                 let (struct_ty, _is_new) = self.find_or_create_anon_struct(
+                    crate::AnonymousNominalKey {
+                        kind: crate::AnonymousNominalKind::Struct,
+                        producer,
+                        anchor: anchor.clone(),
+                        arguments,
+                    },
                     &struct_fields,
                     &method_sigs,
                     &local_value_subst,
@@ -979,7 +1016,11 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             // The enum analog of the AnonStructType arm above — this is what
             // makes `fn Option(comptime T: type) -> type { enum { Some(T), None } }`
             // monomorphize per instantiation (ADR-0038, RUE-6 phase 2).
-            InstData::AnonEnumType { variants, payloads } => {
+            InstData::AnonEnumType {
+                variants,
+                payloads,
+                anchor,
+            } => {
                 let variant_syms: Vec<lasso::Spur> = self.rir.anon_enum_variants(variants).to_vec();
                 let payload_symbols: Vec<Vec<lasso::Spur>> = self
                     .rir
@@ -1015,7 +1056,19 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                     variant_payloads.push(tys);
                 }
 
-                let enum_ty = self.find_or_create_anon_enum(&variant_names, &variant_payloads);
+                let Some((producer, arguments)) = env.canonical_identity.clone() else {
+                    return Ok(None);
+                };
+                let enum_ty = self.find_or_create_anon_enum(
+                    crate::AnonymousNominalKey {
+                        kind: crate::AnonymousNominalKind::Enum,
+                        producer,
+                        anchor: anchor.clone(),
+                        arguments,
+                    },
+                    &variant_names,
+                    &variant_payloads,
+                );
                 Ok(Some(ConstValue::Type(enum_ty)))
             }
 
@@ -1080,7 +1133,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
 
             // VarRef: comptime let-bindings, comptime parameters, file-level
             // constants, then type names.
-            InstData::VarRef { name } => {
+            InstData::VarRef { name, .. } => {
                 // 1. `let` bindings inside the comptime expression
                 if let Some(&v) = env.locals.get(name) {
                     return Ok(Some(v));
@@ -1321,7 +1374,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         let mut cursor = receiver;
         let recv_name = loop {
             match self.rir.get(cursor).data {
-                InstData::VarRef { name } => break name,
+                InstData::VarRef { name, .. } => break name,
                 InstData::FieldGet { base, field } => {
                     chain_rev.push(field);
                     cursor = base;
@@ -1444,7 +1497,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         let mut cursor = inst_ref;
         let root_name = loop {
             match self.rir.get(cursor).data {
-                InstData::VarRef { name } => break name,
+                InstData::VarRef { name, .. } => break name,
                 InstData::FieldGet { base, field } => {
                     chain_rev.push(field);
                     cursor = base;
@@ -1526,7 +1579,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         let mut cursor = arg;
         let root_name = loop {
             match self.rir.get(cursor).data {
-                InstData::VarRef { name } => break name,
+                InstData::VarRef { name, .. } => break name,
                 InstData::FieldGet { base, field } => {
                     fields_rev.push(field);
                     cursor = base;
@@ -1988,7 +2041,19 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         let fn_body = fn_info.body;
         let fn_span = fn_info.span;
         let fn_file = fn_info.file_id;
+        let canonical_identity = self
+            .canonical_function_producer(name, callee_types, callee_values)
+            .map_err(|failure| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "failed to issue canonical comptime producer: {failure:?}"
+                    )),
+                    fn_span,
+                )
+            })?;
         let mut callee_env = ComptimeEnv::with_subst(callee_types, callee_values);
+        callee_env.producer = Some(fn_body);
+        callee_env.canonical_identity = Some(canonical_identity);
         // The callee body is code from the callee's file: a module-qualified
         // comptime call inside it (`let O = b.Mk(T)`) names an import of *that*
         // file, so the receiver must resolve against the callee's module
@@ -2258,6 +2323,8 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         // evaluation of the initializer handles `let P = Q;`,
         // `let P = struct { .. };`, and `let P = Pair(i32);` alike (RUE-251).
         let mut env = ComptimeEnv::with_subst(eval_types, eval_values);
+        env.producer = Some(init);
+        env.canonical_identity = self.active_anonymous_producer.clone();
         env.runtime_binding_names = Some(runtime_bindings);
         env.defining_file = Some(self.rir.get(init).span.file_id);
         match self.eval_const_expr(init, &mut env).ok().flatten() {

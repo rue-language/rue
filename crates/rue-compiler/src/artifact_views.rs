@@ -1967,7 +1967,7 @@ fn rir_kind(data: &rue_rir::InstData) -> &'static str {
     match data {
         IntConst(_) => "integer_constant",
         BoolConst(_) => "boolean_constant",
-        StringConst(_) => "string_constant",
+        StringConst { .. } => "string_constant",
         UnitConst => "unit_constant",
         Add { .. } => "add",
         Sub { .. } => "subtract",
@@ -2183,7 +2183,7 @@ fn rir_operands(rir: &rue_rir::Rir, data: &rue_rir::InstData) -> Vec<RirOperandR
         }
         IntConst(_)
         | BoolConst(_)
-        | StringConst(_)
+        | StringConst { .. }
         | UnitConst
         | Continue
         | TypeIntrinsic { .. }

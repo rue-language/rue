@@ -41,6 +41,30 @@ impl<'a> BodySema<'a> {
             })
             .collect::<CompileResult<Vec<_>>>()?;
 
+        let function_symbol = self.interner.get_or_intern(fn_name);
+        let producer = self
+            .canonical_function_producer(function_symbol, &HashMap::new(), &HashMap::new())
+            .map_err(|failure| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "failed to issue canonical producer for '{fn_name}': {failure:?}"
+                    )),
+                    span,
+                )
+            })?;
+        let crate::StableProducerId::Function(identity) = &producer.0 else {
+            unreachable!("a callable body producer is always a function")
+        };
+        let identity = (**identity).clone();
+        let previous_producer = self.active_anonymous_producer.replace(producer);
+        let analysis = self.analyze_function(
+            infer_ctx,
+            ret_type,
+            &param_info,
+            body,
+            allow_unused_variable,
+        );
+        self.active_anonymous_producer = previous_producer;
         let (
             air,
             num_locals,
@@ -48,18 +72,15 @@ impl<'a> BodySema<'a> {
             param_modes,
             warnings,
             local_strings,
+            local_atoms,
             ref_fns,
             ref_meths,
-        ) = self.analyze_function(
-            infer_ctx,
-            ret_type,
-            &param_info,
-            body,
-            allow_unused_variable,
-        )?;
+        ) = analysis?;
 
         Ok((
             AnalyzedFunction {
+                identity,
+                callable_kind: crate::AnalyzedCallableKind::Ordinary,
                 ordinary_owner: None,
                 name: fn_name.to_string(),
                 implicit_drop_source: None,
@@ -68,6 +89,7 @@ impl<'a> BodySema<'a> {
                     &self.type_pool,
                     self.interner,
                 )?,
+                local_atoms,
                 num_locals,
                 num_param_slots,
                 param_modes,
@@ -138,16 +160,23 @@ impl<'a> BodySema<'a> {
         let mut type_subst = HashMap::new();
         type_subst.insert(self_sym, struct_type);
 
-        let (
-            air,
-            num_locals,
-            num_param_slots,
-            param_modes,
-            warnings,
-            local_strings,
-            ref_fns,
-            ref_meths,
-        ) = self.analyze_function_internal(
+        let method_symbol = self.interner.get_or_intern(full_name);
+        let identity = crate::FunctionInstanceKey::Definition(
+            self.function_identity(method_symbol).map_err(|failure| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "failed to issue canonical producer for method '{full_name}': {failure:?}"
+                    )),
+                    span,
+                )
+            })?,
+        );
+        let producer = (
+            crate::StableProducerId::Function(Box::new(identity.clone())),
+            crate::CanonicalArguments::default(),
+        );
+        let previous_producer = self.active_anonymous_producer.replace(producer);
+        let analysis = self.analyze_function_internal(
             infer_ctx,
             ret_type,
             &param_info,
@@ -157,10 +186,24 @@ impl<'a> BodySema<'a> {
             false,
             false,
             self_is_mut,
-        )?;
+        );
+        self.active_anonymous_producer = previous_producer;
+        let (
+            air,
+            num_locals,
+            num_param_slots,
+            param_modes,
+            warnings,
+            local_strings,
+            local_atoms,
+            ref_fns,
+            ref_meths,
+        ) = analysis?;
 
         Ok((
             AnalyzedFunction {
+                identity,
+                callable_kind: crate::AnalyzedCallableKind::Ordinary,
                 ordinary_owner: None,
                 name: full_name.to_string(),
                 implicit_drop_source: None,
@@ -169,6 +212,7 @@ impl<'a> BodySema<'a> {
                     &self.type_pool,
                     self.interner,
                 )?,
+                local_atoms,
                 num_locals,
                 num_param_slots,
                 param_modes,
@@ -205,16 +249,38 @@ impl<'a> BodySema<'a> {
         let param_info: Vec<(Spur, Type, RirParamMode, bool)> =
             vec![(self_sym, struct_type, RirParamMode::Normal, false)];
 
-        let (
-            mut air,
-            num_locals,
-            num_param_slots,
-            param_modes,
-            warnings,
-            local_strings,
-            ref_fns,
-            ref_meths,
-        ) = self.analyze_function_internal(
+        let owner_name = self
+            .type_pool
+            .struct_def(
+                struct_type
+                    .as_struct()
+                    .expect("a named destructor owner must be a struct"),
+            )
+            .name
+            .clone();
+        let destructor_identity = self
+            .stable_definition_token(
+                _span.file_id.index(),
+                &owner_name,
+                Some(&owner_name),
+                crate::StableDefinitionKind::Destructor,
+            )
+            .map_err(|failure| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "failed to issue canonical producer for destructor '{full_name}': {failure:?}"
+                    )),
+                    _span,
+                )
+            })?;
+        let producer = (
+            crate::StableProducerId::Function(Box::new(crate::FunctionInstanceKey::Definition(
+                destructor_identity,
+            ))),
+            crate::CanonicalArguments::default(),
+        );
+        let previous_producer = self.active_anonymous_producer.replace(producer);
+        let analysis = self.analyze_function_internal(
             infer_ctx,
             Type::UNIT,
             &param_info,
@@ -223,10 +289,20 @@ impl<'a> BodySema<'a> {
             None,
             /* is_destructor */ true,
             false,
-            // A destructor's `self` stays immutable; mutate via a `let mut`
-            // rebind if needed.
             false,
-        )?;
+        );
+        self.active_anonymous_producer = previous_producer;
+        let (
+            mut air,
+            num_locals,
+            num_param_slots,
+            param_modes,
+            warnings,
+            local_strings,
+            local_atoms,
+            ref_fns,
+            ref_meths,
+        ) = analysis?;
 
         reject_self_move_in_destructor(&air, full_name)?;
 
@@ -237,6 +313,8 @@ impl<'a> BodySema<'a> {
 
         Ok((
             AnalyzedFunction {
+                identity: crate::FunctionInstanceKey::Definition(destructor_identity),
+                callable_kind: crate::AnalyzedCallableKind::Destructor,
                 ordinary_owner: None,
                 name: full_name.to_string(),
                 implicit_drop_source: None,
@@ -245,6 +323,7 @@ impl<'a> BodySema<'a> {
                     &self.type_pool,
                     self.interner,
                 )?,
+                local_atoms,
                 num_locals,
                 num_param_slots,
                 param_modes,
@@ -277,6 +356,7 @@ impl<'a> BodySema<'a> {
         ParamSlotModes,
         Vec<CompileWarning>,
         Vec<String>,
+        Vec<crate::LocalAtomRecord<crate::SemanticDefinitionToken, crate::SemanticModuleToken>>,
         HashSet<Spur>,
         HashSet<(StructId, Spur)>,
     )> {
@@ -325,6 +405,7 @@ impl<'a> BodySema<'a> {
         ParamSlotModes,
         Vec<CompileWarning>,
         Vec<String>,
+        Vec<crate::LocalAtomRecord<crate::SemanticDefinitionToken, crate::SemanticModuleToken>>,
         HashSet<Spur>,
         HashSet<(StructId, Spur)>,
     )> {
@@ -447,7 +528,30 @@ impl<'a> BodySema<'a> {
         // so that type parameters can be resolved during struct initialization.
         let comptime_type_vars = type_subst.map(|s| s.clone()).unwrap_or_else(HashMap::new);
         let comptime_value_vars = value_subst.map(|s| s.clone()).unwrap_or_else(HashMap::new);
+        let (canonical_producer, canonical_producer_arguments) =
+            self.active_anonymous_producer.clone().ok_or_else(|| {
+                CompileError::new(
+                    ErrorKind::InternalError(
+                        "body analysis started without a canonical producer identity".into(),
+                    ),
+                    self.rir.get(body).span,
+                )
+            })?;
+        let crate::StableProducerId::Function(canonical_function_identity) = &canonical_producer
+        else {
+            return Err(CompileError::new(
+                ErrorKind::InternalError(
+                    "callable body has a non-function canonical producer".into(),
+                ),
+                self.rir.get(body).span,
+            ));
+        };
+        let canonical_function_identity = (**canonical_function_identity).clone();
         let mut ctx = AnalysisContext {
+            producer: body,
+            canonical_producer,
+            canonical_producer_arguments,
+            canonical_function_identity,
             current_file_id: self.rir.get(body).span.file_id,
             locals: HashMap::new(),
             params: &param_vec,
@@ -466,6 +570,7 @@ impl<'a> BodySema<'a> {
             allow_unused_variables: allow_unused_variable,
             local_string_table: HashMap::new(),
             local_strings: Vec::new(),
+            local_atoms: Vec::new(),
             comptime_type_vars,
             comptime_value_vars,
             referenced_functions: HashSet::new(),
@@ -588,6 +693,7 @@ impl<'a> BodySema<'a> {
             param_modes,
             ctx.warnings,
             ctx.local_strings,
+            ctx.local_atoms,
             ctx.referenced_functions,
             ctx.referenced_methods,
         ))
@@ -618,6 +724,7 @@ impl<'a> BodySema<'a> {
         ParamSlotModes,
         Vec<CompileWarning>,
         Vec<String>,
+        Vec<crate::LocalAtomRecord<crate::SemanticDefinitionToken, crate::SemanticModuleToken>>,
         HashSet<Spur>,
         HashSet<(StructId, Spur)>,
     )> {
@@ -648,6 +755,8 @@ impl<'a> BodySema<'a> {
     pub(super) fn analyze_method_body(
         &mut self,
         infer_ctx: &InferenceContext,
+        method_name: Spur,
+        has_self: bool,
         return_type: Type,
         params: &[(Spur, Type, RirParamMode, bool)],
         body: InstRef,
@@ -662,6 +771,7 @@ impl<'a> BodySema<'a> {
         ParamSlotModes,
         Vec<CompileWarning>,
         Vec<String>,
+        Vec<crate::LocalAtomRecord<crate::SemanticDefinitionToken, crate::SemanticModuleToken>>,
         HashSet<Spur>,
         HashSet<(StructId, Spur)>,
     )> {
@@ -674,7 +784,28 @@ impl<'a> BodySema<'a> {
         let mut type_subst = enclosing_type_subst.clone();
         type_subst.insert(self_sym, self_type);
 
-        self.analyze_function_internal(
+        let producer = (
+            self.canonical_anonymous_member_producer(
+                self_type,
+                method_name,
+                if has_self {
+                    crate::AnonymousMemberKind::Method
+                } else {
+                    crate::AnonymousMemberKind::AssociatedFunction
+                },
+            )
+            .map_err(|failure| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "failed to issue anonymous method producer: {failure:?}"
+                    )),
+                    self.rir.get(body).span,
+                )
+            })?,
+            crate::CanonicalArguments::default(),
+        );
+        let previous_producer = self.active_anonymous_producer.replace(producer);
+        let analysis = self.analyze_function_internal(
             infer_ctx,
             return_type,
             params,
@@ -684,7 +815,9 @@ impl<'a> BodySema<'a> {
             false,
             false,
             self_is_mut,
-        )
+        );
+        self.active_anonymous_producer = previous_producer;
+        analysis
     }
 
     /// Analyze the body of a `drop fn(self)` destructor declared inside an
@@ -707,6 +840,7 @@ impl<'a> BodySema<'a> {
         body: InstRef,
         self_type: Type,
         captured_comptime_values: &std::collections::HashMap<Spur, ConstValue>,
+        method_name: Spur,
         full_name: &str,
         enclosing_type_subst: &std::collections::HashMap<Spur, Type>,
     ) -> CompileResult<(
@@ -716,6 +850,7 @@ impl<'a> BodySema<'a> {
         ParamSlotModes,
         Vec<CompileWarning>,
         Vec<String>,
+        Vec<crate::LocalAtomRecord<crate::SemanticDefinitionToken, crate::SemanticModuleToken>>,
         HashSet<Spur>,
         HashSet<(StructId, Spur)>,
     )> {
@@ -726,16 +861,24 @@ impl<'a> BodySema<'a> {
         let mut type_subst = enclosing_type_subst.clone();
         type_subst.insert(self_sym, self_type);
 
-        let (
-            mut air,
-            num_locals,
-            num_param_slots,
-            param_modes,
-            warnings,
-            local_strings,
-            ref_fns,
-            ref_meths,
-        ) = self.analyze_function_internal(
+        let producer = (
+            self.canonical_anonymous_member_producer(
+                self_type,
+                method_name,
+                crate::AnonymousMemberKind::Destructor,
+            )
+            .map_err(|failure| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "failed to issue anonymous destructor producer: {failure:?}"
+                    )),
+                    self.rir.get(body).span,
+                )
+            })?,
+            crate::CanonicalArguments::default(),
+        );
+        let previous_producer = self.active_anonymous_producer.replace(producer);
+        let analysis = self.analyze_function_internal(
             infer_ctx,
             Type::UNIT,
             params,
@@ -744,10 +887,20 @@ impl<'a> BodySema<'a> {
             Some(captured_comptime_values),
             /* is_destructor */ true,
             false,
-            // Anonymous-struct destructors keep an immutable `self`, matching
-            // named `drop fn`.
             false,
-        )?;
+        );
+        self.active_anonymous_producer = previous_producer;
+        let (
+            mut air,
+            num_locals,
+            num_param_slots,
+            param_modes,
+            warnings,
+            local_strings,
+            local_atoms,
+            ref_fns,
+            ref_meths,
+        ) = analysis?;
 
         reject_self_move_in_destructor(&air, full_name)?;
 
@@ -762,6 +915,7 @@ impl<'a> BodySema<'a> {
             param_modes,
             warnings,
             local_strings,
+            local_atoms,
             ref_fns,
             ref_meths,
         ))

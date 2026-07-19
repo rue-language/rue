@@ -21,10 +21,35 @@ pub(crate) fn compile_backend(
     // Check for main function
     let _main_fn = functions
         .iter()
-        .find(|f| f.analyzed.name == "main")
+        .find(|f| {
+            matches!(
+                f.symbol,
+                crate::StableSymbolId::Callable(crate::StableCallableId::Compiler(
+                    crate::CompilerCallableId::ProgramEntry
+                ))
+            ) && f.machine_name == "main"
+        })
         .ok_or_else(|| {
             CompileErrors::from(CompileError::without_span(ErrorKind::NoMainFunction))
         })?;
+
+    for function in functions {
+        match &function.symbol {
+            crate::StableSymbolId::Callable(crate::StableCallableId::Function(identity))
+                if identity == &function.semantic_identity
+                    && crate::StableSymbolEncoder::encode(&function.symbol)
+                        == function.machine_name => {}
+            crate::StableSymbolId::Callable(crate::StableCallableId::Compiler(
+                crate::CompilerCallableId::ProgramEntry,
+            )) if function.machine_name == "main" => {}
+            _ => {
+                return Err(CompileError::without_span(ErrorKind::InternalError(
+                    "compiler function record has inconsistent semantic/symbol projection".into(),
+                ))
+                .into());
+            }
+        }
+    }
 
     // Generate object files based on target architecture
     let object_files = match options.target.arch() {
@@ -52,14 +77,45 @@ fn generate_x86_64_objects(
     options: &CompileOptions,
 ) -> MultiErrorResult<Vec<Vec<u8>>> {
     let _span = info_span!("codegen", arch = "x86_64").entered();
+    let symbol_mappings = functions
+        .iter()
+        .map(|function| (function.legacy_name.clone(), function.machine_name.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let symbols = rue_codegen::MachineSymbolResolver::new(&symbol_mappings);
 
     let results: Vec<CompileResult<Vec<u8>>> = functions
         .par_iter()
         .map(|func| {
-            let machine_code =
-                rue_codegen::x86_64::generate(&func.cfg, type_pool, strings, interner)?;
+            let stable_atom_ids = func
+                .local_atoms
+                .iter()
+                .map(|atom| {
+                    crate::StableSymbolEncoder::encode(&crate::StableSymbolId::LocalAtom(
+                        atom.identity.clone(),
+                    ))
+                })
+                .collect::<Vec<_>>();
+            let atom_projection = func
+                .local_atoms
+                .iter()
+                .zip(&stable_atom_ids)
+                .map(|(atom, stable_id)| rue_codegen::LocalAtomProjection {
+                    stable_id,
+                    dense_id: atom.dense_id,
+                    content: &atom.content,
+                })
+                .collect::<Vec<_>>();
+            let machine_code = rue_codegen::x86_64::generate_with_symbols_and_atoms(
+                &func.cfg,
+                type_pool,
+                strings,
+                interner,
+                symbols,
+                &atom_projection,
+            )?;
+            validate_production_call_relocations(&machine_code.relocations, &symbol_mappings)?;
 
-            let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
+            let mut obj_builder = ObjectBuilder::new(options.target, &func.machine_name)
                 .code(machine_code.code)
                 .strings(machine_code.strings);
 
@@ -98,19 +154,46 @@ fn generate_aarch64_objects(
     options: &CompileOptions,
 ) -> MultiErrorResult<Vec<Vec<u8>>> {
     let _span = info_span!("codegen", arch = "aarch64").entered();
+    let symbol_mappings = functions
+        .iter()
+        .map(|function| (function.legacy_name.clone(), function.machine_name.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let symbols = rue_codegen::MachineSymbolResolver::new(&symbol_mappings);
 
     let results: Vec<CompileResult<Vec<u8>>> = functions
         .par_iter()
         .map(|func| {
-            let machine_code = rue_codegen::aarch64::generate(
+            let stable_atom_ids = func
+                .local_atoms
+                .iter()
+                .map(|atom| {
+                    crate::StableSymbolEncoder::encode(&crate::StableSymbolId::LocalAtom(
+                        atom.identity.clone(),
+                    ))
+                })
+                .collect::<Vec<_>>();
+            let atom_projection = func
+                .local_atoms
+                .iter()
+                .zip(&stable_atom_ids)
+                .map(|(atom, stable_id)| rue_codegen::LocalAtomProjection {
+                    stable_id,
+                    dense_id: atom.dense_id,
+                    content: &atom.content,
+                })
+                .collect::<Vec<_>>();
+            let machine_code = rue_codegen::aarch64::generate_with_symbols_and_atoms(
                 &func.cfg,
                 type_pool,
                 strings,
                 interner,
                 options.target,
+                symbols,
+                &atom_projection,
             )?;
+            validate_production_call_relocations(&machine_code.relocations, &symbol_mappings)?;
 
-            let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
+            let mut obj_builder = ObjectBuilder::new(options.target, &func.machine_name)
                 .code(machine_code.code)
                 .strings(machine_code.strings);
 
@@ -159,6 +242,37 @@ fn collect_codegen_results(
         "codegen complete"
     );
     Ok(object_files)
+}
+
+/// Standalone codegen APIs retain their historical passthrough behavior, but
+/// the compiler's production path must never let an unresolved source or glue
+/// name reach the linker. Runtime exports and already-projected canonical
+/// machine names are the only call relocations which may bypass a map lookup.
+fn validate_production_call_relocations(
+    relocations: &[rue_codegen::EmittedRelocation],
+    symbol_mappings: &std::collections::BTreeMap<String, String>,
+) -> CompileResult<()> {
+    for relocation in relocations {
+        let is_call = matches!(
+            relocation.kind,
+            RelocationKind::X86Plt32 | RelocationKind::Aarch64Call26
+        );
+        if !is_call
+            || rue_runtime_abi::classify_export(&relocation.symbol).is_some()
+            || symbol_mappings
+                .values()
+                .any(|machine_name| machine_name == &relocation.symbol)
+        {
+            continue;
+        }
+        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+            format!(
+                "production machine-symbol resolver left source/glue call `{}` unresolved",
+                relocation.symbol
+            ),
+        )));
+    }
+    Ok(())
 }
 
 /// Machine IR that can hold either x86-64 or AArch64 MIR.
@@ -395,6 +509,45 @@ fn main() -> i32 {
             .windows(needle.len())
             .filter(|window| *window == needle)
             .count()
+    }
+
+    #[test]
+    fn production_call_symbol_validation_fails_closed_for_source_and_glue_names() {
+        let mappings = std::collections::BTreeMap::from([(
+            "legacy".to_owned(),
+            "__rue_sem_v1_projected".to_owned(),
+        )]);
+        let relocation = |symbol: &str| rue_codegen::EmittedRelocation {
+            offset: 0,
+            symbol: symbol.to_owned(),
+            kind: RelocationKind::X86Plt32,
+            addend: -4,
+        };
+
+        assert!(
+            validate_production_call_relocations(
+                &[relocation("__rue_sem_v1_projected")],
+                &mappings,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_production_call_relocations(
+                &[relocation(
+                    rue_runtime_abi::RuntimeHelperId::DebugBool.symbol(),
+                )],
+                &mappings,
+            )
+            .is_ok()
+        );
+        assert!(validate_production_call_relocations(&[relocation("legacy")], &mappings).is_err());
+        assert!(
+            validate_production_call_relocations(
+                &[relocation("__rue_drop_unprojected")],
+                &mappings,
+            )
+            .is_err()
+        );
     }
 
     fn frontend() -> (

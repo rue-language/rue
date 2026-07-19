@@ -4,7 +4,7 @@ use lasso::Spur;
 use rue_error::CompileWarning;
 use rue_span::Span;
 
-use super::{AnalyzedFunction, BodyOwnerToken, BodySema};
+use super::{AnalyzedFunction, BodyOwnerToken, DeclarationPhase, Sema};
 use crate::{
     AirInstData, AirPattern, AirProjection, SemanticBody, SemanticBodyAnchor, SemanticBodyCallArg,
     SemanticBodyExport, SemanticBodyExportFailure as F, SemanticBodyInst, SemanticBodyInstData,
@@ -14,7 +14,7 @@ use crate::{
     TypeKind,
 };
 
-impl BodySema<'_> {
+impl<D: DeclarationPhase> Sema<'_, D> {
     pub(crate) fn export_specialized_body(
         &self,
         base_name: Spur,
@@ -144,7 +144,7 @@ impl BodySema<'_> {
                         struct_id,
                         field_index,
                     } => SemanticBodyProjection::Field {
-                        struct_key: self.struct_identity(*struct_id)?,
+                        struct_key: self.body_struct_identity(*struct_id)?,
                         field_index: *field_index,
                     },
                     AirProjection::Index { array_type, index } => {
@@ -326,7 +326,7 @@ impl BodySema<'_> {
                                     enum_id,
                                     variant_index,
                                 } => SemanticBodyPattern::EnumVariant {
-                                    enum_key: self.enum_identity(enum_id)?,
+                                    enum_key: self.body_enum_identity(enum_id)?,
                                     variant_index,
                                 },
                             };
@@ -376,7 +376,7 @@ impl BodySema<'_> {
                                 args: call_args(args)?,
                             },
                             None => SemanticBodyInstData::Call {
-                                function: self.function_identity(*name)?,
+                                function: self.body_function_identity(*name)?,
                                 args: call_args(args)?,
                             },
                         }
@@ -406,7 +406,7 @@ impl BodySema<'_> {
                     fields,
                     source_order,
                 } => SemanticBodyInstData::StructInit {
-                    struct_key: self.struct_identity(*struct_id)?,
+                    struct_key: self.body_struct_identity(*struct_id)?,
                     fields: body
                         .get_struct_fields(fields)
                         .map(|value| r(value, current))
@@ -437,7 +437,7 @@ impl BodySema<'_> {
                     variant_index,
                     payload,
                 } => SemanticBodyInstData::EnumVariant {
-                    enum_key: self.enum_identity(*enum_id)?,
+                    enum_key: self.body_enum_identity(*enum_id)?,
                     variant_index: *variant_index,
                     payload: body
                         .get_enum_payload(payload)
@@ -452,7 +452,7 @@ impl BodySema<'_> {
                     field_index,
                 } => SemanticBodyInstData::EnumPayloadGet {
                     base: r(*base, current)?,
-                    enum_key: self.enum_identity(*enum_id)?,
+                    enum_key: self.body_enum_identity(*enum_id)?,
                     variant_index: *variant_index,
                     field_index: *field_index,
                 },
@@ -509,6 +509,14 @@ impl BodySema<'_> {
                     .iter()
                     .map(|value| Arc::from(value.as_str()))
                     .collect(),
+                local_atoms: analyzed
+                    .local_atoms
+                    .iter()
+                    .map(|atom| crate::SemanticBodyLocalAtom {
+                        identity: atom.identity.clone(),
+                        content: atom.content.clone(),
+                    })
+                    .collect(),
                 param_drops: Arc::from(param_drops),
                 borrow_slots: Arc::from(borrow_slots),
                 num_locals: analyzed.num_locals,
@@ -531,7 +539,9 @@ impl BodySema<'_> {
             );
         }
         let resolved = self.interner.resolve(&symbol);
-        for (&(struct_id, method_name), info) in &self.methods {
+        for (&(struct_id, method_name), info) in
+            self.methods.iter().chain(self.anonymous_methods.iter())
+        {
             let method = self.interner.resolve(&method_name);
             if self.method_symbol(struct_id, method, info.has_self) != resolved {
                 continue;
@@ -556,11 +566,79 @@ impl BodySema<'_> {
         Err(F::UnmappedFunction)
     }
 
+    fn body_function_identity(
+        &self,
+        symbol: Spur,
+    ) -> Result<crate::FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>, F> {
+        if self.functions.contains_key(&symbol) {
+            return Ok(crate::FunctionInstanceKey::Definition(
+                self.function_identity(symbol)?,
+            ));
+        }
+        let resolved = self.interner.resolve(&symbol);
+        for (&(struct_id, method_name), info) in
+            self.methods.iter().chain(self.anonymous_methods.iter())
+        {
+            let method = self.interner.resolve(&method_name);
+            if self.method_symbol(struct_id, method, info.has_self) != resolved {
+                continue;
+            }
+            let owner = Type::new_struct(struct_id);
+            if self.canonical_anonymous_types.contains_key(&owner) {
+                let kind = if method == "__drop" {
+                    crate::AnonymousMemberKind::Destructor
+                } else if info.has_self {
+                    crate::AnonymousMemberKind::Method
+                } else {
+                    crate::AnonymousMemberKind::AssociatedFunction
+                };
+                return Ok(crate::FunctionInstanceKey::AnonymousMember {
+                    owner: Box::new(self.canonical_type_instance(owner)?),
+                    member: crate::AnonymousMemberKey {
+                        kind,
+                        name: Arc::from(method),
+                    },
+                });
+            }
+            return Ok(crate::FunctionInstanceKey::Definition(
+                self.function_identity(symbol)?,
+            ));
+        }
+        Ok(crate::FunctionInstanceKey::Definition(
+            self.function_identity(symbol)?,
+        ))
+    }
+
+    fn body_struct_identity(
+        &self,
+        id: crate::StructId,
+    ) -> Result<crate::NominalInstanceKey<SemanticDefinitionToken, SemanticModuleToken>, F> {
+        let ty = Type::new_struct(id);
+        Ok(match self.canonical_anonymous_types.get(&ty) {
+            Some(key) => crate::NominalInstanceKey::Anonymous(key.clone()),
+            None => crate::NominalInstanceKey::Named(self.struct_identity(id)?),
+        })
+    }
+
+    fn body_enum_identity(
+        &self,
+        id: crate::EnumId,
+    ) -> Result<crate::NominalInstanceKey<SemanticDefinitionToken, SemanticModuleToken>, F> {
+        let ty = Type::new_enum(id);
+        Ok(match self.canonical_anonymous_types.get(&ty) {
+            Some(key) => crate::NominalInstanceKey::Anonymous(key.clone()),
+            None => crate::NominalInstanceKey::Named(self.enum_identity(id)?),
+        })
+    }
+
     pub(crate) fn struct_identity(
         &self,
         id: crate::StructId,
     ) -> Result<SemanticDefinitionToken, F> {
-        let def = self.type_pool.struct_def(id);
+        let def = self
+            .type_pool
+            .struct_metadata(id)
+            .ok_or(F::UnsupportedType)?;
         if def.name.starts_with("__anon_struct_") {
             return Err(F::AnonymousNominal);
         }
@@ -573,7 +651,7 @@ impl BodySema<'_> {
     }
 
     pub(crate) fn enum_identity(&self, id: crate::EnumId) -> Result<SemanticDefinitionToken, F> {
-        let def = self.type_pool.enum_def(id);
+        let def = self.type_pool.enum_metadata(id).ok_or(F::UnsupportedType)?;
         if def.name.starts_with("__anon_enum_") {
             return Err(F::AnonymousNominal);
         }
@@ -649,7 +727,18 @@ impl BodySema<'_> {
             TypeKind::ComptimeType => SemanticImportType::ComptimeType,
             TypeKind::Struct(id) => {
                 let def = self.type_pool.struct_def(id);
-                if def.is_builtin {
+                if let Some(identity) = self.canonical_anonymous_types.get(&ty) {
+                    // Canonicalization keeps the stable-key minimum as the
+                    // representative while retaining every producer alias.
+                    // Bodies always export that representative so cache bytes
+                    // do not depend on materialization order.
+                    debug_assert!(
+                        self.canonical_anonymous_aliases
+                            .get(&ty)
+                            .is_some_and(|aliases| aliases.contains(identity))
+                    );
+                    SemanticImportType::AnonymousNominal(identity.clone())
+                } else if def.is_builtin {
                     SemanticImportType::BuiltinNominal {
                         name: Arc::from(def.name.as_str()),
                         kind: crate::SemanticImportNominalKind::Struct,
@@ -660,7 +749,14 @@ impl BodySema<'_> {
             }
             TypeKind::Enum(id) => {
                 let def = self.type_pool.enum_def(id);
-                if rue_builtins::BUILTIN_ENUMS
+                if let Some(identity) = self.canonical_anonymous_types.get(&ty) {
+                    debug_assert!(
+                        self.canonical_anonymous_aliases
+                            .get(&ty)
+                            .is_some_and(|aliases| aliases.contains(identity))
+                    );
+                    SemanticImportType::AnonymousNominal(identity.clone())
+                } else if rue_builtins::BUILTIN_ENUMS
                     .iter()
                     .any(|builtin| builtin.name == def.name)
                 {

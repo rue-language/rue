@@ -105,7 +105,7 @@ impl<'a> BodySema<'a> {
         if validate_semantic_types {
             for ((arg, air_arg), expected) in args.iter().zip(&air_args).zip(param_types) {
                 let found = air.get(air_arg.value).ty;
-                if !found.can_coerce_to(expected) {
+                if !self.types_compatible(found, *expected) {
                     return Err(self.type_mismatch_error(
                         *expected,
                         found,
@@ -352,7 +352,6 @@ impl<'a> BodySema<'a> {
         let param_names = param_names.to_vec();
         let param_modes = param_modes.to_vec();
         let base_return_type = fn_info.return_type;
-        let fn_body = fn_info.body;
 
         // `-> type` functions with no runtime parameters reduce immediately,
         // but their arguments still obey the ordinary comptime contract. Build
@@ -582,11 +581,7 @@ impl<'a> BodySema<'a> {
                     &value_subst,
                 )?;
                 let found = air.get(air_arg.value).ty;
-                if found != expected
-                    && !found.is_error()
-                    && !found.is_never()
-                    && !expected.is_error()
-                {
+                if !self.types_compatible(found, expected) && !expected.is_error() {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: expected.safe_name_with_pool(Some(&self.type_pool)),
@@ -628,7 +623,7 @@ impl<'a> BodySema<'a> {
                     }
                 }
                 if let Some(ConstValue::Type(ty)) =
-                    self.try_evaluate_const_with_subst(fn_body, &type_subst, &value_subst)
+                    self.reduce_type_ctor_body(name, &type_subst, &value_subst)?
                 {
                     // Success! Return a TypeConst instruction instead of a runtime call
                     let air_ref = air.add_inst(AirInst {
@@ -700,7 +695,7 @@ impl<'a> BodySema<'a> {
         // name-not-found, exactly like a struct literal, type annotation, or
         // plain function reference; the module-qualified spelling
         // (`m.Type.assoc()`) is the supported form (ADR-0046).
-        if let InstData::VarRef { name } = self.rir.get(receiver).data
+        if let InstData::VarRef { name, .. } = self.rir.get(receiver).data
             && !self.is_runtime_value_binding(name, ctx)
             && (self.resolve_struct_type_name(name, ctx).is_some()
                 || self.resolve_enum_type_name(name, ctx).is_some()

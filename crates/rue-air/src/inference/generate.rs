@@ -816,7 +816,7 @@ impl<'a> ConstraintGenerator<'a> {
             // explicit `StrBuf` context retain the owning-buffer type;
             // otherwise semantic analysis defaults it after unification (to
             // core `str`, with contextual promotion to trusted `StrBuf`).
-            InstData::StringConst(_) => {
+            InstData::StringConst { .. } => {
                 let var = self.fresh_var();
                 self.string_literal_vars.push(var);
                 InferType::Var(var)
@@ -929,7 +929,7 @@ impl<'a> ConstraintGenerator<'a> {
             }
 
             // Variable reference
-            InstData::VarRef { name } => {
+            InstData::VarRef { name, .. } => {
                 if let Some(local) = ctx.locals.get(name) {
                     local.ty.clone()
                 } else if let Some(param) = ctx.params.get(name) {
@@ -2144,7 +2144,7 @@ impl<'a> ConstraintGenerator<'a> {
                 // variable silently unifying with the expected type. A comptime
                 // type-variable local (typed `COMPTIME_TYPE`) is a type
                 // reference, not a runtime value shadow.
-                if let InstData::VarRef { name } = self.rir.get(*base).data
+                if let InstData::VarRef { name, .. } = self.rir.get(*base).data
                     && !ctx.params.contains_key(&name)
                     && ctx.locals.get(&name).is_none_or(
                         |l| matches!(l.ty, InferType::Concrete(t) if t == Type::COMPTIME_TYPE),
@@ -2407,7 +2407,7 @@ impl<'a> ConstraintGenerator<'a> {
                 // type-variable local (`let O = Option(i32)`, typed
                 // `COMPTIME_TYPE`) IS a type reference, so `O.Some(true)` resolves
                 // to its concrete enum and a wrong payload type is caught here.
-                if let InstData::VarRef { name } = self.rir.get(*receiver).data
+                if let InstData::VarRef { name, .. } = self.rir.get(*receiver).data
                     && !ctx.params.contains_key(&name)
                     && ctx.locals.get(&name).is_none_or(
                         |l| matches!(l.ty, InferType::Concrete(t) if t == Type::COMPTIME_TYPE),
@@ -2441,7 +2441,7 @@ impl<'a> ConstraintGenerator<'a> {
                     field: type_name,
                 } = self.rir.get(*receiver).data
                     && !matches!(self.rir.get(module_ref).data,
-                        InstData::VarRef { name }
+                        InstData::VarRef { name, .. }
                             if ctx.locals.contains_key(&name) || ctx.params.contains_key(&name))
                     && let Some(member_ty) = self
                         .struct_type_for_module(module_ref, &type_name)
@@ -3166,7 +3166,7 @@ impl<'a> ConstraintGenerator<'a> {
     fn module_member_file(&self, module: InstRef) -> Option<FileId> {
         let inst = self.rir.get(module);
         match &inst.data {
-            InstData::VarRef { name } => {
+            InstData::VarRef { name, .. } => {
                 let module_ty = self
                     .module_binding_types
                     .and_then(|bindings| bindings.get(&(inst.span.file_id, *name)))
@@ -3261,7 +3261,7 @@ impl<'a> ConstraintGenerator<'a> {
             }
             // A struct/enum name or forwarded type parameter used as a value
             // parses as a variable reference, not a type literal.
-            InstData::VarRef { name } => {
+            InstData::VarRef { name, .. } => {
                 // A local bound to a type value (`let X = i32; identity(X, 42)`
                 // or `let P = Pair(i32); f(P, ..)`) resolves to that bound type
                 // via the in-scope comptime-alias view — the same map
@@ -3325,7 +3325,7 @@ impl<'a> ConstraintGenerator<'a> {
         match &self.rir.get(inst).data {
             InstData::IntConst(v) => Some(Integer(*v as i128)),
             InstData::BoolConst(b) => Some(Bool(*b)),
-            InstData::VarRef { name } => self
+            InstData::VarRef { name, .. } => self
                 .comptime_values
                 .and_then(|m| m.get(name).copied())
                 .or_else(|| {

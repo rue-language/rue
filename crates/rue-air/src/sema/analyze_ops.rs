@@ -79,7 +79,10 @@ impl<'a> BodySema<'a> {
                 Ok(AnalysisResult::new(air_ref, ty))
             }
 
-            InstData::StringConst(symbol) => {
+            InstData::StringConst {
+                content: symbol,
+                anchor,
+            } => {
                 // A string literal is static-backed: its bytes live in `.rodata`
                 // (the local string table), and the value is the fat pointer to
                 // them. When a `str` is expected (ADR-0043 Phase 3, RUE-324) the
@@ -116,7 +119,7 @@ impl<'a> BodySema<'a> {
                     }
                 }
 
-                let local_string_id = ctx.add_local_string(string_content);
+                let local_string_id = ctx.add_local_string(string_content, anchor.clone());
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::StringConst(local_string_id),

@@ -41,6 +41,7 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
         include_str!("revisioned_query_database.rs"),
     ),
     ("semantic_symbols", include_str!("semantic_symbols.rs")),
+    ("semantic_identity", include_str!("semantic_identity.rs")),
     ("session", include_str!("session.rs")),
     ("source_identity", include_str!("source_identity.rs")),
     ("source_metadata", include_str!("source_metadata.rs")),

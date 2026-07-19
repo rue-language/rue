@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use crate::ParamSlotModes;
 use crate::{
-    AirArgMode, AirPlaceBase, BodyOwnerToken, SemanticImportConstValue, SemanticImportFailure,
-    SemanticImportType,
+    AirArgMode, AirPlaceBase, BodyOwnerToken, FunctionInstanceKey, NominalInstanceKey,
+    SemanticImportConstValue, SemanticImportFailure, SemanticImportType,
 };
 
 /// Issuer-scoped snapshot authorization for one stable definition.
@@ -115,7 +115,7 @@ pub struct SemanticSpecializedBodyExport {
     pub dependency_boundary_complete: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SemanticSpecializedBodyCandidate<K, IM, BM = IM> {
     pub identity: SemanticSpecializationIdentity<K, IM>,
     pub body_span: rue_span::Span,
@@ -185,16 +185,19 @@ pub struct SemanticBodyAnchor {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SemanticBodyPattern<K> {
+pub enum SemanticBodyPattern<K, M> {
     Wildcard,
     Int(i64),
     Bool(bool),
-    EnumVariant { enum_key: K, variant_index: u32 },
+    EnumVariant {
+        enum_key: NominalInstanceKey<K, M>,
+        variant_index: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SemanticBodyMatchArm<K> {
-    pub pattern: SemanticBodyPattern<K>,
+pub struct SemanticBodyMatchArm<K, M> {
+    pub pattern: SemanticBodyPattern<K, M>,
     pub body: SemanticBodyRef,
 }
 
@@ -207,7 +210,7 @@ pub struct SemanticBodyCallArg {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SemanticBodyProjection<K, M> {
     Field {
-        struct_key: K,
+        struct_key: NominalInstanceKey<K, M>,
         field_index: u32,
     },
     Index {
@@ -279,7 +282,7 @@ pub enum SemanticBodyInstData<K, M> {
     },
     Match {
         scrutinee: SemanticBodyRef,
-        arms: Arc<[SemanticBodyMatchArm<K>]>,
+        arms: Arc<[SemanticBodyMatchArm<K, M>]>,
     },
     Break,
     Continue,
@@ -300,7 +303,7 @@ pub enum SemanticBodyInstData<K, M> {
     },
     Ret(Option<SemanticBodyRef>),
     Call {
-        function: K,
+        function: FunctionInstanceKey<K, M>,
         args: Arc<[SemanticBodyCallArg]>,
     },
     RuntimeCall {
@@ -327,7 +330,7 @@ pub enum SemanticBodyInstData<K, M> {
         value: SemanticBodyRef,
     },
     StructInit {
-        struct_key: K,
+        struct_key: NominalInstanceKey<K, M>,
         fields: Arc<[SemanticBodyRef]>,
         source_order: Arc<[u32]>,
     },
@@ -342,13 +345,13 @@ pub enum SemanticBodyInstData<K, M> {
         value: SemanticBodyRef,
     },
     EnumVariant {
-        enum_key: K,
+        enum_key: NominalInstanceKey<K, M>,
         variant_index: u32,
         payload: Arc<[SemanticBodyRef]>,
     },
     EnumPayloadGet {
         base: SemanticBodyRef,
-        enum_key: K,
+        enum_key: NominalInstanceKey<K, M>,
         variant_index: u32,
         field_index: u32,
     },
@@ -523,6 +526,8 @@ pub enum SemanticBodyInstDependency<'a, K, M> {
     Instruction(SemanticBodyRef),
     Place(SemanticBodyPlaceRef),
     Definition(&'a K),
+    Nominal(&'a NominalInstanceKey<K, M>),
+    Function(&'a FunctionInstanceKey<K, M>),
     Type(&'a SemanticImportType<K, M>),
     String(SemanticBodyRef),
 }
@@ -536,10 +541,11 @@ impl<K, M> SemanticBodyInstData<K, M> {
         key: &impl Fn(&K) -> Result<K2, E>,
         module: &impl Fn(&M) -> Result<M2, E>,
     ) -> Result<SemanticBodyInstData<K2, M2>, E> {
-        fn pattern<K, K2, E>(
-            value: &SemanticBodyPattern<K>,
+        fn pattern<K, M, K2, M2, E>(
+            value: &SemanticBodyPattern<K, M>,
             key: &impl Fn(&K) -> Result<K2, E>,
-        ) -> Result<SemanticBodyPattern<K2>, E> {
+            module: &impl Fn(&M) -> Result<M2, E>,
+        ) -> Result<SemanticBodyPattern<K2, M2>, E> {
             Ok(match value {
                 SemanticBodyPattern::Wildcard => SemanticBodyPattern::Wildcard,
                 SemanticBodyPattern::Int(value) => SemanticBodyPattern::Int(*value),
@@ -548,7 +554,12 @@ impl<K, M> SemanticBodyInstData<K, M> {
                     enum_key,
                     variant_index,
                 } => SemanticBodyPattern::EnumVariant {
-                    enum_key: key(enum_key)?,
+                    enum_key: match enum_key {
+                        NominalInstanceKey::Named(value) => NominalInstanceKey::Named(key(value)?),
+                        NominalInstanceKey::Anonymous(value) => {
+                            NominalInstanceKey::Anonymous(value.try_map_identities(key, module)?)
+                        }
+                    },
                     variant_index: *variant_index,
                 },
             })
@@ -605,7 +616,7 @@ impl<K, M> SemanticBodyInstData<K, M> {
                     .iter()
                     .map(|arm| {
                         Ok(SemanticBodyMatchArm {
-                            pattern: pattern(&arm.pattern, key)?,
+                            pattern: pattern(&arm.pattern, key, module)?,
                             body: arm.body,
                         })
                     })
@@ -629,7 +640,7 @@ impl<K, M> SemanticBodyInstData<K, M> {
             },
             D::Ret(v) => D::Ret(*v),
             D::Call { function, args } => D::Call {
-                function: key(function)?,
+                function: function.try_map_identities(key, module)?,
                 args: args.clone(),
             },
             D::RuntimeCall { runtime, args } => D::RuntimeCall {
@@ -660,7 +671,12 @@ impl<K, M> SemanticBodyInstData<K, M> {
                 fields,
                 source_order,
             } => D::StructInit {
-                struct_key: key(struct_key)?,
+                struct_key: match struct_key {
+                    NominalInstanceKey::Named(value) => NominalInstanceKey::Named(key(value)?),
+                    NominalInstanceKey::Anonymous(value) => {
+                        NominalInstanceKey::Anonymous(value.try_map_identities(key, module)?)
+                    }
+                },
                 fields: fields.clone(),
                 source_order: source_order.clone(),
             },
@@ -677,7 +693,12 @@ impl<K, M> SemanticBodyInstData<K, M> {
                 variant_index,
                 payload,
             } => D::EnumVariant {
-                enum_key: key(enum_key)?,
+                enum_key: match enum_key {
+                    NominalInstanceKey::Named(value) => NominalInstanceKey::Named(key(value)?),
+                    NominalInstanceKey::Anonymous(value) => {
+                        NominalInstanceKey::Anonymous(value.try_map_identities(key, module)?)
+                    }
+                },
                 variant_index: *variant_index,
                 payload: payload.clone(),
             },
@@ -688,7 +709,12 @@ impl<K, M> SemanticBodyInstData<K, M> {
                 field_index,
             } => D::EnumPayloadGet {
                 base: *base,
-                enum_key: key(enum_key)?,
+                enum_key: match enum_key {
+                    NominalInstanceKey::Named(value) => NominalInstanceKey::Named(key(value)?),
+                    NominalInstanceKey::Anonymous(value) => {
+                        NominalInstanceKey::Anonymous(value.try_map_identities(key, module)?)
+                    }
+                },
                 variant_index: *variant_index,
                 field_index: *field_index,
             },
@@ -795,7 +821,7 @@ impl<K, M> SemanticBodyInstData<K, M> {
                 inst(visitor, *scrutinee);
                 for arm in arms.iter() {
                     if let SemanticBodyPattern::EnumVariant { enum_key, .. } = &arm.pattern {
-                        visitor(SemanticBodyInstDependency::Definition(enum_key));
+                        visitor(SemanticBodyInstDependency::Nominal(enum_key));
                     }
                     inst(visitor, arm.body);
                 }
@@ -811,7 +837,7 @@ impl<K, M> SemanticBodyInstData<K, M> {
                 function,
                 args: values,
             } => {
-                visitor(SemanticBodyInstDependency::Definition(function));
+                visitor(SemanticBodyInstDependency::Function(function));
                 args(visitor, values);
             }
             D::RuntimeCall { args: values, .. } | D::Intrinsic { args: values, .. } => {
@@ -847,7 +873,7 @@ impl<K, M> SemanticBodyInstData<K, M> {
             D::StructInit {
                 struct_key, fields, ..
             } => {
-                visitor(SemanticBodyInstDependency::Definition(struct_key));
+                visitor(SemanticBodyInstDependency::Nominal(struct_key));
                 for field in fields.iter() {
                     inst(visitor, *field);
                 }
@@ -865,14 +891,14 @@ impl<K, M> SemanticBodyInstData<K, M> {
             D::EnumVariant {
                 enum_key, payload, ..
             } => {
-                visitor(SemanticBodyInstDependency::Definition(enum_key));
+                visitor(SemanticBodyInstDependency::Nominal(enum_key));
                 for value in payload.iter() {
                     inst(visitor, *value);
                 }
             }
             D::EnumPayloadGet { base, enum_key, .. } => {
                 inst(visitor, *base);
-                visitor(SemanticBodyInstDependency::Definition(enum_key));
+                visitor(SemanticBodyInstDependency::Nominal(enum_key));
             }
             D::IntCast { value, from_ty } => {
                 inst(visitor, *value);
@@ -901,6 +927,7 @@ pub struct SemanticBody<K, M> {
     pub instructions: Arc<[SemanticBodyInst<K, M>]>,
     pub places: Arc<[SemanticBodyPlace<K, M>]>,
     pub strings: Arc<[Arc<str>]>,
+    pub local_atoms: Arc<[crate::SemanticBodyLocalAtom<K, M>]>,
     pub param_drops: Arc<[(u32, SemanticImportType<K, M>)]>,
     pub borrow_slots: Arc<[u32]>,
     pub num_locals: u32,
@@ -935,7 +962,16 @@ impl<K, M> SemanticBody<K, M> {
                                     struct_key,
                                     field_index,
                                 } => SemanticBodyProjection::Field {
-                                    struct_key: key(struct_key)?,
+                                    struct_key: match struct_key {
+                                        NominalInstanceKey::Named(value) => {
+                                            NominalInstanceKey::Named(key(value)?)
+                                        }
+                                        NominalInstanceKey::Anonymous(value) => {
+                                            NominalInstanceKey::Anonymous(
+                                                value.try_map_identities(key, module)?,
+                                            )
+                                        }
+                                    },
                                     field_index: *field_index,
                                 },
                                 SemanticBodyProjection::Index { array_type, index } => {
@@ -969,6 +1005,17 @@ impl<K, M> SemanticBody<K, M> {
             instructions: instructions.into(),
             places: places.into(),
             strings: self.strings.clone(),
+            local_atoms: self
+                .local_atoms
+                .iter()
+                .map(|atom| {
+                    Ok(crate::SemanticBodyLocalAtom {
+                        identity: atom.identity.try_map_identities(key, module)?,
+                        content: atom.content.clone(),
+                    })
+                })
+                .collect::<Result<Vec<_>, E>>()?
+                .into(),
             param_drops: self
                 .param_drops
                 .iter()
@@ -987,9 +1034,10 @@ impl<K, M> SemanticBody<K, M> {
 }
 
 #[derive(Debug)]
-pub struct SemanticImportedBody {
+pub struct SemanticImportedBody<K, M> {
     pub air: crate::ValidatedAir,
     pub strings: Vec<String>,
+    pub local_atoms: Vec<crate::LocalAtomRecord<K, M>>,
     pub num_locals: u32,
     pub num_param_slots: u32,
     pub param_modes: ParamSlotModes,
@@ -997,7 +1045,7 @@ pub struct SemanticImportedBody {
     pub warnings: Arc<[SemanticBodyWarning]>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SemanticBodyCandidate<K, M> {
     pub owner: crate::BodyOwnerToken,
     pub body_span: rue_span::Span,
@@ -1123,7 +1171,7 @@ mod schema_tests {
                 scrutinee: 1,
                 arms: vec![SemanticBodyMatchArm {
                     pattern: SemanticBodyPattern::EnumVariant {
-                        enum_key: "match_enum",
+                        enum_key: NominalInstanceKey::Named("match_enum"),
                         variant_index: 0,
                     },
                     body: 2,
@@ -1141,7 +1189,7 @@ mod schema_tests {
             },
             D::Ret(Some(1)),
             D::Call {
-                function: "function",
+                function: FunctionInstanceKey::Definition("function"),
                 args: call_args(&[1, 2]),
             },
             D::RuntimeCall {
@@ -1169,7 +1217,7 @@ mod schema_tests {
                 value: 3,
             },
             D::StructInit {
-                struct_key: "struct",
+                struct_key: NominalInstanceKey::Named("struct"),
                 fields: vec![1, 2].into(),
                 source_order: vec![1, 0].into(),
             },
@@ -1179,13 +1227,13 @@ mod schema_tests {
             D::PlaceRead { place: 4 },
             D::PlaceWrite { place: 4, value: 1 },
             D::EnumVariant {
-                enum_key: "enum",
+                enum_key: NominalInstanceKey::Named("enum"),
                 variant_index: 1,
                 payload: vec![1, 2].into(),
             },
             D::EnumPayloadGet {
                 base: 1,
-                enum_key: "enum",
+                enum_key: NominalInstanceKey::Named("enum"),
                 variant_index: 1,
                 field_index: 0,
             },
@@ -1259,6 +1307,16 @@ mod schema_tests {
                 }
                 SemanticBodyInstDependency::Place(value) => SeenDependency::Place(value),
                 SemanticBodyInstDependency::Definition(value) => SeenDependency::Definition(value),
+                SemanticBodyInstDependency::Nominal(NominalInstanceKey::Named(value)) => {
+                    SeenDependency::Definition(value)
+                }
+                SemanticBodyInstDependency::Function(FunctionInstanceKey::Definition(value)) => {
+                    SeenDependency::Definition(value)
+                }
+                SemanticBodyInstDependency::Nominal(NominalInstanceKey::Anonymous(_))
+                | SemanticBodyInstDependency::Function(_) => {
+                    panic!("the bounded named sample does not use anonymous identities")
+                }
                 SemanticBodyInstDependency::Type(value) => SeenDependency::Type(value.kind()),
                 SemanticBodyInstDependency::String(value) => SeenDependency::String(value),
             });
@@ -1353,15 +1411,15 @@ mod schema_tests {
         assert!(matches!(
             map(&samples[32]),
             SemanticBodyInstData::Match { arms, .. }
-                if matches!(&arms[0].pattern, SemanticBodyPattern::EnumVariant { enum_key, .. } if enum_key == "mapped:match_enum")
+                if matches!(&arms[0].pattern, SemanticBodyPattern::EnumVariant { enum_key: NominalInstanceKey::Named(enum_key), .. } if enum_key == "mapped:match_enum")
         ));
         assert!(matches!(
             map(&samples[47]),
-            SemanticBodyInstData::StructInit { struct_key, .. } if struct_key == "mapped:struct"
+            SemanticBodyInstData::StructInit { struct_key: NominalInstanceKey::Named(struct_key), .. } if struct_key == "mapped:struct"
         ));
         assert!(matches!(
             map(&samples[51]),
-            SemanticBodyInstData::EnumVariant { enum_key, .. } if enum_key == "mapped:enum"
+            SemanticBodyInstData::EnumVariant { enum_key: NominalInstanceKey::Named(enum_key), .. } if enum_key == "mapped:enum"
         ));
         assert!(matches!(
             map(&samples[53]),
@@ -1402,6 +1460,7 @@ mod schema_tests {
         data.visit_dependencies(&mut |dependency| match dependency {
             SemanticBodyInstDependency::Instruction(value) => instruction_refs.push(value),
             SemanticBodyInstDependency::Definition(value) => definitions.push(*value),
+            SemanticBodyInstDependency::Nominal(_) | SemanticBodyInstDependency::Function(_) => {}
             SemanticBodyInstDependency::Type(value) => {
                 saw_type_argument_by_reference |= std::ptr::eq(value, &type_arguments[0]);
             }

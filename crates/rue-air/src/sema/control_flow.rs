@@ -217,7 +217,10 @@ impl<'a> BodySema<'a> {
                 (false, true) => then_type,
                 (false, false) => {
                     // Neither diverges - types must match exactly
-                    if then_type != else_type && !then_type.is_error() && !else_type.is_error() {
+                    if !self.types_equivalent(then_type, else_type)
+                        && !then_type.is_error()
+                        && !else_type.is_error()
+                    {
                         return Err(CompileError::new(
                             ErrorKind::TypeMismatch {
                                 expected: then_type.safe_name_with_pool(Some(&self.type_pool)),
@@ -1016,7 +1019,7 @@ impl<'a> BodySema<'a> {
                     let enum_def = self.type_pool.enum_def(enum_id);
 
                     // Check that scrutinee type matches the pattern's enum type
-                    if scrutinee_type != Type::new_enum(enum_id) {
+                    if !self.types_equivalent(scrutinee_type, Type::new_enum(enum_id)) {
                         return Err(CompileError::new(
                             ErrorKind::TypeMismatch {
                                 expected: scrutinee_type.safe_name_with_pool(Some(&self.type_pool)),
@@ -1114,7 +1117,10 @@ impl<'a> BodySema<'a> {
                         body_type
                     } else if body_type.is_never() {
                         prev
-                    } else if prev != body_type && !prev.is_error() && !body_type.is_error() {
+                    } else if !self.types_equivalent(prev, body_type)
+                        && !prev.is_error()
+                        && !body_type.is_error()
+                    {
                         // Point at the offending arm's body, not the whole match.
                         return Err(self.type_mismatch_error(
                             prev,
@@ -1382,7 +1388,7 @@ impl<'a> BodySema<'a> {
                     ));
                 }
             };
-            if err_ty != ret_err_ty {
+            if !self.types_equivalent(err_ty, ret_err_ty) {
                 return Err(CompileError::new(
                     ErrorKind::QuestionErrTypeMismatch {
                         operand_err: err_ty.safe_name_with_pool(Some(&self.type_pool)),
@@ -1731,7 +1737,7 @@ impl<'a> BodySema<'a> {
             // Type check: returned value must match function's return type.
             if !ctx.return_type.is_error()
                 && !inner_ty.is_error()
-                && !inner_ty.can_coerce_to(&ctx.return_type)
+                && !self.types_compatible(inner_ty, ctx.return_type)
             {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {

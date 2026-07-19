@@ -1,14 +1,16 @@
 //! Anonymous struct handling.
 //!
 //! This module implements structural type equality for anonymous structs.
-//! Two anonymous structs with the same field names/types (in order) AND
-//! the same method signatures AND the same captured comptime values are the same type.
+//! Two anonymous structs with the same field names/types (in order) and the
+//! same method signatures are the same language type. Method bodies and their
+//! captured values belong to the stable representative, not to equality.
 //!
 //! It also implements the enum analog (`find_or_create_anon_enum`): anonymous
 //! enum types produced by comptime type functions like
 //! `fn Option(comptime T: type) -> type { enum { Some(T), None } }`
 //! (ADR-0038, RUE-6 phase 2).
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use lasso::Spur;
@@ -19,97 +21,341 @@ use crate::types::{EnumDef, StructDef, StructField, Type};
 use super::info::AnonMethodSig;
 use super::{DeclarationPhase, Sema};
 
+pub(crate) type IssuedAnonymousNominalKey =
+    crate::AnonymousNominalKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>;
+
+pub(crate) type IssuedFunctionInstanceKey =
+    crate::FunctionInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>;
+
+pub(crate) type IssuedTypeInstanceKey =
+    crate::TypeInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>;
+
+pub(crate) type IssuedCanonicalArguments =
+    crate::CanonicalArguments<crate::SemanticDefinitionToken, crate::SemanticModuleToken>;
+
+pub(crate) type IssuedStableProducerId =
+    crate::StableProducerId<crate::SemanticDefinitionToken, crate::SemanticModuleToken>;
+
 impl<D: DeclarationPhase> Sema<'_, D> {
-    /// Find an existing anonymous struct with the same fields, methods, and captured values, or create a new one.
+    pub(crate) fn anonymous_key_cmp(
+        left: &IssuedAnonymousNominalKey,
+        right: &IssuedAnonymousNominalKey,
+    ) -> Ordering {
+        fn type_root(value: &IssuedTypeInstanceKey) -> Option<crate::SemanticDefinitionToken> {
+            use crate::{NominalInstanceKey as N, TypeInstanceKey as T};
+            match value {
+                T::Nominal(N::Named(value)) => Some(*value),
+                T::Nominal(N::Anonymous(value)) => producer_root(&value.producer),
+                T::Array { element, .. } | T::PtrConst(element) | T::PtrMut(element) => {
+                    type_root(element)
+                }
+                _ => None,
+            }
+        }
+        fn function_root(
+            value: &IssuedFunctionInstanceKey,
+        ) -> Option<crate::SemanticDefinitionToken> {
+            use crate::FunctionInstanceKey as F;
+            match value {
+                F::Definition(value) => Some(*value),
+                F::Specialization { base, .. } => function_root(base),
+                F::AnonymousMember { owner, .. } | F::DropGlue(owner) => type_root(owner),
+            }
+        }
+        fn producer_root(value: &IssuedStableProducerId) -> Option<crate::SemanticDefinitionToken> {
+            match value {
+                crate::StableProducerId::Definition(value) => Some(*value),
+                crate::StableProducerId::Function(value) => function_root(value),
+            }
+        }
+
+        producer_root(&left.producer)
+            .cmp(&producer_root(&right.producer))
+            .then_with(|| left.cmp(right))
+    }
+
+    pub(crate) fn canonical_definition_producer(
+        &self,
+        file: rue_span::FileId,
+        name: &str,
+        owner: Option<&str>,
+        kind: crate::StableDefinitionKind,
+    ) -> Result<IssuedStableProducerId, crate::SemanticBodyExportFailure> {
+        Ok(IssuedStableProducerId::Definition(
+            self.stable_definition_token(file.index(), name, owner, kind)?,
+        ))
+    }
+
+    pub(crate) fn canonical_type_instance(
+        &self,
+        ty: Type,
+    ) -> Result<IssuedTypeInstanceKey, crate::SemanticBodyExportFailure> {
+        use crate::SemanticBodyExportFailure as F;
+        use crate::{AnonymousNominalKind as K, NominalInstanceKey as N, TypeInstanceKey as T};
+
+        Ok(match ty.kind() {
+            crate::TypeKind::I8 => T::I8,
+            crate::TypeKind::I16 => T::I16,
+            crate::TypeKind::I32 => T::I32,
+            crate::TypeKind::I64 => T::I64,
+            crate::TypeKind::U8 => T::U8,
+            crate::TypeKind::U16 => T::U16,
+            crate::TypeKind::U32 => T::U32,
+            crate::TypeKind::U64 => T::U64,
+            crate::TypeKind::Bool => T::Bool,
+            crate::TypeKind::Unit => T::Unit,
+            crate::TypeKind::Never => T::Never,
+            crate::TypeKind::ComptimeType => T::ComptimeType,
+            crate::TypeKind::Struct(id) => {
+                if let Some(key) = self.canonical_anonymous_types.get(&ty) {
+                    T::Nominal(N::Anonymous(key.clone()))
+                } else {
+                    // Nominal identity is available from the declaration shell,
+                    // before fields are complete. Comptime type constructors can
+                    // legitimately receive such a nominal while declarations are
+                    // still being collected; identity must not depend on layout.
+                    let def = self
+                        .type_pool
+                        .struct_metadata(id)
+                        .ok_or(F::UnsupportedType)?;
+                    if def.is_builtin {
+                        T::BuiltinNominal {
+                            kind: K::Struct,
+                            name: std::sync::Arc::from(def.name.as_str()),
+                        }
+                    } else {
+                        T::Nominal(N::Named(self.struct_identity(id)?))
+                    }
+                }
+            }
+            crate::TypeKind::Enum(id) => {
+                if let Some(key) = self.canonical_anonymous_types.get(&ty) {
+                    T::Nominal(N::Anonymous(key.clone()))
+                } else {
+                    let def = self.type_pool.enum_metadata(id).ok_or(F::UnsupportedType)?;
+                    if rue_builtins::BUILTIN_ENUMS
+                        .iter()
+                        .any(|builtin| builtin.name == def.name)
+                    {
+                        T::BuiltinNominal {
+                            kind: K::Enum,
+                            name: std::sync::Arc::from(def.name.as_str()),
+                        }
+                    } else {
+                        T::Nominal(N::Named(self.enum_identity(id)?))
+                    }
+                }
+            }
+            crate::TypeKind::Array(id) => {
+                let (element, len) = self.type_pool.array_def(id);
+                T::Array {
+                    element: Box::new(self.canonical_type_instance(element)?),
+                    len,
+                }
+            }
+            crate::TypeKind::PtrConst(id) => T::PtrConst(Box::new(
+                self.canonical_type_instance(self.type_pool.ptr_const_def(id))?,
+            )),
+            crate::TypeKind::PtrMut(id) => T::PtrMut(Box::new(
+                self.canonical_type_instance(self.type_pool.ptr_mut_def(id))?,
+            )),
+            crate::TypeKind::Module(id) => {
+                let file = self.module_registry.get_def(id).file_id;
+                T::Module(
+                    self.stable_module_tokens
+                        .get(&file)
+                        .copied()
+                        .or_else(|| {
+                            self.stable_module_tokens
+                                .is_empty()
+                                .then(|| crate::SemanticModuleToken::new(0, file.index()))
+                        })
+                        .ok_or(F::MissingStableIdentity)?,
+                )
+            }
+            crate::TypeKind::Error => return Err(F::UnsupportedType),
+        })
+    }
+
+    pub(crate) fn canonical_argument_value(
+        &self,
+        value: ConstValue,
+    ) -> Result<
+        crate::CanonicalArgumentValue<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    > {
+        use crate::CanonicalArgumentValue as V;
+        Ok(match value {
+            ConstValue::Integer(value) => V::Integer(value),
+            ConstValue::Bool(value) => V::Bool(value),
+            ConstValue::Type(value) => V::Type(Box::new(self.canonical_type_instance(value)?)),
+            ConstValue::Function(value) => V::Function(Box::new(
+                IssuedFunctionInstanceKey::Definition(self.function_identity(value)?),
+            )),
+            ConstValue::Unit => V::Unit,
+            ConstValue::String(value) => {
+                V::String(std::sync::Arc::from(self.interner.resolve(&value)))
+            }
+        })
+    }
+
+    pub(crate) fn canonical_specialization_instance(
+        &self,
+        function_name: Spur,
+        type_args: &[Type],
+        value_args: &[ConstValue],
+    ) -> Result<IssuedFunctionInstanceKey, crate::SemanticBodyExportFailure> {
+        let arguments = IssuedCanonicalArguments {
+            types: type_args
+                .iter()
+                .map(|ty| self.canonical_type_instance(*ty))
+                .collect::<Result<Vec<_>, _>>()?
+                .into(),
+            values: value_args
+                .iter()
+                .copied()
+                .map(|value| self.canonical_argument_value(value))
+                .collect::<Result<Vec<_>, _>>()?
+                .into(),
+        };
+        Ok(IssuedFunctionInstanceKey::Specialization {
+            base: Box::new(IssuedFunctionInstanceKey::Definition(
+                self.function_identity(function_name)?,
+            )),
+            arguments,
+        })
+    }
+
+    pub(crate) fn canonical_function_producer(
+        &self,
+        function_name: Spur,
+        type_subst: &HashMap<Spur, Type>,
+        value_subst: &HashMap<Spur, ConstValue>,
+    ) -> Result<(IssuedStableProducerId, IssuedCanonicalArguments), crate::SemanticBodyExportFailure>
+    {
+        use crate::SemanticBodyExportFailure as F;
+
+        let function = self
+            .function_info(function_name)
+            .ok_or(F::MissingStableIdentity)?;
+        let type_flags = self.comptime_type_param_flags(function);
+        let mut types = Vec::new();
+        let mut values = Vec::new();
+        for (index, (name, _, _, is_comptime)) in self.param_arena.iter(function.params).enumerate()
+        {
+            if !*is_comptime {
+                continue;
+            }
+            if type_flags[index] {
+                types.push(self.canonical_type_instance(
+                    *type_subst.get(name).ok_or(F::MissingStableIdentity)?,
+                )?);
+            } else {
+                values.push(self.canonical_argument_value(
+                    *value_subst.get(name).ok_or(F::MissingStableIdentity)?,
+                )?);
+            }
+        }
+        let arguments = IssuedCanonicalArguments {
+            types: types.into(),
+            values: values.into(),
+        };
+        let base = IssuedFunctionInstanceKey::Definition(self.function_identity(function_name)?);
+        let function = if arguments.types.is_empty() && arguments.values.is_empty() {
+            base
+        } else {
+            IssuedFunctionInstanceKey::Specialization {
+                base: Box::new(base),
+                arguments: arguments.clone(),
+            }
+        };
+        Ok((
+            IssuedStableProducerId::Function(Box::new(function)),
+            arguments,
+        ))
+    }
+
+    pub(crate) fn canonical_anonymous_member_producer(
+        &self,
+        owner: Type,
+        name: Spur,
+        kind: crate::AnonymousMemberKind,
+    ) -> Result<IssuedStableProducerId, crate::SemanticBodyExportFailure> {
+        let owner = self.canonical_type_instance(owner)?;
+        Ok(IssuedStableProducerId::Function(Box::new(
+            IssuedFunctionInstanceKey::AnonymousMember {
+                owner: Box::new(owner),
+                member: crate::AnonymousMemberKey {
+                    kind,
+                    name: std::sync::Arc::from(self.interner.resolve(&name)),
+                },
+            },
+        )))
+    }
+}
+
+impl<D: DeclarationPhase> Sema<'_, D> {
+    /// Find an existing anonymous struct with the same fields and method
+    /// signatures, or create a new one.
     ///
     /// This implements structural type equality for anonymous structs: two anonymous
     /// structs with the same field names/types (in the same order) AND the same method
-    /// signatures AND the same captured comptime values are the same type.
-    ///
-    /// Method bodies do NOT affect structural equality, but captured comptime values DO.
-    /// This means `FixedBuffer(42)` and `FixedBuffer(100)` are different types because
-    /// they capture different values, similar to how C++ templates or Zig comptime work.
+    /// signatures are the same type. Method bodies and captured values do not
+    /// participate in structural equality (§4.14:15).
     ///
     /// Returns a tuple of (Type, is_new) where is_new indicates whether the struct was
     /// newly created (true) or an existing match was found (false). Callers should only
     /// register methods for newly created structs.
     pub(crate) fn find_or_create_anon_struct(
         &mut self,
+        identity: IssuedAnonymousNominalKey,
         fields: &[StructField],
         method_sigs: &[AnonMethodSig],
         captured_values: &HashMap<Spur, ConstValue>,
     ) -> (Type, bool) {
-        // Check if an equivalent anonymous struct already exists
-        // Anonymous structs have names starting with "__anon_struct_"
-        for struct_id in self.type_pool.all_struct_ids() {
-            let Some(struct_def) = self.type_pool.try_struct_def(struct_id) else {
-                // Named declaration shells participate in recursive identity,
-                // but they are not definitions eligible for anonymous
-                // structural deduplication.
-                continue;
-            };
-            if struct_def.name.starts_with("__anon_struct_") {
-                // Check fields match
-                if struct_def.fields.len() != fields.len() {
-                    continue;
-                }
-                let mut fields_match = true;
-                for (def_field, new_field) in struct_def.fields.iter().zip(fields.iter()) {
-                    if def_field.name != new_field.name || def_field.ty != new_field.ty {
-                        fields_match = false;
-                        break;
-                    }
-                }
-                if !fields_match {
-                    continue;
-                }
+        if let Some(struct_id) = self.anon_struct_identities.get(&identity) {
+            return (Type::new_struct(*struct_id), false);
+        }
 
-                // Check method signatures match
-                let existing_sigs = self
-                    .anon_struct_method_sigs
-                    .get(&struct_id)
-                    .map(|v| v.as_slice())
-                    .unwrap_or(&[]);
-                if existing_sigs.len() != method_sigs.len() {
-                    continue;
+        let existing = self
+            .anonymous_struct_ids
+            .iter()
+            .copied()
+            .filter(|id| self.anonymous_struct_matches(*id, fields, method_sigs))
+            .min_by(|left, right| {
+                Self::anonymous_key_cmp(
+                    &self.canonical_anonymous_types[&Type::new_struct(*left)],
+                    &self.canonical_anonymous_types[&Type::new_struct(*right)],
+                )
+            });
+        if let Some(struct_id) = existing {
+            let ty = Type::new_struct(struct_id);
+            self.anon_struct_identities
+                .insert(identity.clone(), struct_id);
+            self.canonical_anonymous_aliases
+                .entry(ty)
+                .or_default()
+                .insert(identity.clone());
+            let representative = self
+                .canonical_anonymous_types
+                .get_mut(&ty)
+                .expect("anonymous type must have a representative");
+            if Self::anonymous_key_cmp(&identity, representative).is_lt() {
+                *representative = identity;
+                self.anon_struct_method_sigs
+                    .insert(struct_id, method_sigs.to_vec());
+                if captured_values.is_empty() {
+                    self.anon_struct_captured_values.remove(&struct_id);
+                } else {
+                    self.anon_struct_captured_values
+                        .insert(struct_id, captured_values.clone());
                 }
-                let mut methods_match = true;
-                for (existing, new) in existing_sigs.iter().zip(method_sigs.iter()) {
-                    if existing != new {
-                        methods_match = false;
-                        break;
-                    }
-                }
-                if !methods_match {
-                    continue;
-                }
-
-                // Check captured comptime values match
-                let empty_map = HashMap::new();
-                let existing_captures = self
-                    .anon_struct_captured_values
-                    .get(&struct_id)
-                    .unwrap_or(&empty_map);
-                if existing_captures.len() != captured_values.len() {
-                    continue;
-                }
-                let mut captures_match = true;
-                for (key, new_val) in captured_values.iter() {
-                    if let Some(existing_val) = existing_captures.get(key) {
-                        if existing_val != new_val {
-                            captures_match = false;
-                            break;
-                        }
-                    } else {
-                        captures_match = false;
-                        break;
-                    }
-                }
-                if captures_match {
-                    // Found a matching struct - return it with is_new=false
-                    return (Type::new_struct(struct_id), false);
-                }
+                self.anon_struct_type_subst.remove(&struct_id);
+                self.anonymous_methods
+                    .retain(|(owner, _), _| *owner != struct_id);
+                return (ty, true);
             }
+            return (ty, false);
         }
 
         // No matching struct found - create a new one using ID reservation
@@ -169,6 +415,15 @@ impl<D: DeclarationPhase> Sema<'_, D> {
 
         // Register in struct lookup
         self.generated_structs.insert(name_spur, struct_id);
+        self.anonymous_struct_ids.insert(struct_id);
+        let ty = Type::new_struct(struct_id);
+        self.anon_struct_identities
+            .insert(identity.clone(), struct_id);
+        self.canonical_anonymous_types.insert(ty, identity.clone());
+        self.canonical_anonymous_aliases
+            .entry(ty)
+            .or_default()
+            .insert(identity);
 
         // Return with is_new=true
         (Type::new_struct(struct_id), true)
@@ -190,11 +445,61 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     /// which can capture a value without it appearing in a field type).
     pub(crate) fn find_or_create_anon_enum(
         &mut self,
+        identity: IssuedAnonymousNominalKey,
         variant_names: &[String],
         variant_payloads: &[Vec<Type>],
     ) -> Type {
-        // Build the canonical, structure-encoding name.
-        let mut name = String::from("enum { ");
+        if let Some(enum_id) = self.anon_enum_identities.get(&identity) {
+            return Type::new_enum(*enum_id);
+        }
+
+        let existing = self
+            .anonymous_enum_ids
+            .iter()
+            .copied()
+            .filter(|id| {
+                let def = self.type_pool.enum_def(*id);
+                def.variants == variant_names
+                    && def.variant_payloads.len() == variant_payloads.len()
+                    && def
+                        .variant_payloads
+                        .iter()
+                        .zip(variant_payloads)
+                        .all(|(left, right)| {
+                            left.len() == right.len()
+                                && left
+                                    .iter()
+                                    .zip(right)
+                                    .all(|(left, right)| self.types_equivalent(*left, *right))
+                        })
+            })
+            .min_by(|left, right| {
+                Self::anonymous_key_cmp(
+                    &self.canonical_anonymous_types[&Type::new_enum(*left)],
+                    &self.canonical_anonymous_types[&Type::new_enum(*right)],
+                )
+            });
+        if let Some(enum_id) = existing {
+            let ty = Type::new_enum(enum_id);
+            self.anon_enum_identities.insert(identity.clone(), enum_id);
+            self.canonical_anonymous_aliases
+                .entry(ty)
+                .or_default()
+                .insert(identity.clone());
+            let representative = self
+                .canonical_anonymous_types
+                .get_mut(&ty)
+                .expect("anonymous type must have a representative");
+            if Self::anonymous_key_cmp(&identity, representative).is_lt() {
+                *representative = identity;
+            }
+            return ty;
+        }
+
+        // Names are presentation/lookup handles only. Source anonymous enums
+        // receive a unique live name because producer-distinct identities must
+        // not be collapsed by the pool's name interning.
+        let mut name = format!("__anon_enum_{} {{ ", self.anon_enum_identities.len());
         for (i, vname) in variant_names.iter().enumerate() {
             if i > 0 {
                 name.push_str(", ");
@@ -231,7 +536,229 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         // Mirror `find_or_create_anon_struct`, which records the type in the
         // name→id lookup so later resolution paths see it.
         self.generated_enums.insert(name_spur, enum_id);
+        self.anonymous_enum_ids.insert(enum_id);
+        let ty = Type::new_enum(enum_id);
+        self.anon_enum_identities.insert(identity.clone(), enum_id);
+        self.canonical_anonymous_types.insert(ty, identity.clone());
+        self.canonical_anonymous_aliases
+            .entry(ty)
+            .or_default()
+            .insert(identity);
 
         Type::new_enum(enum_id)
+    }
+
+    /// Find the canonical-key-minimum anonymous enum compatible with a
+    /// compiler-synthesized use site. This path is lookup-only: a source-less
+    /// intrinsic may consume an existing §4.14-compatible type, but it cannot
+    /// allocate an entity without a stable producer and structural anchor.
+    pub(crate) fn find_compatible_anon_enum(
+        &self,
+        variant_names: &[String],
+        variant_payloads: &[Vec<Type>],
+    ) -> Option<Type> {
+        self.anon_enum_identities
+            .iter()
+            .filter(|(_, id)| {
+                let def = self.type_pool.enum_def(**id);
+                def.variants == variant_names
+                    && def.variant_payloads.len() == variant_payloads.len()
+                    && def
+                        .variant_payloads
+                        .iter()
+                        .zip(variant_payloads)
+                        .all(|(left, right)| {
+                            left.len() == right.len()
+                                && left
+                                    .iter()
+                                    .zip(right)
+                                    .all(|(left, right)| self.types_equivalent(*left, *right))
+                        })
+            })
+            .min_by(|(left, _), (right, _)| Self::anonymous_key_cmp(left, right))
+            .map(|(_, id)| Type::new_enum(*id))
+    }
+
+    /// Canonical semantic type equivalence.
+    ///
+    /// Nominal identity remains exact for named types. Anonymous nominals use
+    /// the language's structural relation, recursively through every composite
+    /// type constructor. This is deliberately separate from allocation
+    /// identity and from recovery coercions such as `never` and `<error>`.
+    pub(crate) fn types_equivalent(&self, left: Type, right: Type) -> bool {
+        self.types_equivalent_inner(left, right, &mut std::collections::HashSet::new())
+    }
+
+    fn types_equivalent_inner(
+        &self,
+        left: Type,
+        right: Type,
+        visited: &mut std::collections::HashSet<(Type, Type)>,
+    ) -> bool {
+        if left == right {
+            return true;
+        }
+        if !visited.insert((left, right)) {
+            return true;
+        }
+        match (left.kind(), right.kind()) {
+            (crate::TypeKind::Array(left), crate::TypeKind::Array(right)) => {
+                let (left_element, left_len) = self.type_pool.array_def(left);
+                let (right_element, right_len) = self.type_pool.array_def(right);
+                left_len == right_len
+                    && self.types_equivalent_inner(left_element, right_element, visited)
+            }
+            (crate::TypeKind::PtrConst(left), crate::TypeKind::PtrConst(right)) => self
+                .types_equivalent_inner(
+                    self.type_pool.ptr_const_def(left),
+                    self.type_pool.ptr_const_def(right),
+                    visited,
+                ),
+            (crate::TypeKind::PtrMut(left), crate::TypeKind::PtrMut(right)) => self
+                .types_equivalent_inner(
+                    self.type_pool.ptr_mut_def(left),
+                    self.type_pool.ptr_mut_def(right),
+                    visited,
+                ),
+            (crate::TypeKind::Struct(left), crate::TypeKind::Struct(right))
+                if self.anonymous_struct_ids.contains(&left)
+                    && self.anonymous_struct_ids.contains(&right) =>
+            {
+                self.anonymous_structs_structurally_equal(left, right, visited)
+            }
+            (crate::TypeKind::Enum(left), crate::TypeKind::Enum(right))
+                if self.anonymous_enum_ids.contains(&left)
+                    && self.anonymous_enum_ids.contains(&right) =>
+            {
+                let left = self.type_pool.enum_def(left);
+                let right = self.type_pool.enum_def(right);
+                left.variants == right.variants
+                    && left.variant_payloads.len() == right.variant_payloads.len()
+                    && left
+                        .variant_payloads
+                        .iter()
+                        .zip(&right.variant_payloads)
+                        .all(|(left, right)| {
+                            left.len() == right.len()
+                                && left.iter().zip(right).all(|(left, right)| {
+                                    self.types_equivalent_inner(*left, *right, visited)
+                                })
+                        })
+            }
+            _ => false,
+        }
+    }
+
+    fn anonymous_structs_structurally_equal(
+        &self,
+        left: crate::StructId,
+        right: crate::StructId,
+        visited: &mut std::collections::HashSet<(Type, Type)>,
+    ) -> bool {
+        let left_def = self.type_pool.struct_def(left);
+        let right_def = self.type_pool.struct_def(right);
+        left_def.fields.len() == right_def.fields.len()
+            && left_def
+                .fields
+                .iter()
+                .zip(&right_def.fields)
+                .all(|(left, right)| {
+                    left.name == right.name
+                        && self.types_equivalent_inner(left.ty, right.ty, visited)
+                })
+            && self.method_signatures_equivalent(
+                self.anon_struct_method_sigs
+                    .get(&left)
+                    .map_or(&[], Vec::as_slice),
+                self.anon_struct_method_sigs
+                    .get(&right)
+                    .map_or(&[], Vec::as_slice),
+                visited,
+            )
+    }
+
+    fn anonymous_struct_matches(
+        &self,
+        existing: crate::StructId,
+        fields: &[StructField],
+        methods: &[AnonMethodSig],
+    ) -> bool {
+        let existing_def = self.type_pool.struct_def(existing);
+        let mut visited = std::collections::HashSet::new();
+        existing_def.fields.len() == fields.len()
+            && existing_def.fields.iter().zip(fields).all(|(left, right)| {
+                left.name == right.name
+                    && self.types_equivalent_inner(left.ty, right.ty, &mut visited)
+            })
+            && self.method_signatures_equivalent(
+                self.anon_struct_method_sigs
+                    .get(&existing)
+                    .map_or(&[], Vec::as_slice),
+                methods,
+                &mut visited,
+            )
+    }
+
+    fn method_signatures_equivalent(
+        &self,
+        left: &[AnonMethodSig],
+        right: &[AnonMethodSig],
+        visited: &mut std::collections::HashSet<(Type, Type)>,
+    ) -> bool {
+        left.len() == right.len()
+            && left.iter().all(|left| {
+                right.iter().any(|right| {
+                    left.name == right.name
+                        && left.has_self == right.has_self
+                        && left.self_mode == right.self_mode
+                        && left.param_modes == right.param_modes
+                        && left.param_comptime == right.param_comptime
+                        && left.param_types.len() == right.param_types.len()
+                        && left
+                            .param_types
+                            .iter()
+                            .zip(&right.param_types)
+                            .all(|(left, right)| self.method_types_equivalent(left, right, visited))
+                        && self.method_types_equivalent(
+                            &left.return_type,
+                            &right.return_type,
+                            visited,
+                        )
+                })
+            })
+    }
+
+    fn method_types_equivalent(
+        &self,
+        left: &super::AnonMethodType,
+        right: &super::AnonMethodType,
+        visited: &mut std::collections::HashSet<(Type, Type)>,
+    ) -> bool {
+        use super::AnonMethodType as T;
+        match (left, right) {
+            (T::SelfType, T::SelfType) => true,
+            (T::Concrete(left), T::Concrete(right)) => {
+                self.types_equivalent_inner(*left, *right, visited)
+            }
+            (
+                T::Array {
+                    element: left,
+                    len: left_len,
+                },
+                T::Array {
+                    element: right,
+                    len: right_len,
+                },
+            ) => left_len == right_len && self.method_types_equivalent(left, right, visited),
+            (T::PtrConst(left), T::PtrConst(right)) | (T::PtrMut(left), T::PtrMut(right)) => {
+                self.method_types_equivalent(left, right, visited)
+            }
+            (T::Syntax(left), T::Syntax(right)) => left == right,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn types_compatible(&self, found: Type, expected: Type) -> bool {
+        found.is_never() || found.is_error() || self.types_equivalent(found, expected)
     }
 }

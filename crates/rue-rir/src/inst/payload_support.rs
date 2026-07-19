@@ -99,7 +99,9 @@ impl Rir {
                     account(7, fields.extent(), false);
                     account(9, methods.extent(), false);
                 }
-                InstData::AnonStructType { fields, methods } => {
+                InstData::AnonStructType {
+                    fields, methods, ..
+                } => {
                     account(8, fields.extent(), false);
                     account(10, methods.extent(), false);
                 }
@@ -110,7 +112,9 @@ impl Rir {
                     account(12, variants.extent(), false);
                     account(14, payloads.extent(), true);
                 }
-                InstData::AnonEnumType { variants, payloads } => {
+                InstData::AnonEnumType {
+                    variants, payloads, ..
+                } => {
                     account(13, variants.extent(), false);
                     account(15, payloads.extent(), true);
                 }

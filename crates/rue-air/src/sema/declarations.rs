@@ -1782,9 +1782,9 @@ impl<'a> Sema<'a> {
                     let arg_refs = self.rir.intrinsic_args(args);
                     let arg_inst = self.rir.get(arg_refs.get(0).unwrap());
                     let import_path = match &arg_inst.data {
-                        InstData::StringConst(path_spur) => {
-                            self.interner.resolve(path_spur).to_string()
-                        }
+                        InstData::StringConst {
+                            content: path_spur, ..
+                        } => self.interner.resolve(path_spur).to_string(),
                         _ => unreachable!("compiler import preflight requires a string literal"),
                     };
 
@@ -1804,7 +1804,7 @@ impl<'a> Sema<'a> {
             }
 
             // A name: another module binding (alias) or a value constant.
-            InstData::VarRef { name } => {
+            InstData::VarRef { name, .. } => {
                 let name = *name;
                 self.ensure_const_collected(name, file_id)?;
                 if let Some(binding) = self.module_bindings.get(&(file_id, name)).cloned() {
@@ -1912,7 +1912,9 @@ impl<'a> Sema<'a> {
             // A string literal is directly a constant value (RUE-957). It is
             // stored as the interned content; use sites materialize it like
             // an inline literal (local string table -> `.rodata` `str`).
-            InstData::StringConst(content) => Ok(ConstInit::Value(ConstValue::String(*content))),
+            InstData::StringConst { content, .. } => {
+                Ok(ConstInit::Value(ConstValue::String(*content)))
+            }
 
             // Everything else: literals, arithmetic, comptime blocks, ... —
             // evaluated by the comptime engine.
@@ -1959,10 +1961,32 @@ impl<'a> Sema<'a> {
         let mut resolved_types: HashMap<InstRef, Type> = HashMap::new();
         self.infer_const_init_types(init, file_id, declared_ty, &mut resolved_types)?;
 
+        let canonical_identity = self
+            .named_const_dependency_source
+            .as_ref()
+            .map(|(file, name)| {
+                self.canonical_definition_producer(
+                    *file,
+                    name,
+                    None,
+                    crate::StableDefinitionKind::ValueConst,
+                )
+                .map(|producer| (producer, crate::CanonicalArguments::default()))
+                .map_err(|failure| {
+                    CompileError::new(
+                        ErrorKind::InternalError(format!(
+                            "failed to issue canonical const producer: {failure:?}"
+                        )),
+                        span,
+                    )
+                })
+            })
+            .transpose()?;
         let mut env = super::comptime_eval::ComptimeEnv::for_const_init(
             &resolved_types,
             &const_module_members,
             file_id,
+            canonical_identity,
         );
         match self.eval_const_expr(init, &mut env)? {
             Some(value) => Ok(ConstInit::Value(value)),
@@ -2007,7 +2031,7 @@ impl<'a> Sema<'a> {
 
             // A reference to another constant carries that constant's declared
             // type, regardless of the surrounding context.
-            InstData::VarRef { name } => self
+            InstData::VarRef { name, .. } => self
                 .resolve_const_info_in_file(*name, file_id)
                 .map(|info| info.ty)
                 .filter(|t| t.is_integer()),
@@ -2019,7 +2043,7 @@ impl<'a> Sema<'a> {
             // width, so lookup is authoritative in the receiver module.
             InstData::FieldGet { base, field } => {
                 let (base, field) = (*base, *field);
-                let via_module = if let InstData::VarRef { name } = &self.rir.get(base).data {
+                let via_module = if let InstData::VarRef { name, .. } = &self.rir.get(base).data {
                     self.module_bindings
                         .get(&(file_id, *name))
                         .and_then(|info| info.ty.as_module())
@@ -2174,7 +2198,7 @@ impl<'a> Sema<'a> {
         file_id: FileId,
     ) -> CompileResult<()> {
         match &self.rir.get(expr).data {
-            InstData::VarRef { name } => {
+            InstData::VarRef { name, .. } => {
                 let name = *name;
                 self.ensure_const_collected(name, file_id)
             }
@@ -2592,6 +2616,7 @@ impl<'a> Sema<'a> {
                 &resolved_types,
                 &const_module_members,
                 accessing_file,
+                None,
             );
             let Some(value) = self.eval_const_expr(arg.value, &mut env)? else {
                 return Err(CompileError::new(
@@ -2857,7 +2882,7 @@ impl<'a> Sema<'a> {
             }
         }
 
-        if declared == inferred {
+        if self.types_equivalent(declared, inferred) {
             return Ok(declared);
         }
         Err(CompileError::new(

@@ -1195,6 +1195,64 @@ exit_code = 9
 # --- Destructors on anonymous (generic) struct types (RUE-312) ---
 
 [[case]]
+name = "structurally_equal_anon_destructor_uses_stable_representative"
+spec = ["3.9:42", "4.14:15"]
+description = "Structurally equal anonymous types dispatch the stable representative destructor body"
+source = """
+fn A() -> type {
+    struct {
+        v: i32,
+        drop fn(self) { @dbg(self.v); }
+    }
+}
+fn B() -> type {
+    struct {
+        v: i32,
+        drop fn(self) { @dbg(self.v + 100); }
+    }
+}
+fn main() -> i32 {
+    let TA = A();
+    let TB = B();
+    let value: TB = TA { v: 7 };
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "7\n"
+
+[[case]]
+name = "late_specialization_replaces_anonymous_destructor_with_stable_representative"
+spec = ["3.9:42", "4.14:15"]
+description = "A lower stable anonymous producer discovered during specialization replaces an already analyzed destructor body"
+source = """
+fn Z() -> type {
+    struct {
+        value: i32,
+        drop fn(self) { @dbg(self.value + 1); }
+    }
+}
+fn A() -> type {
+    struct {
+        value: i32,
+        drop fn(self) { @dbg(self.value + 10); }
+    }
+}
+fn discover(comptime T: type) -> i32 {
+    let Item = A();
+    let value: Item = Item { value: 10 };
+    0
+}
+fn main() -> i32 {
+    let Item = Z();
+    let value: Item = Item { value: 10 };
+    discover(i32)
+}
+"""
+exit_code = 0
+expected_stdout = "20\n20\n"
+
+[[case]]
 name = "anon_struct_in_body_destructor_runs"
 spec = ["3.9:41", "3.9:42"]
 description = "A `drop fn(self)` declared inside a comptime type function's anonymous struct runs at scope exit"

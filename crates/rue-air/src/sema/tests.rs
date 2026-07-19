@@ -10,7 +10,7 @@ mod tests {
     use rue_lexer::Lexer;
     use rue_parser::Parser;
     use rue_rir::{AstGen, InstData, InternalIntrinsic, Rir, RirParamMode};
-    use rue_span::FileId;
+    use rue_span::{FileId, Span};
 
     struct TestModule {
         id: String,
@@ -73,6 +73,46 @@ mod tests {
         sema.analyze_all()
     }
 
+    fn compile_to_air_with_authoritative_identity_order(
+        source: &str,
+    ) -> MultiErrorResult<SemaOutput> {
+        // Synthetic tests hash names into token slots. These ordering-sensitive
+        // cases install the production contract instead: definition tokens
+        // follow the stable declaration-key order.
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().map_err(CompileErrors::from_error)?;
+        let parser = Parser::new(tokens, interner);
+        let (ast, interner) = parser.parse()?;
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
+
+        let shells = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
+            .predeclare_declaration_shells()?;
+        let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
+        let (_, owners) = authoritative_test_endpoints(&shell_records);
+        let mut definition_shells = shell_records;
+        definition_shells.sort_by(|left, right| left.identity.cmp(&right.identity));
+        let definitions = definition_shells
+            .iter()
+            .enumerate()
+            .map(|(slot, shell)| crate::SemanticDefinitionEndpoint {
+                token: crate::SemanticDefinitionToken::new(92, slot as u32),
+                file: shell.declaration_span.file_id.index(),
+                name: shell.identity.name.clone(),
+                kind: shell.identity.kind,
+                owner: shell.identity.owner.clone(),
+            })
+            .collect::<Vec<_>>();
+        shells
+            .install_stable_identity_endpoints(&definitions, &[])
+            .unwrap()
+            .resolve_declarations()?
+            .install_body_owner_tokens(&owners)
+            .unwrap()
+            .analyze_all_bodies()
+    }
+
     fn lower_files(files: &[(&str, FileId)]) -> (Rir, ThreadedRodeo) {
         let mut interner = ThreadedRodeo::default();
         let mut items = Vec::new();
@@ -88,6 +128,77 @@ mod tests {
         astgen.append_items(&items);
         let rir = astgen.finish();
         (rir, interner)
+    }
+
+    fn authoritative_test_endpoints(
+        shells: &[crate::SemanticDeclarationShell],
+    ) -> (
+        Vec<crate::SemanticDefinitionEndpoint>,
+        Vec<crate::BodyOwnerEndpoint>,
+    ) {
+        let definitions = shells
+            .iter()
+            .enumerate()
+            .map(|(slot, shell)| crate::SemanticDefinitionEndpoint {
+                token: crate::SemanticDefinitionToken::new(91, slot as u32),
+                file: shell.declaration_span.file_id.index(),
+                name: shell.identity.name.clone(),
+                kind: shell.identity.kind,
+                owner: shell.identity.owner.clone(),
+            })
+            .collect();
+        let owners = shells
+            .iter()
+            .filter_map(|shell| {
+                let (kind, name, owner_name) = match shell.identity.kind {
+                    crate::StableDefinitionKind::Function => (
+                        crate::BodyOwnerKind::FreeFunction,
+                        shell.identity.name.to_string(),
+                        None,
+                    ),
+                    crate::StableDefinitionKind::Method => (
+                        crate::BodyOwnerKind::Method,
+                        shell.identity.name.to_string(),
+                        shell.identity.owner.as_deref().map(str::to_owned),
+                    ),
+                    crate::StableDefinitionKind::AssociatedFunction => (
+                        crate::BodyOwnerKind::AssociatedFunction,
+                        shell.identity.name.to_string(),
+                        shell.identity.owner.as_deref().map(str::to_owned),
+                    ),
+                    crate::StableDefinitionKind::Destructor => {
+                        let owner = shell.identity.owner.as_deref()?.to_owned();
+                        (crate::BodyOwnerKind::Destructor, owner.clone(), Some(owner))
+                    }
+                    _ => return None,
+                };
+                Some(crate::BodyOwnerEndpoint {
+                    token: crate::BodyOwnerToken::new(91, shell.source_order),
+                    kind,
+                    file: shell.declaration_span.file_id.index(),
+                    name,
+                    owner_name,
+                })
+            })
+            .collect();
+        (definitions, owners)
+    }
+
+    fn authoritative_bound<'a>(
+        rir: &'a Rir,
+        interner: &'a ThreadedRodeo,
+        definitions: &[crate::SemanticDefinitionEndpoint],
+        owners: &[crate::BodyOwnerEndpoint],
+    ) -> crate::sema::BoundSema<'a> {
+        Sema::new_synthetic(rir, interner, PreviewFeatures::new())
+            .predeclare_declaration_shells()
+            .unwrap()
+            .install_stable_identity_endpoints(definitions, &[])
+            .unwrap()
+            .resolve_declarations()
+            .unwrap()
+            .install_body_owner_tokens(owners)
+            .unwrap()
     }
 
     #[test]
@@ -900,7 +1011,10 @@ mod tests {
                 }
                 (interner.resolve(name) == "import").then(|| {
                     let argument = args.get(0).unwrap();
-                    let rue_rir::InstData::StringConst(specifier) = rir.get(argument).data else {
+                    let rue_rir::InstData::StringConst {
+                        content: specifier, ..
+                    } = rir.get(argument).data
+                    else {
                         unreachable!()
                     };
                     let specifier = interner.resolve(&specifier).to_owned();
@@ -2729,6 +2843,790 @@ mod tests {
             })
             .collect();
         assert_eq!(struct_ids.len(), 2);
+    }
+
+    #[test]
+    fn anonymous_structural_equivalence_is_recursive_at_semantic_choke_points() {
+        compile_to_air(
+            r#"
+fn A() -> type { struct { value: i32 } }
+fn B() -> type { struct { value: i32 } }
+
+fn generic(comptime T: type, value: T) -> T { value }
+fn replace(inout value: A()) -> i32 {
+    let before: B() = value;
+    value = A() { value: before.value + 1 };
+    before.value
+}
+
+fn main() -> i32 {
+    let b: B() = B() { value: 40 };
+    let from_field: A() = B() { value: 40 };
+    let arrays_b: [B(); 1] = [b];
+    let arrays_a: [A(); 1] = arrays_b;
+    let branch = if true { A() { value: arrays_a[0].value } }
+                 else { B() { value: 0 } };
+    let specialized: B() = generic(A(), branch);
+    let p: ptr const B() = checked { @raw(specialized) };
+    let q: ptr const A() = p;
+    let mut updated: B() = checked { @ptr_read(q) };
+    replace(inout updated) + from_field.value - 38
+}
+"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn producer_distinct_anonymous_methods_destructors_and_nested_payloads_are_compatible() {
+        compile_to_air(
+            r#"
+fn A() -> type {
+    struct {
+        value: i32,
+        fn get(self) -> i32 { self.value }
+        drop fn(self) { @dbg(self.value); }
+    }
+}
+fn B() -> type {
+    struct {
+        value: i32,
+        fn get(self) -> i32 { self.value + 1 }
+        drop fn(self) { @dbg(self.value + 1); }
+    }
+}
+fn EA() -> type { enum { Some([A(); 1]), None } }
+fn EB() -> type { enum { Some([B(); 1]), None } }
+fn consume(value: EA()) -> i32 {
+    match value { EA().Some(items) => items[0].get(), EA().None => 0 }
+}
+fn main() -> i32 {
+    let value: EB() = EB().Some([B() { value: 42 }]);
+    consume(value)
+}
+"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn structurally_equal_anonymous_types_retain_all_producer_aliases() {
+        let output = compile_to_air(
+            r#"
+fn A() -> type { struct { value: i32 } }
+fn B() -> type { struct { value: i32 } }
+fn main() -> i32 {
+    let TA = A();
+    let TB = B();
+    let a: TA = TA { value: 42 };
+    let b: TB = a;
+    b.value
+}
+"#,
+        )
+        .unwrap();
+        assert_eq!(output.anonymous_nominal_identities_by_type.len(), 1);
+        let identities = output
+            .anonymous_nominal_identities_by_type
+            .values()
+            .next()
+            .unwrap();
+        assert_eq!(identities.aliases.len(), 2);
+        assert_eq!(identities.aliases.first(), Some(&identities.representative));
+    }
+
+    #[test]
+    fn body_types_export_the_stable_minimum_anonymous_representative() {
+        let output = compile_to_air(
+            r#"
+fn A() -> type { struct { value: i32 } }
+fn B() -> type { struct { value: i32 } }
+fn main() -> i32 {
+    let original: A() = A() { value: 42 };
+    let value: B() = original;
+    value.value
+}
+"#,
+        )
+        .unwrap();
+        let identities = output
+            .anonymous_nominal_identities_by_type
+            .values()
+            .next()
+            .expect("one structural anonymous type");
+        assert_eq!(identities.aliases.len(), 2);
+        let exported = output
+            .ordinary_body_exports
+            .iter()
+            .flat_map(|export| export.body.instructions.iter())
+            .filter_map(|instruction| match &instruction.ty {
+                crate::SemanticImportType::AnonymousNominal(identity) => Some(identity),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(!exported.is_empty());
+        assert!(
+            exported
+                .iter()
+                .all(|identity| **identity == identities.representative)
+        );
+    }
+
+    #[test]
+    fn late_anonymous_representative_retracts_stale_method_errors() {
+        compile_to_air_with_authoritative_identity_order(
+            r#"
+fn B() -> type {
+    struct {
+        value: i32,
+        fn get(self) -> i32 { missing() }
+    }
+}
+fn A() -> type {
+    struct {
+        value: i32,
+        fn get(self) -> i32 { self.value + 10 }
+    }
+}
+fn discover(comptime T: type) -> i32 {
+    let Item = A();
+    let value: Item = Item { value: 10 };
+    value.get()
+}
+fn main() -> i32 {
+    let Item = B();
+    let value: Item = Item { value: 10 };
+    discover(i32);
+    value.get()
+}
+"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn late_anonymous_representative_recomputes_outbound_reachability() {
+        const SOURCE: &str = r#"
+fn b_only() -> i32 { 111 }
+fn B() -> type {
+    struct {
+        value: i32,
+        fn get(self) -> i32 {
+            let stale_warning = 0;
+            b_only()
+        }
+    }
+}
+fn A() -> type {
+    struct {
+        value: i32,
+        fn get(self) -> i32 { self.value + 10 }
+    }
+}
+fn discover(comptime T: type) -> i32 {
+    let Item = A();
+    let value: Item = Item { value: 10 };
+    value.get()
+}
+fn main() -> i32 {
+    let Item = B();
+    let value: Item = Item { value: 10 };
+    discover(i32);
+    value.get()
+}
+"#;
+        let before_replacement = SOURCE.replace("    discover(i32);\n", "");
+        let output = compile_to_air_with_authoritative_identity_order(&before_replacement).unwrap();
+        assert!(
+            output
+                .functions
+                .iter()
+                .any(|function| function.name == "b_only")
+        );
+        assert!(!output.warnings.is_empty());
+
+        let output = compile_to_air_with_authoritative_identity_order(SOURCE).unwrap();
+        assert!(
+            output
+                .functions
+                .iter()
+                .all(|function| function.name != "b_only")
+        );
+        assert!(output.warnings.is_empty());
+
+        let independently_reachable =
+            SOURCE.replace("    discover(i32);", "    b_only();\n    discover(i32);");
+        let output =
+            compile_to_air_with_authoritative_identity_order(&independently_reachable).unwrap();
+        assert!(
+            output
+                .functions
+                .iter()
+                .any(|function| function.name == "b_only")
+        );
+    }
+
+    #[test]
+    fn abandoned_anonymous_method_cannot_root_its_nested_destructor() {
+        let output = compile_to_air_with_authoritative_identity_order(
+            r#"
+fn A() -> type {
+    struct { x: i32, fn get(self) -> i32 { 10 } }
+}
+fn Bad() -> type {
+    struct { x: i32, drop fn(self) { missing(); } }
+}
+fn B() -> type {
+    struct {
+        x: i32,
+        fn get(self) -> i32 {
+            let T = Bad();
+            let value: T = T { x: 0 };
+            1
+        }
+    }
+}
+fn run(comptime n: i32) -> i32 {
+    let T = A();
+    let value: T = T { x: n };
+    value.get()
+}
+fn main() -> i32 {
+    let T = B();
+    let value: T = T { x: 0 };
+    value.get() + run(0)
+}
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            output
+                .functions
+                .iter()
+                .all(|function| !function.name.ends_with(".__drop"))
+        );
+        assert!(
+            output.body_analysis_work.bodies_failed > 0,
+            "discarded-attempt work must remain visible even though its diagnostic is retracted"
+        );
+        let abandoned_destructor_owners = output
+            .type_pool
+            .all_struct_ids()
+            .into_iter()
+            .map(Type::new_struct)
+            .filter(|&ty| {
+                let def = output.type_pool.struct_def(ty.as_struct().unwrap());
+                def.name.starts_with("__anon_struct_") && def.destructor.is_some()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(abandoned_destructor_owners.len(), 1);
+        for ty in abandoned_destructor_owners {
+            assert!(!output.aggregate_type_identities_by_type.contains_key(&ty));
+            assert!(
+                !output
+                    .anonymous_nominal_identities_by_type
+                    .contains_key(&ty)
+            );
+        }
+    }
+
+    #[test]
+    fn final_anonymous_method_nested_destructor_remains_rooted() {
+        let output = compile_to_air_with_authoritative_identity_order(
+            r#"
+fn good_drop() -> i32 { 0 }
+fn Good() -> type {
+    struct { x: i32, drop fn(self) { good_drop(); } }
+}
+fn A() -> type {
+    struct {
+        x: i32,
+        fn get(self) -> i32 {
+            let T = Good();
+            let value: T = T { x: 0 };
+            10
+        }
+    }
+}
+fn B() -> type {
+    struct { x: i32, fn get(self) -> i32 { 1 } }
+}
+fn run(comptime n: i32) -> i32 {
+    let T = A();
+    let value: T = T { x: n };
+    value.get()
+}
+fn main() -> i32 {
+    let T = B();
+    let value: T = T { x: 0 };
+    value.get() + run(0)
+}
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            output
+                .functions
+                .iter()
+                .any(|function| function.name.ends_with(".__drop"))
+        );
+        assert!(
+            output
+                .functions
+                .iter()
+                .any(|function| function.name == "good_drop")
+        );
+        assert!(output.aggregate_type_identities_by_type.keys().any(|ty| {
+            ty.as_struct().is_some_and(|id| {
+                let def = output.type_pool.struct_def(id);
+                def.name.starts_with("__anon_struct_") && def.destructor.is_some()
+            })
+        }));
+    }
+
+    #[test]
+    fn independently_reachable_abandoned_nested_type_keeps_its_destructor() {
+        let output = compile_to_air_with_authoritative_identity_order(
+            r#"
+fn bad_drop() -> i32 { 0 }
+fn A() -> type {
+    struct { x: i32, fn get(self) -> i32 { 10 } }
+}
+fn Bad() -> type {
+    struct { x: i32, drop fn(self) { bad_drop(); } }
+}
+fn B() -> type {
+    struct {
+        x: i32,
+        fn get(self) -> i32 {
+            let T = Bad();
+            let value: T = T { x: 0 };
+            1
+        }
+    }
+}
+fn run(comptime n: i32) -> i32 {
+    let T = A();
+    let value: T = T { x: n };
+    value.get()
+}
+fn main() -> i32 {
+    let BadT = Bad();
+    let bad: BadT = BadT { x: 0 };
+    let T = B();
+    let value: T = T { x: 0 };
+    value.get() + run(0)
+}
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            output
+                .functions
+                .iter()
+                .any(|function| function.name.ends_with(".__drop"))
+        );
+        assert!(
+            output
+                .functions
+                .iter()
+                .any(|function| function.name == "bad_drop")
+        );
+        assert!(output.aggregate_type_identities_by_type.keys().any(|ty| {
+            ty.as_struct().is_some_and(|id| {
+                let def = output.type_pool.struct_def(id);
+                def.name.starts_with("__anon_struct_") && def.destructor.is_some()
+            })
+        }));
+    }
+
+    #[test]
+    fn representative_restart_restores_consumed_body_candidates() {
+        const SOURCE: &str = r#"
+fn warm() -> i32 { 2 }
+fn cached(comptime n: i32) -> i32 { n + 1 }
+fn A() -> type {
+    struct { x: i32, fn get(self) -> i32 { 10 } }
+}
+fn B() -> type {
+    struct { x: i32, fn get(self) -> i32 { 1 } }
+}
+fn discover(comptime n: i32) -> i32 {
+    let T = A();
+    let value: T = T { x: n };
+    value.get()
+}
+fn main() -> i32 {
+    let T = B();
+    let value: T = T { x: 0 };
+    warm();
+    cached(0);
+    discover(0);
+    value.get()
+}
+"#;
+        let (rir, interner) = lower_files(&[(SOURCE, FileId::DEFAULT)]);
+        let shells = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
+            .predeclare_declaration_shells()
+            .unwrap();
+        let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
+        let (_, owners) = authoritative_test_endpoints(&shell_records);
+        let mut ordered_shells = shell_records;
+        ordered_shells.sort_by(|left, right| left.identity.cmp(&right.identity));
+        let definitions = ordered_shells
+            .iter()
+            .enumerate()
+            .map(|(slot, shell)| crate::SemanticDefinitionEndpoint {
+                token: crate::SemanticDefinitionToken::new(92, slot as u32),
+                file: shell.declaration_span.file_id.index(),
+                name: shell.identity.name.clone(),
+                kind: shell.identity.kind,
+                owner: shell.identity.owner.clone(),
+            })
+            .collect::<Vec<_>>();
+        let cold = shells
+            .install_stable_identity_endpoints(&definitions, &[])
+            .unwrap()
+            .resolve_declarations()
+            .unwrap()
+            .install_body_owner_tokens(&owners)
+            .unwrap()
+            .analyze_all_bodies()
+            .unwrap();
+
+        let warm_owner = owners
+            .iter()
+            .find(|endpoint| endpoint.name == "warm")
+            .unwrap()
+            .token;
+        let ordinary = cold
+            .ordinary_body_exports
+            .iter()
+            .find(|export| export.owner == warm_owner)
+            .map(|export| crate::SemanticBodyCandidate {
+                owner: export.owner,
+                body_span: Span::with_file(FileId::DEFAULT, 0, SOURCE.len() as u32),
+                body: export.body.clone(),
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+        assert_eq!(ordinary.len(), 1);
+
+        let cached_token = definitions
+            .iter()
+            .find(|endpoint| endpoint.name.as_ref() == "cached")
+            .unwrap()
+            .token;
+        let specialized = cold
+            .specialized_body_exports
+            .iter()
+            .filter(|export| export.identity.base == cached_token)
+            .map(|export| crate::SemanticSpecializedBodyCandidate {
+                identity: export.identity.clone(),
+                body_span: Span::with_file(FileId::DEFAULT, 0, SOURCE.len() as u32),
+                body: export.body.clone(),
+                dependencies: export.dependencies.clone(),
+                dependency_boundary_complete: export.dependency_boundary_complete,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(specialized.len(), 1);
+
+        let bound = authoritative_bound(&rir, &interner, &definitions, &owners)
+            .install_ordinary_body_candidates(
+                ordinary,
+                |token: &crate::SemanticDefinitionToken| {
+                    Ok::<_, crate::SemanticStableResolutionFailure>(*token)
+                },
+                |token: &crate::SemanticModuleToken| {
+                    Ok::<_, crate::SemanticStableResolutionFailure>(*token)
+                },
+            );
+        let (bound, install_work) = bound.install_specialized_body_candidates(
+            specialized,
+            |token: &crate::SemanticDefinitionToken| {
+                Ok::<_, crate::SemanticStableResolutionFailure>(*token)
+            },
+            |token: &crate::SemanticModuleToken| {
+                Ok::<_, crate::SemanticStableResolutionFailure>(*token)
+            },
+        );
+        assert_eq!(install_work.successes, 1);
+        let reused = bound.analyze_all_bodies().unwrap();
+
+        assert_eq!(reused.body_analysis_work.ordinary_body_import_successes, 2);
+        assert_eq!(reused.body_analysis_work.ordinary_body_analyses_skipped, 2);
+        assert_eq!(
+            reused.body_analysis_work.specialized_body_import_successes,
+            2
+        );
+        assert_eq!(
+            reused.body_analysis_work.specialized_body_analyses_skipped,
+            2
+        );
+    }
+
+    #[test]
+    fn materialized_anonymous_body_identity_round_trips_and_missing_key_discards_atomically() {
+        let source = r#"
+fn Box() -> type {
+    struct {
+        value: i32,
+        fn get(self) -> i32 { self.value }
+    }
+}
+fn consume(value: Box()) -> i32 { value.get() }
+fn main() -> i32 {
+    let value: Box() = Box() { value: 42 };
+    consume(value)
+}
+"#;
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        let parser = Parser::new(tokens, interner);
+        let (ast, interner) = parser.parse().unwrap();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
+
+        let shells = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
+            .predeclare_declaration_shells()
+            .unwrap();
+        let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
+        let (definitions, owners) = authoritative_test_endpoints(&shell_records);
+        let cold = shells
+            .install_stable_identity_endpoints(&definitions, &[])
+            .unwrap()
+            .resolve_declarations()
+            .unwrap()
+            .install_body_owner_tokens(&owners)
+            .unwrap()
+            .analyze_all_bodies()
+            .unwrap();
+        let wanted = ["consume", "main"];
+        let owner_tokens = owners
+            .iter()
+            .filter(|endpoint| wanted.contains(&endpoint.name.as_str()))
+            .map(|endpoint| endpoint.token)
+            .collect::<std::collections::HashSet<_>>();
+        let candidates = cold
+            .ordinary_body_exports
+            .iter()
+            .filter(|export| owner_tokens.contains(&export.owner))
+            .map(|export| crate::SemanticBodyCandidate {
+                owner: export.owner,
+                body_span: rue_span::Span::with_file(
+                    rue_span::FileId::DEFAULT,
+                    0,
+                    source.len() as u32,
+                ),
+                body: export.body.clone(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(candidates.len(), 2);
+
+        let reused = authoritative_bound(&rir, &interner, &definitions, &owners)
+            .install_ordinary_body_candidates(
+                candidates,
+                |token: &crate::SemanticDefinitionToken| {
+                    Ok::<_, crate::SemanticStableResolutionFailure>(*token)
+                },
+                |token: &crate::SemanticModuleToken| {
+                    Ok::<_, crate::SemanticStableResolutionFailure>(*token)
+                },
+            )
+            .analyze_all_bodies()
+            .unwrap();
+        assert_eq!(reused.body_analysis_work.ordinary_body_import_attempts, 2);
+        assert_eq!(reused.body_analysis_work.ordinary_body_import_successes, 2);
+        assert_eq!(reused.body_analysis_work.ordinary_body_import_failures, 0);
+        assert_eq!(reused.body_analysis_work.ordinary_body_analyses_skipped, 2);
+
+        let main_token = owners
+            .iter()
+            .find(|endpoint| endpoint.name == "main")
+            .unwrap()
+            .token;
+        let mut missing = cold
+            .ordinary_body_exports
+            .iter()
+            .find(|export| export.owner == main_token)
+            .unwrap()
+            .body
+            .clone();
+        let mut instructions = missing.instructions.to_vec();
+        let identity = instructions
+            .iter_mut()
+            .find_map(|instruction| match &mut instruction.ty {
+                crate::SemanticImportType::AnonymousNominal(identity) => Some(identity),
+                _ => None,
+            })
+            .expect("main body contains an anonymous nominal type");
+        identity.kind = match identity.kind {
+            crate::AnonymousNominalKind::Struct => crate::AnonymousNominalKind::Enum,
+            crate::AnonymousNominalKind::Enum => crate::AnonymousNominalKind::Struct,
+        };
+        missing.instructions = instructions.into();
+        let rejected = authoritative_bound(&rir, &interner, &definitions, &owners)
+            .install_ordinary_body_candidates(
+                vec![crate::SemanticBodyCandidate {
+                    owner: main_token,
+                    body_span: rue_span::Span::with_file(
+                        rue_span::FileId::DEFAULT,
+                        0,
+                        source.len() as u32,
+                    ),
+                    body: missing,
+                }],
+                |token: &crate::SemanticDefinitionToken| {
+                    Ok::<_, crate::SemanticStableResolutionFailure>(*token)
+                },
+                |token: &crate::SemanticModuleToken| {
+                    Ok::<_, crate::SemanticStableResolutionFailure>(*token)
+                },
+            )
+            .analyze_all_bodies()
+            .unwrap();
+        assert_eq!(rejected.body_analysis_work.ordinary_body_import_attempts, 1);
+        assert_eq!(
+            rejected.body_analysis_work.ordinary_body_import_successes,
+            0
+        );
+        assert_eq!(rejected.body_analysis_work.ordinary_body_import_failures, 1);
+        assert_eq!(
+            rejected
+                .body_analysis_work
+                .last_ordinary_body_import_failure,
+            Some(crate::SemanticBodyImportFailureKind::StructuralValidation)
+        );
+        assert_eq!(
+            rejected
+                .body_analysis_work
+                .ordinary_body_import_atomic_discards,
+            1
+        );
+        assert!(
+            rejected
+                .functions
+                .iter()
+                .any(|function| function.name == "main")
+        );
+    }
+
+    #[test]
+    fn direct_anonymous_type_alias_and_const_receive_authoritative_producers() {
+        let local = compile_to_air(
+            r#"
+fn main() -> i32 {
+    let T = struct { value: i32 };
+    let value: T = T { value: 42 };
+    value.value
+}
+"#,
+        )
+        .unwrap();
+        assert_eq!(local.anonymous_nominal_identities_by_type.len(), 1);
+
+        let constant = compile_to_air(
+            r#"
+const T: type = struct { value: i32 };
+fn main() -> i32 {
+    let value: T = T { value: 42 };
+    value.value
+}
+"#,
+        )
+        .unwrap();
+        assert_eq!(constant.anonymous_nominal_identities_by_type.len(), 1);
+    }
+
+    #[test]
+    fn mixed_comptime_arguments_preserve_each_declaration_order_stream() {
+        let output = compile_to_air(
+            r#"
+fn Mixed(
+    comptime Z: type,
+    comptime n: i32,
+    comptime A: type,
+    comptime flag: bool,
+) -> type {
+    struct { first: Z, second: A, values: [i32; n] }
+}
+fn main() -> i32 {
+    let T = Mixed(i64, 2, i32, true);
+    let value: T = T { first: 1, second: 2, values: [19, 21] };
+    value.values[0] + value.values[1] + value.second
+}
+"#,
+        )
+        .unwrap();
+        let identities = output
+            .anonymous_nominal_identities_by_type
+            .values()
+            .next()
+            .unwrap();
+        assert_eq!(
+            identities.representative.arguments.types.as_ref(),
+            &[crate::TypeInstanceKey::I64, crate::TypeInstanceKey::I32]
+        );
+        assert_eq!(
+            identities.representative.arguments.values.as_ref(),
+            &[
+                crate::CanonicalArgumentValue::Integer(2),
+                crate::CanonicalArgumentValue::Bool(true),
+            ]
+        );
+    }
+
+    #[test]
+    fn inference_does_not_compare_every_pair_of_anonymous_types() {
+        const PRODUCERS: usize = 40;
+        let mut source = String::new();
+        for index in 0..PRODUCERS {
+            source.push_str(&format!(
+                "fn T{index}() -> type {{ struct {{ value: i32 }} }}\n"
+            ));
+        }
+        source.push_str("fn consume(value: T0()) -> i32 { value.value }\nfn main() -> i32 {\n");
+        for index in 0..PRODUCERS {
+            source.push_str(&format!(
+                "let value{index}: T{index}() = T{index}() {{ value: {index} }};\n"
+            ));
+        }
+        source.push_str("consume(value39)\n}");
+
+        let output = compile_to_air(&source).unwrap();
+        let anonymous_types = output
+            .type_pool
+            .all_struct_ids()
+            .into_iter()
+            .filter(|id| {
+                output
+                    .type_pool
+                    .struct_def(*id)
+                    .name
+                    .starts_with("__anon_struct_")
+            })
+            .count();
+        assert_eq!(anonymous_types, 1);
+        assert_eq!(output.anonymous_nominal_identities_by_type.len(), 1);
+        assert_eq!(
+            output
+                .anonymous_nominal_identities_by_type
+                .values()
+                .next()
+                .unwrap()
+                .aliases
+                .len(),
+            PRODUCERS
+        );
+        assert!(
+            output.body_analysis_work.semantic_type_equivalence_queries < PRODUCERS * 4,
+            "demand-driven equivalence work unexpectedly grew with all anonymous pairs: {:?}",
+            output.body_analysis_work
+        );
     }
 
     #[test]
