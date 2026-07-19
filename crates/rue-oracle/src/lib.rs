@@ -558,6 +558,7 @@ fn run_state_with_output_limits(
                     stderr_cap,
                     budget,
                     depth: 0,
+                    heap: Vec::new(),
                 }
                 .run()
             })
@@ -592,6 +593,27 @@ const STEP_BUDGET: u64 = 50_000_000;
 /// against stack exhaustion.
 const MAX_DEPTH: u32 = 2_000;
 
+/// Byte-address space reserved per abstract heap allocation when synthesizing a
+/// `@ptr_to_int` value. Comfortably larger than [`MAX_ALLOC_BYTES`] so an
+/// allocation's whole byte range fits in its segment and adjacent allocations
+/// never alias, while `alloc_index * HEAP_SEG` stays far below `u64::MAX` for
+/// any realistic allocation count.
+const HEAP_SEG: u128 = 1 << 44;
+
+/// Base of the synthetic heap address space. Non-zero so no live pointer ever
+/// collides with the null address (`0`).
+const HEAP_BASE: u128 = HEAP_SEG;
+
+/// Largest byte size the modeled allocator satisfies before returning null.
+///
+/// The real runtime bump allocator fails (returns null) once a request exceeds
+/// what `mmap` can back — astronomically large sizes such as the corpus's
+/// `2305843009213693951`-byte `@realloc`. Every legitimate corpus allocation is
+/// a few bytes to kilobytes, so any threshold between them models the platform
+/// failure faithfully. Kept below [`HEAP_SEG`] so a satisfiable allocation's
+/// byte range never overflows its address segment.
+const MAX_ALLOC_BYTES: u128 = 1 << 40;
+
 /// A runtime value. Integers are held in `i128` (wide enough for every Rue
 /// integer type, and to detect overflow of any of them before range-checking).
 /// Unsigned values are stored as their non-negative magnitude.
@@ -620,6 +642,58 @@ enum Value {
         bytes: Vec<u8>,
         slots: usize,
     },
+    /// A raw pointer into the abstract heap (RUE model-gap closure). `None` is
+    /// the null pointer (`@int_to_ptr(0)`, a failed `@alloc`/`@realloc`); `Some`
+    /// names a live cell inside an [`Allocation`]. Heap allocations
+    /// (`@alloc`/`@alloc_bytes`) and address-taken stack places
+    /// (`@raw`/`@raw_mut`/`@field_ptr`) share this one provenance-carrying
+    /// representation so a pointer read/write, offset, or int round-trip resolves
+    /// to the same backing store the source place or allocation owns.
+    Ptr(Option<PtrTarget>),
+}
+
+/// A provenance-carrying pointer value: the allocation it addresses plus a
+/// positional path to the pointee cell.
+///
+/// Struct fields and array elements share the interpreter's positional
+/// `Aggregate` layout, so a single `Vec<usize>` path plus a trailing `index`
+/// navigates both. `@ptr_offset` (and byte-address arithmetic) move `index`;
+/// `@field_ptr` sets `path`/`index` from the source place's projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PtrTarget {
+    /// Index of the owning [`Allocation`] in [`Interp::heap`].
+    alloc: usize,
+    /// Positional navigation into the allocation root reaching the *container*
+    /// aggregate whose element `index` is the pointee.
+    path: Vec<usize>,
+    /// Position of the pointee within its container. Signed so an out-of-range
+    /// `@ptr_offset` is detectable rather than silently wrapping.
+    index: i128,
+}
+
+/// One abstract heap allocation.
+///
+/// The backing store is always a positional [`Value::Aggregate`] of *cells* —
+/// array elements, struct fields, or individual bytes. A promoted stack place
+/// wraps a bare scalar in a one-cell aggregate so every pointee is uniformly a
+/// cell of some container.
+#[derive(Debug, Clone)]
+struct Allocation {
+    /// Backing cells as a positional aggregate.
+    root: Value,
+    /// Byte size of one addressable element. Used only to synthesize a stable
+    /// `@ptr_to_int` address so an integer round-trips back to the same cell.
+    elem_stride: u64,
+    /// This allocation backs a promoted whole scalar (`@raw(x)` with no
+    /// projection): its single cell is the scalar, and a redirected `Load` of
+    /// the owning slot must unwrap `root[0]` rather than return the aggregate.
+    wrapped_scalar: bool,
+    /// `@free`/`@free_bytes` marked this released. The runtime bump allocator's
+    /// `free` is a documented no-op (memory stays valid until process exit), so
+    /// this is diagnostic only and never blocks access — modeling it as an error
+    /// would disagree with every compiled program that reads through a freed
+    /// pointer (see the heap-model notes).
+    freed: bool,
 }
 
 impl Value {
@@ -659,16 +733,18 @@ impl Value {
         match self {
             Value::Int(n) => *n,
             Value::Bool(b) => *b as i128,
-            // Unreachable for a well-typed program (aggregates/strings never
-            // reach a scalar context); defined so callers need not thread an error.
-            Value::Unit | Value::Aggregate(_) | Value::Str { .. } => 0,
+            // Unreachable for a well-typed program (aggregates/strings/pointers
+            // never reach a bare scalar context; a pointer becomes an integer
+            // only through `@ptr_to_int`, which computes its address explicitly);
+            // defined so callers need not thread an error.
+            Value::Unit | Value::Aggregate(_) | Value::Str { .. } | Value::Ptr(_) => 0,
         }
     }
     fn as_bool(&self) -> bool {
         match self {
             Value::Bool(b) => *b,
             Value::Int(n) => *n != 0,
-            Value::Unit | Value::Aggregate(_) | Value::Str { .. } => false,
+            Value::Unit | Value::Aggregate(_) | Value::Str { .. } | Value::Ptr(_) => false,
         }
     }
 }
@@ -759,8 +835,16 @@ fn unsupported_intrinsic_kind(name: &str) -> UnsupportedKind {
         "parse_i64" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ParseI64)),
         "parse_u32" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ParseU32)),
         "parse_u64" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ParseU64)),
-        "ptr_read" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::PointerRead)),
-        "ptr_write" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::PointerWrite)),
+        // `@ptr_read_unaligned`/`@ptr_write_unaligned` (ADR-0059) differ from the
+        // aligned forms only in the alignment *requirement* on the address. The
+        // oracle does not model alignment, so they share the aligned forms'
+        // semantics and gap classification.
+        "ptr_read" | "ptr_read_unaligned" => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::PointerRead))
+        }
+        "ptr_write" | "ptr_write_unaligned" => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::PointerWrite))
+        }
         "ptr_offset" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::PointerOffset)),
         "ptr_to_int" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::PointerToInt)),
         "int_to_ptr" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::IntToPointer)),
@@ -829,6 +913,11 @@ struct Interp<'a> {
     /// Current call-recursion depth (see [`MAX_DEPTH`]). Incremented on entry to
     /// each `call` and decremented on exit, bounding Rust-stack recursion.
     depth: u32,
+    /// The abstract heap: every `@alloc`/`@alloc_bytes` block and every promoted
+    /// address-taken stack place. Indexed by [`PtrTarget::alloc`]. It lives on
+    /// the interpreter (not a frame) so a pointer read across a call boundary
+    /// still resolves after the address is passed to a callee.
+    heap: Vec<Allocation>,
 }
 
 /// Per-call activation record. `cache` preserves values produced along the
@@ -846,6 +935,12 @@ struct Frame {
     params: Vec<Option<Value>>,
     locals: Vec<Option<Value>>,
     cache: HashMap<u32, Value>,
+    /// Slots whose address has been taken (`@raw`/`@raw_mut`/`@field_ptr`). The
+    /// slot's storage is moved into the heap allocation named here; every
+    /// subsequent `Load`/`Store`/`PlaceRead`/`PlaceWrite` of the slot aliases
+    /// that allocation so a write through the pointer and a direct read agree.
+    /// Keyed by [`promotion_key`] over the slot's [`PlaceBase`].
+    promoted: HashMap<u64, usize>,
 }
 
 enum WritebackPlace<'a> {
@@ -1302,7 +1397,12 @@ impl<'a> Interp<'a> {
             "read_line" | "random_u32" | "random_u64" | "arg_count" | "env_count" => {
                 args.is_empty()
             }
-            "ptr_write" | "ptr_offset" | "free" | "byte_read" | "alloc_bytes" => args.len() == 2,
+            "ptr_write"
+            | "ptr_write_unaligned"
+            | "ptr_offset"
+            | "free"
+            | "byte_read"
+            | "alloc_bytes" => args.len() == 2,
             "realloc" | "byte_write" | "byte_copy" | "byte_set" | "free_bytes" => args.len() == 3,
             "realloc_bytes" => args.len() == 4,
             "syscall" => (1..=7).contains(&args.len()),
@@ -1321,14 +1421,15 @@ impl<'a> Interp<'a> {
             "parse_i64" => is_text(0) && self.is_option_of(result_ty, Type::I64),
             "parse_u32" => is_text(0) && self.is_option_of(result_ty, Type::U32),
             "parse_u64" => is_text(0) && self.is_option_of(result_ty, Type::U64),
-            "ptr_read" => self
+            "ptr_read" | "ptr_read_unaligned" => self
                 .pointer_pointee(ty(0))
                 .is_some_and(|(pointee, _)| pointee == result_ty),
-            "ptr_write" => self
-                .pointer_pointee(ty(0))
-                .is_some_and(|(pointee, mutable)| {
-                    mutable && pointee == ty(1) && result_ty == Type::UNIT
-                }),
+            "ptr_write" | "ptr_write_unaligned" => {
+                self.pointer_pointee(ty(0))
+                    .is_some_and(|(pointee, mutable)| {
+                        mutable && pointee == ty(1) && result_ty == Type::UNIT
+                    })
+            }
             "ptr_offset" => {
                 self.pointer_pointee(ty(0)).is_some() && ty(1).is_integer() && result_ty == ty(0)
             }
@@ -1839,6 +1940,7 @@ impl<'a> Interp<'a> {
             params: param_slots,
             locals: vec![None; cfg.num_locals() as usize],
             cache: HashMap::new(),
+            promoted: HashMap::new(),
         };
 
         let mut current = cfg.entry;
@@ -2297,6 +2399,12 @@ impl<'a> Interp<'a> {
                     // not read the slot (that would grab the next parameter's
                     // value); materialize the unique ZST value instead.
                     self.zero_sized_value(ty)
+                } else if let Some(&a) =
+                    frame.promoted.get(&promotion_key(PlaceBase::Param(*index)))
+                {
+                    // The parameter's address was taken; read through its heap
+                    // allocation so a `@ptr_write` is observed on re-read.
+                    self.promoted_slot_value(a)
                 } else {
                     match frame.params.get(*index as usize) {
                         Some(Some(value)) => value.clone(),
@@ -2390,13 +2498,13 @@ impl<'a> Interp<'a> {
 
             CfgInstData::Alloc { slot, init } => {
                 let val = self.eval(cfg, frame, *init)?;
-                Self::set_local(frame, *slot, val);
+                self.store_local(frame, *slot, val);
                 Value::Unit
             }
-            CfgInstData::Load { slot } => Self::get_local(frame, *slot)?,
+            CfgInstData::Load { slot } => self.load_local(frame, *slot)?,
             CfgInstData::Store { slot, value } => {
                 let val = self.eval(cfg, frame, *value)?;
-                Self::set_local(frame, *slot, val);
+                self.store_local(frame, *slot, val);
                 Value::Unit
             }
             CfgInstData::PlaceRead { place } => {
@@ -2628,10 +2736,25 @@ impl<'a> Interp<'a> {
                 if let Some(intrinsic) = self.preflight_abort_intrinsic(cfg, &iname, &args, ty)? {
                     self.eval_abort_intrinsic(cfg, frame, intrinsic, &args)?
                 } else if iname != "dbg" {
-                    return Err(unsupported(
-                        self.classify_unsupported_intrinsic(cfg, v, &iname, &args, ty),
-                        format!("intrinsic @{iname}"),
-                    ));
+                    // Classify first: the same static arity/signature validation
+                    // that gates a model-gap registration also gates execution, so
+                    // a malformed intrinsic still reports its contract violation
+                    // rather than being run. A validated, now-modeled heap/pointer
+                    // intrinsic executes; every other typed gap is reported.
+                    let kind = self.classify_unsupported_intrinsic(cfg, v, &iname, &args, ty);
+                    match kind {
+                        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(ik))
+                            if modeled_pointer_intrinsic(ik) =>
+                        {
+                            match self.eval_pointer_intrinsic(cfg, frame, &iname, &args, ty)? {
+                                Some(value) => value,
+                                None => {
+                                    return Err(unsupported(kind, format!("intrinsic @{iname}")));
+                                }
+                            }
+                        }
+                        _ => return Err(unsupported(kind, format!("intrinsic @{iname}"))),
+                    }
                 } else {
                     let [arg] = args.as_slice() else {
                         return Err(unsupported(
@@ -2886,7 +3009,7 @@ impl<'a> Interp<'a> {
 
     fn place_read(&mut self, cfg: &'a Cfg, frame: &mut Frame, place: &Place) -> Step<Value> {
         let (base, path) = self.resolve_path(cfg, frame, place)?;
-        let mut cur = Self::base_value(frame, base)?;
+        let mut cur = self.base_value_of(frame, base)?;
         for (idx, projection) in path {
             cur = match cur {
                 Value::Aggregate(mut v) if idx < v.len() => v.swap_remove(idx),
@@ -2933,16 +3056,31 @@ impl<'a> Interp<'a> {
         val: Value,
     ) -> Step<()> {
         let (base, path) = self.resolve_path(cfg, frame, place)?;
-        // Select the storage vector: writing through an `inout` parameter place
-        // targets the param slot (copied back to the caller on return).
-        let (store, slot) = match base {
-            PlaceBase::Local(slot) => (&mut frame.locals, slot as usize),
-            PlaceBase::Param(slot) => (&mut frame.params, slot as usize),
+        // Select the storage root. A promoted (address-taken) base writes through
+        // its heap allocation so the mutation is observed by both a later direct
+        // read and any live pointer. Otherwise write frame storage directly;
+        // writing through an `inout` parameter place targets the param slot
+        // (copied back to the caller on return).
+        let root: &mut Value = if let Some(&a) = frame.promoted.get(&promotion_key(base)) {
+            let alloc = &mut self.heap[a];
+            if alloc.wrapped_scalar {
+                match &mut alloc.root {
+                    Value::Aggregate(cells) if !cells.is_empty() => &mut cells[0],
+                    other => other,
+                }
+            } else {
+                &mut alloc.root
+            }
+        } else {
+            let (store, slot) = match base {
+                PlaceBase::Local(slot) => (&mut frame.locals, slot as usize),
+                PlaceBase::Param(slot) => (&mut frame.params, slot as usize),
+            };
+            if slot >= store.len() {
+                store.resize(slot + 1, None);
+            }
+            store[slot].get_or_insert(Value::Unit)
         };
-        if slot >= store.len() {
-            store.resize(slot + 1, None);
-        }
-        let root = store[slot].get_or_insert(Value::Unit);
         let mut cur = root;
         for (idx, _) in &path {
             cur = match cur {
@@ -2996,6 +3134,642 @@ impl<'a> Interp<'a> {
             frame.params.resize(s + 1, None);
         }
         frame.params[s] = Some(val);
+    }
+
+    // ---- abstract heap & pointer intrinsics ------------------------------
+
+    /// Current value of a place base, transparently reading through a promoted
+    /// (address-taken) slot's heap allocation so a pointer write is observed by
+    /// a later direct read of the same slot.
+    fn base_value_of(&self, frame: &Frame, base: PlaceBase) -> Step<Value> {
+        if let Some(&a) = frame.promoted.get(&promotion_key(base)) {
+            return Ok(self.promoted_slot_value(a));
+        }
+        Self::base_value(frame, base)
+    }
+
+    /// The logical value a promoted slot holds: the wrapped scalar unwrapped, or
+    /// the aggregate root as-is.
+    fn promoted_slot_value(&self, alloc: usize) -> Value {
+        let allocation = &self.heap[alloc];
+        if allocation.wrapped_scalar {
+            match &allocation.root {
+                Value::Aggregate(cells) if !cells.is_empty() => cells[0].clone(),
+                other => other.clone(),
+            }
+        } else {
+            allocation.root.clone()
+        }
+    }
+
+    /// Write the logical value of a promoted slot back into its allocation,
+    /// preserving the scalar wrap.
+    fn set_promoted_slot(&mut self, alloc: usize, val: Value) {
+        if self.heap[alloc].wrapped_scalar {
+            self.heap[alloc].root = Value::Aggregate(vec![val]);
+        } else {
+            self.heap[alloc].root = val;
+        }
+    }
+
+    /// Read a local slot, honoring promotion.
+    fn load_local(&self, frame: &Frame, slot: u32) -> Step<Value> {
+        if let Some(&a) = frame.promoted.get(&promotion_key(PlaceBase::Local(slot))) {
+            return Ok(self.promoted_slot_value(a));
+        }
+        Self::get_local(frame, slot)
+    }
+
+    /// Write a local slot, honoring promotion.
+    fn store_local(&mut self, frame: &mut Frame, slot: u32, val: Value) {
+        if let Some(&a) = frame.promoted.get(&promotion_key(PlaceBase::Local(slot))) {
+            self.set_promoted_slot(a, val);
+        } else {
+            Self::set_local(frame, slot, val);
+        }
+    }
+
+    /// The zero image of `ty`, matching the runtime's mmap-zeroed fresh cell.
+    fn zeroed_value(&self, ty: Type) -> Value {
+        match ty.kind() {
+            TypeKind::Bool => Value::Bool(false),
+            TypeKind::I8
+            | TypeKind::I16
+            | TypeKind::I32
+            | TypeKind::I64
+            | TypeKind::U8
+            | TypeKind::U16
+            | TypeKind::U32
+            | TypeKind::U64 => Value::Int(0),
+            TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => Value::Ptr(None),
+            TypeKind::Struct(sid) => {
+                if self.is_str_like_struct(sid) || self.is_owned_string_struct(sid) {
+                    Value::Str {
+                        bytes: Vec::new(),
+                        slots: self.text_value_slot_width(ty),
+                    }
+                } else {
+                    let sd = self.state.type_pool.struct_def(sid);
+                    Value::Aggregate(sd.fields.iter().map(|f| self.zeroed_value(f.ty)).collect())
+                }
+            }
+            TypeKind::Array(aid) => {
+                let (elem, len) = self.state.type_pool.array_def(aid);
+                Value::Aggregate((0..len).map(|_| self.zeroed_value(elem)).collect())
+            }
+            // A zeroed enum is discriminant 0; a bare tag under the interpreter's
+            // model (payload cells are only reached after a variant write).
+            TypeKind::Enum(_) => Value::Int(0),
+            _ => Value::Unit,
+        }
+    }
+
+    /// Byte size of one value of `ty` from the compact-layout authority.
+    fn type_byte_size(&self, ty: Type) -> u64 {
+        self.state.type_pool.layout(ty).size
+    }
+
+    /// Push a new allocation, returning its index.
+    fn heap_alloc(&mut self, root: Value, elem_stride: u64, wrapped_scalar: bool) -> usize {
+        self.heap.push(Allocation {
+            root,
+            elem_stride: elem_stride.max(1),
+            wrapped_scalar,
+            freed: false,
+        });
+        self.heap.len() - 1
+    }
+
+    /// Synthesize a stable non-null address for `target`, used by `@ptr_to_int`.
+    fn ptr_address(&self, target: &PtrTarget) -> u128 {
+        let stride = self.heap[target.alloc].elem_stride as u128;
+        HEAP_BASE + (target.alloc as u128) * HEAP_SEG + target.index.max(0) as u128 * stride
+    }
+
+    /// Decode a synthetic address back to a pointer target, honoring byte-offset
+    /// arithmetic performed on a `@ptr_to_int` value. Returns `None` for an
+    /// address that names no known allocation (an arbitrary integer, which stays
+    /// an unsupported `@int_to_ptr`).
+    fn address_target(&self, addr: u128, pointee: Type) -> Option<PtrTarget> {
+        if addr < HEAP_BASE {
+            return None;
+        }
+        let n = addr - HEAP_BASE;
+        let alloc = (n / HEAP_SEG) as usize;
+        if alloc >= self.heap.len() {
+            return None;
+        }
+        let byte_off = n % HEAP_SEG;
+        let stride = self.type_byte_size(pointee).max(1) as u128;
+        Some(PtrTarget {
+            alloc,
+            path: Vec::new(),
+            index: (byte_off / stride) as i128,
+        })
+    }
+
+    fn nav<'v>(root: &'v Value, path: &[usize]) -> Option<&'v Value> {
+        let mut cur = root;
+        for &p in path {
+            match cur {
+                Value::Aggregate(cells) => cur = cells.get(p)?,
+                _ => return None,
+            }
+        }
+        Some(cur)
+    }
+
+    fn nav_mut<'v>(root: &'v mut Value, path: &[usize]) -> Option<&'v mut Value> {
+        let mut cur = root;
+        for &p in path {
+            match cur {
+                Value::Aggregate(cells) => cur = cells.get_mut(p)?,
+                _ => return None,
+            }
+        }
+        Some(cur)
+    }
+
+    /// Read the pointee cell of `target`. `gap` is the model-gap kind reported if
+    /// the access is out of bounds or malformed (unmodelable UB, kept as a typed
+    /// gap rather than a false agreement).
+    fn ptr_cell_read(&self, target: &PtrTarget, gap: UnsupportedKind) -> Step<Value> {
+        let alloc = self
+            .heap
+            .get(target.alloc)
+            .ok_or_else(|| unsupported(gap, "pointer to unknown allocation"))?;
+        let container = Self::nav(&alloc.root, &target.path)
+            .ok_or_else(|| unsupported(gap, "pointer path escapes allocation"))?;
+        match container {
+            Value::Aggregate(cells) => {
+                if target.index < 0 || target.index as usize >= cells.len() {
+                    return Err(unsupported(gap, "pointer read out of bounds"));
+                }
+                Ok(cells[target.index as usize].clone())
+            }
+            _ => Err(unsupported(gap, "pointer to non-aggregate cell")),
+        }
+    }
+
+    /// Write the pointee cell of `target`.
+    fn ptr_cell_write(&mut self, target: &PtrTarget, val: Value, gap: UnsupportedKind) -> Step<()> {
+        let alloc = self
+            .heap
+            .get_mut(target.alloc)
+            .ok_or_else(|| unsupported(gap, "pointer to unknown allocation"))?;
+        let container = Self::nav_mut(&mut alloc.root, &target.path)
+            .ok_or_else(|| unsupported(gap, "pointer path escapes allocation"))?;
+        match container {
+            Value::Aggregate(cells) => {
+                if target.index < 0 || target.index as usize >= cells.len() {
+                    return Err(unsupported(gap, "pointer write out of bounds"));
+                }
+                cells[target.index as usize] = val;
+                Ok(())
+            }
+            _ => Err(unsupported(gap, "pointer to non-aggregate cell")),
+        }
+    }
+
+    /// Read one byte from a byte-store allocation at `target.index + offset`.
+    fn byte_at(&self, target: &PtrTarget, offset: i128, gap: UnsupportedKind) -> Step<u8> {
+        let at = PtrTarget {
+            alloc: target.alloc,
+            path: target.path.clone(),
+            index: target.index + offset,
+        };
+        match self.ptr_cell_read(&at, gap)? {
+            Value::Int(n) => Ok((n & 0xFF) as u8),
+            _ => Err(unsupported(gap, "byte access of non-byte allocation")),
+        }
+    }
+
+    /// Ensure the place's owning slot is heap-backed (promoted) and return a
+    /// pointer to the addressed pointee cell. `pointee` sizes the allocation's
+    /// address stride.
+    fn promote_place(
+        &mut self,
+        cfg: &'a Cfg,
+        frame: &mut Frame,
+        place: &Place,
+        pointee: Type,
+    ) -> Step<PtrTarget> {
+        let (base, path) = self.resolve_path(cfg, frame, place)?;
+        let key = promotion_key(base);
+        let alloc = if let Some(&a) = frame.promoted.get(&key) {
+            a
+        } else {
+            let value = self.base_value_of(frame, base)?;
+            // A whole-local address (no projection) wraps its value in a single
+            // cell so every pointee is uniformly a cell of some container; a
+            // projected address keeps the aggregate root and navigates into it.
+            let (root, wrapped) = if path.is_empty() {
+                (Value::Aggregate(vec![value]), true)
+            } else {
+                (value, false)
+            };
+            let stride = self.type_byte_size(pointee);
+            let a = self.heap_alloc(root, stride, wrapped);
+            frame.promoted.insert(key, a);
+            a
+        };
+        match path.last().copied() {
+            Some((last, _)) => Ok(PtrTarget {
+                alloc,
+                path: path[..path.len() - 1].iter().map(|(i, _)| *i).collect(),
+                index: last as i128,
+            }),
+            None => Ok(PtrTarget {
+                alloc,
+                path: Vec::new(),
+                index: 0,
+            }),
+        }
+    }
+
+    /// Execute a heap/pointer intrinsic whose signature already validated as a
+    /// modeled model-gap kind. Returns `Ok(None)` to fall through to the existing
+    /// typed-gap path (e.g. the empty-slice `@int_to_ptr(0)` special case, or an
+    /// arbitrary-integer `@int_to_ptr`).
+    fn eval_pointer_intrinsic(
+        &mut self,
+        cfg: &'a Cfg,
+        frame: &mut Frame,
+        name: &str,
+        args: &[CfgValue],
+        result_ty: Type,
+    ) -> Step<Option<Value>> {
+        let gap = unsupported_intrinsic_kind(name);
+        // Evaluate operands eagerly and left-to-right, matching native lowering,
+        // except `@raw`/`@raw_mut`/`@field_ptr` whose operand is an lvalue place.
+        match name {
+            "raw" | "raw_mut" | "field_ptr" => {
+                let pointee = cfg.get_inst(args[0]).ty;
+                let target = match &cfg.get_inst(args[0]).data {
+                    CfgInstData::PlaceRead { place } => {
+                        self.promote_place(cfg, frame, place, pointee)?
+                    }
+                    CfgInstData::Load { slot } => {
+                        let place = Place::local(*slot, pointee);
+                        self.promote_place(cfg, frame, &place, pointee)?
+                    }
+                    CfgInstData::Param { index } => {
+                        let place = Place::param(*index, pointee);
+                        self.promote_place(cfg, frame, &place, pointee)?
+                    }
+                    other => {
+                        return Err(unsupported(
+                            UnsupportedKind::ContractViolation(
+                                ContractViolationKind::InoutArgumentNotLvalue,
+                            ),
+                            format!("address-of operand is not an lvalue: {other:?}"),
+                        ));
+                    }
+                };
+                Ok(Some(Value::Ptr(Some(target))))
+            }
+            "alloc" => {
+                let count = self.eval(cfg, frame, args[0])?.as_int();
+                let (pointee, _) = self
+                    .pointer_pointee(result_ty)
+                    .expect("validated @alloc result is a pointer");
+                Ok(Some(self.do_alloc(count, pointee)?))
+            }
+            "alloc_bytes" => {
+                let size = self.eval(cfg, frame, args[0])?.as_int();
+                let _align = self.eval(cfg, frame, args[1])?.as_int();
+                Ok(Some(self.do_alloc_bytes(size)?))
+            }
+            "free" | "free_bytes" => {
+                // Evaluate every operand (side-effect-free here) then no-op, as
+                // the runtime bump allocator's free does.
+                let p = self.eval(cfg, frame, args[0])?;
+                for a in &args[1..] {
+                    self.eval(cfg, frame, *a)?;
+                }
+                if let Value::Ptr(Some(t)) = p {
+                    if let Some(alloc) = self.heap.get_mut(t.alloc) {
+                        alloc.freed = true;
+                    }
+                }
+                Ok(Some(Value::Unit))
+            }
+            "realloc" => {
+                let p = self.eval(cfg, frame, args[0])?;
+                let old_count = self.eval(cfg, frame, args[1])?.as_int();
+                let new_count = self.eval(cfg, frame, args[2])?.as_int();
+                let (pointee, _) = self
+                    .pointer_pointee(result_ty)
+                    .expect("validated @realloc result is a pointer");
+                let stride = self.type_byte_size(pointee);
+                Ok(Some(self.do_realloc(
+                    p, old_count, new_count, stride, pointee, false,
+                )?))
+            }
+            "realloc_bytes" => {
+                let p = self.eval(cfg, frame, args[0])?;
+                let old_size = self.eval(cfg, frame, args[1])?.as_int();
+                let _align = self.eval(cfg, frame, args[2])?.as_int();
+                let new_size = self.eval(cfg, frame, args[3])?.as_int();
+                Ok(Some(self.do_realloc(
+                    p,
+                    old_size,
+                    new_size,
+                    1,
+                    Type::U8,
+                    true,
+                )?))
+            }
+            "ptr_read" | "ptr_read_unaligned" => {
+                let p = self.eval(cfg, frame, args[0])?;
+                let target = self.expect_ptr(p, gap)?;
+                Ok(Some(self.ptr_cell_read(&target, gap)?))
+            }
+            "ptr_write" | "ptr_write_unaligned" => {
+                let p = self.eval(cfg, frame, args[0])?;
+                let val = self.eval(cfg, frame, args[1])?;
+                let target = self.expect_ptr(p, gap)?;
+                self.ptr_cell_write(&target, val, gap)?;
+                Ok(Some(Value::Unit))
+            }
+            "ptr_offset" => {
+                let p = self.eval(cfg, frame, args[0])?;
+                let by = self.eval(cfg, frame, args[1])?.as_int();
+                match p {
+                    Value::Ptr(Some(mut t)) => {
+                        t.index += by;
+                        Ok(Some(Value::Ptr(Some(t))))
+                    }
+                    Value::Ptr(None) => Ok(Some(Value::Ptr(None))),
+                    _ => Err(unsupported(gap, "@ptr_offset of non-pointer")),
+                }
+            }
+            "ptr_to_int" => {
+                let p = self.eval(cfg, frame, args[0])?;
+                let addr = match p {
+                    Value::Ptr(Some(t)) => self.ptr_address(&t),
+                    Value::Ptr(None) => 0,
+                    _ => return Err(unsupported(gap, "@ptr_to_int of non-pointer")),
+                };
+                Ok(Some(Value::Int((addr as u64) as i128)))
+            }
+            "int_to_ptr" => {
+                let addr = self.eval(cfg, frame, args[0])?.as_int() as u64 as u128;
+                if addr == 0 {
+                    return Ok(Some(Value::Ptr(None)));
+                }
+                let (pointee, _) = self
+                    .pointer_pointee(result_ty)
+                    .expect("validated @int_to_ptr result is a pointer");
+                match self.address_target(addr, pointee) {
+                    // A pointer-derived integer round-trips to its allocation.
+                    Some(target) => Ok(Some(Value::Ptr(Some(target)))),
+                    // An arbitrary integer names no allocation: unmodelable,
+                    // stays the typed `IntToPointer` model gap.
+                    None => Ok(None),
+                }
+            }
+            "byte_read" => {
+                let p = self.eval(cfg, frame, args[0])?;
+                let off = self.eval(cfg, frame, args[1])?.as_int();
+                let target = self.expect_ptr(p, gap)?;
+                Ok(Some(Value::Int(self.byte_at(&target, off, gap)? as i128)))
+            }
+            "byte_write" => {
+                let p = self.eval(cfg, frame, args[0])?;
+                let off = self.eval(cfg, frame, args[1])?.as_int();
+                let val = self.eval(cfg, frame, args[2])?.as_int();
+                let target = self.expect_ptr(p, gap)?;
+                let at = PtrTarget {
+                    alloc: target.alloc,
+                    path: target.path.clone(),
+                    index: target.index + off,
+                };
+                self.ptr_cell_write(&at, Value::Int(val & 0xFF), gap)?;
+                Ok(Some(Value::Unit))
+            }
+            "byte_copy" => {
+                let dst = self.eval(cfg, frame, args[0])?;
+                let src = self.eval(cfg, frame, args[1])?;
+                let count = self.eval(cfg, frame, args[2])?.as_int();
+                let dst = self.expect_ptr(dst, gap)?;
+                let src = self.expect_ptr(src, gap)?;
+                // Read all source bytes first so an overlapping copy is well
+                // defined (the runtime uses copy_nonoverlapping; corpus copies
+                // never overlap, but buffering keeps a same-allocation copy sane).
+                let mut buf = Vec::with_capacity(count.max(0) as usize);
+                for k in 0..count {
+                    buf.push(self.byte_at(&src, k, gap)?);
+                }
+                for (k, byte) in buf.into_iter().enumerate() {
+                    let at = PtrTarget {
+                        alloc: dst.alloc,
+                        path: dst.path.clone(),
+                        index: dst.index + k as i128,
+                    };
+                    self.ptr_cell_write(&at, Value::Int(byte as i128), gap)?;
+                }
+                Ok(Some(Value::Unit))
+            }
+            "byte_set" => {
+                let p = self.eval(cfg, frame, args[0])?;
+                let val = self.eval(cfg, frame, args[1])?.as_int();
+                let count = self.eval(cfg, frame, args[2])?.as_int();
+                let target = self.expect_ptr(p, gap)?;
+                for k in 0..count {
+                    let at = PtrTarget {
+                        alloc: target.alloc,
+                        path: target.path.clone(),
+                        index: target.index + k,
+                    };
+                    self.ptr_cell_write(&at, Value::Int(val & 0xFF), gap)?;
+                }
+                Ok(Some(Value::Unit))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn expect_ptr(&self, v: Value, gap: UnsupportedKind) -> Step<PtrTarget> {
+        match v {
+            Value::Ptr(Some(t)) => Ok(t),
+            // A null-pointer dereference is undefined behavior; the oracle cannot
+            // model the faulting read, so it stays a typed gap.
+            Value::Ptr(None) => Err(unsupported(gap, "dereference of null pointer")),
+            _ => Err(unsupported(gap, "pointer operation on non-pointer")),
+        }
+    }
+
+    /// `@alloc(count)`: `count` zeroed cells of the pointee type, or null on
+    /// allocator failure (zero size or a byte size beyond [`MAX_ALLOC_BYTES`]).
+    fn do_alloc(&mut self, count: i128, pointee: Type) -> Step<Value> {
+        let stride = self.type_byte_size(pointee);
+        let Some(_bytes) = self.alloc_byte_size(count, stride)? else {
+            return Ok(Value::Ptr(None));
+        };
+        self.materialize_cells_guard(count)?;
+        let cells = (0..count).map(|_| self.zeroed_value(pointee)).collect();
+        let alloc = self.heap_alloc(Value::Aggregate(cells), stride, false);
+        Ok(Value::Ptr(Some(PtrTarget {
+            alloc,
+            path: Vec::new(),
+            index: 0,
+        })))
+    }
+
+    /// `@alloc_bytes(size, align)`: `size` zeroed byte cells, or null on failure.
+    fn do_alloc_bytes(&mut self, size: i128) -> Step<Value> {
+        let Some(_bytes) = self.alloc_byte_size(size, 1)? else {
+            return Ok(Value::Ptr(None));
+        };
+        self.materialize_cells_guard(size)?;
+        let cells = (0..size).map(|_| Value::Int(0)).collect();
+        let alloc = self.heap_alloc(Value::Aggregate(cells), 1, false);
+        Ok(Value::Ptr(Some(PtrTarget {
+            alloc,
+            path: Vec::new(),
+            index: 0,
+        })))
+    }
+
+    /// `@realloc`/`@realloc_bytes`: grow/shrink an allocation, preserving the
+    /// first `min(old, new)` cells and zero-filling growth. Shrinking returns the
+    /// original pointer (the bump runtime does); growing allocates fresh and
+    /// copies. Returns null on `new == 0` or allocator failure, leaving the
+    /// original allocation valid (spec 8.6:3), and traps on a `new * stride`
+    /// overflow like the compiled size arithmetic (spec 8.6:1).
+    fn do_realloc(
+        &mut self,
+        p: Value,
+        old_count: i128,
+        new_count: i128,
+        stride: u64,
+        pointee: Type,
+        bytes: bool,
+    ) -> Step<Value> {
+        let target = match p {
+            Value::Ptr(Some(t)) => t,
+            // realloc(null, .., new) behaves like a fresh allocation.
+            Value::Ptr(None) => {
+                return if bytes {
+                    self.do_alloc_bytes(new_count)
+                } else {
+                    self.do_alloc(new_count, pointee)
+                };
+            }
+            _ => return Ok(Value::Ptr(None)),
+        };
+        if new_count == 0 {
+            if let Some(alloc) = self.heap.get_mut(target.alloc) {
+                alloc.freed = true;
+            }
+            return Ok(Value::Ptr(None));
+        }
+        let Some(_new_bytes) = self.alloc_byte_size(new_count, stride)? else {
+            return Ok(Value::Ptr(None));
+        };
+        if new_count <= old_count {
+            // No move needed; the original block already holds the data.
+            return Ok(Value::Ptr(Some(PtrTarget {
+                alloc: target.alloc,
+                path: Vec::new(),
+                index: 0,
+            })));
+        }
+        self.materialize_cells_guard(new_count)?;
+        let old_cells = match self.heap.get(target.alloc).map(|a| &a.root) {
+            Some(Value::Aggregate(cells)) => cells.clone(),
+            _ => Vec::new(),
+        };
+        let mut cells: Vec<Value> = Vec::with_capacity(new_count as usize);
+        for i in 0..new_count {
+            if (i as usize) < old_cells.len() && i < old_count {
+                cells.push(old_cells[i as usize].clone());
+            } else if bytes {
+                cells.push(Value::Int(0));
+            } else {
+                cells.push(self.zeroed_value(pointee));
+            }
+        }
+        let alloc = self.heap_alloc(Value::Aggregate(cells), stride, false);
+        Ok(Value::Ptr(Some(PtrTarget {
+            alloc,
+            path: Vec::new(),
+            index: 0,
+        })))
+    }
+
+    /// Classify an allocation request by its total byte size:
+    /// - `Err(ArithmeticOverflow trap)` when `count * stride` overflows `u64`,
+    ///   matching the compiled size arithmetic's checked multiply (spec 8.6:1;
+    ///   corpus `alloc_count_size_overflow_traps`).
+    /// - `Ok(None)` when the allocator returns null: a zero or negative request,
+    ///   or a byte size beyond [`MAX_ALLOC_BYTES`] (the platform `mmap` failure
+    ///   the raw intrinsics surface as null, spec 8.6:4).
+    /// - `Ok(Some(bytes))` for a satisfiable request.
+    fn alloc_byte_size(&self, count: i128, stride: u64) -> Step<Option<u128>> {
+        if count < 0 {
+            return Ok(None);
+        }
+        let product = (count as u128) * (stride as u128);
+        if product > u64::MAX as u128 {
+            return Err(Flow::Panic(Panic::runtime(TrapKind::ArithmeticOverflow)));
+        }
+        if product == 0 || product > MAX_ALLOC_BYTES {
+            return Ok(None);
+        }
+        Ok(Some(product))
+    }
+
+    /// Bound the number of cells the interpreter will materialize for one
+    /// allocation. A satisfiable-but-enormous request (only reachable from a
+    /// synthetic fuzz program, never the differential corpus) resolves to a typed
+    /// resource limit rather than exhausting harness memory building cells.
+    fn materialize_cells_guard(&self, count: i128) -> Step<()> {
+        const MAX_MATERIALIZED_CELLS: i128 = 1 << 24;
+        if count > MAX_MATERIALIZED_CELLS {
+            return Err(unsupported(
+                UnsupportedKind::ResourceLimit(ResourceLimitKind::InterpreterSteps),
+                "allocation cell count exceeds the interpreter materialization bound",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Whether the interpreter now executes this pointer/heap intrinsic instead of
+/// reporting it as a model gap. Excludes the still-unmodeled text parses and the
+/// empty-slice `@int_to_ptr(0)` special case (kept as its own typed gap).
+fn modeled_pointer_intrinsic(kind: UnsupportedIntrinsicKind) -> bool {
+    use UnsupportedIntrinsicKind as I;
+    matches!(
+        kind,
+        I::PointerRead
+            | I::PointerWrite
+            | I::PointerOffset
+            | I::PointerToInt
+            | I::IntToPointer
+            | I::RawAddress
+            | I::RawMutableAddress
+            | I::FieldPointer
+            | I::Allocate
+            | I::Free
+            | I::Reallocate
+            | I::AllocateBytes
+            | I::FreeBytes
+            | I::ReallocateBytes
+            | I::ByteRead
+            | I::ByteWrite
+            | I::ByteCopy
+            | I::ByteSet
+    )
+}
+
+/// Stable map key for a promoted place base within a frame.
+fn promotion_key(base: PlaceBase) -> u64 {
+    match base {
+        PlaceBase::Local(slot) => (slot as u64) << 1,
+        PlaceBase::Param(slot) => ((slot as u64) << 1) | 1,
     }
 }
 

@@ -1033,3 +1033,269 @@ fn payloadless_enum_before_inout_uses_the_static_writeback_slot() {
         }"#;
     assert_eq!(exit(src), 42);
 }
+
+// ---- abstract heap & pointer intrinsics (RUE heap model) -----------------
+
+/// `@raw` + `@ptr_read` round-trips a local's value through a const pointer.
+#[test]
+fn raw_pointer_read_roundtrip() {
+    let src = r#"fn main() -> i32 {
+        let x: i32 = 123;
+        let v: i32 = checked {
+            let p: ptr const i32 = @raw(x);
+            @ptr_read(p)
+        };
+        @dbg(v);
+        0
+    }"#;
+    assert_eq!(run(src).stdout, "123\n");
+}
+
+/// A write through a `ptr mut` from `@raw_mut` mutates the source local.
+#[test]
+fn raw_mut_write_mutates_local() {
+    let src = r#"fn main() -> i32 {
+        let mut x: i32 = 10;
+        checked {
+            let p: ptr mut i32 = @raw_mut(x);
+            @ptr_write(p, 77);
+        };
+        @dbg(x);
+        0
+    }"#;
+    assert_eq!(run(src).stdout, "77\n");
+}
+
+/// An address round-trips through `@ptr_to_int` / `@int_to_ptr` back to the
+/// same allocation.
+#[test]
+fn ptr_int_roundtrip_reads_same_cell() {
+    let src = r#"fn main() -> i32 {
+        let x: i32 = 42;
+        let addr: u64 = checked {
+            let p: ptr const i32 = @raw(x);
+            @ptr_to_int(p)
+        };
+        let v: i32 = checked {
+            let p2: ptr mut i32 = @int_to_ptr(addr);
+            @ptr_read(p2)
+        };
+        @dbg(v);
+        0
+    }"#;
+    assert_eq!(run(src).stdout, "42\n");
+}
+
+/// `@ptr_offset` strides by whole elements, forward and backward.
+#[test]
+fn ptr_offset_strides_by_element() {
+    let src = r#"fn main() -> i32 {
+        let arr: [i64; 3] = [10, 20, 30];
+        let v: i64 = checked {
+            let base: ptr const i64 = @raw(arr[0]);
+            @ptr_read(@ptr_offset(base, 1))
+        };
+        @dbg(v);
+        let w: i64 = checked {
+            let base: ptr const i64 = @raw(arr[2]);
+            @ptr_read(@ptr_offset(base, -1))
+        };
+        @dbg(w);
+        0
+    }"#;
+    assert_eq!(run(src).stdout, "20\n20\n");
+}
+
+/// A heap buffer round-trips values, and reads after `@free` still observe the
+/// stored bytes — the runtime bump allocator's `free` is a no-op, so the whole
+/// program is well defined and the oracle must agree with it.
+#[test]
+fn alloc_write_read_survives_free() {
+    let src = r#"fn main() -> i32 {
+        checked {
+            let p: ptr mut i32 = @alloc(3);
+            @ptr_write(p, 10);
+            @ptr_write(@ptr_offset(p, 1), 20);
+            @ptr_write(@ptr_offset(p, 2), 30);
+            @dbg(@ptr_read(p));
+            @dbg(@ptr_read(@ptr_offset(p, 1)));
+            @dbg(@ptr_read(@ptr_offset(p, 2)));
+            @free(p, 3);
+            @ptr_read(p) + @ptr_read(@ptr_offset(p, 1)) + @ptr_read(@ptr_offset(p, 2))
+        }
+    }"#;
+    let outcome = run(src);
+    assert_eq!(outcome.stdout, "10\n20\n30\n");
+    assert_eq!(outcome.exit_code, 60);
+}
+
+/// `@alloc` round-trips an aggregate element written and read whole.
+#[test]
+fn alloc_read_write_aggregate() {
+    let src = r#"struct P { x: i32, y: i32 }
+    struct AosBox { a: [P; 2] }
+    fn main() -> i32 {
+        checked {
+            let wp: ptr mut AosBox = @alloc(1);
+            @ptr_write(wp, AosBox { a: [P { x: 1, y: 2 }, P { x: 3, y: 4 }] });
+            let v = @ptr_read(wp);
+            @dbg(v.a[0].x); @dbg(v.a[1].y);
+            @free(wp, 1);
+        };
+        0
+    }"#;
+    assert_eq!(run(src).stdout, "1\n4\n");
+}
+
+/// `@field_ptr` reads and writes a field in place, observable by direct access.
+#[test]
+fn field_ptr_reads_and_writes_field() {
+    let src = r#"struct Pair { a: i32, b: i32 }
+    fn main() -> i32 {
+        let mut p = Pair { a: 7, b: 9 };
+        checked {
+            let fp: ptr mut i32 = @field_ptr(p.b);
+            @ptr_write(fp, 100);
+        };
+        @dbg(p.a);
+        @dbg(p.b);
+        p.b
+    }"#;
+    let outcome = run(src);
+    assert_eq!(outcome.stdout, "7\n100\n");
+    assert_eq!(outcome.exit_code, 100);
+}
+
+/// `@field_ptr` addresses a by-value struct parameter's own storage.
+#[test]
+fn field_ptr_on_param_struct() {
+    let src = r#"struct Point { x: i32, y: i32 }
+    fn second(p: Point) -> i32 {
+        checked { @ptr_read(@field_ptr(p.y)) }
+    }
+    fn main() -> i32 {
+        let pt = Point { x: 3, y: 44 };
+        @dbg(second(pt));
+        0
+    }"#;
+    assert_eq!(run(src).stdout, "44\n");
+}
+
+/// The full byte family round-trips through `@alloc_bytes`, `@byte_*`, and
+/// `@realloc_bytes` with contents preserved across a grow.
+#[test]
+fn byte_family_roundtrip() {
+    let src = r#"fn main() -> i32 {
+        checked {
+            let p: ptr mut u8 = @alloc_bytes(6, 1);
+            @byte_set(p, 0, 6);
+            @byte_write(p, 0, 10);
+            @byte_write(p, 1, 20);
+            @byte_write(p, 2, 30);
+            let q: ptr mut u8 = @realloc_bytes(p, 6, 1, 8);
+            @byte_write(q, 3, 40);
+            let dst: ptr mut u8 = @alloc_bytes(8, 1);
+            @byte_copy(dst, q, 8);
+            let sum: i32 = @intCast(@byte_read(dst, 0)) + @intCast(@byte_read(dst, 1))
+                + @intCast(@byte_read(dst, 2)) + @intCast(@byte_read(dst, 3))
+                + @intCast(@byte_read(dst, 4));
+            @dbg(sum);
+            @free_bytes(q, 8, 1);
+            @free_bytes(dst, 8, 1);
+        };
+        0
+    }"#;
+    assert_eq!(run(src).stdout, "100\n");
+}
+
+/// Byte offsets folded into the address via `@ptr_to_int`/`@int_to_ptr`
+/// (never `@ptr_offset`) address a byte-aliased sub-range.
+#[test]
+fn byte_address_arithmetic_roundtrip() {
+    let src = r#"fn main() -> i32 {
+        checked {
+            let src: ptr mut u8 = @alloc_bytes(5, 1);
+            let mut i: u64 = 0;
+            while i < 5 {
+                @byte_write(src, i, @intCast(i + 1));
+                i = i + 1;
+            }
+            let dst: ptr mut u8 = @alloc_bytes(5, 1);
+            @byte_set(dst, 0, 5);
+            let sp: ptr mut u8 = @int_to_ptr(@ptr_to_int(src) + 1);
+            let dp: ptr mut u8 = @int_to_ptr(@ptr_to_int(dst) + 2);
+            @byte_copy(dp, sp, 3);
+            let mut sum: i32 = 0;
+            let mut j: u64 = 0;
+            while j < 5 {
+                sum = sum + @intCast(@byte_read(dst, j));
+                j = j + 1;
+            }
+            @dbg(sum);
+            @free_bytes(src, 5, 1);
+            @free_bytes(dst, 5, 1);
+        };
+        0
+    }"#;
+    assert_eq!(run(src).stdout, "9\n");
+}
+
+/// `@realloc` grows a block and preserves the earlier contents.
+#[test]
+fn realloc_grows_and_preserves() {
+    let src = r#"fn main() -> i32 {
+        checked {
+            let mut p: ptr mut i32 = @alloc(2);
+            @ptr_write(p, 5);
+            @ptr_write(@ptr_offset(p, 1), 7);
+            p = @realloc(p, 2, 16);
+            @ptr_write(@ptr_offset(p, 8), 100);
+            let sum: i32 = @ptr_read(p) + @ptr_read(@ptr_offset(p, 1)) + @ptr_read(@ptr_offset(p, 8));
+            @free(p, 16);
+            sum
+        }
+    }"#;
+    assert_eq!(run(src).exit_code, 112);
+}
+
+/// A `@realloc` too large to satisfy returns null; the original allocation and
+/// its contents remain valid (spec 8.6:3/8.6:4).
+#[test]
+fn realloc_failure_returns_null_and_preserves_original() {
+    let src = r#"fn main() -> i32 {
+        checked {
+            let p: ptr mut u8 = @alloc(4);
+            @ptr_write(p, 10);
+            @ptr_write(@ptr_offset(p, 1), 20);
+            @ptr_write(@ptr_offset(p, 2), 30);
+            @ptr_write(@ptr_offset(p, 3), 40);
+            let q: ptr mut u8 = @realloc(p, 4, 2305843009213693951);
+            if @ptr_to_int(q) == 0 {
+                let sum: i32 = @intCast(@ptr_read(p))
+                    + @intCast(@ptr_read(@ptr_offset(p, 1)))
+                    + @intCast(@ptr_read(@ptr_offset(p, 2)))
+                    + @intCast(@ptr_read(@ptr_offset(p, 3)));
+                @free(p, 4);
+                sum
+            } else {
+                @free(q, 2305843009213693951);
+                1
+            }
+        }
+    }"#;
+    assert_eq!(run(src).exit_code, 100);
+}
+
+/// A null pointer from `@int_to_ptr(0)` round-trips to integer zero.
+#[test]
+fn int_to_ptr_zero_is_null() {
+    let src = r#"fn main() -> i32 {
+        let zero: u64 = 0;
+        let z: u64 = checked {
+            let p: ptr mut i32 = @int_to_ptr(zero);
+            @ptr_to_int(p)
+        };
+        @intCast(z)
+    }"#;
+    assert_eq!(run(src).exit_code, 0);
+}
