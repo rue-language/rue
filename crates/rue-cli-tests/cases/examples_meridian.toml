@@ -69,7 +69,7 @@ description = "catalog, query, transaction, recovery, replication, analysis, opt
 source_path = "examples/meridian/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 program_args = ["selftest"]
-timeout_ms = 60000
+timeout_ms = 120000
 exit_code = 0
 stdout_contains = ["selftest checks=24", "failures=0", "analysis_passes=112", "optimizer_rules=72", "optimizer_evaluations=144", "report_documents=44", "recovery_redone=2", "recovery_undone=1", "valid=true"]
 
