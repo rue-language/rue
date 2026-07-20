@@ -1962,6 +1962,50 @@ fn stable_module_files<D: super::DeclarationPhase>(sema: &super::Sema<'_, D>) ->
 }
 
 impl<'a> BoundSema<'a> {
+    /// RUE-1084 extraction seam.  This remains test-only until the compiler
+    /// body-query family replaces the whole-program production authority.
+    #[cfg(test)]
+    pub(crate) fn analyze_one_body_for_test(
+        self,
+        request: super::OneBodyRequest,
+        interruption: Option<super::OneBodyInterruption>,
+    ) -> super::OneBodyTransactionOutcome {
+        super::one_body::analyze_one_body(self.sema, request, interruption)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remove_stable_definition_for_test(
+        mut self,
+        token: crate::SemanticDefinitionToken,
+    ) -> Self {
+        self.sema
+            .stable_definition_tokens
+            .retain(|_, candidate| *candidate != token);
+        self.sema.stable_definition_endpoints.remove(&token);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reissue_stable_definition_for_test(
+        mut self,
+        token: crate::SemanticDefinitionToken,
+        issuer: u64,
+    ) -> Self {
+        let replacement = crate::SemanticDefinitionToken::new(issuer, token.slot());
+        for candidate in self.sema.stable_definition_tokens.values_mut() {
+            if *candidate == token {
+                *candidate = replacement;
+            }
+        }
+        if let Some(mut endpoint) = self.sema.stable_definition_endpoints.remove(&token) {
+            endpoint.token = replacement;
+            self.sema
+                .stable_definition_endpoints
+                .insert(replacement, endpoint);
+        }
+        self
+    }
+
     /// Install stable declaration dependency observations captured by the
     /// semantic query nucleus. These events describe the declaration payloads
     /// already installed in this epoch; AIR must not rediscover them by

@@ -350,20 +350,28 @@ impl<'a> BodySema<'a> {
         ctx.referenced_functions.insert(name);
 
         // Get parameter data from the arena
-        let param_types = self.param_arena.types(fn_info.params);
-        let param_modes = self.param_arena.modes(fn_info.params);
-        let param_comptime = self.param_arena.comptime(fn_info.params);
-        let param_names = self.param_arena.names(fn_info.params);
+        let param_types = self.param_arena.types(fn_info.params).to_vec();
+        let param_modes = self.param_arena.modes(fn_info.params).to_vec();
+        let param_comptime = self.param_arena.comptime(fn_info.params).to_vec();
+        let param_names = self.param_arena.names(fn_info.params).to_vec();
 
-        self.validate_call_contract(args_range, param_types, param_modes, span, true)?;
+        self.validate_call_contract(args_range, &param_types, &param_modes, span, true)?;
+        // The declaration, visibility, checked-call policy, and explicit call
+        // contract have all selected this exact callable. Record before
+        // operand analysis so a later argument diagnostic retains the edge.
+        #[cfg(test)]
+        {
+            self.record_body_named_dependency(NamedConstDependencyTargetEvent::FreeFunction {
+                file: fn_info.file_id.index(),
+                name: fn_name_str.clone(),
+            });
+            self.record_body_callable_dependency(name);
+        }
         let args = self.rir.call_args(args_range);
 
         // Extract info before any mutable borrow
         let is_generic = fn_info.is_generic;
-        let param_types = param_types.to_vec();
-        let param_comptime = param_comptime.to_vec();
         let param_comptime_type = self.comptime_type_param_flags(&fn_info);
-        let param_names = param_names.to_vec();
         let param_modes = param_modes.to_vec();
         let base_return_type = fn_info.return_type;
 
@@ -612,6 +620,15 @@ impl<'a> BodySema<'a> {
             // resolves back to COMPTIME_TYPE and is comptime-evaluated below).
             let return_type =
                 self.resolve_substituted_return_type(&fn_info, &type_subst, &value_subst)?;
+
+            #[cfg(test)]
+            if let Some(source) = self.body_dependency_observer.clone()
+                && let Ok(identity) =
+                    self.canonical_specialization_instance(name, &type_args, &value_args)
+            {
+                self.body_specialization_dependencies
+                    .push((source, identity));
+            }
 
             // Special case: functions that return `type` (not a type parameter) with only comptime args
             // can be fully evaluated at compile time to produce a concrete anonymous struct type.
@@ -890,7 +907,7 @@ impl<'a> BodySema<'a> {
 
         // Look up the method using StructId directly
         let method_key = (struct_id, method);
-        let method_info = self.method_info(method_key).ok_or_compile_error(
+        let method_info = self.method_info(method_key).copied().ok_or_compile_error(
             ErrorKind::UndefinedMethod {
                 type_name: struct_name_str.clone(),
                 method_name: method_name_str.clone(),
@@ -927,6 +944,8 @@ impl<'a> BodySema<'a> {
             span,
             false,
         )?;
+        #[cfg(test)]
+        self.record_body_method_dependency(method_key);
 
         // Clone data needed before mutable borrow
         let return_type = method_info.return_type;
@@ -1141,6 +1160,11 @@ impl<'a> BodySema<'a> {
                         span,
                     ));
                 }
+                #[cfg(test)]
+                self.record_body_named_dependency(NamedConstDependencyTargetEvent::ValueConst {
+                    file: mfile.index(),
+                    name: fn_name_str.clone(),
+                });
                 function_key = Some(fkey);
                 via_reexport = true;
             }
@@ -1204,6 +1228,8 @@ impl<'a> BodySema<'a> {
         }
 
         self.validate_call_contract(args_range, &param_types, &param_modes, span, true)?;
+        #[cfg(test)]
+        self.record_body_callable_dependency(function_key);
 
         // Analyze arguments (the per-pipeline recursion seam). Module-qualified
         // calls use the coercing path so slice and `borrow str` parameters
@@ -1316,7 +1342,7 @@ impl<'a> BodySema<'a> {
 
         // Look up the function using StructId
         let method_key = (struct_id, function);
-        let method_info = self.method_info(method_key).ok_or_compile_error(
+        let method_info = self.method_info(method_key).copied().ok_or_compile_error(
             ErrorKind::UndefinedAssocFn {
                 type_name: type_name_str.clone(),
                 function_name: function_name_str.clone(),
@@ -1347,6 +1373,8 @@ impl<'a> BodySema<'a> {
             span,
             true,
         )?;
+        #[cfg(test)]
+        self.record_body_method_dependency(method_key);
 
         // Clone data needed before mutable borrow
         let return_type = method_info.return_type;

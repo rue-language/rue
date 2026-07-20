@@ -6,6 +6,228 @@
 use super::*;
 
 impl<'a> BodySema<'a> {
+    #[cfg(test)]
+    fn inference_function_is_selected(
+        &self,
+        function: Spur,
+        span: Span,
+        route: &crate::inference::InferenceCallRoute,
+        checked: bool,
+    ) -> Option<bool> {
+        let info = self.function_info(function)?;
+        if (info.is_unchecked || info.is_extern) && !checked {
+            return Some(false);
+        }
+        match route {
+            crate::inference::InferenceCallRoute::Unqualified { alias } => {
+                if let Some(alias_name) = alias {
+                    let alias = self.value_const(&(span.file_id, *alias_name))?;
+                    if alias.value.as_function() != Some(function)
+                        || self
+                            .check_unqualified_visibility(
+                                "constant",
+                                self.interner.resolve(alias_name),
+                                alias.span.file_id,
+                                alias.is_pub,
+                                span,
+                            )
+                            .is_err()
+                    {
+                        return Some(false);
+                    }
+                } else if self
+                    .resolve_function_name_local(self.source_function_name(function), span.file_id)
+                    .is_none_or(|selected| selected != function)
+                {
+                    return Some(false);
+                }
+                Some(
+                    self.check_unqualified_visibility(
+                        "function",
+                        self.interner.resolve(&self.source_function_name(function)),
+                        info.file_id,
+                        info.is_pub,
+                        span,
+                    )
+                    .is_ok(),
+                )
+            }
+            crate::inference::InferenceCallRoute::Module {
+                module,
+                member,
+                via_alias,
+            } => {
+                let module_file = self.module_registry.get_def(*module).file_id;
+                if *via_alias {
+                    // The visible facade const is the module membership and
+                    // visibility grant. Its selected function may be private
+                    // or defined in another file, exactly as in the canonical
+                    // module-call path; do not reapply direct-member policy to
+                    // that hidden target.
+                    let alias = self.value_const(&(module_file, *member))?;
+                    return Some(
+                        alias.value.as_function() == Some(function)
+                            && self.is_accessible(span.file_id, module_file, alias.is_pub),
+                    );
+                }
+                let selected = self
+                    .resolve_function_name_local(*member, module_file)
+                    .is_some_and(|selected| selected == function);
+                Some(
+                    selected
+                        && info.file_id == module_file
+                        && self.is_accessible(span.file_id, info.file_id, info.is_pub),
+                )
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn record_inference_body_dependencies(
+        &mut self,
+        dependencies: &[crate::inference::InferenceBodyDependency],
+        expr_types: &HashMap<InstRef, InferType>,
+    ) -> bool {
+        if !self.one_body_error_recovery {
+            return false;
+        }
+
+        let mut incomplete = false;
+        for dependency in dependencies {
+            match dependency {
+                crate::inference::InferenceBodyDependency::Function {
+                    function,
+                    span,
+                    route,
+                    checked,
+                } => match self.inference_function_is_selected(*function, *span, route, *checked) {
+                    Some(true) => self.record_body_callable_dependency(*function),
+                    Some(false) => {}
+                    None => incomplete = true,
+                },
+                crate::inference::InferenceBodyDependency::Method {
+                    structure,
+                    method,
+                    span,
+                    associated,
+                } => {
+                    let Some(info) = self.method_info((*structure, *method)) else {
+                        incomplete = true;
+                        continue;
+                    };
+                    if info.has_self != *associated {
+                        if *associated {
+                            let def = self.type_pool.struct_def(*structure);
+                            if self
+                                .check_unqualified_visibility(
+                                    "struct",
+                                    &def.name,
+                                    def.file_id,
+                                    def.is_pub,
+                                    *span,
+                                )
+                                .is_err()
+                            {
+                                continue;
+                            }
+                        }
+                        self.record_body_method_dependency((*structure, *method));
+                    }
+                }
+                crate::inference::InferenceBodyDependency::ModuleBinding(file, name) => {
+                    self.record_body_named_dependency(
+                        crate::NamedConstDependencyTargetEvent::ModuleBinding {
+                            file: file.index(),
+                            name: self.interner.resolve(name).to_owned(),
+                        },
+                    );
+                }
+                crate::inference::InferenceBodyDependency::ValueConst {
+                    file,
+                    name,
+                    access_file,
+                    qualified,
+                } => {
+                    let Some(info) = self.value_const(&(*file, *name)) else {
+                        incomplete = true;
+                        continue;
+                    };
+                    if *qualified && !self.is_accessible(*access_file, *file, info.is_pub) {
+                        continue;
+                    }
+                    self.record_body_named_dependency(
+                        crate::NamedConstDependencyTargetEvent::ValueConst {
+                            file: file.index(),
+                            name: self.interner.resolve(name).to_owned(),
+                        },
+                    );
+                }
+                crate::inference::InferenceBodyDependency::Specialization {
+                    function,
+                    type_arguments,
+                    value_arguments,
+                    span,
+                    route,
+                    checked,
+                } => {
+                    match self.inference_function_is_selected(*function, *span, route, *checked) {
+                        Some(true) => {}
+                        Some(false) => continue,
+                        None => {
+                            incomplete = true;
+                            continue;
+                        }
+                    }
+                    let Some(source) = self.body_dependency_observer.clone() else {
+                        incomplete = true;
+                        continue;
+                    };
+                    match self.canonical_specialization_instance(
+                        *function,
+                        type_arguments,
+                        value_arguments,
+                    ) {
+                        Ok(identity) => self
+                            .body_specialization_dependencies
+                            .push((source, identity)),
+                        Err(_) => incomplete = true,
+                    }
+                }
+                crate::inference::InferenceBodyDependency::IncompleteCallable => {
+                    incomplete = true;
+                }
+            }
+        }
+
+        fn record_concrete(sema: &mut BodySema<'_>, ty: &InferType, access_file: FileId) -> bool {
+            match ty {
+                InferType::Concrete(ty) => {
+                    let accessible = match ty.kind() {
+                        TypeKind::Struct(id) => {
+                            let def = sema.type_pool.struct_def(id);
+                            sema.is_accessible(access_file, def.file_id, def.is_pub)
+                        }
+                        TypeKind::Enum(id) => {
+                            let def = sema.type_pool.enum_def(id);
+                            sema.is_accessible(access_file, def.file_id, def.is_pub)
+                        }
+                        _ => true,
+                    };
+                    if accessible {
+                        sema.record_resolved_declaration_type(*ty);
+                    }
+                    !accessible
+                }
+                InferType::Array { element, .. } => record_concrete(sema, element, access_file),
+                InferType::Var(_) | InferType::IntLiteral => false,
+            }
+        }
+        for (inst_ref, ty) in expr_types {
+            incomplete |= record_concrete(self, ty, self.rir.get(*inst_ref).span.file_id);
+        }
+        incomplete
+    }
+
     /// Run Hindley-Milner type inference on a function body.
     ///
     /// This is Phases 1-2 of the HM algorithm:
@@ -203,6 +425,9 @@ impl<'a> BodySema<'a> {
         // Phase 1: Generate constraints
         let body_info = cgen.generate(body, &mut cgen_ctx);
 
+        #[cfg(test)]
+        let inference_body_dependencies = cgen.body_dependencies().to_vec();
+
         // The function body's type must match the return type.
         // This handles implicit returns like `fn foo() -> i8 { 42 }`.
         // For arrays, we need to convert Type to InferType structurally.
@@ -260,6 +485,12 @@ impl<'a> BodySema<'a> {
         // For now, we collect the first error. In the future, we could
         // report multiple errors for better diagnostics.
         if let Some(err) = errors.first() {
+            #[cfg(test)]
+            {
+                let inference_dependency_incomplete = self
+                    .record_inference_body_dependencies(&inference_body_dependencies, &expr_types);
+                self.one_body_inference_failure_incomplete = inference_dependency_incomplete;
+            }
             // Map each UnifyResult variant to the appropriate ErrorKind
             let error_kind = match &err.kind {
                 UnifyResult::Ok => unreachable!("UnificationError should never contain Ok"),
@@ -309,6 +540,11 @@ impl<'a> BodySema<'a> {
             }
 
             return Err(compile_error);
+        }
+
+        #[cfg(test)]
+        {
+            self.one_body_inference_failure_incomplete = false;
         }
 
         // Default any unconstrained integer literals to i32

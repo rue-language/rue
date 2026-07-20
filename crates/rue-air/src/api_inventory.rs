@@ -1,6 +1,72 @@
 //! Structural guard for AIR's read-only canonical import consumption boundary.
 
 #[test]
+fn one_body_authority_is_repository_wide_and_test_only() {
+    fn visit(directory: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(directory).expect("read Rust source directory") {
+            let path = entry.expect("read source entry").path();
+            if path.is_dir() {
+                visit(&path, files);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                files.push(path);
+            }
+        }
+    }
+
+    let root = std::env::current_dir().expect("repository working directory");
+    let crates = root.join("crates");
+    assert!(
+        crates.is_dir(),
+        "inventory must run from the repository root"
+    );
+    let mut files = Vec::new();
+    visit(&crates, &mut files);
+    files.sort();
+
+    let declaration_marker = ["fn analyze_", "one_body"].concat();
+    let mut declarations = Vec::new();
+    for path in &files {
+        let source = std::fs::read_to_string(path).expect("read Rust source");
+        for (line, text) in source.lines().enumerate() {
+            if text.contains(&declaration_marker) {
+                declarations.push((
+                    path.strip_prefix(&root).unwrap_or(path).to_path_buf(),
+                    line + 1,
+                    text.trim().to_owned(),
+                ));
+            }
+        }
+    }
+    let declared_paths = declarations
+        .iter()
+        .map(|(path, _, _)| path.as_path())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        declared_paths,
+        [
+            std::path::Path::new("crates/rue-air/src/sema/binding_manifest.rs"),
+            std::path::Path::new("crates/rue-air/src/sema/one_body.rs"),
+        ],
+        "another repository source installed a one-body entrypoint: {declarations:?}"
+    );
+
+    let sema_module = include_str!("sema/mod.rs");
+    assert!(sema_module.contains("#[cfg(test)]\nmod one_body;"));
+    let binding = include_str!("sema/binding_manifest.rs");
+    let binding_entrypoint = [
+        "#[cfg(test)]\n    pub(crate) fn analyze_",
+        "one_body_for_test",
+    ]
+    .concat();
+    assert!(binding.contains(&binding_entrypoint));
+    let transaction_entrypoint = ["pub(super) fn analyze_", "one_body"].concat();
+    assert!(
+        include_str!("sema/one_body.rs").contains(&transaction_entrypoint),
+        "the sole transaction authority moved without updating the inventory"
+    );
+}
+
+#[test]
 fn canonical_import_consumers_do_not_grow_resolution_policy() {
     let consumers = [
         include_str!("canonical_imports.rs"),

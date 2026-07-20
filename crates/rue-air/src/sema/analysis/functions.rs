@@ -6,7 +6,7 @@
 use super::*;
 
 impl<'a> BodySema<'a> {
-    pub(super) fn analyze_single_function<P>(
+    pub(in crate::sema) fn analyze_single_function<P>(
         &mut self,
         infer_ctx: &InferenceContext,
         fn_name: &str,
@@ -107,7 +107,7 @@ impl<'a> BodySema<'a> {
     /// The `infer_ctx` provides pre-computed type information for constraint generation.
     ///
     /// Returns the analyzed function, any warnings, and local strings collected during analysis.
-    pub(super) fn analyze_method_function<P>(
+    pub(in crate::sema) fn analyze_method_function<P>(
         &mut self,
         infer_ctx: &InferenceContext,
         full_name: &str,
@@ -230,7 +230,7 @@ impl<'a> BodySema<'a> {
     /// The `infer_ctx` provides pre-computed type information for constraint generation.
     ///
     /// Returns the analyzed function, any warnings, and local strings collected during analysis.
-    pub(super) fn analyze_destructor_function(
+    pub(in crate::sema) fn analyze_destructor_function(
         &mut self,
         infer_ctx: &InferenceContext,
         full_name: &str,
@@ -684,6 +684,11 @@ impl<'a> BodySema<'a> {
             for ty in observed_types {
                 self.record_resolved_declaration_type(ty);
             }
+        }
+
+        #[cfg(test)]
+        if self.one_body_error_recovery && !self.one_body_recovered_errors.is_empty() {
+            return Err(self.one_body_recovered_errors[0].clone());
         }
 
         Ok((

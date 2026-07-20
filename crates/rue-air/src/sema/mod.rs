@@ -43,6 +43,8 @@ mod inference_ctx;
 mod info;
 mod known_symbols;
 mod metadata;
+#[cfg(test)]
+mod one_body;
 mod output;
 mod semantic_body_export;
 mod typeck;
@@ -66,6 +68,11 @@ use info::ConstResolution;
 pub use info::{AnonMethodSig, AnonMethodType, ConstInfo, FunctionInfo, MethodInfo};
 pub use known_symbols::KnownSymbols;
 pub use metadata::SemaMetadata;
+#[cfg(test)]
+pub(crate) use one_body::{
+    OneBodyCanonicalArtifact, OneBodyDependency, OneBodyInterruption, OneBodyNonTerminalReason,
+    OneBodyRequest, OneBodyTransactionOutcome,
+};
 pub use output::{
     AnalyzedBodyOwnerEvent, AnalyzedCallableKind, AnalyzedFunction, BodyAnalysisFailure,
     BodyAnalysisWork, BodyNamedDependencyEvent, BodyOwnerEndpoint, BodyOwnerKind, BodyOwnerToken,
@@ -335,6 +342,19 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     pub(crate) body_owner_tokens:
         HashMap<(u32, String, Option<String>, BodyOwnerKind), BodyOwnerToken>,
     pub(crate) body_named_dependencies: Vec<BodyNamedDependencyEvent>,
+    #[cfg(test)]
+    pub(crate) one_body_error_recovery: bool,
+    #[cfg(test)]
+    pub(crate) one_body_recovered_errors: Vec<rue_error::CompileError>,
+    #[cfg(test)]
+    pub(crate) one_body_inference_failure_incomplete: bool,
+    #[cfg(test)]
+    pub(crate) body_callable_dependencies: Vec<(AnalyzedBodyOwnerEvent, Spur)>,
+    #[cfg(test)]
+    pub(crate) body_specialization_dependencies: Vec<(
+        AnalyzedBodyOwnerEvent,
+        crate::FunctionInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
+    )>,
     pub(crate) ordinary_free_function_dependencies: Vec<OrdinaryFreeFunctionDependencyEvent>,
     pub(crate) specialized_free_function_origins: Vec<SpecializedFreeFunctionOrigin>,
     pub(crate) specialized_free_function_dependencies: Vec<SpecializedFreeFunctionDependencyEvent>,
@@ -496,6 +516,16 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             body_dependency_observer,
             body_owner_tokens,
             body_named_dependencies,
+            #[cfg(test)]
+            one_body_error_recovery,
+            #[cfg(test)]
+            one_body_recovered_errors,
+            #[cfg(test)]
+            one_body_inference_failure_incomplete,
+            #[cfg(test)]
+            body_callable_dependencies,
+            #[cfg(test)]
+            body_specialization_dependencies,
             ordinary_free_function_dependencies,
             specialized_free_function_origins,
             specialized_free_function_dependencies,
@@ -568,6 +598,16 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             body_dependency_observer,
             body_owner_tokens,
             body_named_dependencies,
+            #[cfg(test)]
+            one_body_error_recovery,
+            #[cfg(test)]
+            one_body_recovered_errors,
+            #[cfg(test)]
+            one_body_inference_failure_incomplete,
+            #[cfg(test)]
+            body_callable_dependencies,
+            #[cfg(test)]
+            body_specialization_dependencies,
             ordinary_free_function_dependencies,
             specialized_free_function_origins,
             specialized_free_function_dependencies,
@@ -814,6 +854,24 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         self.body_analysis_work.named_const_dependency_events += 1;
     }
 
+    #[cfg(test)]
+    pub(crate) fn record_body_callable_dependency(&mut self, symbol: Spur) {
+        let Some(source) = self.body_dependency_observer.clone() else {
+            return;
+        };
+        self.body_callable_dependencies.push((source, symbol));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_body_method_dependency(&mut self, key: (StructId, Spur)) {
+        let Some(info) = self.method_info(key) else {
+            return;
+        };
+        let symbol = self.method_symbol(key.0, self.interner.resolve(&key.1), info.has_self);
+        let symbol = self.interner.get_or_intern(&symbol);
+        self.record_body_callable_dependency(symbol);
+    }
+
     pub(crate) fn validate_explicit_call_modes<A>(
         &self,
         args: A,
@@ -1052,6 +1110,16 @@ impl<'a> Sema<'a> {
             body_dependency_observer: None,
             body_owner_tokens: HashMap::new(),
             body_named_dependencies: Vec::new(),
+            #[cfg(test)]
+            one_body_error_recovery: false,
+            #[cfg(test)]
+            one_body_recovered_errors: Vec::new(),
+            #[cfg(test)]
+            one_body_inference_failure_incomplete: false,
+            #[cfg(test)]
+            body_callable_dependencies: Vec::new(),
+            #[cfg(test)]
+            body_specialization_dependencies: Vec::new(),
             ordinary_free_function_dependencies: Vec::new(),
             specialized_free_function_origins: Vec::new(),
             specialized_free_function_dependencies: Vec::new(),
