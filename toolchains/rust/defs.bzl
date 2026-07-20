@@ -111,51 +111,16 @@ def _hermetic_rust_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
     )
     clippy_driver = RunInfo(args = cmd_args(clippy_wrapper, hidden = [clippy_bin, clippy_lib_dir]))
 
-    # Build a merged sysroot by running a shell script
+    # Build a merged sysroot by running the checked-in shell script. Keeping the
+    # script as an explicit action input ensures content changes invalidate the
+    # action cache along with the generated sysroot.
     # The Rust distribution has components in separate directories that need merging:
     #   rustc/                                      - compiler and core libs
     #   rust-std-{triple}/lib/rustlib/{triple}/lib/ - stdlib rlibs
     #
     # We use a shell action to create symlinks properly merging these.
     sysroot = ctx.actions.declare_output("sysroot", dir = True)
-    merge_script = ctx.actions.write(
-        "merge_sysroot.sh",
-        [
-            "#!/bin/bash",
-            "set -e",
-            "DIST=$(cd \"$1\" && pwd)",  # Convert to absolute path
-            "SYSROOT=$2",
-            "TRIPLE=$3",
-            "",
-            "# Create sysroot structure",
-            "mkdir -p \"$SYSROOT\"",
-            "",
-            "# Link top-level dirs from rustc",
-            "ln -s \"$DIST/rustc/bin\" \"$SYSROOT/bin\"",
-            "ln -s \"$DIST/rustc/libexec\" \"$SYSROOT/libexec\"",
-            "",
-            "# Create lib structure manually to merge rustlib",
-            "mkdir -p \"$SYSROOT/lib/rustlib/$TRIPLE\"",
-            "",
-            "# Link compiler libs (dylibs at lib/)",
-            "for f in \"$DIST/rustc/lib/\"*; do",
-            "    name=$(basename \"$f\")",
-            "    if [ \"$name\" != \"rustlib\" ]; then",
-            "        ln -s \"$f\" \"$SYSROOT/lib/$name\"",
-            "    fi",
-            "done",
-            "",
-            "# Link rustlib/etc",
-            "ln -s \"$DIST/rustc/lib/rustlib/etc\" \"$SYSROOT/lib/rustlib/etc\"",
-            "",
-            "# Link target bin (rust-lld)",
-            "ln -s \"$DIST/rustc/lib/rustlib/$TRIPLE/bin\" \"$SYSROOT/lib/rustlib/$TRIPLE/bin\"",
-            "",
-            "# Link target lib (stdlib from rust-std)",
-            "ln -s \"$DIST/rust-std-$TRIPLE/lib/rustlib/$TRIPLE/lib\" \"$SYSROOT/lib/rustlib/$TRIPLE/lib\"",
-        ],
-        is_executable = True,
-    )
+    merge_script = ctx.attrs.merge_script
 
     ctx.actions.run(
         cmd_args(
@@ -198,6 +163,9 @@ hermetic_rust_toolchain = rule(
     attrs = {
         "distribution": attrs.dep(
             doc = "The downloaded Rust distribution (from http_archive)",
+        ),
+        "merge_script": attrs.source(
+            doc = "Portable script that assembles a relocatable Rust sysroot",
         ),
         "target_triple": attrs.string(
             doc = "The target triple (e.g., x86_64-unknown-linux-gnu)",
