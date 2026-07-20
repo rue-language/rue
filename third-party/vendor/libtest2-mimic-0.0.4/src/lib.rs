@@ -126,6 +126,7 @@ impl Harness {
 /// A test case to be run
 pub struct Trial {
     name: String,
+    exclusive: bool,
     #[allow(clippy::type_complexity)]
     runner: Box<dyn Fn(RunContext<'_>) -> Result<(), RunError> + Send + Sync>,
 }
@@ -137,8 +138,19 @@ impl Trial {
     ) -> Self {
         Self {
             name: name.into(),
+            exclusive: false,
             runner: Box::new(runner),
         }
+    }
+
+    /// Mark this test as unable to run concurrently with other tests.
+    ///
+    /// Exclusive tests run serially after the harness's ordinary parallel
+    /// lane. This mirrors the scheduling contract already exposed by
+    /// `libtest2_harness::Case`.
+    pub fn exclusive(mut self) -> Self {
+        self.exclusive = true;
+        self
     }
 }
 
@@ -157,7 +169,7 @@ impl libtest2_harness::Case for TrialCase {
         None
     }
     fn exclusive(&self, _: &libtest2_harness::TestContext) -> bool {
-        false
+        self.inner.exclusive
     }
 
     fn run(

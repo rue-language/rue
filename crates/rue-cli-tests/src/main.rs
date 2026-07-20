@@ -61,7 +61,8 @@
 //! - `stdout` / `stdout_contains`: assert on the program's stdout
 //! - `runtime_error_contains`: assert on the program's stderr
 //! - `exit_code`: expected program exit code (default 0)
-//! - `timeout_ms`: wall-clock limit for running the program (default 10s)
+//! - `contract`: named execution contract supplying scheduling class and
+//!   separate compile/runtime budgets (ordinary cases default to 10s for each)
 //! - `known_bug = "RUE-NN"`: expected failure (xfail). An ordinary assertion
 //!   failure is ignored with the bug reference. A fatal subprocess failure or
 //!   unexpected pass fails loudly.
@@ -82,19 +83,19 @@
 //!
 //! # Timeouts
 //!
-//! Both the COMPILE step and the compiled program run under a per-case
-//! wall-clock timeout (default [`rue_test_runner::DEFAULT_TIMEOUT_MS`],
-//! overridable per case with `timeout_ms`). If either runs long — an infinite
-//! loop in generated code, or a compile-time hang in comptime evaluation —
-//! its whole process group is killed and the case is reported as a distinct
-//! TIMEOUT failure (see [`rue_test_runner::TIMEOUT_PREFIX`]), so one bad
-//! case can never hang the suite. `compile_only = true` still skips the run
-//! entirely for sources that are meant only to compile.
+//! Both the COMPILE step and the compiled program run under phase-specific
+//! wall-clock budgets (default [`rue_test_runner::DEFAULT_TIMEOUT_MS`]). Named
+//! contracts can raise either budget and move heavyweight cases into the
+//! harness's bounded serial lane. If either phase runs long — an infinite loop
+//! in generated code, or a compile-time hang in comptime evaluation — its whole
+//! process group is killed and the diagnostic names the phase, elapsed time,
+//! and budget. `compile_only = true` still skips the run entirely for sources
+//! that are meant only to compile.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
+use std::process::{Command, Output};
+use std::time::{Duration, Instant};
 
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
 use rue_target::{Arch, Target};
@@ -383,45 +384,6 @@ struct ExampleExpectation {
     stdin: Option<&'static str>,
 }
 
-/// Compile-and-execute timeout overrides for unusually large examples.
-///
-/// A large multi-module program can need more wall time to compile or start
-/// while the CLI harness is running its large corpus in parallel. Only an
-/// explicitly named example receives this narrowly scoped allowance.
-struct ExampleTimeout {
-    path: &'static str,
-    timeout_ms: u64,
-}
-
-const EXAMPLE_TIMEOUTS: &[ExampleTimeout] = &[
-    ExampleTimeout {
-        path: "lattice/main.rue",
-        timeout_ms: 30_000,
-    },
-    ExampleTimeout {
-        path: "meridian/main.rue",
-        timeout_ms: 120_000,
-    },
-    // Harbor is a large multi-module program that instantiates several
-    // ArrayBuf element types; since each now also monomorphizes the shared
-    // RawBuf(T) core (RUE-1066), its compile time sits close enough to the
-    // default budget to time out under heavy parallel CI load. The binary runs
-    // instantly — this allowance covers compilation headroom only.
-    ExampleTimeout {
-        path: "harbor/main.rue",
-        timeout_ms: 30_000,
-    },
-];
-
-fn example_timeout(relative_path: &str) -> Duration {
-    Duration::from_millis(
-        EXAMPLE_TIMEOUTS
-            .iter()
-            .find(|override_| override_.path == relative_path)
-            .map_or(DEFAULT_TIMEOUT_MS, |override_| override_.timeout_ms),
-    )
-}
-
 const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
     // The 2026-07-11 ambitious-dogfood programs: each is a self-checking
     // program that returns 42 exactly when every internal @assert passes.
@@ -672,6 +634,15 @@ const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
 #[serde(deny_unknown_fields)]
 struct TestFile {
     section: Section,
+    /// Named execution contracts contributed by this file. Keeping these in
+    /// the same declarative corpus as cases lets automatic examples and TOML
+    /// cases share one scheduling and timeout policy.
+    #[serde(default, rename = "contract")]
+    contracts: HashMap<String, ExecutionContract>,
+    /// Contracts for recursively discovered examples, keyed by the path that
+    /// also determines their `cli.examples::...` test name.
+    #[serde(default)]
+    automatic_example: Vec<AutomaticExampleContract>,
     #[serde(default, rename = "case")]
     cases: Vec<Case>,
 }
@@ -685,6 +656,61 @@ struct Section {
     #[allow(dead_code)]
     #[serde(default)]
     description: Option<String>,
+    /// Default execution contract for every case in this section. Individual
+    /// cases may override it when only one scenario is heavyweight.
+    #[serde(default)]
+    contract: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ExecutionClass {
+    Ordinary,
+    Heavyweight,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ExecutionContract {
+    class: ExecutionClass,
+    compile_timeout_ms: u64,
+    runtime_timeout_ms: u64,
+}
+
+impl ExecutionContract {
+    fn ordinary() -> Self {
+        Self {
+            class: ExecutionClass::Ordinary,
+            compile_timeout_ms: DEFAULT_TIMEOUT_MS,
+            runtime_timeout_ms: DEFAULT_TIMEOUT_MS,
+        }
+    }
+
+    fn compile_timeout(&self) -> Duration {
+        Duration::from_millis(self.compile_timeout_ms)
+    }
+
+    fn runtime_timeout(&self) -> Duration {
+        Duration::from_millis(self.runtime_timeout_ms)
+    }
+
+    fn is_heavyweight(&self) -> bool {
+        self.class == ExecutionClass::Heavyweight
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct AutomaticExampleContract {
+    path: String,
+    contract: String,
+}
+
+#[derive(Debug)]
+struct LoadedCorpus {
+    files: Vec<(String, TestFile)>,
+    contracts: HashMap<String, ExecutionContract>,
+    automatic_examples: Vec<AutomaticExampleContract>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -703,6 +729,9 @@ struct Case {
     #[allow(dead_code)]
     #[serde(default)]
     description: Option<String>,
+    /// Named execution contract. Overrides the section default.
+    #[serde(default)]
+    contract: Option<String>,
     /// Files written to the temp directory before invoking the compiler.
     #[serde(default)]
     files: Vec<SourceFile>,
@@ -786,11 +815,6 @@ struct Case {
     /// Expected program exit code (default 0).
     #[serde(default)]
     exit_code: Option<i32>,
-    /// Wall-clock timeout in milliseconds for RUNNING the compiled program.
-    /// Defaults to [`rue_test_runner::DEFAULT_TIMEOUT_MS`]. On timeout the
-    /// program's process group is killed and the case fails as a TIMEOUT.
-    #[serde(default)]
-    timeout_ms: Option<u64>,
     /// Expected failure: reference to the Linear issue tracking the bug.
     #[serde(default)]
     known_bug: Option<String>,
@@ -1277,6 +1301,47 @@ fn find_repo_root(cases_dir: &Path, real_std: &Path) -> PathBuf {
     PathBuf::from(".")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcessPhase {
+    Compiler,
+    ProducedProgram,
+}
+
+impl ProcessPhase {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Compiler => "compiler phase",
+            Self::ProducedProgram => "produced-program phase",
+        }
+    }
+}
+
+/// Run one subprocess phase and replace the runner's intentionally generic
+/// timeout with a phase-aware diagnostic. The measured elapsed time includes
+/// process-group termination and pipe drainage, while `budget` is the exact
+/// contract applied to this phase.
+fn run_phase_with_timeout(
+    command: Command,
+    phase: ProcessPhase,
+    budget: Duration,
+    stdin: Option<&str>,
+) -> TestResult<Output> {
+    let started = Instant::now();
+    run_with_timeout(command, budget, stdin).map_err(|error| {
+        if error.starts_with(rue_test_runner::TIMEOUT_PREFIX) {
+            TestFailure::fatal(format!(
+                "{} {} timed out (elapsed={} ms, budget={} ms; process group killed)",
+                rue_test_runner::TIMEOUT_PREFIX,
+                phase.name(),
+                started.elapsed().as_millis(),
+                budget.as_millis(),
+            ))
+        } else {
+            error.with_context(phase.name())
+        }
+    })
+}
+
 fn resolve_source_path(path: &str, real_std: &Path, repo_root: &Path) -> PathBuf {
     let source_path = Path::new(path);
     if source_path.is_absolute() {
@@ -1299,6 +1364,7 @@ fn resolve_source_path(path: &str, real_std: &Path, repo_root: &Path) -> PathBuf
 /// (see [`run_case_differential`]); when `None`, args are used verbatim.
 fn run_case(
     case: &Case,
+    contract: &ExecutionContract,
     rue_binary: &Path,
     real_std: &Path,
     repo_root: &Path,
@@ -1382,11 +1448,15 @@ fn run_case(
     }
 
     let cmd = case_compiler_command(rue_binary, &args, dir, &case.env, real_std);
-    // The COMPILE step runs under the same per-case timeout as execution: a
-    // compile-time hang (comptime/parser loop) must fail this one case as a
-    // TIMEOUT, not wedge the suite. Mirrors the spec runner's compile step.
-    let compile_timeout = Duration::from_millis(case.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
-    let compile_output = run_with_timeout(cmd, compile_timeout, None)?;
+    // A compile-time hang (comptime/parser loop) must fail this one case rather
+    // than wedge the suite. Compilation and execution intentionally have
+    // separate contract budgets and diagnostics.
+    let compile_output = run_phase_with_timeout(
+        cmd,
+        ProcessPhase::Compiler,
+        contract.compile_timeout(),
+        None,
+    )?;
 
     let compile_stderr = String::from_utf8_lossy(&compile_output.stderr).to_string();
     let compile_stdout = String::from_utf8_lossy(&compile_output.stdout).to_string();
@@ -1499,8 +1569,12 @@ fn run_case(
     for (key, value) in &case.program_env {
         run_cmd.env(key, value);
     }
-    let timeout = Duration::from_millis(case.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
-    let run_output = run_with_timeout(run_cmd, timeout, case.stdin.as_deref())?;
+    let run_output = run_phase_with_timeout(
+        run_cmd,
+        ProcessPhase::ProducedProgram,
+        contract.runtime_timeout(),
+        case.stdin.as_deref(),
+    )?;
 
     let run_stdout = String::from_utf8_lossy(&run_output.stdout).to_string();
     let run_stderr = String::from_utf8_lossy(&run_output.stderr).to_string();
@@ -1566,6 +1640,7 @@ fn run_case(
 /// mismatch the error names the diverging level.
 fn run_case_differential(
     case: &Case,
+    contract: &ExecutionContract,
     rue_binary: &Path,
     real_std: &Path,
     repo_root: &Path,
@@ -1591,7 +1666,7 @@ fn run_case_differential(
 
     let mut baseline: Option<(&str, RunOutcome)> = None;
     for level in OPT_LEVELS {
-        let outcome = run_case(case, rue_binary, real_std, repo_root, Some(level))
+        let outcome = run_case(case, contract, rue_binary, real_std, repo_root, Some(level))
             .map_err(|error| error.with_context(format!("at {level}")))?;
         match &baseline {
             None => baseline = Some((level, outcome)),
@@ -1640,6 +1715,7 @@ fn known_bug_disposition(bug: &str, result: TestResult) -> KnownBugDisposition {
 /// Wrapper handling skip and known_bug (xfail) semantics.
 fn run_case_wrapper(
     case: &Case,
+    contract: &ExecutionContract,
     rue_binary: &Path,
     real_std: &Path,
     repo_root: &Path,
@@ -1663,9 +1739,9 @@ fn run_case_wrapper(
     }
 
     let result = if case.differential_opt {
-        run_case_differential(case, rue_binary, real_std, repo_root)
+        run_case_differential(case, contract, rue_binary, real_std, repo_root)
     } else {
-        run_case(case, rue_binary, real_std, repo_root, None).map(|_| ())
+        run_case(case, contract, rue_binary, real_std, repo_root, None).map(|_| ())
     };
 
     // A known_bug scoped to other platforms doesn't apply here: the case
@@ -1733,7 +1809,7 @@ fn unknown_only_on_targets(case: &Case) -> Vec<&str> {
         .collect()
 }
 
-fn load_cases(cases_dir: &Path) -> Vec<(String, TestFile)> {
+fn load_cases(cases_dir: &Path) -> LoadedCorpus {
     let toml_files = rue_test_runner::discover_files(cases_dir, "toml").unwrap_or_else(|error| {
         eprintln!(
             "error: failed to discover CLI test files under {}: {error}",
@@ -1743,6 +1819,9 @@ fn load_cases(cases_dir: &Path) -> Vec<(String, TestFile)> {
     });
 
     let mut out = Vec::new();
+    let mut contracts = HashMap::new();
+    let mut contract_origins = HashMap::<String, String>::new();
+    let mut automatic_examples = Vec::new();
     for path in toml_files {
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
@@ -1826,6 +1905,30 @@ fn load_cases(cases_dir: &Path) -> Vec<(String, TestFile)> {
                         std::process::exit(1);
                     }
                 }
+
+                for (name, contract) in &tf.contracts {
+                    if contract.compile_timeout_ms == 0 || contract.runtime_timeout_ms == 0 {
+                        eprintln!(
+                            "error: {}: contract '{}' must use non-zero compile and runtime budgets",
+                            path.display(),
+                            name,
+                        );
+                        std::process::exit(1);
+                    }
+                    if let Some(previous) =
+                        contract_origins.insert(name.clone(), path.display().to_string())
+                    {
+                        eprintln!(
+                            "error: {}: duplicate contract '{}' (already defined in {})",
+                            path.display(),
+                            name,
+                            previous,
+                        );
+                        std::process::exit(1);
+                    }
+                    contracts.insert(name.clone(), contract.clone());
+                }
+                automatic_examples.extend(tf.automatic_example.iter().cloned());
                 out.push((path.display().to_string(), tf));
             }
             Err(e) => {
@@ -1834,7 +1937,93 @@ fn load_cases(cases_dir: &Path) -> Vec<(String, TestFile)> {
             }
         }
     }
-    out
+    LoadedCorpus {
+        files: out,
+        contracts,
+        automatic_examples,
+    }
+}
+
+fn case_contract_name<'a>(section: &'a Section, case: &'a Case) -> Option<&'a str> {
+    case.contract.as_deref().or(section.contract.as_deref())
+}
+
+fn resolve_contract(
+    contracts: &HashMap<String, ExecutionContract>,
+    name: Option<&str>,
+) -> ExecutionContract {
+    name.map_or_else(ExecutionContract::ordinary, |name| {
+        contracts
+            .get(name)
+            .unwrap_or_else(|| panic!("contract '{name}' was not validated"))
+            .clone()
+    })
+}
+
+/// Validate the contract graph against the complete, unfiltered inventory.
+/// This happens before `libtest2` sees command-line filters, so a focused run
+/// cannot silently lose a budget or scheduling classification.
+fn validate_contract_metadata(
+    corpus: &LoadedCorpus,
+    discovered_examples: &HashSet<String>,
+) -> Result<HashMap<String, ExecutionContract>, String> {
+    let mut used_contracts = HashSet::new();
+
+    for (source, file) in &corpus.files {
+        for case in &file.cases {
+            if let Some(name) = case_contract_name(&file.section, case) {
+                if !corpus.contracts.contains_key(name) {
+                    return Err(format!(
+                        "{source}: case '{}::{}' references unknown contract '{name}'",
+                        file.section.id, case.name,
+                    ));
+                }
+                used_contracts.insert(name.to_string());
+            }
+        }
+    }
+
+    let mut automatic_contracts = HashMap::new();
+    for entry in &corpus.automatic_examples {
+        if !discovered_examples.contains(&entry.path) {
+            return Err(format!(
+                "automatic example contract names '{}', but that example was not discovered",
+                entry.path,
+            ));
+        }
+        let contract = corpus.contracts.get(&entry.contract).ok_or_else(|| {
+            format!(
+                "automatic example '{}' references unknown contract '{}'",
+                entry.path, entry.contract,
+            )
+        })?;
+        if automatic_contracts
+            .insert(entry.path.clone(), contract.clone())
+            .is_some()
+        {
+            return Err(format!(
+                "automatic example '{}' has more than one execution contract",
+                entry.path,
+            ));
+        }
+        used_contracts.insert(entry.contract.clone());
+    }
+
+    let mut unused = corpus
+        .contracts
+        .keys()
+        .filter(|name| !used_contracts.contains(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+    unused.sort();
+    if !unused.is_empty() {
+        return Err(format!(
+            "execution contract(s) are not attached to any discovered case: {}",
+            unused.join(", "),
+        ));
+    }
+
+    Ok(automatic_contracts)
 }
 
 /// Compile and run one `examples/**/*.rue` program end to end (RUE-48).
@@ -1854,7 +2043,7 @@ fn run_example(
     expectation: Option<&ExampleExpectation>,
     rue_binary: &Path,
     real_std: &Path,
-    timeout: Duration,
+    contract: &ExecutionContract,
 ) -> TestResult {
     let temp_dir = tempfile::tempdir()
         .map_err(|e| TestFailure::fatal(format!("failed to create temp dir: {}", e)))?;
@@ -1863,10 +2052,12 @@ fn run_example(
     let mut cmd = compiler_command(rue_binary);
     cmd.arg(path).args(["-o", "prog"]).current_dir(dir);
     cmd.env("RUE_STD_PATH", real_std);
-    // Compile under the same per-example timeout too (see run_case): an
-    // example that hangs the compiler fails as one TIMEOUT, not a wedged
-    // suite, while explicitly large examples can opt into a larger budget.
-    let compile_output = run_with_timeout(cmd, timeout, None)?;
+    let compile_output = run_phase_with_timeout(
+        cmd,
+        ProcessPhase::Compiler,
+        contract.compile_timeout(),
+        None,
+    )?;
     let compile_stderr = String::from_utf8_lossy(&compile_output.stderr).to_string();
     let compile_stdout = String::from_utf8_lossy(&compile_output.stdout).to_string();
 
@@ -1891,7 +2082,12 @@ fn run_example(
 
     let mut run_cmd = Command::new(&program);
     run_cmd.current_dir(dir);
-    let run_output = run_with_timeout(run_cmd, timeout, expectation.and_then(|exp| exp.stdin))?;
+    let run_output = run_phase_with_timeout(
+        run_cmd,
+        ProcessPhase::ProducedProgram,
+        contract.runtime_timeout(),
+        expectation.and_then(|exp| exp.stdin),
+    )?;
     let run_stdout = String::from_utf8_lossy(&run_output.stdout).to_string();
     let run_stderr = String::from_utf8_lossy(&run_output.stderr).to_string();
 
@@ -1967,54 +2163,75 @@ fn example_test_name(relative_path: &str) -> String {
     format!("cli.examples::{name}")
 }
 
-/// Discover `examples/**/*.rue` and build one smoke-test trial per file (RUE-48).
-///
-/// This is self-maintaining: it enumerates the directory at run time, so a new
-/// example is picked up automatically. If the directory can't be found or holds
-/// no `.rue` files, a single loud failing trial is emitted rather than silently
-/// running zero example tests (which would let example rot slip through CI).
-fn example_trials(rue_binary: &Path, real_std: &Path) -> Vec<Trial> {
+#[derive(Debug)]
+struct DiscoveredExample {
+    path: PathBuf,
+    relative_path: String,
+}
+
+/// Discover the complete automatic-example inventory before filtering. This
+/// lets execution-contract metadata be checked against reality even for a
+/// focused test invocation.
+fn discover_examples() -> Result<Vec<DiscoveredExample>, String> {
     let examples_dir = find_dir("RUE_EXAMPLES_DIR", EXAMPLES_DIR_PATHS, "examples");
 
     let mut example_files = Vec::new();
-    match collect_example_files(&examples_dir, &mut example_files) {
-        Ok(()) => {}
-        Err(e) => {
-            let msg = format!(
-                "{} (set RUE_EXAMPLES_DIR to override '{}')",
-                e,
-                examples_dir.display(),
-            );
-            return vec![Trial::test("cli.examples::_discovery", move |_ctx| {
-                Err(RunError::fail(msg.clone()))
-            })];
-        }
-    };
+    collect_example_files(&examples_dir, &mut example_files).map_err(|error| {
+        format!(
+            "{} (set RUE_EXAMPLES_DIR to override '{}')",
+            error,
+            examples_dir.display(),
+        )
+    })?;
     example_files.sort();
 
     if example_files.is_empty() {
-        let msg = format!(
+        return Err(format!(
             "no *.rue examples found in '{}' — RUE-48 smoke coverage is empty",
             examples_dir.display()
-        );
-        return vec![Trial::test("cli.examples::_discovery", move |_ctx| {
-            Err(RunError::fail(msg.clone()))
-        })];
+        ));
     }
 
-    let mut trials = Vec::with_capacity(example_files.len());
-    for path in example_files {
-        let relative_path = example_relative_path(&examples_dir, &path);
+    Ok(example_files
+        .into_iter()
+        .map(|path| DiscoveredExample {
+            relative_path: example_relative_path(&examples_dir, &path),
+            path,
+        })
+        .collect())
+}
+
+/// Build one automatic smoke-test trial per discovered example (RUE-48).
+fn example_trials(
+    examples: Vec<DiscoveredExample>,
+    automatic_contracts: &HashMap<String, ExecutionContract>,
+    rue_binary: &Path,
+    real_std: &Path,
+) -> Vec<Trial> {
+    let mut trials = Vec::with_capacity(examples.len());
+    for example in examples {
+        let path = example.path;
+        let relative_path = example.relative_path;
+        let contract = automatic_contracts
+            .get(&relative_path)
+            .cloned()
+            .unwrap_or_else(ExecutionContract::ordinary);
+        let heavyweight = contract.is_heavyweight();
         let rue_binary = rue_binary.to_path_buf();
         let real_std = real_std.to_path_buf();
         let test_name = example_test_name(&relative_path);
-        trials.push(Trial::test(test_name, move |_ctx| {
-            let timeout = example_timeout(&relative_path);
+        let trial = Trial::test(test_name, move |_ctx| {
             let expectation = EXAMPLE_EXPECTATIONS
                 .iter()
                 .find(|e| e.path == relative_path);
-            run_example(&path, expectation, &rue_binary, &real_std, timeout).map_err(RunError::fail)
-        }));
+            run_example(&path, expectation, &rue_binary, &real_std, &contract)
+                .map_err(RunError::fail)
+        });
+        trials.push(if heavyweight {
+            trial.exclusive()
+        } else {
+            trial
+        });
     }
     trials
 }
@@ -2036,32 +2253,58 @@ fn main() {
     let real_std = real_std.canonicalize().unwrap_or(real_std);
     let repo_root = find_repo_root(&cases_dir, &real_std);
 
-    let files = load_cases(&cases_dir);
+    let corpus = load_cases(&cases_dir);
+    let examples = discover_examples().unwrap_or_else(|error| {
+        eprintln!("error: {error}");
+        std::process::exit(1);
+    });
+    let discovered_example_paths = examples
+        .iter()
+        .map(|example| example.relative_path.clone())
+        .collect::<HashSet<_>>();
+    let automatic_contracts = validate_contract_metadata(&corpus, &discovered_example_paths)
+        .unwrap_or_else(|error| {
+            eprintln!("error: invalid CLI execution contract metadata: {error}");
+            std::process::exit(1);
+        });
 
-    let total: usize = files.iter().map(|(_, f)| f.cases.len()).sum();
+    let total: usize = corpus.files.iter().map(|(_, f)| f.cases.len()).sum();
     if let Err(error) = validate_nonempty_case_corpus(&cases_dir, total, "CLI") {
         eprintln!("error: {error}");
         std::process::exit(1);
     }
     let mut tests: Vec<Trial> = Vec::with_capacity(total);
 
-    for (_, file) in files {
+    for (_, file) in corpus.files {
         let section_id = file.section.id.clone();
         for case in file.cases {
+            let contract_name = case_contract_name(&file.section, &case);
+            let contract = resolve_contract(&corpus.contracts, contract_name);
+            let heavyweight = contract.is_heavyweight();
             let test_name = format!("{}::{}", section_id, case.name);
             let rue_binary = rue_binary.clone();
             let real_std = real_std.clone();
             let repo_root = repo_root.clone();
-            tests.push(Trial::test(test_name, move |ctx| {
-                run_case_wrapper(&case, &rue_binary, &real_std, &repo_root, ctx)
-            }));
+            let trial = Trial::test(test_name, move |ctx| {
+                run_case_wrapper(&case, &contract, &rue_binary, &real_std, &repo_root, ctx)
+            });
+            tests.push(if heavyweight {
+                trial.exclusive()
+            } else {
+                trial
+            });
         }
     }
 
     // RUE-48: compile+run every examples/**/*.rue through the real driver, so a
     // regression that breaks a shipped example (or an example referencing a
     // removed flag) can't slip past CI unnoticed.
-    tests.extend(example_trials(&rue_binary, &real_std));
+    tests.extend(example_trials(
+        examples,
+        &automatic_contracts,
+        &rue_binary,
+        &real_std,
+    ));
 
     Harness::with_env().discover(tests).main();
 }
@@ -2108,16 +2351,152 @@ mod tests {
         );
     }
 
+    fn corpus_from_toml(source: &str) -> LoadedCorpus {
+        let file = toml::from_str::<TestFile>(source).expect("valid test corpus TOML");
+        LoadedCorpus {
+            contracts: file.contracts.clone(),
+            automatic_examples: file.automatic_example.clone(),
+            files: vec![("inline.toml".to_string(), file)],
+        }
+    }
+
     #[test]
-    fn heavyweight_example_timeout_is_narrowly_scoped() {
-        assert_eq!(example_timeout("lattice/main.rue"), Duration::from_secs(30));
-        assert_eq!(
-            example_timeout("meridian/main.rue"),
-            Duration::from_secs(120)
+    fn declarative_contract_applies_to_explicit_and_automatic_cases() {
+        let corpus = corpus_from_toml(
+            r#"
+                [section]
+                id = "cli.large"
+                name = "large"
+                contract = "heavy"
+
+                [contract.heavy]
+                class = "heavyweight"
+                compile_timeout_ms = 30000
+                runtime_timeout_ms = 45000
+
+                [[automatic_example]]
+                path = "large/main.rue"
+                contract = "heavy"
+
+                [[case]]
+                name = "stress"
+            "#,
         );
-        assert_eq!(
-            example_timeout("welcome.rue"),
-            Duration::from_millis(DEFAULT_TIMEOUT_MS)
+        let discovered = HashSet::from(["large/main.rue".to_string()]);
+        let automatic = validate_contract_metadata(&corpus, &discovered).unwrap();
+        let file = &corpus.files[0].1;
+        let explicit = resolve_contract(
+            &corpus.contracts,
+            case_contract_name(&file.section, &file.cases[0]),
+        );
+
+        assert_eq!(automatic["large/main.rue"], explicit);
+        assert!(explicit.is_heavyweight());
+        assert_eq!(explicit.compile_timeout(), Duration::from_secs(30));
+        assert_eq!(explicit.runtime_timeout(), Duration::from_secs(45));
+    }
+
+    #[test]
+    fn ordinary_contract_keeps_strict_ten_second_defaults() {
+        let contract = ExecutionContract::ordinary();
+        assert!(!contract.is_heavyweight());
+        assert_eq!(contract.compile_timeout(), Duration::from_secs(10));
+        assert_eq!(contract.runtime_timeout(), Duration::from_secs(10));
+    }
+
+    #[test]
+    fn stale_automatic_example_contract_is_rejected_before_filtering() {
+        let corpus = corpus_from_toml(
+            r#"
+                [section]
+                id = "cli.contracts"
+                name = "contracts"
+
+                [contract.heavy]
+                class = "heavyweight"
+                compile_timeout_ms = 30000
+                runtime_timeout_ms = 30000
+
+                [[automatic_example]]
+                path = "renamed/main.rue"
+                contract = "heavy"
+            "#,
+        );
+        let error = validate_contract_metadata(&corpus, &HashSet::new()).unwrap_err();
+        assert!(error.contains("renamed/main.rue"));
+        assert!(error.contains("was not discovered"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compiler_and_program_timeouts_name_distinct_phases_and_budgets() {
+        let source_case = || Case {
+            name: "phase_timeout".to_string(),
+            files: vec![SourceFile {
+                path: "main.rue".to_string(),
+                source: "fn main() -> i32 { 0 }".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        let (_directory, compiler) = fake_compiler("#!/bin/sh\nwhile :; do :; done\n");
+        let compile_contract = ExecutionContract {
+            class: ExecutionClass::Ordinary,
+            compile_timeout_ms: 10,
+            runtime_timeout_ms: 1_000,
+        };
+        let compile_error = run_case(
+            &source_case(),
+            &compile_contract,
+            &compiler,
+            Path::new("std"),
+            Path::new("."),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            compile_error.contains("TIMEOUT: compiler phase timed out"),
+            "actual error: {compile_error}",
+        );
+        assert!(
+            compile_error.contains("elapsed="),
+            "actual error: {compile_error}",
+        );
+        assert!(
+            compile_error.contains("budget=10 ms"),
+            "actual error: {compile_error}",
+        );
+
+        let (_directory, compiler) = fake_compiler(
+            "#!/bin/sh\nprintf '#!/bin/sh\\nwhile :; do :; done\\n' > prog\nchmod +x prog\n",
+        );
+        let runtime_contract = ExecutionContract {
+            class: ExecutionClass::Ordinary,
+            // Keep fixture setup comfortably outside the forced runtime budget
+            // so loaded hosts cannot turn this into a compiler-phase timeout.
+            compile_timeout_ms: DEFAULT_TIMEOUT_MS,
+            runtime_timeout_ms: 10,
+        };
+        let runtime_error = run_case(
+            &source_case(),
+            &runtime_contract,
+            &compiler,
+            Path::new("std"),
+            Path::new("."),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            runtime_error.contains("TIMEOUT: produced-program phase timed out"),
+            "actual error: {runtime_error}",
+        );
+        assert!(
+            runtime_error.contains("elapsed="),
+            "actual error: {runtime_error}",
+        );
+        assert!(
+            runtime_error.contains("budget=10 ms"),
+            "actual error: {runtime_error}",
         );
     }
 
@@ -2271,7 +2650,13 @@ mod tests {
             ..Default::default()
         };
 
-        let result = run_case_differential(&case, &binary, Path::new("std"), Path::new("."));
+        let result = run_case_differential(
+            &case,
+            &ExecutionContract::ordinary(),
+            &binary,
+            Path::new("std"),
+            Path::new("."),
+        );
         let error = result.expect_err("compiler panic must fail an xfail");
         assert!(error.is_fatal());
         assert!(error.contains("at -O0"));

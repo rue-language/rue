@@ -518,7 +518,7 @@ class PerfBaselineAggregationTests(unittest.TestCase):
         self.assertEqual(inclusive["name"], "parse")
         self.assertAlmostEqual(inclusive["median_percent"], 55.0)
 
-    def test_deep_nesting_corpus_shape_and_explicit_complexity_gate(self):
+    def test_deep_nesting_corpus_shape_and_implicit_cli_complexity_gate(self):
         source = (
             INPUT_ROOT / "benchmarks" / "stress" / "deep_nesting.rue"
         ).read_text()
@@ -539,7 +539,13 @@ class PerfBaselineAggregationTests(unittest.TestCase):
 
         cli_case = DEEP_NESTING_CASE.read_text()
         self.assertIn("A 60-level nested block", cli_case)
-        self.assertIn("timeout_ms = 10000", cli_case)
+        # CLI cases without a named contract use the shared ordinary contract,
+        # whose Rust unit test pins both compiler and produced-program phases to
+        # DEFAULT_TIMEOUT_MS (the test-runner's strict 10-second default). Keep
+        # this case on that single source of truth instead of duplicating a
+        # per-case timeout that can drift from the harness default.
+        self.assertNotIn("contract =", cli_case)
+        self.assertNotIn("timeout_ms", cli_case)
 
     def test_deep_nesting_budget_is_enforced_independently_of_global_timeout(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -1614,6 +1614,43 @@ cargo.rust_library(
     ],
 )
 
+# Rue carries a scheduler fix for exclusive CLI-test lanes. Keep a native unit
+# target beside the vendored library so fail-fast worker draining remains
+# executable regression coverage rather than an untested vendor patch.
+rust_test(
+    name = "libtest2-harness-scheduler-test",
+    srcs = [
+        "vendor/libtest2-harness-0.0.3/src/case.rs",
+        "vendor/libtest2-harness-0.0.3/src/cli.rs",
+        "vendor/libtest2-harness-0.0.3/src/context.rs",
+        "vendor/libtest2-harness-0.0.3/src/harness.rs",
+        "vendor/libtest2-harness-0.0.3/src/lib.rs",
+        "vendor/libtest2-harness-0.0.3/src/notify/json.rs",
+        "vendor/libtest2-harness-0.0.3/src/notify/mod.rs",
+        "vendor/libtest2-harness-0.0.3/src/notify/no_style.rs",
+        "vendor/libtest2-harness-0.0.3/src/notify/pretty.rs",
+        "vendor/libtest2-harness-0.0.3/src/notify/style.rs",
+        "vendor/libtest2-harness-0.0.3/src/notify/summary.rs",
+        "vendor/libtest2-harness-0.0.3/src/notify/terse.rs",
+    ],
+    crate = "libtest2_harness",
+    crate_root = "vendor/libtest2-harness-0.0.3/src/lib.rs",
+    edition = "2021",
+    features = [
+        "color",
+        "default",
+        "threads",
+    ],
+    deps = [
+        ":anstream-0.6.21",
+        ":anstyle-1.0.13",
+        ":lexarg-error-0.0.2",
+        ":lexarg-parser-0.0.2",
+        ":libtest-json-0.0.2",
+        ":libtest-lexarg-0.0.3",
+    ],
+)
+
 alias(
     name = "libtest2-mimic",
     actual = ":libtest2-mimic-0.0.4",

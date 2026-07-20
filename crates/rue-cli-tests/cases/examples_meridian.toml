@@ -3,6 +3,7 @@
 id = "cli.examples_meridian"
 name = "Meridian relational database and query engine written in Rue"
 description = "exercise parsing, validation, catalogs, planning, optimization, execution, transactions, recovery, replication, analysis, reporting, and generated scaling workloads"
+contract = "heavyweight_long"
 
 [[case]]
 name = "meridian_runs_built_in_demo"
@@ -10,7 +11,6 @@ description = "the built-in database runs through planning and execution while t
 source_path = "examples/meridian/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 program_args = ["demo"]
-timeout_ms = 120000
 exit_code = 0
 stdout_contains = ["database=meridian", "tables=3", "queries=2", "plan_nodes=7", "result_rows=6", "used_index=true", "plan_valid=true", "result_valid=true"]
 
@@ -33,7 +33,6 @@ ROLLBACK 7;
 SELECT users FILTER score 80 GROUP team ORDER score LIMIT 10;
 """ }]
 program_args = ["run", "query.sql"]
-timeout_ms = 120000
 exit_code = 0
 stdout_contains = ["tables=1", "stored_rows=3", "indexes=1", "transactions=1", "query_table=users", "result_rows=2", "sum=173", "used_index=true", "plan_valid=true", "result_valid=true"]
 
@@ -48,7 +47,6 @@ COLUMN users id INT REQUIRED;
 SELECT users;
 """ }]
 program_args = ["run", "schema.sql"]
-timeout_ms = 120000
 exit_code = 1
 stdout_contains = ["meridian[schema] users: declared column count does not match COLUMN statements"]
 
@@ -59,7 +57,6 @@ source_path = "examples/meridian/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "unknown.sql", source = "SELECT missing;\n" }]
 program_args = ["run", "unknown.sql"]
-timeout_ms = 120000
 exit_code = 1
 stdout_contains = ["meridian[query] missing: SELECT references unknown table"]
 
@@ -69,7 +66,6 @@ description = "catalog, query, transaction, recovery, replication, analysis, opt
 source_path = "examples/meridian/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 program_args = ["selftest"]
-timeout_ms = 120000
 exit_code = 0
 stdout_contains = ["selftest checks=24", "failures=0", "analysis_passes=112", "optimizer_rules=72", "optimizer_evaluations=144", "report_documents=44", "recovery_redone=2", "recovery_undone=1", "valid=true"]
 
@@ -79,6 +75,5 @@ description = "stress mode executes every maintained analysis, optimizer, render
 source_path = "examples/meridian/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 program_args = ["stress1"]
-timeout_ms = 120000
 exit_code = 0
 stdout_contains = ["stress scale=1", "tables=3", "rows=46", "analysis_passes=112", "optimizer_evaluations=144", "report_documents=44", "oracle_mismatches=0", "deterministic_mismatches=0", "valid=true"]
