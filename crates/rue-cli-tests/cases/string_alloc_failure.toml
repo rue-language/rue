@@ -87,8 +87,11 @@ const std = @import("std");
 fn main() -> i32 {
     let V = std.arraybuf.ArrayBuf(u8);
     let mut v = V.new();
+    // White-box fault injection: fake a near-overflow header without a real
+    // allocation, so the next push's doubling reaches the allocation trap. The
+    // capacity lives in the shared RawBuf core (RUE-1066).
     v.len = 9223372036854775808;
-    v.cap = 9223372036854775808;
+    v.core.cap = 9223372036854775808;
     v.push(1);
     0
 }
