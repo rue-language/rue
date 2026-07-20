@@ -1,0 +1,34 @@
+# Shared scheduling and timeout contracts for CLI tests. Automatic examples
+# and explicit TOML sections both reference these names, so heavyweight
+# classification has one declarative authority rather than path checks in the
+# Rust harness.
+[section]
+id = "cli.execution_contracts"
+name = "CLI execution contracts"
+description = "bounded scheduling and phase-specific budgets for heavyweight dogfood programs"
+
+[contract.heavyweight]
+class = "heavyweight"
+compile_timeout_ms = 30000
+runtime_timeout_ms = 30000
+
+[contract.heavyweight_long]
+class = "heavyweight"
+compile_timeout_ms = 120000
+runtime_timeout_ms = 120000
+
+[[automatic_example]]
+path = "harbor/main.rue"
+contract = "heavyweight"
+
+[[automatic_example]]
+path = "lattice/main.rue"
+contract = "heavyweight"
+
+[[automatic_example]]
+path = "mosaic/main.rue"
+contract = "heavyweight"
+
+[[automatic_example]]
+path = "meridian/main.rue"
+contract = "heavyweight_long"

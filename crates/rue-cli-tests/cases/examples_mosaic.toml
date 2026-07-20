@@ -73,16 +73,17 @@ stdout_contains = ["pages=1", "tables=1", "diagnostics=0", "pooled_strings=", "h
 [[case]]
 name = "mosaic_runs_scaling_and_selftest_invariants"
 description = "stress parses and renders 200 linked pages and checks expected counts and focused subsystem tests"
+contract = "heavyweight"
 source_path = "examples/mosaic/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 program_args = ["stress"]
-timeout_ms = 30000
 exit_code = 0
 stdout = "stress pages=200 blocks=2200 links=200 anchors=400\nexpected_links=200\ndeterministic=true\nvalid=true\nselftests=30 failures=0\n"
 
 [[case]]
 name = "mosaic_scales_generated_workload_fourfold"
 description = "the 4x tier parses and renders 400 linked pages with proportional model counts"
+contract = "heavyweight"
 source_path = "examples/mosaic/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 # Rendered navigation is a bounded window (RUE-1003), so generated output
@@ -90,7 +91,6 @@ env = { RUE_STD_PATH = "${REAL_STD}" }
 # isolated Linux x64 runs, but need the large-example allowance while the
 # parallel CLI corpus competes for loaded Linux runners (RUE-999).
 program_args = ["stress4"]
-timeout_ms = 30000
 exit_code = 0
 stdout = "stress pages=400 blocks=4400 links=400 anchors=800\nexpected_links=400\ndeterministic=true\nvalid=true\nselftests=30 failures=0\n"
 

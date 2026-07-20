@@ -362,12 +362,21 @@ fn run(
             std::hash::BuildHasherDefault<std::collections::hash_map::DefaultHasher>,
         >;
 
-        let sync_success = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(success));
+        let failure_seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut running: TestMap = Default::default();
         let (tx, rx) = std::sync::mpsc::channel::<String>();
         let mut remaining = std::collections::VecDeque::from(concurrent_cases);
+        let mut stop_spawning = false;
+        let mut scheduler_error = None;
         while !running.is_empty() || !remaining.is_empty() {
-            while running.len() < threads && !remaining.is_empty() {
+            while !stop_spawning && running.len() < threads && !remaining.is_empty() {
+                if opts.fail_fast
+                    && failure_seen.load(std::sync::atomic::Ordering::Acquire)
+                {
+                    stop_spawning = true;
+                    remaining.clear();
+                    break;
+                }
                 let case = remaining.pop_front().unwrap();
                 let case = std::sync::Arc::new(case);
                 let name = case.name().to_owned();
@@ -377,11 +386,11 @@ fn run(
                 let thread_case = case.clone();
                 let mut thread_context = context.clone();
                 thread_context.test_name = name.clone();
-                let thread_sync_success = sync_success.clone();
+                let thread_failure_seen = failure_seen.clone();
                 let join_handle = cfg.spawn(move || {
                     let status = run_case(thread_case.as_ref().as_ref(), &thread_context);
                     if !matches!(status, Ok(true)) {
-                        thread_sync_success.store(false, std::sync::atomic::Ordering::Relaxed);
+                        thread_failure_seen.store(true, std::sync::atomic::Ordering::Release);
                     }
                     let _ = thread_tx.send(thread_case.name().to_owned());
                     status
@@ -393,28 +402,74 @@ fn run(
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         // `ErrorKind::WouldBlock` means hitting the thread limit on some
                         // platforms, so run the test synchronously here instead.
-                        let case_success = run_case(case.as_ref().as_ref(), &context)?;
-                        if !case_success {
-                            sync_success.store(case_success, std::sync::atomic::Ordering::Relaxed);
+                        match run_case(case.as_ref().as_ref(), &context) {
+                            Ok(case_success) => {
+                                success &= case_success;
+                                if !case_success {
+                                    failure_seen.store(true, std::sync::atomic::Ordering::Release);
+                                    if opts.fail_fast {
+                                        stop_spawning = true;
+                                        remaining.clear();
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                failure_seen.store(true, std::sync::atomic::Ordering::Release);
+                                scheduler_error = Some(error);
+                                stop_spawning = true;
+                                remaining.clear();
+                            }
                         }
                     }
                     Err(e) => {
-                        return Err(e);
+                        scheduler_error = Some(e);
+                        stop_spawning = true;
+                        remaining.clear();
                     }
                 }
             }
 
-            let test_name = rx.recv().unwrap();
-            let running_test = running.remove(&test_name).unwrap();
-            let _ = running_test.join();
-            success &= sync_success.load(std::sync::atomic::Ordering::SeqCst);
-            if !success && opts.fail_fast {
+            if running.is_empty() {
                 break;
             }
+
+            let test_name = rx
+                .recv()
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            let running_test = running.remove(&test_name).unwrap();
+            match running_test.join() {
+                Ok(Ok(case_success)) => {
+                    success &= case_success;
+                    if !case_success && opts.fail_fast {
+                        stop_spawning = true;
+                        remaining.clear();
+                    }
+                }
+                Ok(Err(error)) => {
+                    if scheduler_error.is_none() {
+                        scheduler_error = Some(error);
+                    }
+                    stop_spawning = true;
+                    remaining.clear();
+                }
+                Err(_) => {
+                    if scheduler_error.is_none() {
+                        scheduler_error = Some(std::io::Error::other(format!(
+                            "test worker '{test_name}' panicked outside the case runner"
+                        )));
+                    }
+                    stop_spawning = true;
+                    remaining.clear();
+                }
+            }
+        }
+
+        if let Some(error) = scheduler_error {
+            return Err(error);
         }
     }
 
-    if !exclusive_cases.is_empty() {
+    if !exclusive_cases.is_empty() && !(opts.fail_fast && !success) {
         context.notifier().threaded(false);
         for case in exclusive_cases {
             success &= run_case(case.as_ref(), &context)?;
@@ -496,4 +551,213 @@ fn __rust_begin_short_backtrace<T, F: FnOnce() -> T>(f: F) -> T {
 
     // prevent this frame from being tail-call optimised away
     std::hint::black_box(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
+    use std::time::Duration;
+
+    use super::*;
+    use crate::{Source, TestKind};
+
+    struct SchedulerCase {
+        name: &'static str,
+        exclusive: bool,
+        runner: Arc<dyn Fn(&TestContext) -> Result<(), RunError> + Send + Sync>,
+    }
+
+    impl SchedulerCase {
+        fn concurrent(
+            name: &'static str,
+            runner: impl Fn(&TestContext) -> Result<(), RunError> + Send + Sync + 'static,
+        ) -> Self {
+            Self {
+                name,
+                exclusive: false,
+                runner: Arc::new(runner),
+            }
+        }
+
+        fn exclusive(
+            name: &'static str,
+            runner: impl Fn(&TestContext) -> Result<(), RunError> + Send + Sync + 'static,
+        ) -> Self {
+            Self {
+                name,
+                exclusive: true,
+                runner: Arc::new(runner),
+            }
+        }
+    }
+
+    impl Case for SchedulerCase {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn kind(&self) -> TestKind {
+            TestKind::Unknown
+        }
+
+        fn source(&self) -> Option<&Source> {
+            None
+        }
+
+        fn exclusive(&self, _state: &TestContext) -> bool {
+            self.exclusive
+        }
+
+        fn run(&self, context: &TestContext) -> Result<(), RunError> {
+            (self.runner)(context)
+        }
+    }
+
+    fn run_scheduler(cases: Vec<SchedulerCase>, fail_fast: bool) -> bool {
+        let mut args = vec!["scheduler-test", "--test-threads=2"];
+        if fail_fast {
+            args.push("--fail-fast");
+        }
+        Harness::new()
+            .with_args(args)
+            .unwrap()
+            .parse()
+            .unwrap()
+            .discover(cases)
+            .unwrap()
+            .run()
+            .unwrap()
+    }
+
+    #[test]
+    fn exclusive_lane_starts_only_after_concurrent_workers_finish() {
+        let barrier = Arc::new(Barrier::new(2));
+        let active = Arc::new(AtomicUsize::new(0));
+        let overlap = Arc::new(AtomicBool::new(false));
+        let exclusive_ran = Arc::new(AtomicBool::new(false));
+
+        let ordinary = |name| {
+            let barrier = barrier.clone();
+            let active = active.clone();
+            SchedulerCase::concurrent(name, move |_| {
+                active.fetch_add(1, Ordering::SeqCst);
+                barrier.wait();
+                std::thread::sleep(Duration::from_millis(25));
+                active.fetch_sub(1, Ordering::SeqCst);
+                Ok(())
+            })
+        };
+        let exclusive = {
+            let active = active.clone();
+            let overlap = overlap.clone();
+            let exclusive_ran = exclusive_ran.clone();
+            SchedulerCase::exclusive("z_exclusive", move |_| {
+                exclusive_ran.store(true, Ordering::SeqCst);
+                if active.load(Ordering::SeqCst) != 0 {
+                    overlap.store(true, Ordering::SeqCst);
+                }
+                Ok(())
+            })
+        };
+
+        assert!(run_scheduler(
+            vec![ordinary("a_ordinary"), ordinary("b_ordinary"), exclusive],
+            false,
+        ));
+        assert!(exclusive_ran.load(Ordering::SeqCst));
+        assert!(!overlap.load(Ordering::SeqCst));
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn fail_fast_drains_started_workers_and_skips_all_later_work() {
+        let barrier = Arc::new(Barrier::new(2));
+        let active = Arc::new(AtomicUsize::new(0));
+        let slow_finished = Arc::new(AtomicBool::new(false));
+        let unstarted_ran = Arc::new(AtomicBool::new(false));
+        let exclusive_ran = Arc::new(AtomicBool::new(false));
+        let overlap = Arc::new(AtomicBool::new(false));
+
+        let failing = {
+            let barrier = barrier.clone();
+            SchedulerCase::concurrent("a_failing", move |_| {
+                barrier.wait();
+                Err(RunError::fail("expected failure"))
+            })
+        };
+        let slow = {
+            let barrier = barrier.clone();
+            let active = active.clone();
+            let slow_finished = slow_finished.clone();
+            SchedulerCase::concurrent("b_slow", move |_| {
+                active.fetch_add(1, Ordering::SeqCst);
+                barrier.wait();
+                std::thread::sleep(Duration::from_millis(250));
+                active.fetch_sub(1, Ordering::SeqCst);
+                slow_finished.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+        };
+        let unstarted = {
+            let unstarted_ran = unstarted_ran.clone();
+            SchedulerCase::concurrent("c_unstarted", move |_| {
+                unstarted_ran.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+        };
+        let exclusive = {
+            let active = active.clone();
+            let exclusive_ran = exclusive_ran.clone();
+            let overlap = overlap.clone();
+            SchedulerCase::exclusive("z_exclusive", move |_| {
+                exclusive_ran.store(true, Ordering::SeqCst);
+                if active.load(Ordering::SeqCst) != 0 {
+                    overlap.store(true, Ordering::SeqCst);
+                }
+                Ok(())
+            })
+        };
+
+        assert!(!run_scheduler(
+            vec![failing, slow, unstarted, exclusive],
+            true,
+        ));
+        assert!(slow_finished.load(Ordering::SeqCst));
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert!(!unstarted_ran.load(Ordering::SeqCst));
+        assert!(!exclusive_ran.load(Ordering::SeqCst));
+        assert!(!overlap.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn non_fail_fast_still_runs_remaining_and_exclusive_cases() {
+        let remaining_ran = Arc::new(AtomicBool::new(false));
+        let exclusive_ran = Arc::new(AtomicBool::new(false));
+
+        let failing = SchedulerCase::concurrent("a_failing", |_| {
+            Err(RunError::fail("expected failure"))
+        });
+        let remaining = {
+            let remaining_ran = remaining_ran.clone();
+            SchedulerCase::concurrent("b_remaining", move |_| {
+                remaining_ran.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+        };
+        let exclusive = {
+            let exclusive_ran = exclusive_ran.clone();
+            SchedulerCase::exclusive("z_exclusive", move |_| {
+                exclusive_ran.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+        };
+
+        assert!(!run_scheduler(
+            vec![failing, remaining, exclusive],
+            false,
+        ));
+        assert!(remaining_ran.load(Ordering::SeqCst));
+        assert!(exclusive_ran.load(Ordering::SeqCst));
+    }
 }

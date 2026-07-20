@@ -3,6 +3,7 @@
 id = "cli.examples_harbor"
 name = "Harbor logistics simulator written in Rue"
 description = "exercise std.json, routing, simulation, replay, reporting, deterministic selftests, and generated scaling workloads"
+contract = "heavyweight"
 
 [[case]]
 name = "harbor_validates_and_simulates_scenario"
@@ -27,7 +28,6 @@ files = [{ path = "scenario.json", source = """
 }
 """ }]
 program_args = ["simulate", "scenario.json"]
-timeout_ms = 30000
 exit_code = 0
 stdout_contains = ["locations=2", "routes=1", "delivered=40", "unmet=0", "route_mismatches=0", "balance_mismatches=0", "replay_mismatches=0", "json_valid=true"]
 
@@ -37,7 +37,6 @@ description = "selftest crosses route oracles, scenario round trips, simulation 
 source_path = "examples/harbor/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 program_args = ["selftest"]
-timeout_ms = 30000
 exit_code = 0
 stdout_contains = ["selftest checks=", "failures=0", "scenarios=", "simulations=", "route_pairs=", "valid=true"]
 
@@ -47,7 +46,6 @@ description = "the 1x tier generates and simulates a connected logistics network
 source_path = "examples/harbor/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 program_args = ["stress1"]
-timeout_ms = 30000
 exit_code = 0
 stdout_contains = ["stress locations=6", "route_pairs=30", "diagnostics=0", "route_mismatches=0", "conservation_mismatches=0", "replay_mismatches=0", "deterministic=true", "valid=true"]
 
@@ -57,6 +55,5 @@ description = "help documents normal, export, audit, selftest, and scaling modes
 source_path = "examples/harbor/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 program_args = ["help"]
-timeout_ms = 30000
 exit_code = 0
 stdout_contains = ["usage:", "simulate", "routes", "scenario", "timeline", "selftest", "stressN"]
