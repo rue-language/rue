@@ -138,6 +138,48 @@ fn const_classification_has_one_tagged_authority_and_no_retired_maps() {
 }
 
 #[test]
+fn const_resolution_uses_only_shell_bound_candidate_locators() {
+    let declaration_index = include_str!("sema/declaration_index.rs")
+        .split("#[cfg(test)]")
+        .next()
+        .unwrap();
+    let resolver = include_str!("sema/declarations.rs");
+    let shell_boundary = include_str!("sema/binding_manifest.rs");
+
+    for retired_index_authority in [
+        ["const_", "candidates: Vec<InstRef>"].concat(),
+        ["const_candidates_by_", "file_name: HashMap"].concat(),
+        ["fn all_const_", "candidates("].concat(),
+    ] {
+        assert!(
+            !declaration_index.contains(&retired_index_authority),
+            "RIR declaration index regained const lookup authority: {retired_index_authority}"
+        );
+    }
+    for retired_resolver_read in [
+        ["declaration_index.", "const_candidates("].concat(),
+        ["declaration_index.", "all_const_candidates("].concat(),
+    ] {
+        assert!(
+            !resolver.contains(&retired_resolver_read),
+            "const resolver bypassed the shell-bound candidate set: {retired_resolver_read}"
+        );
+    }
+    assert_eq!(
+        shell_boundary
+            .matches("self.sema.bound_const_candidates =")
+            .count(),
+        1,
+        "declaration resolution must install the exact shell-bound const set once"
+    );
+    assert_eq!(
+        resolver.matches(".bound_const_candidates").count(),
+        4,
+        "all const occurrence traversal and point lookup must use the bound set"
+    );
+}
+
+#[test]
 fn canonical_type_surface_has_one_checked_handle_and_private_storage_ids() {
     let types = include_str!("types.rs");
     let pool = include_str!("intern_pool.rs");

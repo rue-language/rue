@@ -257,6 +257,10 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     pub(crate) interner: &'a ThreadedRodeo,
     /// Request-local declaration candidates for this exact RIR arena.
     declaration_index: declaration_index::RirDeclarationIndex,
+    /// Const locators admitted by the declaration-shell boundary. Canonical
+    /// epochs populate this only from query-owned shells; it is installed
+    /// immediately before declaration resolution begins.
+    bound_const_candidates: Option<declaration_index::BoundConstCandidateIndex>,
     /// Raw RIR declaration discovery is confined to synthetic component-test
     /// epochs. Canonical compiler epochs must import query-owned shells.
     synthetic_declaration_discovery: bool,
@@ -461,6 +465,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             rir,
             interner,
             declaration_index,
+            bound_const_candidates,
             synthetic_declaration_discovery,
             anonymous_methods,
             named_callable_methods_by_symbol,
@@ -532,6 +537,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             rir,
             interner,
             declaration_index,
+            bound_const_candidates,
             synthetic_declaration_discovery,
             anonymous_methods,
             named_callable_methods_by_symbol,
@@ -976,6 +982,22 @@ impl<'a> Sema<'a> {
                 .expect("Rue cannot choose a default sema target on this unsupported host"),
         );
         sema.synthetic_declaration_discovery = true;
+        let synthetic_const_candidates = sema
+            .declaration_index
+            .shell_declarations()
+            .iter()
+            .filter_map(|candidate| {
+                matches!(
+                    sema.rir.get(candidate.declaration).data,
+                    rue_rir::InstData::ConstDecl { .. }
+                )
+                .then_some((candidate.source_order, candidate.declaration))
+            })
+            .collect::<Vec<_>>();
+        sema.bound_const_candidates = Some(declaration_index::BoundConstCandidateIndex::new(
+            sema.rir,
+            synthetic_const_candidates,
+        ));
         sema
     }
 
@@ -999,6 +1021,7 @@ impl<'a> Sema<'a> {
             rir,
             interner,
             declaration_index: declaration_index::RirDeclarationIndex::new(rir),
+            bound_const_candidates: None,
             synthetic_declaration_discovery: false,
             anonymous_methods: HashMap::new(),
             named_callable_methods_by_symbol: HashMap::new(),
