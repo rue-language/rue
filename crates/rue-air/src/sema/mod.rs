@@ -60,6 +60,7 @@ pub use binding_manifest::{
 pub use context::ConstValue;
 pub use declaration_index::RirDeclarationIndexWork;
 pub use inference_ctx::InferenceContext;
+use info::ConstResolution;
 pub use info::{AnonMethodSig, AnonMethodType, ConstInfo, FunctionInfo, MethodInfo};
 pub use known_symbols::KnownSymbols;
 pub use metadata::SemaMetadata;
@@ -123,8 +124,7 @@ pub struct DeclarationNamespace {
     enums_by_file_name: HashMap<(FileId, Spur), EnumId>,
     methods: HashMap<(StructId, Spur), MethodInfo>,
     named_method_declarations: HashMap<(StructId, Spur), rue_rir::InstRef>,
-    constants_by_file_name: HashMap<(FileId, Spur), ConstInfo>,
-    module_bindings: HashMap<(FileId, Spur), ConstInfo>,
+    const_resolutions: HashMap<(FileId, Spur), ConstResolution>,
 }
 
 impl DeclarationNamespace {
@@ -139,9 +139,32 @@ impl DeclarationNamespace {
             enums_by_file_name: HashMap::new(),
             methods: HashMap::new(),
             named_method_declarations: HashMap::new(),
-            constants_by_file_name: HashMap::new(),
-            module_bindings: HashMap::new(),
+            const_resolutions: HashMap::new(),
         }
+    }
+
+    fn value_const(&self, key: &(FileId, Spur)) -> Option<&ConstInfo> {
+        self.const_resolutions
+            .get(key)
+            .and_then(ConstResolution::value)
+    }
+
+    fn module_binding(&self, key: &(FileId, Spur)) -> Option<&ConstInfo> {
+        self.const_resolutions
+            .get(key)
+            .and_then(ConstResolution::module_binding)
+    }
+
+    fn value_consts(&self) -> impl Iterator<Item = (&(FileId, Spur), &ConstInfo)> {
+        self.const_resolutions
+            .iter()
+            .filter_map(|(key, value)| value.value().map(|info| (key, info)))
+    }
+
+    fn module_binding_consts(&self) -> impl Iterator<Item = (&(FileId, Spur), &ConstInfo)> {
+        self.const_resolutions
+            .iter()
+            .filter_map(|(key, value)| value.module_binding().map(|info| (key, info)))
     }
 }
 
@@ -875,8 +898,8 @@ impl BodySema<'_> {
             ^ fingerprint(6, self.enums_by_file_name.iter())
             ^ fingerprint(7, self.methods.keys())
             ^ fingerprint(8, self.named_method_declarations.iter())
-            ^ fingerprint(9, self.constants_by_file_name.keys())
-            ^ fingerprint(10, self.module_bindings.keys());
+            ^ fingerprint(9, self.value_consts().map(|(key, _)| key))
+            ^ fingerprint(10, self.module_binding_consts().map(|(key, _)| key));
 
         NamespaceBoundarySnapshot {
             source_counts: [
@@ -889,8 +912,8 @@ impl BodySema<'_> {
                 self.enums_by_file_name.len(),
                 self.methods.len(),
                 self.named_method_declarations.len(),
-                self.constants_by_file_name.len(),
-                self.module_bindings.len(),
+                self.value_consts().count(),
+                self.module_binding_consts().count(),
             ],
             source_fingerprint,
             generated_structs: self.generated_structs.len(),

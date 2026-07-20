@@ -1345,7 +1345,7 @@ impl<'a> BodySema<'a> {
         // @import("math")`). Module bindings are per-file scoped (RUE-113),
         // so the lookup is keyed by the reference's own file and takes
         // precedence over file-local value constants.
-        if let Some(binding) = self.module_bindings.get(&(span.file_id, name)).cloned() {
+        if let Some(binding) = self.module_binding(&(span.file_id, name)).cloned() {
             self.record_body_named_dependency(
                 super::super::NamedConstDependencyTargetEvent::ModuleBinding {
                     file: span.file_id.index(),
@@ -1363,7 +1363,7 @@ impl<'a> BodySema<'a> {
 
         // Check if it's a value constant (e.g., `const VALUE: i32 = -42;`).
         // Module-typed constants never appear here: module bindings AND
-        // aliases (`const m2 = std.math;`) live in `module_bindings`,
+        // aliases (`const m2 = std.math;`) are tagged module bindings,
         // checked above. The value was evaluated once during declaration
         // gathering (RUE-171); materialize it directly — the initializer is
         // never re-analyzed at use sites.

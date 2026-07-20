@@ -164,3 +164,53 @@ pub struct ConstInfo {
     /// Span of the const declaration
     pub span: Span,
 }
+
+/// The authoritative post-evaluation classification of a source `const`.
+/// Keeping the variants in one table prevents value and module namespaces
+/// from drifting or accepting the same candidate twice.
+#[derive(Debug, Clone)]
+pub(crate) enum ConstResolution {
+    Value(ConstInfo),
+    ModuleBinding(ConstInfo),
+}
+
+impl ConstResolution {
+    pub(crate) fn value(&self) -> Option<&ConstInfo> {
+        match self {
+            Self::Value(info) => Some(info),
+            Self::ModuleBinding(_) => None,
+        }
+    }
+
+    pub(crate) fn module_binding(&self) -> Option<&ConstInfo> {
+        match self {
+            Self::Value(_) => None,
+            Self::ModuleBinding(info) => Some(info),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info() -> ConstInfo {
+        ConstInfo {
+            is_pub: false,
+            ty: Type::I32,
+            value: crate::sema::ConstValue::Integer(1),
+            span: Span::new(0, 1),
+        }
+    }
+
+    #[test]
+    fn const_resolution_accessors_keep_variants_disjoint() {
+        let value = ConstResolution::Value(info());
+        assert!(value.value().is_some());
+        assert!(value.module_binding().is_none());
+
+        let module_binding = ConstResolution::ModuleBinding(info());
+        assert!(module_binding.value().is_none());
+        assert!(module_binding.module_binding().is_some());
+    }
+}

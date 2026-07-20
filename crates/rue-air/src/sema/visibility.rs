@@ -144,15 +144,13 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         let module_ty = match inst.data {
             InstData::VarRef { name, .. } => {
                 ctx.locals.get(&name).map(|local| local.ty).or_else(|| {
-                    self.module_bindings
-                        .get(&(inst.span.file_id, name))
+                    self.module_binding(&(inst.span.file_id, name))
                         .map(|binding| binding.ty)
                 })
             }
             InstData::FieldGet { base, field } => {
                 let parent_file = self.module_file_for_ref(base, ctx)?;
-                self.module_bindings
-                    .get(&(parent_file, field))
+                self.module_binding(&(parent_file, field))
                     .map(|binding| binding.ty)
             }
             _ => None,
