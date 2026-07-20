@@ -161,7 +161,33 @@ pub struct TraceabilityReport {
 /// you to remove it (see [`TraceabilityReport::stale_known_uncovered`]). This
 /// mirrors the `known_bug` xfail convention: an exemption that starts passing
 /// must be retired so it converts back into an enforced check.
-pub const KNOWN_UNCOVERED_NORMATIVE: &[(&str, &str)] = &[];
+pub const KNOWN_UNCOVERED_NORMATIVE: &[(&str, &str)] = &[
+    // ADR-0064 P4 (RUE-1058) foreign-boundary rules. These are normative but not
+    // coverable by the standalone spec corpus: the abort proof needs a C caller
+    // linked to a Rue export (a harness only the preview-gated `c_ffi` CLI suite
+    // provides), and the other two describe undefined / programmer-responsibility
+    // behavior that is not positively testable.
+    (
+        "9.3:2",
+        "Abort-at-boundary for a trapping `pub extern \"C\" fn` export: verified by \
+         execution in the preview-gated c_ffi CLI suite \
+         (crates/rue-cli-tests, `*_trapping_export_aborts_at_boundary`), which links \
+         a C caller to a Rue export — a setup the standalone spec corpus cannot build.",
+    ),
+    (
+        "9.3:3",
+        "Reverse-direction undefined behavior (a foreign exception or `longjmp` \
+         crossing a Rue frame): undefined behavior is not positively testable; it is \
+         documented as the mirror of the abort-at-boundary rule (9.3:2).",
+    ),
+    (
+        "9.3:4",
+        "Ownership/linear-move across the C boundary: a by-value linear or \
+         destructor-bearing crossing is a hard error (not FFI-safe), so the \
+         move-without-destructor rule governs `@raw`/`@raw_mut` pointer escapes under \
+         ADR-0028 programmer responsibility, which is not positively testable.",
+    ),
+];
 
 impl TraceabilityReport {
     /// Whether `id` is on the [`KNOWN_UNCOVERED_NORMATIVE`] allowlist.

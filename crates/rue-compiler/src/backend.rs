@@ -18,6 +18,23 @@ pub(crate) fn collect_foreign_symbols(rir: &rue_rir::Rir, interner: &ThreadedRod
         .collect()
 }
 
+/// Collect the unmangled C symbol names of every `pub extern "C" fn` export in
+/// the lowered program (ADR-0064 P4). Each is the raw name under which a C-ABI
+/// entry thunk exposes the exported Rue function to separately compiled C
+/// callers; the name is the export's source identifier (no mangling).
+pub(crate) fn collect_export_symbols(rir: &rue_rir::Rir, interner: &ThreadedRodeo) -> Vec<String> {
+    rir.iter()
+        .filter_map(|(_, inst)| match &inst.data {
+            rue_rir::InstData::FnDecl {
+                is_c_export: true,
+                name,
+                ..
+            } => Some(interner.resolve(name).to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Project live callable legacy names to their machine symbols, plus an
 /// identity mapping for every `extern "C"` foreign declaration.
 ///
@@ -62,6 +79,9 @@ pub(crate) fn compile_backend(
     // undefined symbol a call site references by its raw (unmangled) name and
     // that the linker resolves from a supplied static archive.
     foreign_symbols: &[String],
+    // Unmangled C names of `pub extern "C" fn` exports (ADR-0064 P4). Each gets
+    // an additional C-ABI entry thunk object exposing that name globally.
+    export_symbols: &[String],
 ) -> MultiErrorResult<CompileOutput> {
     // Check for main function
     let _main_fn = functions
@@ -97,7 +117,7 @@ pub(crate) fn compile_backend(
     }
 
     // Generate object files based on target architecture
-    let object_files = match options.target.arch() {
+    let mut object_files = match options.target.arch() {
         Arch::X86_64 => generate_x86_64_objects(
             functions,
             type_pool,
@@ -115,6 +135,15 @@ pub(crate) fn compile_backend(
             foreign_symbols,
         )?,
     };
+
+    // Emit a C-ABI entry thunk object for every `pub extern "C" fn` export
+    // (ADR-0064 P4). The native body was already generated above under its
+    // mangled symbol; the thunk adds the unmangled global C entry point.
+    object_files.extend(generate_export_thunk_objects(
+        functions,
+        options,
+        export_symbols,
+    ));
 
     // Link to executable
     match &options.linker {
@@ -279,6 +308,80 @@ fn generate_aarch64_objects(
         .collect();
 
     collect_codegen_results(results, functions.len())
+}
+
+/// Emit the C-ABI entry thunk objects for every `pub extern "C" fn` export
+/// (ADR-0064 P4).
+///
+/// Each exported function was already code-generated as an ordinary native body
+/// under its mangled `machine_name`; this adds one extra object per export whose
+/// single global symbol is the unmangled C name (`legacy_name`, the source
+/// identifier) and whose body receives arguments per the target-C convention,
+/// re-extends narrow scalars, and forwards to the native body. The signature was
+/// gated to register-resident scalars/pointers in semantic analysis
+/// (`ExportSignatureUnsupported`), so the entry block's parameters are exactly
+/// the argument-register scalars the thunk marshals.
+fn generate_export_thunk_objects(
+    functions: &[FunctionWithCfg],
+    options: &CompileOptions,
+    export_symbols: &[String],
+) -> Vec<Vec<u8>> {
+    if export_symbols.is_empty() {
+        return Vec::new();
+    }
+    let export_set: std::collections::BTreeSet<&str> =
+        export_symbols.iter().map(String::as_str).collect();
+    let mut objects = Vec::new();
+    for function in functions {
+        if !export_set.contains(function.legacy_name.as_str()) {
+            continue;
+        }
+        let cfg = &function.cfg;
+        // A scalar parameter is materialized as a `Param { index }` instruction
+        // carrying its type; parameter `index` arrives in the matching argument
+        // register. Default every slot to a register-width scalar (no extension)
+        // so an *unused* parameter — which the body never reads and therefore
+        // needs no re-extension — is harmless. Semantic analysis restricted the
+        // signature to register-resident scalars, so `num_params` slots map 1:1
+        // to argument registers.
+        let mut param_types: Vec<rue_air::Type> =
+            vec![rue_air::Type::I64; cfg.num_params() as usize];
+        for block in cfg.blocks() {
+            for &value in &block.insts {
+                let inst = cfg.get_inst(value);
+                if let rue_cfg::CfgInstData::Param { index } = inst.data {
+                    if let Some(slot) = param_types.get_mut(index as usize) {
+                        *slot = inst.ty;
+                    }
+                }
+            }
+        }
+        let machine_code = rue_codegen::export_thunk::generate_export_thunk(
+            options.target,
+            &function.machine_name,
+            &param_types,
+        );
+        let mut obj_builder = ObjectBuilder::new(options.target, &function.legacy_name)
+            .code(machine_code.code)
+            .strings(machine_code.strings);
+        for reloc in machine_code.relocations {
+            let rel_type = match reloc.kind {
+                RelocationKind::X86Plt32 => RelocationType::Plt32,
+                RelocationKind::Aarch64Call26 => RelocationType::Call26,
+                other => {
+                    unreachable!("export thunk emitted unexpected relocation kind {other:?}")
+                }
+            };
+            obj_builder = obj_builder.relocation(CodeRelocation {
+                offset: reloc.offset,
+                symbol: reloc.symbol,
+                rel_type,
+                addend: reloc.addend,
+            });
+        }
+        objects.push(obj_builder.build());
+    }
+    objects
 }
 
 /// Collect codegen results, propagating errors and logging stats.
@@ -904,6 +1007,7 @@ drop fn StrBuf(self) { }
             semantic.strings(),
             interner,
             &options,
+            &[],
             &[],
             &[],
         )

@@ -680,11 +680,16 @@ impl<'a> DeclarationShells<'a> {
                         self_mode,
                         self_is_mut,
                         directives,
+                        // The Rue-to-C export marker (ADR-0064 P4) is a property
+                        // of the current RIR, so it is read here rather than
+                        // threaded through the durable declaration shell.
+                        is_c_export,
                         ..
                     } = &self.sema.rir.get(pending.declaration).data
                     else {
                         return Err(DeclarationInstallFailure::KindMismatch);
                     };
+                    let is_c_export = *is_c_export;
                     let type_name = self.sema.interner.get_or_intern("type");
                     let rir_parameters = self.sema.rir.params(params);
                     if parameters
@@ -780,6 +785,7 @@ impl<'a> DeclarationShells<'a> {
                                 is_pub: pending.shell.is_public,
                                 is_unchecked: pending.shell.is_unchecked,
                                 is_extern: pending.shell.is_extern,
+                                is_c_export,
                                 allow_unused_function,
                                 allow_unused_variable,
                                 allow_unreachable_code,

@@ -40,6 +40,12 @@ pub struct FunctionInfo {
     /// a `checked` block; codegen emits an undefined linker symbol rather than a
     /// definition.
     pub is_extern: bool,
+    /// Whether this is a Rue-to-C export (`pub extern "C" fn`, ADR-0064 P4): an
+    /// ordinary Rue function body (analyzed, with a CFG, code-generated) that is
+    /// *also* exposed to C callers under its unmangled source name via a C-ABI
+    /// callee thunk. Unlike `is_extern`, an export is a reachability root and
+    /// requires codegen to emit its entry thunk.
+    pub is_c_export: bool,
     /// Whether `@allow(unused_function)` was applied to this function.
     pub allow_unused_function: bool,
     /// Whether `@allow(unused_variable)` was applied to this function.
