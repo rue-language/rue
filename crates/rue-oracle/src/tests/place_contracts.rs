@@ -49,7 +49,7 @@ fn flattened_parameter_padding_is_a_semantic_gap_but_oob_is_a_contract_failure()
 }
 
 #[test]
-fn core_str_length_is_modeled_but_inout_forwarding_remains_a_program_model_gap() {
+fn core_str_length_is_modeled_and_inout_forwarding_threads_through_nested_calls() {
     let text = run_source_with_preview_features(
         r#"fn main() -> i32 {
             let s: str = "hi";
@@ -68,15 +68,22 @@ fn core_str_length_is_modeled_but_inout_forwarding_remains_a_program_model_gap()
         }
     );
 
-    let forwarding = expect_unsupported(
+    // Forwarding a writable `inout` parameter as a nested call's `inout`
+    // argument is now modeled (RUE-1010): `f` forwards its own `inout v` to
+    // `g`, whose mutation threads back through both call boundaries. This is the
+    // container `self`-chain (`push` -> `self.reserve()`) that previously
+    // reached the `InoutParameterForwarding` gap.
+    let forwarding = run_source_with_preview_features(
         "struct D { x: i32 }
         fn g(inout v: D) -> i32 { v.x = v.x + 1; v.x }
         fn f(inout v: D) -> i32 { g(inout v) }
         fn main() -> i32 { let mut d = D { x: 7 }; f(inout d) }",
-    );
+        &PreviewFeatures::new(),
+    )
+    .expect("inout parameter forwarding must be modeled");
     assert_eq!(
-        forwarding.kind(),
-        UnsupportedKind::SemanticGap(SemanticGapKind::InoutParameterForwarding)
+        forwarding.exit_code, 8,
+        "d.x incremented 7 -> 8 threads back"
     );
 }
 

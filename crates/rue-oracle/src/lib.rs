@@ -3113,13 +3113,22 @@ impl<'a> Interp<'a> {
             CfgInstData::PlaceRead { place } if self.is_inout_writeback_place(cfg, v, place) => {
                 Ok(WritebackPlace::Stored(place))
             }
-            other @ CfgInstData::Param { index }
+            // Forwarding a writable `inout` parameter as a nested call's `inout`
+            // argument (the container `self`-chain: `push` -> `self.reserve()`).
+            // The caller place is the parameter slot itself; the post-call
+            // copy-out writes the callee's final value back into it, and this
+            // frame in turn copies its own parameter back to *its* caller on
+            // return, so the mutation threads all the way up the chain.
+            // `place_write` routes a `Param` base through the promoted heap
+            // allocation when the slot's address was taken, matching the `Param`
+            // read path, so an address-taken forwarded parameter stays coherent.
+            CfgInstData::Param { index }
                 if *index < cfg.num_params() && cfg.is_param_writable(*index) =>
             {
-                Err(unsupported(
-                    UnsupportedKind::SemanticGap(SemanticGapKind::InoutParameterForwarding),
-                    format!("inout argument is not an lvalue: {other:?}"),
-                ))
+                Ok(WritebackPlace::Simple {
+                    base: PlaceBase::Param(*index),
+                    base_type: cfg.get_inst(v).ty,
+                })
             }
             other => Err(unsupported(
                 UnsupportedKind::ContractViolation(ContractViolationKind::InoutArgumentNotLvalue),

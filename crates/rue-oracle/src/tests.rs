@@ -796,6 +796,42 @@ fn inout_struct_field() {
 }
 
 #[test]
+fn inout_param_forwarded_to_nested_inout_call() {
+    // Forwarding a writable `inout` parameter as a *nested* call's `inout`
+    // argument. This is the container `self`-chain — `ArrayBuf::push` calls
+    // `self.reserve()`, forwarding its own `inout self` — and before RUE-1010 it
+    // was the `InoutParameterForwarding` model gap. The mutation must thread
+    // through both call boundaries back to the original caller.
+    let src = "fn add(inout x: i32, k: i32) { x = x + k; }
+    fn bump(inout x: i32) { add(inout x, 1); }
+    fn main() -> i32 {
+        let mut n = 40;
+        bump(inout n);
+        bump(inout n);
+        n
+    }";
+    assert_eq!(exit(src), 42);
+}
+
+#[test]
+fn inout_aggregate_param_forwarded_preserves_all_fields() {
+    // The forwarded `inout` value is a whole aggregate mutated through a nested
+    // `inout` call: the copy-back must rewrite the entire header, so an
+    // untouched sibling field survives the round trip (the `{buf, len, cap}`
+    // header-forwarding shape the container mutators rely on).
+    let src = "struct P { x: i32, y: i32 }
+    fn set_x(inout p: P, v: i32) { p.x = v; }
+    fn relabel(inout p: P) { set_x(inout p, 99); }
+    fn main() -> i32 {
+        let mut p = P { x: 1, y: 7 };
+        relabel(inout p);
+        p.x + p.y
+    }";
+    // p.x becomes 99, p.y stays 7 -> 106
+    assert_eq!(exit(src), 106);
+}
+
+#[test]
 fn destructor_runs_at_scope_exit() {
     let src = "struct D { v: i32 }
     drop fn D(self) { @dbg(self.v); }

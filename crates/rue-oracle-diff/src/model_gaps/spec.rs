@@ -100,43 +100,43 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "expressions.intrinsics",
         "dbg_string_borrows_not_consumed",
-        semantic(SemanticGapKind::InoutParameterForwarding),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
         "expressions.intrinsics",
         "dbg_string_dropped_exactly_once",
-        semantic(SemanticGapKind::InoutParameterForwarding),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
         "items.general",
         "fn_builtin_method_name_allowed",
-        semantic(SemanticGapKind::InoutParameterForwarding),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
         "types.destructors",
         "codegen_nontrivial_drop_call",
-        semantic(SemanticGapKind::InoutParameterForwarding),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
         "types.destructors",
         "struct_with_destructor_field",
-        semantic(SemanticGapKind::InoutParameterForwarding),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
         "types.destructors",
         "struct_with_string_fields_dropped",
-        semantic(SemanticGapKind::InoutParameterForwarding),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
         "types.destructors",
         "type_with_destructor",
-        semantic(SemanticGapKind::InoutParameterForwarding),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
@@ -148,7 +148,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "types.destructors",
         "type_with_destructor_literal_promoted",
-        semantic(SemanticGapKind::InoutParameterForwarding),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
@@ -166,7 +166,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "types.mutable_strings",
         "string_building_message",
-        semantic(SemanticGapKind::InoutParameterForwarding),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
@@ -202,7 +202,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "types.mutable_strings",
         "string_byte_semantics",
-        semantic(SemanticGapKind::InoutParameterForwarding),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
@@ -226,7 +226,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "types.mutable_strings",
         "string_destructor_heap",
-        semantic(SemanticGapKind::InoutParameterForwarding),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
@@ -238,7 +238,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "types.mutable_strings",
         "string_equality_after_mutation",
-        semantic(SemanticGapKind::InoutParameterForwarding),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
@@ -268,19 +268,19 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "types.mutable_strings",
         "string_push_byte",
-        semantic(SemanticGapKind::InoutParameterForwarding),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
         "types.mutable_strings",
         "string_push_str_basic",
-        semantic(SemanticGapKind::InoutParameterForwarding),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
         "types.mutable_strings",
         "string_push_str_multiple",
-        semantic(SemanticGapKind::InoutParameterForwarding),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
@@ -551,27 +551,9 @@ const ENTRIES: &[Entry] = &[
         &[],
     ),
     Entry::new(
-        "items.functions",
-        "inout_array_forward",
-        semantic(SemanticGapKind::InoutParameterForwarding),
-        &[],
-    ),
-    Entry::new(
-        "items.functions",
-        "inout_forward_struct",
-        semantic(SemanticGapKind::InoutParameterForwarding),
-        &[],
-    ),
-    Entry::new(
         "items.impl-blocks",
         "method_and_assoc_string_view_coercions",
         semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "items.impl-blocks",
-        "mut_self_allows_inout_method_call",
-        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     // ADR-0052 phase 7 (RUE-978): the unaligned-access round trip allocates
@@ -633,19 +615,19 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "types.mutable_strings",
         "string_clear",
-        semantic(SemanticGapKind::InoutParameterForwarding),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
         "types.mutable_strings",
         "string_growth_on_append",
-        semantic(SemanticGapKind::InoutParameterForwarding),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
         "types.mutable_strings",
         "string_heap_promotion",
-        semantic(SemanticGapKind::InoutParameterForwarding),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
@@ -675,7 +657,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "types.mutable_strings",
         "string_reserve",
-        semantic(SemanticGapKind::InoutParameterForwarding),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
@@ -706,12 +688,6 @@ const ENTRIES: &[Entry] = &[
         "types.str_type",
         "borrow_str_view_of_strbuf_reads_values",
         semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "types.str_type",
-        "inout_str_view_can_be_forwarded",
-        semantic(SemanticGapKind::InoutParameterForwarding),
         &[],
     ),
     Entry::new(
