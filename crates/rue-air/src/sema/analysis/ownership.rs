@@ -363,51 +363,65 @@ impl<'a> BodySema<'a> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<(AirRef, AirRef, Vec<AirRef>)> {
         let struct_id = ty.as_struct().expect("StrBuf is a struct");
-        let (value, mut prefix) = self.peel_projected_rvalue_scope(air, value);
-        let (base, base_type, projections) = match air.get(value).data {
-            AirInstData::Load { slot } => (AirPlaceBase::Local(slot), ty, Vec::new()),
-            AirInstData::Param { index } => (AirPlaceBase::Param(index), ty, Vec::new()),
-            AirInstData::PlaceRead { place } => {
-                let place = air.get_place(place);
-                (
-                    place.base,
-                    place.base_type,
-                    air.get_place_projections(place).to_vec(),
-                )
-            }
-            _ => {
-                let slot = ctx.next_slot;
-                ctx.next_slot += self.require_layout_slots(ty, span)?;
-                let live = air.add_inst(AirInst {
-                    data: AirInstData::StorageLive { slot },
-                    ty,
-                    span,
-                });
-                let alloc = air.add_inst(AirInst {
-                    data: AirInstData::Alloc { slot, init: value },
-                    ty: Type::UNIT,
-                    span,
-                });
-                prefix.extend([live, alloc]);
-                (AirPlaceBase::Local(slot), ty, Vec::new())
-            }
-        };
-        let fields = self.type_pool.struct_def(struct_id).fields;
-        let mut reads = Vec::with_capacity(2);
-        for field_index in 0..2u32 {
-            let mut field_projections = projections.clone();
-            field_projections.push(AirProjection::Field {
-                struct_id,
-                field_index,
-            });
-            let place = air.make_place(base, base_type, field_projections)?;
-            reads.push(air.add_inst(AirInst {
-                data: AirInstData::PlaceRead { place },
-                ty: fields[field_index as usize].ty,
+        // Read the `{ptr, len}` prefix through the trusted source accessors
+        // (`as_ptr()`, `len()`) rather than by projecting fields 0 and 1, so the
+        // compiler never depends on StrBuf's internal field layout (RUE-1066).
+        // Both accessors are `borrow self`, so one materialized borrow of the
+        // owner backs both calls.
+        let ptr_method = self.interner.get_or_intern("as_ptr");
+        let len_method = self.interner.get_or_intern("len");
+        let Some(ptr_ty) = self
+            .method_info((struct_id, ptr_method))
+            .map(|m| m.return_type)
+        else {
+            return Err(CompileError::new(
+                ErrorKind::InternalError(
+                    "trusted std StrBuf is missing its source `as_ptr` method".to_string(),
+                ),
                 span,
-            }));
-        }
-        Ok((reads[0], reads[1], prefix))
+            ));
+        };
+        let Some(len_ty) = self
+            .method_info((struct_id, len_method))
+            .map(|m| m.return_type)
+        else {
+            return Err(CompileError::new(
+                ErrorKind::InternalError(
+                    "trusted std StrBuf is missing its source `len` method".to_string(),
+                ),
+                span,
+            ));
+        };
+        ctx.referenced_methods.insert((struct_id, ptr_method));
+        ctx.referenced_methods.insert((struct_id, len_method));
+        let (receiver, prefix) = self.materialize_borrow_argument(air, value, ty, span, ctx)?;
+        let ptr_call_name = self
+            .interner
+            .get_or_intern(&self.method_symbol(struct_id, "as_ptr", true));
+        let len_call_name = self
+            .interner
+            .get_or_intern(&self.method_symbol(struct_id, "len", true));
+        let ptr_ref = air.add_call(
+            None,
+            ptr_call_name,
+            &[AirCallArg {
+                value: receiver,
+                mode: AirArgMode::Borrow,
+            }],
+            ptr_ty,
+            span,
+        )?;
+        let len_ref = air.add_call(
+            None,
+            len_call_name,
+            &[AirCallArg {
+                value: receiver,
+                mode: AirArgMode::Borrow,
+            }],
+            len_ty,
+            span,
+        )?;
+        Ok((ptr_ref, len_ref, prefix))
     }
 
     /// Peel the synthetic scope produced by [`Self::emit_projected_rvalue_read`].

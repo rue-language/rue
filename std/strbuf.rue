@@ -114,6 +114,13 @@ pub struct StrBuf {
     fn capacity(borrow self) -> u64 { self.cap }
     fn is_empty(borrow self) -> bool { self.len == 0 }
 
+    // The address of the packed byte buffer, for the trusted text lowering
+    // (`@dbg`/`@panic`/`print`/str-view coercion). Returning the pointer through
+    // a source accessor is what lets the compiler read a StrBuf's `{ptr, len}`
+    // without projecting its fields by layout (RUE-1066) — so StrBuf's internal
+    // representation stays a private implementation detail of this source type.
+    fn as_ptr(borrow self) -> ptr mut u8 { self.buf }
+
     fn initial_capacity(required: u64) -> u64 {
         if required < 16 { 16 } else { required }
     }
