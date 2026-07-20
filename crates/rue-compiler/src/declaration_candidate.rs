@@ -153,6 +153,39 @@ pub(crate) enum RawDeclarationBodyFailure {
     ParserCapabilityMismatch(DeclarationCandidateKey),
 }
 
+/// Position-independent identity of one valid `@import` occurrence inside an
+/// exact declaration.
+///
+/// `occurrence` is counted in source order within the declaration, across all
+/// specifiers. Keeping the exact decoded specifier in the key makes a stale or
+/// malformed caller fail closed instead of silently selecting a different
+/// import after an edit.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct DeclarationImportSiteKey {
+    pub(crate) declaration: DeclarationCandidateKey,
+    pub(crate) occurrence: u32,
+    pub(crate) specifier: Arc<str>,
+}
+
+/// Stable, position-free failure retained by the declaration-import family.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DeclarationImportFailure {
+    OccurrencesUnavailable(DeclarationOccurrenceFailure),
+    AbsentDeclaration(DeclarationImportSiteKey),
+    AmbiguousDeclaration(DeclarationImportSiteKey),
+    CategoryMismatch(DeclarationImportSiteKey),
+    SiteOutOfRange {
+        key: DeclarationImportSiteKey,
+        available: u32,
+    },
+    SpecifierMismatch {
+        key: DeclarationImportSiteKey,
+        actual: Arc<str>,
+    },
+    ParserCapabilityMismatch(DeclarationImportSiteKey),
+    ResolutionUnavailable(DeclarationImportSiteKey),
+}
+
 impl DeclarationCandidateKey {
     pub(crate) fn stable_identity(&self) -> String {
         // Length-prefix every user-authored component. Query identities must
@@ -170,6 +203,18 @@ impl DeclarationCandidateKey {
             self.name,
             owner,
             self.duplicate_discriminator
+        )
+    }
+}
+
+impl DeclarationImportSiteKey {
+    pub(crate) fn stable_identity(&self) -> String {
+        format!(
+            "{}:import:{}:{}:{}",
+            self.declaration.stable_identity(),
+            self.occurrence,
+            self.specifier.len(),
+            self.specifier
         )
     }
 }

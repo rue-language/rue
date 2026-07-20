@@ -954,15 +954,7 @@ pub(crate) fn reduce_exact_import_graph(
     accepted_reads: &[AcceptedReadManifestEntry],
 ) -> CompileResult<crate::CanonicalImportGraph> {
     validate_exact_import_ledger(groups, ledger)?;
-    let manifest = accepted_reads
-        .iter()
-        .map(|entry| (entry.metadata_identity(), entry))
-        .collect::<BTreeMap<_, _>>();
-    if manifest.len() != accepted_reads.len() {
-        return Err(invalid_input(
-            "accepted read manifest contains duplicate physical identities",
-        ));
-    }
+    let manifest = accepted_import_manifest(accepted_reads)?;
     let mut by_site: BTreeMap<&ImportOccurrenceKey, Vec<&Arc<[ImportDiscoveryRequest]>>> =
         BTreeMap::new();
     for group in groups {
@@ -973,36 +965,10 @@ pub(crate) fn reduce_exact_import_graph(
     }
     let mut records = Vec::with_capacity(by_site.len());
     for (site, groups) in by_site {
-        let winning = groups.iter().find_map(|group| {
-            let present = group
-                .iter()
-                .filter_map(|request| ledger.get(request))
-                .filter_map(ImportObservation::accepted_source)
-                .collect::<Vec<_>>();
-            (!present.is_empty()).then_some(present)
-        });
-        let module_for = |source: &AcceptedImportSource| -> CompileResult<ModuleId> {
-            let entry = manifest.get(&source.metadata_identity()).ok_or_else(|| {
-                invalid_input("accepted observation is absent from accepted read provenance")
-            })?;
-            if entry.metadata_fingerprint() != source.metadata_fingerprint()
-                || entry.content_fingerprint() != source.content_fingerprint()
-            {
-                return Err(invalid_input(
-                    "accepted observation does not match accepted read provenance",
-                ));
-            }
-            Ok(entry.module().clone())
-        };
-        let resolution = match winning.as_deref() {
-            Some([source]) => crate::CanonicalImportResolution::Resolved(module_for(source)?),
-            Some([file, directory, ..]) => crate::CanonicalImportResolution::Ambiguous {
-                file_module: module_for(file)?,
-                directory_module: module_for(directory)?,
-            },
-            Some([]) => unreachable!(),
-            None => crate::CanonicalImportResolution::Missing,
-        };
+        let winner = exact_import_winner(groups.iter().copied(), ledger);
+        let resolution = resolve_exact_import_winner(winner, |source| {
+            module_for_accepted_source(source, &manifest)
+        })?;
         records.push(crate::CanonicalImportRecord::new(
             site.importer().clone(),
             site.specifier(),
@@ -1012,6 +978,158 @@ pub(crate) fn reduce_exact_import_graph(
     Ok(crate::CanonicalImportGraph::from_discovery_records(
         root, records,
     ))
+}
+
+/// Validate one demand-scoped exact occurrence before applying the canonical
+/// winning-group policy. Observations for other occurrences may coexist in the
+/// ledger because declaration queries intentionally share an import revision.
+pub(crate) fn validate_exact_import_occurrence(
+    groups: &[Arc<[ImportDiscoveryRequest]>],
+    ledger: &ImportObservationLedger,
+) -> CompileResult<()> {
+    let first = groups
+        .first()
+        .and_then(|group| group.first())
+        .ok_or_else(|| invalid_input("exact import occurrence has no candidate groups"))?;
+    if groups.iter().any(|group| {
+        group.is_empty()
+            || group
+                .iter()
+                .any(|request| request.occurrence() != first.occurrence())
+    }) {
+        return Err(invalid_input(
+            "exact import occurrence groups contain mixed or empty sites",
+        ));
+    }
+    let requests = groups
+        .iter()
+        .flat_map(|group| group.iter())
+        .collect::<BTreeSet<_>>();
+    if ledger.iter().any(|observation| {
+        observation.request().occurrence() == first.occurrence()
+            && !requests.contains(observation.request())
+    }) {
+        return Err(invalid_input(
+            "observation ledger contains a non-canonical request for the exact occurrence",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_accepted_import_manifest(
+    accepted_reads: &[AcceptedReadManifestEntry],
+) -> CompileResult<()> {
+    accepted_import_manifest(accepted_reads).map(drop)
+}
+
+fn accepted_import_manifest(
+    accepted_reads: &[AcceptedReadManifestEntry],
+) -> CompileResult<BTreeMap<PhysicalFileIdentity, &AcceptedReadManifestEntry>> {
+    let manifest = accepted_reads
+        .iter()
+        .map(|entry| (entry.metadata_identity(), entry))
+        .collect::<BTreeMap<_, _>>();
+    if manifest.len() != accepted_reads.len() {
+        return Err(invalid_input(
+            "accepted read manifest contains duplicate physical identities",
+        ));
+    }
+    Ok(manifest)
+}
+
+/// The one canonical precedence decision for an exact occurrence. The winner
+/// borrows accepted-source evidence from the immutable observation ledger;
+/// consumers decide how exact provenance maps those identities to modules.
+pub(crate) enum ExactImportWinner<'a> {
+    Missing,
+    Resolved(&'a AcceptedImportSource),
+    Ambiguous {
+        file: &'a AcceptedImportSource,
+        directory: &'a AcceptedImportSource,
+    },
+}
+
+pub(crate) fn exact_import_winner<'ledger, 'groups>(
+    groups: impl IntoIterator<Item = &'groups Arc<[ImportDiscoveryRequest]>>,
+    ledger: &'ledger ImportObservationLedger,
+) -> ExactImportWinner<'ledger> {
+    let winning = groups.into_iter().find_map(|group| {
+        let present = group
+            .iter()
+            .filter_map(|request| ledger.get(request))
+            .filter_map(ImportObservation::accepted_source)
+            .collect::<Vec<_>>();
+        (!present.is_empty()).then_some(present)
+    });
+    match winning.as_deref() {
+        Some([source]) => ExactImportWinner::Resolved(source),
+        Some([file, directory, ..]) => ExactImportWinner::Ambiguous { file, directory },
+        Some([]) => unreachable!(),
+        None => ExactImportWinner::Missing,
+    }
+}
+
+/// Obtain the canonical resolution by visiting exactly the accepted sources
+/// selected by precedence. Query consumers inject an exact provenance lookup;
+/// whole-graph closure injects its already-validated manifest map.
+pub(crate) fn resolve_exact_import_winner<E>(
+    winner: ExactImportWinner<'_>,
+    mut module_for: impl FnMut(&AcceptedImportSource) -> Result<ModuleId, E>,
+) -> Result<crate::CanonicalImportResolution, E> {
+    Ok(match winner {
+        ExactImportWinner::Missing => crate::CanonicalImportResolution::Missing,
+        ExactImportWinner::Resolved(source) => {
+            crate::CanonicalImportResolution::Resolved(module_for(source)?)
+        }
+        ExactImportWinner::Ambiguous { file, directory } => {
+            crate::CanonicalImportResolution::Ambiguous {
+                file_module: module_for(file)?,
+                directory_module: module_for(directory)?,
+            }
+        }
+    })
+}
+
+fn module_for_accepted_source(
+    source: &AcceptedImportSource,
+    manifest: &BTreeMap<PhysicalFileIdentity, &AcceptedReadManifestEntry>,
+) -> CompileResult<ModuleId> {
+    let entry = manifest.get(&source.metadata_identity()).ok_or_else(|| {
+        invalid_input("accepted observation is absent from accepted read provenance")
+    })?;
+    validate_accepted_import_source(source, entry)
+}
+
+pub(crate) fn accepted_import_module(
+    source: &AcceptedImportSource,
+    accepted_reads: &[AcceptedReadManifestEntry],
+) -> CompileResult<ModuleId> {
+    let mut matches = accepted_reads
+        .iter()
+        .filter(|entry| entry.metadata_identity() == source.metadata_identity());
+    let entry = matches.next().ok_or_else(|| {
+        invalid_input("accepted observation is absent from accepted read provenance")
+    })?;
+    if matches.next().is_some() {
+        return Err(invalid_input(
+            "accepted read manifest contains duplicate physical identities",
+        ));
+    }
+    validate_accepted_import_source(source, entry)
+}
+
+fn validate_accepted_import_source(
+    source: &AcceptedImportSource,
+    entry: &AcceptedReadManifestEntry,
+) -> CompileResult<ModuleId> {
+    if entry.metadata_fingerprint() != source.metadata_fingerprint()
+        || entry.content_fingerprint() != source.content_fingerprint()
+    {
+        return Err(invalid_input(
+            "accepted observation does not match accepted read provenance",
+        ));
+    }
+    Ok(entry.module().clone())
 }
 
 /// Compiler-owned durable identity assembly for a discovery epoch.
