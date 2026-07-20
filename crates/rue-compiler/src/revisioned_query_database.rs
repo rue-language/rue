@@ -396,6 +396,11 @@ pub(crate) struct RevisionedQueryDatabase {
     // semantic dependency until the keyed constant evaluator consumes it.
     #[cfg_attr(not(test), allow(dead_code))]
     raw_const_syntax: QueryFamily<RawConstSyntaxQueryKey, RawConstSyntaxQueryValue>,
+    // Registered now as the syntax boundary for the later keyed signature and
+    // type evaluators; production semantic resolution does not consume it yet.
+    #[cfg_attr(not(test), allow(dead_code))]
+    raw_declaration_signatures:
+        QueryFamily<RawDeclarationSignatureQueryKey, RawDeclarationSignatureQueryValue>,
     module_rirs: QueryFamily<ModuleQueryKey, ModuleRirValue>,
     resolve_imports: QueryFamily<ResolveImportKey, ResolveImportValue>,
     lookup_names: QueryFamily<LookupNameKey, LookupNameValue>,
@@ -490,6 +495,21 @@ impl QueryKey for RawConstSyntaxQueryKey {
 enum RawConstSyntaxQueryValue {
     Available(crate::declaration_candidate::RawConstSyntax),
     Failure(crate::declaration_candidate::RawConstSyntaxFailure),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RawDeclarationSignatureQueryKey(crate::declaration_candidate::DeclarationCandidateKey);
+
+impl QueryKey for RawDeclarationSignatureQueryKey {
+    fn stable_identity(&self) -> String {
+        self.0.stable_identity()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RawDeclarationSignatureQueryValue {
+    Available(crate::declaration_candidate::RawDeclarationSignatureSyntax),
+    Failure(crate::declaration_candidate::RawDeclarationSignatureFailure),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1183,6 +1203,155 @@ impl Default for RevisionedQueryDatabase {
                 },
             )
             .expect("the RawConstSyntax family has one canonical name");
+        let occurrences_for_raw_signature = declaration_occurrence_indexes.clone();
+        let shells_for_raw_signature = declaration_shells.clone();
+        let parse_for_raw_signature = parse_modules.clone();
+        let raw_declaration_signatures = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.raw-declaration-signature",
+                MODULE_QUERY_MEMO_RETENTION,
+                |left: &RawDeclarationSignatureQueryValue,
+                 right: &RawDeclarationSignatureQueryValue| { left == right },
+                move |context, _, key: &RawDeclarationSignatureQueryKey| {
+                    use crate::declaration_candidate::{
+                        DeclarationCandidateCategory, DeclarationOccurrenceCapability,
+                        DeclarationShellFailure, RawDeclarationSignatureFailure,
+                    };
+
+                    let indexed = context.query_registered(
+                        &occurrences_for_raw_signature,
+                        ModuleQueryKey(key.0.module.clone()),
+                    )?;
+                    let rue_query::QueryOutcome::Success(indexed) = indexed.outcome() else {
+                        unreachable!("DeclarationOccurrenceIndex publishes typed values")
+                    };
+                    let value = match indexed {
+                        DeclarationOccurrenceIndexValue::Failure(failure) => {
+                            RawDeclarationSignatureQueryValue::Failure(
+                                RawDeclarationSignatureFailure::OccurrencesUnavailable(
+                                    failure.clone(),
+                                ),
+                            )
+                        }
+                        DeclarationOccurrenceIndexValue::Available(index) => {
+                            match index.capabilities.get(&key.0) {
+                                None => RawDeclarationSignatureQueryValue::Failure(
+                                    RawDeclarationSignatureFailure::Absent(key.0.clone()),
+                                ),
+                                Some(DeclarationOccurrenceCapability::Ambiguous { .. }) => {
+                                    RawDeclarationSignatureQueryValue::Failure(
+                                        RawDeclarationSignatureFailure::Ambiguous(key.0.clone()),
+                                    )
+                                }
+                                Some(DeclarationOccurrenceCapability::Exact {
+                                    duplicate_multiplicity: 0,
+                                    ..
+                                }) => RawDeclarationSignatureQueryValue::Failure(
+                                    RawDeclarationSignatureFailure::ParserCapabilityMismatch(
+                                        key.0.clone(),
+                                    ),
+                                ),
+                                Some(DeclarationOccurrenceCapability::Exact { .. }) => {
+                                    let shell = context.query_registered(
+                                        &shells_for_raw_signature,
+                                        DeclarationShellQueryKey(key.0.clone()),
+                                    )?;
+                                    let rue_query::QueryOutcome::Success(shell) = shell.outcome()
+                                    else {
+                                        unreachable!("DeclarationShell publishes typed values")
+                                    };
+                                    match shell {
+                                        DeclarationShellQueryValue::Failure(failure) => {
+                                            let failure = match failure {
+                                                DeclarationShellFailure::OccurrencesUnavailable(
+                                                    failure,
+                                                ) => RawDeclarationSignatureFailure::OccurrencesUnavailable(
+                                                    failure.clone(),
+                                                ),
+                                                DeclarationShellFailure::Absent(key) => {
+                                                    RawDeclarationSignatureFailure::Absent(
+                                                        key.clone(),
+                                                    )
+                                                }
+                                                DeclarationShellFailure::Ambiguous(key) => {
+                                                    RawDeclarationSignatureFailure::Ambiguous(
+                                                        key.clone(),
+                                                    )
+                                                }
+                                                DeclarationShellFailure::ParserCapabilityMismatch(
+                                                    key,
+                                                ) => RawDeclarationSignatureFailure::ParserCapabilityMismatch(
+                                                    key.clone(),
+                                                ),
+                                            };
+                                            RawDeclarationSignatureQueryValue::Failure(failure)
+                                        }
+                                        DeclarationShellQueryValue::Available(fact)
+                                            if fact.key.category
+                                                == DeclarationCandidateCategory::ConstCandidate =>
+                                        {
+                                            RawDeclarationSignatureQueryValue::Failure(
+                                                RawDeclarationSignatureFailure::CategoryMismatch(
+                                                    key.0.clone(),
+                                                ),
+                                            )
+                                        }
+                                        DeclarationShellQueryValue::Available(fact)
+                                            if fact.key != key.0 =>
+                                        {
+                                            RawDeclarationSignatureQueryValue::Failure(
+                                                RawDeclarationSignatureFailure::ParserCapabilityMismatch(
+                                                    key.0.clone(),
+                                                ),
+                                            )
+                                        }
+                                        DeclarationShellQueryValue::Available(_) => {
+                                            let parsed = context.query_registered(
+                                                &parse_for_raw_signature,
+                                                ModuleQueryKey(key.0.module.clone()),
+                                            )?;
+                                            let rue_query::QueryOutcome::Success(parsed) =
+                                                parsed.outcome()
+                                            else {
+                                                unreachable!("ParseModule publishes typed values")
+                                            };
+                                            match &parsed.result {
+                                                Err(_) => RawDeclarationSignatureQueryValue::Failure(
+                                                    RawDeclarationSignatureFailure::OccurrencesUnavailable(
+                                                        crate::declaration_candidate::DeclarationOccurrenceFailure::ParseRejected {
+                                                            module: key.0.module.clone(),
+                                                        },
+                                                    ),
+                                                ),
+                                                Ok(module) => module
+                                                    .evaluate_raw_declaration_signature(&key.0)
+                                                    .map_or_else(
+                                                        || RawDeclarationSignatureQueryValue::Failure(
+                                                            RawDeclarationSignatureFailure::ParserCapabilityMismatch(
+                                                                key.0.clone(),
+                                                            ),
+                                                        ),
+                                                        RawDeclarationSignatureQueryValue::Available,
+                                                    ),
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    let kind = if matches!(
+                        value,
+                        RawDeclarationSignatureQueryValue::Available(_)
+                    ) {
+                        QueryTerminalKind::Success
+                    } else {
+                        QueryTerminalKind::Failure
+                    };
+                    Ok(QueryOutput::success(value).with_terminal_kind(kind))
+                },
+            )
+            .expect("the RawDeclarationSignature family has one canonical name");
         let index_for_lookup = module_indexes.clone();
         let lookup_names = runtime
             .family_with_evaluator(
@@ -1321,6 +1490,7 @@ impl Default for RevisionedQueryDatabase {
             declaration_occurrence_indexes,
             declaration_shells,
             raw_const_syntax,
+            raw_declaration_signatures,
             module_rirs,
             resolve_imports,
             lookup_names,
@@ -2635,6 +2805,546 @@ mod tests {
             recovered.terminal().unwrap().outcome(),
             rue_query::QueryOutcome::Success(RawConstSyntaxQueryValue::Available(syntax))
                 if syntax.initializer.as_ref() == "0"
+        ));
+    }
+
+    fn raw_signature_text(
+        syntax: &crate::declaration_candidate::RawDeclarationSignatureSyntax,
+    ) -> String {
+        syntax
+            .declaration_fragments
+            .iter()
+            .map(AsRef::as_ref)
+            .collect::<String>()
+    }
+
+    #[test]
+    fn raw_declaration_signature_is_exact_lazy_and_red_green() {
+        fn program(selected_type: &str, unrelated_body: u32) -> String {
+            let mut source = String::new();
+            for index in 0..128 {
+                let body = if index == 64 { unrelated_body } else { index };
+                source.push_str(&format!("fn unrelated{index}() -> i32 {{ {body} }}\n"));
+            }
+            source.push_str(&format!(
+                "fn selected(value: {selected_type}) -> {selected_type} {{ value }}\n"
+            ));
+            source
+        }
+
+        let first_text = program("i32", 64);
+        let unrelated_edit_text = program("i32", 999);
+        let selected_edit_text = program("i64", 999);
+        let first = source_snapshot(&[(1, "/main.rue", "main.rue", &first_text)], 1);
+        let unrelated_edit =
+            source_snapshot(&[(1, "/main.rue", "main.rue", &unrelated_edit_text)], 1);
+        let selected_edit =
+            source_snapshot(&[(1, "/main.rue", "main.rue", &selected_edit_text)], 1);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let key = crate::declaration_candidate::DeclarationCandidateKey {
+            module: module.clone(),
+            category: crate::declaration_candidate::DeclarationCandidateCategory::Function,
+            name: Arc::from("selected"),
+            owner: None,
+            duplicate_discriminator: 0,
+        };
+        let mut database = RevisionedQueryDatabase::default();
+        let first_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&first),
+            &first,
+        );
+        let parsed = database.runtime.request_registered(
+            &database.parse_modules,
+            first_revision,
+            ModuleQueryKey(module),
+            CancellationToken::new(),
+        );
+        let parsed_module = match parsed.terminal().unwrap().outcome() {
+            rue_query::QueryOutcome::Success(value) => value.result.clone().unwrap(),
+            rue_query::QueryOutcome::Failure(_) => unreachable!(),
+        };
+        assert_eq!(
+            parsed_module.raw_declaration_signature_terminal_materialization_count(),
+            0,
+            "indexing 129 declarations must allocate no raw-signature terminal fragments"
+        );
+
+        let first_request = database.runtime.request_registered(
+            &database.raw_declaration_signatures,
+            first_revision,
+            RawDeclarationSignatureQueryKey(key.clone()),
+            CancellationToken::new(),
+        );
+        assert_eq!(execution(&first_request), RequestExecution::Computed);
+        assert_eq!(
+            first_request
+                .dependencies()
+                .iter()
+                .map(|dependency| dependency.node.family())
+                .collect::<Vec<_>>(),
+            vec![
+                "compiler.declaration-occurrence-index",
+                "compiler.declaration-shell",
+                "compiler.parse-module",
+            ]
+        );
+        let first_terminal = first_request.terminal().unwrap();
+        let first_stamp = first_terminal.stamp();
+        assert!(matches!(
+            first_terminal.outcome(),
+            rue_query::QueryOutcome::Success(
+                RawDeclarationSignatureQueryValue::Available(syntax)
+            ) if raw_signature_text(syntax).trim_end() == "fn selected(value: i32) -> i32"
+                && syntax.extern_abi.is_none()
+        ));
+        assert_eq!(
+            parsed_module.raw_declaration_signature_terminal_materialization_count(),
+            1,
+            "one exact cold demand must materialize one raw-signature terminal"
+        );
+
+        let warm = database.runtime.request_registered(
+            &database.raw_declaration_signatures,
+            first_revision,
+            RawDeclarationSignatureQueryKey(key.clone()),
+            CancellationToken::new(),
+        );
+        assert_eq!(execution(&warm), RequestExecution::Reused);
+        assert_eq!(
+            parsed_module.raw_declaration_signature_terminal_materialization_count(),
+            1,
+            "warm reuse must not rematerialize raw-signature terminal fragments"
+        );
+
+        let unrelated_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&unrelated_edit),
+            &unrelated_edit,
+        );
+        let unrelated_request = database.runtime.request_registered(
+            &database.raw_declaration_signatures,
+            unrelated_revision,
+            RawDeclarationSignatureQueryKey(key.clone()),
+            CancellationToken::new(),
+        );
+        assert_eq!(unrelated_request.terminal().unwrap().stamp(), first_stamp);
+
+        let selected_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&selected_edit),
+            &selected_edit,
+        );
+        let selected_request = database.runtime.request_registered(
+            &database.raw_declaration_signatures,
+            selected_revision,
+            RawDeclarationSignatureQueryKey(key),
+            CancellationToken::new(),
+        );
+        let selected_terminal = selected_request.terminal().unwrap();
+        assert_ne!(selected_terminal.stamp(), first_stamp);
+        assert!(matches!(
+            selected_terminal.outcome(),
+            rue_query::QueryOutcome::Success(
+                RawDeclarationSignatureQueryValue::Available(syntax)
+            ) if raw_signature_text(syntax).trim_end() == "fn selected(value: i64) -> i64"
+        ));
+    }
+
+    #[test]
+    fn raw_declaration_signatures_cover_categories_without_struct_method_peers() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "@copy linear struct Box { value: i32, fn get(borrow self) -> i32 { self.value } @allow(unused_function) fn make(value: i32) -> Box { Box { value } } }\n\
+                 enum Choice { Empty, Value(i32, u64) }\n\
+                 drop fn Box(self) {}\n\
+                 extern \"C\" { fn foreign(value: ptr const u8) -> i32; }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let owner = crate::declaration_candidate::DeclarationCandidateOwner {
+            category: Category::Struct,
+            name: Arc::from("Box"),
+        };
+        let key = |category, name: &'static str, owner| {
+            crate::declaration_candidate::DeclarationCandidateKey {
+                module: module.clone(),
+                category,
+                name: Arc::from(name),
+                owner,
+                duplicate_discriminator: 0,
+            }
+        };
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let request = |key| {
+            database.runtime.request_registered(
+                &database.raw_declaration_signatures,
+                revision,
+                RawDeclarationSignatureQueryKey(key),
+                CancellationToken::new(),
+            )
+        };
+
+        let structure = request(key(Category::Struct, "Box", None));
+        let structure_terminal = structure.terminal().unwrap();
+        let structure_stamp = structure_terminal.stamp();
+        let structure = match structure_terminal.outcome() {
+            rue_query::QueryOutcome::Success(RawDeclarationSignatureQueryValue::Available(
+                syntax,
+            )) => syntax,
+            other => panic!("expected struct signature, got {other:?}"),
+        };
+        let structure_text = raw_signature_text(structure);
+        assert!(structure_text.contains("@copy linear struct Box"));
+        assert!(structure_text.contains("value: i32"));
+        assert!(!structure_text.contains("fn get"));
+        assert!(!structure_text.contains("fn make"));
+        assert!(structure_text.trim_end().ends_with('}'));
+        assert_eq!(structure.declaration_fragments.len(), 2);
+
+        for (candidate, expected) in [
+            (
+                key(Category::Method, "get", Some(owner.clone())),
+                "fn get(borrow self) -> i32",
+            ),
+            (
+                key(Category::AssociatedFunction, "make", Some(owner.clone())),
+                "@allow(unused_function) fn make(value: i32) -> Box",
+            ),
+            (
+                key(Category::Enum, "Choice", None),
+                "enum Choice { Empty, Value(i32, u64) }",
+            ),
+            (
+                key(Category::Destructor, "Box", Some(owner)),
+                "drop fn Box(self)",
+            ),
+        ] {
+            let requested = request(candidate);
+            assert!(matches!(
+                requested.terminal().unwrap().outcome(),
+                rue_query::QueryOutcome::Success(
+                    RawDeclarationSignatureQueryValue::Available(syntax)
+                ) if raw_signature_text(syntax).trim_end() == expected
+                    && syntax.extern_abi.is_none()
+            ));
+        }
+
+        let foreign = request(key(Category::ExternFunction, "foreign", None));
+        assert!(matches!(
+            foreign.terminal().unwrap().outcome(),
+            rue_query::QueryOutcome::Success(
+                RawDeclarationSignatureQueryValue::Available(syntax)
+            ) if raw_signature_text(syntax) == "fn foreign(value: ptr const u8) -> i32;"
+                && syntax.extern_abi.as_deref() == Some("\"C\"")
+        ));
+
+        let peer_signature_edit = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "@copy linear struct Box { value: i32, fn get(borrow self) -> u64 { 0 } @allow(unused_function) fn make(value: i32) -> Box { Box { value } } }\n\
+                 enum Choice { Empty, Value(i32, u64) }\n\
+                 drop fn Box(self) {}\n\
+                 extern \"C\" { fn foreign(value: ptr const u8) -> i32; }",
+            )],
+            1,
+        );
+        let peer_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&peer_signature_edit),
+            &peer_signature_edit,
+        );
+        let unchanged_structure = database.runtime.request_registered(
+            &database.raw_declaration_signatures,
+            peer_revision,
+            RawDeclarationSignatureQueryKey(key(Category::Struct, "Box", None)),
+            CancellationToken::new(),
+        );
+        assert_eq!(
+            unchanged_structure.terminal().unwrap().stamp(),
+            structure_stamp,
+            "a peer method signature must not change the struct signature terminal"
+        );
+    }
+
+    #[test]
+    fn raw_declaration_signature_boundaries_exclude_body_and_method_trivia() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+
+        let first = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn free(value: i32) -> i32 // free boundary one\n\
+                     { value }\n\
+                 struct Box { value: i32, // before first method one\n\
+                     fn get(borrow self) -> i32 // method boundary one\n\
+                         { self.value }\n\
+                     // between methods one\n\
+                     fn make(value: i32) -> Box // associated boundary one\n\
+                         { Box { value } }\n\
+                     // after last method one\n\
+                 }\n\
+                 drop fn Box(self) // destructor boundary one\n\
+                     {}",
+            )],
+            1,
+        );
+        let trivia_edit = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn free(value: i32) -> i32         // free boundary two\n\
+\n\
+                 { value }\n\
+                 struct Box { value: i32,             // before first method two\n\
+\n\
+                     fn get(borrow self) -> i32       // method boundary two\n\
+\n\
+                     { self.value }\n\
+                         // between methods two\n\
+                     fn make(value: i32) -> Box       // associated boundary two\n\
+\n\
+                     { Box { value } }\n\
+                         // after last method two\n\
+\n\
+                 }\n\
+                 drop fn Box(self)                    // destructor boundary two\n\
+\n\
+                 {}",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let owner = crate::declaration_candidate::DeclarationCandidateOwner {
+            category: Category::Struct,
+            name: Arc::from("Box"),
+        };
+        let key = |category, name: &'static str, owner| {
+            crate::declaration_candidate::DeclarationCandidateKey {
+                module: module.clone(),
+                category,
+                name: Arc::from(name),
+                owner,
+                duplicate_discriminator: 0,
+            }
+        };
+        let cases = [
+            (
+                key(Category::Function, "free", None),
+                "fn free(value: i32) -> i32",
+            ),
+            (
+                key(Category::Struct, "Box", None),
+                "struct Box { value: i32}",
+            ),
+            (
+                key(Category::Method, "get", Some(owner.clone())),
+                "fn get(borrow self) -> i32",
+            ),
+            (
+                key(Category::AssociatedFunction, "make", Some(owner.clone())),
+                "fn make(value: i32) -> Box",
+            ),
+            (
+                key(Category::Destructor, "Box", Some(owner)),
+                "drop fn Box(self)",
+            ),
+        ];
+        let mut database = RevisionedQueryDatabase::default();
+        let first_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&first),
+            &first,
+        );
+        let mut first_terminals = Vec::new();
+        for (candidate, expected) in &cases {
+            let requested = database.runtime.request_registered(
+                &database.raw_declaration_signatures,
+                first_revision,
+                RawDeclarationSignatureQueryKey(candidate.clone()),
+                CancellationToken::new(),
+            );
+            let terminal = requested.terminal().unwrap();
+            assert!(matches!(
+                terminal.outcome(),
+                rue_query::QueryOutcome::Success(
+                    RawDeclarationSignatureQueryValue::Available(syntax)
+                ) if raw_signature_text(syntax) == *expected
+            ));
+            first_terminals.push((candidate.clone(), terminal.stamp()));
+        }
+
+        let edited_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&trivia_edit),
+            &trivia_edit,
+        );
+        for (candidate, first_stamp) in first_terminals {
+            let requested = database.runtime.request_registered(
+                &database.raw_declaration_signatures,
+                edited_revision,
+                RawDeclarationSignatureQueryKey(candidate),
+                CancellationToken::new(),
+            );
+            assert_eq!(
+                requested.terminal().unwrap().stamp(),
+                first_stamp,
+                "body-boundary and method-adjacent trivia must stay outside the signature terminal"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_declaration_signature_duplicate_discriminators_are_exact() {
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn duplicate(value: i32) {} fn duplicate(value: i64) {}",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        for (duplicate_discriminator, expected) in [
+            (0, "fn duplicate(value: i32)"),
+            (1, "fn duplicate(value: i64)"),
+        ] {
+            let key = crate::declaration_candidate::DeclarationCandidateKey {
+                module: module.clone(),
+                category: crate::declaration_candidate::DeclarationCandidateCategory::Function,
+                name: Arc::from("duplicate"),
+                owner: None,
+                duplicate_discriminator,
+            };
+            let requested = database.runtime.request_registered(
+                &database.raw_declaration_signatures,
+                revision,
+                RawDeclarationSignatureQueryKey(key),
+                CancellationToken::new(),
+            );
+            assert!(matches!(
+                requested.terminal().unwrap().outcome(),
+                rue_query::QueryOutcome::Success(
+                    RawDeclarationSignatureQueryValue::Available(syntax)
+                ) if raw_signature_text(syntax).trim_end() == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn raw_declaration_signature_failures_cancel_and_recover() {
+        use crate::declaration_candidate::{
+            DeclarationCandidateCategory as Category, DeclarationOccurrenceFailure,
+            RawDeclarationSignatureFailure,
+        };
+
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "const value = 1; fn present() {}",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let key =
+            |category, name: &'static str| crate::declaration_candidate::DeclarationCandidateKey {
+                module: module.clone(),
+                category,
+                name: Arc::from(name),
+                owner: None,
+                duplicate_discriminator: 0,
+            };
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let constant = key(Category::ConstCandidate, "value");
+        let absent = key(Category::Function, "absent");
+        for (candidate, expected) in [
+            (
+                constant.clone(),
+                RawDeclarationSignatureFailure::CategoryMismatch(constant),
+            ),
+            (
+                absent.clone(),
+                RawDeclarationSignatureFailure::Absent(absent),
+            ),
+        ] {
+            let requested = database.runtime.request_registered(
+                &database.raw_declaration_signatures,
+                revision,
+                RawDeclarationSignatureQueryKey(candidate),
+                CancellationToken::new(),
+            );
+            assert!(matches!(
+                requested.terminal().unwrap().outcome(),
+                rue_query::QueryOutcome::Success(
+                    RawDeclarationSignatureQueryValue::Failure(actual)
+                ) if actual == &expected
+            ));
+        }
+
+        let present = key(Category::Function, "present");
+        let canceled = CancellationToken::new();
+        canceled.cancel();
+        let aborted = database.runtime.request_registered(
+            &database.raw_declaration_signatures,
+            revision,
+            RawDeclarationSignatureQueryKey(present.clone()),
+            canceled,
+        );
+        assert_eq!(execution(&aborted), RequestExecution::Aborted);
+        assert!(aborted.terminal().is_none());
+        let recovered = database.runtime.request_registered(
+            &database.raw_declaration_signatures,
+            revision,
+            RawDeclarationSignatureQueryKey(present),
+            CancellationToken::new(),
+        );
+        assert!(matches!(
+            recovered.terminal().unwrap().outcome(),
+            rue_query::QueryOutcome::Success(RawDeclarationSignatureQueryValue::Available(_))
+        ));
+
+        let rejected = source_snapshot(&[(1, "/main.rue", "main.rue", "fn broken(")], 1);
+        let rejected_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&rejected),
+            &rejected,
+        );
+        let rejected_key = key(Category::Function, "broken");
+        let requested = database.runtime.request_registered(
+            &database.raw_declaration_signatures,
+            rejected_revision,
+            RawDeclarationSignatureQueryKey(rejected_key),
+            CancellationToken::new(),
+        );
+        assert!(matches!(
+            requested.terminal().unwrap().outcome(),
+            rue_query::QueryOutcome::Success(
+                RawDeclarationSignatureQueryValue::Failure(
+                    RawDeclarationSignatureFailure::OccurrencesUnavailable(
+                        DeclarationOccurrenceFailure::ParseRejected { module: failed_module }
+                    )
+                )
+            ) if failed_module == &module
         ));
     }
 
