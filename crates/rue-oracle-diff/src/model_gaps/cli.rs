@@ -80,7 +80,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.abi",
         "string_return_with_args",
-        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
@@ -92,7 +92,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.aggregate_slots",
         "store_string_from_field",
-        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
@@ -116,7 +116,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.borrow_sibling_moves",
         "byref_method_receiver_stays_usable_control",
-        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
@@ -128,7 +128,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.byref_params",
         "inout_whole_string_reassign",
-        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
@@ -827,12 +827,6 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "string_field",
-        "string_param_rebound_to_local",
-        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
-        &[],
-    ),
-    Entry::new(
-        "string_field",
         "string_struct_field_eq_false",
         semantic(SemanticGapKind::TextProjectionRead),
         &[],
@@ -841,12 +835,6 @@ const ENTRIES: &[Entry] = &[
         "string_field",
         "string_struct_field_eq_true",
         semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "string_field",
-        "struct_with_string_field_eq",
-        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
         &[],
     ),
 ];

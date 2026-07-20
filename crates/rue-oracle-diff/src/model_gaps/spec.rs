@@ -141,12 +141,6 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "types.destructors",
-        "type_with_destructor_literal_no_heap",
-        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
-        &[],
-    ),
-    Entry::new(
-        "types.destructors",
         "type_with_destructor_literal_promoted",
         semantic(SemanticGapKind::TextProjectionRead),
         &[],
@@ -154,13 +148,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "types.move-semantics",
         "borrow_method_receiver_still_usable_after",
-        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
-        &[],
-    ),
-    Entry::new(
-        "types.mutable_strings",
-        "string_affine_move",
-        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
@@ -299,18 +287,6 @@ const ENTRIES: &[Entry] = &[
         "types.strings",
         "string_new_equality_with_empty",
         semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "types.strings",
-        "string_type_annotation",
-        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
-        &[],
-    ),
-    Entry::new(
-        "types.strings",
-        "string_type_annotation_empty",
-        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
         &[],
     ),
     Entry::new(

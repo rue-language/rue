@@ -1418,14 +1418,18 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(len),
                     string_id,
                 });
-                slots = vec![ptr, len];
+                // A `str` view is `{ptr, len}`; an owned `StrBuf` header is
+                // `{buf, cap, len}` — the `RawBuf(u8)` core's `{buf, cap}` then
+                // the length (RUE-1066), so `cap` precedes `len`.
                 if plan.policy.shape.slot_count() >= 3 {
                     let cap = self.mir.alloc_vreg();
                     self.mir.push(X86Inst::StringConstCap {
                         dst: Operand::Virtual(cap),
                         string_id,
                     });
-                    slots.push(cap);
+                    slots = vec![ptr, cap, len];
+                } else {
+                    slots = vec![ptr, len];
                 }
                 ptr
             }
