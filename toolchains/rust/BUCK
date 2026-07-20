@@ -5,6 +5,17 @@
 
 load(":defs.bzl", "RUST_VERSION", "RUST_RELEASES", "RUST_STD_RELEASES", "hermetic_rust_toolchain", "rustfmt", "host_rustfmt")
 
+export_file(
+    name = "merge-sysroot",
+    src = "merge_sysroot.sh",
+)
+
+sh_test(
+    name = "merge-sysroot-test",
+    test = "merge_sysroot_test.sh",
+    args = ["$(location :merge-sysroot)"],
+)
+
 # Download Rust for Linux x86_64
 http_archive(
     name = "rust-linux-x86_64",
@@ -184,6 +195,7 @@ _CLIPPY_ALLOW = [
 hermetic_rust_toolchain(
     name = "hermetic-linux-x86_64",
     distribution = ":rust-linux-x86_64",
+    merge_script = ":merge-sysroot",
     target_triple = "x86_64-unknown-linux-gnu",
     default_edition = "2024",
     deny_lints = ["warnings"],
@@ -196,6 +208,7 @@ hermetic_rust_toolchain(
 hermetic_rust_toolchain(
     name = "hermetic-linux-aarch64",
     distribution = ":rust-linux-aarch64",
+    merge_script = ":merge-sysroot",
     target_triple = "aarch64-unknown-linux-gnu",
     default_edition = "2024",
     deny_lints = ["warnings"],
@@ -208,6 +221,7 @@ hermetic_rust_toolchain(
 hermetic_rust_toolchain(
     name = "hermetic-macos-aarch64",
     distribution = ":rust-macos-aarch64",
+    merge_script = ":merge-sysroot",
     target_triple = "aarch64-apple-darwin",
     default_edition = "2024",
     deny_lints = ["warnings"],
@@ -220,6 +234,7 @@ hermetic_rust_toolchain(
 hermetic_rust_toolchain(
     name = "hermetic-macos-x86_64",
     distribution = ":rust-macos-x86_64",
+    merge_script = ":merge-sysroot",
     target_triple = "x86_64-apple-darwin",
     default_edition = "2024",
     deny_lints = ["warnings"],
