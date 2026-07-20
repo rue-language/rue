@@ -1485,7 +1485,11 @@ impl<'a> BodySema<'a> {
             self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
         });
         let (arg_ref, temp_scope) = if source_strbuf {
-            self.materialize_borrow_argument(air, arg_result.air_ref, arg_type, span, ctx)?
+            // RUE-1066: consume the StrBuf through its method-routed `{ptr, len}`
+            // view so the parse helper receives the same 2-word `str` shape as a
+            // native `str` argument and never reads the reordered 3-word header
+            // by offset.
+            self.strbuf_text_view(air, arg_result.air_ref, arg_type, span, ctx)?
         } else {
             (arg_result.air_ref, Vec::new())
         };

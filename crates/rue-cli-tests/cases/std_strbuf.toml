@@ -59,11 +59,11 @@ fn main() -> i32 {
     bytes.reserve_source(20);
     if bytes.len() != 17 || bytes.capacity() < 37 { return 2; }
     checked {
-        if @byte_read(bytes.buf, 0) != 1 { return 3; }
-        if @byte_read(bytes.buf, 7) != 8 { return 4; }
-        if @byte_read(bytes.buf, 8) != 9 { return 5; }
-        if @byte_read(bytes.buf, 15) != 16 { return 6; }
-        if @byte_read(bytes.buf, 16) != 17 { return 7; }
+        if @byte_read(bytes.core.buf, 0) != 1 { return 3; }
+        if @byte_read(bytes.core.buf, 7) != 8 { return 4; }
+        if @byte_read(bytes.core.buf, 8) != 9 { return 5; }
+        if @byte_read(bytes.core.buf, 15) != 16 { return 6; }
+        if @byte_read(bytes.core.buf, 16) != 17 { return 7; }
     };
 
     let value: S = "abcdefghijklmnopq";
@@ -105,11 +105,11 @@ fn main() -> i32 {
     if value != "abcdefghijkabcdefghijk" { return 1; }
     if value.capacity() < value.len() { return 2; }
     checked {
-        if @byte_read(value.buf, 7) != 104 { return 3; }
-        if @byte_read(value.buf, 8) != 105 { return 4; }
-        if @byte_read(value.buf, 10) != 107 { return 5; }
-        if @byte_read(value.buf, 11) != 97 { return 6; }
-        if @byte_read(value.buf, 21) != 107 { return 7; }
+        if @byte_read(value.core.buf, 7) != 104 { return 3; }
+        if @byte_read(value.core.buf, 8) != 105 { return 4; }
+        if @byte_read(value.core.buf, 10) != 107 { return 5; }
+        if @byte_read(value.core.buf, 11) != 97 { return 6; }
+        if @byte_read(value.core.buf, 21) != 107 { return 7; }
     };
 
     let mut reserved: S = "stay";
@@ -160,9 +160,10 @@ const std = @import("std");
 const S = std.strbuf.StrBuf;
 
 fn main() -> i32 {
-    let zero: u64 = 0;
-    let p: ptr mut u8 = checked { @int_to_ptr(zero) };
-    let mut impossible = S { buf: p, len: 18446744073709551615, cap: 0 };
+    // White-box: force a length at the u64 ceiling so the next grow's
+    // len + additional overflows. The buffer lives in the RawBuf core (RUE-1066).
+    let mut impossible = S.new();
+    impossible.len = 18446744073709551615;
     impossible.grow(1);
     0
 }
@@ -320,7 +321,13 @@ const S = std.strbuf.StrBuf;
 fn owned(byte: u8) -> S {
     let p: ptr mut u8 = checked { @alloc_bytes(4, 1) };
     checked { @byte_write(p, 0, byte); };
-    std.strbuf.StrBuf { buf: p, len: 1, cap: 4 }
+    // White-box: assemble an owned header (cap = 4 exactly, below the 16 floor)
+    // over the RawBuf core (RUE-1066).
+    let mut s = S.new();
+    s.core.buf = p;
+    s.core.cap = 4;
+    s.len = 1;
+    s
 }
 
 fn consume(s: S) -> i32 {
@@ -347,7 +354,7 @@ exit_code = 0
 
 [[case]]
 name = "aliased_three_word_layout_and_scope_drop"
-description = "An alias preserves the ptr/len/cap three-word layout and source-defined scope-exit destructor."
+description = "An alias preserves the ptr/cap/len three-word layout (buf/cap nested in the RawBuf core) and source-defined scope-exit destructor."
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -358,14 +365,15 @@ fn make() -> S {
 }
 
 fn main() -> i32 {
+    // StrBuf nests its growable storage in a RawBuf(u8) core (RUE-1066), so the
+    // three machine words are still [buf, cap, len] in memory: the RawBuf core
+    // (a two-word {buf, cap}) sits at offset 0, and len follows at offset 16.
     let size = @size_of(S);
-    let buf_offset: u64 = @offset_of(S, buf);
+    let core_offset: u64 = @offset_of(S, core);
     let len_offset: u64 = @offset_of(S, len);
-    let cap_offset: u64 = @offset_of(S, cap);
     if size != 24 { return 1; }
-    if buf_offset != 0 { return 2; }
-    if len_offset != 8 { return 3; }
-    if cap_offset != 16 { return 4; }
+    if core_offset != 0 { return 2; }
+    if len_offset != 16 { return 3; }
 
     // Moving the value returned by make leaves one final owner. Its named,
     // source-defined destructor runs exactly once at this scope exit; cap == 0

@@ -1019,9 +1019,59 @@ impl<'a> Interp<'a> {
         else {
             return None;
         };
+        // The nested RawBuf core's buffer pointer (`core.buf`, field 0) is the
+        // text pointer of a three-slot owned StrBuf (RUE-1066). The base value
+        // is the two-slot core view left by the `.core` passthrough, so it
+        // certifies the owned width via the `expected == 3` reconciliation in
+        // `is_matching_text_projection`.
+        if self.is_strbuf_core_struct(struct_id) {
+            return (field_index == 0).then_some(3);
+        }
         let slots = self.text_struct_slots(struct_id)?;
         let def = self.state.type_pool.struct_def(struct_id);
-        (def.field_count() == slots && (field_index as usize) < 2).then_some(slots)
+        // Flat text struct: str/Str(N) (2 fields) or a legacy flat StrBuf
+        // (3 fields, `{ptr, len, cap}`); its `{ptr, len}` prefix is fields 0/1.
+        if def.field_count() == slots && (field_index as usize) < 2 {
+            return Some(slots);
+        }
+        // Nested StrBuf (RUE-1066): `{core, len}` is two fields but three ABI
+        // slots. Its length header is field 1; the buffer pointer lives in the
+        // core (matched above).
+        if self.is_owned_string_struct(struct_id) && def.field_count() == 2 && field_index == 1 {
+            return Some(slots);
+        }
+        None
+    }
+
+    /// Whether `struct_id` is the nested `RawBuf(u8)` core of an owned StrBuf
+    /// (RUE-1066): a two-field `{buf: ptr, cap: u64}` aggregate that is neither
+    /// a `str`/`Str(N)` view nor the StrBuf wrapper itself. It is only ever
+    /// consulted while projecting an opaque `Value::Str`, where the base is
+    /// already known to be text, so this shape check cannot misfire on an
+    /// unrelated user struct.
+    fn is_strbuf_core_struct(&self, struct_id: rue_air::StructId) -> bool {
+        if self.is_str_like_struct(struct_id) || self.is_owned_string_struct(struct_id) {
+            return false;
+        }
+        let def = self.state.type_pool.struct_def(struct_id);
+        def.field_count() == 2 && def.fields[0].ty.is_ptr() && def.fields[1].ty == Type::U64
+    }
+
+    /// The `.core` step of a nested StrBuf (`{core: RawBuf(u8), len}`, field 0).
+    /// Projecting it leaves the opaque text value in place, narrowed to the
+    /// two-slot core view so the buffer-pointer and capacity projections that
+    /// follow resolve against the RawBuf core.
+    fn is_strbuf_core_projection(&self, projection: Projection) -> bool {
+        let Projection::Field {
+            struct_id,
+            field_index,
+        } = projection
+        else {
+            return false;
+        };
+        field_index == 0
+            && self.is_owned_string_struct(struct_id)
+            && self.state.type_pool.struct_def(struct_id).field_count() == 2
     }
 
     fn is_matching_text_projection(&self, projection: Projection, actual_slots: usize) -> bool {
@@ -1060,9 +1110,15 @@ impl<'a> Interp<'a> {
         else {
             return false;
         };
-        self.is_owned_string_struct(struct_id)
+        // Legacy flat StrBuf `{ptr, len, cap}`: capacity is field 2.
+        if self.is_owned_string_struct(struct_id)
             && self.state.type_pool.struct_def(struct_id).field_count() == 3
             && field_index == 2
+        {
+            return true;
+        }
+        // Nested RawBuf core `{buf, cap}` (RUE-1066): capacity is field 1.
+        self.is_strbuf_core_struct(struct_id) && field_index == 1
     }
 
     fn is_owned_string_type(&self, ty: Type) -> bool {
@@ -3034,6 +3090,13 @@ impl<'a> Interp<'a> {
                         UnsupportedKind::SemanticGap(SemanticGapKind::TextProjectionRead),
                         "projection of non-aggregate",
                     ));
+                }
+                // The `.core` step of a nested StrBuf (RUE-1066) is transparent:
+                // keep the opaque bytes and narrow to the two-slot RawBuf core
+                // so the `core.buf` / `core.cap` projections that follow resolve
+                // to the text-pointer / capacity model gaps.
+                Value::Str { bytes, .. } if self.is_strbuf_core_projection(projection) => {
+                    Value::Str { bytes, slots: 2 }
                 }
                 _ => {
                     return Err(unsupported(

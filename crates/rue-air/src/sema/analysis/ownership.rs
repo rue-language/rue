@@ -4283,6 +4283,32 @@ impl<'a> BodySema<'a> {
                     self.rir.get(arg.value).span,
                     ctx,
                 )?;
+                // RUE-1066: a `StrBuf` source no longer shares `str`'s `{ptr,
+                // len}` prefix now that its growable storage nests in a RawBuf
+                // core (`[buf, cap, len]`). Passing the raw 3-word storage by
+                // reference would let the callee read `cap` as `len`. Narrow to
+                // a method-routed `{ptr, len}` view materialized in a temporary
+                // and pass an exclusive reference to that instead: the view's
+                // pointer is `as_ptr()` (the real buffer), so byte writes still
+                // reach the caller's storage, while `len` reads the correct
+                // word. Whole-view rebinding is already rejected
+                // (StrViewReassignment), so the snapshot length stays valid.
+                if self.is_strbuf(arg_result.ty) {
+                    let span = self.rir.get(arg.value).span;
+                    let (view, prefix) =
+                        self.strbuf_text_view(air, arg_result.air_ref, arg_result.ty, span, ctx)?;
+                    let view =
+                        self.wrap_value_with_temp_scope(air, view, param_ty, span, prefix)?;
+                    let (load, mat_prefix) =
+                        self.materialize_borrow_argument(air, view, param_ty, span, ctx)?;
+                    let value =
+                        self.wrap_value_with_temp_scope(air, load, param_ty, span, mat_prefix)?;
+                    air_args.push(AirCallArg {
+                        value,
+                        mode: AirArgMode::Inout,
+                    });
+                    continue;
+                }
             }
             air_args.push(AirCallArg {
                 value: arg_result.air_ref,

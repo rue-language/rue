@@ -219,17 +219,19 @@ pub struct AggregateShape {
     pub slots: &'static [AggregateSlot],
 }
 
+// Slot order mirrors `StrBuf`'s flattened `{buf, cap, len}` layout (RUE-1066):
+// the `RawBuf(u8)` core contributes `{buf, cap}`, then the length.
 const STR_BUF_SLOTS: &[AggregateSlot] = &[
     AggregateSlot {
         name: "ptr",
         ty: AbiType::MutBytePointer,
     },
     AggregateSlot {
-        name: "len",
+        name: "cap",
         ty: AbiType::U64,
     },
     AggregateSlot {
-        name: "cap",
+        name: "len",
         ty: AbiType::U64,
     },
 ];
@@ -244,11 +246,11 @@ const OPTION_STR_BUF_SLOTS: &[AggregateSlot] = &[
         ty: AbiType::MutBytePointer,
     },
     AggregateSlot {
-        name: "len",
+        name: "cap",
         ty: AbiType::U64,
     },
     AggregateSlot {
-        name: "cap",
+        name: "len",
         ty: AbiType::U64,
     },
 ];
@@ -282,12 +284,16 @@ pub const AGGREGATE_SHAPES: [AggregateShape; 3] = [
     },
 ];
 
-/// The three-word growable-string result written by formatting helpers.
+/// The three-word growable-string result written by formatting helpers. The
+/// field order mirrors `StrBuf`'s flattened slot layout `{buf, cap, len}` — the
+/// buffer and capacity live in the shared `RawBuf(u8)` core, then the length
+/// (RUE-1066) — so a `StrBuf`-shaped value is copied slot-for-slot from this
+/// result. Nothing outside the compiler/runtime depends on this order.
 #[repr(C)]
 pub struct StrBufResult {
     pub ptr: *mut u8,
-    pub len: u64,
     pub cap: u64,
+    pub len: u64,
 }
 
 /// The tagged growable-string option written by `__rue_read_line`.
@@ -295,8 +301,8 @@ pub struct StrBufResult {
 pub struct OptionStrBufResult {
     pub disc: u64,
     pub ptr: *mut u8,
-    pub len: u64,
     pub cap: u64,
+    pub len: u64,
 }
 
 /// The tagged integer option written by the parsing helpers.
@@ -310,14 +316,14 @@ const _: () = {
     assert!(core::mem::size_of::<StrBufResult>() == 24);
     assert!(core::mem::align_of::<StrBufResult>() == 8);
     assert!(core::mem::offset_of!(StrBufResult, ptr) == 0);
-    assert!(core::mem::offset_of!(StrBufResult, len) == 8);
-    assert!(core::mem::offset_of!(StrBufResult, cap) == 16);
+    assert!(core::mem::offset_of!(StrBufResult, cap) == 8);
+    assert!(core::mem::offset_of!(StrBufResult, len) == 16);
     assert!(core::mem::size_of::<OptionStrBufResult>() == 32);
     assert!(core::mem::align_of::<OptionStrBufResult>() == 8);
     assert!(core::mem::offset_of!(OptionStrBufResult, disc) == 0);
     assert!(core::mem::offset_of!(OptionStrBufResult, ptr) == 8);
-    assert!(core::mem::offset_of!(OptionStrBufResult, len) == 16);
-    assert!(core::mem::offset_of!(OptionStrBufResult, cap) == 24);
+    assert!(core::mem::offset_of!(OptionStrBufResult, cap) == 16);
+    assert!(core::mem::offset_of!(OptionStrBufResult, len) == 24);
     assert!(core::mem::size_of::<OptionIntResult>() == 16);
     assert!(core::mem::align_of::<OptionIntResult>() == 8);
     assert!(core::mem::offset_of!(OptionIntResult, disc) == 0);
@@ -1622,11 +1628,11 @@ mod tests {
                     ty: AbiType::MutBytePointer
                 },
                 AggregateSlot {
-                    name: "len",
+                    name: "cap",
                     ty: AbiType::U64
                 },
                 AggregateSlot {
-                    name: "cap",
+                    name: "len",
                     ty: AbiType::U64
                 },
             ]
@@ -1643,11 +1649,11 @@ mod tests {
                     ty: AbiType::MutBytePointer
                 },
                 AggregateSlot {
-                    name: "len",
+                    name: "cap",
                     ty: AbiType::U64
                 },
                 AggregateSlot {
-                    name: "cap",
+                    name: "len",
                     ty: AbiType::U64
                 },
             ]

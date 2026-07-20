@@ -1191,7 +1191,13 @@ fn read_line_requires_trusted_source_strbuf_payload_metadata() {
             .to_owned(),
     );
     let strbuf = Arc::new(
-        r#"pub struct StrBuf { buf: ptr mut u8, len: u64, cap: u64 }
+        r#"pub struct StrBuf {
+            buf: ptr mut u8,
+            len: u64,
+            cap: u64,
+            fn len(borrow self) -> u64 { self.len }
+            fn as_ptr(borrow self) -> ptr mut u8 { self.buf }
+        }
         drop fn StrBuf(self) { }"#
             .to_owned(),
     );
