@@ -82,6 +82,30 @@ pub(crate) enum DeclarationShellFailure {
     ParserCapabilityMismatch(DeclarationCandidateKey),
 }
 
+/// Parser-validated source syntax for one constant, detached from its source
+/// epoch and parser symbol universe.
+///
+/// Each fragment is the exact UTF-8 source spelling of the corresponding
+/// syntax node, excluding the declaration's `:` / `=` / `;` separators. The
+/// fragments contain no positional or interned handles and can therefore be
+/// reparsed by a later standalone constant evaluator without retaining an AST,
+/// RIR, resolver, or file table.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct RawConstSyntax {
+    pub(crate) declared_type: Option<Arc<str>>,
+    pub(crate) initializer: Arc<str>,
+}
+
+/// Stable, position-free failure retained by the exact raw-constant family.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RawConstSyntaxFailure {
+    OccurrencesUnavailable(DeclarationOccurrenceFailure),
+    Absent(DeclarationCandidateKey),
+    Ambiguous(DeclarationCandidateKey),
+    CategoryMismatch(DeclarationCandidateKey),
+    ParserCapabilityMismatch(DeclarationCandidateKey),
+}
+
 impl DeclarationCandidateKey {
     pub(crate) fn stable_identity(&self) -> String {
         // Length-prefix every user-authored component. Query identities must

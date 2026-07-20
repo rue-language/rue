@@ -11,6 +11,8 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::BTreeMap;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(test)]
 use lasso::Key;
@@ -29,7 +31,7 @@ use crate::{
     declaration_candidate::{
         DeclarationCandidateCategory, DeclarationCandidateKey, DeclarationCandidateOwner,
         DeclarationOccurrenceCapability, DeclarationParameterHeader, DeclarationParameterMode,
-        DeclarationShellFact, DeclarationShellFailure,
+        DeclarationShellFact, DeclarationShellFailure, RawConstSyntax,
     },
 };
 
@@ -152,6 +154,8 @@ pub struct ParsedDefinitionIndex {
     declaration_by_key: BTreeMap<DeclarationCandidateKey, usize>,
     declaration_capabilities: Arc<[DeclarationOccurrenceCapability]>,
     #[cfg(test)]
+    raw_const_syntax_materializations: Arc<AtomicUsize>,
+    #[cfg(test)]
     by_name: BTreeMap<(DefinitionNamespace, Arc<str>), Arc<[ParsedDefinitionOccurrence]>>,
 }
 
@@ -181,6 +185,46 @@ impl ParsedDefinitionIndex {
             ));
         }
         Ok(candidate.fact.clone())
+    }
+
+    /// Select the parser-owned raw syntax for exactly one constant key.
+    ///
+    /// The declaration table is constructed once with the module. This lookup
+    /// must remain an exact `declaration_by_key` lookup so a demand for one
+    /// constant never projects or scans unrelated declarations.
+    fn materialize_raw_const_syntax(
+        &self,
+        key: &DeclarationCandidateKey,
+        source_text: &str,
+    ) -> Option<RawConstSyntax> {
+        let index = self.declaration_by_key.get(key).copied()?;
+        let candidate = self.declarations.get(index)?;
+        if candidate.fact.key != *key {
+            return None;
+        }
+        let spans = candidate.raw_const_syntax_spans?;
+        let fragment = |span: Span| {
+            source_text
+                .get(span.start as usize..span.end as usize)
+                .map(Arc::from)
+        };
+        let syntax = RawConstSyntax {
+            declared_type: match spans.declared_type {
+                Some(span) => Some(fragment(span)?),
+                None => None,
+            },
+            initializer: fragment(spans.initializer)?,
+        };
+        #[cfg(test)]
+        self.raw_const_syntax_materializations
+            .fetch_add(1, Ordering::Relaxed);
+        Some(syntax)
+    }
+
+    #[cfg(test)]
+    fn raw_const_syntax_materialization_count(&self) -> usize {
+        self.raw_const_syntax_materializations
+            .load(Ordering::Relaxed)
     }
 
     pub(crate) fn declaration_locator(
@@ -215,6 +259,16 @@ impl ParsedDefinitionIndex {
 pub(crate) struct ParsedDeclarationCandidate {
     fact: DeclarationShellFact,
     declaration_span: Span,
+    raw_const_syntax_spans: Option<RawConstSyntaxSpans>,
+}
+
+/// Parser-private locators for syntax that is materialized only after an exact
+/// declaration-key lookup. Keeping these current-epoch spans private also
+/// leaves diagnostic projection independent from the durable query terminal.
+#[derive(Debug, Clone, Copy)]
+struct RawConstSyntaxSpans {
+    declared_type: Option<Span>,
+    initializer: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -334,6 +388,19 @@ impl ParsedItemView {
 }
 
 impl ParsedModule {
+    pub(crate) fn evaluate_raw_const_syntax(
+        &self,
+        key: &DeclarationCandidateKey,
+    ) -> Option<RawConstSyntax> {
+        self.definitions
+            .materialize_raw_const_syntax(key, self.source_text())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn raw_const_syntax_materialization_count(&self) -> usize {
+        self.definitions.raw_const_syntax_materialization_count()
+    }
+
     #[cfg(test)]
     pub(crate) fn with_test_foreign_ast_symbol(&self) -> Arc<Self> {
         let mut ast = (*self.ast).clone();
@@ -1081,13 +1148,24 @@ fn bind_payload(
             .iter()
             .cloned()
             .map(|candidate| ParsedDeclarationCandidate {
+                fact: candidate.fact,
                 declaration_span: remap_span(candidate.declaration_span),
-                ..candidate
+                raw_const_syntax_spans: candidate.raw_const_syntax_spans.map(|spans| {
+                    RawConstSyntaxSpans {
+                        declared_type: spans.declared_type.map(remap_span),
+                        initializer: remap_span(spans.initializer),
+                    }
+                }),
             })
             .collect::<Vec<_>>()
             .into(),
         declaration_by_key: payload.definitions.declaration_by_key.clone(),
         declaration_capabilities: payload.definitions.declaration_capabilities.clone(),
+        #[cfg(test)]
+        raw_const_syntax_materializations: payload
+            .definitions
+            .raw_const_syntax_materializations
+            .clone(),
         #[cfg(test)]
         by_name: payload.definitions.by_name.clone(),
     };
@@ -1472,7 +1550,8 @@ fn build_definition_index(
     resolver: &FrozenSymbolResolver,
 ) -> CompileResult<ParsedDefinitionIndex> {
     let mut pending = Vec::new();
-    let mut pending_declarations = Vec::<(DeclarationShellFact, Span)>::new();
+    let mut pending_declarations =
+        Vec::<(DeclarationShellFact, Span, Option<RawConstSyntaxSpans>)>::new();
     let resolve_name = |ident: rue_parser::Ident| -> CompileResult<Arc<str>> {
         let symbol = resolver.symbol(ident.name)?;
         Ok(Arc::from(resolver.resolve(&symbol)?))
@@ -1548,7 +1627,8 @@ fn build_definition_index(
                         is_unchecked,
                         is_extern,
                         declaration_span,
-                        signature_spans: Vec<Span>|
+                        signature_spans: Vec<Span>,
+                        raw_const_syntax_spans: Option<RawConstSyntaxSpans>|
          -> CompileResult<()> {
             let signature_fingerprint = declaration_signature_fingerprint(
                 file_id,
@@ -1576,6 +1656,7 @@ fn build_definition_index(
                     signature_fingerprint,
                 },
                 declaration_span,
+                raw_const_syntax_spans,
             ));
             Ok(())
         };
@@ -1594,6 +1675,7 @@ fn build_definition_index(
                 false,
                 function.span,
                 vec![signature_prefix(function.span, function.body.span())?],
+                None,
             )?,
             Item::Struct(structure) => {
                 let owner_name = resolve_name(structure.name)?;
@@ -1610,6 +1692,7 @@ fn build_definition_index(
                     false,
                     structure.span,
                     signature_fragments_excluding_method_bodies(structure)?,
+                    None,
                 )?;
                 let owner = DeclarationCandidateOwner {
                     category: DeclarationCandidateCategory::Struct,
@@ -1640,6 +1723,7 @@ fn build_definition_index(
                         false,
                         method.span,
                         vec![signature_prefix(method.span, method.body.span())?],
+                        None,
                     )?;
                 }
             }
@@ -1656,21 +1740,35 @@ fn build_definition_index(
                 false,
                 value.span,
                 vec![value.span],
-            )?,
-            Item::Const(value) => push(
-                DeclarationCandidateCategory::ConstCandidate,
-                resolve_name(value.name)?,
                 None,
-                value.visibility == Visibility::Public,
-                Arc::from([]),
-                None,
-                false,
-                false,
-                false,
-                false,
-                value.span,
-                vec![signature_prefix(value.span, value.init.span())?],
             )?,
+            Item::Const(value) => {
+                let declared_type = value.ty.as_ref().map(TypeExpr::span);
+                if let Some(span) = declared_type {
+                    validate_span("constant declared type", span, file_id, source_text)?;
+                }
+                let initializer = value.init.span();
+                validate_span("constant initializer", initializer, file_id, source_text)?;
+                let raw_const_syntax_spans = RawConstSyntaxSpans {
+                    declared_type,
+                    initializer,
+                };
+                push(
+                    DeclarationCandidateCategory::ConstCandidate,
+                    resolve_name(value.name)?,
+                    None,
+                    value.visibility == Visibility::Public,
+                    Arc::from([]),
+                    None,
+                    false,
+                    false,
+                    false,
+                    false,
+                    value.span,
+                    vec![signature_prefix(value.span, value.init.span())?],
+                    Some(raw_const_syntax_spans),
+                )?;
+            }
             Item::DropFn(value) => push(
                 DeclarationCandidateCategory::Destructor,
                 resolve_name(value.type_name)?,
@@ -1687,6 +1785,7 @@ fn build_definition_index(
                 false,
                 value.span,
                 vec![signature_prefix(value.span, value.body.span())?],
+                None,
             )?,
             Item::Extern(block) => {
                 for function in &block.fns {
@@ -1703,6 +1802,7 @@ fn build_definition_index(
                         true,
                         function.span,
                         vec![function.span],
+                        None,
                     )?;
                 }
             }
@@ -1770,7 +1870,7 @@ fn build_definition_index(
     let mut duplicate_counts = BTreeMap::new();
     let declarations = pending_declarations
         .into_iter()
-        .map(|(mut fact, declaration_span)| {
+        .map(|(mut fact, declaration_span, raw_const_syntax_spans)| {
             let duplicate = duplicate_counts
                 .entry((
                     fact.key.category,
@@ -1785,6 +1885,7 @@ fn build_definition_index(
             Ok(ParsedDeclarationCandidate {
                 fact,
                 declaration_span,
+                raw_const_syntax_spans,
             })
         })
         .collect::<CompileResult<Vec<_>>>()?;
@@ -1813,6 +1914,8 @@ fn build_definition_index(
         declarations: declarations.into(),
         declaration_by_key,
         declaration_capabilities: declaration_capabilities.into(),
+        #[cfg(test)]
+        raw_const_syntax_materializations: Arc::new(AtomicUsize::new(0)),
         #[cfg(test)]
         by_name,
     })

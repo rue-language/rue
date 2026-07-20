@@ -392,6 +392,10 @@ pub(crate) struct RevisionedQueryDatabase {
     module_indexes: QueryFamily<ModuleQueryKey, ModuleIndexValue>,
     declaration_occurrence_indexes: QueryFamily<ModuleQueryKey, DeclarationOccurrenceIndexValue>,
     declaration_shells: QueryFamily<DeclarationShellQueryKey, DeclarationShellQueryValue>,
+    // This registered input boundary is intentionally not a production
+    // semantic dependency until the keyed constant evaluator consumes it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    raw_const_syntax: QueryFamily<RawConstSyntaxQueryKey, RawConstSyntaxQueryValue>,
     module_rirs: QueryFamily<ModuleQueryKey, ModuleRirValue>,
     resolve_imports: QueryFamily<ResolveImportKey, ResolveImportValue>,
     lookup_names: QueryFamily<LookupNameKey, LookupNameValue>,
@@ -471,6 +475,21 @@ impl QueryKey for DeclarationShellQueryKey {
 enum DeclarationShellQueryValue {
     Available(crate::declaration_candidate::DeclarationShellFact),
     Failure(crate::declaration_candidate::DeclarationShellFailure),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RawConstSyntaxQueryKey(crate::declaration_candidate::DeclarationCandidateKey);
+
+impl QueryKey for RawConstSyntaxQueryKey {
+    fn stable_identity(&self) -> String {
+        self.0.stable_identity()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RawConstSyntaxQueryValue {
+    Available(crate::declaration_candidate::RawConstSyntax),
+    Failure(crate::declaration_candidate::RawConstSyntaxFailure),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1027,6 +1046,143 @@ impl Default for RevisionedQueryDatabase {
                 },
             )
             .expect("the DeclarationShell family has one canonical name");
+        let occurrences_for_raw_const = declaration_occurrence_indexes.clone();
+        let shells_for_raw_const = declaration_shells.clone();
+        let parse_for_raw_const = parse_modules.clone();
+        let raw_const_syntax = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.raw-const-syntax",
+                MODULE_QUERY_MEMO_RETENTION,
+                |left: &RawConstSyntaxQueryValue, right: &RawConstSyntaxQueryValue| left == right,
+                move |context, _, key: &RawConstSyntaxQueryKey| {
+                    use crate::declaration_candidate::{
+                        DeclarationCandidateCategory, DeclarationOccurrenceCapability,
+                        DeclarationShellFailure, RawConstSyntaxFailure,
+                    };
+
+                    let indexed = context.query_registered(
+                        &occurrences_for_raw_const,
+                        ModuleQueryKey(key.0.module.clone()),
+                    )?;
+                    let rue_query::QueryOutcome::Success(indexed) = indexed.outcome() else {
+                        unreachable!("DeclarationOccurrenceIndex publishes typed values")
+                    };
+                    let value = match indexed {
+                        DeclarationOccurrenceIndexValue::Failure(failure) => {
+                            RawConstSyntaxQueryValue::Failure(
+                                RawConstSyntaxFailure::OccurrencesUnavailable(failure.clone()),
+                            )
+                        }
+                        DeclarationOccurrenceIndexValue::Available(index) => {
+                            match index.capabilities.get(&key.0) {
+                                None => RawConstSyntaxQueryValue::Failure(
+                                    RawConstSyntaxFailure::Absent(key.0.clone()),
+                                ),
+                                Some(DeclarationOccurrenceCapability::Ambiguous { .. }) => {
+                                    RawConstSyntaxQueryValue::Failure(
+                                    RawConstSyntaxFailure::Ambiguous(key.0.clone()),
+                                    )
+                                }
+                                Some(DeclarationOccurrenceCapability::Exact {
+                                    duplicate_multiplicity: 0,
+                                    ..
+                                }) => RawConstSyntaxQueryValue::Failure(
+                                    RawConstSyntaxFailure::ParserCapabilityMismatch(key.0.clone()),
+                                ),
+                                Some(DeclarationOccurrenceCapability::Exact { .. }) => {
+                                    let shell = context.query_registered(
+                                        &shells_for_raw_const,
+                                        DeclarationShellQueryKey(key.0.clone()),
+                                    )?;
+                                    let rue_query::QueryOutcome::Success(shell) = shell.outcome()
+                                    else {
+                                        unreachable!("DeclarationShell publishes typed values")
+                                    };
+                                    match shell {
+                                        DeclarationShellQueryValue::Failure(failure) => {
+                                            let failure = match failure {
+                                                DeclarationShellFailure::OccurrencesUnavailable(
+                                                    failure,
+                                                ) => RawConstSyntaxFailure::OccurrencesUnavailable(
+                                                    failure.clone(),
+                                                ),
+                                                DeclarationShellFailure::Absent(key) => {
+                                                    RawConstSyntaxFailure::Absent(key.clone())
+                                                }
+                                                DeclarationShellFailure::Ambiguous(key) => {
+                                                    RawConstSyntaxFailure::Ambiguous(key.clone())
+                                                }
+                                                DeclarationShellFailure::ParserCapabilityMismatch(
+                                                    key,
+                                                ) => RawConstSyntaxFailure::ParserCapabilityMismatch(
+                                                    key.clone(),
+                                                ),
+                                            };
+                                            RawConstSyntaxQueryValue::Failure(failure)
+                                        }
+                                        DeclarationShellQueryValue::Available(fact)
+                                            if fact.key.category
+                                                != DeclarationCandidateCategory::ConstCandidate =>
+                                        {
+                                            RawConstSyntaxQueryValue::Failure(
+                                                RawConstSyntaxFailure::CategoryMismatch(
+                                                    key.0.clone(),
+                                                ),
+                                            )
+                                        }
+                                        DeclarationShellQueryValue::Available(fact)
+                                            if fact.key != key.0 =>
+                                        {
+                                            RawConstSyntaxQueryValue::Failure(
+                                                RawConstSyntaxFailure::ParserCapabilityMismatch(
+                                                    key.0.clone(),
+                                                ),
+                                            )
+                                        }
+                                        DeclarationShellQueryValue::Available(_) => {
+                                            let parsed = context.query_registered(
+                                                &parse_for_raw_const,
+                                                ModuleQueryKey(key.0.module.clone()),
+                                            )?;
+                                            let rue_query::QueryOutcome::Success(parsed) =
+                                                parsed.outcome()
+                                            else {
+                                                unreachable!("ParseModule publishes typed values")
+                                            };
+                                            match &parsed.result {
+                                                Err(_) => RawConstSyntaxQueryValue::Failure(
+                                                    RawConstSyntaxFailure::OccurrencesUnavailable(
+                                                        crate::declaration_candidate::DeclarationOccurrenceFailure::ParseRejected {
+                                                            module: key.0.module.clone(),
+                                                        },
+                                                    ),
+                                                ),
+                                                Ok(module) => module
+                                                    .evaluate_raw_const_syntax(&key.0)
+                                                    .map_or_else(
+                                                        || RawConstSyntaxQueryValue::Failure(
+                                                            RawConstSyntaxFailure::ParserCapabilityMismatch(
+                                                                key.0.clone(),
+                                                            ),
+                                                        ),
+                                                        RawConstSyntaxQueryValue::Available,
+                                                    ),
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    let kind = if matches!(value, RawConstSyntaxQueryValue::Available(_)) {
+                        QueryTerminalKind::Success
+                    } else {
+                        QueryTerminalKind::Failure
+                    };
+                    Ok(QueryOutput::success(value).with_terminal_kind(kind))
+                },
+            )
+            .expect("the RawConstSyntax family has one canonical name");
         let index_for_lookup = module_indexes.clone();
         let lookup_names = runtime
             .family_with_evaluator(
@@ -1164,6 +1320,7 @@ impl Default for RevisionedQueryDatabase {
             module_indexes,
             declaration_occurrence_indexes,
             declaration_shells,
+            raw_const_syntax,
             module_rirs,
             resolve_imports,
             lookup_names,
@@ -2189,6 +2346,295 @@ mod tests {
             rue_query::QueryOutcome::Success(DeclarationShellQueryValue::Failure(
                 crate::declaration_candidate::DeclarationShellFailure::Absent(absent)
             )) if absent == &key
+        ));
+    }
+
+    #[test]
+    fn raw_const_syntax_queries_select_exactly_and_reuse_across_unrelated_edits() {
+        let first = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "const selected: ptr const u8 = @import(\"dep.rue\").value; const other = 1; fn main() {}",
+            )],
+            1,
+        );
+        let edited = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "const selected: ptr const u8 = @import(\"dep.rue\").value; const other = 999; fn main() { let x = 2; }",
+            )],
+            1,
+        );
+        let key = crate::declaration_candidate::DeclarationCandidateKey {
+            module: ModuleId::from_logical_path("main.rue").unwrap(),
+            category: crate::declaration_candidate::DeclarationCandidateCategory::ConstCandidate,
+            name: Arc::from("selected"),
+            owner: None,
+            duplicate_discriminator: 0,
+        };
+        let mut database = RevisionedQueryDatabase::default();
+        let first_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&first),
+            &first,
+        );
+        let parsed = database.runtime.request_registered(
+            &database.parse_modules,
+            first_revision,
+            ModuleQueryKey(key.module.clone()),
+            CancellationToken::new(),
+        );
+        let parsed_module = match parsed.terminal().unwrap().outcome() {
+            rue_query::QueryOutcome::Success(value) => value.result.clone().unwrap(),
+            rue_query::QueryOutcome::Failure(_) => unreachable!(),
+        };
+        assert_eq!(
+            parsed_module.raw_const_syntax_materialization_count(),
+            0,
+            "module indexing must retain only private locators"
+        );
+        let selected = database.runtime.request_registered(
+            &database.raw_const_syntax,
+            first_revision,
+            RawConstSyntaxQueryKey(key.clone()),
+            CancellationToken::new(),
+        );
+        assert_eq!(execution(&selected), RequestExecution::Computed);
+        assert_eq!(
+            selected
+                .dependencies()
+                .iter()
+                .map(|dependency| dependency.node.family())
+                .collect::<Vec<_>>(),
+            vec![
+                "compiler.declaration-occurrence-index",
+                "compiler.declaration-shell",
+                "compiler.parse-module",
+            ]
+        );
+        let terminal = selected.terminal().unwrap();
+        let first_stamp = terminal.stamp();
+        assert_eq!(terminal.kind(), QueryTerminalKind::Success);
+        assert!(terminal.diagnostics().is_empty());
+        assert!(matches!(
+            terminal.outcome(),
+            rue_query::QueryOutcome::Success(RawConstSyntaxQueryValue::Available(syntax))
+                if syntax.declared_type.as_deref() == Some("ptr const u8")
+                    && syntax.initializer.as_ref() == "@import(\"dep.rue\").value"
+        ));
+        assert_eq!(
+            parsed_module.raw_const_syntax_materialization_count(),
+            1,
+            "demanding one key must materialize only that constant"
+        );
+
+        let warm = database.runtime.request_registered(
+            &database.raw_const_syntax,
+            first_revision,
+            RawConstSyntaxQueryKey(key.clone()),
+            CancellationToken::new(),
+        );
+        assert_eq!(execution(&warm), RequestExecution::Reused);
+        assert_eq!(parsed_module.raw_const_syntax_materialization_count(), 1);
+
+        let edited_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&edited),
+            &edited,
+        );
+        let revalidated = database.runtime.request_registered(
+            &database.raw_const_syntax,
+            edited_revision,
+            RawConstSyntaxQueryKey(key),
+            CancellationToken::new(),
+        );
+        assert_eq!(
+            revalidated.terminal().unwrap().stamp(),
+            first_stamp,
+            "an unrelated declaration edit must preserve the exact syntax terminal stamp"
+        );
+    }
+
+    #[test]
+    fn raw_const_syntax_duplicate_discriminators_select_distinct_occurrences() {
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "const duplicate = 11; const duplicate = 22;",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        for (duplicate_discriminator, expected) in [(0, "11"), (1, "22")] {
+            let key = crate::declaration_candidate::DeclarationCandidateKey {
+                module: module.clone(),
+                category:
+                    crate::declaration_candidate::DeclarationCandidateCategory::ConstCandidate,
+                name: Arc::from("duplicate"),
+                owner: None,
+                duplicate_discriminator,
+            };
+            let requested = database.runtime.request_registered(
+                &database.raw_const_syntax,
+                revision,
+                RawConstSyntaxQueryKey(key),
+                CancellationToken::new(),
+            );
+            assert!(matches!(
+                requested.terminal().unwrap().outcome(),
+                rue_query::QueryOutcome::Success(RawConstSyntaxQueryValue::Available(syntax))
+                    if syntax.initializer.as_ref() == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn raw_const_syntax_failures_are_stable_and_position_free() {
+        use crate::declaration_candidate::{
+            DeclarationCandidateCategory as Category, DeclarationOccurrenceFailure,
+            RawConstSyntaxFailure,
+        };
+
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "const present = 1; fn callable() {}",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let key =
+            |category, name: &'static str| crate::declaration_candidate::DeclarationCandidateKey {
+                module: module.clone(),
+                category,
+                name: Arc::from(name),
+                owner: None,
+                duplicate_discriminator: 0,
+            };
+        let absent = key(Category::ConstCandidate, "absent");
+        let non_const = key(Category::Function, "callable");
+        for (requested_key, expected) in [
+            (absent.clone(), RawConstSyntaxFailure::Absent(absent)),
+            (
+                non_const.clone(),
+                RawConstSyntaxFailure::CategoryMismatch(non_const),
+            ),
+        ] {
+            let requested = database.runtime.request_registered(
+                &database.raw_const_syntax,
+                revision,
+                RawConstSyntaxQueryKey(requested_key),
+                CancellationToken::new(),
+            );
+            let terminal = requested.terminal().unwrap();
+            assert_eq!(terminal.kind(), QueryTerminalKind::Failure);
+            assert!(terminal.diagnostics().is_empty());
+            assert!(matches!(
+                terminal.outcome(),
+                rue_query::QueryOutcome::Success(RawConstSyntaxQueryValue::Failure(actual))
+                    if actual == &expected
+            ));
+        }
+
+        let rejected = source_snapshot(&[(1, "/main.rue", "main.rue", "const broken = ;")], 1);
+        let rejected_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&rejected),
+            &rejected,
+        );
+        let rejected_key = key(Category::ConstCandidate, "broken");
+        let requested = database.runtime.request_registered(
+            &database.raw_const_syntax,
+            rejected_revision,
+            RawConstSyntaxQueryKey(rejected_key),
+            CancellationToken::new(),
+        );
+        assert!(matches!(
+            requested.terminal().unwrap().outcome(),
+            rue_query::QueryOutcome::Success(RawConstSyntaxQueryValue::Failure(
+                RawConstSyntaxFailure::OccurrencesUnavailable(
+                    DeclarationOccurrenceFailure::ParseRejected { module: failed_module }
+                )
+            )) if failed_module == &module
+        ));
+    }
+
+    #[test]
+    fn canceled_and_evicted_raw_const_syntax_requests_recover() {
+        let source_text = (0..=MODULE_QUERY_MEMO_RETENTION)
+            .map(|index| format!("const c{index} = {index};"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let source = source_snapshot(&[(1, "/main.rue", "main.rue", &source_text)], 1);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let key = |index| crate::declaration_candidate::DeclarationCandidateKey {
+            module: module.clone(),
+            category: crate::declaration_candidate::DeclarationCandidateCategory::ConstCandidate,
+            name: Arc::from(format!("c{index}")),
+            owner: None,
+            duplicate_discriminator: 0,
+        };
+
+        let canceled = CancellationToken::new();
+        canceled.cancel();
+        let aborted = database.runtime.request_registered(
+            &database.raw_const_syntax,
+            revision,
+            RawConstSyntaxQueryKey(key(0)),
+            canceled,
+        );
+        assert_eq!(execution(&aborted), RequestExecution::Aborted);
+        assert!(aborted.terminal().is_none());
+
+        for index in 0..=MODULE_QUERY_MEMO_RETENTION {
+            let requested = database.runtime.request_registered(
+                &database.raw_const_syntax,
+                revision,
+                RawConstSyntaxQueryKey(key(index)),
+                CancellationToken::new(),
+            );
+            assert!(matches!(
+                requested.terminal().unwrap().outcome(),
+                rue_query::QueryOutcome::Success(RawConstSyntaxQueryValue::Available(_))
+            ));
+        }
+        assert_eq!(
+            database.raw_const_syntax.retention().terminals,
+            MODULE_QUERY_MEMO_RETENTION
+        );
+        assert!(database.runtime.metrics().evictions >= 2);
+
+        let recovered = database.runtime.request_registered(
+            &database.raw_const_syntax,
+            revision,
+            RawConstSyntaxQueryKey(key(0)),
+            CancellationToken::new(),
+        );
+        assert_eq!(execution(&recovered), RequestExecution::Computed);
+        assert!(matches!(
+            recovered.terminal().unwrap().outcome(),
+            rue_query::QueryOutcome::Success(RawConstSyntaxQueryValue::Available(syntax))
+                if syntax.initializer.as_ref() == "0"
         ));
     }
 
