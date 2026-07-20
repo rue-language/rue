@@ -745,6 +745,7 @@ impl RegAlloc {
             Aarch64Inst::NarrowLoadIndexed {
                 dst,
                 base,
+                offset: addr_offset,
                 width,
                 signed,
             } => {
@@ -754,6 +755,7 @@ impl RegAlloc {
                     Some(Allocation::Register(reg)) => mir.push(Aarch64Inst::NarrowLoad {
                         dst: Operand::Physical(reg),
                         base: base_phys,
+                        offset: addr_offset,
                         width,
                         signed,
                     }),
@@ -761,6 +763,7 @@ impl RegAlloc {
                         mir.push(Aarch64Inst::NarrowLoad {
                             dst: Operand::Physical(Reg::X10),
                             base: base_phys,
+                            offset: addr_offset,
                             width,
                             signed,
                         });
@@ -776,18 +779,25 @@ impl RegAlloc {
                     None => mir.push(Aarch64Inst::NarrowLoad {
                         dst,
                         base: base_phys,
+                        offset: addr_offset,
                         width,
                         signed,
                     }),
                 }
             }
 
-            Aarch64Inst::NarrowStoreIndexed { src, base, width } => {
+            Aarch64Inst::NarrowStoreIndexed {
+                src,
+                base,
+                offset,
+                width,
+            } => {
                 let src_op = Self::load_operand(context, mir, src, Reg::X9)?;
                 let base_reg = Self::load_operand(context, mir, Operand::Virtual(base), Reg::X10)?;
                 mir.push(Aarch64Inst::NarrowStore {
                     src: src_op,
                     base: base_reg.as_physical(),
+                    offset,
                     width,
                 });
             }
@@ -974,17 +984,27 @@ impl RegAlloc {
             Aarch64Inst::NarrowLoad {
                 dst,
                 base,
+                offset,
                 width,
                 signed,
             } => mir.push(Aarch64Inst::NarrowLoad {
                 dst,
                 base,
+                offset,
                 width,
                 signed,
             }),
-            Aarch64Inst::NarrowStore { src, base, width } => {
-                mir.push(Aarch64Inst::NarrowStore { src, base, width })
-            }
+            Aarch64Inst::NarrowStore {
+                src,
+                base,
+                offset,
+                width,
+            } => mir.push(Aarch64Inst::NarrowStore {
+                src,
+                base,
+                offset,
+                width,
+            }),
         }
         Ok(())
     }

@@ -2145,6 +2145,7 @@ impl<'a> CfgLower<'a> {
                             self.mir.push(X86Inst::NarrowLoadIndexed {
                                 dst: Operand::Virtual(dst),
                                 base: ptr,
+                                offset: 0,
                                 width: narrow.width,
                                 signed: narrow.signed,
                             });
@@ -2200,6 +2201,7 @@ impl<'a> CfgLower<'a> {
                     self.mir.push(X86Inst::NarrowStoreIndexed {
                         base: ptr,
                         src: Operand::Virtual(value.primary),
+                        offset: 0,
                         width: narrow.width,
                     });
                 } else {
@@ -3049,27 +3051,6 @@ impl crate::value_plan::ValueLowerAdapter for CfgLower<'_> {
     }
 }
 
-impl CfgLower<'_> {
-    /// Materialize `ptr + byte_offset` for a narrow access that encodes no
-    /// displacement, returning `ptr` unchanged when the offset is zero
-    /// (RUE-1000).
-    fn narrow_ptr_base(&mut self, ptr: VReg, byte_offset: i32) -> VReg {
-        if byte_offset == 0 {
-            return ptr;
-        }
-        let base = self.mir.alloc_vreg();
-        self.mir.push(X86Inst::MovRR {
-            dst: Operand::Virtual(base),
-            src: Operand::Virtual(ptr),
-        });
-        self.mir.push(X86Inst::AddRI {
-            dst: Operand::Virtual(base),
-            imm: byte_offset,
-        });
-        base
-    }
-}
-
 impl crate::agg_slots::SlotBackend for CfgLower<'_> {
     fn ctx(&self) -> &crate::cfg_lower::CfgLowerContext<'_> {
         &self.ctx
@@ -3126,12 +3107,13 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
         byte_offset: i32,
         access: crate::types::NarrowScalar,
     ) {
-        // The narrow store addresses `[base]` with no displacement, so fold the
-        // byte offset into a materialized base pointer first (RUE-1000).
-        let base = self.narrow_ptr_base(ptr, byte_offset);
+        // x86 `[base+disp]` encodes any i32 displacement (disp8/disp32), so fold
+        // the byte offset straight into the narrow store's addressing mode
+        // (RUE-1079) rather than materializing `base+offset` into a register.
         self.mir.push(X86Inst::NarrowStoreIndexed {
-            base,
+            base: ptr,
             src: Operand::Virtual(src),
+            offset: byte_offset,
             width: access.width,
         });
     }
@@ -3142,10 +3124,11 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
         byte_offset: i32,
         access: crate::types::NarrowScalar,
     ) {
-        let base = self.narrow_ptr_base(ptr, byte_offset);
+        // x86 folds any i32 displacement into the load's ModRM byte (RUE-1079).
         self.mir.push(X86Inst::NarrowLoadIndexed {
             dst: Operand::Virtual(dst),
-            base,
+            base: ptr,
+            offset: byte_offset,
             width: access.width,
             signed: access.signed,
         });

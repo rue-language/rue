@@ -1922,6 +1922,7 @@ impl<'a> CfgLower<'a> {
                             self.mir.push(Aarch64Inst::NarrowLoadIndexed {
                                 dst: Operand::Virtual(dst),
                                 base: ptr,
+                                offset: 0,
                                 width: narrow.width,
                                 signed: narrow.signed,
                             });
@@ -1976,6 +1977,7 @@ impl<'a> CfgLower<'a> {
                     self.mir.push(Aarch64Inst::NarrowStoreIndexed {
                         src: Operand::Virtual(value.primary),
                         base: ptr,
+                        offset: 0,
                         width: narrow.width,
                     });
                 } else {
@@ -3264,6 +3266,18 @@ impl CfgLower<'_> {
     }
 }
 
+/// Whether an AArch64 narrow load/store can fold `byte_offset` into its scaled
+/// `imm12` addressing mode (RUE-1079). `ldrb`/`strb` scale the immediate by 1,
+/// `ldrh`/`strh` by 2, and `ldr w`/`str w` by 4, so the byte offset is encodable
+/// iff it is non-negative, an exact multiple of `width`, and its scaled index
+/// fits the unsigned 12-bit immediate (`<= 0xFFF`). Anything else — a negative,
+/// misaligned, or too-large offset — is NOT foldable and must fall back to
+/// materializing `base + offset` in a register (correctness first).
+fn aarch64_narrow_offset_encodable(byte_offset: i32, width: u8) -> bool {
+    let width = width as i32;
+    byte_offset >= 0 && byte_offset % width == 0 && byte_offset / width <= 0xFFF
+}
+
 impl crate::agg_slots::SlotBackend for CfgLower<'_> {
     fn ctx(&self) -> &crate::cfg_lower::CfgLowerContext<'_> {
         &self.ctx
@@ -3320,14 +3334,25 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
         byte_offset: i32,
         access: crate::types::NarrowScalar,
     ) {
-        // The narrow store addresses `[base]` with no offset, so materialize the
-        // base pointer plus the byte offset first (RUE-1000).
-        let base = self.narrow_ptr_base(ptr, byte_offset);
-        self.mir.push(Aarch64Inst::NarrowStoreIndexed {
-            src: Operand::Virtual(src),
-            base,
-            width: access.width,
-        });
+        // Fold the byte offset into the store's scaled imm12 when the scaled
+        // form can encode it (RUE-1079); otherwise materialize `base + offset`
+        // and address `[base]` with offset 0 — always correct (RUE-1000).
+        if aarch64_narrow_offset_encodable(byte_offset, access.width) {
+            self.mir.push(Aarch64Inst::NarrowStoreIndexed {
+                src: Operand::Virtual(src),
+                base: ptr,
+                offset: byte_offset,
+                width: access.width,
+            });
+        } else {
+            let base = self.narrow_ptr_base(ptr, byte_offset);
+            self.mir.push(Aarch64Inst::NarrowStoreIndexed {
+                src: Operand::Virtual(src),
+                base,
+                offset: 0,
+                width: access.width,
+            });
+        }
     }
     fn emit_narrow_load_through_ptr(
         &mut self,
@@ -3336,13 +3361,26 @@ impl crate::agg_slots::SlotBackend for CfgLower<'_> {
         byte_offset: i32,
         access: crate::types::NarrowScalar,
     ) {
-        let base = self.narrow_ptr_base(ptr, byte_offset);
-        self.mir.push(Aarch64Inst::NarrowLoadIndexed {
-            dst: Operand::Virtual(dst),
-            base,
-            width: access.width,
-            signed: access.signed,
-        });
+        // Fold when the scaled imm12 form can encode the offset, else materialize
+        // (RUE-1079); see `emit_narrow_store_through_ptr`.
+        if aarch64_narrow_offset_encodable(byte_offset, access.width) {
+            self.mir.push(Aarch64Inst::NarrowLoadIndexed {
+                dst: Operand::Virtual(dst),
+                base: ptr,
+                offset: byte_offset,
+                width: access.width,
+                signed: access.signed,
+            });
+        } else {
+            let base = self.narrow_ptr_base(ptr, byte_offset);
+            self.mir.push(Aarch64Inst::NarrowLoadIndexed {
+                dst: Operand::Virtual(dst),
+                base,
+                offset: 0,
+                width: access.width,
+                signed: access.signed,
+            });
+        }
     }
     fn emit_zero_vreg(&mut self) -> VReg {
         let dst = self.mir.alloc_vreg();
