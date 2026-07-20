@@ -1558,6 +1558,11 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
             "raw_declaration_signature_cache",
             "warm_raw_declaration_signature",
             "eager_raw_declaration_signature",
+            "legacy_raw_declaration_body",
+            "fallback_raw_declaration_body",
+            "raw_declaration_body_cache",
+            "warm_raw_declaration_body",
+            "eager_raw_declaration_body",
         ] {
             assert!(
                 !source.contains(retired),
@@ -1569,6 +1574,7 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
                 ".evaluate_declaration_shell(",
                 ".evaluate_raw_const_syntax(",
                 ".evaluate_raw_declaration_signature(",
+                ".evaluate_raw_declaration_body(",
                 ".declaration_capabilities()",
                 "project_semantic_shell(",
             ] {
@@ -1594,6 +1600,15 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
             assert!(
                 !source.contains("RawDeclarationSignature"),
                 "compiler production module {name} escaped the raw-signature authority allowlist"
+            );
+        }
+        if !matches!(
+            *name,
+            "declaration_candidate" | "parsed_modules" | "revisioned_query_database"
+        ) {
+            assert!(
+                !source.contains("RawDeclarationBody"),
+                "compiler production module {name} escaped the raw-body authority allowlist"
             );
         }
     }
@@ -1624,7 +1639,38 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         1
     );
     assert_eq!(parsed.matches("RawDeclarationSignatureSyntax {").count(), 1);
+    assert_eq!(
+        runtime.matches(".evaluate_raw_declaration_body(").count(),
+        1
+    );
+    assert_eq!(
+        parsed.matches("fn evaluate_raw_declaration_body(").count(),
+        1
+    );
+    assert_eq!(
+        runtime.matches("\"compiler.raw-declaration-body\"").count(),
+        1
+    );
+    assert_eq!(parsed.matches("RawDeclarationBodySyntax {").count(), 1);
     assert!(!runtime.contains("Vec::remove"));
+
+    let raw_body_evaluator = runtime
+        .split("let occurrences_for_raw_body")
+        .nth(1)
+        .and_then(|tail| tail.split("let index_for_lookup").next())
+        .unwrap();
+    for forbidden in [
+        "module_rirs",
+        "lower_module_rir",
+        "CanonicalMergedProgram",
+        "Sema",
+        "SemanticView",
+    ] {
+        assert!(
+            !raw_body_evaluator.contains(forbidden),
+            "raw-body syntax evaluator gained a broad compiler dependency: {forbidden}"
+        );
+    }
 
     let occurrence = runtime
         .split("struct DeclarationOccurrenceIndex {")
@@ -1685,6 +1731,28 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
     let raw_signature_terminal = runtime
         .split("enum RawDeclarationSignatureQueryValue")
         .nth(1)
+        .and_then(|tail| tail.split("struct RawDeclarationBodyQueryKey").next())
+        .unwrap();
+    for forbidden in [
+        "CompileErrors",
+        "Span",
+        "FileId",
+        "Spur",
+        "Ast",
+        "InstRef",
+        "Rir",
+        "TypeId",
+        "SemanticDefinitionToken",
+        "SemanticModuleToken",
+    ] {
+        assert!(
+            !raw_signature_terminal.contains(forbidden),
+            "raw-signature terminal regained positioned/live parser or semantic payload: {forbidden}"
+        );
+    }
+    let raw_body_terminal = runtime
+        .split("enum RawDeclarationBodyQueryValue")
+        .nth(1)
         .and_then(|tail| {
             tail.split("pub(crate) enum DeclarationShellBatchFailure")
                 .next()
@@ -1703,8 +1771,8 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         "SemanticModuleToken",
     ] {
         assert!(
-            !raw_signature_terminal.contains(forbidden),
-            "raw-signature terminal regained positioned/live parser or semantic payload: {forbidden}"
+            !raw_body_terminal.contains(forbidden),
+            "raw-body terminal regained positioned/live parser or semantic payload: {forbidden}"
         );
     }
     let raw_const_payload = module("declaration_candidate")
@@ -1730,6 +1798,20 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         assert!(
             !raw_signature_payload.contains(forbidden),
             "raw-signature payload regained a positioned or live parser/semantic handle: {forbidden}"
+        );
+    }
+    let raw_body_payload = module("declaration_candidate")
+        .split("pub(crate) struct RawDeclarationBodySyntax")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("pub(crate) enum RawDeclarationBodyFailure")
+                .next()
+        })
+        .unwrap();
+    for forbidden in ["Span", "FileId", "Spur", "Ast", "Rir", "InstRef", "TypeId"] {
+        assert!(
+            !raw_body_payload.contains(forbidden),
+            "raw-body payload regained a positioned or live parser/semantic handle: {forbidden}"
         );
     }
     let raw_signature_locator = parsed

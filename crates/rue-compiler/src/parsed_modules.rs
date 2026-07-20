@@ -31,7 +31,7 @@ use crate::{
     declaration_candidate::{
         DeclarationCandidateCategory, DeclarationCandidateKey, DeclarationCandidateOwner,
         DeclarationOccurrenceCapability, DeclarationParameterHeader, DeclarationParameterMode,
-        DeclarationShellFact, DeclarationShellFailure, RawConstSyntax,
+        DeclarationShellFact, DeclarationShellFailure, RawConstSyntax, RawDeclarationBodySyntax,
         RawDeclarationSignatureSyntax,
     },
 };
@@ -159,6 +159,8 @@ pub struct ParsedDefinitionIndex {
     #[cfg(test)]
     raw_declaration_signature_terminal_materializations: Arc<AtomicUsize>,
     #[cfg(test)]
+    raw_declaration_body_terminal_materializations: Arc<AtomicUsize>,
+    #[cfg(test)]
     by_name: BTreeMap<(DefinitionNamespace, Arc<str>), Arc<[ParsedDefinitionOccurrence]>>,
 }
 
@@ -280,6 +282,35 @@ impl ParsedDefinitionIndex {
             .load(Ordering::Relaxed)
     }
 
+    /// Materialize the syntax for exactly one body-bearing declaration key.
+    /// The current-epoch span stays parser-private; only owned source text may
+    /// cross the revisioned query boundary.
+    fn materialize_raw_declaration_body(
+        &self,
+        key: &DeclarationCandidateKey,
+        source_text: &str,
+    ) -> Option<RawDeclarationBodySyntax> {
+        let index = self.declaration_by_key.get(key).copied()?;
+        let candidate = self.declarations.get(index)?;
+        if candidate.fact.key != *key {
+            return None;
+        }
+        let body = candidate.raw_body_span?;
+        let syntax = RawDeclarationBodySyntax {
+            body: Arc::from(source_text.get(body.start as usize..body.end as usize)?),
+        };
+        #[cfg(test)]
+        self.raw_declaration_body_terminal_materializations
+            .fetch_add(1, Ordering::Relaxed);
+        Some(syntax)
+    }
+
+    #[cfg(test)]
+    fn raw_declaration_body_terminal_materialization_count(&self) -> usize {
+        self.raw_declaration_body_terminal_materializations
+            .load(Ordering::Relaxed)
+    }
+
     pub(crate) fn declaration_locator(
         &self,
         key: &DeclarationCandidateKey,
@@ -314,6 +345,7 @@ pub(crate) struct ParsedDeclarationCandidate {
     declaration_span: Span,
     raw_const_syntax_spans: Option<RawConstSyntaxSpans>,
     raw_signature_locator: Option<RawDeclarationSignatureLocator>,
+    raw_body_span: Option<Span>,
 }
 
 /// Parser-private locators for syntax that is materialized only after an exact
@@ -485,6 +517,20 @@ impl ParsedModule {
     pub(crate) fn raw_declaration_signature_terminal_materialization_count(&self) -> usize {
         self.definitions
             .raw_declaration_signature_terminal_materialization_count()
+    }
+
+    pub(crate) fn evaluate_raw_declaration_body(
+        &self,
+        key: &DeclarationCandidateKey,
+    ) -> Option<RawDeclarationBodySyntax> {
+        self.definitions
+            .materialize_raw_declaration_body(key, self.source_text())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn raw_declaration_body_terminal_materialization_count(&self) -> usize {
+        self.definitions
+            .raw_declaration_body_terminal_materialization_count()
     }
 
     #[cfg(test)]
@@ -1264,6 +1310,7 @@ fn bind_payload(
                         }
                     },
                 ),
+                raw_body_span: candidate.raw_body_span.map(remap_span),
             })
             .collect::<Vec<_>>()
             .into(),
@@ -1278,6 +1325,11 @@ fn bind_payload(
         raw_declaration_signature_terminal_materializations: payload
             .definitions
             .raw_declaration_signature_terminal_materializations
+            .clone(),
+        #[cfg(test)]
+        raw_declaration_body_terminal_materializations: payload
+            .definitions
+            .raw_declaration_body_terminal_materializations
             .clone(),
         #[cfg(test)]
         by_name: payload.definitions.by_name.clone(),
@@ -1668,6 +1720,7 @@ fn build_definition_index(
         Span,
         Option<RawConstSyntaxSpans>,
         Option<RawDeclarationSignatureLocator>,
+        Option<Span>,
     )>::new();
     let resolve_name = |ident: rue_parser::Ident| -> CompileResult<Arc<str>> {
         let symbol = resolver.symbol(ident.name)?;
@@ -1746,7 +1799,8 @@ fn build_definition_index(
                         declaration_span,
                         signature_spans: Vec<Span>,
                         raw_const_syntax_spans: Option<RawConstSyntaxSpans>,
-                        raw_signature_locator: Option<RawDeclarationSignatureLocator>|
+                        raw_signature_locator: Option<RawDeclarationSignatureLocator>,
+                        raw_body_span: Option<Span>|
          -> CompileResult<()> {
             let signature_fingerprint = declaration_signature_fingerprint(
                 file_id,
@@ -1776,6 +1830,9 @@ fn build_definition_index(
                     validate_span("raw extern ABI", span, file_id, source_text)?;
                 }
             }
+            if let Some(body) = raw_body_span {
+                validate_span("raw declaration body", body, file_id, source_text)?;
+            }
             pending_declarations.push((
                 DeclarationShellFact {
                     key: DeclarationCandidateKey {
@@ -1797,6 +1854,7 @@ fn build_definition_index(
                 declaration_span,
                 raw_const_syntax_spans,
                 raw_signature_locator,
+                raw_body_span,
             ));
             Ok(())
         };
@@ -1823,6 +1881,7 @@ fn build_definition_index(
                         tokens,
                     )?,
                 }),
+                Some(function.body.span()),
             )?,
             Item::Struct(structure) => {
                 let owner_name = resolve_name(structure.name)?;
@@ -1841,6 +1900,7 @@ fn build_definition_index(
                     signature_fragments_excluding_method_bodies(structure)?,
                     None,
                     Some(struct_signature_locator(structure, tokens)?),
+                    None,
                 )?;
                 let owner = DeclarationCandidateOwner {
                     category: DeclarationCandidateCategory::Struct,
@@ -1879,6 +1939,7 @@ fn build_definition_index(
                                 tokens,
                             )?,
                         }),
+                        Some(method.body.span()),
                     )?;
                 }
             }
@@ -1899,6 +1960,7 @@ fn build_definition_index(
                 Some(RawDeclarationSignatureLocator::Contiguous {
                     declaration: token_bounded_declaration(value.span, tokens)?,
                 }),
+                None,
             )?,
             Item::Const(value) => {
                 let declared_type = value.ty.as_ref().map(TypeExpr::span);
@@ -1926,6 +1988,7 @@ fn build_definition_index(
                     vec![signature_prefix(value.span, value.init.span())?],
                     Some(raw_const_syntax_spans),
                     None,
+                    None,
                 )?;
             }
             Item::DropFn(value) => push(
@@ -1952,6 +2015,7 @@ fn build_definition_index(
                         tokens,
                     )?,
                 }),
+                Some(value.body.span()),
             )?,
             Item::Extern(block) => {
                 for function in &block.fns {
@@ -1973,6 +2037,7 @@ fn build_definition_index(
                             declaration: token_bounded_declaration(function.span, tokens)?,
                             abi: block.abi_span,
                         }),
+                        None,
                     )?;
                 }
             }
@@ -2041,7 +2106,13 @@ fn build_definition_index(
     let declarations = pending_declarations
         .into_iter()
         .map(
-            |(mut fact, declaration_span, raw_const_syntax_spans, raw_signature_locator)| {
+            |(
+                mut fact,
+                declaration_span,
+                raw_const_syntax_spans,
+                raw_signature_locator,
+                raw_body_span,
+            )| {
                 let duplicate = duplicate_counts
                     .entry((
                         fact.key.category,
@@ -2058,6 +2129,7 @@ fn build_definition_index(
                     declaration_span,
                     raw_const_syntax_spans,
                     raw_signature_locator,
+                    raw_body_span,
                 })
             },
         )
@@ -2091,6 +2163,8 @@ fn build_definition_index(
         raw_const_syntax_materializations: Arc::new(AtomicUsize::new(0)),
         #[cfg(test)]
         raw_declaration_signature_terminal_materializations: Arc::new(AtomicUsize::new(0)),
+        #[cfg(test)]
+        raw_declaration_body_terminal_materializations: Arc::new(AtomicUsize::new(0)),
         #[cfg(test)]
         by_name,
     })
