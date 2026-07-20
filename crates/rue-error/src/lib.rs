@@ -383,6 +383,7 @@ impl ErrorCode {
     pub const EXTERN_AGGREGATE_NOT_REPR_C: Self = Self(1102);
     pub const EXTERN_ARRAY_BY_VALUE: Self = Self(1103);
     pub const REPR_C_STRUCT_INELIGIBLE: Self = Self(1104);
+    pub const EXTERN_VARIADIC_UNSUPPORTED: Self = Self(1105);
 
     // ========================================================================
     // Comptime errors (E1200-E1299)
@@ -1636,6 +1637,19 @@ pub enum ErrorKind {
         ty: String,
     },
 
+    /// A C variadic marker (`...`) appeared in an `extern "C"` parameter list.
+    /// Variadic foreign calls are rejected in v0 (ADR-0064 secondary ruling B,
+    /// P6): the target-C classifier implements a fixed-signature calling
+    /// convention only, and matching C's variadic argument-promotion and
+    /// register-save-area contract is a later, separate design. The parser
+    /// recognizes the `...` token specifically so the boundary reports this
+    /// rather than a generic "unexpected token".
+    #[error(
+        "variadic parameters (`...`) are not supported in an `extern \"C\"` \
+         signature: C variadic calls are rejected in v0 (ADR-0064)"
+    )]
+    ExternVariadicUnsupported,
+
     /// A `@repr(c)` struct failed the reject-don't-guess eligibility check
     /// (ADR-0064 Amendment 1): an empty struct, an enum/aggregate field without
     /// its own `@repr(c)` marker, or a linear / destructor-bearing field. The
@@ -1885,6 +1899,7 @@ impl ErrorKind {
             }
             ErrorKind::ExternAggregateNotReprC { .. } => ErrorCode::EXTERN_AGGREGATE_NOT_REPR_C,
             ErrorKind::ExternArrayByValue { .. } => ErrorCode::EXTERN_ARRAY_BY_VALUE,
+            ErrorKind::ExternVariadicUnsupported => ErrorCode::EXTERN_VARIADIC_UNSUPPORTED,
             ErrorKind::ReprCStructIneligible(_) => ErrorCode::REPR_C_STRUCT_INELIGIBLE,
             ErrorKind::SliceNotYetImplemented => ErrorCode::SLICE_NOT_YET_IMPLEMENTED,
             ErrorKind::SliceReturnNotAllowed => ErrorCode::SLICE_RETURN_NOT_ALLOWED,

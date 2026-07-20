@@ -25,6 +25,10 @@
 // machine-readably and is the hook a future ILP32/LLP64 target would branch on
 // once const-context target selection exists (see the c_char note below).
 
+// The StrBuf <-> char* bridges at the bottom of this module copy through the
+// growable byte-string type.
+const strbuf = @import("strbuf.rue");
+
 // ---------------------------------------------------------------------------
 // Character types
 // ---------------------------------------------------------------------------
@@ -122,3 +126,109 @@ pub const c_bool = bool;
 // is out of scope for this change. The signed/unsigned char types (`c_schar`,
 // `c_uchar`) are provided unconditionally in the meantime; the WIDTHS above are
 // all target-invariant across the supported LP64 set and so are fully correct.
+
+// ---------------------------------------------------------------------------
+// StrBuf <-> char* interop (ADR-0064 P6)
+// ---------------------------------------------------------------------------
+//
+// A C `char*` is Rue's `ptr mut u8`. A StrBuf is a length-carrying byte buffer
+// that is NOT NUL-terminated, so it cannot be handed to a C function expecting a
+// NUL-terminated string as-is. Per ADR-0064, NUL termination and ownership are
+// an EXPLICIT MANUAL CONTRACT, not an automatic conversion: these helpers make
+// that contract a single documented call each rather than open-coded pointer
+// arithmetic at every call site.
+//
+// POINTER MUTABILITY. These are typed `ptr mut u8` (C `char*`), not
+// `ptr const u8` (C `const char*`), because Rue v0 provides no way to construct
+// or coerce to a `ptr const u8` value: `@alloc_bytes` and `@int_to_ptr` both
+// yield `ptr mut u8`, and there is no `ptr mut → ptr const` coercion, so a
+// `ptr const u8` parameter is currently uncallable with a constructed pointer.
+// `char*` is the callable spelling of a C string boundary today; a `const
+// char*`-only foreign function is reachable once a const-pointer view exists (a
+// later, additive design). A `char*` argument satisfies a C `const char*`
+// parameter on the C side regardless.
+//
+// All are unchecked-boundary operations (raw-pointer reads/writes and the byte
+// allocator), consistent with the FFI rule that foreign interop is
+// unchecked-context work (ADR-0064 ruling 3): a pointer received from or handed
+// to C carries no Rue lifetime, aliasing, or validity guarantee, and the caller
+// is responsible for keeping it live and for freeing what it owns.
+
+/// Scan a NUL-terminated C string and return its length in bytes, EXCLUDING the
+/// terminator — the `strlen(3)` shape.
+///
+/// `cstr` must point at a `0`-terminated buffer the caller keeps valid for the
+/// duration of the call. There is no length bound: a buffer without a
+/// terminator reads out of bounds, exactly as C `strlen` does. This is the
+/// scan both `strbuf_from_c_string` and `free_c_string` share.
+pub fn c_strlen(cstr: ptr mut u8) -> u64 {
+    let mut len: u64 = 0;
+    while checked { @byte_read(cstr, len) } != 0 {
+        len = len + 1;
+    }
+    len
+}
+
+/// Copy `source`'s bytes into a freshly allocated, NUL-terminated C string and
+/// return a pointer the CALLER OWNS.
+///
+/// The returned buffer holds `source.len() + 1` bytes at alignment one — the
+/// string bytes followed by a `0` terminator — and is suitable for a C `char*`
+/// (or `const char*`) parameter. It is an INDEPENDENT allocation: `source`
+/// is borrowed, remains valid, and is not consumed. Ownership transfers to the
+/// caller, who MUST release the buffer with [`free_c_string`] (never a StrBuf
+/// free — this buffer is not a StrBuf and carries no capacity header). If
+/// `source` itself contains an interior `0` byte, the C string is effectively
+/// truncated at that byte from a C consumer's point of view; the full
+/// `len + 1` bytes are still what `free_c_string` reclaims via its own scan, so
+/// interior NULs are a caller concern, not a leak. Allocation failure is
+/// fail-fast, matching StrBuf's allocator convention.
+pub fn owned_c_string(borrow source: strbuf.StrBuf) -> ptr mut u8 {
+    let len = source.len();
+    let buf: ptr mut u8 = checked { @alloc_bytes(len + 1, 1) };
+    if checked { @ptr_to_int(buf) } == 0 {
+        @panic("out of memory");
+    }
+    let mut i: u64 = 0;
+    while i < len {
+        let byte = strbuf.StrBuf.byte_at_borrowed(borrow source, i);
+        checked { @byte_write(buf, i, byte); };
+        i = i + 1;
+    }
+    checked { @byte_write(buf, len, 0); };
+    buf
+}
+
+/// Import a NUL-terminated C string into a NEW owned StrBuf by scanning for the
+/// terminator (`strlen`-shape) and copying the bytes before it.
+///
+/// The terminator is NOT copied — the resulting StrBuf's length is the C
+/// string's `strlen`. `cstr` is only READ and must stay valid for the duration
+/// of the call; its ownership is unaffected (freeing it, if the caller owns it,
+/// remains the caller's responsibility). The returned StrBuf is an independent
+/// owner with its own allocation and the ordinary StrBuf destructor.
+pub fn strbuf_from_c_string(cstr: ptr mut u8) -> strbuf.StrBuf {
+    let len = c_strlen(cstr);
+    let mut out = strbuf.StrBuf.with_capacity(len);
+    let mut i: u64 = 0;
+    while i < len {
+        out.push(checked { @byte_read(cstr, i) });
+        i = i + 1;
+    }
+    out
+}
+
+/// Release a buffer returned by [`owned_c_string`].
+///
+/// `cstr` must be a pointer `owned_c_string` returned and not yet freed. The
+/// length is recovered by scanning to the terminator (the buffer was allocated
+/// as `strlen + 1` bytes at alignment one), so the caller does not track the
+/// size. Passing any other pointer — a StrBuf's backing buffer, a C-owned
+/// string, or an already-freed pointer — is a contract violation.
+pub fn free_c_string(cstr: ptr mut u8) {
+    let mut len: u64 = 0;
+    while checked { @byte_read(cstr, len) } != 0 {
+        len = len + 1;
+    }
+    checked { @free_bytes(cstr, len + 1, 1); };
+}

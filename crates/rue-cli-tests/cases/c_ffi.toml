@@ -509,3 +509,84 @@ fn main() -> i32 { 0 }
 """ }]
 args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
 exit_code = 0
+
+# --- P6: StrBuf <-> char* interop, execution-verified (both backends) ---------
+# A Rue StrBuf is built, exported to a caller-owned NUL-terminated `char*` via
+# `std.c.owned_c_string`, and its length is measured by the archive's
+# `ffi_strlen` foreign function (a real C-shape strlen call through the FFI
+# boundary). Then the C string is imported back into a StrBuf with
+# `std.c.strbuf_from_c_string` and compared to the original, closing the
+# round-trip. Prints: the C strlen (11), the local scan agreeing (11), the
+# round-trip equality (true), and the reimported length (11). Target-pinned like
+# cli.abi_conformance; the native host executes and checks exact output.
+
+[[case]]
+name = "x86_64_linux_strbuf_char_star_interop_roundtrip"
+description = "StrBuf exported to char*, measured by an archive strlen, reimported and compared on x86-64."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+extern "C" {
+    fn ffi_strlen(s: ptr mut u8) -> u64;
+}
+
+fn main() -> i32 {
+    let text = "hello world";
+    let sb = std.strbuf.StrBuf.from_str(borrow text);
+
+    // Export to a caller-owned, NUL-terminated C string and hand it to a real
+    // foreign strlen-shape function.
+    let cstr = std.c.owned_c_string(borrow sb);
+    @dbg(checked { ffi_strlen(cstr) });
+    @dbg(std.c.c_strlen(cstr));
+
+    // Import the C string back and compare with the original StrBuf.
+    let back = std.c.strbuf_from_c_string(cstr);
+    @dbg(std.strbuf.StrBuf.equals_borrowed(borrow sb, borrow back));
+    @dbg(back.len());
+
+    std.c.free_c_string(cstr);
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "x86-64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = "11\n11\ntrue\n11\n"
+exit_code = 0
+
+[[case]]
+name = "aarch64_linux_strbuf_char_star_interop_roundtrip"
+description = "StrBuf exported to char*, measured by an archive strlen, reimported and compared on AArch64."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+extern "C" {
+    fn ffi_strlen(s: ptr mut u8) -> u64;
+}
+
+fn main() -> i32 {
+    let text = "hello world";
+    let sb = std.strbuf.StrBuf.from_str(borrow text);
+
+    let cstr = std.c.owned_c_string(borrow sb);
+    @dbg(checked { ffi_strlen(cstr) });
+    @dbg(std.c.c_strlen(cstr));
+
+    let back = std.c.strbuf_from_c_string(cstr);
+    @dbg(std.strbuf.StrBuf.equals_borrowed(borrow sb, borrow back));
+    @dbg(back.len());
+
+    std.c.free_c_string(cstr);
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "aarch64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = "11\n11\ntrue\n11\n"
+exit_code = 0

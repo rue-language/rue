@@ -136,6 +136,10 @@ use rue_target::{Arch, Target};
 /// - `ffi_fill_triple(i64 x) -> Triple` returns `{a: x, b: x+1, c: x+2}` via sret:
 ///   the callee writes the caller storage (SysV echoes the pointer in rax; AAPCS64
 ///   uses the dedicated x8, no echo) — the large indirect aggregate return.
+/// - `ffi_strlen(char*) -> size_t` — a `strlen`-shape length scan for the P6
+///   `StrBuf`<->`char*` interop proof: it counts bytes before the NUL terminator
+///   of the pointer argument, so a `StrBuf` exported via `std.c.owned_c_string`
+///   round-trips its length through a real foreign call.
 fn synthesize_answer_archive(target: Target) -> TestResult<Vec<u8>> {
     // A leaf function returning 42 (P1).
     let answer: Vec<u8> = match target.arch() {
@@ -159,6 +163,25 @@ fn synthesize_answer_archive(target: Target) -> TestResult<Vec<u8>> {
         Arch::Aarch64 => vec![
             0xE0, 0x03, 0x00, 0x2A, 0x0A, 0x1E, 0xFE, 0xD2, 0x0A, 0x1E, 0xDE, 0xF2, 0x00, 0x00,
             0x0A, 0xAA, 0xC0, 0x03, 0x5F, 0xD6,
+        ],
+    };
+    // A `strlen`-shape length scan over a NUL-terminated `char*` in the first
+    // pointer argument (rdi / x0), returning the byte count before the `0` in the
+    // result register (rax / x0). This is the P6 StrBuf<->char* interop proof
+    // callee: a Rue `StrBuf` exported through `std.c.owned_c_string` is passed
+    // here and its length is checked. Byte-for-byte a hand-assembled leaf loop;
+    // no C toolchain is involved (matching the other members).
+    let strlen: Vec<u8> = match target.arch() {
+        // xor eax,eax ; L: cmp byte [rdi+rax],0 ; je +5 ; inc rax ; jmp L ; ret
+        Arch::X86_64 => vec![
+            0x31, 0xC0, 0x80, 0x3C, 0x07, 0x00, 0x74, 0x05, 0x48, 0xFF, 0xC0, 0xEB, 0xF5, 0xC3,
+        ],
+        // movz x2,#0 ; L: ldrb w3,[x0] ; cbz w3,done ; add x0,x0,#1 ; add x2,x2,#1
+        //           ; b L ; done: mov x0,x2 ; ret
+        Arch::Aarch64 => vec![
+            0x02, 0x00, 0x80, 0xD2, 0x03, 0x00, 0x40, 0x39, 0x83, 0x00, 0x00, 0x34, 0x00, 0x04,
+            0x00, 0x91, 0x42, 0x04, 0x00, 0x91, 0xFC, 0xFF, 0xFF, 0x17, 0xE0, 0x03, 0x02, 0xAA,
+            0xC0, 0x03, 0x5F, 0xD6,
         ],
     };
     // A `_Bool` normalizer: al/w0 = (x != 0), then the same dirty-high pattern.
@@ -203,6 +226,12 @@ fn synthesize_answer_archive(target: Target) -> TestResult<Vec<u8>> {
         "ffi_bool_norm.o".to_string(),
         rue_linker::ObjectBuilder::new(target, "ffi_bool_norm")
             .code(bool_norm)
+            .build(),
+    ));
+    objects.push((
+        "ffi_strlen.o".to_string(),
+        rue_linker::ObjectBuilder::new(target, "ffi_strlen")
+            .code(strlen)
             .build(),
     ));
 
