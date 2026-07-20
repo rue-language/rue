@@ -401,6 +401,11 @@ pub(crate) struct RevisionedQueryDatabase {
     #[cfg_attr(not(test), allow(dead_code))]
     raw_declaration_signatures:
         QueryFamily<RawDeclarationSignatureQueryKey, RawDeclarationSignatureQueryValue>,
+    // Exact body text is an input for the later declaration-time comptime
+    // evaluator. It is not runtime body semantics and must never request a
+    // whole-module RIR.
+    #[cfg_attr(not(test), allow(dead_code))]
+    raw_declaration_bodies: QueryFamily<RawDeclarationBodyQueryKey, RawDeclarationBodyQueryValue>,
     module_rirs: QueryFamily<ModuleQueryKey, ModuleRirValue>,
     resolve_imports: QueryFamily<ResolveImportKey, ResolveImportValue>,
     lookup_names: QueryFamily<LookupNameKey, LookupNameValue>,
@@ -510,6 +515,21 @@ impl QueryKey for RawDeclarationSignatureQueryKey {
 enum RawDeclarationSignatureQueryValue {
     Available(crate::declaration_candidate::RawDeclarationSignatureSyntax),
     Failure(crate::declaration_candidate::RawDeclarationSignatureFailure),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RawDeclarationBodyQueryKey(crate::declaration_candidate::DeclarationCandidateKey);
+
+impl QueryKey for RawDeclarationBodyQueryKey {
+    fn stable_identity(&self) -> String {
+        self.0.stable_identity()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RawDeclarationBodyQueryValue {
+    Available(crate::declaration_candidate::RawDeclarationBodySyntax),
+    Failure(crate::declaration_candidate::RawDeclarationBodyFailure),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1352,6 +1372,151 @@ impl Default for RevisionedQueryDatabase {
                 },
             )
             .expect("the RawDeclarationSignature family has one canonical name");
+        let occurrences_for_raw_body = declaration_occurrence_indexes.clone();
+        let shells_for_raw_body = declaration_shells.clone();
+        let parse_for_raw_body = parse_modules.clone();
+        let raw_declaration_bodies = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.raw-declaration-body",
+                MODULE_QUERY_MEMO_RETENTION,
+                |left: &RawDeclarationBodyQueryValue,
+                 right: &RawDeclarationBodyQueryValue| { left == right },
+                move |context, _, key: &RawDeclarationBodyQueryKey| {
+                    use crate::declaration_candidate::{
+                        DeclarationCandidateCategory, DeclarationOccurrenceCapability,
+                        DeclarationShellFailure, RawDeclarationBodyFailure,
+                    };
+
+                    let indexed = context.query_registered(
+                        &occurrences_for_raw_body,
+                        ModuleQueryKey(key.0.module.clone()),
+                    )?;
+                    let rue_query::QueryOutcome::Success(indexed) = indexed.outcome() else {
+                        unreachable!("DeclarationOccurrenceIndex publishes typed values")
+                    };
+                    let value = match indexed {
+                        DeclarationOccurrenceIndexValue::Failure(failure) => {
+                            RawDeclarationBodyQueryValue::Failure(
+                                RawDeclarationBodyFailure::OccurrencesUnavailable(failure.clone()),
+                            )
+                        }
+                        DeclarationOccurrenceIndexValue::Available(index) => {
+                            match index.capabilities.get(&key.0) {
+                                None => RawDeclarationBodyQueryValue::Failure(
+                                    RawDeclarationBodyFailure::Absent(key.0.clone()),
+                                ),
+                                Some(DeclarationOccurrenceCapability::Ambiguous { .. }) => {
+                                    RawDeclarationBodyQueryValue::Failure(
+                                        RawDeclarationBodyFailure::Ambiguous(key.0.clone()),
+                                    )
+                                }
+                                Some(DeclarationOccurrenceCapability::Exact {
+                                    duplicate_multiplicity: 0,
+                                    ..
+                                }) => RawDeclarationBodyQueryValue::Failure(
+                                    RawDeclarationBodyFailure::ParserCapabilityMismatch(
+                                        key.0.clone(),
+                                    ),
+                                ),
+                                Some(DeclarationOccurrenceCapability::Exact { .. }) => {
+                                    let shell = context.query_registered(
+                                        &shells_for_raw_body,
+                                        DeclarationShellQueryKey(key.0.clone()),
+                                    )?;
+                                    let rue_query::QueryOutcome::Success(shell) = shell.outcome()
+                                    else {
+                                        unreachable!("DeclarationShell publishes typed values")
+                                    };
+                                    match shell {
+                                        DeclarationShellQueryValue::Failure(failure) => {
+                                            let failure = match failure {
+                                                DeclarationShellFailure::OccurrencesUnavailable(
+                                                    failure,
+                                                ) => RawDeclarationBodyFailure::OccurrencesUnavailable(
+                                                    failure.clone(),
+                                                ),
+                                                DeclarationShellFailure::Absent(key) => {
+                                                    RawDeclarationBodyFailure::Absent(key.clone())
+                                                }
+                                                DeclarationShellFailure::Ambiguous(key) => {
+                                                    RawDeclarationBodyFailure::Ambiguous(key.clone())
+                                                }
+                                                DeclarationShellFailure::ParserCapabilityMismatch(
+                                                    key,
+                                                ) => RawDeclarationBodyFailure::ParserCapabilityMismatch(
+                                                    key.clone(),
+                                                ),
+                                            };
+                                            RawDeclarationBodyQueryValue::Failure(failure)
+                                        }
+                                        DeclarationShellQueryValue::Available(fact)
+                                            if !matches!(
+                                                fact.key.category,
+                                                DeclarationCandidateCategory::Function
+                                                    | DeclarationCandidateCategory::Method
+                                                    | DeclarationCandidateCategory::AssociatedFunction
+                                                    | DeclarationCandidateCategory::Destructor
+                                            ) =>
+                                        {
+                                            RawDeclarationBodyQueryValue::Failure(
+                                                RawDeclarationBodyFailure::CategoryMismatch(
+                                                    key.0.clone(),
+                                                ),
+                                            )
+                                        }
+                                        DeclarationShellQueryValue::Available(fact)
+                                            if fact.key != key.0 =>
+                                        {
+                                            RawDeclarationBodyQueryValue::Failure(
+                                                RawDeclarationBodyFailure::ParserCapabilityMismatch(
+                                                    key.0.clone(),
+                                                ),
+                                            )
+                                        }
+                                        DeclarationShellQueryValue::Available(_) => {
+                                            let parsed = context.query_registered(
+                                                &parse_for_raw_body,
+                                                ModuleQueryKey(key.0.module.clone()),
+                                            )?;
+                                            let rue_query::QueryOutcome::Success(parsed) =
+                                                parsed.outcome()
+                                            else {
+                                                unreachable!("ParseModule publishes typed values")
+                                            };
+                                            match &parsed.result {
+                                                Err(_) => RawDeclarationBodyQueryValue::Failure(
+                                                    RawDeclarationBodyFailure::OccurrencesUnavailable(
+                                                        crate::declaration_candidate::DeclarationOccurrenceFailure::ParseRejected {
+                                                            module: key.0.module.clone(),
+                                                        },
+                                                    ),
+                                                ),
+                                                Ok(module) => module
+                                                    .evaluate_raw_declaration_body(&key.0)
+                                                    .map_or_else(
+                                                        || RawDeclarationBodyQueryValue::Failure(
+                                                            RawDeclarationBodyFailure::ParserCapabilityMismatch(
+                                                                key.0.clone(),
+                                                            ),
+                                                        ),
+                                                        RawDeclarationBodyQueryValue::Available,
+                                                    ),
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    let kind = if matches!(value, RawDeclarationBodyQueryValue::Available(_)) {
+                        QueryTerminalKind::Success
+                    } else {
+                        QueryTerminalKind::Failure
+                    };
+                    Ok(QueryOutput::success(value).with_terminal_kind(kind))
+                },
+            )
+            .expect("the RawDeclarationBody family has one canonical name");
         let index_for_lookup = module_indexes.clone();
         let lookup_names = runtime
             .family_with_evaluator(
@@ -1491,6 +1656,7 @@ impl Default for RevisionedQueryDatabase {
             declaration_shells,
             raw_const_syntax,
             raw_declaration_signatures,
+            raw_declaration_bodies,
             module_rirs,
             resolve_imports,
             lookup_names,
@@ -3346,6 +3512,269 @@ mod tests {
                 )
             ) if failed_module == &module
         ));
+    }
+
+    #[test]
+    fn raw_declaration_body_is_exact_lazy_and_red_green() {
+        fn program(selected_body: &str, unrelated_body: u32) -> String {
+            let mut source = String::new();
+            for index in 0..128 {
+                let body = if index == 64 { unrelated_body } else { index };
+                source.push_str(&format!("fn unrelated{index}() -> i32 {{ {body} }}\n"));
+            }
+            source.push_str(&format!(
+                "fn selected(comptime T: type) -> type // boundary trivia\n{{ {selected_body} }}\n"
+            ));
+            source
+        }
+
+        let first_text = program("struct { value: T }", 64);
+        let unrelated_edit_text = program("struct { value: T }", 999);
+        let selected_edit_text = program("enum { Value(T), Empty }", 999);
+        let first = source_snapshot(&[(1, "/main.rue", "main.rue", &first_text)], 1);
+        let unrelated_edit =
+            source_snapshot(&[(1, "/main.rue", "main.rue", &unrelated_edit_text)], 1);
+        let selected_edit =
+            source_snapshot(&[(1, "/main.rue", "main.rue", &selected_edit_text)], 1);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let key = crate::declaration_candidate::DeclarationCandidateKey {
+            module: module.clone(),
+            category: crate::declaration_candidate::DeclarationCandidateCategory::Function,
+            name: Arc::from("selected"),
+            owner: None,
+            duplicate_discriminator: 0,
+        };
+        let mut database = RevisionedQueryDatabase::default();
+        let first_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&first),
+            &first,
+        );
+        let parsed = database.runtime.request_registered(
+            &database.parse_modules,
+            first_revision,
+            ModuleQueryKey(module),
+            CancellationToken::new(),
+        );
+        let parsed_module = match parsed.terminal().unwrap().outcome() {
+            rue_query::QueryOutcome::Success(value) => value.result.clone().unwrap(),
+            rue_query::QueryOutcome::Failure(_) => unreachable!(),
+        };
+        assert_eq!(
+            parsed_module.raw_declaration_body_terminal_materialization_count(),
+            0,
+            "indexing must not allocate raw-body terminal text"
+        );
+
+        let first_request = database.runtime.request_registered(
+            &database.raw_declaration_bodies,
+            first_revision,
+            RawDeclarationBodyQueryKey(key.clone()),
+            CancellationToken::new(),
+        );
+        assert_eq!(execution(&first_request), RequestExecution::Computed);
+        assert_eq!(
+            first_request
+                .dependencies()
+                .iter()
+                .map(|dependency| dependency.node.family())
+                .collect::<Vec<_>>(),
+            vec![
+                "compiler.declaration-occurrence-index",
+                "compiler.declaration-shell",
+                "compiler.parse-module",
+            ]
+        );
+        let first_terminal = first_request.terminal().unwrap();
+        let first_stamp = first_terminal.stamp();
+        assert!(matches!(
+            first_terminal.outcome(),
+            rue_query::QueryOutcome::Success(RawDeclarationBodyQueryValue::Available(syntax))
+                if syntax.body.as_ref() == "{ struct { value: T } }"
+        ));
+        assert_eq!(
+            parsed_module.raw_declaration_body_terminal_materialization_count(),
+            1
+        );
+
+        let warm = database.runtime.request_registered(
+            &database.raw_declaration_bodies,
+            first_revision,
+            RawDeclarationBodyQueryKey(key.clone()),
+            CancellationToken::new(),
+        );
+        assert_eq!(execution(&warm), RequestExecution::Reused);
+        assert_eq!(
+            parsed_module.raw_declaration_body_terminal_materialization_count(),
+            1,
+            "warm reuse must not rematerialize body text"
+        );
+
+        let unrelated_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&unrelated_edit),
+            &unrelated_edit,
+        );
+        let unrelated_request = database.runtime.request_registered(
+            &database.raw_declaration_bodies,
+            unrelated_revision,
+            RawDeclarationBodyQueryKey(key.clone()),
+            CancellationToken::new(),
+        );
+        assert_eq!(unrelated_request.terminal().unwrap().stamp(), first_stamp);
+
+        let selected_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&selected_edit),
+            &selected_edit,
+        );
+        let selected_request = database.runtime.request_registered(
+            &database.raw_declaration_bodies,
+            selected_revision,
+            RawDeclarationBodyQueryKey(key),
+            CancellationToken::new(),
+        );
+        let selected_terminal = selected_request.terminal().unwrap();
+        assert_ne!(selected_terminal.stamp(), first_stamp);
+        assert!(matches!(
+            selected_terminal.outcome(),
+            rue_query::QueryOutcome::Success(RawDeclarationBodyQueryValue::Available(syntax))
+                if syntax.body.as_ref() == "{ enum { Value(T), Empty } }"
+        ));
+    }
+
+    #[test]
+    fn raw_declaration_bodies_cover_body_categories_and_boundaries() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn free() -> i32 // excluded one\n{ 1 }\n\
+                 struct Box { value: i32, fn get(borrow self) -> i32 // excluded two\n{ self.value } fn make(value: i32) -> Box { Box { value } } }\n\
+                 drop fn Box(self) // excluded three\n{ let x = self; }\n\
+                 const value = 1; extern \"C\" { fn foreign() -> i32; }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let owner = crate::declaration_candidate::DeclarationCandidateOwner {
+            category: Category::Struct,
+            name: Arc::from("Box"),
+        };
+        let key = |category, name: &'static str, owner| {
+            crate::declaration_candidate::DeclarationCandidateKey {
+                module: module.clone(),
+                category,
+                name: Arc::from(name),
+                owner,
+                duplicate_discriminator: 0,
+            }
+        };
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        for (candidate, expected) in [
+            (key(Category::Function, "free", None), "{ 1 }"),
+            (
+                key(Category::Method, "get", Some(owner.clone())),
+                "{ self.value }",
+            ),
+            (
+                key(Category::AssociatedFunction, "make", Some(owner.clone())),
+                "{ Box { value } }",
+            ),
+            (
+                key(Category::Destructor, "Box", Some(owner)),
+                "{ let x = self; }",
+            ),
+        ] {
+            let requested = database.runtime.request_registered(
+                &database.raw_declaration_bodies,
+                revision,
+                RawDeclarationBodyQueryKey(candidate),
+                CancellationToken::new(),
+            );
+            match requested.terminal().unwrap().outcome() {
+                rue_query::QueryOutcome::Success(RawDeclarationBodyQueryValue::Available(
+                    syntax,
+                )) => assert_eq!(syntax.body.as_ref(), expected),
+                other => panic!("expected raw body {expected:?}, got {other:?}"),
+            }
+        }
+
+        for candidate in [
+            key(Category::Struct, "Box", None),
+            key(Category::ConstCandidate, "value", None),
+            key(Category::ExternFunction, "foreign", None),
+        ] {
+            let requested = database.runtime.request_registered(
+                &database.raw_declaration_bodies,
+                revision,
+                RawDeclarationBodyQueryKey(candidate.clone()),
+                CancellationToken::new(),
+            );
+            assert!(matches!(
+                requested.terminal().unwrap().outcome(),
+                rue_query::QueryOutcome::Success(RawDeclarationBodyQueryValue::Failure(
+                    crate::declaration_candidate::RawDeclarationBodyFailure::CategoryMismatch(
+                        actual
+                    )
+                )) if actual == &candidate
+            ));
+        }
+    }
+
+    #[test]
+    fn raw_declaration_body_duplicate_discriminators_cancel_and_recover() {
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn duplicate() -> i32 { 11 } fn duplicate() -> i32 { 22 }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let key = |duplicate_discriminator| crate::declaration_candidate::DeclarationCandidateKey {
+            module: module.clone(),
+            category: crate::declaration_candidate::DeclarationCandidateCategory::Function,
+            name: Arc::from("duplicate"),
+            owner: None,
+            duplicate_discriminator,
+        };
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+
+        let canceled = CancellationToken::new();
+        canceled.cancel();
+        let aborted = database.runtime.request_registered(
+            &database.raw_declaration_bodies,
+            revision,
+            RawDeclarationBodyQueryKey(key(0)),
+            canceled,
+        );
+        assert_eq!(execution(&aborted), RequestExecution::Aborted);
+        assert!(aborted.terminal().is_none());
+
+        for (discriminator, expected) in [(0, "{ 11 }"), (1, "{ 22 }")] {
+            let requested = database.runtime.request_registered(
+                &database.raw_declaration_bodies,
+                revision,
+                RawDeclarationBodyQueryKey(key(discriminator)),
+                CancellationToken::new(),
+            );
+            assert!(matches!(
+                requested.terminal().unwrap().outcome(),
+                rue_query::QueryOutcome::Success(RawDeclarationBodyQueryValue::Available(syntax))
+                    if syntax.body.as_ref() == expected
+            ));
+        }
     }
 
     #[test]

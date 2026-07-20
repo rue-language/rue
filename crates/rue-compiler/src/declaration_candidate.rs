@@ -129,6 +129,30 @@ pub(crate) enum RawDeclarationSignatureFailure {
     ParserCapabilityMismatch(DeclarationCandidateKey),
 }
 
+/// Parser-validated syntax for one body-bearing declaration, detached from its
+/// source epoch and parser symbol universe.
+///
+/// The fragment is exactly the declaration's body expression, including its
+/// delimiters. It deliberately excludes the signature and trivia between the
+/// signature's last token and the body. This is a syntax input only: runtime
+/// body analysis remains a later query family, while declaration-time
+/// comptime reduction can reparse this exact demanded producer without
+/// requesting a whole-module RIR.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct RawDeclarationBodySyntax {
+    pub(crate) body: Arc<str>,
+}
+
+/// Stable, position-free failure retained by the exact raw-body family.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RawDeclarationBodyFailure {
+    OccurrencesUnavailable(DeclarationOccurrenceFailure),
+    Absent(DeclarationCandidateKey),
+    Ambiguous(DeclarationCandidateKey),
+    CategoryMismatch(DeclarationCandidateKey),
+    ParserCapabilityMismatch(DeclarationCandidateKey),
+}
+
 impl DeclarationCandidateKey {
     pub(crate) fn stable_identity(&self) -> String {
         // Length-prefix every user-authored component. Query identities must
