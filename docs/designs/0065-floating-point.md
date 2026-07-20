@@ -1,11 +1,11 @@
 ---
 id: 0065
 title: "Floating point: f32/f64, IEEE-754 semantics, and register classes"
-status: proposal
+status: accepted
 tags: [types, semantics, codegen, numerics, abi]
 feature-flag: floats
 created: 2026-07-19
-accepted:
+accepted: 2026-07-20
 implemented:
 spec-sections: []
 superseded-by:
@@ -15,14 +15,16 @@ superseded-by:
 
 ## Status
 
-Proposal. This is the design gate for **M9 · Floating point** (RUE-714). It needs
-a maintainer decision before any implementation issue is opened. Today Rue has
-**zero** float support: the lexer emits only `Int(u64)`
-(`crates/rue-lexer/src/logos_lexer.rs`), the packed `Type` encoding has no
-F32/F64 tags (`crates/rue-air/src/types.rs`), neither backend has XMM/V
-registers, and the register allocator has **no register-class concept at all**
+Accepted 2026-07-20 by Steve Klabnik, ratifying the proposal below and the four
+open questions resolved in the amendment (Decision §§1, 4, 8, 9). This was the
+design gate for **M9 · Floating point** (RUE-714); the M9 implementation epic
+and per-phase sub-issues are filed next, followed by the `PreviewFeature::Floats`
+gate. Before this ADR, Rue had **zero** float support: the lexer emitted only
+`Int(u64)` (`crates/rue-lexer/src/logos_lexer.rs`), the packed `Type` encoding
+had no F32/F64 tags (`crates/rue-air/src/types.rs`), neither backend had XMM/V
+registers, and the register allocator had **no register-class concept at all**
 (`crates/rue-codegen/src/vreg.rs` is `struct VReg(u32)`, single-class). The only
-existing traces are a forward reference in spec `4.3` ("once floating-point types
+existing traces were a forward reference in spec `4.3` ("once floating-point types
 exist") and `comptime_float` marked *future* in [ADR-0025](0025-comptime.md).
 
 ## Summary
@@ -38,7 +40,9 @@ concrete type by context with round-to-nearest, so no literal suffixes are
 introduced. Comparison operators (`==`, `<`, …) use **IEEE partial** semantics —
 `NaN != NaN`, `NaN` is unordered — which formally resolves the open question in
 spec 4.3 and is the concrete motivation for the future `PartialEq`/`Eq` split
-(RUE-246). The enabling compiler change is a **register-class split (GP vs FP)**
+(RUE-246). A **`@total_cmp` intrinsic ships with v1** as a stopgap total order
+(IEEE `totalOrder`) for sorting and hashing, ahead of that trait split. The
+enabling compiler change is a **register-class split (GP vs FP)**
 threaded through `VReg`, liveness, register allocation, and scheduling; it lands
 as a no-op refactor *before* any float instruction selection. Runtime `float →
 string` adopts the already-vendored `zmij` dtoa crate. The whole feature is gated
@@ -108,6 +112,12 @@ direction of Rue's existing grain.
 - **`-0.0`, `inf`, `NaN` are ordinary runtime values.** There is no `NaN`/`inf`
   literal syntax (matching Zig); they arise from arithmetic or from `std.math`
   constants/intrinsics (`@is_nan`, `std.math.inf`, `std.math.nan`).
+- **`f16`/`f128` are out of scope**, confirmed on ratification: no hardware
+  `f16` on baseline targets, and `f128` needs soft-float. Their only foreseeable
+  interaction with Rue is FFI, where `_Float16` and `long double` are simply
+  non-FFI-safe types under the existing RUE-740/742 FFI-safety predicates —
+  which already express that without new work. Reconsider only with a concrete
+  need.
 
 ### 2. Comparison and equality (resolves spec 4.3)
 
@@ -121,13 +131,14 @@ direction of Rue's existing grain.
   no leaf type has a value that is unequal to itself. `f32`/`f64` introduce
   exactly such a value. Under this ADR, a structural `==` on an aggregate
   containing a float leaf inherits IEEE partiality (a struct holding a `NaN` is
-  not equal to itself). We accept that as the honest consequence and **defer the
-  total-order machinery to traits** (RUE-246): the eventual `Eq`/`Ord` refinement
-  supplies the total path that containers, sorting, and hashing need, realized by
-  a `total_cmp`-style total order (IEEE `totalOrder`: `-0.0 < +0.0`, `NaN` a
-  distinct maximal bit pattern), following Rust and Swift. No trait work is in
-  scope here; this ADR only records that float `==` is IEEE and that the split is
-  now *required*, not merely anticipated.
+  not equal to itself). We accept that as the honest consequence. A usable total
+  order ships immediately as the `@total_cmp` intrinsic (§8) rather than waiting
+  on traits — but the **trait machinery itself** (`Eq`/`Ord`, RUE-246) is still
+  deferred: `@total_cmp` is a stopgap primitive today and becomes the literal
+  implementation of `Ord::cmp` once that split lands. No trait work is in scope
+  here; this ADR only records that float `==` is IEEE, that the split is now
+  *required* rather than merely anticipated, and that `@total_cmp` closes the
+  gap in the meantime.
 
 ### 3. Literals and inference
 
@@ -159,10 +170,16 @@ intrinsics, named in Rue's existing `@x_to_y` convention (`@int_to_ptr`,
 
 - **`@int_to_float(x)`** — integer → float, rounding to nearest.
 - **`@float_to_int(x)`** — float → integer, **truncating toward zero**, and it
-  **traps** on `NaN` or an out-of-range magnitude. Trapping (rather than Rust's
-  saturating `as` or C's UB) is the loud-pragmatism choice and is consistent with
-  Rue's trapping integer overflow. A saturating variant can be added later if a
-  concrete need appears.
+  **traps** on `NaN` or an out-of-range magnitude. Confirmed on ratification.
+  Trapping (rather than Rust's saturating `as` or C's UB) is the loud-pragmatism
+  choice and is consistent with Rue's trapping integer overflow. Recorded
+  honestly: hardware does not trap for us — `cvttsd2si`/`fcvtzs` produce
+  sentinel values on `NaN`/out-of-range input rather than faulting — so every
+  `@float_to_int` lowers to a compare-and-branch plus the convert instruction,
+  not the convert alone. That per-call check is exactly why Rust chose
+  saturating `as` instead; the "saturating variant later if a concrete need
+  appears" escape hatch above exists to absorb that cost if it proves to
+  matter.
 - **`@float_cast(x)`** — `f32` ↔ `f64`. Widening is exact; narrowing rounds to
   nearest (and may produce `±inf`). Both directions are explicit precisely
   because narrowing is lossy — the same "lossiness is never implicit" discipline
@@ -213,6 +230,48 @@ instruction selection, as its own reviewed change.
   round-trip; precision/width control can follow).
 - **`@dbg`** gains float support.
 
+### 8. Total ordering: `@total_cmp` ships with v1
+
+Resolves the "total-order timing" open question. An intrinsic, not a stopgap
+trait, lands with v1 rather than waiting for the `PartialEq`/`Eq`/`Ord` split
+(RUE-246).
+
+- **Rationale.** With IEEE-partial `==` as the only comparison (Decision §2),
+  sorting a float slice containing `NaN` is ill-defined, and hash containers
+  keyed on floats violate the hash/equality contract: `NaN != NaN` makes a
+  `NaN` key unfindable, and `-0.0 == +0.0` across distinct bit patterns breaks
+  naive bit-hashing. Without an escape hatch, total ordering may be
+  inexpressible in pure Rue at all — the hand-rolled workaround needs a
+  float→int bitcast, and today's conversion intrinsics (§4) are all value
+  conversions, never reinterpretations.
+- **Semantics:** IEEE `totalOrder` — `-0.0 < +0.0`, NaNs ordered by sign and
+  payload bit pattern, exactly as specified by IEEE 754-2008 §5.10.
+- **Return type:** a signed integer, memcmp-style (negative/zero/positive; no
+  `Ordering` enum until traits exist).
+- **Precedent:** this is the same intrinsic-now-trait-later pattern already
+  used for the FFI-safety predicates (RUE-740 → RUE-504). Commitment risk is
+  low: IEEE `totalOrder` is standardized and both Rust (`f64::total_cmp`) and
+  Swift converged on it, so `@total_cmp` becomes the literal implementation of
+  `Ord::cmp` once RUE-246 lands — nothing here needs to be redesigned later.
+- **Not resolved here:** whether to add a general `@bit_cast` intrinsic (useful
+  beyond floats, and the thing whose absence made deferring `@total_cmp` risky
+  in the first place). Tracked as a follow-up in Future Work rather than
+  decided in this ADR.
+
+### 9. `%` on floats: deferred, not in v1
+
+Resolves the "`%` on floats" open question. The `%` operator stays
+integer-only; the typechecker rejects it on float operands with a diagnostic
+that names the tracking issue and points at the `std.math.rem` workaround path
+(agents porting C/Rust code with `fmod` will hit this rejection directly).
+
+Deferral is deliberate, not just scope-trimming: truncated `fmod` and IEEE
+round-to-even remainder differ and both have prior-art claims (C/Rust use
+`fmod`; IEEE 754 defines `remainder` as round-to-even), and there is no
+concrete use case yet to pick a winner. `std.math.rem` can land as an explicit
+function alongside transcendentals, or sooner if a concrete need appears
+first.
+
 ## Implementation Phases
 
 Sub-issues are filed under an M9 epic **after this ADR is accepted**; the
@@ -223,13 +282,17 @@ register-class pre-work (Phase 1) is a hard prerequisite for Phases 5–6.
 - [ ] **Phase 2: Lexer** — `comptime_float` literal token (`1.5`, `1e9`). RUE-NNN
 - [ ] **Phase 3: Parser + RIR** — float literal node through untyped IR. RUE-NNN
 - [ ] **Phase 4: AIR types + inference** — `f32`/`f64` tags in the packed `Type`,
-  `comptime_float`, context coercion, `@int_to_float`/`@float_to_int`/`@float_cast`. RUE-NNN
+  `comptime_float`, context coercion, `@int_to_float`/`@float_to_int`/`@float_cast`;
+  plus `@total_cmp` typing (§8) and rejecting `%` on float operands with a
+  diagnostic naming the tracking issue and the `std.math.rem` path (§9). RUE-NNN
 - [ ] **Phase 5: x86-64 backend** — SSE2 scalar ops, XMM regs, SysV FP ABI. RUE-NNN
 - [ ] **Phase 6: aarch64 backend** — FP/NEON scalar ops, V-regs, AAPCS64 FP ABI. RUE-NNN
 - [ ] **Phase 7: Runtime dtoa** — wire `zmij` as `__rue_to_string_float`. RUE-NNN
-- [ ] **Phase 8: std.math / std.fmt / @dbg** — hardware-instruction math, float formatting. RUE-NNN
+- [ ] **Phase 8: std.math / std.fmt / @dbg** — hardware-instruction math, float
+  formatting, `@total_cmp` lowering (§8). RUE-NNN
 - [ ] **Phase 9: Spec + spec tests** — a `03-types/` float chapter, division-divergence
-  and NaN-comparison paragraphs, traceability. RUE-NNN
+  and NaN-comparison paragraphs, plus paragraphs for total ordering (`@total_cmp`,
+  §8) and the deferred float `%` (§9), traceability. RUE-NNN
 - [ ] **Phase 10: Stabilization** — remove the `Floats` preview gate. RUE-NNN
 
 ## Consequences
@@ -252,10 +315,11 @@ register-class pre-work (Phase 1) is a hard prerequisite for Phases 5–6.
   float leaf is no longer guaranteed equal to itself (a struct holding `NaN`).
   This forces the `PartialEq`/`Eq` split (RUE-246) to become required work rather
   than a someday-refinement.
-- **No total order until traits.** Sorting, hashing, and ordered containers of
-  floats cannot be fully correct until the `Ord`/`total_cmp` path exists; a
-  `NaN` in a sort key is ill-defined under IEEE ordering. This is deferred, not
-  solved, by this ADR.
+- **No ergonomic total order until traits.** `@total_cmp` (§8) gives sorting,
+  hashing, and ordered containers a usable total order immediately, but it's an
+  intrinsic call site, not `Ord`/operator integration; a `NaN` compared with `<`
+  is still unordered until code explicitly opts into `@total_cmp`. Full
+  ergonomics wait on RUE-246.
 - The register-class refactor touches both backends' hottest code (regalloc,
   scheduling); a subtle bug there is a broad blast radius, which is why Phase 1
   is isolated and validated as a pure no-op first.
@@ -270,23 +334,21 @@ register-class pre-work (Phase 1) is a hard prerequisite for Phases 5–6.
 
 ## Open Questions
 
-- **Total-order timing.** Should a `@total_cmp`-style intrinsic (giving sorting
-  and hashing a usable total order) ship *with* v1 as a stopgap, or wait for the
-  full `Eq`/`Ord` trait split? Shipping the intrinsic early unblocks float keys
-  in containers without committing the trait design.
-- **`%` on floats.** Provide IEEE remainder / `fmod` semantics via the `%`
-  operator, or leave float `%` out of v1 and expose `std.math.rem` explicitly?
-- **`@float_to_int` on out-of-range:** trap (this proposal) vs saturate. Trapping
-  matches integer overflow; saturating matches Rust's `as`. Confirm the trap.
-- **`f16`/`f128`:** confirmed out of scope for this ADR (no hardware `f16` on
-  baseline targets; `f128` needs soft-float). Reconsider only with a concrete
-  need.
+None outstanding. The four questions raised in proposal — total-order timing,
+`%` on floats, `@float_to_int` trap-vs-saturate, and `f16`/`f128` scope — were
+all ratified on 2026-07-20 and are recorded in Decision §§1, 4, 8, 9.
 
 ## Future Work
 
-- Traits (`PartialEq`/`Eq`, `PartialOrd`/`Ord`) and the `total_cmp` total order
-  for float containers/sorting (RUE-246).
-- `std.math` transcendentals once a libm-class strategy exists.
+- Traits (`PartialEq`/`Eq`, `PartialOrd`/`Ord`) once RUE-246 lands; `@total_cmp`
+  (§8) becomes the literal implementation of `Ord::cmp` at that point.
+- Whether to add a general `@bit_cast` intrinsic (useful beyond floats):
+  flagged during ratification as a side question deliberately left unresolved
+  by this ADR (§8). Revisit if a concrete need for float→int reinterpretation
+  beyond `@total_cmp` appears.
+- `std.math.rem` (`fmod`/IEEE remainder) once a concrete use case picks a
+  semantics (§9), and `std.math` transcendentals once a libm-class strategy
+  exists.
 - Runtime `string → float` parsing (`strtod`).
 - SIMD / vector float types, building on the register-class infrastructure.
 - FP calling-convention completion for C FFI floats (RUE-1059).
