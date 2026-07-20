@@ -68,6 +68,17 @@ def _runtime_staticlib_impl(ctx: AnalysisContext) -> list[Provider]:
         target_sysroot,
     )
     allocator_args.add(ctx.attrs.rustc_flags)
+    # Generic allocator code is instantiated into the runtime static library,
+    # including source locations used by panic paths. The exported source
+    # artifact lives under checkout-specific buck-out roots, so give rustc a
+    # stable virtual filename before those bytes are embedded in the compiler.
+    allocator_args.add(
+        "--remap-path-prefix",
+        cmd_args(
+            ctx.attrs.allocator_crate_root,
+            format = "{}=/rue/crates/rue-allocator/src/lib.rs",
+        ),
+    )
     allocator_args.add(
         ctx.attrs.allocator_crate_root,
         "-o",
