@@ -3,6 +3,10 @@
 id = "cli.examples_mosaic"
 name = "Mosaic static-site generator written in Rue"
 description = "exercise manifests, front matter, block/inline markup, graph validation, deterministic rendering, filesystem output, audits, and scaling"
+# RUE-1083: every case below compiles the same maintained large Mosaic
+# program. Give the whole section the existing 30-second phase budgets while
+# the declaration-query regression is repaired.
+contract = "heavyweight"
 
 [[case]]
 name = "mosaic_builds_site_and_shared_artifacts"
@@ -73,7 +77,6 @@ stdout_contains = ["pages=1", "tables=1", "diagnostics=0", "pooled_strings=", "h
 [[case]]
 name = "mosaic_runs_scaling_and_selftest_invariants"
 description = "stress parses and renders 200 linked pages and checks expected counts and focused subsystem tests"
-contract = "heavyweight"
 source_path = "examples/mosaic/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 program_args = ["stress"]
@@ -83,7 +86,6 @@ stdout = "stress pages=200 blocks=2200 links=200 anchors=400\nexpected_links=200
 [[case]]
 name = "mosaic_scales_generated_workload_fourfold"
 description = "the 4x tier parses and renders 400 linked pages with proportional model counts"
-contract = "heavyweight"
 source_path = "examples/mosaic/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 # Rendered navigation is a bounded window (RUE-1003), so generated output

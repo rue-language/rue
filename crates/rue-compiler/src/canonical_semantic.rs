@@ -153,12 +153,6 @@ fn inject_cfg_failure(sema_output: &mut rue_air::SemaOutput, interner: &crate::T
         .expect("injected AIR must validate");
 }
 
-pub(crate) struct CanonicalOrdinaryAnalysis {
-    pub output: CanonicalSemanticOutput,
-    pub definitions: BoundDefinitionSet,
-    pub durable_declarations: Option<std::sync::Arc<[DurableDeclarationSemantic]>>,
-}
-
 /// One current-revision declaration epoch prepared for either ordinary
 /// resolution or durable installation. Stable identities are issued from the
 /// same shells that the selected analysis path subsequently consumes.
@@ -167,14 +161,6 @@ pub(crate) struct CanonicalPreparedDeclarations<'a> {
     shell_records: Vec<rue_air::SemanticDeclarationShell>,
     definitions: BoundDefinitionSet,
     declaration_index: RirDeclarationIndexWork,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CanonicalDeclarationFallbackReason {
-    SchemaVersionMismatch,
-    UnsupportedExport(crate::DurableSemanticExportFailure),
-    Projection(crate::DurableSemanticProjectionFailure),
-    Import(rue_air::DeclarationInstallFailure),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -192,7 +178,6 @@ pub struct CanonicalDeclarationReuseWork {
     pub stable_join_fallbacks: usize,
     pub structural_validation_fallbacks: usize,
     pub unsupported_import_fallbacks: usize,
-    pub last_fallback_reason: Option<CanonicalDeclarationFallbackReason>,
     /// Actual request-local semantic epochs constructed, including a fresh
     /// epoch required after a consuming installation failure.
     pub semantic_epochs_started: usize,
@@ -202,7 +187,7 @@ pub struct CanonicalDeclarationReuseWork {
     pub fallback_epochs_started: usize,
 }
 
-pub(crate) fn prepare_canonical_declarations<'a>(
+pub(crate) fn prepare_query_declaration_shells<'a>(
     merged: &CanonicalMergedProgram,
     rir: &'a CanonicalRirOutput,
     options: &CompileOptions,
@@ -239,17 +224,17 @@ pub(crate) fn prepare_canonical_declarations<'a>(
     let definitions = match issue_shell_definitions(merged, rir.source_revision(), &shell_records) {
         Ok(definitions) => definitions,
         Err(preparation_error) => {
-            let preparation_error = crate::CompileErrors::from(preparation_error);
-            let bound = shells.resolve_declarations_with_work().map_err(|failure| {
-                declaration_resolution_failure(failure, declaration_index, false, declaration_reuse)
-            })?;
-            return Err(recover_declaration_failure(
-                bound,
-                preparation_error,
-                declaration_index,
-                false,
-                declaration_reuse,
-                BodyOwnerTokenWork::default(),
+            return Err(CanonicalSemanticFailure::declaration(
+                crate::CompileErrors::from(preparation_error),
+                declaration_stage_work(
+                    declaration_index,
+                    DeclarationBindingWork::default(),
+                    SemanticBindingManifestWork::default(),
+                    BodyOwnerTokenWork::default(),
+                    BodyAnalysisWork::default(),
+                    false,
+                    declaration_reuse,
+                ),
             ));
         }
     };
@@ -280,6 +265,10 @@ impl CanonicalPreparedDeclarations<'_> {
     pub(crate) fn definitions(&self) -> &BoundDefinitionSet {
         &self.definitions
     }
+
+    pub(crate) fn declaration_index_work(&self) -> RirDeclarationIndexWork {
+        self.declaration_index
+    }
 }
 
 #[cfg(test)]
@@ -297,7 +286,7 @@ pub(crate) fn query_owned_declaration_shells_for_test<'a>(
     };
     let query_shells =
         crate::revisioned_query_database::projected_declaration_shells_for_test(merged)?;
-    let prepared = prepare_canonical_declarations(merged, rir, &options, imports, &query_shells)
+    let prepared = prepare_query_declaration_shells(merged, rir, &options, imports, &query_shells)
         .map_err(|failure| failure.errors)?;
     Ok(prepared.shells)
 }
@@ -311,7 +300,7 @@ pub(crate) fn bind_query_owned_declarations_for_test<'a>(
     imports: &CanonicalImportGraph,
 ) -> MultiErrorResult<rue_air::BoundSema<'a>> {
     query_owned_declaration_shells_for_test(merged, rir, preview_features, target, imports)?
-        .resolve_declarations()
+        .resolve_declarations_for_test()
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -431,27 +420,6 @@ fn declaration_stage_work(
         declaration_reuse,
         ..CanonicalSemanticWork::default()
     }
-}
-
-fn declaration_resolution_failure(
-    failure: rue_air::DeclarationResolutionFailure,
-    declaration_index: RirDeclarationIndexWork,
-    stable_ids_requested: bool,
-    declaration_reuse: CanonicalDeclarationReuseWork,
-) -> CanonicalSemanticFailure {
-    let binding = failure.work();
-    CanonicalSemanticFailure::declaration(
-        failure.into_errors(),
-        declaration_stage_work(
-            declaration_index,
-            binding,
-            SemanticBindingManifestWork::default(),
-            BodyOwnerTokenWork::default(),
-            BodyAnalysisWork::default(),
-            stable_ids_requested,
-            declaration_reuse,
-        ),
-    )
 }
 
 /// Owned semantic and optimized CFG artifacts returned by `CompilerSession`.
@@ -795,7 +763,7 @@ pub(crate) fn analyze_canonical_program_for_test_support(
     };
     let query_shells =
         crate::revisioned_query_database::projected_declaration_shells_for_test(merged)?;
-    let prepared = prepare_canonical_declarations(merged, rir, options, imports, &query_shells)
+    let prepared = prepare_query_declaration_shells(merged, rir, options, imports, &query_shells)
         .map_err(|failure| failure.errors)?;
     let CanonicalPreparedDeclarations {
         shells,
@@ -803,7 +771,7 @@ pub(crate) fn analyze_canonical_program_for_test_support(
         definitions,
         declaration_index,
     } = prepared;
-    let bound = shells.resolve_declarations()?;
+    let bound = shells.resolve_declarations_for_test()?;
     finish_canonical_analysis(
         input,
         merged,
@@ -823,110 +791,20 @@ pub(crate) fn analyze_canonical_program_for_test_support(
     .map_err(|failure| failure.errors)
 }
 
-/// Run the ordinary canonical path once and opportunistically export its
-/// resolved declaration payloads before body analysis consumes the binder.
-/// Export is fail-closed: unsupported payloads disable reuse without changing
-/// the successful batch semantic result.
-pub(crate) fn analyze_prepared_canonical_program_with_durable_export(
-    merged: &CanonicalMergedProgram,
-    rir: &CanonicalRirOutput,
-    options: &CompileOptions,
-    prepared: CanonicalPreparedDeclarations<'_>,
-    reuse_plan: CanonicalDeclarationReuseWork,
-    body_candidates: Vec<PreparedDurableBodyCandidate>,
-    specialized_body_candidates: Vec<PreparedDurableSpecializedBodyCandidate>,
-    durable_cfg_candidates: Arc<[crate::queries::DurableCfgArtifact]>,
-    body_work: crate::DurableBodyWork,
-) -> Result<CanonicalOrdinaryAnalysis, CanonicalSemanticFailure> {
-    let input = CodegenInputDescriptor {
-        semantic: SemanticInputDescriptor::new(
-            merged.definitions().source_snapshot(),
-            options.target,
-            &options.preview_features,
-        ),
-        opt_level: options.opt_level.into(),
-    };
-    let sema_span = info_span!("sema").entered();
-    let CanonicalPreparedDeclarations {
-        shells,
-        shell_records,
-        definitions,
-        declaration_index,
-    } = prepared;
-    let declaration_reuse = CanonicalDeclarationReuseWork {
-        semantic_epochs_started: 1,
-        declaration_indexes_built: declaration_index.build_invocations,
-        shell_predeclaration_epochs: 1,
-        ..reuse_plan
-    };
-    let bound = shells.resolve_declarations_with_work().map_err(|failure| {
-        declaration_resolution_failure(failure, declaration_index, false, declaration_reuse)
-    })?;
-
-    let declaration_exports = bound
-        .with_declaration_semantics_from_shells(&shell_records, |records, _work| records.to_vec())
-        .map_err(crate::DurableSemanticExportFailure::from);
-
-    let mut output = finish_canonical_analysis(
-        input,
-        merged,
-        rir,
-        options,
-        false,
-        declaration_index,
-        bound,
-        definitions.clone(),
-        declaration_reuse,
-        body_candidates,
-        specialized_body_candidates,
-        durable_cfg_candidates,
-        body_work,
-        sema_span,
-    )?;
-    // Final analysis has now issued the authoritative post-classification
-    // definition universe. Join the already-owned AIR exports to that exact
-    // universe without a second definition-issuance pass or RIR traversal.
-    let durable_declarations = declaration_exports.and_then(|records| {
-        crate::durable_semantics::convert_declaration_semantics(
-            merged,
-            &output.body_owner_issuer,
-            &records,
-        )
-    });
-    let durable_declarations = match durable_declarations {
-        Ok(values) => Some(values),
-        Err(reason) => {
-            output.work.declaration_reuse.unsupported_export_fallbacks += 1;
-            output.work.declaration_reuse.last_fallback_reason = Some(
-                CanonicalDeclarationFallbackReason::UnsupportedExport(reason),
-            );
-            None
-        }
-    };
-    output
-        .work
-        .declaration_reuse
-        .durable_cache_population_exports = usize::from(durable_declarations.is_some());
-    let durable_definitions = output.body_owner_issuer.clone();
-    Ok(CanonicalOrdinaryAnalysis {
-        output,
-        definitions: durable_definitions,
-        durable_declarations,
-    })
-}
-
-/// Analyze bodies in a fresh semantic epoch whose declaration payloads are
-/// installed from stable, request-independent records. Any projection or
-/// installation failure is typed internally and falls back to a wholly fresh
-/// ordinary binder; partially installed state is never observed.
+/// Analyze bodies in a fresh semantic epoch whose declaration payloads come
+/// from the canonical keyed semantic nucleus. Projection and installation are
+/// invariant checks, not a compatibility choice: a failure is terminal and
+/// must never revive the removed ordinary declaration resolver.
 pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
     merged: &CanonicalMergedProgram,
     rir: &CanonicalRirOutput,
     options: &CompileOptions,
-    imports: &CanonicalImportGraph,
+    _imports: &CanonicalImportGraph,
     prepared: CanonicalPreparedDeclarations<'_>,
     definitions: &BoundDefinitionSet,
     durable: &[DurableDeclarationSemantic],
+    anonymous_nominals: &[crate::durable_semantics::DurableAnonymousNominal],
+    declaration_dependencies: &[crate::semantic_query_nucleus::SemanticDeclarationDependency],
     body_candidates: Vec<PreparedDurableBodyCandidate>,
     specialized_body_candidates: Vec<PreparedDurableSpecializedBodyCandidate>,
     durable_cfg_candidates: Arc<[crate::queries::DurableCfgArtifact]>,
@@ -953,132 +831,274 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
         definitions: prepared_definitions,
         declaration_index,
     } = prepared;
-    let mut selected_definitions = prepared_definitions;
+    let selected_definitions = prepared_definitions;
     reuse.declaration_indexes_built = declaration_index.build_invocations;
-    let bound = match crate::project_durable_declaration_semantics(
+    let (projected, _) = crate::project_durable_declaration_semantics(
         merged,
         definitions,
         &shell_records,
         durable,
-    ) {
-        Err(reason) => {
-            reuse.fallbacks = 1;
-            match reason {
-                crate::DurableSemanticProjectionFailure::UnsupportedDeclaration => {
-                    reuse.structural_validation_fallbacks = 1;
-                }
-                _ => reuse.stable_join_fallbacks = 1,
-            }
-            reuse.last_fallback_reason =
-                Some(CanonicalDeclarationFallbackReason::Projection(reason));
-            // Projection is read-only, so ordinary resolution consumes the
-            // exact same unmutated shells and does not create a hidden epoch.
-            shells.resolve_declarations_with_work().map_err(|failure| {
-                declaration_resolution_failure(failure, declaration_index, false, reuse)
-            })?
-        }
-        Ok((projected, _)) => {
-            reuse.install_invocations += 1;
-            match shells.install_declaration_semantics(&projected) {
-                Ok(bound) => {
-                    reuse.durable_records_reused = durable.len();
-                    reuse.ordinary_declaration_resolutions_skipped = 1;
-                    bound
-                }
-                Err(reason) => {
-                    // Installation consumes potentially mutated shells. Only
-                    // this failure requires a wholly fresh ordinary epoch.
-                    reuse.fallbacks = 1;
-                    match reason {
-                        rue_air::DeclarationInstallFailure::UnsupportedType
-                        | rue_air::DeclarationInstallFailure::UnsupportedDeclaration => {
-                            reuse.unsupported_import_fallbacks = 1;
-                        }
-                        _ => reuse.structural_validation_fallbacks = 1,
-                    }
-                    reuse.last_fallback_reason =
-                        Some(CanonicalDeclarationFallbackReason::Import(reason));
-                    let fallback = configure_timed_canonical_sema(merged, rir, options, imports)
-                        .map_err(|errors| {
-                            CanonicalSemanticFailure::declaration(
-                                errors,
-                                declaration_stage_work(
-                                    declaration_index,
-                                    DeclarationBindingWork::default(),
-                                    SemanticBindingManifestWork::default(),
-                                    BodyOwnerTokenWork::default(),
-                                    BodyAnalysisWork::default(),
-                                    false,
-                                    reuse,
-                                ),
-                            )
-                        })?;
-                    reuse.fallback_epochs_started = 1;
-                    reuse.semantic_epochs_started += 1;
-                    reuse.declaration_indexes_built +=
-                        fallback.rir_declaration_index_work().build_invocations;
-                    reuse.shell_predeclaration_epochs += 1;
-                    let fallback_shells = fallback
-                        .predeclare_imported_declaration_shells(&shell_records)
-                        .map_err(|errors| {
-                            CanonicalSemanticFailure::declaration(
-                                errors,
-                                declaration_stage_work(
-                                    declaration_index,
-                                    DeclarationBindingWork::default(),
-                                    SemanticBindingManifestWork::default(),
-                                    BodyOwnerTokenWork::default(),
-                                    BodyAnalysisWork::default(),
-                                    false,
-                                    reuse,
-                                ),
-                            )
-                        })?;
-                    let fallback_records = fallback_shells
-                        .declaration_shells()
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    selected_definitions =
-                        issue_shell_definitions(merged, rir.source_revision(), &fallback_records)
-                            .map_err(crate::CompileErrors::from)
-                            .map_err(|errors| {
-                                CanonicalSemanticFailure::declaration(
-                                    errors,
-                                    declaration_stage_work(
-                                        declaration_index,
-                                        DeclarationBindingWork::default(),
-                                        SemanticBindingManifestWork::default(),
-                                        BodyOwnerTokenWork::default(),
-                                        BodyAnalysisWork::default(),
-                                        false,
-                                        reuse,
-                                    ),
-                                )
-                            })?;
-                    let fallback_shells = fallback_shells
-                        .install_stable_identity_endpoints(
-                            &selected_definitions.semantic_definition_endpoints(),
-                            &selected_definitions.semantic_module_endpoints(merged),
-                        )
-                        .map_err(|failure| {
-                            CanonicalSemanticFailure::declaration(
-                                crate::CompileErrors::from(crate::CompileError::without_span(
-                                    rue_error::ErrorKind::InternalError(format!(
-                                        "failed to install fallback stable identity endpoints: {failure:?}"
-                                    )),
-                                )),
-                                CanonicalSemanticWork::default(),
-                            )
-                        })?;
-                    fallback_shells
-                        .resolve_declarations_with_work()
-                        .map_err(|failure| {
-                            declaration_resolution_failure(failure, declaration_index, false, reuse)
-                        })?
-                }
-            }
-        }
+    )
+    .map_err(|reason| {
+        CanonicalSemanticFailure::declaration(
+            crate::CompileErrors::from(crate::CompileError::without_span(
+                rue_error::ErrorKind::InternalError(format!(
+                    "query declaration projection invariant failed: {reason:?}; definitions={:?}; durable={:?}; shells={:?}",
+                    definitions
+                        .definitions()
+                        .iter()
+                        .map(|record| record.stable_key())
+                        .collect::<Vec<_>>(),
+                    durable.iter().map(|record| &record.key).collect::<Vec<_>>(),
+                    shell_records
+                        .iter()
+                        .map(|shell| &shell.identity)
+                        .collect::<Vec<_>>(),
+                )),
+            )),
+            declaration_stage_work(
+                declaration_index,
+                DeclarationBindingWork::default(),
+                SemanticBindingManifestWork::default(),
+                BodyOwnerTokenWork::default(),
+                BodyAnalysisWork::default(),
+                false,
+                reuse,
+            ),
+        )
+    })?;
+    let projected_anonymous = crate::durable_semantics::project_durable_anonymous_nominals(
+        merged,
+        definitions,
+        anonymous_nominals,
+    )
+    .map_err(|reason| {
+        CanonicalSemanticFailure::declaration(
+            crate::CompileErrors::from(crate::CompileError::without_span(
+                rue_error::ErrorKind::InternalError(format!(
+                    "query anonymous nominal projection invariant failed: {reason:?}"
+                )),
+            )),
+            CanonicalSemanticWork::default(),
+        )
+    })?;
+    reuse.install_invocations = 1;
+    let bound = shells
+        .install_declaration_semantics_with_anonymous(&projected, &projected_anonymous)
+        .map_err(|reason| {
+            CanonicalSemanticFailure::declaration(
+                crate::CompileErrors::from(crate::CompileError::without_span(
+                    rue_error::ErrorKind::InternalError(format!(
+                        "query declaration installation invariant failed: {reason:?}"
+                    )),
+                )),
+                declaration_stage_work(
+                    declaration_index,
+                    DeclarationBindingWork::default(),
+                    SemanticBindingManifestWork::default(),
+                    BodyOwnerTokenWork::default(),
+                    BodyAnalysisWork::default(),
+                    false,
+                    reuse,
+                ),
+            )
+        })?;
+    let dependency_file = |key: &crate::StableDefinitionKey| {
+        definitions
+            .definition_by_key(key)
+            .map(|record| record.declaration_span().file_id.index())
+            .or_else(|| {
+                merged
+                    .ast()
+                    .modules()
+                    .iter()
+                    .find(|module| module.module_id() == key.module())
+                    .map(|module| module.file_id().index())
+            })
     };
+    let mut type_dependencies = Vec::new();
+    let mut type_call_heads = Vec::new();
+    let mut builtin_type_call_heads = Vec::new();
+    let mut named_const_dependencies = Vec::new();
+    for dependency in declaration_dependencies {
+        let Some(source_file) = dependency_file(&dependency.source) else {
+            return Err(CanonicalSemanticFailure::declaration(
+                crate::CompileErrors::from(crate::CompileError::without_span(
+                    rue_error::ErrorKind::InternalError(format!(
+                        "query dependency source is absent from the current definition epoch: {:?}",
+                        dependency.source
+                    )),
+                )),
+                CanonicalSemanticWork::default(),
+            ));
+        };
+        let source_kind = match dependency.source.kind() {
+            crate::StableDefinitionKind::Function => {
+                rue_air::DeclarationTypeDependencySourceKind::Function
+            }
+            crate::StableDefinitionKind::Struct => {
+                rue_air::DeclarationTypeDependencySourceKind::Struct
+            }
+            crate::StableDefinitionKind::Enum => rue_air::DeclarationTypeDependencySourceKind::Enum,
+            crate::StableDefinitionKind::ValueConst
+            | crate::StableDefinitionKind::ModuleBinding => {
+                rue_air::DeclarationTypeDependencySourceKind::ValueConst
+            }
+            crate::StableDefinitionKind::Method => {
+                rue_air::DeclarationTypeDependencySourceKind::Method
+            }
+            crate::StableDefinitionKind::AssociatedFunction => {
+                rue_air::DeclarationTypeDependencySourceKind::AssociatedFunction
+            }
+            crate::StableDefinitionKind::Destructor => {
+                rue_air::DeclarationTypeDependencySourceKind::Destructor
+            }
+        };
+        let source_name = dependency.source.name().to_owned();
+        let source_owner_name = dependency
+            .source
+            .owner()
+            .map(|owner| owner.name().to_owned());
+        match &dependency.target {
+            crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedType(
+                target,
+            ) => {
+                let Some(target_file) = dependency_file(target) else {
+                    return Err(CanonicalSemanticFailure::declaration(
+                        crate::CompileErrors::from(crate::CompileError::without_span(
+                            rue_error::ErrorKind::InternalError(format!(
+                                "query dependency target is absent from the current definition epoch: {target:?}"
+                            )),
+                        )),
+                        CanonicalSemanticWork::default(),
+                    ));
+                };
+                let target_kind = match target.kind() {
+                    crate::StableDefinitionKind::Struct => {
+                        rue_air::DeclarationTypeDependencyTargetKind::Struct
+                    }
+                    crate::StableDefinitionKind::Enum => {
+                        rue_air::DeclarationTypeDependencyTargetKind::Enum
+                    }
+                    crate::StableDefinitionKind::ValueConst
+                    | crate::StableDefinitionKind::ModuleBinding => {
+                        rue_air::DeclarationTypeDependencyTargetKind::ValueConst
+                    }
+                    _ => continue,
+                };
+                type_dependencies.push(rue_air::DeclarationTypeDependencyEvent {
+                    source_token: None,
+                    source_file,
+                    source_name,
+                    source_owner_name,
+                    source_kind,
+                    dependency_kind: dependency.kind,
+                    target_file,
+                    target_name: target.name().to_owned(),
+                    target_kind,
+                });
+            }
+            crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::TypeCallHead(
+                callable,
+            ) => {
+                let Some(callable_file) = dependency_file(callable) else {
+                    return Err(CanonicalSemanticFailure::declaration(
+                        crate::CompileErrors::from(crate::CompileError::without_span(
+                            rue_error::ErrorKind::InternalError(format!(
+                                "query type-call head is absent from the current definition epoch: {callable:?}"
+                            )),
+                        )),
+                        CanonicalSemanticWork::default(),
+                    ));
+                };
+                type_call_heads.push(rue_air::DeclarationTypeCallHeadDependencyEvent {
+                    source_token: None,
+                    source_file,
+                    source_name,
+                    source_owner_name,
+                    source_kind,
+                    dependency_kind: dependency.kind,
+                    callable_file,
+                    callable_name: callable.name().to_owned(),
+                });
+            }
+            crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::BuiltinTypeCallHead(
+                builtin,
+            ) => builtin_type_call_heads.push(
+                rue_air::DeclarationBuiltinTypeCallHeadDependencyEvent {
+                    source_token: None,
+                    source_file,
+                    source_name,
+                    source_owner_name,
+                    source_kind,
+                    dependency_kind: dependency.kind,
+                    builtin: *builtin,
+                },
+            ),
+            crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
+                target,
+            ) => {
+                let Some(target_file) = dependency_file(target) else {
+                    return Err(CanonicalSemanticFailure::declaration(
+                        crate::CompileErrors::from(crate::CompileError::without_span(
+                            rue_error::ErrorKind::InternalError(format!(
+                                "query named-value dependency target is absent from the current definition epoch: {target:?}"
+                            )),
+                        )),
+                        CanonicalSemanticWork::default(),
+                    ));
+                };
+                let target = match target.kind() {
+                    crate::StableDefinitionKind::ValueConst => {
+                        rue_air::NamedConstDependencyTargetEvent::ValueConst {
+                            file: target_file,
+                            name: target.name().to_owned(),
+                        }
+                    }
+                    crate::StableDefinitionKind::ModuleBinding => {
+                        rue_air::NamedConstDependencyTargetEvent::ModuleBinding {
+                            file: target_file,
+                            name: target.name().to_owned(),
+                        }
+                    }
+                    crate::StableDefinitionKind::Function => {
+                        rue_air::NamedConstDependencyTargetEvent::FreeFunction {
+                            file: target_file,
+                            name: target.name().to_owned(),
+                        }
+                    }
+                    crate::StableDefinitionKind::Struct => {
+                        rue_air::NamedConstDependencyTargetEvent::NamedType {
+                            file: target_file,
+                            name: target.name().to_owned(),
+                            kind: rue_air::DeclarationTypeDependencyTargetKind::Struct,
+                        }
+                    }
+                    crate::StableDefinitionKind::Enum => {
+                        rue_air::NamedConstDependencyTargetEvent::NamedType {
+                            file: target_file,
+                            name: target.name().to_owned(),
+                            kind: rue_air::DeclarationTypeDependencyTargetKind::Enum,
+                        }
+                    }
+                    _ => continue,
+                };
+                named_const_dependencies.push(rue_air::NamedConstDependencyEvent {
+                    source_file,
+                    source_name,
+                    target,
+                });
+            }
+        }
+    }
+    let bound = bound.install_query_declaration_dependencies(
+        &type_dependencies,
+        &type_call_heads,
+        &builtin_type_call_heads,
+        &named_const_dependencies,
+    );
+    reuse.durable_records_reused = durable.len();
+    reuse.ordinary_declaration_resolutions_skipped = 1;
     let sema_span = info_span!("sema").entered();
     finish_canonical_analysis(
         input,
@@ -1261,6 +1281,10 @@ fn project_anonymous_nominal_key(
             T::Array { element, len } => crate::TypeInstanceKey::Array {
                 element: Box::new(ty(element, merged, definitions)?),
                 len: *len,
+            },
+            T::Slice { element, name } => crate::TypeInstanceKey::Slice {
+                element: Box::new(ty(element, merged, definitions)?),
+                name: name.clone(),
             },
             T::PtrConst(value) => {
                 crate::TypeInstanceKey::PtrConst(Box::new(ty(value, merged, definitions)?))
@@ -2069,7 +2093,7 @@ mod tests {
             rir.semantic_symbols().interner(),
             options.preview_features.clone(),
         )
-        .bind_declarations()
+        .bind_declarations_for_test()
         {
             Err(errors) => errors,
             Ok(_) => panic!("test input must fail ordinary declaration binding"),
@@ -2089,8 +2113,6 @@ mod tests {
             "const value: i32 = 1; const value: i32 = 2; fn main() {}",
             "const X: i32 = 1; fn X() -> i32 { 2 } fn main() -> i32 { 0 }",
             "enum Color { Red, Green } const Color: i32 = 5; fn main() -> i32 { Color }",
-            "struct Value {} drop fn Value(self) {} drop fn Value(self) {} fn main() {}",
-            "drop fn Missing(self) {} fn main() {}",
         ] {
             assert_token_preparation_preserves_source_errors(source);
         }
@@ -2114,7 +2136,7 @@ mod tests {
             &imports,
         )
         .unwrap()
-        .predeclare_declaration_shells()
+        .predeclare_declaration_shells_for_test()
         .unwrap();
     }
 

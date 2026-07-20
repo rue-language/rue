@@ -56,6 +56,7 @@ mod queries;
 mod query_graph;
 mod revisioned_query_database;
 mod semantic_identity;
+mod semantic_query_nucleus;
 mod semantic_symbols;
 mod session;
 mod source_identity;
@@ -197,13 +198,12 @@ pub(crate) use durable_body::{
     convert_semantic_specialized_body_exports,
 };
 pub(crate) use durable_semantics::{
-    DURABLE_SEMANTIC_SCHEMA_VERSION, DurableDeclarationSemantic, DurableSemanticExportFailure,
-    DurableSemanticProjectionFailure, DurableSemanticSchemaVersion,
+    DURABLE_SEMANTIC_SCHEMA_VERSION, DurableDeclarationSemantic, DurableSemanticSchemaVersion,
 };
 #[cfg(test)]
 pub(crate) use durable_semantics::{
     DurableConstValue, DurableDeclarationPayload, DurableParameterMode, DurableSemanticParameter,
-    DurableSemanticProjectionWork, DurableType,
+    DurableSemanticProjectionFailure, DurableSemanticProjectionWork, DurableType,
 };
 
 // Small foundational types callers need to configure or inspect the facade.

@@ -55,3 +55,31 @@ fn production_generate_entry_points_require_validated_cfg() {
         }
     }
 }
+
+#[test]
+fn production_codegen_does_not_call_frozen_declaration_test_adapters() {
+    for (name, source) in [
+        ("x86_64/cfg_lower", include_str!("x86_64/cfg_lower.rs")),
+        ("aarch64/cfg_lower", include_str!("aarch64/cfg_lower.rs")),
+        ("place_lower", include_str!("place_lower.rs")),
+        ("types", include_str!("types.rs")),
+        ("stack_frame", include_str!("stack_frame.rs")),
+    ] {
+        let production = source
+            .split("\n#[cfg(test)]\nmod ")
+            .next()
+            .expect("codegen production prefix");
+        for adapter in [
+            ".predeclare_declaration_shells_for_test()",
+            ".bind_declarations_for_test()",
+            ".analyze_all_for_test()",
+            ".resolve_declarations_for_test()",
+            ".resolve_declarations_with_work_for_test()",
+        ] {
+            assert!(
+                !production.contains(adapter),
+                "production codegen module {name} called frozen declaration test adapter {adapter}"
+            );
+        }
+    }
+}

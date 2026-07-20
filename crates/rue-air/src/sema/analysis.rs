@@ -211,6 +211,26 @@ pub(crate) fn import_staged_body(
             T::Array { element, len } => pool
                 .try_intern_array(import_type(sema, pool, element)?, *len)
                 .map_err(|_| F::InvalidStructuralType)?,
+            T::Slice { element, name } => {
+                let element = import_type(sema, pool, element)?;
+                let symbol = sema
+                    .interner
+                    .get(name.as_ref())
+                    .ok_or(F::UnknownBuiltinNominal)?;
+                let id = *sema
+                    .generated_structs
+                    .get(&symbol)
+                    .ok_or(F::UnknownBuiltinNominal)?;
+                let def = sema.type_pool.struct_def(id);
+                let matches_element = def.fields.first().is_some_and(|field| {
+                    matches!(field.ty.kind(), TypeKind::PtrConst(pointer)
+                        if sema.type_pool.ptr_const_def(pointer) == element)
+                });
+                if !matches_element {
+                    return Err(BF::Semantic(F::InvalidStructuralType));
+                }
+                Type::new_struct(id)
+            }
             T::PtrConst(value) => pool
                 .try_intern_ptr_const(import_type(sema, pool, value)?)
                 .map_err(|_| F::InvalidStructuralType)?,
@@ -756,7 +776,7 @@ fn finalize_function_body_analysis(
             .canonical_anonymous_types
             .iter()
             .filter(|(ty, _)| active_aggregate_types.contains(ty))
-            .map(|(ty, representative)| {
+            .map(|(ty, _representative)| {
                 let mut aliases = sema
                     .canonical_anonymous_aliases
                     .get(ty)
@@ -765,10 +785,14 @@ fn finalize_function_body_analysis(
                     .cloned()
                     .collect::<Vec<_>>();
                 aliases.sort_by(BodySema::anonymous_key_cmp);
+                let representative = aliases
+                    .first()
+                    .expect("every anonymous type must retain its representative")
+                    .clone();
                 (
                     *ty,
                     crate::AnonymousNominalIdentitySet {
-                        representative: representative.clone(),
+                        representative,
                         aliases: aliases.into(),
                     },
                 )

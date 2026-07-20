@@ -105,7 +105,7 @@ pub struct RirValidationContext<'a> {
 }
 
 #[repr(C)]
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct PayloadRange<Family> {
     start: u32,
     extent: u32,
@@ -119,7 +119,7 @@ macro_rules! payload_family {
 
         /// Opaque range into the RIR word store for this payload family.
         #[repr(transparent)]
-        #[derive(PartialEq, Eq)]
+        #[derive(Clone, PartialEq, Eq)]
         pub struct $name(PayloadRange<$marker>);
 
         impl $name {

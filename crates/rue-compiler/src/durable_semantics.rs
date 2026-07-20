@@ -6,9 +6,11 @@
 
 use std::sync::Arc;
 
+#[cfg(test)]
+use rue_air::SemanticExportFailure;
 use rue_air::{
     SemanticBinding, SemanticDeclarationExport, SemanticDeclarationPayload,
-    SemanticDeclarationShell, SemanticExportConstValue, SemanticExportFailure, SemanticExportType,
+    SemanticDeclarationShell, SemanticExportConstValue, SemanticExportType,
     SemanticImportConstValue, SemanticImportEpoch, SemanticImportFailure, SemanticImportNominal,
     SemanticImportNominalKind, SemanticImportType, SemanticParameterMode,
     StableDefinitionNamespace,
@@ -63,6 +65,7 @@ pub fn import_durable_declaration_semantics(
                 modules.insert(Arc::from(module.as_str()));
             }
             DurableType::Array { element, .. }
+            | DurableType::Slice { element, .. }
             | DurableType::PtrConst(element)
             | DurableType::PtrMut(element) => collect_modules(element, modules),
             _ => {}
@@ -225,9 +228,9 @@ pub const DURABLE_SEMANTIC_SCHEMA_VERSION: DurableSemanticSchemaVersion =
     DurableSemanticSchemaVersion {
         major: 1,
         minor: 0,
-        // Epoch 5: durable local atoms carry stable occurrence identity and
-        // content only; request-local dense string indices are reconstructed.
-        implementation_epoch: 5,
+        // Epoch 6: slice identity carries its recursively resolved element
+        // type instead of collapsing to a synthetic builtin name.
+        implementation_epoch: 6,
     };
 
 const DURABLE_SEMANTIC_COMPATIBLE_MINORS: &[u16] = &[0];
@@ -256,6 +259,43 @@ pub type DurableType = SemanticImportType<StableDefinitionKey, ModuleId>;
 
 /// The durable specialization of rue-air's canonical constant algebra.
 pub type DurableConstValue = SemanticImportConstValue<StableDefinitionKey, ModuleId>;
+
+/// Query-owned materialization payload for one anonymous nominal referenced by
+/// declaration semantics. Identity remains separate from shape so recursive
+/// uses and structurally equal aliases can be joined before fields are filled.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DurableAnonymousNominal {
+    pub identity: crate::AnonymousNominalKey,
+    pub shape: DurableAnonymousNominalShape,
+    pub type_captures: Arc<[(Arc<str>, DurableType)]>,
+    pub value_captures: Arc<[(Arc<str>, DurableConstValue)]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DurableAnonymousNominalShape {
+    Struct {
+        fields: Arc<[(Arc<str>, DurableType)]>,
+        methods: Arc<[DurableAnonymousMethodSignature]>,
+    },
+    Enum {
+        variants: Arc<[(Arc<str>, Arc<[DurableType]>)]>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DurableAnonymousMethodSignature {
+    pub name: Arc<str>,
+    pub has_self: bool,
+    pub self_mode: DurableParameterMode,
+    pub parameters: Arc<[(DurableAnonymousMethodType, DurableParameterMode, bool)]>,
+    pub result: DurableAnonymousMethodType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DurableAnonymousMethodType {
+    SelfType,
+    Concrete(DurableType),
+}
 
 /// Relocation into the string-module body algebra is intentionally expressed
 /// through the canonical rue-air traversal, not a compiler-owned enum match.
@@ -471,19 +511,31 @@ pub fn project_durable_declaration_semantics(
             // exact current candidate as a module binding. The durable query's
             // input fingerprints prove initializer compatibility; this adapter
             // supplies only the current locator and header.
+            let value_key = durable_by_join_key.get(&join_key).cloned();
             let mut module_join = join_key.clone();
             module_join.kind = StableDefinitionKind::ModuleBinding;
-            let key = durable_by_join_key
-                .get(&module_join)
-                .cloned()
-                .ok_or(DurableSemanticProjectionFailure::MissingDefinition)?;
-            if !matches!(
-                durable_by_key[&key].payload,
-                DurableDeclarationPayload::ModuleBinding { .. }
-            ) {
-                return Err(DurableSemanticProjectionFailure::KindMismatch);
+            match (value_key, durable_by_join_key.get(&module_join).cloned()) {
+                (Some(key), None)
+                    if matches!(
+                        durable_by_key[&key].payload,
+                        DurableDeclarationPayload::Const { .. }
+                    ) =>
+                {
+                    key
+                }
+                (None, Some(key))
+                    if matches!(
+                        durable_by_key[&key].payload,
+                        DurableDeclarationPayload::ModuleBinding { .. }
+                    ) =>
+                {
+                    key
+                }
+                (Some(_), Some(_)) => {
+                    return Err(DurableSemanticProjectionFailure::DuplicateDefinition);
+                }
+                _ => return Err(DurableSemanticProjectionFailure::KindMismatch),
             }
-            key
         } else {
             return Err(DurableSemanticProjectionFailure::MissingDefinition);
         };
@@ -590,6 +642,72 @@ fn current_nominal(
     })
 }
 
+fn current_definition_identity(
+    value: &StableDefinitionKey,
+    definitions: &BoundDefinitionSet,
+    module_files: &std::collections::BTreeMap<ModuleId, FileId>,
+) -> Result<rue_air::SemanticDefinitionIdentity, DurableSemanticProjectionFailure> {
+    let present = definitions
+        .definitions()
+        .iter()
+        .any(|record| record.stable_key() == value);
+    if !present
+        && !matches!(
+            value.kind(),
+            StableDefinitionKind::ValueConst | StableDefinitionKind::ModuleBinding
+        )
+    {
+        return Err(DurableSemanticProjectionFailure::MissingDefinition);
+    }
+    Ok(rue_air::SemanticDefinitionIdentity {
+        file_id: *module_files
+            .get(value.module())
+            .ok_or(DurableSemanticProjectionFailure::ModuleMismatch)?,
+        name: Arc::from(value.name()),
+        owner: value.owner().map(|owner| Arc::from(owner.name())),
+        kind: stable_air_kind(value.kind()),
+    })
+}
+
+fn stable_air_kind(value: StableDefinitionKind) -> rue_air::StableDefinitionKind {
+    match value {
+        StableDefinitionKind::Function => rue_air::StableDefinitionKind::Function,
+        StableDefinitionKind::Struct => rue_air::StableDefinitionKind::Struct,
+        StableDefinitionKind::Enum => rue_air::StableDefinitionKind::Enum,
+        StableDefinitionKind::ValueConst => rue_air::StableDefinitionKind::ValueConst,
+        StableDefinitionKind::Destructor => rue_air::StableDefinitionKind::Destructor,
+        StableDefinitionKind::Method => rue_air::StableDefinitionKind::Method,
+        StableDefinitionKind::AssociatedFunction => {
+            rue_air::StableDefinitionKind::AssociatedFunction
+        }
+        StableDefinitionKind::ModuleBinding => rue_air::StableDefinitionKind::ModuleBinding,
+    }
+}
+
+fn semantic_parameter_mode(value: DurableParameterMode) -> rue_air::SemanticParameterMode {
+    match value {
+        DurableParameterMode::Value => rue_air::SemanticParameterMode::Value,
+        DurableParameterMode::Borrow => rue_air::SemanticParameterMode::Borrow,
+        DurableParameterMode::Inout => rue_air::SemanticParameterMode::Inout,
+    }
+}
+
+fn current_anonymous_identity(
+    value: &crate::AnonymousNominalKey,
+    definitions: &BoundDefinitionSet,
+    module_files: &std::collections::BTreeMap<ModuleId, FileId>,
+) -> Result<rue_air::SemanticAnonymousNominalIdentity, DurableSemanticProjectionFailure> {
+    value.try_map_identities(
+        &|definition| current_definition_identity(definition, definitions, module_files),
+        &|module| {
+            module_files
+                .contains_key(module)
+                .then(|| Arc::from(module.as_str()))
+                .ok_or(DurableSemanticProjectionFailure::ModuleMismatch)
+        },
+    )
+}
+
 fn project_type(
     value: &DurableType,
     definitions: &BoundDefinitionSet,
@@ -622,12 +740,16 @@ fn project_type(
             // anonymous nominals. Their identity is supported by body and
             // specialization payloads, whose current-request importer owns
             // the exact materialization join.
-            F::AnonymousNominal(_) => {
-                return Err(DurableSemanticProjectionFailure::KindMismatch);
-            }
+            F::AnonymousNominal(identity) => SemanticExportType::AnonymousNominal(
+                current_anonymous_identity(identity, definitions, module_files)?,
+            ),
             F::Array { element, len } => SemanticExportType::Array {
                 element: Box::new(element),
                 len,
+            },
+            F::Slice { element, name } => SemanticExportType::Slice {
+                element: Box::new(element),
+                name: name.clone(),
             },
             F::PtrConst(value) => SemanticExportType::PtrConst(Box::new(value)),
             F::PtrMut(value) => SemanticExportType::PtrMut(Box::new(value)),
@@ -637,6 +759,114 @@ fn project_type(
                 .ok_or(DurableSemanticProjectionFailure::ModuleMismatch)?,
         })
     })
+}
+
+pub(crate) fn project_durable_anonymous_nominals(
+    merged: &CanonicalMergedProgram,
+    definitions: &BoundDefinitionSet,
+    anonymous_nominals: &[DurableAnonymousNominal],
+) -> Result<Arc<[rue_air::SemanticAnonymousNominalExport]>, DurableSemanticProjectionFailure> {
+    let module_files = merged
+        .ast()
+        .modules()
+        .iter()
+        .map(|module| (module.module_id().clone(), module.file_id()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut projected = Vec::with_capacity(anonymous_nominals.len());
+    for nominal in anonymous_nominals {
+        let identity = current_anonymous_identity(&nominal.identity, definitions, &module_files)?;
+        let shape = match &nominal.shape {
+            DurableAnonymousNominalShape::Struct { fields, methods } => {
+                rue_air::SemanticAnonymousNominalShape::Struct {
+                    fields: fields
+                        .iter()
+                        .map(|(name, ty)| {
+                            Ok((name.clone(), project_type(ty, definitions, &module_files)?))
+                        })
+                        .collect::<Result<Vec<_>, DurableSemanticProjectionFailure>>()?
+                        .into(),
+                    methods: methods
+                        .iter()
+                        .map(|method| {
+                            let project_method_type = |ty: &DurableAnonymousMethodType| {
+                                Ok(match ty {
+                                    DurableAnonymousMethodType::SelfType => {
+                                        rue_air::SemanticAnonymousMethodType::SelfType
+                                    }
+                                    DurableAnonymousMethodType::Concrete(ty) => {
+                                        rue_air::SemanticAnonymousMethodType::Concrete(
+                                            project_type(ty, definitions, &module_files)?,
+                                        )
+                                    }
+                                })
+                            };
+                            Ok(rue_air::SemanticAnonymousMethodSignature {
+                                name: method.name.clone(),
+                                has_self: method.has_self,
+                                self_mode: semantic_parameter_mode(method.self_mode),
+                                parameters: method
+                                    .parameters
+                                    .iter()
+                                    .map(|(ty, mode, is_comptime)| {
+                                        Ok((
+                                            project_method_type(ty)?,
+                                            semantic_parameter_mode(*mode),
+                                            *is_comptime,
+                                        ))
+                                    })
+                                    .collect::<Result<Vec<_>, DurableSemanticProjectionFailure>>()?
+                                    .into(),
+                                result: project_method_type(&method.result)?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, DurableSemanticProjectionFailure>>()?
+                        .into(),
+                }
+            }
+            DurableAnonymousNominalShape::Enum { variants } => {
+                rue_air::SemanticAnonymousNominalShape::Enum {
+                    variants: variants
+                        .iter()
+                        .map(|(name, payload)| {
+                            Ok((
+                                name.clone(),
+                                payload
+                                    .iter()
+                                    .map(|ty| project_type(ty, definitions, &module_files))
+                                    .collect::<Result<Vec<_>, _>>()?
+                                    .into(),
+                            ))
+                        })
+                        .collect::<Result<Vec<_>, DurableSemanticProjectionFailure>>()?
+                        .into(),
+                }
+            }
+        };
+        let type_captures = nominal
+            .type_captures
+            .iter()
+            .map(|(name, ty)| Ok((name.clone(), project_type(ty, definitions, &module_files)?)))
+            .collect::<Result<Vec<_>, DurableSemanticProjectionFailure>>()?
+            .into();
+        let value_captures = nominal
+            .value_captures
+            .iter()
+            .map(|(name, value)| {
+                Ok((
+                    name.clone(),
+                    project_const_value(value, definitions, &module_files)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, DurableSemanticProjectionFailure>>()?
+            .into();
+        projected.push(rue_air::SemanticAnonymousNominalExport {
+            identity,
+            shape,
+            type_captures,
+            value_captures,
+        });
+    }
+    Ok(projected.into())
 }
 
 fn project_payload(
@@ -709,9 +939,38 @@ fn project_payload(
                 )?,
             }
         }
-        DurableDeclarationPayload::Const { .. } => {
-            return Err(DurableSemanticProjectionFailure::UnsupportedDeclaration);
+        DurableDeclarationPayload::Const { ty, value } => SemanticDeclarationPayload::Const {
+            ty: project_type(ty, definitions, module_files)?,
+            value: project_const_value(value, definitions, module_files)?,
+        },
+    })
+}
+
+fn project_const_value(
+    value: &DurableConstValue,
+    definitions: &BoundDefinitionSet,
+    module_files: &std::collections::BTreeMap<ModuleId, FileId>,
+) -> Result<SemanticExportConstValue, DurableSemanticProjectionFailure> {
+    Ok(match value {
+        DurableConstValue::Integer(value) => SemanticExportConstValue::Integer(*value),
+        DurableConstValue::Bool(value) => SemanticExportConstValue::Bool(*value),
+        DurableConstValue::Type(value) => {
+            SemanticExportConstValue::Type(project_type(value, definitions, module_files)?)
         }
+        DurableConstValue::Function(key) => {
+            let definition = definitions
+                .definition_by_key(key)
+                .ok_or(DurableSemanticProjectionFailure::MissingDefinition)?;
+            if key.kind() != StableDefinitionKind::Function {
+                return Err(DurableSemanticProjectionFailure::KindMismatch);
+            }
+            SemanticExportConstValue::Function {
+                file_id: definition.declaration_span().file_id,
+                name: key.name().into(),
+            }
+        }
+        DurableConstValue::Unit => SemanticExportConstValue::Unit,
+        DurableConstValue::String(value) => SemanticExportConstValue::String(value.clone()),
     })
 }
 
@@ -738,6 +997,7 @@ fn validate_payload_shape(
         }
         (StableDefinitionKind::Struct, SemanticDeclarationPayload::Struct { .. })
         | (StableDefinitionKind::Enum, SemanticDeclarationPayload::Enum { .. })
+        | (StableDefinitionKind::ValueConst, SemanticDeclarationPayload::Const { .. })
         | (
             StableDefinitionKind::ValueConst | StableDefinitionKind::ModuleBinding,
             SemanticDeclarationPayload::ModuleBinding { .. },
@@ -748,6 +1008,7 @@ fn validate_payload_shape(
 }
 
 /// Typed fail-closed reasons from successful-binding export.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DurableSemanticExportFailure {
     ErrorType,
@@ -759,6 +1020,7 @@ pub enum DurableSemanticExportFailure {
     RecursiveStructuralType,
 }
 
+#[cfg(test)]
 pub(crate) fn durable_module_type(
     path: &str,
     merged: &CanonicalMergedProgram,
@@ -773,6 +1035,7 @@ pub(crate) fn durable_module_type(
     Ok(DurableType::Module(module))
 }
 
+#[cfg(test)]
 pub(crate) fn convert_declaration_semantics(
     merged: &CanonicalMergedProgram,
     definitions: &BoundDefinitionSet,
@@ -882,9 +1145,16 @@ pub(crate) fn convert_declaration_semantics(
                 }
             }
             SemanticExportType::Nominal(n) => nominal(n)?,
+            SemanticExportType::AnonymousNominal(_) => {
+                return Err(DurableSemanticExportFailure::AnonymousNominalType);
+            }
             SemanticExportType::Array { element, len } => DurableType::Array {
                 element: Box::new(ty(element, merged, definitions)?),
                 len: *len,
+            },
+            SemanticExportType::Slice { element, name } => DurableType::Slice {
+                element: Box::new(ty(element, merged, definitions)?),
+                name: name.clone(),
             },
             SemanticExportType::PtrConst(v) => {
                 DurableType::PtrConst(Box::new(ty(v, merged, definitions)?))
@@ -1003,6 +1273,7 @@ pub(crate) fn convert_declaration_semantics(
     Ok(result.into())
 }
 
+#[cfg(test)]
 impl From<SemanticExportFailure> for DurableSemanticExportFailure {
     fn from(value: SemanticExportFailure) -> Self {
         match value {

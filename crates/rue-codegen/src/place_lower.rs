@@ -372,7 +372,7 @@ mod tests {
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
         let output = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new())
-            .analyze_all()
+            .analyze_all_for_test()
             .expect("fixture should analyze");
         let build_cfg = |name: &str| {
             let function = output
@@ -729,7 +729,7 @@ mod tests {
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
         let output = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new())
-            .analyze_all()
+            .analyze_all_for_test()
             .expect("fixture should analyze");
         let function = output
             .functions

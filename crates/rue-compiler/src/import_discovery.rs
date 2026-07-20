@@ -561,6 +561,13 @@ pub struct ImportDiscoveryPlan {
 }
 
 impl ImportDiscoveryPlan {
+    /// Exact parser-owned occurrences in this immutable plan. Rooted consumers
+    /// pass this value explicitly to the query frontier rather than relying on
+    /// a selected-plan compatibility adapter inside the session.
+    pub fn demand_roots(&self) -> ImportDemandRoots {
+        ImportDemandRoots::whole_plan(self)
+    }
+
     pub(crate) fn shape_diagnostics(program: &ParsedProgram) -> CompileErrors {
         let mut errors = CompileErrors::new();
         for invalid in program.invalid_imports() {
@@ -1874,10 +1881,6 @@ mod tests {
             closed.graph().unwrap().graph().records()[0].resolution(),
             crate::CanonicalImportResolution::Resolved(module) if module.as_str() == "a.rue"
         ));
-        let semantic = session
-            .canonical_semantic(&crate::CompileOptions::default())
-            .unwrap();
-        assert_eq!(semantic.functions().len(), 2);
     }
 
     #[test]

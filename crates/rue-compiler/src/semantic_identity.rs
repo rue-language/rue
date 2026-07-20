@@ -55,7 +55,7 @@ impl StableSymbolEncoder {
     }
 }
 
-fn type_instance_from_semantic(
+pub(crate) fn type_instance_from_semantic(
     value: &rue_air::SemanticImportType<StableDefinitionKey, ModuleId>,
 ) -> Option<TypeInstanceKey> {
     use rue_air::SemanticImportType as T;
@@ -87,6 +87,10 @@ fn type_instance_from_semantic(
             element: Box::new(type_instance_from_semantic(element)?),
             len: *len,
         },
+        T::Slice { element, name } => TypeInstanceKey::Slice {
+            element: Box::new(type_instance_from_semantic(element)?),
+            name: name.clone(),
+        },
         T::PtrConst(pointee) => {
             TypeInstanceKey::PtrConst(Box::new(type_instance_from_semantic(pointee)?))
         }
@@ -98,7 +102,7 @@ fn type_instance_from_semantic(
     })
 }
 
-fn argument_value_from_semantic(
+pub(crate) fn argument_value_from_semantic(
     value: &rue_air::SemanticImportConstValue<StableDefinitionKey, ModuleId>,
 ) -> Option<CanonicalArgumentValue> {
     use rue_air::SemanticImportConstValue as V;
@@ -379,6 +383,11 @@ fn encode_type(value: &TypeInstanceKey, output: &mut String) {
         TypeInstanceKey::GenericParameter(value) => {
             tag(output, 19);
             number(output, value);
+        }
+        TypeInstanceKey::Slice { element, name } => {
+            tag(output, 20);
+            encode_type(element, output);
+            bytes(output, name);
         }
     }
 }

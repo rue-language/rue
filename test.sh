@@ -164,7 +164,10 @@ if [[ $# -eq 0 ]]; then
             continue
         fi
         echo "Running heavy suite $suite..."
-        ./buck2 test "$suite" 2>&1 | tee -a "$run_log"
+        # Normalize Buck's configured-cell spelling before handing execution
+        # to the single audited heavy-suite runner. It owns target-specific
+        # executor arguments as well as the per-target result check.
+        ./scripts/ci-heavy-suite "${suite#root}" 2>&1 | tee -a "$run_log"
         step_status=${PIPESTATUS[0]}
         [[ "$step_status" -ne 0 && "$overall_status" -eq 0 ]] && overall_status=$step_status
     done

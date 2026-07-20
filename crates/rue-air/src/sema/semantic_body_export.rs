@@ -724,6 +724,13 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                             .is_some_and(|aliases| aliases.contains(identity))
                     );
                     SemanticImportType::AnonymousNominal(identity.clone())
+                } else if let Some(element) = self.slice_element_type(ty)
+                    && def.name.starts_with('[')
+                {
+                    SemanticImportType::Slice {
+                        element: Box::new(self.export_body_type(element)?),
+                        name: Arc::from(def.name.as_str()),
+                    }
                 } else if def.is_builtin {
                     SemanticImportType::BuiltinNominal {
                         name: Arc::from(def.name.as_str()),

@@ -27,6 +27,53 @@ pub struct SemanticNominalIdentity {
     pub kind: StableDefinitionKind,
 }
 
+/// Position-independent definition endpoint used inside an anonymous nominal
+/// producer identity while crossing the declaration-query boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SemanticDefinitionIdentity {
+    pub file_id: FileId,
+    pub name: Arc<str>,
+    pub owner: Option<Arc<str>>,
+    pub kind: StableDefinitionKind,
+}
+
+pub type SemanticAnonymousNominalIdentity =
+    crate::AnonymousNominalKey<SemanticDefinitionIdentity, Arc<str>>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticAnonymousNominalExport {
+    pub identity: SemanticAnonymousNominalIdentity,
+    pub shape: SemanticAnonymousNominalShape,
+    pub type_captures: Arc<[(Arc<str>, SemanticExportType)]>,
+    pub value_captures: Arc<[(Arc<str>, SemanticExportConstValue)]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SemanticAnonymousNominalShape {
+    Struct {
+        fields: Arc<[(Arc<str>, SemanticExportType)]>,
+        methods: Arc<[SemanticAnonymousMethodSignature]>,
+    },
+    Enum {
+        variants: Arc<[(Arc<str>, Arc<[SemanticExportType]>)]>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticAnonymousMethodSignature {
+    pub name: Arc<str>,
+    pub has_self: bool,
+    pub self_mode: SemanticParameterMode,
+    pub parameters: Arc<[(SemanticAnonymousMethodType, SemanticParameterMode, bool)]>,
+    pub result: SemanticAnonymousMethodType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SemanticAnonymousMethodType {
+    SelfType,
+    Concrete(SemanticExportType),
+}
+
 /// An owned resolved type with no `Type`, pool ID, interner symbol, or RIR handle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SemanticExportType {
@@ -50,9 +97,17 @@ pub enum SemanticExportType {
         kind: crate::SemanticImportNominalKind,
     },
     Nominal(SemanticNominalIdentity),
+    AnonymousNominal(SemanticAnonymousNominalIdentity),
     Array {
         element: Box<Self>,
         len: u64,
+    },
+    /// A second-class slice view. The syntax name is carried explicitly so
+    /// the AIR epoch can materialize the ordinary synthetic nominal without
+    /// reparsing or re-resolving its element type.
+    Slice {
+        element: Box<Self>,
+        name: Arc<str>,
     },
     PtrConst(Box<Self>),
     PtrMut(Box<Self>),
@@ -394,14 +449,21 @@ impl<'a> DeclarationShells<'a> {
             .chain(self.pending_payloads.iter().map(|pending| &pending.shell))
     }
 
-    /// Resolve declaration payloads and finalize a body-analysis-ready binder.
-    pub fn resolve_declarations(self) -> MultiErrorResult<BoundSema<'a>> {
-        self.resolve_declarations_with_work()
+    /// Test-support adapter for resolving source-owned declaration payloads.
+    #[doc(hidden)]
+    pub fn resolve_declarations_for_test(self) -> MultiErrorResult<BoundSema<'a>> {
+        self.resolve_declarations_with_work_for_test()
             .map_err(DeclarationResolutionFailure::into_errors)
     }
 
-    /// Resolve declaration payloads while retaining exact work on failure.
-    pub fn resolve_declarations_with_work(
+    #[cfg(test)]
+    pub fn resolve_declarations(self) -> MultiErrorResult<BoundSema<'a>> {
+        self.resolve_declarations_for_test()
+    }
+
+    /// Test-support adapter retaining exact work on source-owned failure.
+    #[doc(hidden)]
+    pub fn resolve_declarations_with_work_for_test(
         mut self,
     ) -> Result<BoundSema<'a>, DeclarationResolutionFailure> {
         // This is the explicit payload-install boundary. Const resolution may
@@ -437,7 +499,7 @@ impl<'a> DeclarationShells<'a> {
                 }),
             ));
         self.binding_work.declaration_resolution_invocations += 1;
-        if let Err(error) = self.sema.resolve_declarations() {
+        if let Err(error) = self.sema.resolve_declarations_for_test() {
             self.binding_work.declaration_resolution_failures += 1;
             return Err(DeclarationResolutionFailure::new(
                 CompileErrors::from(error),
@@ -448,15 +510,29 @@ impl<'a> DeclarationShells<'a> {
         Ok(self.sema.into_bound_with_work(self.binding_work))
     }
 
+    #[cfg(test)]
+    pub fn resolve_declarations_with_work(
+        self,
+    ) -> Result<BoundSema<'a>, DeclarationResolutionFailure> {
+        self.resolve_declarations_with_work_for_test()
+    }
+
     /// Install a fully validated, current-revision projection of durable
     /// declaration semantics into these freshly predeclared shells.
     ///
     /// Failure consumes the shells, so partially populated request-local state
-    /// can never escape. Callers fall back by creating a fresh binder and
-    /// taking [`Self::resolve_declarations`].
+    /// can never escape.
     pub fn install_declaration_semantics(
+        self,
+        exports: &[SemanticDeclarationExport],
+    ) -> Result<BoundSema<'a>, DeclarationInstallFailure> {
+        self.install_declaration_semantics_with_anonymous(exports, &[])
+    }
+
+    pub fn install_declaration_semantics_with_anonymous(
         mut self,
         exports: &[SemanticDeclarationExport],
+        anonymous_nominals: &[SemanticAnonymousNominalExport],
     ) -> Result<BoundSema<'a>, DeclarationInstallFailure> {
         use std::collections::BTreeMap;
 
@@ -539,6 +615,493 @@ impl<'a> DeclarationShells<'a> {
                 };
                 module_targets.insert(pending.shell.identity.clone(), Type::new_module(target));
             }
+        }
+
+        // Query-owned declaration payloads can mention synthetic string types
+        // before body analysis has had an opportunity to demand them. Create
+        // those ordinary AIR builtins at the declaration-install boundary so
+        // importing `str` and `Str(N)` has the same epoch-local identity as a
+        // cold semantic request.
+        fn collect_string_builtins(
+            ty: &SemanticExportType,
+            needs_str: &mut bool,
+            fixed: &mut std::collections::BTreeSet<u64>,
+        ) -> Result<(), DeclarationInstallFailure> {
+            match ty {
+                SemanticExportType::BuiltinNominal { name, kind }
+                    if *kind == crate::SemanticImportNominalKind::Struct =>
+                {
+                    if name.as_ref() == "str" {
+                        *needs_str = true;
+                    } else if let Some(capacity) = name
+                        .strip_prefix("Str(")
+                        .and_then(|value| value.strip_suffix(')'))
+                    {
+                        fixed.insert(
+                            capacity
+                                .parse()
+                                .map_err(|_| DeclarationInstallFailure::UnsupportedType)?,
+                        );
+                    }
+                }
+                SemanticExportType::Array { element, .. }
+                | SemanticExportType::Slice { element, .. }
+                | SemanticExportType::PtrConst(element)
+                | SemanticExportType::PtrMut(element) => {
+                    collect_string_builtins(element, needs_str, fixed)?;
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+        let mut needs_str = false;
+        let mut fixed_strings = std::collections::BTreeSet::new();
+        for record in records.values() {
+            match &record.payload {
+                SemanticDeclarationPayload::Callable {
+                    parameters, result, ..
+                } => {
+                    for parameter in parameters.iter() {
+                        collect_string_builtins(&parameter.ty, &mut needs_str, &mut fixed_strings)?;
+                    }
+                    collect_string_builtins(result, &mut needs_str, &mut fixed_strings)?;
+                }
+                SemanticDeclarationPayload::Struct { fields, .. } => {
+                    for (_, ty) in fields.iter() {
+                        collect_string_builtins(ty, &mut needs_str, &mut fixed_strings)?;
+                    }
+                }
+                SemanticDeclarationPayload::Enum { variants } => {
+                    for (_, payload) in variants.iter() {
+                        for ty in payload.iter() {
+                            collect_string_builtins(ty, &mut needs_str, &mut fixed_strings)?;
+                        }
+                    }
+                }
+                SemanticDeclarationPayload::Const { ty, value } => {
+                    collect_string_builtins(ty, &mut needs_str, &mut fixed_strings)?;
+                    if let SemanticExportConstValue::Type(ty) = value {
+                        collect_string_builtins(ty, &mut needs_str, &mut fixed_strings)?;
+                    }
+                }
+                SemanticDeclarationPayload::ModuleBinding { .. }
+                | SemanticDeclarationPayload::Destructor => {}
+            }
+        }
+        if needs_str {
+            self.sema
+                .get_or_create_str_struct(Span::default())
+                .map_err(|_| DeclarationInstallFailure::UnsupportedType)?;
+        }
+        for capacity in fixed_strings {
+            self.sema
+                .get_or_create_str_fixed_struct(capacity, Span::default())
+                .map_err(|_| DeclarationInstallFailure::UnsupportedType)?;
+        }
+
+        // Slice DTOs carry the already-resolved element type. Materialize
+        // them from the inside out before payload installation, so all later
+        // type imports are pure identity lookups within this AIR epoch.
+        fn collect_slices(
+            ty: &SemanticExportType,
+            slices: &mut Vec<(Arc<str>, SemanticExportType)>,
+        ) {
+            match ty {
+                SemanticExportType::Slice { element, name } => {
+                    collect_slices(element, slices);
+                    slices.push((name.clone(), (**element).clone()));
+                }
+                SemanticExportType::Array { element, .. }
+                | SemanticExportType::PtrConst(element)
+                | SemanticExportType::PtrMut(element) => collect_slices(element, slices),
+                _ => {}
+            }
+        }
+        let mut slices = Vec::new();
+        for record in records.values() {
+            match &record.payload {
+                SemanticDeclarationPayload::Callable {
+                    parameters, result, ..
+                } => {
+                    for parameter in parameters.iter() {
+                        collect_slices(&parameter.ty, &mut slices);
+                    }
+                    collect_slices(result, &mut slices);
+                }
+                SemanticDeclarationPayload::Struct { fields, .. } => {
+                    for (_, ty) in fields.iter() {
+                        collect_slices(ty, &mut slices);
+                    }
+                }
+                SemanticDeclarationPayload::Enum { variants } => {
+                    for (_, payload) in variants.iter() {
+                        for ty in payload.iter() {
+                            collect_slices(ty, &mut slices);
+                        }
+                    }
+                }
+                SemanticDeclarationPayload::Const { ty, value } => {
+                    collect_slices(ty, &mut slices);
+                    if let SemanticExportConstValue::Type(ty) = value {
+                        collect_slices(ty, &mut slices);
+                    }
+                }
+                SemanticDeclarationPayload::ModuleBinding { .. }
+                | SemanticDeclarationPayload::Destructor => {}
+            }
+        }
+        for (name, element) in slices {
+            // Generic-dependent signatures are represented by the ordinary
+            // declaration placeholder until specialization, so there is no
+            // concrete slice nominal to install yet.
+            if contains_generic_parameter(&element) {
+                continue;
+            }
+            let element = self.sema.import_export_type(&element)?;
+            self.sema
+                .get_or_create_slice_struct_from_element(name.as_ref(), element, Span::default())
+                .map_err(|_| DeclarationInstallFailure::UnsupportedType)?;
+        }
+
+        fn contains_generic_parameter(ty: &SemanticExportType) -> bool {
+            fn identity_type_contains_generic(
+                ty: &crate::TypeInstanceKey<SemanticDefinitionIdentity, Arc<str>>,
+            ) -> bool {
+                match ty {
+                    crate::TypeInstanceKey::GenericParameter(_) => true,
+                    crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(
+                        identity,
+                    )) => identity
+                        .arguments
+                        .types
+                        .iter()
+                        .any(identity_type_contains_generic),
+                    crate::TypeInstanceKey::Array { element, .. }
+                    | crate::TypeInstanceKey::Slice { element, .. }
+                    | crate::TypeInstanceKey::PtrConst(element)
+                    | crate::TypeInstanceKey::PtrMut(element) => {
+                        identity_type_contains_generic(element)
+                    }
+                    _ => false,
+                }
+            }
+            match ty {
+                SemanticExportType::GenericParameter(_) => true,
+                SemanticExportType::AnonymousNominal(identity) => identity
+                    .arguments
+                    .types
+                    .iter()
+                    .any(identity_type_contains_generic),
+                SemanticExportType::Array { element, .. }
+                | SemanticExportType::Slice { element, .. }
+                | SemanticExportType::PtrConst(element)
+                | SemanticExportType::PtrMut(element) => contains_generic_parameter(element),
+                _ => false,
+            }
+        }
+        fn producer_definition(
+            producer: &crate::StableProducerId<SemanticDefinitionIdentity, Arc<str>>,
+        ) -> Option<&SemanticDefinitionIdentity> {
+            fn function_definition(
+                function: &crate::FunctionInstanceKey<SemanticDefinitionIdentity, Arc<str>>,
+            ) -> Option<&SemanticDefinitionIdentity> {
+                match function {
+                    crate::FunctionInstanceKey::Definition(definition) => Some(definition),
+                    crate::FunctionInstanceKey::Specialization { base, .. } => {
+                        function_definition(base)
+                    }
+                    crate::FunctionInstanceKey::AnonymousMember { owner, .. }
+                    | crate::FunctionInstanceKey::DropGlue(owner) => type_definition(owner),
+                }
+            }
+            fn type_definition(
+                ty: &crate::TypeInstanceKey<SemanticDefinitionIdentity, Arc<str>>,
+            ) -> Option<&SemanticDefinitionIdentity> {
+                match ty {
+                    crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(
+                        definition,
+                    )) => Some(definition),
+                    crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(
+                        identity,
+                    )) => producer_definition(&identity.producer),
+                    crate::TypeInstanceKey::Array { element, .. }
+                    | crate::TypeInstanceKey::Slice { element, .. }
+                    | crate::TypeInstanceKey::PtrConst(element)
+                    | crate::TypeInstanceKey::PtrMut(element) => type_definition(element),
+                    _ => None,
+                }
+            }
+            match producer {
+                crate::StableProducerId::Definition(definition) => Some(definition),
+                crate::StableProducerId::Function(function) => function_definition(function),
+            }
+        }
+
+        fn import_capture_value(
+            sema: &mut Sema<'_>,
+            value: &SemanticExportConstValue,
+        ) -> Result<ConstValue, DeclarationInstallFailure> {
+            Ok(match value {
+                SemanticExportConstValue::Integer(value) => ConstValue::Integer(*value),
+                SemanticExportConstValue::Bool(value) => ConstValue::Bool(*value),
+                SemanticExportConstValue::Type(value) => {
+                    ConstValue::Type(sema.import_export_type(value)?)
+                }
+                SemanticExportConstValue::Function { file_id, name } => {
+                    let source = sema.interner.get_or_intern(name.as_ref());
+                    ConstValue::Function(
+                        sema.resolve_function_name_local(source, *file_id)
+                            .or_else(|| {
+                                sema.functions_by_file_name
+                                    .get(&(*file_id, source))
+                                    .copied()
+                            })
+                            .ok_or(DeclarationInstallFailure::MissingPayload)?,
+                    )
+                }
+                SemanticExportConstValue::Unit => ConstValue::Unit,
+                SemanticExportConstValue::String(value) => {
+                    ConstValue::String(sema.interner.get_or_intern(value.as_ref()))
+                }
+            })
+        }
+
+        fn import_method_type(
+            sema: &mut Sema<'_>,
+            value: &SemanticAnonymousMethodType,
+        ) -> Result<super::AnonMethodType, DeclarationInstallFailure> {
+            Ok(match value {
+                SemanticAnonymousMethodType::SelfType => super::AnonMethodType::SelfType,
+                SemanticAnonymousMethodType::Concrete(value) => {
+                    super::AnonMethodType::Concrete(sema.import_export_type(value)?)
+                }
+            })
+        }
+
+        fn rir_mode(mode: SemanticParameterMode) -> RirParamMode {
+            match mode {
+                SemanticParameterMode::Value => RirParamMode::Normal,
+                SemanticParameterMode::Borrow => RirParamMode::Borrow,
+                SemanticParameterMode::Inout => RirParamMode::Inout,
+            }
+        }
+
+        let mut pending_anonymous = anonymous_nominals.iter().collect::<Vec<_>>();
+        while !pending_anonymous.is_empty() {
+            let mut progressed = false;
+            let mut next = Vec::new();
+            for nominal in pending_anonymous {
+                let is_generic_shape = match &nominal.shape {
+                    SemanticAnonymousNominalShape::Struct { fields, .. } => {
+                        fields.iter().any(|(_, ty)| contains_generic_parameter(ty))
+                    }
+                    SemanticAnonymousNominalShape::Enum { variants } => variants
+                        .iter()
+                        .any(|(_, payload)| payload.iter().any(contains_generic_parameter)),
+                };
+                if is_generic_shape {
+                    // Generic declaration signatures use AIR's established
+                    // top-level comptime placeholder. The concrete anonymous
+                    // nominal is materialized by the keyed comptime-call query
+                    // after it receives canonical arguments.
+                    progressed = true;
+                    continue;
+                }
+                let installed = (|| -> Result<(), DeclarationInstallFailure> {
+                    let identity = self.sema.import_anonymous_identity(&nominal.identity)?;
+                    match &nominal.shape {
+                        SemanticAnonymousNominalShape::Struct { fields, methods } => {
+                            let fields = fields
+                                .iter()
+                                .map(|(name, ty)| {
+                                    Ok(crate::types::StructField {
+                                        name: name.to_string(),
+                                        ty: self.sema.import_export_type(ty)?,
+                                    })
+                                })
+                                .collect::<Result<Vec<_>, DeclarationInstallFailure>>()?;
+                            let source = producer_definition(&nominal.identity.producer);
+                            let source_span = source.and_then(|source| {
+                                self.pending_payloads
+                                    .iter()
+                                    .find(|pending| {
+                                        pending.shell.declaration_span.file_id == source.file_id
+                                            && pending.shell.identity.name == source.name
+                                            && pending.shell.identity.owner == source.owner
+                                            && pending.shell.identity.kind == source.kind
+                                    })
+                                    .map(|pending| pending.shell.declaration_span)
+                            });
+                            let query_occurrence = nominal.identity.anchor.segments().last();
+                            let method_materialization = source_span.and_then(|source_span| {
+                                self.sema
+                                    .rir
+                                    .iter()
+                                    .find_map(|(_, instruction)| match &instruction.data {
+                                        InstData::AnonStructType {
+                                            methods, anchor, ..
+                                        } if anchor.segments().last() == query_occurrence
+                                            && instruction.span.file_id == source_span.file_id
+                                            && instruction.span.start >= source_span.start
+                                            && instruction.span.end <= source_span.end =>
+                                        {
+                                            Some((methods.clone(), anchor.clone()))
+                                        }
+                                        _ => None,
+                                    })
+                            });
+                            let has_methods = !methods.is_empty();
+                            if has_methods && method_materialization.is_none() {
+                                return Err(DeclarationInstallFailure::MissingPayload);
+                            }
+                            let type_captures = if has_methods {
+                                nominal
+                                    .type_captures
+                                    .iter()
+                                    .map(|(name, ty)| {
+                                        Ok((
+                                            self.sema.interner.get_or_intern(name.as_ref()),
+                                            self.sema.import_export_type(ty)?,
+                                        ))
+                                    })
+                                    .collect::<Result<HashMap<_, _>, DeclarationInstallFailure>>()?
+                            } else {
+                                HashMap::new()
+                            };
+                            let value_captures = if has_methods {
+                                nominal
+                                    .value_captures
+                                    .iter()
+                                    .map(|(name, value)| {
+                                        Ok((
+                                            self.sema.interner.get_or_intern(name.as_ref()),
+                                            import_capture_value(&mut self.sema, value)?,
+                                        ))
+                                    })
+                                    .collect::<Result<HashMap<_, _>, DeclarationInstallFailure>>()?
+                            } else {
+                                HashMap::new()
+                            };
+                            let method_sigs = methods
+                                .iter()
+                                .map(|method| {
+                                    Ok(super::AnonMethodSig {
+                                        name: self
+                                            .sema
+                                            .interner
+                                            .get_or_intern(method.name.as_ref()),
+                                        has_self: method.has_self,
+                                        self_mode: rir_mode(method.self_mode),
+                                        param_types: method
+                                            .parameters
+                                            .iter()
+                                            .map(|(ty, _, _)| {
+                                                import_method_type(&mut self.sema, ty)
+                                            })
+                                            .collect::<Result<Vec<_>, _>>()?,
+                                        param_modes: method
+                                            .parameters
+                                            .iter()
+                                            .map(|(_, mode, _)| rir_mode(*mode))
+                                            .collect(),
+                                        param_comptime: method
+                                            .parameters
+                                            .iter()
+                                            .map(|(_, _, comptime)| *comptime)
+                                            .collect(),
+                                        return_type: import_method_type(
+                                            &mut self.sema,
+                                            &method.result,
+                                        )?,
+                                    })
+                                })
+                                .collect::<Result<Vec<_>, DeclarationInstallFailure>>()?;
+                            let query_identity = identity;
+                            let (struct_ty, _) = self.sema.find_or_create_anon_struct(
+                                query_identity.clone(),
+                                &fields,
+                                &method_sigs,
+                                &value_captures,
+                            );
+                            let struct_id = struct_ty
+                                .as_struct()
+                                .ok_or(DeclarationInstallFailure::NominalShapeMismatch)?;
+                            if let Some((_, rir_anchor)) = &method_materialization
+                                && rir_anchor != &query_identity.anchor
+                            {
+                                let mut rir_identity = query_identity.clone();
+                                rir_identity.anchor = rir_anchor.clone();
+                                self.sema
+                                    .anon_struct_identities
+                                    .insert(rir_identity.clone(), struct_id);
+                                self.sema
+                                    .canonical_anonymous_aliases
+                                    .entry(struct_ty)
+                                    .or_default()
+                                    .insert(rir_identity);
+                            }
+                            if !type_captures.is_empty() {
+                                self.sema
+                                    .anon_struct_type_subst
+                                    .insert(struct_id, type_captures.clone());
+                            }
+                            if let Some((methods, _)) = method_materialization
+                                && !self.sema.rir.anon_struct_methods(&methods).is_empty()
+                            {
+                                let first = self
+                                    .sema
+                                    .rir
+                                    .anon_struct_methods(&methods)
+                                    .get(0)
+                                    .expect("nonempty anonymous method range");
+                                let needs_registration = match &self.sema.rir.get(first).data {
+                                    InstData::FnDecl { name, .. } => {
+                                        !self.sema.has_method((struct_id, *name))
+                                    }
+                                    _ => false,
+                                };
+                                if needs_registration {
+                                    self.sema
+                                        .register_projected_anon_struct_methods(
+                                            struct_id,
+                                            struct_ty,
+                                            &methods,
+                                            &method_sigs,
+                                        )
+                                        .ok_or(DeclarationInstallFailure::NominalShapeMismatch)?;
+                                }
+                            }
+                        }
+                        SemanticAnonymousNominalShape::Enum { variants } => {
+                            let names = variants
+                                .iter()
+                                .map(|(name, _)| name.to_string())
+                                .collect::<Vec<_>>();
+                            let payloads = variants
+                                .iter()
+                                .map(|(_, payload)| {
+                                    payload
+                                        .iter()
+                                        .map(|ty| self.sema.import_export_type(ty))
+                                        .collect::<Result<Vec<_>, _>>()
+                                })
+                                .collect::<Result<Vec<_>, _>>()?;
+                            self.sema
+                                .find_or_create_anon_enum(identity, &names, &payloads);
+                        }
+                    }
+                    Ok(())
+                })();
+                match installed {
+                    Ok(()) => progressed = true,
+                    Err(DeclarationInstallFailure::MissingNominal) => next.push(nominal),
+                    Err(failure) => return Err(failure),
+                }
+            }
+            if !progressed {
+                return Err(DeclarationInstallFailure::MissingNominal);
+            }
+            pending_anonymous = next;
         }
 
         for pending in &self.pending_nominals {
@@ -648,7 +1211,16 @@ impl<'a> DeclarationShells<'a> {
             }
         }
 
-        for pending in &self.pending_payloads {
+        let mut payload_install_order = self.pending_payloads.iter().collect::<Vec<_>>();
+        payload_install_order.sort_by_key(|pending| {
+            let record = records[&pending.shell.identity];
+            if matches!(record.payload, SemanticDeclarationPayload::Callable { .. }) {
+                0_u8
+            } else {
+                1_u8
+            }
+        });
+        for pending in payload_install_order {
             let record = records[&pending.shell.identity];
             match (&record.payload, pending.source) {
                 (
@@ -839,12 +1411,57 @@ impl<'a> DeclarationShells<'a> {
                         }),
                     );
                 }
-                (_, DeclarationPayloadSource::Const { .. }) => {
-                    return Err(DeclarationInstallFailure::UnsupportedDeclaration);
+                (
+                    SemanticDeclarationPayload::Const { ty, value },
+                    DeclarationPayloadSource::Const { .. },
+                ) => {
+                    let ty = self.sema.import_export_type(ty)?;
+                    let value = match value {
+                        SemanticExportConstValue::Integer(value) => ConstValue::Integer(*value),
+                        SemanticExportConstValue::Bool(value) => ConstValue::Bool(*value),
+                        SemanticExportConstValue::Type(value) => {
+                            ConstValue::Type(self.sema.import_export_type(value)?)
+                        }
+                        SemanticExportConstValue::Function { file_id, name } => {
+                            let name = self.sema.interner.get_or_intern(name.as_ref());
+                            let symbol = self
+                                .sema
+                                .resolve_function_name_local(name, *file_id)
+                                .or_else(|| {
+                                    self.sema
+                                        .functions_by_file_name
+                                        .get(&(*file_id, name))
+                                        .copied()
+                                })
+                                .ok_or(DeclarationInstallFailure::MissingPayload)?;
+                            ConstValue::Function(symbol)
+                        }
+                        SemanticExportConstValue::Unit => ConstValue::Unit,
+                        SemanticExportConstValue::String(value) => {
+                            ConstValue::String(self.sema.interner.get_or_intern(value.as_ref()))
+                        }
+                    };
+                    let name = self
+                        .sema
+                        .interner
+                        .get_or_intern(pending.shell.identity.name.as_ref());
+                    self.sema.const_resolutions.insert(
+                        (pending.shell.declaration_span.file_id, name),
+                        super::ConstResolution::Value(super::ConstInfo {
+                            is_pub: pending.shell.is_public,
+                            ty,
+                            value,
+                            span: pending.shell.declaration_span,
+                        }),
+                    );
                 }
                 _ => return Err(DeclarationInstallFailure::KindMismatch),
             }
         }
+        // The keyed nominal-well-formedness query is the language authority
+        // for by-value cycles. Re-running the canonical containment fold here
+        // validates that this request-local AIR materialization is exactly the
+        // projected stable graph; any failure now indicates projection drift.
         self.sema
             .check_recursive_value_types()
             .map_err(|_| DeclarationInstallFailure::NominalShapeMismatch)?;
@@ -928,6 +1545,47 @@ fn install_const_candidate_endpoints<D: super::DeclarationPhase>(
 }
 
 impl Sema<'_> {
+    fn import_anonymous_identity(
+        &self,
+        identity: &SemanticAnonymousNominalIdentity,
+    ) -> Result<super::anon_structs::IssuedAnonymousNominalKey, DeclarationInstallFailure> {
+        identity.try_map_identities(
+            &|definition| {
+                if matches!(
+                    definition.kind,
+                    StableDefinitionKind::ValueConst | StableDefinitionKind::ModuleBinding
+                ) && definition.owner.is_none()
+                    && let Some(token) = self
+                        .const_candidate_tokens
+                        .get(&(definition.file_id.index(), definition.name.to_string()))
+                {
+                    return Ok(token.0);
+                }
+                self.stable_definition_token(
+                    definition.file_id.index(),
+                    &definition.name,
+                    definition.owner.as_deref(),
+                    definition.kind,
+                )
+                .map_err(|_| DeclarationInstallFailure::MissingNominal)
+            },
+            &|module| {
+                let file = (0..self.module_registry.len())
+                    .map(|index| {
+                        self.module_registry
+                            .get_def(crate::ModuleId::new(index as u32))
+                    })
+                    .find(|definition| definition.durable_id.as_str() == module.as_ref())
+                    .map(|definition| definition.file_id)
+                    .ok_or(DeclarationInstallFailure::MissingNominal)?;
+                self.stable_module_tokens
+                    .get(&file)
+                    .copied()
+                    .ok_or(DeclarationInstallFailure::MissingNominal)
+            },
+        )
+    }
+
     fn import_export_type(
         &self,
         value: &SemanticExportType,
@@ -970,6 +1628,7 @@ impl Sema<'_> {
                 match kind {
                     crate::SemanticImportNominalKind::Struct => Type::new_struct(
                         self.resolve_builtin_struct_name(name)
+                            .or_else(|| self.generated_structs.get(&name).copied())
                             .ok_or(DeclarationInstallFailure::MissingNominal)?,
                     ),
                     crate::SemanticImportNominalKind::Enum => Type::new_enum(
@@ -996,6 +1655,23 @@ impl Sema<'_> {
                     _ => return Err(DeclarationInstallFailure::KindMismatch),
                 }
             }
+            SemanticExportType::AnonymousNominal(identity) => {
+                let identity = self.import_anonymous_identity(identity)?;
+                match identity.kind {
+                    crate::AnonymousNominalKind::Struct => Type::new_struct(
+                        *self
+                            .anon_struct_identities
+                            .get(&identity)
+                            .ok_or(DeclarationInstallFailure::MissingNominal)?,
+                    ),
+                    crate::AnonymousNominalKind::Enum => Type::new_enum(
+                        *self
+                            .anon_enum_identities
+                            .get(&identity)
+                            .ok_or(DeclarationInstallFailure::MissingNominal)?,
+                    ),
+                }
+            }
             SemanticExportType::Array { element, len } => self
                 .type_pool
                 .try_intern_array(
@@ -1003,6 +1679,24 @@ impl Sema<'_> {
                     *len,
                 )
                 .map_err(|_| DeclarationInstallFailure::UnsupportedType)?,
+            SemanticExportType::Slice { element, name } => {
+                let element = self.import_export_type_with_generics(element, generic_parameters)?;
+                let symbol = self.interner.get_or_intern(name.as_ref());
+                let id = self
+                    .generated_structs
+                    .get(&symbol)
+                    .copied()
+                    .ok_or(DeclarationInstallFailure::MissingNominal)?;
+                let def = self.type_pool.struct_def(id);
+                let matches_element = def.fields.first().is_some_and(|field| {
+                    matches!(field.ty.kind(), TypeKind::PtrConst(pointer)
+                        if self.type_pool.ptr_const_def(pointer) == element)
+                });
+                if !matches_element {
+                    return Err(DeclarationInstallFailure::KindMismatch);
+                }
+                Type::new_struct(id)
+            }
             SemanticExportType::PtrConst(value) => self
                 .type_pool
                 .try_intern_ptr_const(
@@ -1033,10 +1727,12 @@ impl Sema<'_> {
                 true
             }
             SemanticExportType::Array { element, .. }
+            | SemanticExportType::Slice { element, .. }
             | SemanticExportType::PtrConst(element)
             | SemanticExportType::PtrMut(element) => {
                 Self::validate_generic_references(element, generic_parameter_count)?
             }
+            SemanticExportType::AnonymousNominal(_) => generic_parameter_count > 0,
             _ => false,
         })
     }
@@ -1266,6 +1962,41 @@ fn stable_module_files<D: super::DeclarationPhase>(sema: &super::Sema<'_, D>) ->
 }
 
 impl<'a> BoundSema<'a> {
+    /// Install stable declaration dependency observations captured by the
+    /// semantic query nucleus. These events describe the declaration payloads
+    /// already installed in this epoch; AIR must not rediscover them by
+    /// re-running declaration resolution.
+    pub fn install_query_declaration_dependencies(
+        mut self,
+        type_dependencies: &[crate::DeclarationTypeDependencyEvent],
+        type_call_heads: &[crate::DeclarationTypeCallHeadDependencyEvent],
+        builtin_type_call_heads: &[crate::DeclarationBuiltinTypeCallHeadDependencyEvent],
+        named_const_dependencies: &[crate::NamedConstDependencyEvent],
+    ) -> Self {
+        self.sema
+            .declaration_type_dependencies
+            .extend_from_slice(type_dependencies);
+        self.sema
+            .declaration_type_call_head_dependencies
+            .extend_from_slice(type_call_heads);
+        self.sema
+            .declaration_builtin_type_call_head_dependencies
+            .extend_from_slice(builtin_type_call_heads);
+        self.sema
+            .named_const_dependencies
+            .extend_from_slice(named_const_dependencies);
+        self.sema
+            .body_analysis_work
+            .declaration_type_dependency_events += type_dependencies.len();
+        self.sema
+            .body_analysis_work
+            .declaration_type_call_head_dependency_events +=
+            type_call_heads.len() + builtin_type_call_heads.len();
+        self.sema.body_analysis_work.named_const_dependency_events +=
+            named_const_dependencies.len();
+        self
+    }
+
     pub fn install_stable_identity_endpoints(
         mut self,
         definitions: &[crate::SemanticDefinitionEndpoint],
@@ -1998,7 +2729,14 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
         let result = match ty.kind() {
             TypeKind::Struct(id) => {
                 let def = self.type_pool.struct_def(id);
-                if def.is_builtin {
+                if let Some(element) = self.slice_element_type(ty)
+                    && def.name.starts_with('[')
+                {
+                    Ok(SemanticExportType::Slice {
+                        element: Box::new(self.export_type(element, stack)?),
+                        name: Arc::from(def.name.as_str()),
+                    })
+                } else if def.is_builtin {
                     Ok(SemanticExportType::BuiltinNominal {
                         name: Arc::from(def.name.as_str()),
                         kind: crate::SemanticImportNominalKind::Struct,
@@ -2643,7 +3381,7 @@ mod tests {
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
         let shells = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
-            .predeclare_declaration_shells()
+            .predeclare_declaration_shells_for_test()
             .unwrap();
         let only_main = crate::SemanticDefinitionEndpoint {
             token: crate::SemanticDefinitionToken::new(11, 0),
@@ -2809,7 +3547,7 @@ mod tests {
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
         let installed = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
-            .predeclare_declaration_shells()
+            .predeclare_declaration_shells_for_test()
             .unwrap()
             .install_declaration_semantics(&exports)
             .unwrap();
@@ -2831,7 +3569,7 @@ mod tests {
         let mut mismatched = exports.clone();
         mismatched[0].identity.is_public = !mismatched[0].identity.is_public;
         let failure = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
-            .predeclare_declaration_shells()
+            .predeclare_declaration_shells_for_test()
             .unwrap()
             .install_declaration_semantics(&mismatched);
         let Err(failure) = failure else {
@@ -3081,7 +3819,7 @@ mod tests {
         let rir = astgen.finish();
 
         let shells = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
-            .predeclare_declaration_shells()
+            .predeclare_declaration_shells_for_test()
             .unwrap();
         let prepared = shells.binding_work();
         assert_eq!(prepared.bind_invocations, 1);
@@ -3122,7 +3860,7 @@ mod tests {
             let (rir, interner) = lower_files(files);
             let mut sema = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new());
             sema.set_symbol_paths(paths);
-            sema.predeclare_declaration_shells()
+            sema.predeclare_declaration_shells_for_test()
                 .unwrap()
                 .declaration_shells()
                 .map(|shell| shell.identity.clone())
@@ -3184,7 +3922,7 @@ mod tests {
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
         let shells = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
-            .predeclare_declaration_shells()
+            .predeclare_declaration_shells_for_test()
             .unwrap();
         let records = shells.callable_value_shells().collect::<Vec<_>>();
         assert_eq!(records.len(), 4);
@@ -3219,7 +3957,7 @@ mod tests {
             .err()
             .expect("ordinary binding must fail");
         let split = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
-            .predeclare_declaration_shells()
+            .predeclare_declaration_shells_for_test()
             .unwrap()
             .resolve_declarations()
             .err()
@@ -3241,7 +3979,7 @@ mod tests {
             .bind_declarations()
             .expect("StrBuf is not a reserved root type");
         let split = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
-            .predeclare_declaration_shells()
+            .predeclare_declaration_shells_for_test()
             .expect("StrBuf nominal predeclaration succeeds")
             .resolve_declarations()
             .expect("StrBuf declaration resolution succeeds");

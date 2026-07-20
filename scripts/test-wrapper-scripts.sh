@@ -747,11 +747,12 @@ test_ci_heavy_suite_audits_its_target() {
   cat >"$sb/buck2" <<'EOF'
 #!/usr/bin/env bash
 if [ "$1" = "uquery" ]; then
-  echo 'root//:cli-tests'
+  printf 'root%s\n' "${FAKE_LABELED_TARGET:-//:cli-tests}"
   exit 0
 fi
 if [ "$1" = "test" ]; then
-  if [ "${FAKE_OMIT:-0}" != 1 ]; then echo 'Pass: root//:cli-tests (0.1s)'; fi
+  if [ -n "${FAKE_CALL_LOG:-}" ]; then printf '%s\n' "$*" >>"$FAKE_CALL_LOG"; fi
+  if [ "${FAKE_OMIT:-0}" != 1 ]; then printf 'Pass: root%s (0.1s)\n' "$2"; fi
   exit "${FAKE_EXIT:-0}"
 fi
 exit 90
@@ -762,6 +763,32 @@ EOF
   (cd "$sb" && ./ci-heavy-suite //:cli-tests) >/dev/null 2>&1 || rc=$?
   check "ci-heavy-suite: labeled target with a result succeeds" \
     "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
+
+  : >"$sb/calls.log"
+  rc=0
+  (cd "$sb" && FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite //:cli-tests) >/dev/null 2>&1 || rc=$?
+  check "ci-heavy-suite: ordinary CLI shard receives the extended executor timeout" \
+    "$([ "$rc" -eq 0 ] && grep -Fxq 'test //:cli-tests -- --timeout 1200' "$sb/calls.log" && echo 0 || echo 1)"
+
+  : >"$sb/calls.log"
+  rc=0
+  (cd "$sb" && FAKE_LABELED_TARGET=//:cli-tests-caldera FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite //:cli-tests-caldera) >/dev/null 2>&1 || rc=$?
+  check "ci-heavy-suite: Caldera shard receives the extended executor timeout" \
+    "$([ "$rc" -eq 0 ] && grep -Fxq 'test //:cli-tests-caldera -- --timeout 1200' "$sb/calls.log" && echo 0 || echo 1)"
+
+  local other_target
+  for other_target in \
+    //:spec-tests \
+    //:ui-tests \
+    //:oracle-diff-generated-smoke \
+    //:reproducible-programs \
+    //:tutorial-snippet-tests; do
+    : >"$sb/calls.log"
+    rc=0
+    (cd "$sb" && FAKE_LABELED_TARGET="$other_target" FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite "$other_target") >/dev/null 2>&1 || rc=$?
+    check "ci-heavy-suite: $other_target retains the default executor timeout" \
+      "$([ "$rc" -eq 0 ] && grep -Fxq "test $other_target" "$sb/calls.log" && echo 0 || echo 1)"
+  done
 
   rc=0
   out="$(cd "$sb" && ./ci-heavy-suite //:spec-tests 2>&1)" || rc=$?
@@ -796,7 +823,10 @@ EOF
 # <target>` run (a result line only when the target is in FAKE_PASS_TARGETS).
 test_testsh_unfiltered_audits_corpus_presence() {
   local sb; sb="$(mktemp -d)"
-  cp "$SRC_ROOT/test.sh" "$sb/test.sh"; chmod +x "$sb/test.sh"
+  mkdir -p "$sb/scripts"
+  cp "$SRC_ROOT/test.sh" "$sb/test.sh"
+  cp "$SRC_ROOT/scripts/ci-heavy-suite" "$sb/scripts/ci-heavy-suite"
+  chmod +x "$sb/test.sh" "$sb/scripts/ci-heavy-suite"
   cat >"$sb/buck2" <<'EOF'
 #!/usr/bin/env bash
 if [ "$1" = "uquery" ]; then

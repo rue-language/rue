@@ -8,7 +8,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use rue_compiler::unstable::{
     DiscoverySourceAssembler, ImportDemandMode, begin_import_input_request,
-    committed_import_discovery, import_demand_frontier, import_observation_ledger,
+    committed_import_discovery, import_demand_frontier_for_roots, import_observation_ledger,
     publish_import_observation_batch,
 };
 use rue_compiler::{
@@ -161,8 +161,14 @@ fn close_discovery(session: &mut CompilerSession, source: &SourceSnapshot) {
                 ledger.clone(),
             )
             .unwrap();
-        let frontier =
-            import_demand_frontier(session, revision, &plan, ImportDemandMode::Rooted).unwrap();
+        let frontier = import_demand_frontier_for_roots(
+            session,
+            revision,
+            &plan,
+            ImportDemandMode::Rooted,
+            &plan.demand_roots(),
+        )
+        .unwrap();
         if frontier.requests().is_empty() {
             session.close_import_discovery(ledger).unwrap();
             break;

@@ -13,11 +13,11 @@ use std::{collections::HashMap, fmt::Write as _, sync::Arc};
 use rue_cfg::OptLevel;
 use rue_compiler::unstable::{
     DifferentialOracleFault, DiscoverySourceAssembler, ImportDemandMode, PresentationRequest,
-    PresentationStage, begin_import_input_request, discovery_attempt, import_demand_frontier,
-    import_discovery_accepted_reads_debug, import_discovery_graph_input_debug,
-    import_discovery_observation_ledger_debug, import_observation_ledger,
-    inject_stale_query_for_oracle, oracle_executable, publish_import_observation_batch,
-    semantic_input_debug,
+    PresentationStage, begin_import_input_request, discovery_attempt,
+    import_demand_frontier_for_roots, import_discovery_accepted_reads_debug,
+    import_discovery_graph_input_debug, import_discovery_observation_ledger_debug,
+    import_observation_ledger, inject_stale_query_for_oracle, oracle_executable,
+    publish_import_observation_batch, semantic_input_debug,
 };
 use rue_compiler::{
     AcceptedImportSource, AcceptedReadManifestEntry, CompileOptions, CompilerSession,
@@ -155,8 +155,14 @@ fn close_discovery(session: &mut CompilerSession, step: &Step) -> String {
             Ok(plan) => plan,
             Err(errors) => return format!("stage-error:{errors:?}"),
         };
-        let frontier =
-            import_demand_frontier(session, revision, &plan, ImportDemandMode::Rooted).unwrap();
+        let frontier = import_demand_frontier_for_roots(
+            session,
+            revision,
+            &plan,
+            ImportDemandMode::Rooted,
+            &plan.demand_roots(),
+        )
+        .unwrap();
         if frontier.requests().is_empty() {
             return match session.close_import_discovery(ledger) {
                 Ok(artifact) => render_import_discovery(&artifact),

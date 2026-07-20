@@ -1655,7 +1655,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// The shared syntax driver resolves the element before invoking this
     /// materializer. The pointer field is `ptr const T` so that `s[i]` can lower to
     /// `@ptr_read(@ptr_offset(ptr, i))` with the correct element stride.
-    fn get_or_create_slice_struct_from_element(
+    pub(crate) fn get_or_create_slice_struct_from_element(
         &mut self,
         type_name: &str,
         element_ty: Type,
@@ -1838,7 +1838,11 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// literal-fits legality rule. Genuine inline-stack storage and mutation
     /// (`push`/append) are deferred; for the literal-only, immutable surface of
     /// this phase the two are observationally identical.
-    fn get_or_create_str_fixed_struct(&mut self, capacity: u64, span: Span) -> CompileResult<Type> {
+    pub(crate) fn get_or_create_str_fixed_struct(
+        &mut self,
+        capacity: u64,
+        span: Span,
+    ) -> CompileResult<Type> {
         use crate::types::{StructDef, StructField};
 
         let name = format!("Str({})", capacity);

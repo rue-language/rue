@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use rue_compiler::unstable::{
     DiscoverySourceAssembler, ImportDemandMode, begin_import_input_request, discovery_attempt,
-    import_demand_frontier, import_observation_ledger, publish_import_observation_batch,
+    import_demand_frontier_for_roots, import_observation_ledger, publish_import_observation_batch,
 };
 use rue_compiler::{
     AcceptedImportSource, AcceptedReadManifestEntry, CompileErrors, CompilerSession,
@@ -608,11 +608,13 @@ pub(crate) fn discover_and_load_imports(
                 });
             }
         };
-        let frontier = import_demand_frontier(
+        let roots = plan.demand_roots();
+        let frontier = import_demand_frontier_for_roots(
             &mut staging,
             input_revision,
             &plan,
             ImportDemandMode::Rooted,
+            &roots,
         )
         .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
         if frontier.requests().is_empty() {
@@ -730,7 +732,7 @@ mod architecture_tests {
         assert!(!production.contains(".pending_requests("));
         for required_boundary in [
             "begin_import_input_request(",
-            "import_demand_frontier(",
+            "import_demand_frontier_for_roots(",
             "publish_import_observation_batch(",
         ] {
             assert_eq!(

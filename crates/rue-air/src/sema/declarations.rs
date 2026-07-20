@@ -12,18 +12,18 @@
 use std::collections::{HashMap, HashSet};
 
 use lasso::Spur;
-use rue_error::{
-    CompileError, CompileResult, CopyStructNonCopyFieldError, ErrorKind, PreviewFeature, ice,
-};
-use rue_rir::{InstData, InstRef, RirParamMode};
+use rue_error::{CompileError, CompileResult, ErrorKind};
+use rue_error::{CopyStructNonCopyFieldError, PreviewFeature, ice};
+use rue_rir::InstData;
+use rue_rir::{InstRef, RirParamMode};
 use rue_span::{FileId, Span};
 
-use super::{
-    ConstInfo, ConstValue, DeclarationPhase, FunctionInfo, InferenceContext, MethodInfo, Sema,
-};
+use super::{ConstInfo, ConstValue, DeclarationPhase, InferenceContext, Sema};
+use super::{FunctionInfo, MethodInfo};
 use crate::inference::{FunctionSig, MethodSig};
 use crate::path_norm::{mangle_symbol_component, normalize_module_path};
-use crate::types::{EnumDef, EnumId, StructDef, StructField, StructId, Type, TypeKind};
+use crate::types::StructField;
+use crate::types::{EnumDef, EnumId, StructDef, StructId, Type, TypeKind};
 
 impl<'a, D: DeclarationPhase> Sema<'a, D> {
     pub(crate) fn source_function_name(&self, internal_name: Spur) -> Spur {
@@ -343,13 +343,13 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
                 || self.structs_by_file_name.contains_key(&(*file_id, *name))
                 || self.enums_by_file_name.contains_key(&(*file_id, *name))
             {
-                let name_str = self.interner.resolve(name).to_string();
-                return Err(CompileError::new(
-                    ErrorKind::DuplicateFunctionDefinition {
-                        function_name: name_str,
-                    },
-                    info.span,
-                ));
+                let name_str = self.interner.resolve(name);
+                let kind =
+                    crate::declaration_validation::const_cross_kind_collision(name_str, true, true)
+                        .expect(
+                            "a present non-const declaration collides with this value constant",
+                        );
+                return Err(CompileError::new(kind, info.span));
             }
         }
         Ok(())
@@ -405,19 +405,22 @@ impl<'a> Sema<'a> {
 
                     let variants = self.rir.enum_variants(variants);
 
-                    // Check for duplicate variant names
                     let mut seen_variants: HashSet<Spur> = HashSet::new();
-                    for variant_name in &variants {
-                        if !seen_variants.insert(*variant_name) {
-                            let variant_name_str =
-                                self.interner.resolve(&*variant_name).to_string();
-                            return Err(CompileError::new(
-                                ErrorKind::DuplicateVariant {
-                                    enum_name: enum_name.clone(),
-                                    variant_name: variant_name_str,
-                                },
-                                inst.span,
-                            ));
+                    for variant in &variants {
+                        if !seen_variants.insert(*variant) {
+                            if self.synthetic_declaration_discovery {
+                                return Err(CompileError::new(
+                                    ErrorKind::DuplicateVariant {
+                                        enum_name: enum_name.clone(),
+                                        variant_name: self.interner.resolve(&*variant).to_owned(),
+                                    },
+                                    inst.span,
+                                ));
+                            }
+                            // Query-owned production payloads validate this
+                            // signature before AIR completion. Shell import is
+                            // intentionally permissive because it precedes
+                            // keyed payload projection.
                         }
                     }
 
@@ -459,12 +462,16 @@ impl<'a> Sema<'a> {
                     let is_copy = self.has_copy_directive(directives.iter());
                     let is_repr_c = self.has_repr_c_directive(directives.iter());
 
-                    // Linear types cannot be @copy
                     if *is_linear && is_copy {
-                        return Err(CompileError::new(
-                            ErrorKind::LinearStructCopy(struct_name.clone()),
-                            inst.span,
-                        ));
+                        if self.synthetic_declaration_discovery {
+                            return Err(CompileError::new(
+                                ErrorKind::LinearStructCopy(struct_name.clone()),
+                                inst.span,
+                            ));
+                        }
+                        // Query-owned production payloads validate this before
+                        // AIR completion. The shell phase itself runs before
+                        // keyed payload projection.
                     }
 
                     // Create placeholder struct def (fields will be resolved in phase 2)
@@ -526,7 +533,12 @@ impl<'a> Sema<'a> {
     /// `resolve_type()` calls. Array types from literals (inferred during HM inference)
     /// are created on-demand via the thread-safe `TypeInternPool` during function
     /// body analysis.
+    #[cfg(test)]
     pub(crate) fn resolve_declarations(&mut self) -> CompileResult<()> {
+        self.resolve_declarations_for_test()
+    }
+
+    pub(crate) fn resolve_declarations_for_test(&mut self) -> CompileResult<()> {
         debug_assert!(!self.declaration_binding_active);
         self.declaration_binding_active = true;
         let result = (|| {
@@ -898,21 +910,23 @@ impl<'a> Sema<'a> {
                         )
                     })?;
 
-                let struct_name = name_str.clone();
                 let fields = self.rir.struct_fields(fields);
 
-                // Check for duplicate field names
                 let mut seen_fields: HashSet<Spur> = HashSet::new();
                 for (field_name, _) in fields.values() {
                     if !seen_fields.insert(field_name) {
-                        let field_name_str = self.interner.resolve(&field_name).to_string();
-                        return Err(CompileError::new(
-                            ErrorKind::DuplicateField {
-                                struct_name,
-                                field_name: field_name_str,
-                            },
-                            inst.span,
-                        ));
+                        if self.synthetic_declaration_discovery {
+                            return Err(CompileError::new(
+                                ErrorKind::DuplicateField {
+                                    struct_name: name_str.clone(),
+                                    field_name: self.interner.resolve(&field_name).to_owned(),
+                                },
+                                inst.span,
+                            ));
+                        }
+                        panic!(
+                            "keyed struct signature validation must reject duplicate fields before AIR installation"
+                        );
                     }
                 }
 
@@ -1375,26 +1389,33 @@ impl<'a> Sema<'a> {
         let type_name_str = self.interner.resolve(&type_name).to_string();
 
         // Get the struct ID from the lookup table
-        let struct_id = *self
+        let Some(struct_id) = self
             .structs_by_file_name
             .get(&(span.file_id, type_name))
-            .ok_or_else(|| {
-                CompileError::new(
-                    ErrorKind::DestructorUnknownType {
-                        type_name: type_name_str.clone(),
-                    },
+            .copied()
+        else {
+            if self.synthetic_declaration_discovery {
+                return Err(CompileError::new(
+                    crate::declaration_validation::destructor_unknown_type(&type_name_str),
                     span,
-                )
-            })?;
+                ));
+            }
+            panic!(
+                "keyed destructor signature validation must reject an unknown owner before AIR installation"
+            );
+        };
 
         let struct_def = self.type_pool.struct_def(struct_id);
         if struct_def.destructor.is_some() {
-            return Err(CompileError::new(
-                ErrorKind::DuplicateDestructor {
-                    type_name: type_name_str,
-                },
-                span,
-            ));
+            if self.synthetic_declaration_discovery {
+                return Err(CompileError::new(
+                    crate::declaration_validation::duplicate_destructor(&type_name_str),
+                    span,
+                ));
+            }
+            panic!(
+                "keyed destructor signature validation must reject duplicate destructors before AIR installation"
+            );
         }
 
         // A @copy struct cannot have a destructor (RUE-159, the spirit of
@@ -1462,16 +1483,25 @@ impl<'a> Sema<'a> {
     /// is fine.
     fn check_duplicate_param_names(&self, params: &rue_rir::RirParamsRange) -> CompileResult<()> {
         let params = self.rir.params(params);
-        let mut seen: HashSet<Spur> = HashSet::with_capacity(params.len());
-        for param in &params {
-            if !seen.insert(param.name) {
-                return Err(CompileError::new(
-                    ErrorKind::DuplicateParameter {
-                        name: self.interner.resolve(&param.name).to_string(),
-                    },
-                    param.span,
-                ));
-            }
+        let names = params
+            .iter()
+            .map(|param| self.interner.resolve(&param.name))
+            .collect::<Vec<_>>();
+        if let Some(kind) = crate::declaration_validation::duplicate_parameter(names.iter()) {
+            let duplicate = match &kind {
+                ErrorKind::DuplicateParameter { name } => name,
+                _ => unreachable!("duplicate-parameter rule has one diagnostic"),
+            };
+            let mut seen = HashSet::new();
+            let span = params
+                .iter()
+                .find(|param| {
+                    let name = self.interner.resolve(&param.name);
+                    !seen.insert(name) && name == duplicate
+                })
+                .map(|param| param.span)
+                .expect("shared rule identified a present duplicate");
+            return Err(CompileError::new(kind, span));
         }
         Ok(())
     }
@@ -1495,13 +1525,8 @@ impl<'a> Sema<'a> {
         // definition either fails to link with a confusing duplicate-symbol error or
         // silently binds calls to the runtime's definition instead of the user's.
         let name_str = self.interner.resolve(&name);
-        if rue_builtins::is_reserved_function_name(name_str) {
-            return Err(CompileError::new(
-                ErrorKind::ReservedFunctionName {
-                    function_name: name_str.to_string(),
-                },
-                span,
-            ));
+        if let Some(kind) = crate::declaration_validation::reserved_function_name(name_str) {
+            return Err(CompileError::new(kind, span));
         }
         self.declaration_type_observer = Some((
             span.file_id,
@@ -2038,10 +2063,7 @@ impl<'a> Sema<'a> {
             };
             if !seen.insert((inst.span.file_id, name)) {
                 return Err(CompileError::new(
-                    ErrorKind::DuplicateConstant {
-                        name: self.interner.resolve(&name).to_string(),
-                        kind: "constant".to_string(),
-                    },
+                    crate::declaration_validation::duplicate_constant(self.interner.resolve(&name)),
                     inst.span,
                 ));
             }

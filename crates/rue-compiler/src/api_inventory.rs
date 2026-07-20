@@ -44,6 +44,10 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
         "revisioned_query_database",
         include_str!("revisioned_query_database.rs"),
     ),
+    (
+        "semantic_query_nucleus",
+        include_str!("semantic_query_nucleus.rs"),
+    ),
     ("semantic_symbols", include_str!("semantic_symbols.rs")),
     ("semantic_identity", include_str!("semantic_identity.rs")),
     ("session", include_str!("session.rs")),
@@ -240,7 +244,6 @@ const RUE_867_DURABLE_VOCABULARY: &[&str] = &[
     "DurableDeclarationPayload",
     "DurableDeclarationSemantic",
     "DurableParameterMode",
-    "DurableSemanticExportFailure",
     "DurableSemanticImportEpoch",
     "DurableSemanticParameter",
     "DurableSemanticProjectionFailure",
@@ -1536,6 +1539,26 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
     let parsed = module("parsed_modules");
     let runtime = module("revisioned_query_database");
 
+    let assert_test_gated_calls = |name: &str, source: &str, adapter: &str| {
+        for (offset, _) in source.match_indices(adapter) {
+            let lines = source[..offset].lines().collect::<Vec<_>>();
+            let function_line = lines
+                .iter()
+                .rposition(|line| line.contains("fn "))
+                .unwrap_or_else(|| panic!("{name} called {adapter} outside a function"));
+            let mut preceding = lines[..function_line]
+                .iter()
+                .rev()
+                .map(|line| line.trim())
+                .filter(|line| !line.is_empty());
+            assert_eq!(
+                preceding.next(),
+                Some("#[cfg(test)]"),
+                "compiler module {name} called frozen declaration test adapter {adapter} from a production function"
+            );
+        }
+    };
+
     for (name, source) in &production {
         for retired in [
             ".predeclare_declaration_shells()",
@@ -1568,11 +1591,21 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
             "declaration_import_cache",
             "warm_declaration_import",
             "eager_declaration_import",
+            "Sema::new_synthetic(",
         ] {
             assert!(
                 !source.contains(retired),
                 "compiler production module {name} bypassed keyed shell authority through {retired}"
             );
+        }
+        for test_adapter in [
+            ".predeclare_declaration_shells_for_test()",
+            ".bind_declarations_for_test()",
+            ".analyze_all_for_test()",
+            ".resolve_declarations_for_test()",
+            ".resolve_declarations_with_work_for_test()",
+        ] {
+            assert_test_gated_calls(name, source, test_adapter);
         }
         if !matches!(*name, "parsed_modules" | "revisioned_query_database") {
             for evaluator_only in [
@@ -1592,7 +1625,10 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         }
         if !matches!(
             *name,
-            "declaration_candidate" | "parsed_modules" | "revisioned_query_database"
+            "declaration_candidate"
+                | "parsed_modules"
+                | "revisioned_query_database"
+                | "semantic_query_nucleus"
         ) {
             assert!(
                 !source.contains("RawConstSyntax"),
@@ -1601,7 +1637,10 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         }
         if !matches!(
             *name,
-            "declaration_candidate" | "parsed_modules" | "revisioned_query_database"
+            "declaration_candidate"
+                | "parsed_modules"
+                | "revisioned_query_database"
+                | "semantic_query_nucleus"
         ) {
             assert!(
                 !source.contains("RawDeclarationSignature"),
@@ -1610,7 +1649,10 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         }
         if !matches!(
             *name,
-            "declaration_candidate" | "parsed_modules" | "revisioned_query_database"
+            "declaration_candidate"
+                | "parsed_modules"
+                | "revisioned_query_database"
+                | "semantic_query_nucleus"
         ) {
             assert!(
                 !source.contains("RawDeclarationBody"),
@@ -1619,7 +1661,10 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         }
         if !matches!(
             *name,
-            "declaration_candidate" | "parsed_modules" | "revisioned_query_database"
+            "declaration_candidate"
+                | "parsed_modules"
+                | "revisioned_query_database"
+                | "semantic_query_nucleus"
         ) {
             assert!(
                 !source.contains("DeclarationImport"),
@@ -1684,7 +1729,6 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         "module_rirs",
         "lower_module_rir",
         "CanonicalMergedProgram",
-        "Sema",
         "SemanticView",
     ] {
         assert!(
@@ -1818,6 +1862,28 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
             "declaration-import terminal regained positioned/live parser or semantic payload: {forbidden}"
         );
     }
+    let lookup_fact = runtime
+        .split("struct LookupNameFact")
+        .nth(1)
+        .and_then(|tail| tail.split("struct LookupNameValue").next())
+        .unwrap();
+    for forbidden in ["CompileErrors", "ModuleRevision", "Span", "FileId", "Spur"] {
+        assert!(
+            !lookup_fact.contains(forbidden),
+            "LookupName retained fact regained locator/live payload: {forbidden}"
+        );
+    }
+    let lookup_value = runtime
+        .split("struct LookupNameValue")
+        .nth(1)
+        .and_then(|tail| tail.split("struct ImportHostOperationKey").next())
+        .unwrap();
+    for forbidden in ["CompileErrors", "ModuleRevision", "Span", "FileId", "Spur"] {
+        assert!(
+            !lookup_value.contains(forbidden),
+            "LookupName terminal regained locator/live payload: {forbidden}"
+        );
+    }
     let raw_const_payload = module("declaration_candidate")
         .split("pub(crate) struct RawConstSyntax")
         .nth(1)
@@ -1928,7 +1994,6 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         "module_rirs",
         "lower_module_rir",
         "CanonicalMergedProgram",
-        "Sema",
         "SemanticView",
     ] {
         assert!(
@@ -2005,8 +2070,8 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         canonical
             .matches("predeclare_imported_declaration_shells")
             .count(),
-        2,
-        "only canonical preparation and durable fallback may import query-owned shells"
+        1,
+        "only canonical query preparation may import query-owned shells"
     );
     for (name, source) in &production {
         if *name == "canonical_semantic" {
@@ -2087,7 +2152,6 @@ fn import_resolution_remains_discovery_owned() {
         ["resolve_", "import_graph"].concat(),
         ["resolve_canonical_", "import_graph"].concat(),
         ["extract_import_", "directives"].concat(),
-        ["Module", "Path"].concat(),
         ["Dir", "Resolution"].concat(),
     ] {
         assert!(

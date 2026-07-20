@@ -11,16 +11,22 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use rue_query::{
-    CancellationToken, InputIdentity, QueryAbort, QueryFamily, QueryKey, QueryOutput,
+    CancellationToken, InputIdentity, QueryAbort, QueryContext, QueryFamily, QueryKey, QueryOutput,
     QueryRequestAttempt, QueryRuntime, QuerySelection, QueryTerminalKind, RequestExecution,
     Revision,
 };
+
+type SemanticNucleusFamily = QueryFamily<
+    crate::semantic_query_nucleus::SemanticNucleusKey,
+    crate::semantic_query_nucleus::SemanticNucleusValue,
+>;
 
 use crate::{
     AcceptedReadManifestEntry, CompileError, CompileResult, DefinitionKind, DefinitionNamespace,
     ErrorKind, ImportDemandFrontier, ImportDemandMode, ImportDemandRoots, ImportDiscoveryContext,
     ImportDiscoveryPlan, ImportDiscoveryRequest, ImportInputRevision, ImportObservation,
-    ImportObservationLedger, ModuleId, ModuleRevision, SourceSnapshot, Span, SyntaxWork,
+    ImportObservationLedger, ModuleId, ModuleRevision, SourceSnapshot, Span, StableDefinitionKey,
+    SyntaxWork,
 };
 
 use crate::canonical_lower::{ModuleRirOutput, lower_module_rir_with_work};
@@ -388,31 +394,32 @@ pub(crate) struct RevisionedQueryDatabase {
     source_stamps: VecDeque<(super::session::ExactSourceInput, u64)>,
     import_store: Arc<Mutex<ImportInputStore>>,
     module_store: Arc<Mutex<ModuleInputStore>>,
+    #[cfg(test)]
+    test_import_store: Arc<Mutex<TestImportInputStore>>,
     parse_modules: QueryFamily<ModuleQueryKey, ParseModuleValue>,
     module_indexes: QueryFamily<ModuleQueryKey, ModuleIndexValue>,
     declaration_occurrence_indexes: QueryFamily<ModuleQueryKey, DeclarationOccurrenceIndexValue>,
     declaration_shells: QueryFamily<DeclarationShellQueryKey, DeclarationShellQueryValue>,
-    // This registered input boundary is intentionally not a production
-    // semantic dependency until the keyed constant evaluator consumes it.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     raw_const_syntax: QueryFamily<RawConstSyntaxQueryKey, RawConstSyntaxQueryValue>,
-    // Registered now as the syntax boundary for the later keyed signature and
-    // type evaluators; production semantic resolution does not consume it yet.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     raw_declaration_signatures:
         QueryFamily<RawDeclarationSignatureQueryKey, RawDeclarationSignatureQueryValue>,
-    // Exact body text is an input for the later declaration-time comptime
-    // evaluator. It is not runtime body semantics and must never request a
-    // whole-module RIR.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     raw_declaration_bodies: QueryFamily<RawDeclarationBodyQueryKey, RawDeclarationBodyQueryValue>,
     module_rirs: QueryFamily<ModuleQueryKey, ModuleRirValue>,
     resolve_imports: QueryFamily<ResolveImportKey, ResolveImportValue>,
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     declaration_imports: QueryFamily<DeclarationImportQueryKey, DeclarationImportQueryValue>,
+    semantic_nucleus: QueryFamily<
+        crate::semantic_query_nucleus::SemanticNucleusKey,
+        crate::semantic_query_nucleus::SemanticNucleusValue,
+    >,
     lookup_names: QueryFamily<LookupNameKey, LookupNameValue>,
     next_import_request: u64,
     current_import_revision: Option<ImportInputRevision>,
+    #[cfg(test)]
+    current_test_import_revision: Option<Revision>,
     pub(crate) parse: RevisionedFamily<super::session::ParseQuery>,
 }
 
@@ -540,6 +547,22 @@ pub(crate) enum DeclarationShellBatchFailure {
     Stable(crate::declaration_candidate::DeclarationShellFailure),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SemanticNucleusBatchFailure {
+    Query(QueryAbort),
+    Stable {
+        declaration: Option<crate::declaration_candidate::DeclarationCandidateKey>,
+        failure: Box<crate::semantic_query_nucleus::SemanticNucleusFailure>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SemanticNucleusProjection {
+    pub(crate) declarations: Arc<[crate::DurableDeclarationSemantic]>,
+    pub(crate) anonymous_nominals: Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
+    pub(crate) dependencies: Arc<[crate::semantic_query_nucleus::SemanticDeclarationDependency]>,
+}
+
 #[derive(Debug, Clone)]
 struct ModuleRirValue {
     result: Result<Arc<ModuleRirOutput>, crate::CompileErrors>,
@@ -562,6 +585,21 @@ struct ModuleInputStore {
     revisions: VecDeque<Arc<ModuleInputView>>,
     next_stamp: u64,
     stamps: Vec<(ModuleInputLeaf, u64)>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct TestImportInputView {
+    revision: Revision,
+    graph: crate::CanonicalImportGraph,
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct TestImportInputStore {
+    revisions: VecDeque<Arc<TestImportInputView>>,
+    next_stamp: u64,
+    stamps: Vec<(crate::CanonicalImportGraph, u64)>,
 }
 
 impl Default for ModuleInputStore {
@@ -611,6 +649,12 @@ impl QueryKey for DeclarationImportQueryKey {
     }
 }
 
+impl QueryKey for crate::semantic_query_nucleus::SemanticNucleusKey {
+    fn stable_identity(&self) -> String {
+        self.stable_identity()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DeclarationImportQueryValue {
     Available(crate::CanonicalImportResolution),
@@ -631,7 +675,26 @@ impl QueryKey for LookupNameKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct LookupNameValue(Result<Arc<[ModuleIndexEntry]>, crate::CompileErrors>);
+struct LookupNameFact {
+    namespace: DefinitionNamespace,
+    kind: DefinitionKind,
+    visibility: Option<rue_parser::ast::Visibility>,
+    name: Arc<str>,
+}
+
+/// Position-free semantic result retained by `LookupName`.
+///
+/// Current-epoch spans and the module revision stay in `ModuleIndex`; callers
+/// that need source locations rejoin these facts with that locator projection.
+/// This lets trivia-only edits preserve downstream semantic stamps without
+/// ever serving stale positions to diagnostics or presentation consumers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LookupNameFailure {
+    ModuleIndexUnavailable(ModuleId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LookupNameValue(Result<Arc<[LookupNameFact]>, LookupNameFailure>);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ImportHostOperationKey {
@@ -703,6 +766,11 @@ fn accepted_import_provenance_input(identity: crate::PhysicalFileIdentity) -> In
 
 fn import_observation_input(request: &ImportDiscoveryRequest) -> InputIdentity {
     InputIdentity::new("import-observation", request.runtime_input_key())
+}
+
+#[cfg(test)]
+fn test_import_graph_input() -> InputIdentity {
+    InputIdentity::new("test-import-graph", "current")
 }
 
 fn import_input_error(message: impl Into<String>) -> CompileError {
@@ -943,10 +1011,4286 @@ fn publish_module_inputs(
     leaves
 }
 
+struct SemanticNucleusTypeProvider<'a> {
+    context: &'a QueryContext,
+    family: &'a SemanticNucleusFamily,
+    shells: &'a QueryFamily<DeclarationShellQueryKey, DeclarationShellQueryValue>,
+    names: &'a QueryFamily<LookupNameKey, LookupNameValue>,
+    configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
+    substitutions: BTreeMap<Arc<str>, crate::durable_semantics::DurableType>,
+    value_substitutions: BTreeMap<Arc<str>, crate::durable_semantics::DurableConstValue>,
+    deferred_value_parameters: BTreeMap<Arc<str>, crate::durable_semantics::DurableType>,
+    anonymous_nominals:
+        BTreeMap<crate::AnonymousNominalKey, crate::durable_semantics::DurableAnonymousNominal>,
+    dependency_source: crate::StableDefinitionKey,
+    dependency_kind: rue_air::DeclarationTypeDependencyKind,
+    dependencies: BTreeSet<crate::semantic_query_nucleus::SemanticDeclarationDependency>,
+    deferred_ownership: BTreeSet<crate::semantic_query_nucleus::DeferredOwnershipGate>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LinearOwnershipFact {
+    DoesNotCarry,
+    Carries,
+    Deferred,
+}
+
+impl LinearOwnershipFact {
+    fn combine(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Carries, _) | (_, Self::Carries) => Self::Carries,
+            (Self::Deferred, _) | (_, Self::Deferred) => Self::Deferred,
+            _ => Self::DoesNotCarry,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EvaluatedSemanticConst {
+    Value(Arc<TypedSemanticConst>),
+    Module(ModuleId),
+    TargetEnum(TargetEnumValue),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TargetEnumValue {
+    type_name: &'static str,
+    variant: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TypedSemanticConst {
+    value: crate::durable_semantics::DurableConstValue,
+    /// `None` is reserved for an unconstrained integer literal. Every named
+    /// value, local derived from one, and completed operation carries its
+    /// canonical semantic type; consumers must never reconstruct it from the
+    /// value's magnitude.
+    ty: Option<crate::durable_semantics::DurableType>,
+}
+
+impl TypedSemanticConst {
+    fn typed(
+        value: crate::durable_semantics::DurableConstValue,
+        ty: crate::durable_semantics::DurableType,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            value,
+            ty: Some(ty),
+        })
+    }
+
+    fn integer_literal(value: i128) -> Arc<Self> {
+        Arc::new(Self {
+            value: crate::durable_semantics::DurableConstValue::Integer(value),
+            ty: None,
+        })
+    }
+}
+
+enum EvaluateSemanticConstError {
+    Abort(QueryAbort),
+    Failure(Box<crate::semantic_query_nucleus::SemanticNucleusFailure>),
+}
+
+impl EvaluateSemanticConstError {
+    fn failure(failure: crate::semantic_query_nucleus::SemanticNucleusFailure) -> Self {
+        Self::Failure(Box::new(failure))
+    }
+}
+
+fn durable_type_diagnostic_name(ty: &crate::durable_semantics::DurableType) -> String {
+    use crate::durable_semantics::DurableType as T;
+
+    fn function_name(function: &crate::FunctionInstanceKey) -> Option<&str> {
+        match function {
+            crate::FunctionInstanceKey::Definition(key) => Some(key.name()),
+            crate::FunctionInstanceKey::Specialization { base, .. } => function_name(base),
+            crate::FunctionInstanceKey::AnonymousMember { .. }
+            | crate::FunctionInstanceKey::DropGlue(_) => None,
+        }
+    }
+
+    match ty {
+        T::I8 => "i8".to_owned(),
+        T::I16 => "i16".to_owned(),
+        T::I32 => "i32".to_owned(),
+        T::I64 => "i64".to_owned(),
+        T::U8 => "u8".to_owned(),
+        T::U16 => "u16".to_owned(),
+        T::U32 => "u32".to_owned(),
+        T::U64 => "u64".to_owned(),
+        T::Bool => "bool".to_owned(),
+        T::Unit => "()".to_owned(),
+        T::Never => "!".to_owned(),
+        T::ComptimeType => "type".to_owned(),
+        T::BuiltinNominal { name, .. } => name.to_string(),
+        T::Nominal(key) => key.name().to_owned(),
+        T::AnonymousNominal(key) => match &key.producer {
+            crate::StableProducerId::Definition(key) => key.name().to_owned(),
+            crate::StableProducerId::Function(function) => {
+                let name = function_name(function).unwrap_or("anonymous");
+                let mut arguments = key
+                    .arguments
+                    .types
+                    .iter()
+                    .filter_map(durable_type_from_instance_key)
+                    .map(|ty| durable_type_diagnostic_name(&ty))
+                    .collect::<Vec<_>>();
+                arguments.extend(key.arguments.values.iter().map(|value| match value {
+                    crate::CanonicalArgumentValue::Integer(value) => value.to_string(),
+                    crate::CanonicalArgumentValue::Bool(value) => value.to_string(),
+                    crate::CanonicalArgumentValue::Type(value) => {
+                        durable_type_from_instance_key(value).map_or_else(
+                            || "type".to_owned(),
+                            |ty| durable_type_diagnostic_name(&ty),
+                        )
+                    }
+                    crate::CanonicalArgumentValue::Function(_) => "function".to_owned(),
+                    crate::CanonicalArgumentValue::Unit => "()".to_owned(),
+                    crate::CanonicalArgumentValue::String(value) => format!("\"{value}\""),
+                }));
+                if arguments.is_empty() {
+                    name.to_owned()
+                } else {
+                    format!("{name}({})", arguments.join(", "))
+                }
+            }
+        },
+        T::Array { element, len } => {
+            format!("[{}; {len}]", durable_type_diagnostic_name(element))
+        }
+        T::Slice { name, .. } => name.to_string(),
+        T::PtrConst(pointee) => {
+            format!("ptr const {}", durable_type_diagnostic_name(pointee))
+        }
+        T::PtrMut(pointee) => format!("ptr mut {}", durable_type_diagnostic_name(pointee)),
+        T::Module(module) => module.to_string(),
+        T::GenericParameter(index) => format!("T{index}"),
+    }
+}
+
+fn inferred_const_type_name(value: &crate::durable_semantics::DurableConstValue) -> &'static str {
+    use crate::durable_semantics::DurableConstValue as V;
+    match value {
+        V::Integer(value) if i32::try_from(*value).is_ok() => "i32",
+        V::Integer(value) if i64::try_from(*value).is_ok() => "i64",
+        V::Integer(_) => "u64",
+        V::Bool(_) => "bool",
+        V::Unit => "()",
+        V::String(_) => "str",
+        V::Type(_) | V::Function(_) => "type",
+    }
+}
+
+fn substitute_durable_generics(
+    ty: &crate::durable_semantics::DurableType,
+    type_arguments: &[crate::durable_semantics::DurableType],
+) -> crate::durable_semantics::DurableType {
+    use crate::durable_semantics::DurableType as T;
+    match ty {
+        T::GenericParameter(index) => type_arguments
+            .get(*index as usize)
+            .cloned()
+            .unwrap_or_else(|| ty.clone()),
+        T::Array { element, len } => T::Array {
+            element: Box::new(substitute_durable_generics(element, type_arguments)),
+            len: *len,
+        },
+        T::Slice { element, name } => T::Slice {
+            element: Box::new(substitute_durable_generics(element, type_arguments)),
+            name: name.clone(),
+        },
+        T::PtrConst(pointee) => T::PtrConst(Box::new(substitute_durable_generics(
+            pointee,
+            type_arguments,
+        ))),
+        T::PtrMut(pointee) => T::PtrMut(Box::new(substitute_durable_generics(
+            pointee,
+            type_arguments,
+        ))),
+        _ => ty.clone(),
+    }
+}
+
+fn durable_const_fits_type(
+    value: &crate::durable_semantics::DurableConstValue,
+    ty: &crate::durable_semantics::DurableType,
+) -> bool {
+    use crate::durable_semantics::{DurableConstValue as V, DurableType as T};
+    match (ty, value) {
+        (T::I8, V::Integer(value)) => i8::try_from(*value).is_ok(),
+        (T::I16, V::Integer(value)) => i16::try_from(*value).is_ok(),
+        (T::I32, V::Integer(value)) => i32::try_from(*value).is_ok(),
+        (T::I64, V::Integer(value)) => i64::try_from(*value).is_ok(),
+        (T::U8, V::Integer(value)) => u8::try_from(*value).is_ok(),
+        (T::U16, V::Integer(value)) => u16::try_from(*value).is_ok(),
+        (T::U32, V::Integer(value)) => u32::try_from(*value).is_ok(),
+        (T::U64, V::Integer(value)) => u64::try_from(*value).is_ok(),
+        (T::Bool, V::Bool(_)) | (T::Unit, V::Unit) => true,
+        (T::ComptimeType, V::Type(_)) => true,
+        _ => false,
+    }
+}
+
+fn semantic_nucleus_declaration_name(identity: &str) -> Option<Arc<str>> {
+    let candidate = [
+        "identity:",
+        "signature:",
+        "nominal-well-formed:",
+        "const:",
+        "comptime:",
+        "anonymous:",
+    ]
+    .iter()
+    .find_map(|prefix| identity.strip_prefix(prefix))?;
+    let (module_len, rest) = candidate.split_once(':')?;
+    let module_len = module_len.parse::<usize>().ok()?;
+    let rest = rest.get(module_len..)?.strip_prefix(':')?;
+    let (_, rest) = rest.split_once(':')?;
+    let (name_len, rest) = rest.split_once(':')?;
+    let name_len = name_len.parse::<usize>().ok()?;
+    Some(Arc::from(rest.get(..name_len)?))
+}
+
+fn semantic_nucleus_cycle_names(nodes: &[rue_query::NodeIdentity]) -> Arc<[Arc<str>]> {
+    let mut names = nodes
+        .iter()
+        .filter(|node| node.family() == "compiler.semantic-nucleus")
+        .filter_map(|node| semantic_nucleus_declaration_name(node.key()))
+        .collect::<Vec<_>>();
+    if let Some(first) = names.first().cloned()
+        && (names.len() == 1 || names.last() != Some(&first))
+    {
+        names.push(first);
+    }
+    names.into()
+}
+
+fn function_definition_key(function: &crate::FunctionInstanceKey) -> Option<&StableDefinitionKey> {
+    match function {
+        crate::FunctionInstanceKey::Definition(key) => Some(key),
+        crate::FunctionInstanceKey::Specialization { base, .. } => function_definition_key(base),
+        crate::FunctionInstanceKey::AnonymousMember { .. }
+        | crate::FunctionInstanceKey::DropGlue(_) => None,
+    }
+}
+
+fn declaration_candidate_for_stable_key(
+    key: &StableDefinitionKey,
+) -> Option<crate::declaration_candidate::DeclarationCandidateKey> {
+    use crate::StableDefinitionKind as K;
+    use crate::declaration_candidate::{
+        DeclarationCandidateCategory as C, DeclarationCandidateOwner,
+    };
+
+    let category = match key.kind() {
+        K::Function => C::Function,
+        K::ValueConst | K::ModuleBinding => C::ConstCandidate,
+        K::Method => C::Method,
+        K::AssociatedFunction => C::AssociatedFunction,
+        _ => return None,
+    };
+    let owner = match key.owner() {
+        Some(owner) => Some(DeclarationCandidateOwner {
+            category: match owner.kind() {
+                K::Struct => C::Struct,
+                K::Enum => C::Enum,
+                _ => return None,
+            },
+            name: Arc::from(owner.name()),
+        }),
+        None => None,
+    };
+    if key.kind().requires_owner() && owner.is_none() {
+        return None;
+    }
+    Some(crate::declaration_candidate::DeclarationCandidateKey {
+        module: key.module().clone(),
+        category,
+        name: Arc::from(key.name()),
+        owner,
+        duplicate_discriminator: 0,
+    })
+}
+
+fn anonymous_nominal_query_key(
+    identity: &crate::AnonymousNominalKey,
+    configuration: &crate::semantic_query_nucleus::SemanticQueryConfiguration,
+) -> Option<crate::semantic_query_nucleus::AnonymousNominalQueryKey> {
+    let producer = match &identity.producer {
+        crate::StableProducerId::Definition(key) => key,
+        crate::StableProducerId::Function(function) => function_definition_key(function)?,
+    };
+    Some(crate::semantic_query_nucleus::AnonymousNominalQueryKey {
+        producer: crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+            declaration: declaration_candidate_for_stable_key(producer)?,
+            configuration: configuration.clone(),
+        },
+        identity: identity.clone(),
+    })
+}
+
+fn durable_type_from_instance_key(
+    value: &crate::TypeInstanceKey,
+) -> Option<crate::durable_semantics::DurableType> {
+    use crate::TypeInstanceKey as T;
+    use crate::durable_semantics::DurableType as D;
+    Some(match value {
+        T::I8 => D::I8,
+        T::I16 => D::I16,
+        T::I32 => D::I32,
+        T::I64 => D::I64,
+        T::U8 => D::U8,
+        T::U16 => D::U16,
+        T::U32 => D::U32,
+        T::U64 => D::U64,
+        T::Bool => D::Bool,
+        T::Unit => D::Unit,
+        T::Never => D::Never,
+        T::ComptimeType => D::ComptimeType,
+        T::BuiltinNominal { kind, name } => D::BuiltinNominal {
+            name: name.clone(),
+            kind: match kind {
+                crate::AnonymousNominalKind::Struct => rue_air::SemanticImportNominalKind::Struct,
+                crate::AnonymousNominalKind::Enum => rue_air::SemanticImportNominalKind::Enum,
+            },
+        },
+        T::Nominal(crate::NominalInstanceKey::Named(key)) => D::Nominal(key.clone()),
+        T::Nominal(crate::NominalInstanceKey::Anonymous(key)) => D::AnonymousNominal(key.clone()),
+        T::Array { element, len } => D::Array {
+            element: Box::new(durable_type_from_instance_key(element)?),
+            len: *len,
+        },
+        T::Slice { element, name } => D::Slice {
+            element: Box::new(durable_type_from_instance_key(element)?),
+            name: name.clone(),
+        },
+        T::PtrConst(value) => D::PtrConst(Box::new(durable_type_from_instance_key(value)?)),
+        T::PtrMut(value) => D::PtrMut(Box::new(durable_type_from_instance_key(value)?)),
+        T::Module(value) => D::Module(value.clone()),
+        T::GenericParameter(index) => D::GenericParameter(*index),
+    })
+}
+
+fn durable_value_from_argument(
+    value: &crate::CanonicalArgumentValue,
+) -> Option<crate::durable_semantics::DurableConstValue> {
+    use crate::CanonicalArgumentValue as V;
+    use crate::durable_semantics::DurableConstValue as D;
+    Some(match value {
+        V::Integer(value) => D::Integer(*value),
+        V::Bool(value) => D::Bool(*value),
+        V::Type(value) => D::Type(durable_type_from_instance_key(value)?),
+        V::Function(value) => {
+            let crate::FunctionInstanceKey::Definition(key) = value.as_ref() else {
+                return None;
+            };
+            D::Function(key.clone())
+        }
+        V::Unit => D::Unit,
+        V::String(value) => D::String(value.clone()),
+    })
+}
+
+fn collect_anonymous_nominal_type_dependencies(
+    ty: &crate::durable_semantics::DurableType,
+    output: &mut BTreeSet<crate::AnonymousNominalKey>,
+) {
+    use crate::durable_semantics::DurableType as T;
+    match ty {
+        T::AnonymousNominal(identity) => {
+            output.insert(identity.clone());
+        }
+        T::Array { element, .. }
+        | T::Slice { element, .. }
+        | T::PtrConst(element)
+        | T::PtrMut(element) => collect_anonymous_nominal_type_dependencies(element, output),
+        _ => {}
+    }
+}
+
+fn collect_anonymous_nominal_value_dependencies(
+    value: &crate::durable_semantics::DurableConstValue,
+    output: &mut BTreeSet<crate::AnonymousNominalKey>,
+) {
+    if let crate::durable_semantics::DurableConstValue::Type(ty) = value {
+        collect_anonymous_nominal_type_dependencies(ty, output);
+    }
+}
+
+struct SemanticConstEvaluator<'a, 'provider> {
+    provider: &'provider mut SemanticNucleusTypeProvider<'a>,
+    imports: &'a QueryFamily<DeclarationImportQueryKey, DeclarationImportQueryValue>,
+    declaration: &'a crate::semantic_query_nucleus::DeclarationSemanticQueryKey,
+    source: &'a str,
+    interner: &'a crate::ThreadedRodeo,
+    import_sites: &'a [crate::ImportDirective],
+    locals: BTreeMap<Arc<str>, EvaluatedSemanticConst>,
+    producer: crate::StableProducerId,
+    canonical_arguments: crate::CanonicalArguments,
+    next_anonymous_type: u32,
+    next_call: u32,
+    expected_type: Option<crate::durable_semantics::DurableType>,
+}
+
+impl SemanticConstEvaluator<'_, '_> {
+    fn failure<T>(message: impl Into<Arc<str>>) -> Result<T, EvaluateSemanticConstError> {
+        Err(Self::failure_value(message))
+    }
+
+    fn failure_value(message: impl Into<Arc<str>>) -> EvaluateSemanticConstError {
+        EvaluateSemanticConstError::failure(
+            crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(message.into()),
+        )
+    }
+
+    fn comptime_failure_value(reason: impl Into<String>) -> EvaluateSemanticConstError {
+        EvaluateSemanticConstError::failure(
+            crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                rue_error::ErrorKind::ComptimeEvaluationFailed {
+                    reason: reason.into(),
+                },
+            ),
+        )
+    }
+
+    fn provider_error(
+        error: rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    ) -> EvaluateSemanticConstError {
+        match error {
+            rue_air::SemanticProviderError::Abort(abort) => Self::abort(abort),
+            rue_air::SemanticProviderError::Failure(failure) => Self::domain_failure(failure),
+        }
+    }
+
+    fn abort(abort: QueryAbort) -> EvaluateSemanticConstError {
+        EvaluateSemanticConstError::Abort(abort)
+    }
+
+    fn domain_failure(
+        failure: crate::semantic_query_nucleus::SemanticNucleusFailure,
+    ) -> EvaluateSemanticConstError {
+        EvaluateSemanticConstError::failure(failure)
+    }
+
+    fn symbol(&self, symbol: &lasso::Spur) -> Arc<str> {
+        Arc::from(self.interner.resolve(symbol))
+    }
+
+    fn value(
+        &self,
+        value: EvaluatedSemanticConst,
+    ) -> Result<TypedSemanticConst, EvaluateSemanticConstError> {
+        match value {
+            EvaluatedSemanticConst::Value(value) => Ok(Arc::unwrap_or_clone(value)),
+            EvaluatedSemanticConst::Module(_) => {
+                Self::failure("module used where a value is required")
+            }
+            EvaluatedSemanticConst::TargetEnum(_) => {
+                Self::failure("target descriptor used where a durable const value is required")
+            }
+        }
+    }
+
+    fn target_intrinsic(
+        &self,
+        intrinsic: &rue_parser::ast::IntrinsicCallExpr,
+        type_name: &'static str,
+        variant: &'static str,
+    ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
+        if !intrinsic.args.is_empty() {
+            return Err(Self::domain_failure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                    rue_error::ErrorKind::IntrinsicWrongArgCount {
+                        name: self.symbol(&intrinsic.name.name).to_string(),
+                        expected: 0,
+                        found: intrinsic.args.len(),
+                    },
+                ),
+            ));
+        }
+        Ok(EvaluatedSemanticConst::TargetEnum(TargetEnumValue {
+            type_name,
+            variant,
+        }))
+    }
+
+    fn target_enum_variant(
+        &self,
+        type_name: &str,
+        variant: &str,
+    ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
+        let canonical_type = match type_name {
+            "Arch" => "Arch",
+            "Os" => "Os",
+            "DataModel" => "DataModel",
+            _ => return Self::failure("unknown target descriptor enum"),
+        };
+        let valid = match canonical_type {
+            "Arch" => matches!(variant, "X86_64" | "Aarch64"),
+            "Os" => matches!(variant, "Linux" | "Macos"),
+            "DataModel" => matches!(variant, "Ilp32" | "Lp64" | "Llp64"),
+            _ => unreachable!(),
+        };
+        if !valid {
+            return Err(Self::domain_failure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                    rue_error::ErrorKind::UnknownVariant {
+                        enum_name: canonical_type.to_owned(),
+                        variant_name: variant.to_owned(),
+                    },
+                ),
+            ));
+        }
+        let variant = match variant {
+            "X86_64" => "X86_64",
+            "Aarch64" => "Aarch64",
+            "Linux" => "Linux",
+            "Macos" => "Macos",
+            "Ilp32" => "Ilp32",
+            "Lp64" => "Lp64",
+            "Llp64" => "Llp64",
+            _ => unreachable!(),
+        };
+        Ok(EvaluatedSemanticConst::TargetEnum(TargetEnumValue {
+            type_name: canonical_type,
+            variant,
+        }))
+    }
+
+    fn bool_value(
+        &mut self,
+        expression: &rue_parser::ast::Expr,
+    ) -> Result<bool, EvaluateSemanticConstError> {
+        let evaluated = self.eval(expression)?;
+        match self.value(evaluated)?.value {
+            crate::durable_semantics::DurableConstValue::Bool(value) => Ok(value),
+            _ => Self::failure("comptime condition is not boolean"),
+        }
+    }
+
+    fn int_value(
+        &mut self,
+        expression: &rue_parser::ast::Expr,
+    ) -> Result<(i128, Option<crate::durable_semantics::DurableType>), EvaluateSemanticConstError>
+    {
+        let evaluated = self.eval(expression)?;
+        let typed = self.value(evaluated)?;
+        match typed.value {
+            crate::durable_semantics::DurableConstValue::Integer(value) => Ok((value, typed.ty)),
+            _ => Self::failure("comptime arithmetic operand is not an integer"),
+        }
+    }
+
+    fn integer_type(
+        &self,
+        left: Option<crate::durable_semantics::DurableType>,
+        right: Option<crate::durable_semantics::DurableType>,
+    ) -> Result<crate::durable_semantics::DurableType, EvaluateSemanticConstError> {
+        use crate::durable_semantics::DurableType as T;
+        let fallback = self
+            .expected_type
+            .clone()
+            .filter(|ty| {
+                matches!(
+                    ty,
+                    T::I8 | T::I16 | T::I32 | T::I64 | T::U8 | T::U16 | T::U32 | T::U64
+                )
+            })
+            .unwrap_or(T::I32);
+        match (left, right) {
+            (Some(left), Some(right)) if left != right => Err(EvaluateSemanticConstError::failure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                    rue_error::ErrorKind::TypeMismatch {
+                        expected: durable_type_diagnostic_name(&left),
+                        found: durable_type_diagnostic_name(&right),
+                    },
+                ),
+            )),
+            (Some(ty), _) | (_, Some(ty)) => Ok(ty),
+            (None, None) => Ok(fallback),
+        }
+    }
+
+    fn require_integer_fits(
+        ty: &crate::durable_semantics::DurableType,
+        value: i128,
+    ) -> Result<(), EvaluateSemanticConstError> {
+        let value = crate::durable_semantics::DurableConstValue::Integer(value);
+        if durable_const_fits_type(&value, ty) {
+            Ok(())
+        } else {
+            let value = match value {
+                crate::durable_semantics::DurableConstValue::Integer(value) => value,
+                _ => unreachable!(),
+            };
+            let type_name = durable_type_diagnostic_name(ty);
+            Err(Self::comptime_failure_value(format!(
+                "integer overflow evaluating constant at type {type_name}: value {value} is out of range for type {type_name}; {value} does not fit in {type_name} (this operation would panic at runtime)",
+            )))
+        }
+    }
+
+    fn eval_binary(
+        &mut self,
+        expression: &rue_parser::ast::BinaryExpr,
+    ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
+        use crate::durable_semantics::DurableConstValue as V;
+        use rue_parser::ast::BinaryOp as O;
+        if expression.op == O::And {
+            return Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                V::Bool(self.bool_value(&expression.left)? && self.bool_value(&expression.right)?),
+                crate::durable_semantics::DurableType::Bool,
+            )));
+        }
+        if expression.op == O::Or {
+            return Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                V::Bool(self.bool_value(&expression.left)? || self.bool_value(&expression.right)?),
+                crate::durable_semantics::DurableType::Bool,
+            )));
+        }
+        let left = self.eval(&expression.left)?;
+        let right = self.eval(&expression.right)?;
+        if let (
+            EvaluatedSemanticConst::TargetEnum(left),
+            EvaluatedSemanticConst::TargetEnum(right),
+        ) = (&left, &right)
+        {
+            let value = match expression.op {
+                O::Eq => left == right,
+                O::Ne => left != right,
+                _ => return Self::failure("target descriptors support only equality comparisons"),
+            };
+            return Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                V::Bool(value),
+                crate::durable_semantics::DurableType::Bool,
+            )));
+        }
+        if matches!(left, EvaluatedSemanticConst::TargetEnum(_))
+            || matches!(right, EvaluatedSemanticConst::TargetEnum(_))
+        {
+            return Self::failure("target descriptor comparison requires matching enum variants");
+        }
+        let left = self.value(left)?;
+        let right = self.value(right)?;
+        if let (V::Bool(left), V::Bool(right)) = (&left.value, &right.value) {
+            let value = match expression.op {
+                O::Eq => *left == *right,
+                O::Ne => *left != *right,
+                _ => return Self::failure("boolean values support only equality comparisons"),
+            };
+            return Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                V::Bool(value),
+                crate::durable_semantics::DurableType::Bool,
+            )));
+        }
+        let (V::Integer(left), left_ty) = (left.value, left.ty) else {
+            return Self::failure("comptime arithmetic operand is not an integer");
+        };
+        let (V::Integer(right), right_ty) = (right.value, right.ty) else {
+            return Self::failure("comptime arithmetic operand is not an integer");
+        };
+        let operand_ty = self.integer_type(left_ty, right_ty)?;
+        Self::require_integer_fits(&operand_ty, left)?;
+        Self::require_integer_fits(&operand_ty, right)?;
+        let value = match expression.op {
+            O::Add => V::Integer(left.checked_add(right).ok_or_else(|| {
+                Self::comptime_failure_value("integer overflow evaluating addition")
+            })?),
+            O::Sub => V::Integer(left.checked_sub(right).ok_or_else(|| {
+                Self::comptime_failure_value("integer overflow evaluating subtraction")
+            })?),
+            O::Mul => V::Integer(left.checked_mul(right).ok_or_else(|| {
+                Self::comptime_failure_value("integer overflow evaluating multiplication")
+            })?),
+            O::Div if right == 0 => {
+                return Err(Self::comptime_failure_value(
+                    "division by zero (this operation would panic at runtime)",
+                ));
+            }
+            O::Mod if right == 0 => {
+                return Err(Self::comptime_failure_value(
+                    "remainder by zero (this operation would panic at runtime)",
+                ));
+            }
+            O::Div => V::Integer(left.checked_div(right).ok_or_else(|| {
+                Self::comptime_failure_value("integer overflow evaluating division")
+            })?),
+            O::Mod => V::Integer(left.checked_rem(right).ok_or_else(|| {
+                Self::comptime_failure_value("integer overflow evaluating remainder")
+            })?),
+            O::Eq => V::Bool(left == right),
+            O::Ne => V::Bool(left != right),
+            O::Lt => V::Bool(left < right),
+            O::Gt => V::Bool(left > right),
+            O::Le => V::Bool(left <= right),
+            O::Ge => V::Bool(left >= right),
+            O::BitAnd => V::Integer(left & right),
+            O::BitOr => V::Integer(left | right),
+            O::BitXor => V::Integer(left ^ right),
+            O::Shl => V::Integer(left.wrapping_shl((right as u32) & 127)),
+            O::Shr => V::Integer(left.wrapping_shr((right as u32) & 127)),
+            O::And | O::Or => unreachable!(),
+        };
+        let ty = if matches!(value, V::Bool(_)) {
+            crate::durable_semantics::DurableType::Bool
+        } else {
+            let V::Integer(result) = value else {
+                unreachable!()
+            };
+            Self::require_integer_fits(&operand_ty, result)?;
+            return Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                V::Integer(result),
+                operand_ty,
+            )));
+        };
+        Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+            value, ty,
+        )))
+    }
+
+    fn eval_block(
+        &mut self,
+        block: &rue_parser::ast::BlockExpr,
+    ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
+        let saved = self.locals.clone();
+        let saved_types = self.provider.substitutions.clone();
+        let saved_values = self.provider.value_substitutions.clone();
+        for statement in &block.statements {
+            match statement {
+                rue_parser::ast::Statement::Let(binding) => {
+                    let mut value = self.eval(&binding.init)?;
+                    if let Some(annotation) = &binding.ty {
+                        let syntax = self
+                            .source
+                            .get(annotation.span().start as usize..annotation.span().end as usize)
+                            .ok_or_else(|| {
+                                Self::failure_value("local type annotation has an invalid span")
+                            })?;
+                        let expected = rue_air::resolve_semantic_type_syntax(
+                            self.provider,
+                            &self.declaration.declaration.module,
+                            syntax,
+                        )
+                        .map_err(|error| match error {
+                            rue_air::SemanticResolutionError::ProviderAbort(abort) => {
+                                EvaluateSemanticConstError::Abort(abort)
+                            }
+                            rue_air::SemanticResolutionError::ProviderFailure(failure) => {
+                                EvaluateSemanticConstError::failure(failure)
+                            }
+                            other => Self::failure_value(format!("{other:?}")),
+                        })?;
+                        if matches!(
+                            expected,
+                            crate::durable_semantics::DurableType::Slice { .. }
+                        ) {
+                            return Err(EvaluateSemanticConstError::failure(
+                                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                                    rue_error::ErrorKind::SliceEscapesScope,
+                                ),
+                            ));
+                        }
+                        let typed = self.value(value)?;
+                        if let Some(found) = &typed.ty
+                            && found != &expected
+                        {
+                            return Err(EvaluateSemanticConstError::failure(
+                                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                                    rue_error::ErrorKind::TypeMismatch {
+                                        expected: durable_type_diagnostic_name(&expected),
+                                        found: durable_type_diagnostic_name(found),
+                                    },
+                                ),
+                            ));
+                        }
+                        if !durable_const_fits_type(&typed.value, &expected) {
+                            let kind = match typed.value {
+                                crate::durable_semantics::DurableConstValue::Integer(value)
+                                    if value >= 0 =>
+                                {
+                                    rue_error::ErrorKind::LiteralOutOfRange {
+                                        value: value as u64,
+                                        ty: durable_type_diagnostic_name(&expected),
+                                    }
+                                }
+                                _ => rue_error::ErrorKind::TypeMismatch {
+                                    expected: durable_type_diagnostic_name(&expected),
+                                    found: inferred_const_type_name(&typed.value).to_owned(),
+                                },
+                            };
+                            return Err(EvaluateSemanticConstError::failure(
+                                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                                    kind,
+                                ),
+                            ));
+                        }
+                        value = EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                            typed.value,
+                            expected,
+                        ));
+                    }
+                    if let rue_parser::ast::LetPattern::Ident(name) = &binding.pattern {
+                        let name = self.symbol(&name.name);
+                        match &value {
+                            EvaluatedSemanticConst::Value(value)
+                                if matches!(
+                                    value.value,
+                                    crate::durable_semantics::DurableConstValue::Type(_)
+                                ) =>
+                            {
+                                let crate::durable_semantics::DurableConstValue::Type(ty) =
+                                    &value.value
+                                else {
+                                    unreachable!()
+                                };
+                                self.provider.substitutions.insert(name.clone(), ty.clone());
+                                self.provider.value_substitutions.remove(&name);
+                            }
+                            EvaluatedSemanticConst::Value(value) => {
+                                self.provider
+                                    .value_substitutions
+                                    .insert(name.clone(), value.value.clone());
+                                self.provider.substitutions.remove(&name);
+                            }
+                            EvaluatedSemanticConst::Module(_)
+                            | EvaluatedSemanticConst::TargetEnum(_) => {
+                                self.provider.substitutions.remove(&name);
+                                self.provider.value_substitutions.remove(&name);
+                            }
+                        }
+                        self.locals.insert(name, value);
+                    }
+                }
+                rue_parser::ast::Statement::Expr(expression) => {
+                    self.eval(expression)?;
+                }
+                rue_parser::ast::Statement::Assign(_) => {
+                    return Self::failure(
+                        "assignment is not supported in declaration-time comptime",
+                    );
+                }
+            }
+        }
+        let value = self.eval(&block.expr);
+        self.locals = saved;
+        self.provider.substitutions = saved_types;
+        self.provider.value_substitutions = saved_values;
+        value
+    }
+
+    fn eval_import(
+        &self,
+        intrinsic: &rue_parser::ast::IntrinsicCallExpr,
+    ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
+        let index = self
+            .import_sites
+            .binary_search_by_key(&intrinsic.span.start, |site| site.source_offset())
+            .map_err(|_| {
+                Self::failure_value(
+                    "exact const import is absent from its parser-authored site index",
+                )
+            })?;
+        let site = &self.import_sites[index];
+        let key = crate::declaration_candidate::DeclarationImportSiteKey {
+            declaration: self.declaration.declaration.clone(),
+            occurrence: index as u32,
+            specifier: Arc::from(site.specifier()),
+        };
+        let terminal = self
+            .provider
+            .context
+            .query_registered(self.imports, DeclarationImportQueryKey(key.clone()))
+            .map_err(EvaluateSemanticConstError::Abort)?;
+        let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+            unreachable!("DeclarationImport publishes typed values")
+        };
+        match value {
+            DeclarationImportQueryValue::Available(crate::CanonicalImportResolution::Resolved(
+                module,
+            )) => Ok(EvaluatedSemanticConst::Module(module.clone())),
+            DeclarationImportQueryValue::Available(crate::CanonicalImportResolution::Missing) => {
+                Self::failure(format!("cannot find module `{}`", site.specifier()))
+            }
+            DeclarationImportQueryValue::Available(
+                crate::CanonicalImportResolution::Ambiguous { .. },
+            ) => Self::failure(format!("ambiguous module `{}`", site.specifier())),
+            DeclarationImportQueryValue::Failure(
+                crate::declaration_candidate::DeclarationImportFailure::ResolutionUnavailable(_),
+            ) => Err(EvaluateSemanticConstError::Abort(QueryAbort::MissingInput(
+                InputIdentity::new(
+                    "declaration-import-resolution",
+                    format!(
+                        "{}:{}:{}",
+                        key.declaration.stable_identity(),
+                        key.occurrence,
+                        key.specifier
+                    ),
+                ),
+            ))),
+            DeclarationImportQueryValue::Failure(failure) => Self::failure(format!("{failure:?}")),
+        }
+    }
+
+    fn eval_identifier(
+        &mut self,
+        name: Arc<str>,
+    ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
+        if let Some(value) = self.locals.get(&name) {
+            return Ok(value.clone());
+        }
+        if let Some(candidate) = self
+            .provider
+            .candidate(
+                &self.declaration.declaration.module,
+                &name,
+                DefinitionKind::Const,
+            )
+            .map_err(Self::provider_error)?
+        {
+            let resolution = self
+                .provider
+                .const_resolution(candidate)
+                .map_err(Self::provider_error)?;
+            let key = match &resolution {
+                crate::semantic_query_nucleus::ConstResolutionProjection::Value { key, .. }
+                | crate::semantic_query_nucleus::ConstResolutionProjection::ModuleBinding {
+                    key,
+                    ..
+                } => key.clone(),
+            };
+            self.provider.dependencies.insert(
+                crate::semantic_query_nucleus::SemanticDeclarationDependency {
+                    source: self.provider.dependency_source.clone(),
+                    kind: rue_air::DeclarationTypeDependencyKind::Body,
+                    target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
+                        key,
+                    ),
+                },
+            );
+            return Ok(match resolution {
+                crate::semantic_query_nucleus::ConstResolutionProjection::Value {
+                    value,
+                    ty,
+                    ..
+                } => EvaluatedSemanticConst::Value(TypedSemanticConst::typed(*value, ty)),
+                crate::semantic_query_nucleus::ConstResolutionProjection::ModuleBinding {
+                    target,
+                    ..
+                } => EvaluatedSemanticConst::Module(target),
+            });
+        }
+        if let Some(candidate) = self
+            .provider
+            .candidate(
+                &self.declaration.declaration.module,
+                &name,
+                DefinitionKind::Function,
+            )
+            .map_err(Self::provider_error)?
+        {
+            let identity = self
+                .provider
+                .identity(candidate)
+                .map_err(Self::provider_error)?;
+            self.provider.dependencies.insert(
+                crate::semantic_query_nucleus::SemanticDeclarationDependency {
+                    source: self.provider.dependency_source.clone(),
+                    kind: rue_air::DeclarationTypeDependencyKind::Body,
+                    target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
+                        identity.key.clone(),
+                    ),
+                },
+            );
+            return Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                crate::durable_semantics::DurableConstValue::Function(identity.key),
+                crate::durable_semantics::DurableType::ComptimeType,
+            )));
+        }
+        for kind in [DefinitionKind::Struct, DefinitionKind::Enum] {
+            if let Some(candidate) = self
+                .provider
+                .candidate(&self.declaration.declaration.module, &name, kind)
+                .map_err(Self::provider_error)?
+            {
+                let identity = self
+                    .provider
+                    .identity(candidate)
+                    .map_err(Self::provider_error)?;
+                self.provider.dependencies.insert(
+                    crate::semantic_query_nucleus::SemanticDeclarationDependency {
+                        source: self.provider.dependency_source.clone(),
+                        kind: rue_air::DeclarationTypeDependencyKind::Body,
+                        target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
+                            identity.key.clone(),
+                        ),
+                    },
+                );
+                return Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                    crate::durable_semantics::DurableConstValue::Type(
+                        crate::durable_semantics::DurableType::Nominal(identity.key),
+                    ),
+                    crate::durable_semantics::DurableType::ComptimeType,
+                )));
+            }
+        }
+        Self::failure(format!("undefined constant `{name}`"))
+    }
+
+    fn eval_call(
+        &mut self,
+        call: &rue_parser::ast::CallExpr,
+    ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
+        let module = self.declaration.declaration.module.clone();
+        let name = self.symbol(&call.name.name);
+        self.eval_named_call(&module, name, &call.args)
+    }
+
+    fn eval_named_call(
+        &mut self,
+        module: &ModuleId,
+        name: Arc<str>,
+        arguments: &[rue_parser::ast::CallArg],
+    ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
+        use crate::semantic_query_nucleus::{
+            ComptimeCallQueryKey, ComptimeCallResultProjection, SemanticNucleusKey,
+            SemanticNucleusValue,
+        };
+        let call_ordinal = self.next_call;
+        self.next_call += 1;
+        let Some(candidate) = self
+            .provider
+            .candidate(module, &name, DefinitionKind::Function)
+            .map_err(Self::provider_error)?
+        else {
+            return Self::failure(format!("undefined comptime function `{name}`"));
+        };
+        let identity = self
+            .provider
+            .identity(candidate.clone())
+            .map_err(Self::provider_error)?;
+        self.provider.dependencies.insert(
+            crate::semantic_query_nucleus::SemanticDeclarationDependency {
+                source: self.provider.dependency_source.clone(),
+                kind: rue_air::DeclarationTypeDependencyKind::Body,
+                target:
+                    crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
+                        identity.key,
+                    ),
+            },
+        );
+        let signature = self
+            .provider
+            .signature(candidate.clone())
+            .map_err(Self::provider_error)?;
+        let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
+            parameters,
+            result,
+            ..
+        } = signature
+        else {
+            return Self::failure(format!("`{name}` is not callable"));
+        };
+        let shell = self
+            .provider
+            .context
+            .query_registered(
+                self.provider.shells,
+                DeclarationShellQueryKey(candidate.clone()),
+            )
+            .map_err(EvaluateSemanticConstError::Abort)?;
+        let rue_query::QueryOutcome::Success(DeclarationShellQueryValue::Available(shell)) =
+            shell.outcome()
+        else {
+            return Self::failure("comptime call shell became unavailable");
+        };
+        if shell.parameters.len() != arguments.len() || parameters.len() != arguments.len() {
+            return Self::failure(format!("comptime call `{name}` has the wrong arity"));
+        }
+        for (parameter, argument) in parameters.iter().zip(arguments) {
+            use crate::durable_semantics::DurableParameterMode as ParameterMode;
+            use rue_parser::ast::ArgMode;
+            let failure = match (parameter.mode, argument.mode) {
+                (ParameterMode::Value, ArgMode::Normal)
+                | (ParameterMode::Borrow, ArgMode::Borrow)
+                | (ParameterMode::Inout, ArgMode::Inout) => None,
+                (ParameterMode::Inout, _) => Some(rue_error::ErrorKind::InoutKeywordMissing),
+                (ParameterMode::Borrow, _) => Some(rue_error::ErrorKind::BorrowKeywordMissing),
+                (ParameterMode::Value, ArgMode::Borrow) => {
+                    Some(rue_error::ErrorKind::UnexpectedCallArgumentMode { mode: "borrow" })
+                }
+                (ParameterMode::Value, ArgMode::Inout) => {
+                    Some(rue_error::ErrorKind::UnexpectedCallArgumentMode { mode: "inout" })
+                }
+            };
+            if let Some(kind) = failure {
+                return Err(EvaluateSemanticConstError::failure(
+                    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(kind),
+                ));
+            }
+        }
+        let all_parameters_comptime =
+            !parameters.is_empty() && parameters.iter().all(|parameter| parameter.is_comptime);
+        let is_type_function = result == crate::durable_semantics::DurableType::ComptimeType;
+        let eligible = if is_type_function {
+            parameters.is_empty() || all_parameters_comptime
+        } else {
+            all_parameters_comptime
+        };
+        if !eligible {
+            return Err(EvaluateSemanticConstError::failure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                    rue_error::ErrorKind::ConstExprNotSupported {
+                        expr_kind: format!("call to `{name}`"),
+                    },
+                ),
+            ));
+        }
+        let mut type_arguments = Vec::new();
+        let mut value_arguments = Vec::new();
+        for ((header, parameter), argument) in shell
+            .parameters
+            .iter()
+            .zip(parameters.iter())
+            .zip(arguments.iter())
+        {
+            if parameter.ty == crate::durable_semantics::DurableType::ComptimeType {
+                if matches!(
+                    argument.expr,
+                    rue_parser::ast::Expr::Int(_)
+                        | rue_parser::ast::Expr::Bool(_)
+                        | rue_parser::ast::Expr::String(_)
+                ) {
+                    return Self::failure(format!(
+                        "argument for comptime parameter `{}` must be a type",
+                        header.name
+                    ));
+                }
+                let syntax = self
+                    .source
+                    .get(argument.expr.span().start as usize..argument.expr.span().end as usize)
+                    .ok_or_else(|| {
+                        Self::failure_value("comptime type argument has an invalid span")
+                    })?;
+                let ty = rue_air::resolve_semantic_type_syntax(
+                    self.provider,
+                    &self.declaration.declaration.module,
+                    syntax,
+                )
+                .map_err(|error| match error {
+                    rue_air::SemanticResolutionError::ProviderAbort(abort) => {
+                        EvaluateSemanticConstError::Abort(abort)
+                    }
+                    rue_air::SemanticResolutionError::ProviderFailure(failure) => {
+                        EvaluateSemanticConstError::failure(failure)
+                    }
+                    other => Self::failure_value(format!("{other:?}")),
+                })?;
+                type_arguments.push((header.name.clone(), ty));
+            } else {
+                let evaluated = self.eval(&argument.expr)?;
+                let typed = self.value(evaluated)?;
+                let value = typed.value;
+                let concrete_type_arguments = type_arguments
+                    .iter()
+                    .map(|(_, ty)| ty.clone())
+                    .collect::<Vec<_>>();
+                let expected = substitute_durable_generics(&parameter.ty, &concrete_type_arguments);
+                if let Some(found) = typed.ty
+                    && found != expected
+                {
+                    return Err(EvaluateSemanticConstError::failure(
+                        crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                            rue_error::ErrorKind::TypeMismatch {
+                                expected: durable_type_diagnostic_name(&expected),
+                                found: durable_type_diagnostic_name(&found),
+                            },
+                        ),
+                    ));
+                }
+                if !durable_const_fits_type(&value, &expected) {
+                    if matches!(
+                        &value,
+                        crate::durable_semantics::DurableConstValue::Function(_)
+                    ) {
+                        return Self::failure(
+                            "a callable alias cannot be passed as a comptime value argument",
+                        );
+                    }
+                    if matches!(
+                        &value,
+                        crate::durable_semantics::DurableConstValue::Integer(_)
+                    ) && matches!(
+                        &expected,
+                        crate::durable_semantics::DurableType::I8
+                            | crate::durable_semantics::DurableType::I16
+                            | crate::durable_semantics::DurableType::I32
+                            | crate::durable_semantics::DurableType::I64
+                            | crate::durable_semantics::DurableType::U8
+                            | crate::durable_semantics::DurableType::U16
+                            | crate::durable_semantics::DurableType::U32
+                            | crate::durable_semantics::DurableType::U64
+                    ) {
+                        return Self::failure(format!(
+                            "value {} is outside the range of type {}",
+                            match &value {
+                                crate::durable_semantics::DurableConstValue::Integer(value) =>
+                                    value,
+                                _ => unreachable!(),
+                            },
+                            durable_type_diagnostic_name(&expected),
+                        ));
+                    }
+                    return Err(EvaluateSemanticConstError::failure(
+                        crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                            rue_error::ErrorKind::TypeMismatch {
+                                expected: durable_type_diagnostic_name(&expected),
+                                found: inferred_const_type_name(&value).to_owned(),
+                            },
+                        ),
+                    ));
+                }
+                value_arguments.push((header.name.clone(), value));
+            }
+        }
+        let query = SemanticNucleusKey::ComptimeCall(ComptimeCallQueryKey {
+            declaration: crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                declaration: candidate,
+                configuration: self.declaration.configuration.clone(),
+            },
+            type_arguments: type_arguments.into(),
+            value_arguments: value_arguments.into(),
+        });
+        match self.provider.query(query).map_err(Self::provider_error)? {
+            SemanticNucleusValue::ComptimeCall(value) => {
+                self.provider.anonymous_nominals.extend(
+                    value
+                        .anonymous_nominals
+                        .iter()
+                        .cloned()
+                        .map(|value| (value.identity.clone(), value)),
+                );
+                self.provider
+                    .dependencies
+                    .extend(value.dependencies.iter().cloned());
+                self.provider.deferred_ownership.extend(
+                    value.deferred_ownership.iter().cloned().map(|mut gate| {
+                        if gate.application.is_none() {
+                            gate.application = Some(
+                                crate::semantic_query_nucleus::DeferredOwnershipApplication {
+                                    declaration: self.declaration.declaration.clone(),
+                                    call_ordinal,
+                                },
+                            );
+                        }
+                        gate
+                    }),
+                );
+                Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                    match value.result {
+                        ComptimeCallResultProjection::Type(value) => {
+                            crate::durable_semantics::DurableConstValue::Type(value)
+                        }
+                        ComptimeCallResultProjection::Value(value) => value,
+                    },
+                    result,
+                )))
+            }
+            SemanticNucleusValue::Failure(failure) => Err(Self::domain_failure(failure)),
+            _ => Self::failure("comptime query returned the wrong projection"),
+        }
+    }
+
+    fn eval_type_literal(
+        &mut self,
+        type_expr: &rue_parser::ast::TypeExpr,
+    ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
+        use crate::durable_semantics::{
+            DurableAnonymousNominal, DurableAnonymousNominalShape, DurableConstValue as V,
+            DurableType,
+        };
+        let resolve = |provider: &mut SemanticNucleusTypeProvider<'_>, syntax: &str| {
+            rue_air::resolve_semantic_type_syntax(
+                provider,
+                &self.declaration.declaration.module,
+                syntax,
+            )
+            .map_err(|error| match error {
+                rue_air::SemanticResolutionError::ProviderAbort(abort) => {
+                    EvaluateSemanticConstError::Abort(abort)
+                }
+                rue_air::SemanticResolutionError::ProviderFailure(failure) => {
+                    EvaluateSemanticConstError::failure(failure)
+                }
+                other => Self::failure_value(format!("{other:?}")),
+            })
+        };
+        let fragment = |span: rue_span::Span| {
+            self.source
+                .get(span.start as usize..span.end as usize)
+                .ok_or_else(|| Self::failure_value("type literal span is invalid"))
+        };
+        let (kind, shape) = match type_expr {
+            rue_parser::ast::TypeExpr::AnonymousStruct {
+                fields, methods, ..
+            } => {
+                let fields = fields
+                    .iter()
+                    .map(|field| {
+                        let name = Arc::from(self.interner.resolve(&field.name.name));
+                        let syntax = fragment(field.ty.span())?;
+                        Ok((name, resolve(self.provider, syntax)?))
+                    })
+                    .collect::<Result<Vec<_>, EvaluateSemanticConstError>>()?;
+                let method_type =
+                    |provider: &mut SemanticNucleusTypeProvider<'_>,
+                     ty: &rue_parser::ast::TypeExpr| {
+                        let syntax = fragment(ty.span())?;
+                        Ok(if syntax.trim() == "Self" {
+                            crate::durable_semantics::DurableAnonymousMethodType::SelfType
+                        } else {
+                            crate::durable_semantics::DurableAnonymousMethodType::Concrete(resolve(
+                                provider, syntax,
+                            )?)
+                        })
+                    };
+                let mode = |mode: rue_parser::ast::ParamMode| match mode {
+                    rue_parser::ast::ParamMode::Normal | rue_parser::ast::ParamMode::Comptime => {
+                        crate::durable_semantics::DurableParameterMode::Value
+                    }
+                    rue_parser::ast::ParamMode::Borrow => {
+                        crate::durable_semantics::DurableParameterMode::Borrow
+                    }
+                    rue_parser::ast::ParamMode::Inout => {
+                        crate::durable_semantics::DurableParameterMode::Inout
+                    }
+                };
+                let methods = methods
+                    .iter()
+                    .map(|method| {
+                        let parameters = method
+                            .params
+                            .iter()
+                            .map(|parameter| {
+                                Ok((
+                                    method_type(self.provider, &parameter.ty)?,
+                                    mode(parameter.mode),
+                                    parameter.mode == rue_parser::ast::ParamMode::Comptime,
+                                ))
+                            })
+                            .collect::<Result<Vec<_>, EvaluateSemanticConstError>>()?;
+                        let result = match &method.return_type {
+                            Some(ty) => method_type(self.provider, ty)?,
+                            None => crate::durable_semantics::DurableAnonymousMethodType::Concrete(
+                                DurableType::Unit,
+                            ),
+                        };
+                        Ok(crate::durable_semantics::DurableAnonymousMethodSignature {
+                            name: Arc::from(self.interner.resolve(&method.name.name)),
+                            has_self: method.receiver.is_some(),
+                            self_mode: method.receiver.as_ref().map_or(
+                                crate::durable_semantics::DurableParameterMode::Value,
+                                |receiver| mode(receiver.mode),
+                            ),
+                            parameters: parameters.into(),
+                            result,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, EvaluateSemanticConstError>>()?;
+                (
+                    rue_air::AnonymousNominalKind::Struct,
+                    DurableAnonymousNominalShape::Struct {
+                        fields: fields.into(),
+                        methods: methods.into(),
+                    },
+                )
+            }
+            rue_parser::ast::TypeExpr::AnonymousEnum { variants, .. } => {
+                let variants = variants
+                    .iter()
+                    .map(|variant| {
+                        let name = Arc::from(self.interner.resolve(&variant.name.name));
+                        let payload = variant
+                            .payload
+                            .iter()
+                            .map(|ty| {
+                                let syntax = fragment(ty.span())?;
+                                resolve(self.provider, syntax)
+                            })
+                            .collect::<Result<Vec<_>, EvaluateSemanticConstError>>()?;
+                        Ok((name, Arc::from(payload)))
+                    })
+                    .collect::<Result<Vec<_>, EvaluateSemanticConstError>>()?;
+                (
+                    rue_air::AnonymousNominalKind::Enum,
+                    DurableAnonymousNominalShape::Enum {
+                        variants: variants.into(),
+                    },
+                )
+            }
+            _ => {
+                let syntax = fragment(type_expr.span())?;
+                return Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                    V::Type(resolve(self.provider, syntax)?),
+                    DurableType::ComptimeType,
+                )));
+            }
+        };
+        let occurrence = self.next_anonymous_type;
+        self.next_anonymous_type += 1;
+        let identity = crate::AnonymousNominalKey {
+            kind,
+            producer: self.producer.clone(),
+            anchor: rue_rir::RirStructuralAnchor::new(vec![
+                rue_rir::RirStructuralPathSegment::Body,
+                rue_rir::RirStructuralPathSegment::AnonymousType(occurrence),
+            ]),
+            arguments: self.canonical_arguments.clone(),
+        };
+        self.provider.anonymous_nominals.insert(
+            identity.clone(),
+            DurableAnonymousNominal {
+                identity: identity.clone(),
+                shape,
+                type_captures: self
+                    .provider
+                    .substitutions
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), ty.clone()))
+                    .collect::<Vec<_>>()
+                    .into(),
+                value_captures: self
+                    .provider
+                    .value_substitutions
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .collect::<Vec<_>>()
+                    .into(),
+            },
+        );
+        Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+            V::Type(DurableType::AnonymousNominal(identity)),
+            DurableType::ComptimeType,
+        )))
+    }
+
+    fn eval(
+        &mut self,
+        expression: &rue_parser::ast::Expr,
+    ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
+        use crate::durable_semantics::DurableConstValue as V;
+        use rue_parser::ast::Expr as E;
+        match expression {
+            E::Int(value) => Ok(EvaluatedSemanticConst::Value(
+                TypedSemanticConst::integer_literal(value.value as i128),
+            )),
+            E::String(value) => Ok(EvaluatedSemanticConst::Value(Arc::new(
+                TypedSemanticConst {
+                    value: V::String(self.symbol(&value.value)),
+                    ty: None,
+                },
+            ))),
+            E::Bool(value) => Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                V::Bool(value.value),
+                crate::durable_semantics::DurableType::Bool,
+            ))),
+            E::Unit(_) => Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                V::Unit,
+                crate::durable_semantics::DurableType::Unit,
+            ))),
+            E::Ident(name) => self.eval_identifier(self.symbol(&name.name)),
+            E::Call(call) => self.eval_call(call),
+            E::MethodCall(call) => {
+                let EvaluatedSemanticConst::Module(module) = self.eval(&call.receiver)? else {
+                    return Self::failure(
+                        "method call in declaration-time comptime requires a module receiver",
+                    );
+                };
+                self.eval_named_call(&module, self.symbol(&call.method.name), &call.args)
+            }
+            E::Binary(binary) => self.eval_binary(binary),
+            E::Unary(unary) => match unary.op {
+                rue_parser::ast::UnaryOp::Not => {
+                    Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                        V::Bool(!self.bool_value(&unary.operand)?),
+                        crate::durable_semantics::DurableType::Bool,
+                    )))
+                }
+                op => {
+                    let (operand, ty) = self.int_value(&unary.operand)?;
+                    let ty = self.integer_type(ty, None)?;
+                    let result = match op {
+                        rue_parser::ast::UnaryOp::Neg => {
+                            operand.checked_neg().ok_or_else(|| {
+                                Self::comptime_failure_value("integer overflow evaluating negation")
+                            })?
+                        }
+                        rue_parser::ast::UnaryOp::BitNot => !operand,
+                        rue_parser::ast::UnaryOp::Not => unreachable!(),
+                    };
+                    Self::require_integer_fits(&ty, result)?;
+                    Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                        V::Integer(result),
+                        ty,
+                    )))
+                }
+            },
+            E::Paren(value) => self.eval(&value.inner),
+            E::Block(block) => self.eval_block(block),
+            E::If(value) => {
+                if self.bool_value(&value.cond)? {
+                    self.eval_block(&value.then_block)
+                } else if let Some(block) = &value.else_block {
+                    self.eval_block(block)
+                } else {
+                    Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                        V::Unit,
+                        crate::durable_semantics::DurableType::Unit,
+                    )))
+                }
+            }
+            E::Match(value) => {
+                let evaluated = self.eval(&value.scrutinee)?;
+                for arm in &value.arms {
+                    let matches = match (&arm.pattern, &evaluated) {
+                        (rue_parser::ast::Pattern::Wildcard(_), _) => true,
+                        (
+                            rue_parser::ast::Pattern::Int(pattern),
+                            EvaluatedSemanticConst::Value(value),
+                        ) => {
+                            matches!(&value.value, V::Integer(value) if *value == pattern.value as i128)
+                        }
+                        (
+                            rue_parser::ast::Pattern::NegInt(pattern),
+                            EvaluatedSemanticConst::Value(value),
+                        ) => {
+                            matches!(&value.value, V::Integer(value) if *value == -(pattern.value as i128))
+                        }
+                        (
+                            rue_parser::ast::Pattern::Bool(pattern),
+                            EvaluatedSemanticConst::Value(value),
+                        ) => {
+                            matches!(&value.value, V::Bool(value) if *value == pattern.value)
+                        }
+                        (
+                            rue_parser::ast::Pattern::Path(pattern),
+                            EvaluatedSemanticConst::TargetEnum(target),
+                        ) if pattern.base.is_none() && pattern.bindings.is_empty() => {
+                            self.interner.resolve(&pattern.type_name.name) == target.type_name
+                                && self.interner.resolve(&pattern.variant.name) == target.variant
+                        }
+                        _ => false,
+                    };
+                    if matches {
+                        return self.eval(&arm.body);
+                    }
+                }
+                Self::failure("comptime match has no selected arm")
+            }
+            E::Comptime(value) => self.eval(&value.expr),
+            E::Checked(value) => self.eval(&value.expr),
+            E::TypeLit(value) => self.eval_type_literal(&value.type_expr),
+            E::IntrinsicCall(intrinsic)
+                if self.symbol(&intrinsic.name.name).as_ref() == "import" =>
+            {
+                self.eval_import(intrinsic)
+            }
+            E::IntrinsicCall(intrinsic)
+                if self.symbol(&intrinsic.name.name).as_ref() == "target_arch" =>
+            {
+                let variant = match self.declaration.configuration.target.arch() {
+                    rue_target::Arch::X86_64 => "X86_64",
+                    rue_target::Arch::Aarch64 => "Aarch64",
+                };
+                self.target_intrinsic(intrinsic, "Arch", variant)
+            }
+            E::IntrinsicCall(intrinsic)
+                if self.symbol(&intrinsic.name.name).as_ref() == "target_os" =>
+            {
+                let variant = match self.declaration.configuration.target.os() {
+                    rue_target::Os::Linux => "Linux",
+                    rue_target::Os::Macos => "Macos",
+                };
+                self.target_intrinsic(intrinsic, "Os", variant)
+            }
+            E::IntrinsicCall(intrinsic)
+                if self.symbol(&intrinsic.name.name).as_ref() == "target_data_model" =>
+            {
+                let variant = match self.declaration.configuration.target.data_model() {
+                    rue_target::DataModel::Ilp32 => "Ilp32",
+                    rue_target::DataModel::Lp64 => "Lp64",
+                    rue_target::DataModel::Llp64 => "Llp64",
+                };
+                self.target_intrinsic(intrinsic, "DataModel", variant)
+            }
+            E::IntrinsicCall(intrinsic)
+                if matches!(
+                    self.symbol(&intrinsic.name.name).as_ref(),
+                    "require_droppable" | "require_trivially_droppable"
+                ) =>
+            {
+                let intrinsic_name = self.symbol(&intrinsic.name.name);
+                let [rue_parser::ast::IntrinsicArg::Type(ty)] = intrinsic.args.as_slice() else {
+                    return Self::failure(format!("@{intrinsic_name} expects one type argument"));
+                };
+                let evaluated = self.eval_type_literal(ty)?;
+                let crate::durable_semantics::DurableConstValue::Type(ty) =
+                    self.value(evaluated)?.value
+                else {
+                    return Self::failure(format!("@{intrinsic_name} argument is not a type"));
+                };
+                // Ownership is a post-signature well-formedness fact. Publishing
+                // the gate instead of inspecting nominal signatures here lets a
+                // recursive but indirect type graph finish before the keyed
+                // ownership query validates it.
+                self.provider.deferred_ownership.insert(
+                    crate::semantic_query_nucleus::DeferredOwnershipGate {
+                        kind: if intrinsic_name.as_ref() == "require_droppable" {
+                            crate::semantic_query_nucleus::DeferredOwnershipGateKind::RequireDroppable
+                        } else {
+                            crate::semantic_query_nucleus::DeferredOwnershipGateKind::RequireTriviallyDroppable
+                        },
+                        ty,
+                        application: None,
+                    },
+                );
+                Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                    V::Unit,
+                    crate::durable_semantics::DurableType::Unit,
+                )))
+            }
+            E::Path(path) if path.base.is_none() => {
+                let type_name = self.interner.resolve(&path.type_name.name);
+                if matches!(type_name, "Arch" | "Os" | "DataModel") {
+                    self.target_enum_variant(type_name, self.interner.resolve(&path.variant.name))
+                } else {
+                    Self::failure("path expression is not supported in declaration-time comptime")
+                }
+            }
+            E::Field(field) => {
+                if let E::Ident(base) = field.base.as_ref() {
+                    let type_name = self.interner.resolve(&base.name);
+                    if matches!(type_name, "Arch" | "Os" | "DataModel") {
+                        return self.target_enum_variant(
+                            type_name,
+                            self.interner.resolve(&field.field.name),
+                        );
+                    }
+                }
+                let EvaluatedSemanticConst::Module(module) = self.eval(&field.base)? else {
+                    return Self::failure("member access on a non-module const value");
+                };
+                let name = self.symbol(&field.field.name);
+                if let Some(candidate) = self
+                    .provider
+                    .candidate(&module, &name, DefinitionKind::Const)
+                    .map_err(Self::provider_error)?
+                {
+                    let resolution = self
+                        .provider
+                        .const_resolution(candidate)
+                        .map_err(Self::provider_error)?;
+                    let key = match &resolution {
+                        crate::semantic_query_nucleus::ConstResolutionProjection::Value { key, .. }
+                        | crate::semantic_query_nucleus::ConstResolutionProjection::ModuleBinding {
+                            key,
+                            ..
+                        } => key.clone(),
+                    };
+                    self.provider.dependencies.insert(
+                        crate::semantic_query_nucleus::SemanticDeclarationDependency {
+                            source: self.provider.dependency_source.clone(),
+                            kind: rue_air::DeclarationTypeDependencyKind::Body,
+                            target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
+                                key,
+                            ),
+                        },
+                    );
+                    return Ok(match resolution {
+                        crate::semantic_query_nucleus::ConstResolutionProjection::Value { value, ty, .. } => EvaluatedSemanticConst::Value(TypedSemanticConst::typed(*value, ty)),
+                        crate::semantic_query_nucleus::ConstResolutionProjection::ModuleBinding { target, .. } => EvaluatedSemanticConst::Module(target),
+                    });
+                }
+                for kind in [DefinitionKind::Struct, DefinitionKind::Enum] {
+                    if let Some(candidate) = self
+                        .provider
+                        .candidate(&module, &name, kind)
+                        .map_err(Self::provider_error)?
+                    {
+                        let identity = self
+                            .provider
+                            .identity(candidate)
+                            .map_err(Self::provider_error)?;
+                        self.provider.dependencies.insert(
+                            crate::semantic_query_nucleus::SemanticDeclarationDependency {
+                                source: self.provider.dependency_source.clone(),
+                                kind: rue_air::DeclarationTypeDependencyKind::Body,
+                                target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
+                                    identity.key.clone(),
+                                ),
+                            },
+                        );
+                        return Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                            V::Type(crate::durable_semantics::DurableType::Nominal(identity.key)),
+                            crate::durable_semantics::DurableType::ComptimeType,
+                        )));
+                    }
+                }
+                if let Some(candidate) = self
+                    .provider
+                    .candidate(&module, &name, DefinitionKind::Function)
+                    .map_err(Self::provider_error)?
+                {
+                    let identity = self
+                        .provider
+                        .identity(candidate)
+                        .map_err(Self::provider_error)?;
+                    self.provider.dependencies.insert(
+                        crate::semantic_query_nucleus::SemanticDeclarationDependency {
+                            source: self.provider.dependency_source.clone(),
+                            kind: rue_air::DeclarationTypeDependencyKind::Body,
+                            target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
+                                identity.key.clone(),
+                            ),
+                        },
+                    );
+                    return Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                        V::Function(identity.key),
+                        crate::durable_semantics::DurableType::ComptimeType,
+                    )));
+                }
+                Err(EvaluateSemanticConstError::failure(
+                    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                        rue_error::ErrorKind::UnknownModuleMember {
+                            module_name: module.to_string(),
+                            member_name: name.to_string(),
+                        },
+                    ),
+                ))
+            }
+            E::StructLit(_) | E::ArrayLit(_) => Err(Self::domain_failure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                    rue_error::ErrorKind::ConstExprNotSupported {
+                        expr_kind: "aggregate expression".to_owned(),
+                    },
+                ),
+            )),
+            E::IntrinsicCall(intrinsic) => Err(Self::domain_failure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                    rue_error::ErrorKind::ConstExprNotSupported {
+                        expr_kind: format!(
+                            "intrinsic `@{}`",
+                            self.interner.resolve(&intrinsic.name.name)
+                        ),
+                    },
+                ),
+            )),
+            _ => Self::failure("expression is not supported in declaration-time comptime"),
+        }
+    }
+}
+
+impl SemanticNucleusTypeProvider<'_> {
+    fn ffi_shape_failure(
+        &mut self,
+        ty: &crate::durable_semantics::DurableType,
+        path: &mut Vec<String>,
+    ) -> Result<
+        Option<(
+            rue_air::FfiRejectReason,
+            Vec<String>,
+            crate::durable_semantics::DurableType,
+        )>,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        use crate::durable_semantics::DurableType as T;
+        use rue_air::FfiRejectReason as R;
+        match ty {
+            T::I8
+            | T::I16
+            | T::I32
+            | T::I64
+            | T::U8
+            | T::U16
+            | T::U32
+            | T::U64
+            | T::Bool
+            | T::PtrConst(_)
+            | T::PtrMut(_) => Ok(None),
+            T::Array { element, .. } => self.ffi_shape_failure(element, path),
+            T::Nominal(key) if key.kind() == crate::StableDefinitionKind::Enum => {
+                Ok(Some((R::Enum, path.clone(), ty.clone())))
+            }
+            T::Nominal(key) if key.kind() == crate::StableDefinitionKind::Struct => {
+                let Some(candidate) =
+                    self.candidate(key.module(), key.name(), DefinitionKind::Struct)?
+                else {
+                    return Self::provider_failure(format!(
+                        "FFI struct `{}` is unavailable",
+                        key.name()
+                    ));
+                };
+                let signature = self.signature(candidate)?;
+                let crate::semantic_query_nucleus::DeclarationSignatureProjection::Struct {
+                    fields,
+                    is_linear,
+                    is_repr_c,
+                    ..
+                } = signature
+                else {
+                    return Self::provider_failure("FFI nominal has the wrong signature kind");
+                };
+                if !is_repr_c {
+                    return Ok(Some((R::NonReprCAggregate, path.clone(), ty.clone())));
+                }
+                if fields.is_empty() {
+                    return Ok(Some((R::EmptyStruct, path.clone(), ty.clone())));
+                }
+                if is_linear {
+                    return Ok(Some((R::Linear, path.clone(), ty.clone())));
+                }
+                if self
+                    .candidate(key.module(), key.name(), DefinitionKind::Destructor)?
+                    .is_some()
+                {
+                    return Ok(Some((R::HasDestructor, path.clone(), ty.clone())));
+                }
+                for (name, field) in fields.iter() {
+                    path.push(name.to_string());
+                    if let Some(failure) = self.ffi_shape_failure(field, path)? {
+                        return Ok(Some(failure));
+                    }
+                    path.pop();
+                }
+                Ok(None)
+            }
+            T::AnonymousNominal(_)
+            | T::Slice { .. }
+            | T::Unit
+            | T::Never
+            | T::ComptimeType
+            | T::BuiltinNominal { .. }
+            | T::Module(_)
+            | T::GenericParameter(_) => Ok(Some((R::UnsupportedType, path.clone(), ty.clone()))),
+            T::Nominal(_) => Ok(Some((R::UnsupportedType, path.clone(), ty.clone()))),
+        }
+    }
+
+    fn repr_c_failure_for_fields(
+        &mut self,
+        fields: &[(Arc<str>, crate::durable_semantics::DurableType)],
+        is_linear: bool,
+        has_destructor: bool,
+    ) -> Result<
+        Option<(
+            rue_air::FfiRejectReason,
+            Vec<String>,
+            crate::durable_semantics::DurableType,
+        )>,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        use rue_air::FfiRejectReason as R;
+        if fields.is_empty() {
+            return Ok(Some((
+                R::EmptyStruct,
+                Vec::new(),
+                crate::durable_semantics::DurableType::Unit,
+            )));
+        }
+        if is_linear {
+            return Ok(Some((
+                R::Linear,
+                Vec::new(),
+                crate::durable_semantics::DurableType::Unit,
+            )));
+        }
+        if has_destructor {
+            return Ok(Some((
+                R::HasDestructor,
+                Vec::new(),
+                crate::durable_semantics::DurableType::Unit,
+            )));
+        }
+        let mut path = Vec::new();
+        for (name, ty) in fields {
+            path.push(name.to_string());
+            if let Some(failure) = self.ffi_shape_failure(ty, &mut path)? {
+                return Ok(Some(failure));
+            }
+            path.pop();
+        }
+        Ok(None)
+    }
+
+    fn provider_failure_value(
+        message: impl Into<Arc<str>>,
+    ) -> rue_air::SemanticProviderError<
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        rue_air::SemanticProviderError::Failure(
+            crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(message.into()),
+        )
+    }
+
+    fn provider_failure<T>(
+        message: impl Into<Arc<str>>,
+    ) -> Result<
+        T,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        Err(Self::provider_failure_value(message))
+    }
+
+    fn provider_domain_failure<T>(
+        failure: crate::semantic_query_nucleus::SemanticNucleusFailure,
+    ) -> Result<
+        T,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        Err(rue_air::SemanticProviderError::Failure(failure))
+    }
+
+    fn type_carries_linear(
+        &mut self,
+        ty: &crate::durable_semantics::DurableType,
+    ) -> Result<
+        bool,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        match self.type_carries_linear_inner(ty, &mut BTreeSet::new())? {
+            LinearOwnershipFact::DoesNotCarry => Ok(false),
+            LinearOwnershipFact::Carries => Ok(true),
+            LinearOwnershipFact::Deferred => Ok(false),
+        }
+    }
+
+    fn type_carries_linear_inner(
+        &mut self,
+        ty: &crate::durable_semantics::DurableType,
+        visiting: &mut BTreeSet<StableDefinitionKey>,
+    ) -> Result<
+        LinearOwnershipFact,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        use crate::durable_semantics::{DurableAnonymousNominalShape as S, DurableType as T};
+        use crate::semantic_query_nucleus::DeclarationSignatureProjection as P;
+
+        match ty {
+            T::Array { len: 0, .. } => Ok(LinearOwnershipFact::DoesNotCarry),
+            T::Array { element, .. } => self.type_carries_linear_inner(element, visiting),
+            T::Nominal(key) => {
+                if !visiting.insert(key.clone()) {
+                    return Ok(LinearOwnershipFact::DoesNotCarry);
+                }
+                let kind = match key.kind() {
+                    crate::StableDefinitionKind::Struct => DefinitionKind::Struct,
+                    crate::StableDefinitionKind::Enum => DefinitionKind::Enum,
+                    _ => {
+                        visiting.remove(key);
+                        return Self::provider_failure(format!(
+                            "non-nominal definition `{}` used as a nominal type",
+                            key.name()
+                        ));
+                    }
+                };
+                let candidate =
+                    self.candidate(key.module(), key.name(), kind)?
+                        .ok_or_else(|| {
+                            Self::provider_failure_value(format!(
+                                "nominal definition `{}` is unavailable",
+                                key.name()
+                            ))
+                        })?;
+                let signature_query = crate::semantic_query_nucleus::SemanticNucleusKey::Signature(
+                    self.declaration_query(candidate.clone()),
+                );
+                let resolved = match self.resolved_signature(candidate) {
+                    Ok(signature) => signature,
+                    Err(rue_air::SemanticProviderError::Failure(
+                        crate::semantic_query_nucleus::SemanticNucleusFailure::SignatureReentry {
+                            signature,
+                            ..
+                        },
+                    )) if signature == *key => {
+                        visiting.remove(key);
+                        return Ok(LinearOwnershipFact::Deferred);
+                    }
+                    Err(rue_air::SemanticProviderError::Abort(QueryAbort::Cycle(nodes)))
+                        if nodes.iter().any(|node| {
+                            node.family() == "compiler.semantic-nucleus"
+                                && node.key() == signature_query.stable_identity()
+                        }) =>
+                    {
+                        visiting.remove(key);
+                        return Ok(LinearOwnershipFact::Deferred);
+                    }
+                    Err(error) => {
+                        visiting.remove(key);
+                        return Err(error);
+                    }
+                };
+                self.anonymous_nominals.extend(
+                    resolved
+                        .anonymous_nominals
+                        .iter()
+                        .cloned()
+                        .map(|nominal| (nominal.identity.clone(), nominal)),
+                );
+                let signature = resolved.signature;
+                let carries = match signature {
+                    P::Struct {
+                        fields, is_linear, ..
+                    } => {
+                        let mut carries = if is_linear {
+                            LinearOwnershipFact::Carries
+                        } else {
+                            LinearOwnershipFact::DoesNotCarry
+                        };
+                        for (_, field) in fields.iter() {
+                            carries =
+                                carries.combine(self.type_carries_linear_inner(field, visiting)?);
+                        }
+                        carries
+                    }
+                    P::Enum { variants } => {
+                        let mut carries = LinearOwnershipFact::DoesNotCarry;
+                        for (_, payload) in variants.iter() {
+                            for field in payload.iter() {
+                                carries = carries
+                                    .combine(self.type_carries_linear_inner(field, visiting)?);
+                            }
+                        }
+                        carries
+                    }
+                    _ => {
+                        visiting.remove(key);
+                        return Self::provider_failure(format!(
+                            "nominal definition `{}` has a non-nominal signature",
+                            key.name()
+                        ));
+                    }
+                };
+                visiting.remove(key);
+                Ok(carries)
+            }
+            T::AnonymousNominal(key) => {
+                let Some(nominal) = self.anonymous_nominals.get(key).cloned() else {
+                    return Self::provider_failure(
+                        "anonymous nominal is unavailable while checking linearity",
+                    );
+                };
+                match nominal.shape {
+                    S::Struct { fields, .. } => {
+                        let mut carries = LinearOwnershipFact::DoesNotCarry;
+                        for (_, field) in fields.iter() {
+                            carries =
+                                carries.combine(self.type_carries_linear_inner(field, visiting)?);
+                        }
+                        Ok(carries)
+                    }
+                    S::Enum { variants } => {
+                        let mut carries = LinearOwnershipFact::DoesNotCarry;
+                        for (_, payload) in variants.iter() {
+                            for field in payload.iter() {
+                                carries = carries
+                                    .combine(self.type_carries_linear_inner(field, visiting)?);
+                            }
+                        }
+                        Ok(carries)
+                    }
+                }
+            }
+            T::Slice { .. } | T::PtrConst(_) | T::PtrMut(_) => {
+                Ok(LinearOwnershipFact::DoesNotCarry)
+            }
+            T::I8
+            | T::I16
+            | T::I32
+            | T::I64
+            | T::U8
+            | T::U16
+            | T::U32
+            | T::U64
+            | T::Bool
+            | T::Unit
+            | T::Never
+            | T::ComptimeType
+            | T::BuiltinNominal { .. }
+            | T::Module(_)
+            | T::GenericParameter(_) => Ok(LinearOwnershipFact::DoesNotCarry),
+        }
+    }
+
+    fn type_has_drop_glue(
+        &mut self,
+        ty: &crate::durable_semantics::DurableType,
+    ) -> Result<
+        bool,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        self.type_has_drop_glue_inner(ty, &mut BTreeSet::new())
+    }
+
+    fn type_has_drop_glue_inner(
+        &mut self,
+        ty: &crate::durable_semantics::DurableType,
+        visiting: &mut BTreeSet<StableDefinitionKey>,
+    ) -> Result<
+        bool,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        use crate::durable_semantics::{DurableAnonymousNominalShape as S, DurableType as T};
+        use crate::semantic_query_nucleus::DeclarationSignatureProjection as P;
+        match ty {
+            T::Array { len: 0, .. } => Ok(false),
+            T::Array { element, .. } => self.type_has_drop_glue_inner(element, visiting),
+            T::Nominal(key) => {
+                if !visiting.insert(key.clone()) {
+                    return Ok(false);
+                }
+                if key.kind() == crate::StableDefinitionKind::Struct {
+                    let destructors = self
+                        .context
+                        .query_registered(
+                            self.names,
+                            LookupNameKey {
+                                module: key.module().clone(),
+                                namespace: DefinitionNamespace::Destructor,
+                                name: Arc::from(key.name()),
+                            },
+                        )
+                        .map_err(rue_air::SemanticProviderError::Abort)?;
+                    let rue_query::QueryOutcome::Success(LookupNameValue(destructors)) =
+                        destructors.outcome()
+                    else {
+                        unreachable!("LookupName publishes typed values")
+                    };
+                    if destructors.as_ref().is_ok_and(|facts| !facts.is_empty()) {
+                        visiting.remove(key);
+                        return Ok(true);
+                    }
+                }
+                let kind = match key.kind() {
+                    crate::StableDefinitionKind::Struct => DefinitionKind::Struct,
+                    crate::StableDefinitionKind::Enum => DefinitionKind::Enum,
+                    _ => {
+                        visiting.remove(key);
+                        return Ok(false);
+                    }
+                };
+                let candidate = self
+                    .candidate(key.module(), key.name(), kind)?
+                    .ok_or_else(|| Self::provider_failure_value("nominal type is unavailable"))?;
+                let signature = self.resolved_signature(candidate)?.signature;
+                let has_glue = match signature {
+                    P::Struct { fields, .. } => {
+                        let mut has_glue = false;
+                        for (_, field) in fields.iter() {
+                            has_glue |= self.type_has_drop_glue_inner(field, visiting)?;
+                        }
+                        has_glue
+                    }
+                    P::Enum { variants } => {
+                        let mut has_glue = false;
+                        for (_, payload) in variants.iter() {
+                            for field in payload.iter() {
+                                has_glue |= self.type_has_drop_glue_inner(field, visiting)?;
+                            }
+                        }
+                        has_glue
+                    }
+                    _ => false,
+                };
+                visiting.remove(key);
+                Ok(has_glue)
+            }
+            T::AnonymousNominal(key) => {
+                let nominal = self.anonymous_nominals.get(key).cloned().ok_or_else(|| {
+                    Self::provider_failure_value(
+                        "anonymous nominal is unavailable while checking drop glue",
+                    )
+                })?;
+                match nominal.shape {
+                    S::Struct { fields, .. } => {
+                        for (_, field) in fields.iter() {
+                            if self.type_has_drop_glue_inner(field, visiting)? {
+                                return Ok(true);
+                            }
+                        }
+                    }
+                    S::Enum { variants } => {
+                        for (_, payload) in variants.iter() {
+                            for field in payload.iter() {
+                                if self.type_has_drop_glue_inner(field, visiting)? {
+                                    return Ok(true);
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(false)
+            }
+            T::GenericParameter { .. } => Self::provider_failure(
+                "generic parameter remained unresolved while checking drop glue",
+            ),
+            _ => Ok(false),
+        }
+    }
+
+    fn type_is_copy(
+        &mut self,
+        ty: &crate::durable_semantics::DurableType,
+    ) -> Result<
+        bool,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        self.type_is_copy_inner(ty, &mut BTreeSet::new())
+    }
+
+    fn type_is_copy_inner(
+        &mut self,
+        ty: &crate::durable_semantics::DurableType,
+        visiting: &mut BTreeSet<StableDefinitionKey>,
+    ) -> Result<
+        bool,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        use crate::durable_semantics::{DurableAnonymousNominalShape as S, DurableType as T};
+        use crate::semantic_query_nucleus::DeclarationSignatureProjection as P;
+
+        match ty {
+            T::I8
+            | T::I16
+            | T::I32
+            | T::I64
+            | T::U8
+            | T::U16
+            | T::U32
+            | T::U64
+            | T::Bool
+            | T::Unit
+            | T::Never
+            | T::ComptimeType
+            | T::PtrConst(_)
+            | T::PtrMut(_)
+            | T::Module(_)
+            | T::Slice { .. }
+            | T::BuiltinNominal { .. } => Ok(true),
+            T::GenericParameter(_) => {
+                Self::provider_failure("unsubstituted generic parameter reached Copy validation")
+            }
+            T::Array { element, .. } => self.type_is_copy_inner(element, visiting),
+            T::Nominal(key) => {
+                if !visiting.insert(key.clone()) {
+                    return Ok(true);
+                }
+                let kind = match key.kind() {
+                    crate::StableDefinitionKind::Struct => DefinitionKind::Struct,
+                    crate::StableDefinitionKind::Enum => DefinitionKind::Enum,
+                    _ => {
+                        visiting.remove(key);
+                        return Self::provider_failure(format!(
+                            "non-nominal definition `{}` used as a nominal type",
+                            key.name()
+                        ));
+                    }
+                };
+                let candidate =
+                    self.candidate(key.module(), key.name(), kind)?
+                        .ok_or_else(|| {
+                            Self::provider_failure_value(format!(
+                                "nominal definition `{}` is unavailable",
+                                key.name()
+                            ))
+                        })?;
+                let resolved = self.resolved_signature(candidate)?;
+                self.anonymous_nominals.extend(
+                    resolved
+                        .anonymous_nominals
+                        .iter()
+                        .cloned()
+                        .map(|nominal| (nominal.identity.clone(), nominal)),
+                );
+                let is_copy = match resolved.signature {
+                    P::Struct { is_copy, .. } => is_copy,
+                    P::Enum { variants } => {
+                        let mut is_copy = true;
+                        for (_, payload) in variants.iter() {
+                            for field in payload.iter() {
+                                is_copy &= self.type_is_copy_inner(field, visiting)?;
+                            }
+                        }
+                        is_copy
+                    }
+                    _ => {
+                        visiting.remove(key);
+                        return Self::provider_failure(format!(
+                            "nominal definition `{}` has a non-nominal signature",
+                            key.name()
+                        ));
+                    }
+                };
+                visiting.remove(key);
+                Ok(is_copy)
+            }
+            T::AnonymousNominal(key) => {
+                let nominal = self.anonymous_nominals.get(key).cloned().ok_or_else(|| {
+                    Self::provider_failure_value(
+                        "anonymous nominal is unavailable while checking Copy",
+                    )
+                })?;
+                match nominal.shape {
+                    S::Struct { fields, .. } => {
+                        for (_, field) in fields.iter() {
+                            if !self.type_is_copy_inner(field, visiting)? {
+                                return Ok(false);
+                            }
+                        }
+                    }
+                    S::Enum { variants } => {
+                        for (_, payload) in variants.iter() {
+                            for field in payload.iter() {
+                                if !self.type_is_copy_inner(field, visiting)? {
+                                    return Ok(false);
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(true)
+            }
+        }
+    }
+
+    fn candidate(
+        &self,
+        module: &ModuleId,
+        name: &str,
+        kind: DefinitionKind,
+    ) -> Result<
+        Option<crate::declaration_candidate::DeclarationCandidateKey>,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        let terminal = self
+            .context
+            .query_registered(
+                self.names,
+                LookupNameKey {
+                    module: module.clone(),
+                    namespace: if kind == DefinitionKind::Destructor {
+                        DefinitionNamespace::Destructor
+                    } else {
+                        DefinitionNamespace::ModuleItem
+                    },
+                    name: Arc::from(name),
+                },
+            )
+            .map_err(rue_air::SemanticProviderError::Abort)?;
+        let rue_query::QueryOutcome::Success(LookupNameValue(result)) = terminal.outcome() else {
+            unreachable!("LookupName publishes typed values")
+        };
+        let entries = result
+            .as_ref()
+            .map_err(|failure| Self::provider_failure_value(format!("{failure:?}")))?;
+        let mut matching = entries.iter().filter(|entry| entry.kind == kind);
+        let Some(entry) = matching.next() else {
+            return Ok(None);
+        };
+        if matching.next().is_some() {
+            return Self::provider_failure(format!(
+                "ambiguous declaration `{name}` in module {module}"
+            ));
+        }
+        let defining = rue_air::SemanticVisibilityDomain::from_file_path(Some(module.as_str()));
+        let accessing = rue_air::SemanticVisibilityDomain::from_file_path(Some(
+            self.dependency_source.module().as_str(),
+        ));
+        let is_public = entry.visibility == Some(rue_parser::ast::Visibility::Public);
+        if !defining.is_visible_from(&accessing, is_public) {
+            return Self::provider_domain_failure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                    rue_error::ErrorKind::PrivateMemberAccess {
+                        item_kind: format!("{kind:?}").to_lowercase(),
+                        name: name.to_owned(),
+                    },
+                ),
+            );
+        }
+        let categories: &[crate::declaration_candidate::DeclarationCandidateCategory] = match kind {
+            DefinitionKind::Function => &[
+                crate::declaration_candidate::DeclarationCandidateCategory::Function,
+                crate::declaration_candidate::DeclarationCandidateCategory::ExternFunction,
+            ],
+            DefinitionKind::Struct => {
+                &[crate::declaration_candidate::DeclarationCandidateCategory::Struct]
+            }
+            DefinitionKind::Enum => {
+                &[crate::declaration_candidate::DeclarationCandidateCategory::Enum]
+            }
+            DefinitionKind::Const => {
+                &[crate::declaration_candidate::DeclarationCandidateCategory::ConstCandidate]
+            }
+            DefinitionKind::Destructor => {
+                &[crate::declaration_candidate::DeclarationCandidateCategory::Destructor]
+            }
+        };
+        for category in categories {
+            let key = crate::declaration_candidate::DeclarationCandidateKey {
+                module: module.clone(),
+                category: *category,
+                name: entry.name.clone(),
+                owner: (*category
+                    == crate::declaration_candidate::DeclarationCandidateCategory::Destructor)
+                    .then(|| crate::declaration_candidate::DeclarationCandidateOwner {
+                        category:
+                            crate::declaration_candidate::DeclarationCandidateCategory::Struct,
+                        name: entry.name.clone(),
+                    }),
+                duplicate_discriminator: 0,
+            };
+            let shell = self
+                .context
+                .query_registered(self.shells, DeclarationShellQueryKey(key.clone()))
+                .map_err(rue_air::SemanticProviderError::Abort)?;
+            let rue_query::QueryOutcome::Success(shell) = shell.outcome() else {
+                unreachable!("DeclarationShell publishes typed values")
+            };
+            if matches!(shell, DeclarationShellQueryValue::Available(_)) {
+                return Ok(Some(key));
+            }
+        }
+        Self::provider_failure(format!(
+            "name index and declaration-shell index disagree for `{name}`"
+        ))
+    }
+
+    fn query(
+        &self,
+        key: crate::semantic_query_nucleus::SemanticNucleusKey,
+    ) -> Result<
+        crate::semantic_query_nucleus::SemanticNucleusValue,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        let terminal = self
+            .context
+            .query_registered(self.family, key)
+            .map_err(rue_air::SemanticProviderError::Abort)?;
+        let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+            unreachable!("SemanticNucleus publishes typed values")
+        };
+        Ok(value.clone())
+    }
+
+    fn declaration_query(
+        &self,
+        declaration: crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+        crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+            declaration,
+            configuration: self.configuration.clone(),
+        }
+    }
+
+    fn identity(
+        &self,
+        declaration: crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> Result<
+        crate::semantic_query_nucleus::DeclarationIdentityProjection,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        use crate::semantic_query_nucleus::{SemanticNucleusKey as K, SemanticNucleusValue as V};
+        match self.query(K::Identity(self.declaration_query(declaration)))? {
+            V::Identity(identity) => Ok(identity),
+            V::Failure(failure) => Self::provider_domain_failure(failure),
+            _ => Self::provider_failure("identity query returned the wrong projection"),
+        }
+    }
+
+    fn const_resolution(
+        &self,
+        declaration: crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> Result<
+        crate::semantic_query_nucleus::ConstResolutionProjection,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        use crate::semantic_query_nucleus::{SemanticNucleusKey as K, SemanticNucleusValue as V};
+        match self.query(K::ConstResolution(self.declaration_query(declaration)))? {
+            V::ConstResolution(value) => Ok(value),
+            V::Failure(failure) => Self::provider_domain_failure(failure),
+            _ => Self::provider_failure("const query returned the wrong projection"),
+        }
+    }
+
+    fn signature(
+        &self,
+        declaration: crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> Result<
+        crate::semantic_query_nucleus::DeclarationSignatureProjection,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        Ok(self.resolved_signature(declaration)?.signature)
+    }
+
+    fn resolved_signature(
+        &self,
+        declaration: crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> Result<
+        crate::semantic_query_nucleus::ResolvedDeclarationSignature,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        use crate::semantic_query_nucleus::{SemanticNucleusKey as K, SemanticNucleusValue as V};
+        match self.query(K::Signature(self.declaration_query(declaration)))? {
+            V::Signature(value) => Ok(value),
+            V::Failure(failure) => Self::provider_domain_failure(failure),
+            _ => Self::provider_failure("signature query returned the wrong projection"),
+        }
+    }
+
+    fn validate_nominal_well_formedness(
+        &mut self,
+        declaration: crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> Result<
+        (),
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        use crate::durable_semantics::{DurableAnonymousNominalShape as S, DurableType as T};
+        use crate::semantic_query_nucleus::DeclarationSignatureProjection as P;
+
+        fn collect_type(
+            ty: &T,
+            anonymous: &BTreeMap<
+                crate::AnonymousNominalKey,
+                crate::durable_semantics::DurableAnonymousNominal,
+            >,
+            neighbors: &mut BTreeSet<StableDefinitionKey>,
+        ) {
+            let mut pending = vec![ty];
+            let mut seen_anonymous = BTreeSet::new();
+            while let Some(ty) = pending.pop() {
+                match ty {
+                    T::Nominal(key) => {
+                        neighbors.insert(key.clone());
+                    }
+                    // Arrays are inline containment edges even at length zero.
+                    T::Array { element, .. } => pending.push(element),
+                    T::AnonymousNominal(key) if seen_anonymous.insert(key.clone()) => {
+                        if let Some(nominal) = anonymous.get(key) {
+                            match &nominal.shape {
+                                S::Struct { fields, .. } => {
+                                    pending.extend(fields.iter().map(|(_, ty)| ty));
+                                }
+                                S::Enum { variants } => {
+                                    pending.extend(
+                                        variants.iter().flat_map(|(_, payload)| payload.iter()),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    // Pointers and slices are indirection and therefore break
+                    // the by-value containment graph.
+                    T::PtrConst(_) | T::PtrMut(_) | T::Slice { .. } => {}
+                    _ => {}
+                }
+            }
+        }
+
+        let root = self.identity(declaration.clone())?.key;
+        if declaration.category
+            == crate::declaration_candidate::DeclarationCandidateCategory::Struct
+            && matches!(
+                self.signature(declaration.clone())?,
+                P::Struct { is_copy: true, .. }
+            )
+            && self
+                .candidate(
+                    &declaration.module,
+                    &declaration.name,
+                    DefinitionKind::Destructor,
+                )?
+                .is_some()
+        {
+            return Self::provider_domain_failure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                    rue_error::ErrorKind::CopyStructWithDestructor {
+                        type_name: declaration.name.to_string(),
+                    },
+                ),
+            );
+        }
+        let mut colors = BTreeMap::<StableDefinitionKey, u8>::new();
+        let mut path = vec![root.clone()];
+        let mut frames = Vec::<(StableDefinitionKey, Vec<StableDefinitionKey>, usize)>::new();
+
+        let load = |provider: &mut Self,
+                    key: &StableDefinitionKey|
+         -> Result<
+            Vec<StableDefinitionKey>,
+            rue_air::SemanticProviderError<
+                QueryAbort,
+                crate::semantic_query_nucleus::SemanticNucleusFailure,
+            >,
+        > {
+            let kind = match key.kind() {
+                crate::StableDefinitionKind::Struct => DefinitionKind::Struct,
+                crate::StableDefinitionKind::Enum => DefinitionKind::Enum,
+                _ => return Ok(Vec::new()),
+            };
+            let Some(candidate) = provider.candidate(key.module(), key.name(), kind)? else {
+                return Self::provider_failure(format!(
+                    "nominal definition `{}` is unavailable",
+                    key.name()
+                ));
+            };
+            let resolved = provider.resolved_signature(candidate)?;
+            let anonymous = resolved
+                .anonymous_nominals
+                .iter()
+                .cloned()
+                .map(|nominal| (nominal.identity.clone(), nominal))
+                .collect::<BTreeMap<_, _>>();
+            let mut neighbors = BTreeSet::new();
+            match &resolved.signature {
+                P::Struct { fields, .. } => {
+                    for (_, ty) in fields.iter() {
+                        collect_type(ty, &anonymous, &mut neighbors);
+                    }
+                }
+                P::Enum { variants } => {
+                    for (_, payload) in variants.iter() {
+                        for ty in payload.iter() {
+                            collect_type(ty, &anonymous, &mut neighbors);
+                        }
+                    }
+                }
+                _ => {
+                    return Self::provider_failure(format!(
+                        "nominal definition `{}` has a non-nominal signature",
+                        key.name()
+                    ));
+                }
+            }
+            Ok(neighbors.into_iter().collect())
+        };
+
+        colors.insert(root.clone(), 1);
+        frames.push((root.clone(), load(self, &root)?, 0));
+        while let Some((key, neighbors, next)) = frames.last_mut() {
+            if *next == neighbors.len() {
+                colors.insert(key.clone(), 2);
+                frames.pop();
+                path.pop();
+                continue;
+            }
+            let child = neighbors[*next].clone();
+            *next += 1;
+            match colors.get(&child).copied() {
+                Some(1) => {
+                    let start = path.iter().position(|key| key == &child).unwrap_or(0);
+                    let cycle = path[start..]
+                        .iter()
+                        .chain(std::iter::once(&child))
+                        .map(|key| key.name())
+                        .collect::<Vec<_>>()
+                        .join(" -> ");
+                    return Self::provider_domain_failure(
+                        crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                            rue_error::ErrorKind::RecursiveTypeInfiniteSize {
+                                name: child.name().to_owned(),
+                                cycle,
+                            },
+                        ),
+                    );
+                }
+                Some(2) => {}
+                _ => {
+                    colors.insert(child.clone(), 1);
+                    path.push(child.clone());
+                    frames.push((child.clone(), load(self, &child)?, 0));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn constructor_fact(
+        &mut self,
+        module: &ModuleId,
+        name: &str,
+    ) -> Result<
+        Option<
+            rue_air::SemanticTypeConstructorHead<
+                StableDefinitionKey,
+                Arc<str>,
+                StableDefinitionKey,
+            >,
+        >,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        use crate::semantic_query_nucleus::DeclarationSignatureProjection;
+        let Some(candidate) = self.candidate(module, name, DefinitionKind::Function)? else {
+            return Ok(None);
+        };
+        let identity = self.identity(candidate.clone())?;
+        let signature = self.signature(candidate.clone())?;
+        let DeclarationSignatureProjection::Callable {
+            parameters, result, ..
+        } = signature
+        else {
+            return Ok(None);
+        };
+        let shell = self
+            .context
+            .query_registered(self.shells, DeclarationShellQueryKey(candidate))
+            .map_err(rue_air::SemanticProviderError::Abort)?;
+        let rue_query::QueryOutcome::Success(DeclarationShellQueryValue::Available(shell)) =
+            shell.outcome()
+        else {
+            return Self::provider_failure("constructor shell became unavailable");
+        };
+        if shell.parameters.len() != parameters.len() {
+            return Self::provider_failure("constructor parameter projections disagree");
+        }
+        let parameters = shell
+            .parameters
+            .iter()
+            .zip(parameters.iter())
+            .map(
+                |(header, parameter)| rue_air::SemanticTypeConstructorParameter {
+                    name: header.name.clone(),
+                    is_comptime: parameter.is_comptime,
+                    is_type: parameter.is_comptime
+                        && parameter.ty == crate::durable_semantics::DurableType::ComptimeType,
+                },
+            )
+            .collect::<Vec<_>>();
+        self.dependencies.insert(
+            crate::semantic_query_nucleus::SemanticDeclarationDependency {
+                source: self.dependency_source.clone(),
+                kind: self.dependency_kind,
+                target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::TypeCallHead(
+                    identity.key.clone(),
+                ),
+            },
+        );
+        Ok(Some(rue_air::SemanticTypeConstructorHead {
+            key: identity.key.clone(),
+            site: identity.key,
+            parameters: parameters.into(),
+            returns_type: result == crate::durable_semantics::DurableType::ComptimeType,
+            is_public: identity.is_public,
+            defining_domain: rue_air::SemanticVisibilityDomain::from_file_path(Some(
+                module.as_str(),
+            )),
+            defining_file: Arc::from(module.as_str()),
+        }))
+    }
+
+    fn module_binding_fact(
+        &self,
+        module: &ModuleId,
+        name: &str,
+    ) -> Result<
+        Option<rue_air::SemanticModuleBinding<ModuleId, StableDefinitionKey>>,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        let Some(candidate) = self.candidate(module, name, DefinitionKind::Const)? else {
+            return Ok(None);
+        };
+        let resolution = self.const_resolution(candidate)?;
+        let crate::semantic_query_nucleus::ConstResolutionProjection::ModuleBinding { key, target } =
+            resolution
+        else {
+            return Ok(None);
+        };
+        let shell = self.identity_key_visibility(&key)?;
+        Ok(Some(rue_air::SemanticModuleBinding {
+            target,
+            site: key,
+            is_public: shell,
+            defining_domain: rue_air::SemanticVisibilityDomain::from_file_path(Some(
+                module.as_str(),
+            )),
+            defining_file: Arc::from(module.as_str()),
+        }))
+    }
+
+    fn observe_deferred_local_type_references(
+        &mut self,
+        module: &ModuleId,
+        syntax: &str,
+    ) -> Result<
+        (),
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        for name in syntax
+            .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+            .filter(|name| !name.is_empty())
+        {
+            if name.chars().all(|character| character.is_ascii_digit())
+                || self.substitutions.contains_key(name)
+                || self.value_substitutions.contains_key(name)
+                || matches!(
+                    name,
+                    "i8" | "i16"
+                        | "i32"
+                        | "i64"
+                        | "isize"
+                        | "u8"
+                        | "u16"
+                        | "u32"
+                        | "u64"
+                        | "usize"
+                        | "bool"
+                        | "type"
+                        | "ptr"
+                        | "const"
+                        | "mut"
+                        | "str"
+                        | "Str"
+                )
+            {
+                continue;
+            }
+            if let Some(fact) = self.alias_fact(module, name)? {
+                self.dependencies.insert(
+                    crate::semantic_query_nucleus::SemanticDeclarationDependency {
+                        source: self.dependency_source.clone(),
+                        kind: self.dependency_kind,
+                        target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedType(
+                            fact.site,
+                        ),
+                    },
+                );
+                <Self as rue_air::SemanticTypeSyntaxProvider<
+                    ModuleId,
+                    ModuleId,
+                    StableDefinitionKey,
+                    StableDefinitionKey,
+                    Arc<str>,
+                    crate::durable_semantics::DurableType,
+                    crate::durable_semantics::DurableConstValue,
+                >>::observe_materialized_type(self, &fact.value)?;
+                continue;
+            }
+            for candidate_kind in [DefinitionKind::Struct, DefinitionKind::Enum] {
+                if let Some(fact) = self.named_fact(module, name, candidate_kind)? {
+                    self.dependencies.insert(
+                        crate::semantic_query_nucleus::SemanticDeclarationDependency {
+                            source: self.dependency_source.clone(),
+                            kind: self.dependency_kind,
+                            target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedType(
+                                fact.site,
+                            ),
+                        },
+                    );
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn identity_key_visibility(
+        &self,
+        key: &StableDefinitionKey,
+    ) -> Result<
+        bool,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        let category = match key.kind() {
+            crate::StableDefinitionKind::Function => {
+                crate::declaration_candidate::DeclarationCandidateCategory::Function
+            }
+            crate::StableDefinitionKind::Struct => {
+                crate::declaration_candidate::DeclarationCandidateCategory::Struct
+            }
+            crate::StableDefinitionKind::Enum => {
+                crate::declaration_candidate::DeclarationCandidateCategory::Enum
+            }
+            crate::StableDefinitionKind::ValueConst
+            | crate::StableDefinitionKind::ModuleBinding => {
+                crate::declaration_candidate::DeclarationCandidateCategory::ConstCandidate
+            }
+            _ => return Ok(false),
+        };
+        let candidate = crate::declaration_candidate::DeclarationCandidateKey {
+            module: key.module().clone(),
+            category,
+            name: Arc::from(key.name()),
+            owner: None,
+            duplicate_discriminator: 0,
+        };
+        let terminal = self
+            .context
+            .query_registered(self.shells, DeclarationShellQueryKey(candidate))
+            .map_err(rue_air::SemanticProviderError::Abort)?;
+        let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+            unreachable!("DeclarationShell publishes typed values")
+        };
+        match value {
+            DeclarationShellQueryValue::Available(shell) => Ok(shell.is_public),
+            DeclarationShellQueryValue::Failure(failure) => {
+                Self::provider_failure(format!("{failure:?}"))
+            }
+        }
+    }
+
+    fn named_fact(
+        &self,
+        module: &ModuleId,
+        name: &str,
+        kind: DefinitionKind,
+    ) -> Result<
+        Option<
+            rue_air::SemanticTypeFact<crate::durable_semantics::DurableType, StableDefinitionKey>,
+        >,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        let Some(candidate) = self.candidate(module, name, kind)? else {
+            return Ok(None);
+        };
+        let identity = self.identity(candidate)?;
+        Ok(Some(rue_air::SemanticTypeFact {
+            value: crate::durable_semantics::DurableType::Nominal(identity.key.clone()),
+            site: identity.key,
+            is_public: identity.is_public,
+            defining_domain: rue_air::SemanticVisibilityDomain::from_file_path(Some(
+                module.as_str(),
+            )),
+            defining_file: Arc::from(module.as_str()),
+        }))
+    }
+
+    fn alias_fact(
+        &mut self,
+        module: &ModuleId,
+        name: &str,
+    ) -> Result<
+        Option<
+            rue_air::SemanticTypeFact<crate::durable_semantics::DurableType, StableDefinitionKey>,
+        >,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        let Some(candidate) = self.candidate(module, name, DefinitionKind::Const)? else {
+            return Ok(None);
+        };
+        let resolution = self.const_resolution(candidate)?;
+        let crate::semantic_query_nucleus::ConstResolutionProjection::Value {
+            key,
+            value,
+            anonymous_nominals,
+            dependencies,
+            ..
+        } = resolution
+        else {
+            return Ok(None);
+        };
+        let crate::durable_semantics::DurableConstValue::Type(value) = *value else {
+            return Ok(None);
+        };
+        self.anonymous_nominals.extend(
+            anonymous_nominals
+                .iter()
+                .cloned()
+                .map(|value| (value.identity.clone(), value)),
+        );
+        self.dependencies.extend(dependencies.iter().cloned());
+        let is_public = self.identity_key_visibility(&key)?;
+        Ok(Some(rue_air::SemanticTypeFact {
+            value,
+            site: key,
+            is_public,
+            defining_domain: rue_air::SemanticVisibilityDomain::from_file_path(Some(
+                module.as_str(),
+            )),
+            defining_file: Arc::from(module.as_str()),
+        }))
+    }
+}
+
+impl rue_air::SemanticModulePathProvider<ModuleId, ModuleId, StableDefinitionKey>
+    for SemanticNucleusTypeProvider<'_>
+{
+    type Abort = QueryAbort;
+    type Failure = crate::semantic_query_nucleus::SemanticNucleusFailure;
+
+    fn root_module_binding(
+        &mut self,
+        scope: &ModuleId,
+        name: &str,
+    ) -> Result<
+        Option<rue_air::SemanticModuleBinding<ModuleId, StableDefinitionKey>>,
+        rue_air::SemanticProviderError<Self::Abort, Self::Failure>,
+    > {
+        self.module_binding_fact(scope, name)
+    }
+
+    fn module_binding(
+        &mut self,
+        module: &ModuleId,
+        name: &str,
+    ) -> Result<
+        Option<rue_air::SemanticModuleBinding<ModuleId, StableDefinitionKey>>,
+        rue_air::SemanticProviderError<Self::Abort, Self::Failure>,
+    > {
+        self.module_binding_fact(module, name)
+    }
+
+    fn module_display_name(&self, module: &ModuleId) -> Arc<str> {
+        Arc::from(module.as_str())
+    }
+
+    fn accessing_domain(&self, scope: &ModuleId) -> rue_air::SemanticVisibilityDomain {
+        rue_air::SemanticVisibilityDomain::from_file_path(Some(scope.as_str()))
+    }
+}
+
+#[rustfmt::skip]
+impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey, StableDefinitionKey, Arc<str>, crate::durable_semantics::DurableType, crate::durable_semantics::DurableConstValue> for SemanticNucleusTypeProvider<'_> {
+    fn observe_selected_named_type(
+        &mut self,
+        _name: &str,
+        kind: rue_air::SemanticTypeFactKind,
+        fact: &rue_air::SemanticTypeFact<
+            crate::durable_semantics::DurableType,
+            StableDefinitionKey,
+        >,
+    ) -> rue_air::SemanticProviderResult<
+        (),
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        if matches!(
+            kind,
+            rue_air::SemanticTypeFactKind::Struct
+                | rue_air::SemanticTypeFactKind::Enum
+                | rue_air::SemanticTypeFactKind::Constant
+        ) {
+            self.dependencies.insert(
+                crate::semantic_query_nucleus::SemanticDeclarationDependency {
+                    source: self.dependency_source.clone(),
+                    kind: self.dependency_kind,
+                    target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedType(
+                        fact.site.clone(),
+                    ),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn observe_materialized_type(
+        &mut self,
+        ty: &crate::durable_semantics::DurableType,
+    ) -> rue_air::SemanticProviderResult<
+        (),
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        fn collect(
+            ty: &crate::durable_semantics::DurableType,
+            output: &mut Vec<StableDefinitionKey>,
+        ) {
+            match ty {
+                crate::durable_semantics::DurableType::Nominal(key) => output.push(key.clone()),
+                crate::durable_semantics::DurableType::Array { element, .. }
+                | crate::durable_semantics::DurableType::Slice { element, .. }
+                | crate::durable_semantics::DurableType::PtrConst(element)
+                | crate::durable_semantics::DurableType::PtrMut(element) => {
+                    collect(element, output)
+                }
+                _ => {}
+            }
+        }
+        let mut targets = Vec::new();
+        collect(ty, &mut targets);
+        self.dependencies.extend(targets.into_iter().map(|target| {
+            crate::semantic_query_nucleus::SemanticDeclarationDependency {
+                source: self.dependency_source.clone(),
+                kind: self.dependency_kind,
+                target:
+                    crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedType(
+                        target,
+                    ),
+            }
+        }));
+        Ok(())
+    }
+
+    fn substituted_type(
+        &mut self,
+        _scope: &ModuleId,
+        name: &str,
+    ) -> rue_air::SemanticProviderResult<
+        Option<crate::durable_semantics::DurableType>,
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        Ok(self.substitutions.get(name).cloned())
+    }
+
+    fn primitive_type(
+        &mut self,
+        name: &str,
+    ) -> rue_air::SemanticProviderResult<
+        Option<crate::durable_semantics::DurableType>,
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        use crate::durable_semantics::DurableType as T;
+        Ok(Some(match name {
+            "i8" => T::I8,
+            "i16" => T::I16,
+            "i32" => T::I32,
+            "i64" => T::I64,
+            "isize" => T::I64,
+            "u8" => T::U8,
+            "u16" => T::U16,
+            "u32" => T::U32,
+            "u64" => T::U64,
+            "usize" => T::U64,
+            "bool" => T::Bool,
+            "()" => T::Unit,
+            "!" => T::Never,
+            "type" => T::ComptimeType,
+            _ => return Ok(None),
+        }))
+    }
+
+    fn builtin_type(
+        &mut self,
+        _scope: &ModuleId,
+        name: &str,
+    ) -> rue_air::SemanticProviderResult<
+        Option<crate::durable_semantics::DurableType>,
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        Ok(
+            (name == "str").then(|| crate::durable_semantics::DurableType::BuiltinNominal {
+                name: Arc::from("str"),
+                kind: rue_air::SemanticImportNominalKind::Struct,
+            }),
+        )
+    }
+
+    fn root_struct_type(
+        &mut self,
+        scope: &ModuleId,
+        name: &str,
+    ) -> rue_air::SemanticProviderResult<
+        Option<
+            rue_air::SemanticTypeFact<crate::durable_semantics::DurableType, StableDefinitionKey>,
+        >,
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        self.named_fact(scope, name, DefinitionKind::Struct)
+    }
+    fn root_enum_type(
+        &mut self,
+        scope: &ModuleId,
+        name: &str,
+    ) -> rue_air::SemanticProviderResult<
+        Option<
+            rue_air::SemanticTypeFact<crate::durable_semantics::DurableType, StableDefinitionKey>,
+        >,
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        self.named_fact(scope, name, DefinitionKind::Enum)
+    }
+    fn root_type_alias(
+        &mut self,
+        scope: &ModuleId,
+        name: &str,
+    ) -> rue_air::SemanticProviderResult<
+        Option<
+            rue_air::SemanticTypeFact<crate::durable_semantics::DurableType, StableDefinitionKey>,
+        >,
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        self.alias_fact(scope, name)
+    }
+    fn module_struct_type(
+        &mut self,
+        module: &ModuleId,
+        name: &str,
+    ) -> rue_air::SemanticProviderResult<
+        Option<
+            rue_air::SemanticTypeFact<crate::durable_semantics::DurableType, StableDefinitionKey>,
+        >,
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        self.named_fact(module, name, DefinitionKind::Struct)
+    }
+    fn module_enum_type(
+        &mut self,
+        module: &ModuleId,
+        name: &str,
+    ) -> rue_air::SemanticProviderResult<
+        Option<
+            rue_air::SemanticTypeFact<crate::durable_semantics::DurableType, StableDefinitionKey>,
+        >,
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        self.named_fact(module, name, DefinitionKind::Enum)
+    }
+    fn module_type_alias(
+        &mut self,
+        module: &ModuleId,
+        name: &str,
+    ) -> rue_air::SemanticProviderResult<
+        Option<
+            rue_air::SemanticTypeFact<crate::durable_semantics::DurableType, StableDefinitionKey>,
+        >,
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        self.alias_fact(module, name)
+    }
+
+    fn resolve_array_length(
+        &mut self,
+        scope: &ModuleId,
+        length: &rue_air::ArrayLen,
+    ) -> rue_air::SemanticProviderResult<
+        Option<u64>,
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        match length {
+            rue_air::ArrayLen::Literal(value) => Ok(Some(*value)),
+            rue_air::ArrayLen::Named(name) => {
+                if let Some(crate::durable_semantics::DurableConstValue::Integer(value)) =
+                    self.value_substitutions.get(name.as_str())
+                {
+                    return u64::try_from(*value).map(Some).map_err(|_| {
+                        Self::provider_failure_value(format!(
+                            "array length `{name}` is negative or too large"
+                        ))
+                    });
+                }
+                if let Some(ty) = self.deferred_value_parameters.get(name.as_str()) {
+                    if matches!(
+                        ty,
+                        crate::durable_semantics::DurableType::I8
+                            | crate::durable_semantics::DurableType::I16
+                            | crate::durable_semantics::DurableType::I32
+                            | crate::durable_semantics::DurableType::I64
+                            | crate::durable_semantics::DurableType::U8
+                            | crate::durable_semantics::DurableType::U16
+                            | crate::durable_semantics::DurableType::U32
+                            | crate::durable_semantics::DurableType::U64
+                    ) {
+                        return Ok(None);
+                    }
+                    return Self::provider_domain_failure(
+                        crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                            rue_error::ErrorKind::InvalidArrayLength {
+                                reason: format!(
+                                    "array length expression '{name}' has non-integer type {}",
+                                    durable_type_diagnostic_name(ty),
+                                ),
+                            },
+                        ),
+                    );
+                }
+                if let Some((call, arguments)) = rue_air::parse_type_call_syntax(name) {
+                    let resolved = rue_air::resolve_semantic_comptime_call(
+                        self,
+                        scope,
+                        &call,
+                        &arguments,
+                        rue_air::SemanticComptimeCallExpectation::Value,
+                    )
+                    .map_err(|error| match semantic_type_query_failure(error) {
+                        ResolveSemanticSignatureError::Abort(abort) => {
+                            rue_air::SemanticProviderError::Abort(abort)
+                        }
+                        ResolveSemanticSignatureError::Failure(failure) => {
+                            rue_air::SemanticProviderError::Failure(*failure)
+                        }
+                    })?;
+                    let rue_air::SemanticComptimeCallResult::Value(
+                        crate::durable_semantics::DurableConstValue::Integer(value),
+                    ) = resolved.result
+                    else {
+                        return Self::provider_failure(format!(
+                            "array length `{name}` is not an integer"
+                        ));
+                    };
+                    return u64::try_from(value).map(Some).map_err(|_| {
+                        Self::provider_failure_value(format!(
+                            "array length `{name}` is negative or too large"
+                        ))
+                    });
+                }
+                let Some(candidate) = self.candidate(scope, name, DefinitionKind::Const)? else {
+                    return Self::provider_failure(format!("unknown array length `{name}`"));
+                };
+                let resolution = self.const_resolution(candidate)?;
+                let crate::semantic_query_nucleus::ConstResolutionProjection::Value {
+                    value,
+                    ..
+                } = resolution
+                else {
+                    return Self::provider_failure(format!(
+                        "array length `{name}` is not an integer"
+                    ));
+                };
+                let crate::durable_semantics::DurableConstValue::Integer(value) = *value else {
+                    return Self::provider_failure(format!(
+                        "array length `{name}` is not an integer"
+                    ));
+                };
+                u64::try_from(value).map(Some).map_err(|_| {
+                    Self::provider_failure_value(format!(
+                        "array length `{name}` is negative or too large"
+                    ))
+                })
+            }
+        }
+    }
+
+    fn array_type(
+        &mut self,
+        element: crate::durable_semantics::DurableType,
+        length: Option<u64>,
+    ) -> rue_air::SemanticProviderResult<
+        crate::durable_semantics::DurableType,
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        Ok(match length {
+            Some(len) => crate::durable_semantics::DurableType::Array {
+                element: Box::new(element),
+                len,
+            },
+            None => crate::durable_semantics::DurableType::ComptimeType,
+        })
+    }
+    fn ptr_const_type(
+        &mut self,
+        pointee: crate::durable_semantics::DurableType,
+    ) -> rue_air::SemanticProviderResult<
+        crate::durable_semantics::DurableType,
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        Ok(crate::durable_semantics::DurableType::PtrConst(Box::new(
+            pointee,
+        )))
+    }
+    fn ptr_mut_type(
+        &mut self,
+        pointee: crate::durable_semantics::DurableType,
+    ) -> rue_air::SemanticProviderResult<
+        crate::durable_semantics::DurableType,
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        Ok(crate::durable_semantics::DurableType::PtrMut(Box::new(
+            pointee,
+        )))
+    }
+    fn preflight_slice(
+        &mut self,
+        _scope: &ModuleId,
+        _syntax: &str,
+    ) -> rue_air::SemanticProviderResult<
+        (),
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        if self
+            .configuration
+            .preview_features
+            .names()
+            .binary_search_by(|name| name.as_ref().cmp("slices"))
+            .is_ok()
+        {
+            Ok(())
+        } else {
+            Self::provider_domain_failure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                    rue_error::ErrorKind::PreviewFeatureRequired {
+                        feature: rue_error::PreviewFeature::Slices,
+                        what: "the slice type `[T]`".to_owned(),
+                    },
+                ),
+            )
+        }
+    }
+    fn slice_type(
+        &mut self,
+        _scope: &ModuleId,
+        syntax: &str,
+        element: crate::durable_semantics::DurableType,
+    ) -> rue_air::SemanticProviderResult<
+        crate::durable_semantics::DurableType,
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        Ok(crate::durable_semantics::DurableType::Slice {
+            element: Box::new(element),
+            name: Arc::from(syntax),
+        })
+    }
+    fn builtin_type_call(
+        &mut self,
+        _scope: &ModuleId,
+        name: &str,
+        arguments: &[String],
+    ) -> rue_air::SemanticProviderResult<
+        Option<crate::durable_semantics::DurableType>,
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        if name != "Str" {
+            return Ok(None);
+        }
+        let [capacity] = arguments else {
+            return Self::provider_failure("Str expects one capacity argument");
+        };
+        let capacity = capacity
+            .parse::<u64>()
+            .map_err(|_| Self::provider_failure_value("Str capacity must be an integer"))?;
+        self.dependencies.insert(
+            crate::semantic_query_nucleus::SemanticDeclarationDependency {
+                source: self.dependency_source.clone(),
+                kind: self.dependency_kind,
+                target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::BuiltinTypeCallHead(
+                    rue_air::BuiltinTypeCallHead::FixedCapacityString,
+                ),
+            },
+        );
+        Ok(Some(
+            crate::durable_semantics::DurableType::BuiltinNominal {
+                name: Arc::from(format!("Str({capacity})")),
+                kind: rue_air::SemanticImportNominalKind::Struct,
+            },
+        ))
+    }
+    fn root_constructor(
+        &mut self,
+        scope: &ModuleId,
+        name: &str,
+    ) -> rue_air::SemanticProviderResult<
+        Option<
+            rue_air::SemanticTypeConstructorHead<
+                StableDefinitionKey,
+                Arc<str>,
+                StableDefinitionKey,
+            >,
+        >,
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        self.constructor_fact(scope, name)
+    }
+    fn module_constructor(
+        &mut self,
+        module: &ModuleId,
+        name: &str,
+    ) -> rue_air::SemanticProviderResult<
+        Option<
+            rue_air::SemanticTypeConstructorHead<
+                StableDefinitionKey,
+                Arc<str>,
+                StableDefinitionKey,
+            >,
+        >,
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        self.constructor_fact(module, name)
+    }
+    fn resolve_value_argument(
+        &mut self,
+        scope: &ModuleId,
+        _constructor: &str,
+        head: &rue_air::SemanticTypeConstructorHead<
+            StableDefinitionKey,
+            Arc<str>,
+            StableDefinitionKey,
+        >,
+        parameter_index: usize,
+        type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
+        value_arguments: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
+        syntax: &str,
+    ) -> rue_air::SemanticProviderResult<
+        crate::durable_semantics::DurableConstValue,
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        use crate::durable_semantics::DurableConstValue as V;
+        let syntax = syntax.trim();
+        if let Ok(value) = syntax.parse::<i128>() {
+            return Ok(V::Integer(value));
+        }
+        if syntax == "true" || syntax == "false" {
+            return Ok(V::Bool(syntax == "true"));
+        }
+        if let Some((_, value)) = value_arguments
+            .iter()
+            .find(|(name, _)| name.as_ref() == syntax)
+        {
+            return Ok(value.clone());
+        }
+        if let Some((_, ty)) = type_arguments
+            .iter()
+            .find(|(name, _)| name.as_ref() == syntax)
+        {
+            return Ok(V::Type(ty.clone()));
+        }
+        if let Some(ty) = self.deferred_value_parameters.get(syntax) {
+            return match ty {
+                crate::durable_semantics::DurableType::I8
+                | crate::durable_semantics::DurableType::I16
+                | crate::durable_semantics::DurableType::I32
+                | crate::durable_semantics::DurableType::I64
+                | crate::durable_semantics::DurableType::U8
+                | crate::durable_semantics::DurableType::U16
+                | crate::durable_semantics::DurableType::U32
+                | crate::durable_semantics::DurableType::U64 => Ok(V::Integer(0)),
+                crate::durable_semantics::DurableType::Bool => Ok(V::Bool(false)),
+                crate::durable_semantics::DurableType::Unit => Ok(V::Unit),
+                _ => Self::provider_failure(format!(
+                    "comptime parameter `{syntax}` has unsupported declared type {}",
+                    durable_type_diagnostic_name(ty),
+                )),
+            };
+        }
+        if let Some(value) = self.value_substitutions.get(syntax) {
+            return Ok(value.clone());
+        }
+        if let Some(ty) = self.substitutions.get(syntax) {
+            return Ok(V::Type(ty.clone()));
+        }
+        if let Some(candidate) = self.candidate(scope, syntax, DefinitionKind::Const)? {
+            if let crate::semantic_query_nucleus::ConstResolutionProjection::Value {
+                value, ..
+            } = self.const_resolution(candidate)?
+            {
+                return Ok(*value);
+            }
+        }
+        let parameter = head
+            .parameters
+            .get(parameter_index)
+            .map(|parameter| parameter.name.as_ref())
+            .unwrap_or("?");
+        Self::provider_failure(format!(
+            "argument for comptime parameter `{parameter}` must be a compile-time known value"
+        ))
+    }
+    fn reduce_comptime_call(
+        &mut self,
+        head: &rue_air::SemanticTypeConstructorHead<
+            StableDefinitionKey,
+            Arc<str>,
+            StableDefinitionKey,
+        >,
+        type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
+        value_arguments: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
+    ) -> rue_air::SemanticProviderResult<
+        Option<
+            rue_air::SemanticComptimeCallResult<
+                crate::durable_semantics::DurableType,
+                crate::durable_semantics::DurableConstValue,
+            >,
+        >,
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        use crate::semantic_query_nucleus::{
+            ComptimeCallQueryKey, ComptimeCallResultProjection as P, DeclarationSemanticQueryKey,
+            SemanticNucleusKey as K, SemanticNucleusValue as V,
+        };
+        let declaration = crate::declaration_candidate::DeclarationCandidateKey {
+            module: head.key.module().clone(),
+            category: crate::declaration_candidate::DeclarationCandidateCategory::Function,
+            name: Arc::from(head.key.name()),
+            owner: None,
+            duplicate_discriminator: 0,
+        };
+        let signature = self.signature(declaration.clone())?;
+        let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
+            parameters,
+            ..
+        } = signature
+        else {
+            return Self::provider_failure("type constructor has a non-callable signature");
+        };
+        let concrete_type_arguments = type_arguments
+            .iter()
+            .map(|(_, ty)| ty.clone())
+            .collect::<Vec<_>>();
+        for (name, value) in value_arguments {
+            let Some((_, parameter)) = head
+                .parameters
+                .iter()
+                .zip(parameters.iter())
+                .find(|(header, _)| &header.name == name)
+            else {
+                return Self::provider_failure("comptime value argument has no parameter");
+            };
+            let expected = substitute_durable_generics(&parameter.ty, &concrete_type_arguments);
+            if !durable_const_fits_type(value, &expected) {
+                if matches!(
+                    value,
+                    crate::durable_semantics::DurableConstValue::Function(_)
+                ) {
+                    return Self::provider_failure(
+                        "a callable alias cannot be passed as a comptime value argument",
+                    );
+                }
+                if let crate::durable_semantics::DurableConstValue::Integer(value) = value
+                    && matches!(
+                        &expected,
+                        crate::durable_semantics::DurableType::I8
+                            | crate::durable_semantics::DurableType::I16
+                            | crate::durable_semantics::DurableType::I32
+                            | crate::durable_semantics::DurableType::I64
+                            | crate::durable_semantics::DurableType::U8
+                            | crate::durable_semantics::DurableType::U16
+                            | crate::durable_semantics::DurableType::U32
+                            | crate::durable_semantics::DurableType::U64
+                    )
+                {
+                    return Self::provider_failure(format!(
+                        "value {value} is outside the range of type {}",
+                        durable_type_diagnostic_name(&expected),
+                    ));
+                }
+                return Self::provider_domain_failure(
+                    crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                        rue_error::ErrorKind::TypeMismatch {
+                            expected: durable_type_diagnostic_name(&expected),
+                            found: inferred_const_type_name(value).to_owned(),
+                        },
+                    ),
+                );
+            }
+        }
+        let query = K::ComptimeCall(ComptimeCallQueryKey {
+            declaration: DeclarationSemanticQueryKey {
+                declaration,
+                configuration: self.configuration.clone(),
+            },
+            type_arguments: type_arguments.to_vec().into(),
+            value_arguments: value_arguments.to_vec().into(),
+        });
+        match self.query(query)? {
+            V::ComptimeCall(value) => {
+                self.anonymous_nominals.extend(
+                    value
+                        .anonymous_nominals
+                        .iter()
+                        .cloned()
+                        .map(|value| (value.identity.clone(), value)),
+                );
+                self.dependencies.extend(value.dependencies.iter().cloned());
+                self.deferred_ownership
+                    .extend(value.deferred_ownership.iter().cloned());
+                match value.result {
+                    P::Type(value) => Ok(Some(rue_air::SemanticComptimeCallResult::Type(value))),
+                    P::Value(value) => Ok(Some(rue_air::SemanticComptimeCallResult::Value(value))),
+                }
+            }
+            V::Failure(failure) => Self::provider_domain_failure(failure),
+            _ => Self::provider_failure("comptime query returned the wrong projection"),
+        }
+    }
+}
+
+enum ResolveSemanticSignatureError {
+    Abort(QueryAbort),
+    Failure(Box<crate::semantic_query_nucleus::SemanticNucleusFailure>),
+}
+
+impl ResolveSemanticSignatureError {
+    fn failure(failure: crate::semantic_query_nucleus::SemanticNucleusFailure) -> Self {
+        Self::Failure(Box::new(failure))
+    }
+}
+
+fn semantic_type_query_failure(
+    failure: rue_air::SemanticTypeSyntaxError<
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+        StableDefinitionKey,
+        Arc<str>,
+    >,
+) -> ResolveSemanticSignatureError {
+    use rue_air::SemanticResolutionError as E;
+    use rue_air::SemanticTypeSyntaxFailure as F;
+    use rue_error::ErrorKind;
+    match failure {
+        E::ProviderAbort(abort) => ResolveSemanticSignatureError::Abort(abort),
+        E::ProviderFailure(failure) => ResolveSemanticSignatureError::failure(failure),
+        E::Semantic(F::UnknownType { syntax }) => ResolveSemanticSignatureError::failure(
+            crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                ErrorKind::UnknownType(syntax.to_string()),
+            ),
+        ),
+        E::Semantic(F::UnknownModuleMember { module, member, .. }) => {
+            ResolveSemanticSignatureError::failure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                    ErrorKind::UnknownModuleMember {
+                        module_name: module.to_string(),
+                        member_name: member.to_string(),
+                    },
+                ),
+            )
+        }
+        E::Semantic(F::ValueWhereTypeExpected { parameter, .. }) => {
+            ResolveSemanticSignatureError::failure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(Arc::from(
+                    format!("argument for comptime parameter `{parameter}` must be a type"),
+                )),
+            )
+        }
+        E::Semantic(F::InvalidConstructorArity {
+            constructor,
+            expected,
+            found,
+            ..
+        }) => ResolveSemanticSignatureError::failure(
+            crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(Arc::from(format!(
+                "type constructor `{constructor}` expects {expected} comptime type argument(s), but {found} provided"
+            ))),
+        ),
+        E::Semantic(F::NotTypeConstructor { constructor, .. }) => {
+            ResolveSemanticSignatureError::failure(
+                crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(Arc::from(
+                    format!("function `{constructor}` is not a type"),
+                )),
+            )
+        }
+        E::ComptimeCallTypeArgument { error, .. } => semantic_type_query_failure(*error),
+        other => ResolveSemanticSignatureError::failure(
+            crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!("{other:?}"),
+                },
+            ),
+        ),
+    }
+}
+
+fn resolve_parsed_semantic_signature(
+    provider: &mut SemanticNucleusTypeProvider<'_>,
+    module: &ModuleId,
+    parsed: &crate::semantic_query_nucleus::ParsedSemanticSignature,
+) -> Result<
+    crate::semantic_query_nucleus::DeclarationSignatureProjection,
+    ResolveSemanticSignatureError,
+> {
+    use crate::durable_semantics::{DurableParameterMode as M, DurableSemanticParameter};
+    use crate::semantic_query_nucleus::{
+        DeclarationSignatureProjection as Output, ParsedSemanticSignature as Input,
+    };
+
+    fn contains_slice(ty: &crate::durable_semantics::DurableType) -> bool {
+        use crate::durable_semantics::DurableType as T;
+        match ty {
+            T::Slice { .. } => true,
+            T::Array { element, .. } | T::PtrConst(element) | T::PtrMut(element) => {
+                contains_slice(element)
+            }
+            _ => false,
+        }
+    }
+
+    let diagnostic = |kind| {
+        ResolveSemanticSignatureError::failure(
+            crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(kind),
+        )
+    };
+
+    let resolve = |provider: &mut SemanticNucleusTypeProvider<'_>,
+                   syntax: &str,
+                   kind: rue_air::DeclarationTypeDependencyKind| {
+        provider.dependency_kind = kind;
+        let resolved = rue_air::resolve_semantic_type_syntax(provider, module, syntax)
+            .map_err(semantic_type_query_failure)?;
+        provider
+            .observe_deferred_local_type_references(module, syntax)
+            .map_err(|error| match error {
+                rue_air::SemanticProviderError::Abort(abort) => {
+                    ResolveSemanticSignatureError::Abort(abort)
+                }
+                rue_air::SemanticProviderError::Failure(failure) => {
+                    ResolveSemanticSignatureError::failure(failure)
+                }
+            })?;
+        Ok(resolved)
+    };
+    match parsed {
+        Input::Callable {
+            parameters,
+            result,
+            has_self,
+            is_unchecked,
+            is_extern,
+            is_c_export,
+        } => {
+            let mut generic_index = 0_u32;
+            for parameter in parameters.iter() {
+                if parameter.is_comptime && parameter.ty.trim() == "type" {
+                    provider.substitutions.insert(
+                        parameter.name.clone(),
+                        crate::durable_semantics::DurableType::GenericParameter(generic_index),
+                    );
+                    generic_index += 1;
+                }
+            }
+            let parameters = parameters
+                .iter()
+                .map(|parameter| {
+                    let ty = resolve(
+                        provider,
+                        &parameter.ty,
+                        rue_air::DeclarationTypeDependencyKind::Signature,
+                    )?;
+                    if parameter.is_comptime && parameter.ty.trim() != "type" {
+                        provider
+                            .deferred_value_parameters
+                            .insert(parameter.name.clone(), ty.clone());
+                    }
+                    Ok(DurableSemanticParameter {
+                        ty,
+                        mode: match parameter.mode {
+                            crate::declaration_candidate::DeclarationParameterMode::Value => {
+                                M::Value
+                            }
+                            crate::declaration_candidate::DeclarationParameterMode::Borrow => {
+                                M::Borrow
+                            }
+                            crate::declaration_candidate::DeclarationParameterMode::Inout => {
+                                M::Inout
+                            }
+                        },
+                        is_comptime: parameter.is_comptime,
+                    })
+                })
+                .collect::<Result<Vec<_>, ResolveSemanticSignatureError>>()?;
+            let result = resolve(
+                provider,
+                result,
+                rue_air::DeclarationTypeDependencyKind::Signature,
+            )?;
+            if contains_slice(&result) {
+                return Err(diagnostic(rue_error::ErrorKind::SliceReturnNotAllowed));
+            }
+            if (*is_extern || *is_c_export)
+                && !provider
+                    .configuration
+                    .preview_features
+                    .contains(rue_error::PreviewFeature::CFfi)
+            {
+                return Err(diagnostic(rue_error::ErrorKind::PreviewFeatureRequired {
+                    feature: rue_error::PreviewFeature::CFfi,
+                    what: if *is_extern {
+                        "an `extern \"C\"` foreign declaration".to_owned()
+                    } else {
+                        "a `pub extern \"C\" fn` export".to_owned()
+                    },
+                }));
+            }
+            if *is_extern || *is_c_export {
+                let check =
+                    |provider: &mut SemanticNucleusTypeProvider<'_>,
+                     ty: &crate::durable_semantics::DurableType| {
+                        use crate::durable_semantics::DurableType as T;
+                        if matches!(ty, T::Array { .. }) {
+                            return Err(diagnostic(rue_error::ErrorKind::ExternArrayByValue {
+                                ty: durable_type_diagnostic_name(ty),
+                            }));
+                        }
+                        if let T::Nominal(key) = ty
+                            && key.kind() == crate::StableDefinitionKind::Struct
+                        {
+                            let failure = provider.ffi_shape_failure(ty, &mut Vec::new()).map_err(
+                                |error| match error {
+                                    rue_air::SemanticProviderError::Abort(abort) => {
+                                        ResolveSemanticSignatureError::Abort(abort)
+                                    }
+                                    rue_air::SemanticProviderError::Failure(failure) => {
+                                        ResolveSemanticSignatureError::failure(failure)
+                                    }
+                                },
+                            )?;
+                            if failure.as_ref().is_some_and(|(reason, _, _)| {
+                                *reason == rue_air::FfiRejectReason::NonReprCAggregate
+                            }) {
+                                return Err(diagnostic(
+                                    rue_error::ErrorKind::ExternAggregateNotReprC {
+                                        ty: durable_type_diagnostic_name(ty),
+                                    },
+                                ));
+                            }
+                            if failure.is_some() {
+                                return Err(diagnostic(
+                                    rue_error::ErrorKind::ExternSignatureTypeUnsupported {
+                                        ty: durable_type_diagnostic_name(ty),
+                                    },
+                                ));
+                            }
+                            return Ok(());
+                        }
+                        if !matches!(
+                            ty,
+                            T::I8
+                                | T::I16
+                                | T::I32
+                                | T::I64
+                                | T::U8
+                                | T::U16
+                                | T::U32
+                                | T::U64
+                                | T::Bool
+                                | T::PtrConst(_)
+                                | T::PtrMut(_)
+                        ) {
+                            return Err(diagnostic(
+                                rue_error::ErrorKind::ExternSignatureTypeUnsupported {
+                                    ty: durable_type_diagnostic_name(ty),
+                                },
+                            ));
+                        }
+                        Ok(())
+                    };
+                for parameter in &parameters {
+                    check(provider, &parameter.ty)?;
+                }
+                if result != crate::durable_semantics::DurableType::Unit {
+                    check(provider, &result)?;
+                }
+            }
+            if *is_c_export {
+                let name = provider.dependency_source.name().to_owned();
+                let reject = |reason| {
+                    diagnostic(rue_error::ErrorKind::ExportSignatureUnsupported {
+                        name: name.clone(),
+                        reason,
+                    })
+                };
+                if name == "main" {
+                    return Err(reject("an export named `main` collides with the program entry point; give it a different C name".to_owned()));
+                }
+                if parameters.iter().any(|parameter| parameter.is_comptime) {
+                    return Err(reject("a generic function has no single C symbol; export a concrete (non-`comptime`) function".to_owned()));
+                }
+                if let Some((index, _)) = parameters
+                    .iter()
+                    .enumerate()
+                    .find(|(_, parameter)| parameter.mode != M::Value)
+                {
+                    return Err(reject(format!(
+                        "parameter {} uses a by-reference (`borrow`/`inout`) mode, which does not cross a C boundary; pass a raw pointer instead",
+                        index + 1
+                    )));
+                }
+                if let Some(parameter) = parameters.iter().find(|parameter| {
+                    matches!(
+                        parameter.ty,
+                        crate::durable_semantics::DurableType::Nominal(_)
+                            | crate::durable_semantics::DurableType::Array { .. }
+                    )
+                }) {
+                    return Err(reject(format!(
+                        "aggregate parameter `{}` is not supported by the P4 export thunk (register repacking across the export boundary is future work); pass a pointer instead",
+                        durable_type_diagnostic_name(&parameter.ty)
+                    )));
+                }
+                if matches!(
+                    result,
+                    crate::durable_semantics::DurableType::Nominal(_)
+                        | crate::durable_semantics::DurableType::Array { .. }
+                ) {
+                    return Err(reject(format!(
+                        "aggregate return `{}` is not supported by the P4 export thunk",
+                        durable_type_diagnostic_name(&result)
+                    )));
+                }
+                if parameters.len() > 6 {
+                    return Err(reject(format!(
+                        "{} scalar parameters exceed the 6-register argument budget the P4 export thunk supports; reduce the parameter count",
+                        parameters.len()
+                    )));
+                }
+            }
+            Ok(Output::Callable {
+                parameters: parameters.into(),
+                result,
+                has_self: *has_self,
+                is_unchecked: *is_unchecked,
+                is_extern: *is_extern,
+                is_c_export: *is_c_export,
+            })
+        }
+        Input::Struct {
+            fields,
+            is_copy,
+            is_linear,
+            is_repr_c,
+        } => {
+            if let Some(kind) = rue_air::declaration_validation::linear_copy_struct(
+                provider.dependency_source.name(),
+                *is_linear,
+                *is_copy,
+            ) {
+                return Err(diagnostic(kind));
+            }
+            if let Some(kind) = rue_air::declaration_validation::duplicate_field(
+                provider.dependency_source.name(),
+                fields.iter().map(|(name, _)| name),
+            ) {
+                return Err(diagnostic(kind));
+            }
+            let fields = fields
+                .iter()
+                .map(|(name, syntax)| {
+                    Ok((
+                        name.clone(),
+                        resolve(
+                            provider,
+                            syntax,
+                            rue_air::DeclarationTypeDependencyKind::Field,
+                        )?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, ResolveSemanticSignatureError>>()?;
+            if fields.iter().any(|(_, ty)| contains_slice(ty)) {
+                return Err(diagnostic(rue_error::ErrorKind::SliceInAggregateField));
+            }
+            if fields
+                .iter()
+                .any(|(_, ty)| *ty == crate::durable_semantics::DurableType::ComptimeType)
+            {
+                return Err(ResolveSemanticSignatureError::failure(
+                    crate::semantic_query_nucleus::SemanticNucleusFailure::Resolution(Arc::from(
+                        "type values cannot exist at runtime",
+                    )),
+                ));
+            }
+            if *is_copy {
+                for (field_name, field_ty) in &fields {
+                    if !provider
+                        .type_is_copy(field_ty)
+                        .map_err(|error| match error {
+                            rue_air::SemanticProviderError::Abort(abort) => {
+                                ResolveSemanticSignatureError::Abort(abort)
+                            }
+                            rue_air::SemanticProviderError::Failure(failure) => {
+                                ResolveSemanticSignatureError::failure(failure)
+                            }
+                        })?
+                    {
+                        return Err(diagnostic(rue_error::ErrorKind::CopyStructNonCopyField(
+                            Box::new(rue_error::CopyStructNonCopyFieldError {
+                                struct_name: provider.dependency_source.name().to_owned(),
+                                field_name: field_name.to_string(),
+                                field_type: durable_type_diagnostic_name(field_ty),
+                            }),
+                        )));
+                    }
+                }
+            }
+            if *is_repr_c {
+                if !provider
+                    .configuration
+                    .preview_features
+                    .contains(rue_error::PreviewFeature::CFfi)
+                {
+                    return Err(diagnostic(rue_error::ErrorKind::PreviewFeatureRequired {
+                        feature: rue_error::PreviewFeature::CFfi,
+                        what: "the `@repr(c)` representation marker".to_owned(),
+                    }));
+                }
+                let has_destructor = provider
+                    .candidate(
+                        module,
+                        provider.dependency_source.name(),
+                        DefinitionKind::Destructor,
+                    )
+                    .map_err(|error| match error {
+                        rue_air::SemanticProviderError::Abort(abort) => {
+                            ResolveSemanticSignatureError::Abort(abort)
+                        }
+                        rue_air::SemanticProviderError::Failure(failure) => {
+                            ResolveSemanticSignatureError::failure(failure)
+                        }
+                    })?
+                    .is_some();
+                if let Some((reason, path, failing)) = provider
+                    .repr_c_failure_for_fields(&fields, *is_linear, has_destructor)
+                    .map_err(|error| match error {
+                        rue_air::SemanticProviderError::Abort(abort) => {
+                            ResolveSemanticSignatureError::Abort(abort)
+                        }
+                        rue_air::SemanticProviderError::Failure(failure) => {
+                            ResolveSemanticSignatureError::failure(failure)
+                        }
+                    })?
+                {
+                    let field_path = path.join(".");
+                    let reason = if field_path.is_empty() {
+                        reason.describe().to_owned()
+                    } else {
+                        format!(
+                            "field `{field_path}` of type `{}` — {}",
+                            durable_type_diagnostic_name(&failing),
+                            reason.describe()
+                        )
+                    };
+                    return Err(diagnostic(rue_error::ErrorKind::ReprCStructIneligible(
+                        Box::new(rue_error::ReprCIneligibleError {
+                            struct_name: provider.dependency_source.name().to_owned(),
+                            field_path,
+                            failing_type: durable_type_diagnostic_name(&failing),
+                            reason,
+                        }),
+                    )));
+                }
+            }
+            Ok(Output::Struct {
+                fields: fields.into(),
+                is_copy: *is_copy,
+                is_linear: *is_linear,
+                is_repr_c: *is_repr_c,
+            })
+        }
+        Input::Enum { variants } => {
+            if let Some(kind) = rue_air::declaration_validation::duplicate_variant(
+                provider.dependency_source.name(),
+                variants.iter().map(|(name, _)| name),
+            ) {
+                return Err(diagnostic(kind));
+            }
+            let variants: Vec<(Arc<str>, Arc<[crate::durable_semantics::DurableType]>)> = variants
+                .iter()
+                .map(|(name, payload)| {
+                    Ok((
+                        name.clone(),
+                        payload
+                            .iter()
+                            .map(|syntax| {
+                                resolve(
+                                    provider,
+                                    syntax,
+                                    rue_air::DeclarationTypeDependencyKind::Payload,
+                                )
+                            })
+                            .collect::<Result<Vec<_>, ResolveSemanticSignatureError>>()?
+                            .into(),
+                    ))
+                })
+                .collect::<Result<Vec<_>, ResolveSemanticSignatureError>>()?;
+            if variants
+                .iter()
+                .flat_map(|(_, payload)| payload.iter())
+                .any(contains_slice)
+            {
+                return Err(diagnostic(rue_error::ErrorKind::SliceInAggregateField));
+            }
+            Ok(Output::Enum {
+                variants: variants.into(),
+            })
+        }
+        Input::Destructor => Ok(Output::Destructor),
+    }
+}
+
 impl Default for RevisionedQueryDatabase {
     fn default() -> Self {
         let runtime = QueryRuntime::new(1);
         let module_store = Arc::new(Mutex::new(ModuleInputStore::default()));
+        #[cfg(test)]
+        let test_import_store = Arc::new(Mutex::new(TestImportInputStore {
+            next_stamp: 1,
+            ..TestImportInputStore::default()
+        }));
         let parse_store = module_store.clone();
         let parse_modules = runtime
             .family_with_equality_and_evaluator(
@@ -1546,29 +5890,36 @@ impl Default for RevisionedQueryDatabase {
             .expect("the RawDeclarationBody family has one canonical name");
         let index_for_lookup = module_indexes.clone();
         let lookup_names = runtime
-            .family_with_evaluator(
+            .family_with_equality_and_evaluator(
                 "compiler.lookup-name",
                 MODULE_QUERY_MEMO_RETENTION,
+                |left: &LookupNameValue, right: &LookupNameValue| left == right,
                 move |context, _, key: &LookupNameKey| {
                     let indexed = context
                         .query_registered(&index_for_lookup, ModuleQueryKey(key.module.clone()))?;
                     let rue_query::QueryOutcome::Success(indexed) = indexed.outcome() else {
                         unreachable!("ModuleIndex publishes typed values")
                     };
-                    let result = indexed.0.as_ref().map(|index| {
-                        index
+                    let result = match &indexed.0 {
+                        Ok(index) => Ok(index
                             .definitions
                             .iter()
                             .filter(|entry| {
                                 entry.namespace == key.namespace && entry.name == key.name
                             })
-                            .cloned()
+                            .map(|entry| LookupNameFact {
+                                namespace: entry.namespace,
+                                kind: entry.kind,
+                                visibility: entry.visibility,
+                                name: entry.name.clone(),
+                            })
                             .collect::<Vec<_>>()
-                            .into()
-                    });
-                    Ok(QueryOutput::success(LookupNameValue(
-                        result.map_err(Clone::clone),
-                    )))
+                            .into()),
+                        Err(_) => Err(LookupNameFailure::ModuleIndexUnavailable(
+                            key.module.clone(),
+                        )),
+                    };
+                    Ok(QueryOutput::success(LookupNameValue(result)))
                 },
             )
             .expect("the LookupName family has one canonical name");
@@ -1728,6 +6079,8 @@ impl Default for RevisionedQueryDatabase {
         let shells_for_declaration_import = declaration_shells.clone();
         let parse_for_declaration_import = parse_modules.clone();
         let resolve_for_declaration_import = resolve_imports.clone();
+        #[cfg(test)]
+        let test_imports_for_declaration_import = test_import_store.clone();
         let declaration_imports = runtime
             .family_with_equality_and_evaluator(
                 "compiler.declaration-import",
@@ -1879,6 +6232,53 @@ impl Default for RevisionedQueryDatabase {
                                                         )
                                                     }
                                                     Ok(site) => {
+                                                        #[cfg(test)]
+                                                        {
+                                                            let view = test_imports_for_declaration_import
+                                                                .lock()
+                                                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                                                .revisions
+                                                                .iter()
+                                                                .find(|view| view.revision == context.revision())
+                                                                .cloned();
+                                                            if let Some(view) = view {
+                                                                context.input(test_import_graph_input())?;
+                                                                let normalized = rue_air::normalize_module_path(
+                                                                    site.specifier(),
+                                                                );
+                                                                let value = view
+                                                                    .graph
+                                                                    .records()
+                                                                    .iter()
+                                                                    .find(|record| {
+                                                                        record.importer() == site.importer()
+                                                                            && record.normalized_specifier()
+                                                                                == normalized
+                                                                    })
+                                                                    .map(|record| {
+                                                                        DeclarationImportQueryValue::Available(
+                                                                            record.resolution().clone(),
+                                                                        )
+                                                                    })
+                                                                    .unwrap_or_else(|| {
+                                                                        DeclarationImportQueryValue::Failure(
+                                                                            DeclarationImportFailure::ResolutionUnavailable(
+                                                                                key.0.clone(),
+                                                                            ),
+                                                                        )
+                                                                });
+                                                                let kind = if matches!(
+                                                                    value,
+                                                                    DeclarationImportQueryValue::Available(_)
+                                                                ) {
+                                                                    QueryTerminalKind::Success
+                                                                } else {
+                                                                    QueryTerminalKind::Failure
+                                                                };
+                                                                return Ok(QueryOutput::success(value)
+                                                                    .with_terminal_kind(kind));
+                                                            }
+                                                        }
                                                         let resolved = context.query_registered(
                                                             &resolve_for_declaration_import,
                                                             ResolveImportKey {
@@ -1928,6 +6328,1277 @@ impl Default for RevisionedQueryDatabase {
                 },
             )
             .expect("the DeclarationImport family has one canonical name");
+        let shells_for_semantic_nucleus = declaration_shells.clone();
+        let signatures_for_semantic_nucleus = raw_declaration_signatures.clone();
+        let consts_for_semantic_nucleus = raw_const_syntax.clone();
+        let bodies_for_semantic_nucleus = raw_declaration_bodies.clone();
+        let names_for_semantic_nucleus = lookup_names.clone();
+        let imports_for_semantic_nucleus = declaration_imports.clone();
+        let semantic_nucleus = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.semantic-nucleus",
+                MODULE_QUERY_MEMO_RETENTION,
+                |left: &crate::semantic_query_nucleus::SemanticNucleusValue,
+                 right: &crate::semantic_query_nucleus::SemanticNucleusValue| left == right,
+                move |context, family, key: &crate::semantic_query_nucleus::SemanticNucleusKey| {
+                    use crate::semantic_query_nucleus::{
+                        SemanticNucleusFailure as Failure, SemanticNucleusKey as Key,
+                        SemanticNucleusValue as Value,
+                    };
+
+                    let shell = context.query_registered(
+                        &shells_for_semantic_nucleus,
+                        DeclarationShellQueryKey(key.declaration().clone()),
+                    )?;
+                    let rue_query::QueryOutcome::Success(shell) = shell.outcome() else {
+                        unreachable!("DeclarationShell publishes typed values")
+                    };
+                    let shell = match shell {
+                        DeclarationShellQueryValue::Available(shell) => shell,
+                        DeclarationShellQueryValue::Failure(failure) => {
+                            let value = Value::Failure(Failure::Shell(Arc::from(format!(
+                                "{failure:?}"
+                            ))));
+                            return Ok(QueryOutput::success(value)
+                                .with_terminal_kind(QueryTerminalKind::Failure));
+                        }
+                    };
+                    let value = match key {
+                        #[cfg(test)]
+                        Key::EngineCycleProbe(_) => {
+                            let _ = context.query_registered(family, key.clone())?;
+                            unreachable!("engine cycle probe must abort before publication")
+                        }
+                        Key::Identity(query) => {
+                            if query.declaration.category
+                                == crate::declaration_candidate::DeclarationCandidateCategory::Destructor
+                            {
+                                let checked = context.query_registered(
+                                    family,
+                                    Key::Signature(query.clone()),
+                                )?;
+                                let rue_query::QueryOutcome::Success(checked) = checked.outcome()
+                                else {
+                                    unreachable!("SemanticNucleus publishes typed values")
+                                };
+                                match checked {
+                                    Value::Failure(failure) => {
+                                        return Ok(QueryOutput::success(Value::Failure(
+                                            failure.clone(),
+                                        ))
+                                        .with_terminal_kind(QueryTerminalKind::Failure));
+                                    }
+                                    Value::Signature(_) => {}
+                                    _ => {
+                                        let value = Value::Failure(Failure::Resolution(Arc::from(
+                                            "destructor validity returned the wrong projection",
+                                        )));
+                                        return Ok(QueryOutput::success(value)
+                                            .with_terminal_kind(QueryTerminalKind::Failure));
+                                    }
+                                }
+                            }
+                            if let Some(identity) =
+                                crate::semantic_query_nucleus::direct_identity(shell)
+                            {
+                                Value::Identity(identity)
+                            } else {
+                                let resolved = context.query_registered(
+                                    family,
+                                    Key::ConstResolution(query.clone()),
+                                )?;
+                                let rue_query::QueryOutcome::Success(resolved) =
+                                    resolved.outcome()
+                                else {
+                                    unreachable!("SemanticNucleus publishes typed values")
+                                };
+                                match resolved {
+                                    Value::ConstResolution(
+                                        crate::semantic_query_nucleus::ConstResolutionProjection::Value {
+                                            key,
+                                            ..
+                                        }
+                                        | crate::semantic_query_nucleus::ConstResolutionProjection::ModuleBinding {
+                                            key,
+                                            ..
+                                        },
+                                    ) => Value::Identity(
+                                        crate::semantic_query_nucleus::DeclarationIdentityProjection {
+                                            key: key.clone(),
+                                            is_public: shell.is_public,
+                                        },
+                                    ),
+                                    Value::Failure(failure) => Value::Failure(failure.clone()),
+                                    _ => Value::Failure(Failure::Resolution(Arc::from(
+                                        "const identity dependency returned the wrong projection",
+                                    ))),
+                                }
+                            }
+                        }
+                        Key::Signature(query) => {
+                            if query.declaration.category
+                                == crate::declaration_candidate::DeclarationCandidateCategory::Destructor
+                            {
+                                let named_types = context.query_registered(
+                                    &names_for_semantic_nucleus,
+                                    LookupNameKey {
+                                        module: query.declaration.module.clone(),
+                                        namespace: DefinitionNamespace::ModuleItem,
+                                        name: query.declaration.name.clone(),
+                                    },
+                                )?;
+                                let rue_query::QueryOutcome::Success(LookupNameValue(named_types)) =
+                                    named_types.outcome()
+                                else {
+                                    unreachable!("LookupName publishes typed values")
+                                };
+                                let named_types = match named_types {
+                                    Ok(named_types) => named_types,
+                                    Err(failure) => {
+                                        let value = Value::Failure(Failure::Resolution(Arc::from(
+                                            format!("{failure:?}"),
+                                        )));
+                                        return Ok(QueryOutput::success(value)
+                                            .with_terminal_kind(QueryTerminalKind::Failure));
+                                    }
+                                };
+                                if !named_types
+                                    .iter()
+                                    .any(|fact| fact.kind == DefinitionKind::Struct)
+                                {
+                                    let value = Value::Failure(Failure::Diagnostic(
+                                        rue_air::declaration_validation::destructor_unknown_type(
+                                            &query.declaration.name,
+                                        ),
+                                    ));
+                                    return Ok(QueryOutput::success(value)
+                                        .with_terminal_kind(QueryTerminalKind::Failure));
+                                }
+
+                                let destructors = context.query_registered(
+                                    &names_for_semantic_nucleus,
+                                    LookupNameKey {
+                                        module: query.declaration.module.clone(),
+                                        namespace: DefinitionNamespace::Destructor,
+                                        name: query.declaration.name.clone(),
+                                    },
+                                )?;
+                                let rue_query::QueryOutcome::Success(LookupNameValue(destructors)) =
+                                    destructors.outcome()
+                                else {
+                                    unreachable!("LookupName publishes typed values")
+                                };
+                                let destructors = match destructors {
+                                    Ok(destructors) => destructors,
+                                    Err(failure) => {
+                                        let value = Value::Failure(Failure::Resolution(Arc::from(
+                                            format!("{failure:?}"),
+                                        )));
+                                        return Ok(QueryOutput::success(value)
+                                            .with_terminal_kind(QueryTerminalKind::Failure));
+                                    }
+                                };
+                                if destructors
+                                    .iter()
+                                    .filter(|fact| fact.kind == DefinitionKind::Destructor)
+                                    .nth(1)
+                                    .is_some()
+                                {
+                                    let mut duplicate = query.declaration.clone();
+                                    duplicate.duplicate_discriminator = 1;
+                                    let value = Value::Failure(
+                                        Failure::DiagnosticAtDeclaration {
+                                            kind: rue_air::declaration_validation::duplicate_destructor(
+                                                &query.declaration.name,
+                                            ),
+                                            declaration: duplicate,
+                                        },
+                                    );
+                                    return Ok(QueryOutput::success(value)
+                                        .with_terminal_kind(QueryTerminalKind::Failure));
+                                }
+                            }
+                            let raw = context.query_registered(
+                                &signatures_for_semantic_nucleus,
+                                RawDeclarationSignatureQueryKey(query.declaration.clone()),
+                            )?;
+                            let rue_query::QueryOutcome::Success(raw) = raw.outcome() else {
+                                unreachable!("RawDeclarationSignature publishes typed values")
+                            };
+                            match raw {
+                                RawDeclarationSignatureQueryValue::Failure(failure) => {
+                                    Value::Failure(Failure::Syntax(Arc::from(format!(
+                                        "{failure:?}"
+                                    ))))
+                                }
+                                RawDeclarationSignatureQueryValue::Available(raw) => {
+                                    match crate::semantic_query_nucleus::parse_semantic_signature(
+                                        &query.declaration,
+                                        raw,
+                                    ) {
+                                        Ok(parsed) => {
+                                            if let crate::semantic_query_nucleus::ParsedSemanticSignature::Callable {
+                                                parameters,
+                                                ..
+                                            } = &parsed
+                                                && let Some((kind, ordinal)) = rue_air::declaration_validation::duplicate_parameter_with_ordinal(
+                                                    parameters.iter().map(|parameter| &parameter.name),
+                                                )
+                                            {
+                                                return Ok(QueryOutput::success(Value::Failure(
+                                                    Failure::DiagnosticAtParameter {
+                                                        kind,
+                                                        ordinal: ordinal as u32,
+                                                    },
+                                                ))
+                                                .with_terminal_kind(QueryTerminalKind::Failure));
+                                            }
+                                            if matches!(
+                                                query.declaration.category,
+                                                crate::declaration_candidate::DeclarationCandidateCategory::Function
+                                                    | crate::declaration_candidate::DeclarationCandidateCategory::ExternFunction
+                                            ) && let Some(kind) = rue_air::declaration_validation::reserved_function_name(
+                                                &query.declaration.name,
+                                            ) {
+                                                return Ok(QueryOutput::success(Value::Failure(
+                                                    Failure::Diagnostic(kind),
+                                                ))
+                                                .with_terminal_kind(QueryTerminalKind::Failure));
+                                            }
+                                            let mut substitutions = BTreeMap::new();
+                                            if let Some(owner) = &query.declaration.owner {
+                                                let owner_candidate = crate::declaration_candidate::DeclarationCandidateKey {
+                                                    module: query.declaration.module.clone(),
+                                                    category: owner.category,
+                                                    name: owner.name.clone(),
+                                                    owner: None,
+                                                    duplicate_discriminator: 0,
+                                                };
+                                                let owner = context.query_registered(
+                                                    family,
+                                                    Key::Identity(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                                                        declaration: owner_candidate,
+                                                        configuration: query.configuration.clone(),
+                                                    }),
+                                                )?;
+                                                let rue_query::QueryOutcome::Success(owner) = owner.outcome() else {
+                                                    unreachable!("SemanticNucleus publishes typed values")
+                                                };
+                                                if let Value::Identity(owner) = owner {
+                                                    substitutions.insert(
+                                                        Arc::from("Self"),
+                                                        crate::durable_semantics::DurableType::Nominal(owner.key.clone()),
+                                                    );
+                                                }
+                                            }
+                                            let dependency_source = crate::semantic_query_nucleus::direct_identity(shell)
+                                                .expect("signature shell has a direct identity")
+                                                .key;
+                                            let mut provider = SemanticNucleusTypeProvider {
+                                                context,
+                                                family,
+                                                shells: &shells_for_semantic_nucleus,
+                                                names: &names_for_semantic_nucleus,
+                                                configuration: query.configuration.clone(),
+                                                substitutions,
+                                                value_substitutions: BTreeMap::new(),
+                                                deferred_value_parameters: BTreeMap::new(),
+                                                anonymous_nominals: BTreeMap::new(),
+                                                dependency_source,
+                                                dependency_kind: rue_air::DeclarationTypeDependencyKind::Signature,
+                                                dependencies: BTreeSet::new(),
+                                                deferred_ownership: BTreeSet::new(),
+                                            };
+                                            match resolve_parsed_semantic_signature(
+                                                &mut provider,
+                                                &query.declaration.module,
+                                                &parsed,
+                                            ) {
+                                                Ok(signature) => Value::Signature(
+                                                    crate::semantic_query_nucleus::ResolvedDeclarationSignature {
+                                                        signature,
+                                                        anonymous_nominals: provider
+                                                            .anonymous_nominals
+                                                            .values()
+                                                            .cloned()
+                                                            .collect::<Vec<_>>()
+                                                            .into(),
+                                                        dependencies: provider
+                                                            .dependencies
+                                                            .iter()
+                                                            .cloned()
+                                                            .collect::<Vec<_>>()
+                                                            .into(),
+                                                        deferred_ownership: provider
+                                                            .deferred_ownership
+                                                            .iter()
+                                                            .cloned()
+                                                            .collect::<Vec<_>>()
+                                                            .into(),
+                                                    },
+                                                ),
+                                                Err(ResolveSemanticSignatureError::Abort(
+                                                    QueryAbort::Cycle(nodes),
+                                                )) => Value::Failure(Failure::SignatureReentry {
+                                                    signature: provider.dependency_source.clone(),
+                                                    cycle: semantic_nucleus_cycle_names(&nodes),
+                                                }),
+                                                Err(ResolveSemanticSignatureError::Abort(abort)) => {
+                                                    return Err(abort)
+                                                }
+                                                Err(ResolveSemanticSignatureError::Failure(failure)) => {
+                                                    Value::Failure(*failure)
+                                                }
+                                            }
+                                        }
+                                        Err(failure) => Value::Failure(Failure::Syntax(failure)),
+                                    }
+                                }
+                            }
+                        }
+                        Key::NominalWellFormedness(query) => {
+                            let identity = crate::semantic_query_nucleus::direct_identity(shell)
+                                .expect("nominal well-formedness has a direct identity");
+                            let mut provider = SemanticNucleusTypeProvider {
+                                context,
+                                family,
+                                shells: &shells_for_semantic_nucleus,
+                                names: &names_for_semantic_nucleus,
+                                configuration: query.configuration.clone(),
+                                substitutions: BTreeMap::new(),
+                                value_substitutions: BTreeMap::new(),
+                                deferred_value_parameters: BTreeMap::new(),
+                                anonymous_nominals: BTreeMap::new(),
+                                dependency_source: identity.key.clone(),
+                                dependency_kind:
+                                    rue_air::DeclarationTypeDependencyKind::Signature,
+                                dependencies: BTreeSet::new(),
+                                deferred_ownership: BTreeSet::new(),
+                            };
+                            match provider
+                                .validate_nominal_well_formedness(query.declaration.clone())
+                            {
+                                Ok(()) => Value::NominalWellFormedness,
+                                Err(rue_air::SemanticProviderError::Failure(failure)) => {
+                                    Value::Failure(failure)
+                                }
+                                Err(rue_air::SemanticProviderError::Abort(abort)) => {
+                                    return Err(abort);
+                                }
+                            }
+                        }
+                        Key::DeferredOwnership(query) => {
+                            let (dependency_source, anonymous_nominals) = if query
+                                .producer
+                                .declaration
+                                .category
+                                == crate::declaration_candidate::DeclarationCandidateCategory::ConstCandidate
+                            {
+                                let resolution = context.query_registered(
+                                    family,
+                                    Key::ConstResolution(query.producer.clone()),
+                                )?;
+                                let rue_query::QueryOutcome::Success(resolution) =
+                                    resolution.outcome()
+                                else {
+                                    unreachable!("SemanticNucleus publishes typed values")
+                                };
+                                match resolution {
+                                    Value::ConstResolution(
+                                        crate::semantic_query_nucleus::ConstResolutionProjection::Value {
+                                            key,
+                                            anonymous_nominals,
+                                            ..
+                                        },
+                                    ) => (key.clone(), anonymous_nominals.clone()),
+                                    Value::Failure(failure) => {
+                                        return Ok(QueryOutput::success(Value::Failure(
+                                            failure.clone(),
+                                        ))
+                                        .with_terminal_kind(QueryTerminalKind::Failure));
+                                    }
+                                    _ => unreachable!(
+                                        "const deferred ownership producer returned the wrong projection"
+                                    ),
+                                }
+                            } else {
+                                let signature = context.query_registered(
+                                    family,
+                                    Key::Signature(query.producer.clone()),
+                                )?;
+                                let rue_query::QueryOutcome::Success(signature) =
+                                    signature.outcome()
+                                else {
+                                    unreachable!("SemanticNucleus publishes typed values")
+                                };
+                                match signature {
+                                    Value::Signature(signature) => (
+                                        crate::semantic_query_nucleus::direct_identity(shell)
+                                            .expect(
+                                                "deferred ownership producer has a direct identity",
+                                            )
+                                            .key,
+                                        signature.anonymous_nominals.clone(),
+                                    ),
+                                    Value::Failure(failure) => {
+                                        return Ok(QueryOutput::success(Value::Failure(
+                                            failure.clone(),
+                                        ))
+                                        .with_terminal_kind(QueryTerminalKind::Failure));
+                                    }
+                                    _ => unreachable!(
+                                        "signature deferred ownership producer returned the wrong projection"
+                                    ),
+                                }
+                            };
+                            let mut provider = SemanticNucleusTypeProvider {
+                                context,
+                                family,
+                                shells: &shells_for_semantic_nucleus,
+                                names: &names_for_semantic_nucleus,
+                                configuration: query.producer.configuration.clone(),
+                                substitutions: BTreeMap::new(),
+                                value_substitutions: BTreeMap::new(),
+                                deferred_value_parameters: BTreeMap::new(),
+                                anonymous_nominals: anonymous_nominals
+                                    .iter()
+                                    .cloned()
+                                    .map(|nominal| (nominal.identity.clone(), nominal))
+                                    .collect(),
+                                dependency_source,
+                                dependency_kind:
+                                    rue_air::DeclarationTypeDependencyKind::Signature,
+                                dependencies: BTreeSet::new(),
+                                deferred_ownership: BTreeSet::new(),
+                            };
+                            let result = match query.gate.kind {
+                                crate::semantic_query_nucleus::DeferredOwnershipGateKind::RequireDroppable => provider
+                                    .type_carries_linear(&query.gate.ty)
+                                    .map(|rejected| rejected.then(|| {
+                                        rue_error::ErrorKind::ContainerElementIsLinear {
+                                            ty: durable_type_diagnostic_name(&query.gate.ty),
+                                        }
+                                    })),
+                                crate::semantic_query_nucleus::DeferredOwnershipGateKind::RequireTriviallyDroppable => provider
+                                    .type_has_drop_glue(&query.gate.ty)
+                                    .map(|rejected| rejected.then(|| {
+                                        rue_error::ErrorKind::ContainerElementNotTriviallyDroppable {
+                                            ty: durable_type_diagnostic_name(&query.gate.ty),
+                                        }
+                                    })),
+                            };
+                            match result {
+                                Ok(Some(kind)) => Value::Failure(Failure::OwnershipGate {
+                                    kind,
+                                    gate: query.gate.clone(),
+                                }),
+                                Ok(None) => Value::DeferredOwnership,
+                                Err(rue_air::SemanticProviderError::Failure(failure)) => {
+                                    Value::Failure(failure)
+                                }
+                                Err(rue_air::SemanticProviderError::Abort(abort)) => {
+                                    return Err(abort)
+                                }
+                            }
+                        }
+                        Key::ConstResolution(query) => {
+                            let named = context.query_registered(
+                                &names_for_semantic_nucleus,
+                                LookupNameKey {
+                                    module: query.declaration.module.clone(),
+                                    namespace: DefinitionNamespace::ModuleItem,
+                                    name: query.declaration.name.clone(),
+                                },
+                            )?;
+                            let rue_query::QueryOutcome::Success(LookupNameValue(named)) =
+                                named.outcome()
+                            else {
+                                unreachable!("LookupName publishes typed values")
+                            };
+                            let named = match named {
+                                Ok(named) => named,
+                                Err(failure) => {
+                                    let value = Value::Failure(Failure::Resolution(Arc::from(
+                                        format!("{failure:?}"),
+                                    )));
+                                    return Ok(QueryOutput::success(value)
+                                        .with_terminal_kind(QueryTerminalKind::Failure));
+                                }
+                            };
+                            let const_count = named
+                                .iter()
+                                .filter(|fact| fact.kind == DefinitionKind::Const)
+                                .count();
+                            if const_count > 1 {
+                                let value = Value::Failure(Failure::Diagnostic(
+                                    rue_air::declaration_validation::duplicate_constant(
+                                        &query.declaration.name,
+                                    ),
+                                ));
+                                return Ok(QueryOutput::success(value)
+                                    .with_terminal_kind(QueryTerminalKind::Failure));
+                            }
+                            if let Some(kind) =
+                                rue_air::declaration_validation::const_cross_kind_collision(
+                                    &query.declaration.name,
+                                    const_count == 1,
+                                    named.iter().any(|fact| fact.kind != DefinitionKind::Const),
+                                )
+                            {
+                                let value = Value::Failure(Failure::Diagnostic(kind));
+                                return Ok(QueryOutput::success(value)
+                                    .with_terminal_kind(QueryTerminalKind::Failure));
+                            }
+                            let raw = context.query_registered(
+                                &consts_for_semantic_nucleus,
+                                RawConstSyntaxQueryKey(query.declaration.clone()),
+                            )?;
+                            let rue_query::QueryOutcome::Success(raw) = raw.outcome() else {
+                                unreachable!("RawConstSyntax publishes typed values")
+                            };
+                            match raw {
+                                RawConstSyntaxQueryValue::Failure(failure) => {
+                                    Value::Failure(Failure::Syntax(Arc::from(format!(
+                                        "{failure:?}"
+                                    ))))
+                                }
+                                RawConstSyntaxQueryValue::Available(raw) => {
+                                    match crate::semantic_query_nucleus::parse_semantic_const(
+                                        &query.declaration,
+                                        raw,
+                                    ) {
+                                        Err(failure) => Value::Failure(Failure::Syntax(failure)),
+                                        Ok(parsed) => {
+                                            let const_identity = crate::semantic_query_nucleus::classified_const_identity(shell, false);
+                                            let mut provider = SemanticNucleusTypeProvider {
+                                                context,
+                                                family,
+                                                shells: &shells_for_semantic_nucleus,
+                                                names: &names_for_semantic_nucleus,
+                                                configuration: query.configuration.clone(),
+                                                substitutions: BTreeMap::new(),
+                                                value_substitutions: BTreeMap::new(),
+                                                deferred_value_parameters: BTreeMap::new(),
+                                                anonymous_nominals: BTreeMap::new(),
+                                                dependency_source: const_identity.key.clone(),
+                                                dependency_kind: rue_air::DeclarationTypeDependencyKind::DeclaredType,
+                                                dependencies: BTreeSet::new(),
+                                                deferred_ownership: BTreeSet::new(),
+                                            };
+                                            let expected_type = raw.declared_type.as_deref().and_then(
+                                                |syntax| {
+                                                    rue_air::resolve_semantic_type_syntax(
+                                                        &mut provider,
+                                                        &query.declaration.module,
+                                                        syntax,
+                                                    )
+                                                    .ok()
+                                                },
+                                            );
+                                            if matches!(
+                                                expected_type,
+                                                Some(crate::durable_semantics::DurableType::Slice { .. })
+                                            ) {
+                                                return Ok(QueryOutput::success(Value::Failure(
+                                                    Failure::Diagnostic(
+                                                        rue_error::ErrorKind::SliceEscapesScope,
+                                                    ),
+                                                ))
+                                                .with_terminal_kind(QueryTerminalKind::Failure));
+                                            }
+                                            let result = {
+                                                let mut evaluator = SemanticConstEvaluator {
+                                                    provider: &mut provider,
+                                                    imports: &imports_for_semantic_nucleus,
+                                                    declaration: query,
+                                                    source: &parsed.source,
+                                                    interner: &parsed.interner,
+                                                    import_sites: &parsed.import_sites,
+                                                    locals: BTreeMap::new(),
+                                                    producer: crate::StableProducerId::Definition(
+                                                        const_identity.key.clone(),
+                                                    ),
+                                                    canonical_arguments:
+                                                        crate::CanonicalArguments::default(),
+                                                    next_anonymous_type: 0,
+                                                    next_call: 0,
+                                                    expected_type,
+                                                };
+                                                evaluator.eval(&parsed.declaration.init)
+                                            };
+                                            match result {
+                                                Ok(EvaluatedSemanticConst::Module(target)) => {
+                                                    if parsed.declaration.ty.is_some() {
+                                                        Value::Failure(Failure::Resolution(
+                                                            Arc::from(
+                                                                "module binding cannot have a type annotation",
+                                                            ),
+                                                        ))
+                                                    } else {
+                                                        let identity = crate::semantic_query_nucleus::classified_const_identity(shell, true);
+                                                        Value::ConstResolution(
+                                                            crate::semantic_query_nucleus::ConstResolutionProjection::ModuleBinding {
+                                                                key: identity.key,
+                                                                target,
+                                                            },
+                                                        )
+                                                    }
+                                                }
+                                                Ok(EvaluatedSemanticConst::Value(typed)) => {
+                                                    let typed = Arc::unwrap_or_clone(typed);
+                                                    let value = typed.value;
+                                                    let resolved_type = match raw.declared_type.as_deref() {
+                                                        Some(type_syntax) => rue_air::resolve_semantic_type_syntax(
+                                                            &mut provider,
+                                                            &query.declaration.module,
+                                                            type_syntax,
+                                                        ),
+                                                        None if matches!(
+                                                            value,
+                                                            crate::durable_semantics::DurableConstValue::Type(_)
+                                                                | crate::durable_semantics::DurableConstValue::Function(_)
+                                                        ) => Ok(crate::durable_semantics::DurableType::ComptimeType),
+                                                        None => {
+                                                            let inferred = inferred_const_type_name(&value);
+                                                            return Ok(QueryOutput::success(Value::Failure(
+                                                                Failure::DiagnosticWithHelp {
+                                                                    kind: rue_error::ErrorKind::ConstMissingTypeAnnotation {
+                                                                        name: query.declaration.name.to_string(),
+                                                                    },
+                                                                    help: Arc::from(format!(
+                                                                        "add a type annotation: `const {}: {} = ...;`",
+                                                                        query.declaration.name,
+                                                                        inferred,
+                                                                    )),
+                                                                },
+                                                            )).with_terminal_kind(QueryTerminalKind::Failure));
+                                                        }
+                                                    };
+                                                    match resolved_type {
+                                                        Err(rue_air::SemanticResolutionError::ProviderAbort(abort)) => return Err(abort),
+                                                        Err(error) => match semantic_type_query_failure(error) {
+                                                            ResolveSemanticSignatureError::Abort(abort) => return Err(abort),
+                                                            ResolveSemanticSignatureError::Failure(failure) => Value::Failure(*failure),
+                                                        },
+                                                        Ok(ty) => {
+                                                            let compatible = typed.ty.as_ref().is_none_or(|found| found == &ty)
+                                                                && match (&ty, &value) {
+                                                                (crate::durable_semantics::DurableType::I8, crate::durable_semantics::DurableConstValue::Integer(value)) => i8::try_from(*value).is_ok(),
+                                                                (crate::durable_semantics::DurableType::I16, crate::durable_semantics::DurableConstValue::Integer(value)) => i16::try_from(*value).is_ok(),
+                                                                (crate::durable_semantics::DurableType::I32, crate::durable_semantics::DurableConstValue::Integer(value)) => i32::try_from(*value).is_ok(),
+                                                                (crate::durable_semantics::DurableType::I64, crate::durable_semantics::DurableConstValue::Integer(value)) => i64::try_from(*value).is_ok(),
+                                                                (crate::durable_semantics::DurableType::U8, crate::durable_semantics::DurableConstValue::Integer(value)) => u8::try_from(*value).is_ok(),
+                                                                (crate::durable_semantics::DurableType::U16, crate::durable_semantics::DurableConstValue::Integer(value)) => u16::try_from(*value).is_ok(),
+                                                                (crate::durable_semantics::DurableType::U32, crate::durable_semantics::DurableConstValue::Integer(value)) => u32::try_from(*value).is_ok(),
+                                                                (crate::durable_semantics::DurableType::U64, crate::durable_semantics::DurableConstValue::Integer(value)) => u64::try_from(*value).is_ok(),
+                                                                (crate::durable_semantics::DurableType::Bool, crate::durable_semantics::DurableConstValue::Bool(_))
+                                                                | (crate::durable_semantics::DurableType::Unit, crate::durable_semantics::DurableConstValue::Unit)
+                                                                | (crate::durable_semantics::DurableType::ComptimeType, crate::durable_semantics::DurableConstValue::Type(_) | crate::durable_semantics::DurableConstValue::Function(_)) => true,
+                                                                (crate::durable_semantics::DurableType::BuiltinNominal { name, .. }, crate::durable_semantics::DurableConstValue::String(_)) if name.as_ref() == "str" => true,
+                                                                _ => false,
+                                                            };
+                                                            if compatible {
+                                                                let identity = crate::semantic_query_nucleus::classified_const_identity(shell, false);
+                                                                Value::ConstResolution(crate::semantic_query_nucleus::ConstResolutionProjection::Value {
+                                                                    key: identity.key,
+                                                                    ty,
+                                                                    value: Box::new(value),
+                                                                    anonymous_nominals: provider
+                                                                        .anonymous_nominals
+                                                                        .values()
+                                                                        .cloned()
+                                                                        .collect::<Vec<_>>()
+                                                                        .into(),
+                                                                    dependencies: provider
+                                                                        .dependencies
+                                                                        .iter()
+                                                                        .cloned()
+                                                                        .collect::<Vec<_>>()
+                                                                        .into(),
+                                                                    deferred_ownership: provider
+                                                                        .deferred_ownership
+                                                                        .iter()
+                                                                        .cloned()
+                                                                        .collect::<Vec<_>>()
+                                                                        .into(),
+                                                                })
+                                                            } else {
+                                                                let kind = match (&ty, &value) {
+                                                                    (crate::durable_semantics::DurableType::I8
+                                                                    | crate::durable_semantics::DurableType::I16
+                                                                    | crate::durable_semantics::DurableType::I32
+                                                                    | crate::durable_semantics::DurableType::I64
+                                                                    | crate::durable_semantics::DurableType::U8
+                                                                    | crate::durable_semantics::DurableType::U16
+                                                                    | crate::durable_semantics::DurableType::U32
+                                                                    | crate::durable_semantics::DurableType::U64,
+                                                                    crate::durable_semantics::DurableConstValue::Integer(value)) if *value >= 0 => {
+                                                                        rue_error::ErrorKind::LiteralOutOfRange {
+                                                                            value: *value as u64,
+                                                                            ty: durable_type_diagnostic_name(&ty),
+                                                                        }
+                                                                    }
+                                                                    (crate::durable_semantics::DurableType::I8
+                                                                    | crate::durable_semantics::DurableType::I16
+                                                                    | crate::durable_semantics::DurableType::I32
+                                                                    | crate::durable_semantics::DurableType::I64
+                                                                    | crate::durable_semantics::DurableType::U8
+                                                                    | crate::durable_semantics::DurableType::U16
+                                                                    | crate::durable_semantics::DurableType::U32
+                                                                    | crate::durable_semantics::DurableType::U64,
+                                                                    crate::durable_semantics::DurableConstValue::Integer(value)) => {
+                                                                        rue_error::ErrorKind::ComptimeEvaluationFailed {
+                                                                            reason: format!(
+                                                                                "value {value} is out of range for type {}",
+                                                                                durable_type_diagnostic_name(&ty),
+                                                                            ),
+                                                                        }
+                                                                    }
+                                                                    _ => rue_error::ErrorKind::TypeMismatch {
+                                                                        expected: durable_type_diagnostic_name(&ty),
+                                                                        found: inferred_const_type_name(&value).to_owned(),
+                                                                    },
+                                                                };
+                                                                Value::Failure(Failure::Diagnostic(kind))
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                Ok(EvaluatedSemanticConst::TargetEnum(_)) => {
+                                                    Value::Failure(Failure::Resolution(Arc::from(
+                                                        "target descriptor must be reduced by a declaration-time branch",
+                                                    )))
+                                                }
+                                                Err(EvaluateSemanticConstError::Failure(failure)) => Value::Failure(*failure),
+                                                Err(EvaluateSemanticConstError::Abort(QueryAbort::Cycle(nodes))) => {
+                                                    Value::Failure(Failure::Cycle(
+                                                        semantic_nucleus_cycle_names(&nodes),
+                                                    ))
+                                                }
+                                                Err(EvaluateSemanticConstError::Abort(abort)) => return Err(abort),
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Key::AnonymousNominal(query) => {
+                            let projected: Result<
+                                Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
+                                Failure,
+                            > = match &query.identity.producer {
+                                crate::StableProducerId::Definition(key) => {
+                                    if declaration_candidate_for_stable_key(key).as_ref()
+                                        != Some(&query.producer.declaration)
+                                    {
+                                        Err(Failure::Resolution(Arc::from(
+                                            "anonymous nominal producer identity mismatch",
+                                        )))
+                                    } else {
+                                        let resolved = context.query_registered(
+                                            family,
+                                            Key::ConstResolution(query.producer.clone()),
+                                        )?;
+                                        let rue_query::QueryOutcome::Success(resolved) =
+                                            resolved.outcome()
+                                        else {
+                                            unreachable!("SemanticNucleus publishes typed values")
+                                        };
+                                        match resolved {
+                                            Value::ConstResolution(
+                                                crate::semantic_query_nucleus::ConstResolutionProjection::Value {
+                                                    anonymous_nominals,
+                                                    ..
+                                                },
+                                            ) => Ok(anonymous_nominals.clone()),
+                                            Value::Failure(failure) => Err(failure.clone()),
+                                            _ => Err(Failure::Resolution(Arc::from(
+                                                "anonymous nominal const producer returned the wrong projection",
+                                            ))),
+                                        }
+                                    }
+                                }
+                                crate::StableProducerId::Function(function) => {
+                                    let Some(key) = function_definition_key(function) else {
+                                        let value = Value::Failure(Failure::Resolution(Arc::from(
+                                            "anonymous nominal has an unsupported function producer",
+                                        )));
+                                        return Ok(QueryOutput::success(value)
+                                            .with_terminal_kind(QueryTerminalKind::Failure));
+                                    };
+                                    if declaration_candidate_for_stable_key(key).as_ref()
+                                        != Some(&query.producer.declaration)
+                                    {
+                                        Err(Failure::Resolution(Arc::from(
+                                            "anonymous nominal producer identity mismatch",
+                                        )))
+                                    } else {
+                                        let signature = context.query_registered(
+                                            family,
+                                            Key::Signature(query.producer.clone()),
+                                        )?;
+                                        let rue_query::QueryOutcome::Success(signature) =
+                                            signature.outcome()
+                                        else {
+                                            unreachable!("SemanticNucleus publishes typed values")
+                                        };
+                                        match signature {
+                                            Value::Failure(failure) => Err(failure.clone()),
+                                            Value::Signature(signature) => {
+                                                let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
+                                                    parameters,
+                                                    ..
+                                                } = &signature.signature
+                                                else {
+                                                    return Ok(QueryOutput::success(Value::Failure(
+                                                        Failure::Resolution(Arc::from(
+                                                            "anonymous nominal function producer is not callable",
+                                                        )),
+                                                    ))
+                                                    .with_terminal_kind(QueryTerminalKind::Failure));
+                                                };
+                                                let arguments = match function.as_ref() {
+                                                    crate::FunctionInstanceKey::Definition(_) => {
+                                                        crate::CanonicalArguments::default()
+                                                    }
+                                                    crate::FunctionInstanceKey::Specialization {
+                                                        arguments,
+                                                        ..
+                                                    } => arguments.clone(),
+                                                    crate::FunctionInstanceKey::AnonymousMember { .. }
+                                                    | crate::FunctionInstanceKey::DropGlue(_) => {
+                                                        unreachable!()
+                                                    }
+                                                };
+                                                let mut types = arguments.types.iter();
+                                                let mut values = arguments.values.iter();
+                                                let mut type_arguments = Vec::new();
+                                                let mut value_arguments = Vec::new();
+                                                let mut reconstruction_failure = None;
+                                                for (header, parameter) in
+                                                    shell.parameters.iter().zip(parameters.iter())
+                                                {
+                                                    if !parameter.is_comptime {
+                                                        continue;
+                                                    }
+                                                    if parameter.ty
+                                                        == crate::durable_semantics::DurableType::ComptimeType
+                                                    {
+                                                        let Some(value) = types.next().and_then(
+                                                            durable_type_from_instance_key,
+                                                        ) else {
+                                                            reconstruction_failure = Some(
+                                                                "anonymous nominal producer type arguments do not match its signature",
+                                                            );
+                                                            break;
+                                                        };
+                                                        type_arguments
+                                                            .push((header.name.clone(), value));
+                                                    } else {
+                                                        let Some(value) = values.next().and_then(
+                                                            durable_value_from_argument,
+                                                        ) else {
+                                                            reconstruction_failure = Some(
+                                                                "anonymous nominal producer value arguments do not match its signature",
+                                                            );
+                                                            break;
+                                                        };
+                                                        value_arguments
+                                                            .push((header.name.clone(), value));
+                                                    }
+                                                }
+                                                if reconstruction_failure.is_none()
+                                                    && (types.next().is_some()
+                                                        || values.next().is_some())
+                                                {
+                                                    reconstruction_failure = Some(
+                                                        "anonymous nominal producer has excess canonical arguments",
+                                                    );
+                                                }
+                                                if let Some(failure) = reconstruction_failure {
+                                                    Err(Failure::Resolution(Arc::from(failure)))
+                                                } else {
+                                                    let producer = context.query_registered(
+                                                        family,
+                                                        Key::ComptimeCall(
+                                                            crate::semantic_query_nucleus::ComptimeCallQueryKey {
+                                                                declaration: query.producer.clone(),
+                                                                type_arguments: type_arguments.into(),
+                                                                value_arguments: value_arguments.into(),
+                                                            },
+                                                        ),
+                                                    )?;
+                                                    let rue_query::QueryOutcome::Success(producer) =
+                                                        producer.outcome()
+                                                    else {
+                                                        unreachable!("SemanticNucleus publishes typed values")
+                                                    };
+                                                    match producer {
+                                                        Value::ComptimeCall(producer) => Ok(
+                                                            producer.anonymous_nominals.clone(),
+                                                        ),
+                                                        Value::Failure(failure) => {
+                                                            Err(failure.clone())
+                                                        }
+                                                        _ => Err(Failure::Resolution(Arc::from(
+                                                            "anonymous nominal function producer returned the wrong projection",
+                                                        ))),
+                                                    }
+                                                }
+                                            }
+                                            _ => Err(Failure::Resolution(Arc::from(
+                                                "anonymous nominal signature dependency returned the wrong projection",
+                                            ))),
+                                        }
+                                    }
+                                }
+                            };
+                            match projected {
+                                Ok(projected) => projected
+                                    .iter()
+                                    .find(|value| value.identity == query.identity)
+                                    .cloned()
+                                    .map(Value::AnonymousNominal)
+                                    .unwrap_or_else(|| {
+                                        Value::Failure(Failure::Resolution(Arc::from(
+                                            "anonymous nominal producer did not publish the requested identity",
+                                        )))
+                                    }),
+                                Err(failure) => Value::Failure(failure),
+                            }
+                        }
+                        Key::ComptimeCall(call) => {
+                            let raw = context.query_registered(
+                                &bodies_for_semantic_nucleus,
+                                RawDeclarationBodyQueryKey(
+                                    call.declaration.declaration.clone(),
+                                ),
+                            )?;
+                            let rue_query::QueryOutcome::Success(raw) = raw.outcome() else {
+                                unreachable!("RawDeclarationBody publishes typed values")
+                            };
+                            match raw {
+                                RawDeclarationBodyQueryValue::Failure(failure) => {
+                                    Value::Failure(Failure::Syntax(Arc::from(format!(
+                                        "{failure:?}"
+                                    ))))
+                                }
+                                RawDeclarationBodyQueryValue::Available(raw) => {
+                                    match crate::semantic_query_nucleus::parse_semantic_body(
+                                        &call.declaration.declaration,
+                                        raw,
+                                    ) {
+                                        Err(failure) => Value::Failure(Failure::Syntax(failure)),
+                                        Ok(parsed) => {
+                                            let signature = context.query_registered(
+                                                family,
+                                                Key::Signature(call.declaration.clone()),
+                                            )?;
+                                            let rue_query::QueryOutcome::Success(signature) =
+                                                signature.outcome()
+                                            else {
+                                                unreachable!("SemanticNucleus publishes typed values")
+                                            };
+                                            let Value::Signature(signature) = signature else {
+                                                let Value::Failure(failure) = signature else {
+                                                    unreachable!("signature query returned the wrong projection")
+                                                };
+                                                return Ok(QueryOutput::success(Value::Failure(
+                                                    failure.clone(),
+                                                ))
+                                                .with_terminal_kind(QueryTerminalKind::Failure));
+                                            };
+                                            let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
+                                                parameters: callable_parameters,
+                                                result: callable_result,
+                                                ..
+                                            } = &signature.signature else {
+                                                return Ok(QueryOutput::success(Value::Failure(
+                                                    Failure::Resolution(Arc::from(
+                                                        "comptime call target is not callable",
+                                                    )),
+                                                )).with_terminal_kind(QueryTerminalKind::Failure));
+                                            };
+                                            let concrete_type_arguments = call
+                                                .type_arguments
+                                                .iter()
+                                                .map(|(_, ty)| ty.clone())
+                                                .collect::<Vec<_>>();
+                                            let value_parameter_types = callable_parameters
+                                                .iter()
+                                                .filter(|parameter| {
+                                                    parameter.ty
+                                                        != crate::durable_semantics::DurableType::ComptimeType
+                                                })
+                                                .map(|parameter| {
+                                                    substitute_durable_generics(
+                                                        &parameter.ty,
+                                                        &concrete_type_arguments,
+                                                    )
+                                                })
+                                                .collect::<Vec<_>>();
+                                            let expected_type = substitute_durable_generics(
+                                                callable_result,
+                                                &concrete_type_arguments,
+                                            );
+                                            let substitutions = call
+                                                .type_arguments
+                                                .iter()
+                                                .cloned()
+                                                .collect::<BTreeMap<_, _>>();
+                                            let value_substitutions = call
+                                                .value_arguments
+                                                .iter()
+                                                .cloned()
+                                                .collect::<BTreeMap<_, _>>();
+                                            let producer_key = crate::semantic_query_nucleus::direct_identity(shell)
+                                                .expect("comptime call shell is callable")
+                                                .key;
+                                            let mut anonymous_dependencies = BTreeSet::new();
+                                            for (_, ty) in call.type_arguments.iter() {
+                                                collect_anonymous_nominal_type_dependencies(
+                                                    ty,
+                                                    &mut anonymous_dependencies,
+                                                );
+                                            }
+                                            for (_, value) in call.value_arguments.iter() {
+                                                collect_anonymous_nominal_value_dependencies(
+                                                    value,
+                                                    &mut anonymous_dependencies,
+                                                );
+                                            }
+                                            let mut anonymous_nominals = BTreeMap::new();
+                                            for identity in anonymous_dependencies {
+                                                let Some(dependency) = anonymous_nominal_query_key(
+                                                    &identity,
+                                                    &call.declaration.configuration,
+                                                ) else {
+                                                    return Ok(QueryOutput::success(Value::Failure(
+                                                        Failure::Resolution(Arc::from(
+                                                            "anonymous nominal argument has an unsupported producer",
+                                                        )),
+                                                    ))
+                                                    .with_terminal_kind(QueryTerminalKind::Failure));
+                                                };
+                                                let dependency = context.query_registered(
+                                                    family,
+                                                    Key::AnonymousNominal(dependency),
+                                                )?;
+                                                let rue_query::QueryOutcome::Success(dependency) =
+                                                    dependency.outcome()
+                                                else {
+                                                    unreachable!("SemanticNucleus publishes typed values")
+                                                };
+                                                match dependency {
+                                                    Value::AnonymousNominal(value) => {
+                                                        anonymous_nominals.insert(
+                                                            value.identity.clone(),
+                                                            value.clone(),
+                                                        );
+                                                    }
+                                                    Value::Failure(failure) => {
+                                                        return Ok(QueryOutput::success(
+                                                            Value::Failure(failure.clone()),
+                                                        )
+                                                        .with_terminal_kind(
+                                                            QueryTerminalKind::Failure,
+                                                        ));
+                                                    }
+                                                    _ => {
+                                                        return Ok(QueryOutput::success(
+                                                            Value::Failure(Failure::Resolution(
+                                                                Arc::from(
+                                                                    "anonymous nominal dependency returned the wrong projection",
+                                                                ),
+                                                            )),
+                                                        )
+                                                        .with_terminal_kind(
+                                                            QueryTerminalKind::Failure,
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                            let mut provider = SemanticNucleusTypeProvider {
+                                                context,
+                                                family,
+                                                shells: &shells_for_semantic_nucleus,
+                                                names: &names_for_semantic_nucleus,
+                                                configuration: call
+                                                    .declaration
+                                                    .configuration
+                                                    .clone(),
+                                                substitutions,
+                                                value_substitutions,
+                                                deferred_value_parameters: BTreeMap::new(),
+                                                anonymous_nominals,
+                                                dependency_source: producer_key.clone(),
+                                                dependency_kind: rue_air::DeclarationTypeDependencyKind::Body,
+                                                dependencies: BTreeSet::new(),
+                                                deferred_ownership: BTreeSet::new(),
+                                            };
+                                            let canonical_arguments = crate::CanonicalArguments {
+                                                types: call
+                                                    .type_arguments
+                                                    .iter()
+                                                    .map(|(_, value)| {
+                                                        crate::semantic_identity::type_instance_from_semantic(value)
+                                                    })
+                                                    .collect::<Option<Vec<_>>>()
+                                                    .expect("durable type arguments have canonical identities")
+                                                    .into(),
+                                                values: call
+                                                    .value_arguments
+                                                    .iter()
+                                                    .map(|(_, value)| {
+                                                        crate::semantic_identity::argument_value_from_semantic(value)
+                                                    })
+                                                    .collect::<Option<Vec<_>>>()
+                                                    .expect("durable value arguments have canonical identities")
+                                                    .into(),
+                                            };
+                                            let producer = crate::StableProducerId::Function(Box::new(
+                                                crate::FunctionInstanceKey::Specialization {
+                                                    base: Box::new(crate::FunctionInstanceKey::Definition(
+                                                        producer_key,
+                                                    )),
+                                                    arguments: canonical_arguments.clone(),
+                                                },
+                                            ));
+                                            let mut locals = BTreeMap::new();
+                                            locals.extend(call.type_arguments.iter().map(
+                                                |(name, value)| {
+                                                    (
+                                                        name.clone(),
+                                                        EvaluatedSemanticConst::Value(
+                                                            TypedSemanticConst::typed(
+                                                                crate::durable_semantics::DurableConstValue::Type(value.clone()),
+                                                                crate::durable_semantics::DurableType::ComptimeType,
+                                                            ),
+                                                        ),
+                                                    )
+                                                },
+                                            ));
+                                            locals.extend(call.value_arguments.iter().zip(value_parameter_types.iter()).map(
+                                                |((name, value), ty)| {
+                                                    (
+                                                        name.clone(),
+                                                        EvaluatedSemanticConst::Value(
+                                                            TypedSemanticConst::typed(value.clone(), ty.clone()),
+                                                        ),
+                                                    )
+                                                },
+                                            ));
+                                            let result = {
+                                                let mut evaluator = SemanticConstEvaluator {
+                                                    provider: &mut provider,
+                                                    imports: &imports_for_semantic_nucleus,
+                                                    declaration: &call.declaration,
+                                                    source: &parsed.source,
+                                                    interner: &parsed.interner,
+                                                    import_sites: &parsed.import_sites,
+                                                    locals,
+                                                    producer,
+                                                    canonical_arguments,
+                                                    next_anonymous_type: 0,
+                                                    next_call: 0,
+                                                    expected_type: Some(expected_type),
+                                                };
+                                                evaluator.eval(&parsed.expression)
+                                            };
+                                            match result {
+                                                Ok(EvaluatedSemanticConst::Value(value))
+                                                    if matches!(value.value, crate::durable_semantics::DurableConstValue::Type(_)) =>
+                                                {
+                                                    let crate::durable_semantics::DurableConstValue::Type(ty) = &value.value else {
+                                                        unreachable!()
+                                                    };
+                                                    Value::ComptimeCall(
+                                                    crate::semantic_query_nucleus::ComptimeCallProjection {
+                                                        result: crate::semantic_query_nucleus::ComptimeCallResultProjection::Type(ty.clone()),
+                                                        anonymous_nominals: provider
+                                                            .anonymous_nominals
+                                                            .values()
+                                                            .cloned()
+                                                            .collect::<Vec<_>>()
+                                                            .into(),
+                                                        dependencies: provider
+                                                            .dependencies
+                                                            .iter()
+                                                            .cloned()
+                                                            .collect::<Vec<_>>()
+                                                            .into(),
+                                                        deferred_ownership: provider
+                                                            .deferred_ownership
+                                                            .iter()
+                                                            .cloned()
+                                                            .collect::<Vec<_>>()
+                                                            .into(),
+                                                    },
+                                                )
+                                                }
+                                                Ok(EvaluatedSemanticConst::Value(value)) => {
+                                                    let value = Arc::unwrap_or_clone(value);
+                                                    Value::ComptimeCall(
+                                                        crate::semantic_query_nucleus::ComptimeCallProjection {
+                                                            result: crate::semantic_query_nucleus::ComptimeCallResultProjection::Value(value.value),
+                                                            anonymous_nominals: provider
+                                                                .anonymous_nominals
+                                                                .values()
+                                                                .cloned()
+                                                                .collect::<Vec<_>>()
+                                                                .into(),
+                                                            dependencies: provider
+                                                                .dependencies
+                                                                .iter()
+                                                                .cloned()
+                                                                .collect::<Vec<_>>()
+                                                                .into(),
+                                                            deferred_ownership: provider
+                                                                .deferred_ownership
+                                                                .iter()
+                                                                .cloned()
+                                                                .collect::<Vec<_>>()
+                                                                .into(),
+                                                        },
+                                                    )
+                                                }
+                                                Ok(EvaluatedSemanticConst::Module(_)) => {
+                                                    Value::Failure(Failure::Resolution(Arc::from(
+                                                        "comptime function returned a module",
+                                                    )))
+                                                }
+                                                Ok(EvaluatedSemanticConst::TargetEnum(_)) => {
+                                                    Value::Failure(Failure::Resolution(Arc::from(
+                                                        "comptime function returned an unreduced target descriptor",
+                                                    )))
+                                                }
+                                                Err(EvaluateSemanticConstError::Failure(failure)) => {
+                                                    Value::Failure(*failure)
+                                                }
+                                                Err(EvaluateSemanticConstError::Abort(
+                                                    QueryAbort::Cycle(nodes),
+                                                )) => Value::Failure(Failure::Cycle(
+                                                    semantic_nucleus_cycle_names(&nodes),
+                                                )),
+                                                Err(EvaluateSemanticConstError::Abort(abort)) => {
+                                                    return Err(abort)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    let kind = if matches!(value, Value::Failure(_)) {
+                        QueryTerminalKind::Failure
+                    } else {
+                        QueryTerminalKind::Success
+                    };
+                    Ok(QueryOutput::success(value).with_terminal_kind(kind))
+                },
+            )
+            .expect("the SemanticNucleus family has one canonical name");
         Self {
             parse: RevisionedFamily::new(&runtime, "compiler.parse"),
             runtime,
@@ -1936,19 +7607,28 @@ impl Default for RevisionedQueryDatabase {
             source_stamps: VecDeque::new(),
             import_store,
             module_store,
+            #[cfg(test)]
+            test_import_store,
             parse_modules,
             module_indexes,
             declaration_occurrence_indexes,
             declaration_shells,
+            #[cfg(test)]
             raw_const_syntax,
+            #[cfg(test)]
             raw_declaration_signatures,
+            #[cfg(test)]
             raw_declaration_bodies,
             module_rirs,
             resolve_imports,
+            #[cfg(test)]
             declaration_imports,
+            semantic_nucleus,
             lookup_names,
             next_import_request: 0,
             current_import_revision: None,
+            #[cfg(test)]
+            current_test_import_revision: None,
         }
     }
 }
@@ -1962,6 +7642,91 @@ impl RevisionedQueryDatabase {
             unreachable!("Parse publishes typed records")
         };
         Some(record.runtime_revision())
+    }
+
+    /// Revision pin for semantic work. Import discovery republishes the exact
+    /// same module leaves together with its observation leaves, so semantic
+    /// queries must run on that successor revision when one exists.
+    pub(crate) fn current_semantic_revision(&self) -> Option<Revision> {
+        self.current_import_revision
+            .map(|revision| Revision::new(revision.revision_id, revision.request_generation))
+            .or({
+                #[cfg(test)]
+                {
+                    self.current_test_import_revision
+                }
+                #[cfg(not(test))]
+                {
+                    None
+                }
+            })
+            .or_else(|| self.current_parse_revision())
+    }
+
+    /// Publish an immutable, revisioned import authority for lower-layer
+    /// tests. The fixture graph is an input leaf rather than an out-of-band
+    /// evaluator read, so changing it invalidates exactly the declaration
+    /// import queries which observed it.
+    #[cfg(test)]
+    pub(crate) fn adopt_test_import_graph(&mut self, graph: crate::CanonicalImportGraph) {
+        let parse_revision = self
+            .current_parse_revision()
+            .expect("test import authority requires a selected parsed revision");
+        self.adopt_test_import_graph_for_revision(parse_revision, graph);
+    }
+
+    #[cfg(test)]
+    fn adopt_test_import_graph_for_revision(
+        &mut self,
+        parse_revision: Revision,
+        graph: crate::CanonicalImportGraph,
+    ) {
+        let snapshot = self
+            .module_store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .revisions
+            .iter()
+            .find(|view| view.revision == parse_revision)
+            .expect("selected parse retains its module input view")
+            .snapshot
+            .clone();
+        let revision = Revision::new(self.next_revision, 1);
+        self.next_revision += 1;
+        let stamp = {
+            let mut store = self
+                .test_import_store
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let TestImportInputStore {
+                next_stamp, stamps, ..
+            } = &mut *store;
+            exact_value_stamp(next_stamp, stamps, &graph)
+        };
+        let mut leaves = vec![(test_import_graph_input(), stamp)];
+        leaves.extend(publish_module_inputs(
+            &self.module_store,
+            revision,
+            &snapshot,
+        ));
+        self.runtime
+            .publish_revision(revision, leaves)
+            .expect("test import revisions are immutable and uniquely numbered");
+        let mut store = self
+            .test_import_store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        store
+            .revisions
+            .push_back(Arc::new(TestImportInputView { revision, graph }));
+        while store.revisions.len() > IMPORT_INPUT_REVISION_RETENTION {
+            store.revisions.pop_front();
+        }
+        let retained = store.revisions.iter().cloned().collect::<Vec<_>>();
+        store
+            .stamps
+            .retain(|(graph, _)| retained.iter().any(|view| &view.graph == graph));
+        self.current_test_import_revision = Some(revision);
     }
 
     /// Request every query-owned declaration shell for the selected parsed
@@ -2063,6 +7828,212 @@ impl RevisionedQueryDatabase {
         Ok(shells)
     }
 
+    /// Materialize the declaration payloads required by the current body
+    /// adapter exclusively from the keyed semantic nucleus. This deliberately
+    /// thin root projection is transitional until RUE-1027 makes body requests
+    /// drive declaration reachability: each declaration remains an
+    /// independently stamped query terminal and no whole-program semantic
+    /// state is retained here.
+    pub(crate) fn projected_declaration_semantics(
+        &self,
+        revision: Revision,
+        program: &crate::canonical_merge::CanonicalMergedAst,
+        target: rue_target::Target,
+        preview_features: &crate::PreviewFeatures,
+        cancellation: CancellationToken,
+    ) -> Result<SemanticNucleusProjection, SemanticNucleusBatchFailure> {
+        use crate::declaration_candidate::{
+            DeclarationCandidateCategory as Category, DeclarationOccurrenceCapability,
+        };
+        use crate::semantic_query_nucleus::{
+            DeclarationSemanticQueryKey as DeclarationQuery, DeclarationSemanticValue,
+            SemanticNucleusKey as Key, SemanticNucleusValue as Value, SemanticQueryConfiguration,
+        };
+
+        let configuration = SemanticQueryConfiguration {
+            target,
+            preview_features: crate::StablePreviewFeatures::new(preview_features),
+        };
+        let mut values = Vec::new();
+        let mut anonymous_nominals = BTreeMap::new();
+        let mut dependencies = BTreeSet::new();
+        for module in program.modules() {
+            if cancellation.is_canceled() {
+                return Err(SemanticNucleusBatchFailure::Query(QueryAbort::Canceled));
+            }
+            let indexed = self.runtime.request_registered(
+                &self.declaration_occurrence_indexes,
+                revision,
+                ModuleQueryKey(module.module_id().clone()),
+                cancellation.clone(),
+            );
+            let terminal = indexed
+                .into_result()
+                .map_err(SemanticNucleusBatchFailure::Query)?;
+            let rue_query::QueryOutcome::Success(indexed) = terminal.outcome() else {
+                unreachable!("DeclarationOccurrenceIndex publishes typed values")
+            };
+            let DeclarationOccurrenceIndexValue::Available(index) = indexed else {
+                let DeclarationOccurrenceIndexValue::Failure(failure) = indexed else {
+                    unreachable!()
+                };
+                return Err(SemanticNucleusBatchFailure::Stable {
+                    declaration: None,
+                    failure: Box::new(
+                        crate::semantic_query_nucleus::SemanticNucleusFailure::Shell(Arc::from(
+                            format!("{failure:?}"),
+                        )),
+                    ),
+                });
+            };
+            for capability in index.capabilities.values() {
+                let DeclarationOccurrenceCapability::Exact { .. } = capability else {
+                    return Err(SemanticNucleusBatchFailure::Stable {
+                        declaration: Some(capability.key().clone()),
+                        failure: Box::new(
+                            crate::semantic_query_nucleus::SemanticNucleusFailure::Shell(
+                                Arc::from(format!(
+                                    "ambiguous declaration `{}`",
+                                    capability.key().name
+                                )),
+                            ),
+                        ),
+                    });
+                };
+                let declaration = capability.key().clone();
+                let query = DeclarationQuery {
+                    declaration: declaration.clone(),
+                    configuration: configuration.clone(),
+                };
+                let request = |key| {
+                    let attempt = self.runtime.request_registered(
+                        &self.semantic_nucleus,
+                        revision,
+                        key,
+                        cancellation.clone(),
+                    );
+                    let terminal = attempt
+                        .into_result()
+                        .map_err(SemanticNucleusBatchFailure::Query)?;
+                    let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+                        unreachable!("SemanticNucleus publishes typed values")
+                    };
+                    match value {
+                        Value::Failure(failure) => Err(SemanticNucleusBatchFailure::Stable {
+                            declaration: Some(declaration.clone()),
+                            failure: Box::new(failure.clone()),
+                        }),
+                        value => Ok(value.clone()),
+                    }
+                };
+                let semantic = if declaration.category == Category::ConstCandidate {
+                    let Value::ConstResolution(resolution) =
+                        request(Key::ConstResolution(query.clone()))?
+                    else {
+                        unreachable!("const query returned the wrong projection")
+                    };
+                    if let crate::semantic_query_nucleus::ConstResolutionProjection::Value {
+                        anonymous_nominals: projected,
+                        dependencies: projected_dependencies,
+                        deferred_ownership,
+                        ..
+                    } = &resolution
+                    {
+                        anonymous_nominals.extend(
+                            projected
+                                .iter()
+                                .cloned()
+                                .map(|value| (value.identity.clone(), value)),
+                        );
+                        dependencies.extend(projected_dependencies.iter().cloned());
+                        for gate in deferred_ownership.iter() {
+                            let Value::DeferredOwnership = request(Key::DeferredOwnership(
+                                crate::semantic_query_nucleus::DeferredOwnershipQueryKey {
+                                    producer: query.clone(),
+                                    gate: gate.clone(),
+                                },
+                            ))?
+                            else {
+                                unreachable!(
+                                    "deferred ownership query returned the wrong projection"
+                                )
+                            };
+                        }
+                    }
+                    let shell = self.runtime.request_registered(
+                        &self.declaration_shells,
+                        revision,
+                        DeclarationShellQueryKey(declaration.clone()),
+                        cancellation.clone(),
+                    );
+                    let terminal = shell
+                        .into_result()
+                        .map_err(SemanticNucleusBatchFailure::Query)?;
+                    let rue_query::QueryOutcome::Success(DeclarationShellQueryValue::Available(
+                        shell,
+                    )) = terminal.outcome()
+                    else {
+                        return Err(SemanticNucleusBatchFailure::Stable {
+                            declaration: Some(declaration.clone()),
+                            failure: Box::new(
+                                crate::semantic_query_nucleus::SemanticNucleusFailure::Shell(
+                                    Arc::from("const declaration shell became unavailable"),
+                                ),
+                            ),
+                        });
+                    };
+                    DeclarationSemanticValue::from_const(shell.is_public, resolution)
+                } else {
+                    let Value::Identity(identity) = request(Key::Identity(query.clone()))? else {
+                        unreachable!("identity query returned the wrong projection")
+                    };
+                    if matches!(declaration.category, Category::Struct | Category::Enum) {
+                        let Value::NominalWellFormedness =
+                            request(Key::NominalWellFormedness(query.clone()))?
+                        else {
+                            unreachable!("nominal well-formedness returned the wrong projection")
+                        };
+                    }
+                    let Value::Signature(signature) = request(Key::Signature(query.clone()))?
+                    else {
+                        unreachable!("signature query returned the wrong projection")
+                    };
+                    for gate in signature.deferred_ownership.iter() {
+                        let Value::DeferredOwnership = request(Key::DeferredOwnership(
+                            crate::semantic_query_nucleus::DeferredOwnershipQueryKey {
+                                producer: query.clone(),
+                                gate: gate.clone(),
+                            },
+                        ))?
+                        else {
+                            unreachable!("deferred ownership query returned the wrong projection")
+                        };
+                    }
+                    anonymous_nominals.extend(
+                        signature
+                            .anonymous_nominals
+                            .iter()
+                            .cloned()
+                            .map(|value| (value.identity.clone(), value)),
+                    );
+                    dependencies.extend(signature.dependencies.iter().cloned());
+                    DeclarationSemanticValue::from_signature(identity, signature.signature)
+                };
+                values.push(crate::DurableDeclarationSemantic {
+                    key: semantic.identity.key,
+                    is_public: semantic.identity.is_public,
+                    payload: semantic.payload,
+                });
+            }
+        }
+        values.sort_by(|left, right| left.key.cmp(&right.key));
+        Ok(SemanticNucleusProjection {
+            declarations: values.into(),
+            anonymous_nominals: anonymous_nominals.into_values().collect::<Vec<_>>().into(),
+            dependencies: dependencies.into_iter().collect::<Vec<_>>().into(),
+        })
+    }
+
     pub(crate) fn begin_import_inputs(
         &mut self,
         snapshot: &SourceSnapshot,
@@ -2134,10 +8105,6 @@ impl RevisionedQueryDatabase {
                 occurrence: occurrence.clone(),
                 mode,
             };
-            // RUE-1026 DELETION GATE: this selected-revision compatibility
-            // shim owns one synchronous request and therefore has no caller
-            // cancellation token to thread yet. Canonical multi-request
-            // consumers must supply their token when this shim is deleted.
             let attempt = self.runtime.request_registered(
                 &self.resolve_imports,
                 runtime_revision,
@@ -2423,6 +8390,10 @@ impl RevisionedQueryDatabase {
         source: &super::session::ExactSourceInput,
         snapshot: &SourceSnapshot,
     ) -> Revision {
+        #[cfg(test)]
+        {
+            self.current_test_import_revision = None;
+        }
         // The parse family is allocated with the shared runtime now so callers
         // can migrate without creating a peer executor.
         let _parse_migration_family = &self.parse;
@@ -2636,7 +8607,7 @@ impl RevisionedQueryDatabase {
                     LookupNameKey {
                         module: module.module_id().clone(),
                         namespace,
-                        name,
+                        name: name.clone(),
                     },
                     CancellationToken::new(),
                 );
@@ -2652,8 +8623,35 @@ impl RevisionedQueryDatabase {
                     unreachable!("LookupName publishes typed values")
                 };
                 match &found.0 {
-                    Ok(found) => definitions.extend(found.iter().cloned()),
-                    Err(module_errors) => errors.extend(module_errors.clone()),
+                    Ok(found) => {
+                        let current = index
+                            .definitions
+                            .iter()
+                            .filter(|entry| entry.namespace == namespace && entry.name == name)
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        let current_facts = current
+                            .iter()
+                            .map(|entry| LookupNameFact {
+                                namespace: entry.namespace,
+                                kind: entry.kind,
+                                visibility: entry.visibility,
+                                name: entry.name.clone(),
+                            })
+                            .collect::<Vec<_>>();
+                        if current_facts.as_slice() == found.as_ref() {
+                            definitions.extend(current);
+                        } else {
+                            errors.push(import_input_error(format!(
+                                "LookupName({}::{name}) disagrees with current locators",
+                                module.module_id()
+                            )));
+                        }
+                    }
+                    Err(failure) => errors.push(import_input_error(format!(
+                        "LookupName({}::{name}) failed: {failure:?}",
+                        module.module_id()
+                    ))),
                 }
             }
             definitions.sort_by(|left, right| {
@@ -2807,6 +8805,1860 @@ mod tests {
                 .collect(),
         )
         .unwrap()
+    }
+
+    fn semantic_configuration() -> crate::semantic_query_nucleus::SemanticQueryConfiguration {
+        crate::semantic_query_nucleus::SemanticQueryConfiguration {
+            target: rue_target::Target::X86_64Linux,
+            preview_features: crate::StablePreviewFeatures::new(&crate::PreviewFeatures::default()),
+        }
+    }
+
+    fn declaration_candidate(
+        database: &RevisionedQueryDatabase,
+        revision: Revision,
+        module: &ModuleId,
+        category: crate::declaration_candidate::DeclarationCandidateCategory,
+        name: &str,
+    ) -> crate::declaration_candidate::DeclarationCandidateKey {
+        let attempt = database.runtime.request_registered(
+            &database.declaration_occurrence_indexes,
+            revision,
+            ModuleQueryKey(module.clone()),
+            CancellationToken::new(),
+        );
+        let rue_query::QueryOutcome::Success(value) = attempt.terminal().unwrap().outcome() else {
+            unreachable!()
+        };
+        let DeclarationOccurrenceIndexValue::Available(index) = value else {
+            panic!("declaration occurrence index unavailable")
+        };
+        index
+            .capabilities
+            .keys()
+            .find(|candidate| candidate.category == category && candidate.name.as_ref() == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("missing {category:?} candidate `{name}`"))
+    }
+
+    fn request_semantic_nucleus(
+        database: &RevisionedQueryDatabase,
+        revision: Revision,
+        key: crate::semantic_query_nucleus::SemanticNucleusKey,
+    ) -> crate::semantic_query_nucleus::SemanticNucleusValue {
+        request_semantic_nucleus_observed(database, revision, key).0
+    }
+
+    fn request_semantic_nucleus_observed(
+        database: &RevisionedQueryDatabase,
+        revision: Revision,
+        key: crate::semantic_query_nucleus::SemanticNucleusKey,
+    ) -> (
+        crate::semantic_query_nucleus::SemanticNucleusValue,
+        QueryRequestAttempt<crate::semantic_query_nucleus::SemanticNucleusValue>,
+    ) {
+        let attempt = database.runtime.request_registered(
+            &database.semantic_nucleus,
+            revision,
+            key,
+            CancellationToken::new(),
+        );
+        let terminal = attempt
+            .terminal()
+            .unwrap_or_else(|| panic!("semantic nucleus aborted: {:?}", attempt.abort()));
+        let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+            unreachable!()
+        };
+        (value.clone(), attempt)
+    }
+
+    fn assert_direct_semantic_observation(
+        label: &str,
+        attempt: &QueryRequestAttempt<crate::semantic_query_nucleus::SemanticNucleusValue>,
+        required_families: &[&str],
+        allowed_families: &[&str],
+        maximum_dependencies: usize,
+    ) {
+        let actual = attempt
+            .dependencies()
+            .iter()
+            .map(|dependency| dependency.node.family())
+            .collect::<BTreeSet<_>>();
+        let required = required_families.iter().copied().collect::<BTreeSet<_>>();
+        let allowed = allowed_families.iter().copied().collect::<BTreeSet<_>>();
+        assert!(
+            required.is_subset(&actual),
+            "{label} omitted a required direct dependency family: required={required:?}, actual={actual:?}"
+        );
+        assert!(
+            actual.is_subset(&allowed),
+            "{label} observed an unexpected dependency family: actual={actual:?}, allowed={allowed:?}; batch, root, full-plan, and unrelated discovery dependencies are forbidden"
+        );
+        assert!(
+            attempt.dependencies().len() <= maximum_dependencies,
+            "{label} observed broad same-family discovery: dependencies={:?}",
+            attempt.dependencies()
+        );
+        assert!(
+            attempt.inputs().is_empty(),
+            "{label} read inputs directly instead of through its precise query dependencies: {:?}",
+            attempt.inputs()
+        );
+    }
+
+    fn retired_declaration_exports(
+        source: &SourceSnapshot,
+    ) -> Vec<rue_air::SemanticDeclarationExport> {
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(source).unwrap();
+        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let bound = rue_air::Sema::new_synthetic(
+            rir.rir(),
+            rir.semantic_symbols().interner(),
+            crate::PreviewFeatures::new(),
+        )
+        .bind_declarations_for_test()
+        .unwrap();
+        bound
+            .with_declaration_semantics(|exports, _| exports.to_vec())
+            .unwrap()
+    }
+
+    fn retired_declaration_failure(source: &SourceSnapshot) -> String {
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(source).unwrap();
+        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let errors = match rue_air::Sema::new_synthetic(
+            rir.rir(),
+            rir.semantic_symbols().interner(),
+            crate::PreviewFeatures::new(),
+        )
+        .bind_declarations_for_test()
+        {
+            Err(errors) => errors,
+            Ok(_) => panic!("retired fixture unexpectedly passed declaration binding"),
+        };
+        errors
+            .first()
+            .expect("retired fixture must produce one declaration failure")
+            .to_string()
+    }
+
+    fn export_type_agrees(
+        retired: &rue_air::SemanticExportType,
+        keyed: &crate::durable_semantics::DurableType,
+    ) -> bool {
+        use crate::durable_semantics::DurableType as K;
+        use rue_air::SemanticExportType as R;
+        match (retired, keyed) {
+            (R::I8, K::I8)
+            | (R::I16, K::I16)
+            | (R::I32, K::I32)
+            | (R::I64, K::I64)
+            | (R::U8, K::U8)
+            | (R::U16, K::U16)
+            | (R::U32, K::U32)
+            | (R::U64, K::U64)
+            | (R::Bool, K::Bool)
+            | (R::Unit, K::Unit)
+            | (R::Never, K::Never)
+            | (R::ComptimeType, K::ComptimeType) => true,
+            (R::GenericParameter(left), K::GenericParameter(right)) => left == right,
+            (R::Nominal(left), K::Nominal(right)) => {
+                left.name.as_ref() == right.name() && left.kind == right.kind()
+            }
+            (
+                R::Array {
+                    element: left,
+                    len: left_len,
+                },
+                K::Array {
+                    element: right,
+                    len: right_len,
+                },
+            ) => left_len == right_len && export_type_agrees(left, right),
+            (R::PtrConst(left), K::PtrConst(right)) | (R::PtrMut(left), K::PtrMut(right)) => {
+                export_type_agrees(left, right)
+            }
+            _ => false,
+        }
+    }
+
+    fn signature_agrees(
+        retired: &rue_air::SemanticDeclarationPayload,
+        keyed: &crate::semantic_query_nucleus::DeclarationSignatureProjection,
+    ) -> bool {
+        use crate::semantic_query_nucleus::DeclarationSignatureProjection as K;
+        use rue_air::SemanticDeclarationPayload as R;
+        match (retired, keyed) {
+            (
+                R::Callable {
+                    parameters: left,
+                    result: left_result,
+                    has_self: left_self,
+                    is_unchecked: left_unchecked,
+                },
+                K::Callable {
+                    parameters: right,
+                    result: right_result,
+                    has_self: right_self,
+                    is_unchecked: right_unchecked,
+                    ..
+                },
+            ) => {
+                left_self == right_self
+                    && left_unchecked == right_unchecked
+                    && export_type_agrees(left_result, right_result)
+                    && left.len() == right.len()
+                    && left.iter().zip(right.iter()).all(|(left, right)| {
+                        let mode_agrees = matches!(
+                            (left.mode, right.mode),
+                            (
+                                rue_air::SemanticParameterMode::Value,
+                                crate::durable_semantics::DurableParameterMode::Value
+                            ) | (
+                                rue_air::SemanticParameterMode::Borrow,
+                                crate::durable_semantics::DurableParameterMode::Borrow
+                            ) | (
+                                rue_air::SemanticParameterMode::Inout,
+                                crate::durable_semantics::DurableParameterMode::Inout
+                            )
+                        );
+                        mode_agrees
+                            && left.is_comptime == right.is_comptime
+                            && export_type_agrees(&left.ty, &right.ty)
+                    })
+            }
+            (
+                R::Struct {
+                    fields: left,
+                    is_copy: left_copy,
+                    is_linear: left_linear,
+                },
+                K::Struct {
+                    fields: right,
+                    is_copy: right_copy,
+                    is_linear: right_linear,
+                    ..
+                },
+            ) => {
+                left_copy == right_copy
+                    && left_linear == right_linear
+                    && left.len() == right.len()
+                    && left.iter().zip(right.iter()).all(
+                        |((left_name, left_ty), (right_name, right_ty))| {
+                            left_name == right_name && export_type_agrees(left_ty, right_ty)
+                        },
+                    )
+            }
+            (R::Enum { variants: left }, K::Enum { variants: right }) => {
+                left.len() == right.len()
+                    && left.iter().zip(right.iter()).all(
+                        |((left_name, left_payload), (right_name, right_payload))| {
+                            left_name == right_name
+                                && left_payload.len() == right_payload.len()
+                                && left_payload
+                                    .iter()
+                                    .zip(right_payload.iter())
+                                    .all(|(left, right)| export_type_agrees(left, right))
+                        },
+                    )
+            }
+            (R::Destructor, K::Destructor) => true,
+            _ => false,
+        }
+    }
+
+    fn nucleus_failure_message(
+        value: &crate::semantic_query_nucleus::SemanticNucleusValue,
+    ) -> Option<String> {
+        use crate::semantic_query_nucleus::{
+            SemanticNucleusFailure as F, SemanticNucleusValue as V,
+        };
+        match value {
+            V::Failure(
+                F::Diagnostic(kind)
+                | F::DiagnosticAtParameter { kind, .. }
+                | F::DiagnosticAtDeclaration { kind, .. }
+                | F::OwnershipGate { kind, .. }
+                | F::DiagnosticWithHelp { kind, .. },
+            ) => Some(kind.to_string()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn direct_identity_and_signature_families_match_retired_air_per_declaration() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::semantic_query_nucleus::{SemanticNucleusKey as Key, SemanticNucleusValue as V};
+
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "struct S { value: i32, fn get(borrow self, delta: i32) -> i32 { self.value + delta } fn make(value: i32) -> S { S { value } } } enum E { A, B } drop fn S(self) {} fn free(value: i32) -> i32 { value } fn main() {}",
+            )],
+            1,
+        );
+        let retired = retired_declaration_exports(&source);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+
+        for (category, kind, name) in [
+            (
+                Category::Function,
+                crate::StableDefinitionKind::Function,
+                "free",
+            ),
+            (Category::Struct, crate::StableDefinitionKind::Struct, "S"),
+            (Category::Enum, crate::StableDefinitionKind::Enum, "E"),
+            (Category::Method, crate::StableDefinitionKind::Method, "get"),
+            (
+                Category::AssociatedFunction,
+                crate::StableDefinitionKind::AssociatedFunction,
+                "make",
+            ),
+            (
+                Category::Destructor,
+                crate::StableDefinitionKind::Destructor,
+                "S",
+            ),
+        ] {
+            let declaration = declaration_candidate(&database, revision, &module, category, name);
+            let query = crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                declaration,
+                configuration: semantic_configuration(),
+            };
+            let (identity, identity_attempt) = request_semantic_nucleus_observed(
+                &database,
+                revision,
+                Key::Identity(query.clone()),
+            );
+            if category == Category::Destructor {
+                assert_direct_semantic_observation(
+                    "destructor identity",
+                    &identity_attempt,
+                    &["compiler.declaration-shell", "compiler.semantic-nucleus"],
+                    &[
+                        "compiler.declaration-occurrence-index",
+                        "compiler.declaration-shell",
+                        "compiler.lookup-name",
+                        "compiler.module-index",
+                        "compiler.parse-module",
+                        "compiler.raw-declaration-signature",
+                        "compiler.semantic-nucleus",
+                    ],
+                    7,
+                );
+            } else {
+                assert_direct_semantic_observation(
+                    "direct identity",
+                    &identity_attempt,
+                    &["compiler.declaration-shell"],
+                    &[
+                        "compiler.declaration-occurrence-index",
+                        "compiler.declaration-shell",
+                        "compiler.parse-module",
+                    ],
+                    3,
+                );
+            }
+            let V::Identity(identity) = identity else {
+                panic!("direct identity failed for {kind:?} {name}: {identity:?}")
+            };
+            let retired = retired
+                .iter()
+                .find(|export| {
+                    export.identity.kind == kind && export.identity.name.as_ref() == name
+                })
+                .unwrap_or_else(|| panic!("retired AIR omitted {kind:?} {name}"));
+            assert_eq!(identity.key.namespace(), retired.identity.namespace);
+            assert_eq!(identity.key.kind(), retired.identity.kind);
+            assert_eq!(identity.key.name(), retired.identity.name.as_ref());
+            assert_eq!(
+                identity.key.owner().map(|owner| owner.name()),
+                retired.identity.owner.as_deref()
+            );
+            assert_eq!(identity.is_public, retired.identity.is_public);
+
+            let (signature, signature_attempt) =
+                request_semantic_nucleus_observed(&database, revision, Key::Signature(query));
+            match category {
+                Category::Destructor => assert_direct_semantic_observation(
+                    "destructor signature",
+                    &signature_attempt,
+                    &[
+                        "compiler.declaration-shell",
+                        "compiler.lookup-name",
+                        "compiler.raw-declaration-signature",
+                    ],
+                    &[
+                        "compiler.declaration-occurrence-index",
+                        "compiler.declaration-shell",
+                        "compiler.lookup-name",
+                        "compiler.module-index",
+                        "compiler.parse-module",
+                        "compiler.raw-declaration-signature",
+                        "compiler.semantic-nucleus",
+                    ],
+                    10,
+                ),
+                Category::Method | Category::AssociatedFunction => {
+                    assert_direct_semantic_observation(
+                        "owned callable signature",
+                        &signature_attempt,
+                        &[
+                            "compiler.declaration-shell",
+                            "compiler.raw-declaration-signature",
+                            "compiler.semantic-nucleus",
+                        ],
+                        &[
+                            "compiler.declaration-occurrence-index",
+                            "compiler.declaration-shell",
+                            "compiler.lookup-name",
+                            "compiler.module-index",
+                            "compiler.parse-module",
+                            "compiler.raw-declaration-signature",
+                            "compiler.semantic-nucleus",
+                        ],
+                        9,
+                    )
+                }
+                _ => assert_direct_semantic_observation(
+                    "direct signature",
+                    &signature_attempt,
+                    &[
+                        "compiler.declaration-shell",
+                        "compiler.raw-declaration-signature",
+                    ],
+                    &[
+                        "compiler.declaration-occurrence-index",
+                        "compiler.declaration-shell",
+                        "compiler.parse-module",
+                        "compiler.raw-declaration-signature",
+                    ],
+                    4,
+                ),
+            }
+            let V::Signature(signature) = signature else {
+                panic!("direct signature failed for {kind:?} {name}: {signature:?}")
+            };
+            assert!(
+                signature_agrees(&retired.payload, &signature.signature),
+                "retired/keyed signature disagreement for {kind:?} {name}: retired={:?}, keyed={:?}",
+                retired.payload,
+                signature.signature,
+            );
+        }
+    }
+
+    #[test]
+    fn direct_const_family_matches_retired_evaluation() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::semantic_query_nucleus::{
+            ConstResolutionProjection as Resolution, SemanticNucleusKey as Key,
+            SemanticNucleusValue as V,
+        };
+
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "const SELECTED: i32 = 40 + 2; fn main() -> i32 { SELECTED }",
+            )],
+            1,
+        );
+        let retired = retired_declaration_exports(&source);
+        let retired = retired
+            .iter()
+            .find(|export| {
+                export.identity.kind == crate::StableDefinitionKind::ValueConst
+                    && export.identity.name.as_ref() == "SELECTED"
+            })
+            .expect("retired AIR omitted SELECTED");
+        let rue_air::SemanticDeclarationPayload::Const {
+            ty: retired_ty,
+            value: rue_air::SemanticExportConstValue::Integer(retired_value),
+        } = &retired.payload
+        else {
+            panic!("retired AIR classified SELECTED unexpectedly: {retired:?}")
+        };
+
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let declaration = declaration_candidate(
+            &database,
+            revision,
+            &module,
+            Category::ConstCandidate,
+            "SELECTED",
+        );
+        let configuration = crate::semantic_query_nucleus::SemanticQueryConfiguration {
+            target: rue_target::Target::host().expect("retired AIR requires a supported host"),
+            preview_features: crate::StablePreviewFeatures::new(&crate::PreviewFeatures::default()),
+        };
+        let (keyed, keyed_attempt) = request_semantic_nucleus_observed(
+            &database,
+            revision,
+            Key::ConstResolution(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                declaration,
+                configuration,
+            }),
+        );
+        assert_direct_semantic_observation(
+            "const evaluation",
+            &keyed_attempt,
+            &[
+                "compiler.declaration-shell",
+                "compiler.lookup-name",
+                "compiler.raw-const-syntax",
+            ],
+            &[
+                "compiler.declaration-occurrence-index",
+                "compiler.declaration-shell",
+                "compiler.lookup-name",
+                "compiler.module-index",
+                "compiler.parse-module",
+                "compiler.raw-const-syntax",
+            ],
+            6,
+        );
+        let V::ConstResolution(Resolution::Value {
+            ty: keyed_ty,
+            value,
+            ..
+        }) = keyed
+        else {
+            panic!("direct const terminal failed: {keyed:?}")
+        };
+        let crate::durable_semantics::DurableConstValue::Integer(keyed_value) = *value else {
+            panic!("direct const terminal returned a non-integer value")
+        };
+        assert!(export_type_agrees(retired_ty, &keyed_ty));
+        assert_eq!(*retired_value, keyed_value);
+    }
+
+    #[test]
+    fn direct_target_selected_comptime_matches_retired_air_oracle() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::semantic_query_nucleus::{
+            ComptimeCallQueryKey, ComptimeCallResultProjection as ResultProjection,
+            SemanticNucleusKey as Key, SemanticNucleusValue as V,
+        };
+
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn selected(comptime seed: i32) -> i32 { match @target_arch() { Arch.X86_64 => seed + 64, Arch.Aarch64 => seed + 32 } } fn main() -> i32 { selected(0) }",
+            )],
+            1,
+        );
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&source).unwrap();
+        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let retired = rue_air::Sema::new_synthetic(
+            rir.rir(),
+            rir.semantic_symbols().interner(),
+            crate::PreviewFeatures::new(),
+        )
+        .analyze_all_for_test()
+        .unwrap();
+        let retired = retired
+            .functions
+            .iter()
+            .flat_map(|function| function.air.iter())
+            .find_map(|(_, instruction)| match &instruction.data {
+                rue_air::AirInstData::EnumVariant { variant_index, .. } => match variant_index {
+                    0 => Some(64),
+                    1 => Some(32),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("retired AIR did not lower the target-selected Arch variant");
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let mut configuration = semantic_configuration();
+        configuration.target =
+            rue_target::Target::host().expect("retired AIR requires a supported host");
+        let (keyed, keyed_attempt) = request_semantic_nucleus_observed(
+            &database,
+            revision,
+            Key::ComptimeCall(ComptimeCallQueryKey {
+                declaration: crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration: declaration_candidate(
+                        &database,
+                        revision,
+                        &module,
+                        Category::Function,
+                        "selected",
+                    ),
+                    configuration,
+                },
+                type_arguments: Arc::from([]),
+                value_arguments: Arc::from([(
+                    Arc::from("seed"),
+                    crate::durable_semantics::DurableConstValue::Integer(0),
+                )]),
+            }),
+        );
+        assert_direct_semantic_observation(
+            "target-selected comptime call",
+            &keyed_attempt,
+            &[
+                "compiler.declaration-shell",
+                "compiler.raw-declaration-body",
+                "compiler.semantic-nucleus",
+            ],
+            &[
+                "compiler.declaration-occurrence-index",
+                "compiler.declaration-shell",
+                "compiler.parse-module",
+                "compiler.raw-declaration-body",
+                "compiler.raw-declaration-signature",
+                "compiler.semantic-nucleus",
+            ],
+            7,
+        );
+        let V::ComptimeCall(crate::semantic_query_nucleus::ComptimeCallProjection {
+            result:
+                ResultProjection::Value(crate::durable_semantics::DurableConstValue::Integer(keyed)),
+            ..
+        }) = keyed
+        else {
+            panic!("direct target-selected const failed: {keyed:?}")
+        };
+        assert_eq!(i128::from(retired), keyed);
+    }
+
+    #[test]
+    fn direct_ownership_terminals_match_retired_air_acceptance_and_failure() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::semantic_query_nucleus::{SemanticNucleusKey as Key, SemanticNucleusValue as V};
+
+        for (source_text, should_accept) in [
+            (
+                "enum Maybe { Some, None } fn Gated(comptime T: type) -> type { @require_droppable(T); T } const G = Gated(Maybe); fn main() {}",
+                true,
+            ),
+            (
+                "linear struct Token { v: i32 } fn Gated(comptime T: type) -> type { @require_droppable(T); T } const G = Gated(Token); fn main() {}",
+                false,
+            ),
+        ] {
+            let source = source_snapshot(&[(1, "/main.rue", "main.rue", source_text)], 1);
+            let module = ModuleId::from_logical_path("main.rue").unwrap();
+            let mut database = RevisionedQueryDatabase::default();
+            let revision = database.source_revision(
+                &super::super::session::ExactSourceInput::new(&source),
+                &source,
+            );
+            let producer = crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                declaration: declaration_candidate(
+                    &database,
+                    revision,
+                    &module,
+                    Category::ConstCandidate,
+                    "G",
+                ),
+                configuration: semantic_configuration(),
+            };
+            let (resolution, resolution_attempt) = request_semantic_nucleus_observed(
+                &database,
+                revision,
+                Key::ConstResolution(producer.clone()),
+            );
+            assert_direct_semantic_observation(
+                "ownership-gated const producer",
+                &resolution_attempt,
+                &[
+                    "compiler.declaration-shell",
+                    "compiler.lookup-name",
+                    "compiler.raw-const-syntax",
+                    "compiler.semantic-nucleus",
+                ],
+                &[
+                    "compiler.declaration-occurrence-index",
+                    "compiler.declaration-shell",
+                    "compiler.lookup-name",
+                    "compiler.module-index",
+                    "compiler.parse-module",
+                    "compiler.raw-const-syntax",
+                    "compiler.raw-declaration-body",
+                    "compiler.raw-declaration-signature",
+                    "compiler.semantic-nucleus",
+                ],
+                14,
+            );
+            let V::ConstResolution(
+                crate::semantic_query_nucleus::ConstResolutionProjection::Value {
+                    deferred_ownership,
+                    ..
+                },
+            ) = resolution
+            else {
+                panic!("direct const producer failed before its ownership gate: {resolution:?}")
+            };
+            let [gate] = deferred_ownership.as_ref() else {
+                panic!("expected one direct ownership gate: {deferred_ownership:?}")
+            };
+            let (keyed, keyed_attempt) = request_semantic_nucleus_observed(
+                &database,
+                revision,
+                Key::DeferredOwnership(crate::semantic_query_nucleus::DeferredOwnershipQueryKey {
+                    producer,
+                    gate: gate.clone(),
+                }),
+            );
+            assert_direct_semantic_observation(
+                "deferred ownership terminal",
+                &keyed_attempt,
+                &[
+                    "compiler.declaration-shell",
+                    "compiler.lookup-name",
+                    "compiler.semantic-nucleus",
+                ],
+                &[
+                    "compiler.declaration-occurrence-index",
+                    "compiler.declaration-shell",
+                    "compiler.lookup-name",
+                    "compiler.module-index",
+                    "compiler.parse-module",
+                    "compiler.raw-const-syntax",
+                    "compiler.raw-declaration-body",
+                    "compiler.raw-declaration-signature",
+                    "compiler.semantic-nucleus",
+                ],
+                18,
+            );
+            if should_accept {
+                let retired = retired_declaration_exports(&source);
+                assert!(
+                    retired
+                        .iter()
+                        .any(|export| export.identity.name.as_ref() == "G"),
+                    "retired AIR omitted accepted G"
+                );
+                assert_eq!(keyed, V::DeferredOwnership);
+            } else {
+                let retired = retired_declaration_failure(&source);
+                assert_eq!(
+                    nucleus_failure_message(&keyed).as_deref(),
+                    Some(retired.as_str())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn direct_family_failures_match_retired_air_without_root_prevalidation() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::semantic_query_nucleus::{SemanticNucleusKey as Key, SemanticNucleusValue as V};
+
+        for (source_text, category, name, identity_terminal) in [
+            (
+                "drop fn Missing(self) {} fn main() {}",
+                Category::Destructor,
+                "Missing",
+                false,
+            ),
+            (
+                "struct S {} drop fn S(self) {} drop fn S(self) {} fn main() {}",
+                Category::Destructor,
+                "S",
+                true,
+            ),
+            (
+                "struct S { fn make(a: i32, a: i32) {} } fn main() {}",
+                Category::AssociatedFunction,
+                "make",
+                false,
+            ),
+        ] {
+            let source = source_snapshot(&[(1, "/main.rue", "main.rue", source_text)], 1);
+            let retired = retired_declaration_failure(&source);
+            let module = ModuleId::from_logical_path("main.rue").unwrap();
+            let mut database = RevisionedQueryDatabase::default();
+            let revision = database.source_revision(
+                &super::super::session::ExactSourceInput::new(&source),
+                &source,
+            );
+            let query = crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                declaration: declaration_candidate(&database, revision, &module, category, name),
+                configuration: semantic_configuration(),
+            };
+            let (keyed, keyed_attempt) = request_semantic_nucleus_observed(
+                &database,
+                revision,
+                if identity_terminal {
+                    Key::Identity(query)
+                } else {
+                    Key::Signature(query)
+                },
+            );
+            if identity_terminal {
+                assert_direct_semantic_observation(
+                    "deterministic destructor identity failure",
+                    &keyed_attempt,
+                    &["compiler.declaration-shell", "compiler.semantic-nucleus"],
+                    &[
+                        "compiler.declaration-occurrence-index",
+                        "compiler.declaration-shell",
+                        "compiler.lookup-name",
+                        "compiler.module-index",
+                        "compiler.parse-module",
+                        "compiler.semantic-nucleus",
+                    ],
+                    6,
+                );
+            } else if category == Category::Destructor {
+                assert_direct_semantic_observation(
+                    "deterministic destructor signature failure",
+                    &keyed_attempt,
+                    &["compiler.declaration-shell", "compiler.lookup-name"],
+                    &[
+                        "compiler.declaration-occurrence-index",
+                        "compiler.declaration-shell",
+                        "compiler.lookup-name",
+                        "compiler.module-index",
+                        "compiler.parse-module",
+                    ],
+                    5,
+                );
+            } else {
+                assert_direct_semantic_observation(
+                    "deterministic parameter failure",
+                    &keyed_attempt,
+                    &[
+                        "compiler.declaration-shell",
+                        "compiler.raw-declaration-signature",
+                    ],
+                    &[
+                        "compiler.declaration-occurrence-index",
+                        "compiler.declaration-shell",
+                        "compiler.parse-module",
+                        "compiler.raw-declaration-signature",
+                    ],
+                    4,
+                );
+            }
+            assert!(matches!(keyed, V::Failure(_)));
+            assert_eq!(
+                nucleus_failure_message(&keyed).as_deref(),
+                Some(retired.as_str()),
+                "direct keyed failure diverged for {category:?} {name}: {keyed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_declaration_import_family_matches_independent_import_graph_oracle() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+
+        let source = source_snapshot(
+            &[
+                (
+                    1,
+                    "/project/main.rue",
+                    "main.rue",
+                    "const dep = @import(\"dep.rue\"); fn main() -> i32 { dep.value }",
+                ),
+                (
+                    2,
+                    "/project/dep.rue",
+                    "dep.rue",
+                    "pub const value: i32 = 42;",
+                ),
+            ],
+            1,
+        );
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&source).unwrap();
+        let retired = crate::test_support::test_fixture_import_graph(&parsed).unwrap();
+        let main = ModuleId::from_logical_path("main.rue").unwrap();
+        let expected = retired
+            .records()
+            .iter()
+            .find(|record| record.importer() == &main && record.normalized_specifier() == "dep.rue")
+            .expect("retired import graph omitted dep.rue")
+            .resolution()
+            .clone();
+
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        database.adopt_test_import_graph_for_revision(revision, retired);
+        let revision = database.current_semantic_revision().unwrap();
+        let requested = database.runtime.request_registered(
+            &database.declaration_imports,
+            revision,
+            declaration_import_key(&main, Category::ConstCandidate, "dep", None, 0, "dep.rue"),
+            CancellationToken::new(),
+        );
+        let rue_query::QueryOutcome::Success(DeclarationImportQueryValue::Available(actual)) =
+            requested.terminal().unwrap().outcome()
+        else {
+            panic!("direct declaration-import terminal failed: {requested:?}")
+        };
+        assert_eq!(actual, &expected);
+        assert_eq!(
+            requested
+                .dependencies()
+                .iter()
+                .map(|dependency| dependency.node.family())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "compiler.declaration-occurrence-index",
+                "compiler.declaration-shell",
+                "compiler.parse-module",
+            ]),
+            "direct import oracle must not pass through a batch/root semantic adapter"
+        );
+        assert_eq!(requested.dependencies().len(), 3);
+        assert_eq!(requested.inputs().len(), 1);
+        assert_eq!(requested.inputs()[0].input, test_import_graph_input());
+    }
+
+    #[test]
+    fn direct_semantic_keys_own_declaration_validity() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::semantic_query_nucleus::{
+            SemanticNucleusFailure as Failure, SemanticNucleusKey as Key,
+            SemanticNucleusValue as Value,
+        };
+
+        let cases = [
+            (
+                "struct S { x: i32, x: i64 }",
+                Category::Struct,
+                "S",
+                "duplicate-field",
+            ),
+            ("enum E { A, A }", Category::Enum, "E", "duplicate-variant"),
+            (
+                "@copy linear struct L { x: i32 }",
+                Category::Struct,
+                "L",
+                "linear-copy",
+            ),
+        ];
+        for (source_text, category, name, expected) in cases {
+            let source = source_snapshot(&[(1, "/main.rue", "main.rue", source_text)], 1);
+            let module = ModuleId::from_logical_path("main.rue").unwrap();
+            let mut database = RevisionedQueryDatabase::default();
+            let revision = database.source_revision(
+                &super::super::session::ExactSourceInput::new(&source),
+                &source,
+            );
+            let declaration = declaration_candidate(&database, revision, &module, category, name);
+            let value = request_semantic_nucleus(
+                &database,
+                revision,
+                Key::Signature(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration,
+                    configuration: semantic_configuration(),
+                }),
+            );
+            let valid = matches!(
+                (&*expected, &value),
+                (
+                    "duplicate-field",
+                    Value::Failure(Failure::Diagnostic(
+                        rue_error::ErrorKind::DuplicateField { .. }
+                    ))
+                ) | (
+                    "duplicate-variant",
+                    Value::Failure(Failure::Diagnostic(
+                        rue_error::ErrorKind::DuplicateVariant { .. }
+                    ))
+                ) | (
+                    "linear-copy",
+                    Value::Failure(Failure::Diagnostic(rue_error::ErrorKind::LinearStructCopy(
+                        _
+                    )))
+                )
+            );
+            assert!(valid, "direct signature did not own {expected}: {value:?}");
+        }
+
+        for (source_text, name, expected) in [
+            (
+                "drop fn Missing(self) {}",
+                "Missing",
+                "unknown-destructor-owner",
+            ),
+            (
+                "struct S {} drop fn S(self) {} drop fn S(self) {}",
+                "S",
+                "duplicate-destructor",
+            ),
+        ] {
+            let source = source_snapshot(&[(1, "/main.rue", "main.rue", source_text)], 1);
+            let module = ModuleId::from_logical_path("main.rue").unwrap();
+            let mut database = RevisionedQueryDatabase::default();
+            let revision = database.source_revision(
+                &super::super::session::ExactSourceInput::new(&source),
+                &source,
+            );
+            let declaration =
+                declaration_candidate(&database, revision, &module, Category::Destructor, name);
+            let query = crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                declaration,
+                configuration: semantic_configuration(),
+            };
+            for key in [Key::Signature(query.clone()), Key::Identity(query.clone())] {
+                let value = request_semantic_nucleus(&database, revision, key);
+                let valid = match expected {
+                    "unknown-destructor-owner" => matches!(
+                        &value,
+                        Value::Failure(Failure::Diagnostic(
+                            rue_error::ErrorKind::DestructorUnknownType { .. }
+                        ))
+                    ),
+                    "duplicate-destructor" => matches!(
+                        &value,
+                        Value::Failure(Failure::DiagnosticAtDeclaration {
+                            kind: rue_error::ErrorKind::DuplicateDestructor { .. },
+                            declaration,
+                        }) if declaration.duplicate_discriminator == 1
+                    ),
+                    _ => false,
+                };
+                assert!(
+                    valid,
+                    "direct destructor terminal did not own {expected}: {value:?}"
+                );
+            }
+        }
+
+        for (source_text, category, name) in [
+            (
+                "struct S { fn m(self, a: i32, a: i32) {} }",
+                Category::Method,
+                "m",
+            ),
+            (
+                "struct S { fn make(a: i32, a: i32) {} }",
+                Category::AssociatedFunction,
+                "make",
+            ),
+        ] {
+            let source = source_snapshot(&[(1, "/main.rue", "main.rue", source_text)], 1);
+            let module = ModuleId::from_logical_path("main.rue").unwrap();
+            let mut database = RevisionedQueryDatabase::default();
+            let revision = database.source_revision(
+                &super::super::session::ExactSourceInput::new(&source),
+                &source,
+            );
+            let declaration = declaration_candidate(&database, revision, &module, category, name);
+            let value = request_semantic_nucleus(
+                &database,
+                revision,
+                Key::Signature(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration,
+                    configuration: semantic_configuration(),
+                }),
+            );
+            assert!(
+                matches!(
+                    value,
+                    Value::Failure(Failure::DiagnosticAtParameter {
+                        kind: rue_error::ErrorKind::DuplicateParameter { .. },
+                        ordinal: 1,
+                    })
+                ),
+                "direct nested signature lost its duplicate occurrence: {value:?}"
+            );
+        }
+
+        for (source_text, expected_duplicate) in [
+            ("const C: i32 = 1; const C: i32 = 2;", true),
+            ("fn C() -> i32 { 0 } const C: i32 = 1;", false),
+        ] {
+            let source = source_snapshot(&[(1, "/main.rue", "main.rue", source_text)], 1);
+            let module = ModuleId::from_logical_path("main.rue").unwrap();
+            let mut database = RevisionedQueryDatabase::default();
+            let revision = database.source_revision(
+                &super::super::session::ExactSourceInput::new(&source),
+                &source,
+            );
+            let declaration =
+                declaration_candidate(&database, revision, &module, Category::ConstCandidate, "C");
+            let value = request_semantic_nucleus(
+                &database,
+                revision,
+                Key::ConstResolution(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration,
+                    configuration: semantic_configuration(),
+                }),
+            );
+            assert!(
+                if expected_duplicate {
+                    matches!(
+                        value,
+                        Value::Failure(Failure::Diagnostic(
+                            rue_error::ErrorKind::DuplicateConstant { .. }
+                        ))
+                    )
+                } else {
+                    matches!(
+                        value,
+                        Value::Failure(Failure::Diagnostic(
+                            rue_error::ErrorKind::DuplicateFunctionDefinition { .. }
+                        ))
+                    )
+                },
+                "direct const key did not own name validity: {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_const_keys_preserve_structured_evaluator_failures() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::semantic_query_nucleus::{
+            ConstResolutionProjection, SemanticNucleusFailure as Failure,
+            SemanticNucleusKey as Key, SemanticNucleusValue as Value,
+        };
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "struct P { x: i32 }\
+                 const SIZE: i32 = @size_of(i32);\
+                 const AGG: P = P { x: 1 };\
+                 const ZERO: i32 = 5 / 0;\
+                 const OVF: i32 = 2147483647 + 1;\
+                 const LOCAL: u8 = { let y: u8 = 255; y + 1 };\
+                 const TARGET: i32 = if @target_arch() == Arch.Linux { 1 } else { 0 };\
+                 const BOOL: bool = true != false;",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let query = |name: &str| {
+            let declaration =
+                declaration_candidate(&database, revision, &module, Category::ConstCandidate, name);
+            request_semantic_nucleus(
+                &database,
+                revision,
+                Key::ConstResolution(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration,
+                    configuration: semantic_configuration(),
+                }),
+            )
+        };
+        assert!(matches!(
+            query("SIZE"),
+            Value::Failure(Failure::Diagnostic(
+                rue_error::ErrorKind::ConstExprNotSupported { .. }
+            ))
+        ));
+        assert!(matches!(
+            query("AGG"),
+            Value::Failure(Failure::Diagnostic(
+                rue_error::ErrorKind::ConstExprNotSupported { .. }
+            ))
+        ));
+        for name in ["ZERO", "OVF", "LOCAL"] {
+            assert!(matches!(
+                query(name),
+                Value::Failure(Failure::Diagnostic(
+                    rue_error::ErrorKind::ComptimeEvaluationFailed { .. }
+                ))
+            ));
+        }
+        assert!(matches!(
+            query("TARGET"),
+            Value::Failure(Failure::Diagnostic(
+                rue_error::ErrorKind::UnknownVariant { .. }
+            ))
+        ));
+        assert!(matches!(
+            query("BOOL"),
+            Value::ConstResolution(ConstResolutionProjection::Value {
+                value,
+                ..
+            }) if matches!(*value, crate::durable_semantics::DurableConstValue::Bool(true))
+        ));
+    }
+
+    #[test]
+    fn semantic_nucleus_resolves_exact_signatures_without_whole_module_semantics() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::durable_semantics::DurableType as T;
+        use crate::semantic_query_nucleus::{
+            DeclarationSignatureProjection as Signature, SemanticNucleusKey as Key,
+            SemanticNucleusValue as Value,
+        };
+
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "struct Node { next: ptr const Node, } fn choose(comptime T: type, value: T) -> T { value }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let configuration = semantic_configuration();
+
+        let node = declaration_candidate(&database, revision, &module, Category::Struct, "Node");
+        let node_query = crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+            declaration: node,
+            configuration: configuration.clone(),
+        };
+        let identity =
+            request_semantic_nucleus(&database, revision, Key::Identity(node_query.clone()));
+        let Value::Identity(identity) = identity else {
+            panic!("expected Node identity, got {identity:?}")
+        };
+        let signature = request_semantic_nucleus(&database, revision, Key::Signature(node_query));
+        assert_eq!(
+            signature,
+            Value::Signature(crate::semantic_query_nucleus::ResolvedDeclarationSignature {
+                signature: Signature::Struct {
+                    fields: vec![(
+                        Arc::from("next"),
+                        T::PtrConst(Box::new(T::Nominal(identity.key.clone())))
+                    )]
+                    .into(),
+                    is_copy: false,
+                    is_linear: false,
+                    is_repr_c: false,
+                },
+                anonymous_nominals: Arc::from([]),
+                dependencies: vec![
+                    crate::semantic_query_nucleus::SemanticDeclarationDependency {
+                        source: identity.key.clone(),
+                        kind: rue_air::DeclarationTypeDependencyKind::Field,
+                        target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedType(
+                            identity.key,
+                        ),
+                    },
+                ]
+                .into(),
+                deferred_ownership: Arc::from([]),
+            })
+        );
+
+        let choose =
+            declaration_candidate(&database, revision, &module, Category::Function, "choose");
+        let signature = request_semantic_nucleus(
+            &database,
+            revision,
+            Key::Signature(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                declaration: choose,
+                configuration,
+            }),
+        );
+        let Value::Signature(crate::semantic_query_nucleus::ResolvedDeclarationSignature {
+            signature: Signature::Callable {
+                parameters, result, ..
+            },
+            ..
+        }) = signature
+        else {
+            panic!("expected callable signature, got {signature:?}")
+        };
+        assert_eq!(parameters[0].ty, T::ComptimeType);
+        assert_eq!(parameters[1].ty, T::GenericParameter(0));
+        assert_eq!(result, T::GenericParameter(0));
+    }
+
+    #[test]
+    fn nominal_well_formedness_is_a_keyed_query_and_preserves_indirection() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::semantic_query_nucleus::{
+            SemanticNucleusFailure as Failure, SemanticNucleusKey as Key,
+            SemanticNucleusValue as Value,
+        };
+
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "struct Bad { next: [Bad; 0] } struct Good { next: ptr const Good }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let query = |declaration| crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+            declaration,
+            configuration: semantic_configuration(),
+        };
+
+        let bad = declaration_candidate(&database, revision, &module, Category::Struct, "Bad");
+        assert!(matches!(
+            request_semantic_nucleus(
+                &database,
+                revision,
+                Key::NominalWellFormedness(query(bad)),
+            ),
+            Value::Failure(Failure::Diagnostic(
+                rue_error::ErrorKind::RecursiveTypeInfiniteSize { ref name, ref cycle }
+            )) if name == "Bad" && cycle == "Bad -> Bad"
+        ));
+
+        let good = declaration_candidate(&database, revision, &module, Category::Struct, "Good");
+        assert_eq!(
+            request_semantic_nucleus(&database, revision, Key::NominalWellFormedness(query(good)),),
+            Value::NominalWellFormedness,
+        );
+    }
+
+    #[test]
+    fn require_droppable_propagates_signature_cycles_and_accepts_deferred_pointer_graphs() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::semantic_query_nucleus::{
+            SemanticNucleusFailure as Failure, SemanticNucleusKey as Key,
+            SemanticNucleusValue as Value,
+        };
+
+        let cycle_source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn Loop(comptime T: type) -> type { @require_droppable(Loop(T)); struct { value: ptr const T } } const X = Loop(i32);",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut cycle_database = RevisionedQueryDatabase::default();
+        let cycle_revision = cycle_database.source_revision(
+            &super::super::session::ExactSourceInput::new(&cycle_source),
+            &cycle_source,
+        );
+        let alias = declaration_candidate(
+            &cycle_database,
+            cycle_revision,
+            &module,
+            Category::ConstCandidate,
+            "X",
+        );
+        let cycle = request_semantic_nucleus(
+            &cycle_database,
+            cycle_revision,
+            Key::ConstResolution(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                declaration: alias,
+                configuration: semantic_configuration(),
+            }),
+        );
+        assert!(
+            matches!(
+                &cycle,
+                Value::Failure(Failure::Cycle(nodes))
+                    if nodes.iter().any(|name| name.as_ref() == "Loop")
+            ),
+            "unexpected cycle result: {cycle:?}"
+        );
+
+        let control_source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn Wrap(comptime T: type) -> type { @require_droppable(T); struct { value: ptr const T } } struct Node { next: ptr const Wrap(Node) }",
+            )],
+            1,
+        );
+        let mut control_database = RevisionedQueryDatabase::default();
+        let control_revision = control_database.source_revision(
+            &super::super::session::ExactSourceInput::new(&control_source),
+            &control_source,
+        );
+        let node = declaration_candidate(
+            &control_database,
+            control_revision,
+            &module,
+            Category::Struct,
+            "Node",
+        );
+        let producer = crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+            declaration: node,
+            configuration: semantic_configuration(),
+        };
+        let signature = request_semantic_nucleus(
+            &control_database,
+            control_revision,
+            Key::Signature(producer.clone()),
+        );
+        let Value::Signature(signature) = signature else {
+            panic!("expected deferred pointer signature, got {signature:?}")
+        };
+        let [gate] = signature.deferred_ownership.as_ref() else {
+            panic!("expected one deferred ownership gate: {signature:?}")
+        };
+        assert_eq!(
+            request_semantic_nucleus(
+                &control_database,
+                control_revision,
+                Key::DeferredOwnership(crate::semantic_query_nucleus::DeferredOwnershipQueryKey {
+                    producer,
+                    gate: gate.clone(),
+                }),
+            ),
+            Value::DeferredOwnership,
+        );
+    }
+
+    #[test]
+    fn signature_engine_cycles_publish_family_owned_domain_failures() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::semantic_query_nucleus::{
+            SemanticNucleusFailure as Failure, SemanticNucleusKey as Key,
+            SemanticNucleusValue as Value,
+        };
+
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn A(x: B(i32)) -> i32 { 0 } fn B(x: A(i32)) -> i32 { 0 }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let declaration =
+            declaration_candidate(&database, revision, &module, Category::Function, "A");
+        let result = request_semantic_nucleus(
+            &database,
+            revision,
+            Key::Signature(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                declaration,
+                configuration: semantic_configuration(),
+            }),
+        );
+        assert!(
+            matches!(
+                &result,
+                Value::Failure(Failure::SignatureReentry { signature, cycle })
+                    if signature.name() == "B"
+                        && cycle.as_ref() == [Arc::from("A"), Arc::from("B"), Arc::from("A")]
+            ),
+            "unexpected cycle diagnostic: {result:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_nucleus_evaluates_only_selected_const_dependencies_and_reports_cycles() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::durable_semantics::DurableConstValue as Const;
+        use crate::semantic_query_nucleus::{
+            ConstResolutionProjection as Resolution, SemanticNucleusFailure as Failure,
+            SemanticNucleusKey as Key, SemanticNucleusValue as Value,
+        };
+
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "const base: i32 = 20; const selected: i32 = if true { base + 22 } else { missing }; const left: i32 = right; const right: i32 = left;",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let configuration = semantic_configuration();
+        let query = |name: &str| {
+            Key::ConstResolution(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                declaration: declaration_candidate(
+                    &database,
+                    revision,
+                    &module,
+                    Category::ConstCandidate,
+                    name,
+                ),
+                configuration: configuration.clone(),
+            })
+        };
+
+        let selected = request_semantic_nucleus(&database, revision, query("selected"));
+        assert!(matches!(
+            selected,
+            Value::ConstResolution(Resolution::Value {
+                value,
+                ..
+            }) if matches!(value.as_ref(), Const::Integer(42))
+        ));
+        let cycle = request_semantic_nucleus(&database, revision, query("left"));
+        assert!(
+            matches!(cycle, Value::Failure(Failure::Cycle(ref nodes)) if !nodes.is_empty()),
+            "expected a domain cycle, got {cycle:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_nucleus_selects_declaration_time_target_branches_from_exact_configuration() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::durable_semantics::{DurableConstValue as Const, DurableType as Type};
+        use crate::semantic_query_nucleus::{
+            ConstResolutionProjection as Resolution, SemanticNucleusKey as Key,
+            SemanticNucleusValue as Value,
+        };
+
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "const arch: i32 = match @target_arch() { Arch.X86_64 => 64, Arch.Aarch64 => 32 }; const os: i32 = if @target_os() == Os.Macos { 2 } else { 1 }; const model = match @target_data_model() { DataModel.Ilp32 => i8, DataModel.Lp64 => i64, DataModel.Llp64 => i16 };",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let request = |database: &RevisionedQueryDatabase,
+                       target: rue_target::Target,
+                       name: &str| {
+            let mut configuration = semantic_configuration();
+            configuration.target = target;
+            request_semantic_nucleus(
+                database,
+                revision,
+                Key::ConstResolution(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration: declaration_candidate(
+                        database,
+                        revision,
+                        &module,
+                        Category::ConstCandidate,
+                        name,
+                    ),
+                    configuration,
+                }),
+            )
+        };
+
+        assert!(matches!(
+            request(&database, rue_target::Target::X86_64Linux, "arch"),
+            Value::ConstResolution(Resolution::Value {
+                value,
+                ty: Type::I32,
+                ..
+            }) if matches!(value.as_ref(), Const::Integer(64))
+        ));
+        assert!(matches!(
+            request(&database, rue_target::Target::Aarch64Macos, "arch"),
+            Value::ConstResolution(Resolution::Value {
+                value,
+                ty: Type::I32,
+                ..
+            }) if matches!(value.as_ref(), Const::Integer(32))
+        ));
+        assert!(matches!(
+            request(&database, rue_target::Target::Aarch64Macos, "os"),
+            Value::ConstResolution(Resolution::Value {
+                value,
+                ty: Type::I32,
+                ..
+            }) if matches!(value.as_ref(), Const::Integer(2))
+        ));
+        assert!(matches!(
+            request(&database, rue_target::Target::Aarch64Linux, "model"),
+            Value::ConstResolution(Resolution::Value {
+                value,
+                ty: Type::ComptimeType,
+                ..
+            }) if matches!(value.as_ref(), Const::Type(Type::I64))
+        ));
+    }
+
+    #[test]
+    fn semantic_nucleus_demand_does_not_touch_unrelated_declarations() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::durable_semantics::DurableConstValue as Const;
+        use crate::semantic_query_nucleus::{
+            ConstResolutionProjection as Resolution, SemanticNucleusKey as Key,
+            SemanticNucleusValue as Value,
+        };
+
+        let mut text = String::from("const base: i32 = 20; const selected: i32 = base + 22;\n");
+        for index in 0..128 {
+            text.push_str(&format!("const unrelated{index}: i32 = missing{index};\n"));
+        }
+        let source = source_snapshot(&[(1, "/main.rue", "main.rue", &text)], 1);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let selected = declaration_candidate(
+            &database,
+            revision,
+            &module,
+            Category::ConstCandidate,
+            "selected",
+        );
+        let value = request_semantic_nucleus(
+            &database,
+            revision,
+            Key::ConstResolution(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                declaration: selected,
+                configuration: semantic_configuration(),
+            }),
+        );
+        assert!(matches!(
+            value,
+            Value::ConstResolution(Resolution::Value {
+                value,
+                ..
+            }) if matches!(value.as_ref(), Const::Integer(42))
+        ));
+        assert_eq!(
+            database.semantic_nucleus.retention().terminals,
+            2,
+            "only `selected` and its exact `base` dependency may publish semantic terminals"
+        );
+    }
+
+    #[test]
+    fn semantic_nucleus_lifecycle_distinguishes_terminals_from_control_flow() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::durable_semantics::DurableConstValue as Const;
+        use crate::semantic_query_nucleus::{
+            ConstResolutionProjection as Resolution, SemanticNucleusFailure as Failure,
+            SemanticNucleusKey as Key, SemanticNucleusValue as Value,
+        };
+
+        let source_text = (0..=MODULE_QUERY_MEMO_RETENTION)
+            .map(|index| format!("const c{index}: i32 = {index};"))
+            .chain([
+                "const bad: i32 = missing;".to_owned(),
+                "const canceled: i32 = 7;".to_owned(),
+            ])
+            .collect::<Vec<_>>()
+            .join("\n");
+        let source = source_snapshot(&[(1, "/main.rue", "main.rue", &source_text)], 1);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let configuration = semantic_configuration();
+        let query = |name: &str| crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+            declaration: declaration_candidate(
+                &database,
+                revision,
+                &module,
+                Category::ConstCandidate,
+                name,
+            ),
+            configuration: configuration.clone(),
+        };
+
+        let c0 = Key::ConstResolution(query("c0"));
+        let cold = database.runtime.request_registered(
+            &database.semantic_nucleus,
+            revision,
+            c0.clone(),
+            CancellationToken::new(),
+        );
+        assert_eq!(execution(&cold), RequestExecution::Computed);
+        let cold_terminal = cold.terminal().unwrap();
+        let cold_stamp = cold_terminal.stamp();
+        let rue_query::QueryOutcome::Success(cold_value) = cold_terminal.outcome() else {
+            unreachable!()
+        };
+        assert!(matches!(
+            cold_value,
+            Value::ConstResolution(Resolution::Value {
+                value,
+                ..
+            }) if matches!(value.as_ref(), Const::Integer(0))
+        ));
+
+        let warm = database.runtime.request_registered(
+            &database.semantic_nucleus,
+            revision,
+            c0.clone(),
+            CancellationToken::new(),
+        );
+        assert_eq!(execution(&warm), RequestExecution::Reused);
+        assert_eq!(warm.terminal().unwrap().stamp(), cold_stamp);
+        assert_eq!(warm.terminal().unwrap().outcome(), cold_terminal.outcome());
+
+        let bad = Key::ConstResolution(query("bad"));
+        let failed = database.runtime.request_registered(
+            &database.semantic_nucleus,
+            revision,
+            bad.clone(),
+            CancellationToken::new(),
+        );
+        let failed_terminal = failed.terminal().unwrap();
+        assert_eq!(failed_terminal.kind(), QueryTerminalKind::Failure);
+        assert!(matches!(
+            failed_terminal.outcome(),
+            rue_query::QueryOutcome::Success(Value::Failure(Failure::Resolution(_)))
+        ));
+        let failed_again = database.runtime.request_registered(
+            &database.semantic_nucleus,
+            revision,
+            bad,
+            CancellationToken::new(),
+        );
+        assert_eq!(execution(&failed_again), RequestExecution::Reused);
+        assert_eq!(
+            failed_again.terminal().unwrap().stamp(),
+            failed_terminal.stamp(),
+            "deterministic semantic failures are reusable terminals"
+        );
+
+        let canceled_key = Key::ConstResolution(query("canceled"));
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let canceled = database.runtime.request_registered(
+            &database.semantic_nucleus,
+            revision,
+            canceled_key.clone(),
+            cancellation,
+        );
+        assert_eq!(execution(&canceled), RequestExecution::Aborted);
+        assert!(canceled.terminal().is_none());
+        let after_cancel = database.runtime.request_registered(
+            &database.semantic_nucleus,
+            revision,
+            canceled_key,
+            CancellationToken::new(),
+        );
+        assert_eq!(execution(&after_cancel), RequestExecution::Computed);
+
+        let cycle = database.runtime.request_registered(
+            &database.semantic_nucleus,
+            revision,
+            Key::EngineCycleProbe(query("canceled")),
+            CancellationToken::new(),
+        );
+        assert_eq!(execution(&cycle), RequestExecution::Aborted);
+        assert!(matches!(cycle.abort(), Some(QueryAbort::Cycle(_))));
+        assert!(cycle.terminal().is_none());
+
+        for index in 1..=MODULE_QUERY_MEMO_RETENTION {
+            let requested = database.runtime.request_registered(
+                &database.semantic_nucleus,
+                revision,
+                Key::ConstResolution(query(&format!("c{index}"))),
+                CancellationToken::new(),
+            );
+            assert!(requested.terminal().is_some());
+        }
+        assert_eq!(
+            database.semantic_nucleus.retention().terminals,
+            MODULE_QUERY_MEMO_RETENTION
+        );
+        let after_eviction = database.runtime.request_registered(
+            &database.semantic_nucleus,
+            revision,
+            c0,
+            CancellationToken::new(),
+        );
+        assert_eq!(execution(&after_eviction), RequestExecution::Computed);
+        assert_eq!(
+            after_eviction.terminal().unwrap().outcome(),
+            cold_terminal.outcome()
+        );
+
+        let broken = source_snapshot(
+            &[(1, "/main.rue", "main.rue", "const value: i32 = missing;")],
+            1,
+        );
+        let fixed = source_snapshot(&[(1, "/main.rue", "main.rue", "const value: i32 = 42;")], 1);
+        let mut recovery = RevisionedQueryDatabase::default();
+        let broken_revision = recovery.source_revision(
+            &super::super::session::ExactSourceInput::new(&broken),
+            &broken,
+        );
+        let broken_query = crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+            declaration: declaration_candidate(
+                &recovery,
+                broken_revision,
+                &module,
+                Category::ConstCandidate,
+                "value",
+            ),
+            configuration: configuration.clone(),
+        };
+        assert!(matches!(
+            request_semantic_nucleus(
+                &recovery,
+                broken_revision,
+                Key::ConstResolution(broken_query)
+            ),
+            Value::Failure(Failure::Resolution(_))
+        ));
+        let fixed_revision = recovery.source_revision(
+            &super::super::session::ExactSourceInput::new(&fixed),
+            &fixed,
+        );
+        let fixed_query = crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+            declaration: declaration_candidate(
+                &recovery,
+                fixed_revision,
+                &module,
+                Category::ConstCandidate,
+                "value",
+            ),
+            configuration,
+        };
+        assert!(matches!(
+            request_semantic_nucleus(&recovery, fixed_revision, Key::ConstResolution(fixed_query)),
+            Value::ConstResolution(Resolution::Value {
+                value,
+                ..
+            }) if matches!(value.as_ref(), Const::Integer(42))
+        ));
     }
 
     #[test]
@@ -4429,6 +12281,72 @@ mod tests {
         assert_eq!(database.runtime.metrics().claims, after_first_projection);
     }
 
+    #[test]
+    fn lookup_name_retains_position_free_facts_across_trivia_shifts() {
+        let first = source_snapshot(
+            &[(1, "/main.rue", "main.rue", "pub struct Base { value: i32 }")],
+            1,
+        );
+        let shifted = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "// leading trivia moves every current locator\npub struct Base { value: i32 }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let key = LookupNameKey {
+            module: module.clone(),
+            namespace: DefinitionNamespace::ModuleItem,
+            name: Arc::from("Base"),
+        };
+        let mut database = RevisionedQueryDatabase::default();
+        let first_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&first),
+            &first,
+        );
+        let first_lookup = database.runtime.request_registered(
+            &database.lookup_names,
+            first_revision,
+            key.clone(),
+            CancellationToken::new(),
+        );
+        let first_stamp = first_lookup.terminal().unwrap().stamp();
+        let (first_program, _) =
+            database.parse_program(first_revision, &module, std::iter::once(module.clone()));
+        let first_locator = database
+            .projected_module_indexes(first_revision, &first_program.unwrap())
+            .unwrap()[0]
+            .definitions[0]
+            .name_span;
+
+        let shifted_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&shifted),
+            &shifted,
+        );
+        let shifted_lookup = database.runtime.request_registered(
+            &database.lookup_names,
+            shifted_revision,
+            key,
+            CancellationToken::new(),
+        );
+        assert_eq!(
+            shifted_lookup.terminal().unwrap().stamp(),
+            first_stamp,
+            "trivia-only locator changes must not invalidate the retained name fact"
+        );
+        let (shifted_program, _) =
+            database.parse_program(shifted_revision, &module, std::iter::once(module.clone()));
+        let shifted_locator = database
+            .projected_module_indexes(shifted_revision, &shifted_program.unwrap())
+            .unwrap()[0]
+            .definitions[0]
+            .name_span;
+        assert!(shifted_locator.start > first_locator.start);
+    }
+
     fn import_fixture(
         epoch: u64,
         source: &str,
@@ -4901,6 +12819,59 @@ mod tests {
             rue_query::QueryOutcome::Success(DeclarationImportQueryValue::Available(
                 crate::CanonicalImportResolution::Missing
             ))
+        ));
+    }
+
+    #[test]
+    fn semantic_import_is_typed_missing_input_and_recovers_on_successor_revision() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::semantic_query_nucleus::{
+            SemanticNucleusFailure as Failure, SemanticNucleusKey as Key,
+            SemanticNucleusValue as Value,
+        };
+
+        let (_, assembler, context) =
+            import_fixture(307, "const selected = @import(\"missing\"); fn main() {}");
+        let mut database = RevisionedQueryDatabase::default();
+        let (snapshot, reads, revision, plan) =
+            begin_database_plan(&mut database, &assembler, context);
+        let runtime_revision = Revision::new(revision.revision_id, revision.request_generation);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let query =
+            Key::ConstResolution(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                declaration: declaration_candidate(
+                    &database,
+                    runtime_revision,
+                    &module,
+                    Category::ConstCandidate,
+                    "selected",
+                ),
+                configuration: semantic_configuration(),
+            });
+
+        let pending = database.runtime.request_registered(
+            &database.semantic_nucleus,
+            runtime_revision,
+            query.clone(),
+            CancellationToken::new(),
+        );
+        assert_eq!(execution(&pending), RequestExecution::Aborted);
+        assert!(matches!(pending.abort(), Some(QueryAbort::MissingInput(_))));
+        assert!(pending.terminal().is_none());
+
+        let completed =
+            publish_manifest_observations(&mut database, &snapshot, reads, &plan, revision);
+        let recovered = database.runtime.request_registered(
+            &database.semantic_nucleus,
+            Revision::new(completed.revision_id, completed.request_generation),
+            query,
+            CancellationToken::new(),
+        );
+        assert_eq!(execution(&recovered), RequestExecution::Computed);
+        assert!(matches!(
+            recovered.terminal().unwrap().outcome(),
+            rue_query::QueryOutcome::Success(Value::Failure(Failure::Resolution(message)))
+                if message.as_ref() == "cannot find module `missing`"
         ));
     }
 
@@ -5481,7 +13452,12 @@ mod tests {
         let (mut session, assembler, context) = import_fixture(1, source);
         let (revision, plan) = begin_and_plan(&mut session, &assembler, context);
         let frontier = session
-            .import_demand_frontier(revision, &plan, ImportDemandMode::Rooted)
+            .import_demand_frontier_for_roots(
+                revision,
+                &plan,
+                ImportDemandMode::Rooted,
+                &plan.demand_roots(),
+            )
             .unwrap();
         assert_eq!(frontier.revision(), revision);
         assert_eq!(frontier.revision().frontier_round(), 0);
@@ -5550,7 +13526,12 @@ mod tests {
         );
         let (revision, plan) = begin_and_plan(&mut session, &assembler, context);
         let speculative = session
-            .import_demand_frontier(revision, &plan, ImportDemandMode::Speculative)
+            .import_demand_frontier_for_roots(
+                revision,
+                &plan,
+                ImportDemandMode::Speculative,
+                &plan.demand_roots(),
+            )
             .unwrap();
         assert!(speculative.requests().is_empty());
         assert!(speculative.speculative_blocked());
@@ -5576,7 +13557,12 @@ mod tests {
         );
 
         let rooted = session
-            .import_demand_frontier(revision, &plan, ImportDemandMode::Rooted)
+            .import_demand_frontier_for_roots(
+                revision,
+                &plan,
+                ImportDemandMode::Rooted,
+                &plan.demand_roots(),
+            )
             .unwrap();
         assert!(!rooted.requests().is_empty());
         assert_eq!(rooted.revision(), revision);
@@ -5591,7 +13577,12 @@ mod tests {
         let (first_revision, first_plan) =
             begin_and_plan(&mut session, &assembler, first_context.clone());
         let first = session
-            .import_demand_frontier(first_revision, &first_plan, ImportDemandMode::Rooted)
+            .import_demand_frontier_for_roots(
+                first_revision,
+                &first_plan,
+                ImportDemandMode::Rooted,
+                &first_plan.demand_roots(),
+            )
             .unwrap();
         assert!(
             first
@@ -5617,7 +13608,12 @@ mod tests {
             )
             .unwrap();
         let second = session
-            .import_demand_frontier(second_revision, &second_plan, ImportDemandMode::Rooted)
+            .import_demand_frontier_for_roots(
+                second_revision,
+                &second_plan,
+                ImportDemandMode::Rooted,
+                &second_plan.demand_roots(),
+            )
             .unwrap();
         assert!(
             second
@@ -5697,7 +13693,12 @@ mod tests {
         let (first_revision, first_plan) =
             begin_and_plan(&mut session, &assembler, context.clone());
         let first = session
-            .import_demand_frontier(first_revision, &first_plan, ImportDemandMode::Rooted)
+            .import_demand_frontier_for_roots(
+                first_revision,
+                &first_plan,
+                ImportDemandMode::Rooted,
+                &first_plan.demand_roots(),
+            )
             .unwrap();
         let successor = session
             .publish_import_observation_batch(
@@ -5726,7 +13727,12 @@ mod tests {
             .stage_import_discovery(&snapshot, context, reads, fresh_ledger)
             .unwrap();
         let reread = session
-            .import_demand_frontier(fresh_revision, &fresh_plan, ImportDemandMode::Rooted)
+            .import_demand_frontier_for_roots(
+                fresh_revision,
+                &fresh_plan,
+                ImportDemandMode::Rooted,
+                &fresh_plan.demand_roots(),
+            )
             .unwrap();
         assert_eq!(
             reread
@@ -5754,7 +13760,12 @@ mod tests {
         );
         let (revision, plan) = begin_and_plan(&mut session, &assembler, context);
         let frontier = session
-            .import_demand_frontier(revision, &plan, ImportDemandMode::Rooted)
+            .import_demand_frontier_for_roots(
+                revision,
+                &plan,
+                ImportDemandMode::Rooted,
+                &plan.demand_roots(),
+            )
             .unwrap();
         assert_eq!(frontier.requests().len(), 1, "one host candidate operation");
 
@@ -5788,7 +13799,12 @@ mod tests {
         let (mut session, assembler, context) = import_fixture(3, source);
         let (revision, plan) = begin_and_plan(&mut session, &assembler, context);
         let first = session
-            .import_demand_frontier(revision, &plan, ImportDemandMode::Rooted)
+            .import_demand_frontier_for_roots(
+                revision,
+                &plan,
+                ImportDemandMode::Rooted,
+                &plan.demand_roots(),
+            )
             .unwrap();
         let first_paths = first
             .requests()
@@ -5819,7 +13835,12 @@ mod tests {
             )
             .unwrap();
         let next = session
-            .import_demand_frontier(successor, &successor_plan, ImportDemandMode::Rooted)
+            .import_demand_frontier_for_roots(
+                successor,
+                &successor_plan,
+                ImportDemandMode::Rooted,
+                &successor_plan.demand_roots(),
+            )
             .unwrap();
         assert!(
             next.requests()
@@ -5846,7 +13867,12 @@ mod tests {
             )
             .unwrap();
         let reread = session
-            .import_demand_frontier(new_revision, &new_plan, ImportDemandMode::Rooted)
+            .import_demand_frontier_for_roots(
+                new_revision,
+                &new_plan,
+                ImportDemandMode::Rooted,
+                &new_plan.demand_roots(),
+            )
             .unwrap();
         assert_eq!(
             reread

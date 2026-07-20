@@ -452,7 +452,11 @@ impl StablePreviewFeatures {
         names.dedup();
         Self(names.into())
     }
-    #[cfg(test)]
+    pub(crate) fn contains(&self, feature: rue_error::PreviewFeature) -> bool {
+        self.0
+            .binary_search_by(|name| name.as_ref().cmp(feature.name()))
+            .is_ok()
+    }
     pub(crate) fn names(&self) -> &[Arc<str>] {
         &self.0
     }

@@ -3398,7 +3398,7 @@ mod tests {
         let rir = astgen.finish();
 
         let sema = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new());
-        let output = sema.analyze_all().unwrap();
+        let output = sema.analyze_all_for_test().unwrap();
 
         let func = select(&output.functions);
         CfgBuilder::build(
@@ -3908,7 +3908,7 @@ mod tests {
         let rir = astgen.finish();
         let sema = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new());
         let err = sema
-            .analyze_all()
+            .analyze_all_for_test()
             .expect_err("field move out of a destructor-having struct must be rejected");
         assert!(
             format!("{err}").contains("cannot move field"),

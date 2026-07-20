@@ -814,8 +814,10 @@ mod tests {
             .iter()
             .find(|pass| pass.name == "sema")
             .unwrap();
-        assert_eq!(session_parse_file.invocations, 1);
-        assert_eq!(session_parse_file.root_invocations, 1);
+        // The session parses the source module once, then lazily reparses the
+        // demanded body-free declaration terminal inside the semantic query.
+        assert_eq!(session_parse_file.invocations, 2);
+        assert_eq!(session_parse_file.root_invocations, 2);
         assert_eq!(rir_declaration_index.invocations, 1);
         assert_eq!(rir_declaration_index.root_invocations, 1);
         assert_eq!(rir_declaration_index.leaf_invocations, 1);

@@ -51,11 +51,13 @@ mod visibility;
 // Public re-exports
 pub use binding_manifest::{
     BoundSema, DeclarationBindingWork, DeclarationInstallFailure, DeclarationResolutionFailure,
-    DeclarationShells, SemanticBinding, SemanticBindingManifest, SemanticBindingManifestWork,
-    SemanticDeclarationExport, SemanticDeclarationExportWork, SemanticDeclarationPayload,
-    SemanticDeclarationShell, SemanticDeclarationShellIdentity, SemanticExportConstValue,
-    SemanticExportFailure, SemanticExportParameter, SemanticExportType, SemanticNominalIdentity,
-    SemanticParameterMode,
+    DeclarationShells, SemanticAnonymousMethodSignature, SemanticAnonymousMethodType,
+    SemanticAnonymousNominalExport, SemanticAnonymousNominalIdentity,
+    SemanticAnonymousNominalShape, SemanticBinding, SemanticBindingManifest,
+    SemanticBindingManifestWork, SemanticDeclarationExport, SemanticDeclarationExportWork,
+    SemanticDeclarationPayload, SemanticDeclarationShell, SemanticDeclarationShellIdentity,
+    SemanticDefinitionIdentity, SemanticExportConstValue, SemanticExportFailure,
+    SemanticExportParameter, SemanticExportType, SemanticNominalIdentity, SemanticParameterMode,
 };
 pub use context::ConstValue;
 pub use declaration_index::RirDeclarationIndexWork;
@@ -1101,26 +1103,36 @@ impl<'a> Sema<'a> {
         self.declaration_index.work()
     }
 
-    /// Perform semantic analysis on the RIR.
-    ///
-    /// This is the main entry point for semantic analysis. It returns analyzed
-    /// functions, struct definitions, enum definitions, and any warnings.
+    /// Test-support adapter for exercising AIR's retired source-owned
+    /// declaration producer independently of the compiler query graph.
+    #[doc(hidden)]
+    pub fn analyze_all_for_test(self) -> MultiErrorResult<SemaOutput> {
+        self.bind_declarations_for_test()?.analyze_all_bodies()
+    }
+
+    #[cfg(test)]
     pub fn analyze_all(self) -> MultiErrorResult<SemaOutput> {
-        self.bind_declarations()?.analyze_all_bodies()
+        self.analyze_all_for_test()
     }
 
-    /// Complete all declaration and namespace binding without analyzing bodies.
+    /// Test-support adapter for the retired source-owned declaration producer.
+    #[doc(hidden)]
+    pub fn bind_declarations_for_test(self) -> MultiErrorResult<BoundSema<'a>> {
+        self.predeclare_declaration_shells_for_test()?
+            .resolve_declarations_for_test()
+    }
+
+    #[cfg(test)]
     pub fn bind_declarations(self) -> MultiErrorResult<BoundSema<'a>> {
-        self.predeclare_declaration_shells()?.resolve_declarations()
+        self.bind_declarations_for_test()
     }
 
-    /// Validate module-keyed declaration namespaces and predeclare nominal shells.
-    ///
-    /// This is the explicit boundary before resolved declaration semantics are
-    /// installed. The batch adapter [`Self::bind_declarations`] immediately
-    /// executes both sides of the boundary and therefore preserves historical
-    /// ordering and failure behavior.
-    pub fn predeclare_declaration_shells(mut self) -> MultiErrorResult<DeclarationShells<'a>> {
+    /// Test-support adapter that validates module-keyed declaration namespaces
+    /// and predeclares nominal shells through the retired source-owned producer.
+    #[doc(hidden)]
+    pub fn predeclare_declaration_shells_for_test(
+        mut self,
+    ) -> MultiErrorResult<DeclarationShells<'a>> {
         assert!(
             self.synthetic_declaration_discovery,
             "canonical compiler epochs must import query-owned declaration shells"

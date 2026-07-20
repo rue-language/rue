@@ -914,7 +914,7 @@ mod failure_work_tests {
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
         let mut output = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
-            .analyze_all()
+            .analyze_all_for_test()
             .unwrap();
 
         for (name, start) in [("broken", 10), ("zeta", 20)] {

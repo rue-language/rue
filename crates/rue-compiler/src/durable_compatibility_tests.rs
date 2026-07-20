@@ -20,14 +20,14 @@ use crate::*;
 const REVIEWED_SEMANTIC_SCHEMA: DurableSemanticSchemaVersion = DurableSemanticSchemaVersion {
     major: 1,
     minor: 0,
-    // Epoch 5: durable local atoms exclude request-local dense indices.
-    implementation_epoch: 5,
+    // Epoch 6: slice identity includes the resolved element type.
+    implementation_epoch: 6,
 };
 const REVIEWED_ORDINARY_BODY_SCHEMA: u32 = 9;
 const REVIEWED_SPECIALIZED_BODY_SCHEMA: u32 = 8;
 const REVIEWED_CFG_SCHEMA: u32 = 4;
 const REVIEWED_BODY_KINDS: usize = 58;
-const REVIEWED_TYPE_KINDS: usize = 20;
+const REVIEWED_TYPE_KINDS: usize = 21;
 const REVIEWED_CONST_KINDS: usize = 6;
 const REVIEWED_DECLARATION_PAYLOAD_KINDS: usize = 6;
 const REVIEWED_DEFINITION_KINDS: usize = 8;
@@ -198,6 +198,10 @@ fn every_type_const_and_specialization_identity_round_trips_same_version() {
         T::Array {
             element: Box::new(T::I32),
             len: 4,
+        },
+        T::Slice {
+            element: Box::new(T::I32),
+            name: Arc::from("[i32]"),
         },
         T::PtrConst(Box::new(T::I32)),
         T::PtrMut(Box::new(T::I32)),

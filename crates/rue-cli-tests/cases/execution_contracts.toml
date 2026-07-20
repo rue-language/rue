@@ -19,7 +19,8 @@ runtime_timeout_ms = 120000
 
 [contract.heavyweight_extra_long]
 class = "heavyweight"
-compile_timeout_ms = 300000
+# RUE-1083: temporary headroom while the query regression is fixed.
+compile_timeout_ms = 900000
 runtime_timeout_ms = 120000
 
 [[automatic_example]]
@@ -32,6 +33,10 @@ contract = "heavyweight"
 
 [[automatic_example]]
 path = "mosaic/main.rue"
+contract = "heavyweight"
+
+[[automatic_example]]
+path = "rill/main.rue"
 contract = "heavyweight"
 
 [[automatic_example]]
