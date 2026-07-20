@@ -207,6 +207,12 @@ impl<'a> BodySema<'a> {
             .expect("print builtin must map to a runtime helper");
         let call_name = self.interner.get_or_intern(runtime_helper.symbol);
 
+        // A StrBuf source reads its `{ptr, len}` prefix through the trusted
+        // accessors and passes them as separate scalars (the `*Projected`
+        // helpers), so print never depends on StrBuf's field layout
+        // (RUE-1066). Since `source_strbuf` already covers every StrBuf value,
+        // the remaining case is a `str`/`Str(N)` view, forwarded by value to
+        // the `*Aggregate` helpers.
         let extra_data = if source_strbuf {
             let (ptr, len, temp_scope) =
                 self.project_strbuf_text_fields(air, arg_result.air_ref, arg_result.ty, span, ctx)?;
@@ -221,21 +227,6 @@ impl<'a> BodySema<'a> {
                 },
             ];
             (args, temp_scope)
-        } else if self.is_strbuf(arg_result.ty) {
-            let (arg, temp_scope) = self.materialize_borrow_argument(
-                air,
-                arg_result.air_ref,
-                arg_result.ty,
-                span,
-                ctx,
-            )?;
-            (
-                vec![AirCallArg {
-                    value: arg,
-                    mode: AirArgMode::Normal,
-                }],
-                temp_scope,
-            )
         } else {
             (
                 vec![AirCallArg {

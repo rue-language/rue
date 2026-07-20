@@ -761,8 +761,12 @@ impl<'a> BodySema<'a> {
         let source_strbuf = arg_type.as_struct().is_some_and(|struct_id| {
             self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
         });
+        // A StrBuf argument is passed as a layout-stable `{ptr, len}` str view
+        // rather than the buffer header, so `@dbg`'s `DebugStr` text lowering
+        // never depends on StrBuf's field layout (RUE-1066). A `str`/`Str(N)`
+        // argument already has that shape and is forwarded by value.
         let (arg_ref, temp_scope) = if source_strbuf {
-            self.materialize_borrow_argument(air, arg_result.air_ref, arg_type, span, ctx)?
+            self.strbuf_text_view(air, arg_result.air_ref, arg_type, span, ctx)?
         } else {
             (arg_result.air_ref, Vec::new())
         };
@@ -926,8 +930,11 @@ impl<'a> BodySema<'a> {
         let source_strbuf = arg_result.ty.as_struct().is_some_and(|struct_id| {
             self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
         });
+        // Narrow a StrBuf message to a layout-stable `{ptr, len}` str view so
+        // the `Panic` text lowering reads a `str`, not the StrBuf header
+        // (RUE-1066). `str`/`Str(N)` messages already have that shape.
         let (arg_ref, temp_scope) = if source_strbuf {
-            self.materialize_borrow_argument(air, arg_result.air_ref, arg_result.ty, span, ctx)?
+            self.strbuf_text_view(air, arg_result.air_ref, arg_result.ty, span, ctx)?
         } else {
             (arg_result.air_ref, Vec::new())
         };

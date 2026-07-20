@@ -1000,6 +1000,7 @@ pub struct StrBuf {
     }
 
     fn len(borrow self) -> u64 { self.len }
+    fn as_ptr(borrow self) -> ptr mut u8 { self.buf }
 }
 
 drop fn StrBuf(self) { }
