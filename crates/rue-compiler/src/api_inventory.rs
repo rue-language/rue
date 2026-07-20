@@ -1548,6 +1548,11 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
             "declaration_shell_cache",
             "warm_declaration_shell",
             "eager_declaration_shell",
+            "legacy_raw_const_syntax",
+            "fallback_raw_const_syntax",
+            "raw_const_syntax_cache",
+            "warm_raw_const_syntax",
+            "eager_raw_const_syntax",
         ] {
             assert!(
                 !source.contains(retired),
@@ -1557,6 +1562,7 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         if !matches!(*name, "parsed_modules" | "revisioned_query_database") {
             for evaluator_only in [
                 ".evaluate_declaration_shell(",
+                ".evaluate_raw_const_syntax(",
                 ".declaration_capabilities()",
                 "project_semantic_shell(",
             ] {
@@ -1566,11 +1572,24 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
                 );
             }
         }
+        if !matches!(
+            *name,
+            "declaration_candidate" | "parsed_modules" | "revisioned_query_database"
+        ) {
+            assert!(
+                !source.contains("RawConstSyntax"),
+                "compiler production module {name} escaped the raw-constant authority allowlist"
+            );
+        }
     }
     assert!(canonical.contains("predeclare_imported_declaration_shells"));
     assert!(!canonical.contains("fn analyze_canonical_program("));
     assert_eq!(runtime.matches(".evaluate_declaration_shell(").count(), 1);
     assert_eq!(parsed.matches("fn evaluate_declaration_shell(").count(), 1);
+    assert_eq!(runtime.matches(".evaluate_raw_const_syntax(").count(), 1);
+    assert_eq!(parsed.matches("fn evaluate_raw_const_syntax(").count(), 1);
+    assert_eq!(runtime.matches("\"compiler.raw-const-syntax\"").count(), 1);
+    assert_eq!(parsed.matches("RawConstSyntax {").count(), 1);
     assert!(!runtime.contains("Vec::remove"));
 
     let occurrence = runtime
@@ -1593,10 +1612,7 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
     let shell_terminal = runtime
         .split("enum DeclarationShellQueryValue")
         .nth(1)
-        .and_then(|tail| {
-            tail.split("pub(crate) enum DeclarationShellBatchFailure")
-                .next()
-        })
+        .and_then(|tail| tail.split("struct RawConstSyntaxQueryKey").next())
         .unwrap();
     for forbidden in [
         "CompileErrors",
@@ -1610,6 +1626,40 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         assert!(
             !shell_terminal.contains(forbidden),
             "shell terminal regained positioned/live semantic payload: {forbidden}"
+        );
+    }
+    let raw_const_terminal = runtime
+        .split("enum RawConstSyntaxQueryValue")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("pub(crate) enum DeclarationShellBatchFailure")
+                .next()
+        })
+        .unwrap();
+    for forbidden in [
+        "CompileErrors",
+        "Span",
+        "FileId",
+        "Spur",
+        "InstRef",
+        "Rir",
+        "SemanticDefinitionToken",
+        "SemanticModuleToken",
+    ] {
+        assert!(
+            !raw_const_terminal.contains(forbidden),
+            "raw-constant terminal regained positioned/live parser or semantic payload: {forbidden}"
+        );
+    }
+    let raw_const_payload = module("declaration_candidate")
+        .split("pub(crate) struct RawConstSyntax")
+        .nth(1)
+        .and_then(|tail| tail.split("pub(crate) enum RawConstSyntaxFailure").next())
+        .unwrap();
+    for forbidden in ["Span", "FileId", "Spur", "Ast", "Rir", "InstRef"] {
+        assert!(
+            !raw_const_payload.contains(forbidden),
+            "raw-constant payload regained a positioned or live parser handle: {forbidden}"
         );
     }
     let failure_algebra = module("declaration_candidate")
