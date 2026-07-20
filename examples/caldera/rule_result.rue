@@ -1,0 +1,20 @@
+const metric = @import("metric.rue");
+pub struct Result { rule: u64, inspected: u64, matches: u64,
+    actions: u64, benefit: u64, digest: u64, valid: bool }
+pub fn new(rule: u64) -> Result {
+    Result { rule: rule, inspected: 0, matches: 0, actions: 0,
+        benefit: 0, digest: metric.mix(14695981039346656037, rule), valid: false }
+}
+pub fn record(inout out: Result, matched: bool, acted: bool, benefit: u64) {
+    out.inspected = out.inspected + 1;
+    if matched { out.matches = out.matches + 1; }
+    if acted { out.actions = out.actions + 1; }
+    out.benefit = @wrapping_add(out.benefit, benefit);
+    out.digest = metric.mix(out.digest, benefit + out.inspected * 43);
+}
+pub fn finish(inout out: Result) {
+    out.digest = metric.mix(out.digest, out.matches);
+    out.digest = metric.mix(out.digest, out.actions);
+    out.valid = out.inspected > 0 && out.actions <= out.matches &&
+        out.matches <= out.inspected;
+}

@@ -1,0 +1,48 @@
+// Stable system scheduling order derived from live entity pressure.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+
+pub struct Schedule { order: model.U64s, digest: u64, valid: bool }
+
+pub fn priority(borrow entity: model.Entity) -> u64 {
+    (if entity.health < 40 { 0 } else { 100 }) +
+        entity.kind * 11 + entity.faction * 7 + (100 - entity.energy) + entity.id
+}
+
+pub fn build(borrow world: model.World) -> Schedule {
+    let mut out = Schedule { order: model.U64s.new(),
+        digest: 14695981039346656037, valid: false };
+    let mut i: u64 = 0;
+    while i < world.entities.len() {
+        if world.entities.get_or(i, model.empty_entity()).alive { out.order.push(i); }
+        i = i + 1;
+    }
+    i = 1;
+    while i < out.order.len() {
+        let key = out.order.get_or(i, 0);
+        let key_entity = world.entities.get_or(key, model.empty_entity());
+        let key_priority = priority(borrow key_entity);
+        let mut j = i;
+        while j > 0 {
+            let previous = out.order.get_or(j - 1, 0);
+            let previous_entity = world.entities.get_or(previous, model.empty_entity());
+            let previous_priority = priority(borrow previous_entity);
+            if previous_priority < key_priority ||
+                (previous_priority == key_priority && previous < key) { break; }
+            out.order.set(j, previous); j = j - 1;
+        }
+        out.order.set(j, key); i = i + 1;
+    }
+    i = 0;
+    let mut last: u64 = 0;
+    while i < out.order.len() {
+        let index = out.order.get_or(i, 0);
+        let current_entity = world.entities.get_or(index, model.empty_entity());
+        let current = priority(borrow current_entity);
+        if i > 0 && current < last { out.valid = false; return out; }
+        last = current; out.digest = metric.mix(out.digest, index);
+        i = i + 1;
+    }
+    out.valid = out.order.len() == model.alive_count(borrow world);
+    out
+}

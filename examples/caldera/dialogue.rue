@@ -1,0 +1,12 @@
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+pub struct DialogueAudit { nodes: u64, choices: u64, reachable: u64,
+    digest: u64, valid: bool }
+pub fn audit(borrow world: model.World) -> DialogueAudit {
+    let nodes = 24 + world.entities.len() * 2;
+    let choices = nodes + world.tick;
+    let reachable = if model.alive_count(borrow world) == 0 { 0 } else { nodes };
+    DialogueAudit { nodes: nodes, choices: choices, reachable: reachable,
+        digest: metric.mix(metric.mix(world.seed, nodes), choices),
+        valid: reachable <= nodes && choices >= nodes }
+}

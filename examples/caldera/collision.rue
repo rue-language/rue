@@ -1,0 +1,33 @@
+// Tile and entity collision checks are deterministic and order-stable.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+
+pub struct Audit { tile_hits: u64, entity_hits: u64, pairs: u64,
+    digest: u64, valid: bool }
+
+pub fn audit(borrow world: model.World) -> Audit {
+    let mut out = Audit { tile_hits: 0, entity_hits: 0, pairs: 0,
+        digest: 14695981039346656037, valid: false };
+    let mut i: u64 = 0;
+    while i < world.entities.len() {
+        let entity = world.entities.get_or(i, model.empty_entity());
+        if entity.alive && !model.walkable(borrow world, entity.x, entity.y) {
+            out.tile_hits = out.tile_hits + 1;
+            out.digest = metric.mix(out.digest, entity.id);
+        }
+        let mut j = i + 1;
+        while j < world.entities.len() {
+            let other = world.entities.get_or(j, model.empty_entity());
+            out.pairs = out.pairs + 1;
+            if entity.alive && other.alive && entity.x == other.x && entity.y == other.y {
+                out.entity_hits = out.entity_hits + 1;
+                out.digest = metric.mix(out.digest, entity.id ^ other.id);
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    out.valid = out.pairs == (world.entities.len() *
+        (if world.entities.len() == 0 { 0 } else { world.entities.len() - 1 })) / 2;
+    out
+}

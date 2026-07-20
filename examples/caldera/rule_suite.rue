@@ -1,0 +1,499 @@
+// Canonical registry for every Caldera content rule.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+const result = @import("rule_result.rue");
+const rule_terrain_normalize = @import("rule_terrain_normalize.rue");
+const rule_terrain_bound = @import("rule_terrain_bound.rue");
+const rule_terrain_merge = @import("rule_terrain_merge.rue");
+const rule_terrain_split = @import("rule_terrain_split.rue");
+const rule_terrain_prioritize = @import("rule_terrain_prioritize.rue");
+const rule_terrain_defer = @import("rule_terrain_defer.rue");
+const rule_terrain_reserve = @import("rule_terrain_reserve.rue");
+const rule_terrain_release = @import("rule_terrain_release.rue");
+const rule_terrain_replicate = @import("rule_terrain_replicate.rue");
+const rule_terrain_recover = @import("rule_terrain_recover.rue");
+const rule_terrain_validate = @import("rule_terrain_validate.rue");
+const rule_terrain_explain = @import("rule_terrain_explain.rue");
+const rule_spawn_normalize = @import("rule_spawn_normalize.rue");
+const rule_spawn_bound = @import("rule_spawn_bound.rue");
+const rule_spawn_merge = @import("rule_spawn_merge.rue");
+const rule_spawn_split = @import("rule_spawn_split.rue");
+const rule_spawn_prioritize = @import("rule_spawn_prioritize.rue");
+const rule_spawn_defer = @import("rule_spawn_defer.rue");
+const rule_spawn_reserve = @import("rule_spawn_reserve.rue");
+const rule_spawn_release = @import("rule_spawn_release.rue");
+const rule_spawn_replicate = @import("rule_spawn_replicate.rue");
+const rule_spawn_recover = @import("rule_spawn_recover.rue");
+const rule_spawn_validate = @import("rule_spawn_validate.rue");
+const rule_spawn_explain = @import("rule_spawn_explain.rue");
+const rule_resource_normalize = @import("rule_resource_normalize.rue");
+const rule_resource_bound = @import("rule_resource_bound.rue");
+const rule_resource_merge = @import("rule_resource_merge.rue");
+const rule_resource_split = @import("rule_resource_split.rue");
+const rule_resource_prioritize = @import("rule_resource_prioritize.rue");
+const rule_resource_defer = @import("rule_resource_defer.rue");
+const rule_resource_reserve = @import("rule_resource_reserve.rue");
+const rule_resource_release = @import("rule_resource_release.rue");
+const rule_resource_replicate = @import("rule_resource_replicate.rue");
+const rule_resource_recover = @import("rule_resource_recover.rue");
+const rule_resource_validate = @import("rule_resource_validate.rue");
+const rule_resource_explain = @import("rule_resource_explain.rue");
+const rule_combat_normalize = @import("rule_combat_normalize.rue");
+const rule_combat_bound = @import("rule_combat_bound.rue");
+const rule_combat_merge = @import("rule_combat_merge.rue");
+const rule_combat_split = @import("rule_combat_split.rue");
+const rule_combat_prioritize = @import("rule_combat_prioritize.rue");
+const rule_combat_defer = @import("rule_combat_defer.rue");
+const rule_combat_reserve = @import("rule_combat_reserve.rue");
+const rule_combat_release = @import("rule_combat_release.rue");
+const rule_combat_replicate = @import("rule_combat_replicate.rue");
+const rule_combat_recover = @import("rule_combat_recover.rue");
+const rule_combat_validate = @import("rule_combat_validate.rue");
+const rule_combat_explain = @import("rule_combat_explain.rue");
+const rule_economy_normalize = @import("rule_economy_normalize.rue");
+const rule_economy_bound = @import("rule_economy_bound.rue");
+const rule_economy_merge = @import("rule_economy_merge.rue");
+const rule_economy_split = @import("rule_economy_split.rue");
+const rule_economy_prioritize = @import("rule_economy_prioritize.rue");
+const rule_economy_defer = @import("rule_economy_defer.rue");
+const rule_economy_reserve = @import("rule_economy_reserve.rue");
+const rule_economy_release = @import("rule_economy_release.rue");
+const rule_economy_replicate = @import("rule_economy_replicate.rue");
+const rule_economy_recover = @import("rule_economy_recover.rue");
+const rule_economy_validate = @import("rule_economy_validate.rue");
+const rule_economy_explain = @import("rule_economy_explain.rue");
+const rule_quest_normalize = @import("rule_quest_normalize.rue");
+const rule_quest_bound = @import("rule_quest_bound.rue");
+const rule_quest_merge = @import("rule_quest_merge.rue");
+const rule_quest_split = @import("rule_quest_split.rue");
+const rule_quest_prioritize = @import("rule_quest_prioritize.rue");
+const rule_quest_defer = @import("rule_quest_defer.rue");
+const rule_quest_reserve = @import("rule_quest_reserve.rue");
+const rule_quest_release = @import("rule_quest_release.rue");
+const rule_quest_replicate = @import("rule_quest_replicate.rue");
+const rule_quest_recover = @import("rule_quest_recover.rue");
+const rule_quest_validate = @import("rule_quest_validate.rue");
+const rule_quest_explain = @import("rule_quest_explain.rue");
+const rule_network_normalize = @import("rule_network_normalize.rue");
+const rule_network_bound = @import("rule_network_bound.rue");
+const rule_network_merge = @import("rule_network_merge.rue");
+const rule_network_split = @import("rule_network_split.rue");
+const rule_network_prioritize = @import("rule_network_prioritize.rue");
+const rule_network_defer = @import("rule_network_defer.rue");
+const rule_network_reserve = @import("rule_network_reserve.rue");
+const rule_network_release = @import("rule_network_release.rue");
+const rule_network_replicate = @import("rule_network_replicate.rue");
+const rule_network_recover = @import("rule_network_recover.rue");
+const rule_network_validate = @import("rule_network_validate.rue");
+const rule_network_explain = @import("rule_network_explain.rue");
+const rule_render_normalize = @import("rule_render_normalize.rue");
+const rule_render_bound = @import("rule_render_bound.rue");
+const rule_render_merge = @import("rule_render_merge.rue");
+const rule_render_split = @import("rule_render_split.rue");
+const rule_render_prioritize = @import("rule_render_prioritize.rue");
+const rule_render_defer = @import("rule_render_defer.rue");
+const rule_render_reserve = @import("rule_render_reserve.rue");
+const rule_render_release = @import("rule_render_release.rue");
+const rule_render_replicate = @import("rule_render_replicate.rue");
+const rule_render_recover = @import("rule_render_recover.rue");
+const rule_render_validate = @import("rule_render_validate.rue");
+const rule_render_explain = @import("rule_render_explain.rue");
+pub struct Summary { rules: u64, inspected: u64, matches: u64, actions: u64,
+    deterministic_mismatches: u64, digest: u64, valid: bool }
+fn include(inout out: Summary, borrow first: result.Result, borrow second: result.Result, verified: bool) {
+    out.rules = out.rules + 1; out.inspected = out.inspected + first.inspected;
+    out.matches = out.matches + first.matches; out.actions = out.actions + first.actions;
+    if first.digest != second.digest || first.benefit != second.benefit || !verified {
+        out.deterministic_mismatches = out.deterministic_mismatches + 1;
+    }
+    out.digest = metric.mix(out.digest, first.digest);
+}
+pub fn run(borrow world: model.World) -> Summary {
+    let mut out = Summary { rules: 0, inspected: 0, matches: 0, actions: 0,
+        deterministic_mismatches: 0, digest: 14695981039346656037, valid: false };
+    let rule_terrain_normalize_a = rule_terrain_normalize.evaluate(borrow world);
+    let rule_terrain_normalize_b = rule_terrain_normalize.evaluate(borrow world);
+    include(inout out, borrow rule_terrain_normalize_a, borrow rule_terrain_normalize_b,
+        rule_terrain_normalize.verify(borrow world, borrow rule_terrain_normalize_a));
+    let rule_terrain_bound_a = rule_terrain_bound.evaluate(borrow world);
+    let rule_terrain_bound_b = rule_terrain_bound.evaluate(borrow world);
+    include(inout out, borrow rule_terrain_bound_a, borrow rule_terrain_bound_b,
+        rule_terrain_bound.verify(borrow world, borrow rule_terrain_bound_a));
+    let rule_terrain_merge_a = rule_terrain_merge.evaluate(borrow world);
+    let rule_terrain_merge_b = rule_terrain_merge.evaluate(borrow world);
+    include(inout out, borrow rule_terrain_merge_a, borrow rule_terrain_merge_b,
+        rule_terrain_merge.verify(borrow world, borrow rule_terrain_merge_a));
+    let rule_terrain_split_a = rule_terrain_split.evaluate(borrow world);
+    let rule_terrain_split_b = rule_terrain_split.evaluate(borrow world);
+    include(inout out, borrow rule_terrain_split_a, borrow rule_terrain_split_b,
+        rule_terrain_split.verify(borrow world, borrow rule_terrain_split_a));
+    let rule_terrain_prioritize_a = rule_terrain_prioritize.evaluate(borrow world);
+    let rule_terrain_prioritize_b = rule_terrain_prioritize.evaluate(borrow world);
+    include(inout out, borrow rule_terrain_prioritize_a, borrow rule_terrain_prioritize_b,
+        rule_terrain_prioritize.verify(borrow world, borrow rule_terrain_prioritize_a));
+    let rule_terrain_defer_a = rule_terrain_defer.evaluate(borrow world);
+    let rule_terrain_defer_b = rule_terrain_defer.evaluate(borrow world);
+    include(inout out, borrow rule_terrain_defer_a, borrow rule_terrain_defer_b,
+        rule_terrain_defer.verify(borrow world, borrow rule_terrain_defer_a));
+    let rule_terrain_reserve_a = rule_terrain_reserve.evaluate(borrow world);
+    let rule_terrain_reserve_b = rule_terrain_reserve.evaluate(borrow world);
+    include(inout out, borrow rule_terrain_reserve_a, borrow rule_terrain_reserve_b,
+        rule_terrain_reserve.verify(borrow world, borrow rule_terrain_reserve_a));
+    let rule_terrain_release_a = rule_terrain_release.evaluate(borrow world);
+    let rule_terrain_release_b = rule_terrain_release.evaluate(borrow world);
+    include(inout out, borrow rule_terrain_release_a, borrow rule_terrain_release_b,
+        rule_terrain_release.verify(borrow world, borrow rule_terrain_release_a));
+    let rule_terrain_replicate_a = rule_terrain_replicate.evaluate(borrow world);
+    let rule_terrain_replicate_b = rule_terrain_replicate.evaluate(borrow world);
+    include(inout out, borrow rule_terrain_replicate_a, borrow rule_terrain_replicate_b,
+        rule_terrain_replicate.verify(borrow world, borrow rule_terrain_replicate_a));
+    let rule_terrain_recover_a = rule_terrain_recover.evaluate(borrow world);
+    let rule_terrain_recover_b = rule_terrain_recover.evaluate(borrow world);
+    include(inout out, borrow rule_terrain_recover_a, borrow rule_terrain_recover_b,
+        rule_terrain_recover.verify(borrow world, borrow rule_terrain_recover_a));
+    let rule_terrain_validate_a = rule_terrain_validate.evaluate(borrow world);
+    let rule_terrain_validate_b = rule_terrain_validate.evaluate(borrow world);
+    include(inout out, borrow rule_terrain_validate_a, borrow rule_terrain_validate_b,
+        rule_terrain_validate.verify(borrow world, borrow rule_terrain_validate_a));
+    let rule_terrain_explain_a = rule_terrain_explain.evaluate(borrow world);
+    let rule_terrain_explain_b = rule_terrain_explain.evaluate(borrow world);
+    include(inout out, borrow rule_terrain_explain_a, borrow rule_terrain_explain_b,
+        rule_terrain_explain.verify(borrow world, borrow rule_terrain_explain_a));
+    let rule_spawn_normalize_a = rule_spawn_normalize.evaluate(borrow world);
+    let rule_spawn_normalize_b = rule_spawn_normalize.evaluate(borrow world);
+    include(inout out, borrow rule_spawn_normalize_a, borrow rule_spawn_normalize_b,
+        rule_spawn_normalize.verify(borrow world, borrow rule_spawn_normalize_a));
+    let rule_spawn_bound_a = rule_spawn_bound.evaluate(borrow world);
+    let rule_spawn_bound_b = rule_spawn_bound.evaluate(borrow world);
+    include(inout out, borrow rule_spawn_bound_a, borrow rule_spawn_bound_b,
+        rule_spawn_bound.verify(borrow world, borrow rule_spawn_bound_a));
+    let rule_spawn_merge_a = rule_spawn_merge.evaluate(borrow world);
+    let rule_spawn_merge_b = rule_spawn_merge.evaluate(borrow world);
+    include(inout out, borrow rule_spawn_merge_a, borrow rule_spawn_merge_b,
+        rule_spawn_merge.verify(borrow world, borrow rule_spawn_merge_a));
+    let rule_spawn_split_a = rule_spawn_split.evaluate(borrow world);
+    let rule_spawn_split_b = rule_spawn_split.evaluate(borrow world);
+    include(inout out, borrow rule_spawn_split_a, borrow rule_spawn_split_b,
+        rule_spawn_split.verify(borrow world, borrow rule_spawn_split_a));
+    let rule_spawn_prioritize_a = rule_spawn_prioritize.evaluate(borrow world);
+    let rule_spawn_prioritize_b = rule_spawn_prioritize.evaluate(borrow world);
+    include(inout out, borrow rule_spawn_prioritize_a, borrow rule_spawn_prioritize_b,
+        rule_spawn_prioritize.verify(borrow world, borrow rule_spawn_prioritize_a));
+    let rule_spawn_defer_a = rule_spawn_defer.evaluate(borrow world);
+    let rule_spawn_defer_b = rule_spawn_defer.evaluate(borrow world);
+    include(inout out, borrow rule_spawn_defer_a, borrow rule_spawn_defer_b,
+        rule_spawn_defer.verify(borrow world, borrow rule_spawn_defer_a));
+    let rule_spawn_reserve_a = rule_spawn_reserve.evaluate(borrow world);
+    let rule_spawn_reserve_b = rule_spawn_reserve.evaluate(borrow world);
+    include(inout out, borrow rule_spawn_reserve_a, borrow rule_spawn_reserve_b,
+        rule_spawn_reserve.verify(borrow world, borrow rule_spawn_reserve_a));
+    let rule_spawn_release_a = rule_spawn_release.evaluate(borrow world);
+    let rule_spawn_release_b = rule_spawn_release.evaluate(borrow world);
+    include(inout out, borrow rule_spawn_release_a, borrow rule_spawn_release_b,
+        rule_spawn_release.verify(borrow world, borrow rule_spawn_release_a));
+    let rule_spawn_replicate_a = rule_spawn_replicate.evaluate(borrow world);
+    let rule_spawn_replicate_b = rule_spawn_replicate.evaluate(borrow world);
+    include(inout out, borrow rule_spawn_replicate_a, borrow rule_spawn_replicate_b,
+        rule_spawn_replicate.verify(borrow world, borrow rule_spawn_replicate_a));
+    let rule_spawn_recover_a = rule_spawn_recover.evaluate(borrow world);
+    let rule_spawn_recover_b = rule_spawn_recover.evaluate(borrow world);
+    include(inout out, borrow rule_spawn_recover_a, borrow rule_spawn_recover_b,
+        rule_spawn_recover.verify(borrow world, borrow rule_spawn_recover_a));
+    let rule_spawn_validate_a = rule_spawn_validate.evaluate(borrow world);
+    let rule_spawn_validate_b = rule_spawn_validate.evaluate(borrow world);
+    include(inout out, borrow rule_spawn_validate_a, borrow rule_spawn_validate_b,
+        rule_spawn_validate.verify(borrow world, borrow rule_spawn_validate_a));
+    let rule_spawn_explain_a = rule_spawn_explain.evaluate(borrow world);
+    let rule_spawn_explain_b = rule_spawn_explain.evaluate(borrow world);
+    include(inout out, borrow rule_spawn_explain_a, borrow rule_spawn_explain_b,
+        rule_spawn_explain.verify(borrow world, borrow rule_spawn_explain_a));
+    let rule_resource_normalize_a = rule_resource_normalize.evaluate(borrow world);
+    let rule_resource_normalize_b = rule_resource_normalize.evaluate(borrow world);
+    include(inout out, borrow rule_resource_normalize_a, borrow rule_resource_normalize_b,
+        rule_resource_normalize.verify(borrow world, borrow rule_resource_normalize_a));
+    let rule_resource_bound_a = rule_resource_bound.evaluate(borrow world);
+    let rule_resource_bound_b = rule_resource_bound.evaluate(borrow world);
+    include(inout out, borrow rule_resource_bound_a, borrow rule_resource_bound_b,
+        rule_resource_bound.verify(borrow world, borrow rule_resource_bound_a));
+    let rule_resource_merge_a = rule_resource_merge.evaluate(borrow world);
+    let rule_resource_merge_b = rule_resource_merge.evaluate(borrow world);
+    include(inout out, borrow rule_resource_merge_a, borrow rule_resource_merge_b,
+        rule_resource_merge.verify(borrow world, borrow rule_resource_merge_a));
+    let rule_resource_split_a = rule_resource_split.evaluate(borrow world);
+    let rule_resource_split_b = rule_resource_split.evaluate(borrow world);
+    include(inout out, borrow rule_resource_split_a, borrow rule_resource_split_b,
+        rule_resource_split.verify(borrow world, borrow rule_resource_split_a));
+    let rule_resource_prioritize_a = rule_resource_prioritize.evaluate(borrow world);
+    let rule_resource_prioritize_b = rule_resource_prioritize.evaluate(borrow world);
+    include(inout out, borrow rule_resource_prioritize_a, borrow rule_resource_prioritize_b,
+        rule_resource_prioritize.verify(borrow world, borrow rule_resource_prioritize_a));
+    let rule_resource_defer_a = rule_resource_defer.evaluate(borrow world);
+    let rule_resource_defer_b = rule_resource_defer.evaluate(borrow world);
+    include(inout out, borrow rule_resource_defer_a, borrow rule_resource_defer_b,
+        rule_resource_defer.verify(borrow world, borrow rule_resource_defer_a));
+    let rule_resource_reserve_a = rule_resource_reserve.evaluate(borrow world);
+    let rule_resource_reserve_b = rule_resource_reserve.evaluate(borrow world);
+    include(inout out, borrow rule_resource_reserve_a, borrow rule_resource_reserve_b,
+        rule_resource_reserve.verify(borrow world, borrow rule_resource_reserve_a));
+    let rule_resource_release_a = rule_resource_release.evaluate(borrow world);
+    let rule_resource_release_b = rule_resource_release.evaluate(borrow world);
+    include(inout out, borrow rule_resource_release_a, borrow rule_resource_release_b,
+        rule_resource_release.verify(borrow world, borrow rule_resource_release_a));
+    let rule_resource_replicate_a = rule_resource_replicate.evaluate(borrow world);
+    let rule_resource_replicate_b = rule_resource_replicate.evaluate(borrow world);
+    include(inout out, borrow rule_resource_replicate_a, borrow rule_resource_replicate_b,
+        rule_resource_replicate.verify(borrow world, borrow rule_resource_replicate_a));
+    let rule_resource_recover_a = rule_resource_recover.evaluate(borrow world);
+    let rule_resource_recover_b = rule_resource_recover.evaluate(borrow world);
+    include(inout out, borrow rule_resource_recover_a, borrow rule_resource_recover_b,
+        rule_resource_recover.verify(borrow world, borrow rule_resource_recover_a));
+    let rule_resource_validate_a = rule_resource_validate.evaluate(borrow world);
+    let rule_resource_validate_b = rule_resource_validate.evaluate(borrow world);
+    include(inout out, borrow rule_resource_validate_a, borrow rule_resource_validate_b,
+        rule_resource_validate.verify(borrow world, borrow rule_resource_validate_a));
+    let rule_resource_explain_a = rule_resource_explain.evaluate(borrow world);
+    let rule_resource_explain_b = rule_resource_explain.evaluate(borrow world);
+    include(inout out, borrow rule_resource_explain_a, borrow rule_resource_explain_b,
+        rule_resource_explain.verify(borrow world, borrow rule_resource_explain_a));
+    let rule_combat_normalize_a = rule_combat_normalize.evaluate(borrow world);
+    let rule_combat_normalize_b = rule_combat_normalize.evaluate(borrow world);
+    include(inout out, borrow rule_combat_normalize_a, borrow rule_combat_normalize_b,
+        rule_combat_normalize.verify(borrow world, borrow rule_combat_normalize_a));
+    let rule_combat_bound_a = rule_combat_bound.evaluate(borrow world);
+    let rule_combat_bound_b = rule_combat_bound.evaluate(borrow world);
+    include(inout out, borrow rule_combat_bound_a, borrow rule_combat_bound_b,
+        rule_combat_bound.verify(borrow world, borrow rule_combat_bound_a));
+    let rule_combat_merge_a = rule_combat_merge.evaluate(borrow world);
+    let rule_combat_merge_b = rule_combat_merge.evaluate(borrow world);
+    include(inout out, borrow rule_combat_merge_a, borrow rule_combat_merge_b,
+        rule_combat_merge.verify(borrow world, borrow rule_combat_merge_a));
+    let rule_combat_split_a = rule_combat_split.evaluate(borrow world);
+    let rule_combat_split_b = rule_combat_split.evaluate(borrow world);
+    include(inout out, borrow rule_combat_split_a, borrow rule_combat_split_b,
+        rule_combat_split.verify(borrow world, borrow rule_combat_split_a));
+    let rule_combat_prioritize_a = rule_combat_prioritize.evaluate(borrow world);
+    let rule_combat_prioritize_b = rule_combat_prioritize.evaluate(borrow world);
+    include(inout out, borrow rule_combat_prioritize_a, borrow rule_combat_prioritize_b,
+        rule_combat_prioritize.verify(borrow world, borrow rule_combat_prioritize_a));
+    let rule_combat_defer_a = rule_combat_defer.evaluate(borrow world);
+    let rule_combat_defer_b = rule_combat_defer.evaluate(borrow world);
+    include(inout out, borrow rule_combat_defer_a, borrow rule_combat_defer_b,
+        rule_combat_defer.verify(borrow world, borrow rule_combat_defer_a));
+    let rule_combat_reserve_a = rule_combat_reserve.evaluate(borrow world);
+    let rule_combat_reserve_b = rule_combat_reserve.evaluate(borrow world);
+    include(inout out, borrow rule_combat_reserve_a, borrow rule_combat_reserve_b,
+        rule_combat_reserve.verify(borrow world, borrow rule_combat_reserve_a));
+    let rule_combat_release_a = rule_combat_release.evaluate(borrow world);
+    let rule_combat_release_b = rule_combat_release.evaluate(borrow world);
+    include(inout out, borrow rule_combat_release_a, borrow rule_combat_release_b,
+        rule_combat_release.verify(borrow world, borrow rule_combat_release_a));
+    let rule_combat_replicate_a = rule_combat_replicate.evaluate(borrow world);
+    let rule_combat_replicate_b = rule_combat_replicate.evaluate(borrow world);
+    include(inout out, borrow rule_combat_replicate_a, borrow rule_combat_replicate_b,
+        rule_combat_replicate.verify(borrow world, borrow rule_combat_replicate_a));
+    let rule_combat_recover_a = rule_combat_recover.evaluate(borrow world);
+    let rule_combat_recover_b = rule_combat_recover.evaluate(borrow world);
+    include(inout out, borrow rule_combat_recover_a, borrow rule_combat_recover_b,
+        rule_combat_recover.verify(borrow world, borrow rule_combat_recover_a));
+    let rule_combat_validate_a = rule_combat_validate.evaluate(borrow world);
+    let rule_combat_validate_b = rule_combat_validate.evaluate(borrow world);
+    include(inout out, borrow rule_combat_validate_a, borrow rule_combat_validate_b,
+        rule_combat_validate.verify(borrow world, borrow rule_combat_validate_a));
+    let rule_combat_explain_a = rule_combat_explain.evaluate(borrow world);
+    let rule_combat_explain_b = rule_combat_explain.evaluate(borrow world);
+    include(inout out, borrow rule_combat_explain_a, borrow rule_combat_explain_b,
+        rule_combat_explain.verify(borrow world, borrow rule_combat_explain_a));
+    let rule_economy_normalize_a = rule_economy_normalize.evaluate(borrow world);
+    let rule_economy_normalize_b = rule_economy_normalize.evaluate(borrow world);
+    include(inout out, borrow rule_economy_normalize_a, borrow rule_economy_normalize_b,
+        rule_economy_normalize.verify(borrow world, borrow rule_economy_normalize_a));
+    let rule_economy_bound_a = rule_economy_bound.evaluate(borrow world);
+    let rule_economy_bound_b = rule_economy_bound.evaluate(borrow world);
+    include(inout out, borrow rule_economy_bound_a, borrow rule_economy_bound_b,
+        rule_economy_bound.verify(borrow world, borrow rule_economy_bound_a));
+    let rule_economy_merge_a = rule_economy_merge.evaluate(borrow world);
+    let rule_economy_merge_b = rule_economy_merge.evaluate(borrow world);
+    include(inout out, borrow rule_economy_merge_a, borrow rule_economy_merge_b,
+        rule_economy_merge.verify(borrow world, borrow rule_economy_merge_a));
+    let rule_economy_split_a = rule_economy_split.evaluate(borrow world);
+    let rule_economy_split_b = rule_economy_split.evaluate(borrow world);
+    include(inout out, borrow rule_economy_split_a, borrow rule_economy_split_b,
+        rule_economy_split.verify(borrow world, borrow rule_economy_split_a));
+    let rule_economy_prioritize_a = rule_economy_prioritize.evaluate(borrow world);
+    let rule_economy_prioritize_b = rule_economy_prioritize.evaluate(borrow world);
+    include(inout out, borrow rule_economy_prioritize_a, borrow rule_economy_prioritize_b,
+        rule_economy_prioritize.verify(borrow world, borrow rule_economy_prioritize_a));
+    let rule_economy_defer_a = rule_economy_defer.evaluate(borrow world);
+    let rule_economy_defer_b = rule_economy_defer.evaluate(borrow world);
+    include(inout out, borrow rule_economy_defer_a, borrow rule_economy_defer_b,
+        rule_economy_defer.verify(borrow world, borrow rule_economy_defer_a));
+    let rule_economy_reserve_a = rule_economy_reserve.evaluate(borrow world);
+    let rule_economy_reserve_b = rule_economy_reserve.evaluate(borrow world);
+    include(inout out, borrow rule_economy_reserve_a, borrow rule_economy_reserve_b,
+        rule_economy_reserve.verify(borrow world, borrow rule_economy_reserve_a));
+    let rule_economy_release_a = rule_economy_release.evaluate(borrow world);
+    let rule_economy_release_b = rule_economy_release.evaluate(borrow world);
+    include(inout out, borrow rule_economy_release_a, borrow rule_economy_release_b,
+        rule_economy_release.verify(borrow world, borrow rule_economy_release_a));
+    let rule_economy_replicate_a = rule_economy_replicate.evaluate(borrow world);
+    let rule_economy_replicate_b = rule_economy_replicate.evaluate(borrow world);
+    include(inout out, borrow rule_economy_replicate_a, borrow rule_economy_replicate_b,
+        rule_economy_replicate.verify(borrow world, borrow rule_economy_replicate_a));
+    let rule_economy_recover_a = rule_economy_recover.evaluate(borrow world);
+    let rule_economy_recover_b = rule_economy_recover.evaluate(borrow world);
+    include(inout out, borrow rule_economy_recover_a, borrow rule_economy_recover_b,
+        rule_economy_recover.verify(borrow world, borrow rule_economy_recover_a));
+    let rule_economy_validate_a = rule_economy_validate.evaluate(borrow world);
+    let rule_economy_validate_b = rule_economy_validate.evaluate(borrow world);
+    include(inout out, borrow rule_economy_validate_a, borrow rule_economy_validate_b,
+        rule_economy_validate.verify(borrow world, borrow rule_economy_validate_a));
+    let rule_economy_explain_a = rule_economy_explain.evaluate(borrow world);
+    let rule_economy_explain_b = rule_economy_explain.evaluate(borrow world);
+    include(inout out, borrow rule_economy_explain_a, borrow rule_economy_explain_b,
+        rule_economy_explain.verify(borrow world, borrow rule_economy_explain_a));
+    let rule_quest_normalize_a = rule_quest_normalize.evaluate(borrow world);
+    let rule_quest_normalize_b = rule_quest_normalize.evaluate(borrow world);
+    include(inout out, borrow rule_quest_normalize_a, borrow rule_quest_normalize_b,
+        rule_quest_normalize.verify(borrow world, borrow rule_quest_normalize_a));
+    let rule_quest_bound_a = rule_quest_bound.evaluate(borrow world);
+    let rule_quest_bound_b = rule_quest_bound.evaluate(borrow world);
+    include(inout out, borrow rule_quest_bound_a, borrow rule_quest_bound_b,
+        rule_quest_bound.verify(borrow world, borrow rule_quest_bound_a));
+    let rule_quest_merge_a = rule_quest_merge.evaluate(borrow world);
+    let rule_quest_merge_b = rule_quest_merge.evaluate(borrow world);
+    include(inout out, borrow rule_quest_merge_a, borrow rule_quest_merge_b,
+        rule_quest_merge.verify(borrow world, borrow rule_quest_merge_a));
+    let rule_quest_split_a = rule_quest_split.evaluate(borrow world);
+    let rule_quest_split_b = rule_quest_split.evaluate(borrow world);
+    include(inout out, borrow rule_quest_split_a, borrow rule_quest_split_b,
+        rule_quest_split.verify(borrow world, borrow rule_quest_split_a));
+    let rule_quest_prioritize_a = rule_quest_prioritize.evaluate(borrow world);
+    let rule_quest_prioritize_b = rule_quest_prioritize.evaluate(borrow world);
+    include(inout out, borrow rule_quest_prioritize_a, borrow rule_quest_prioritize_b,
+        rule_quest_prioritize.verify(borrow world, borrow rule_quest_prioritize_a));
+    let rule_quest_defer_a = rule_quest_defer.evaluate(borrow world);
+    let rule_quest_defer_b = rule_quest_defer.evaluate(borrow world);
+    include(inout out, borrow rule_quest_defer_a, borrow rule_quest_defer_b,
+        rule_quest_defer.verify(borrow world, borrow rule_quest_defer_a));
+    let rule_quest_reserve_a = rule_quest_reserve.evaluate(borrow world);
+    let rule_quest_reserve_b = rule_quest_reserve.evaluate(borrow world);
+    include(inout out, borrow rule_quest_reserve_a, borrow rule_quest_reserve_b,
+        rule_quest_reserve.verify(borrow world, borrow rule_quest_reserve_a));
+    let rule_quest_release_a = rule_quest_release.evaluate(borrow world);
+    let rule_quest_release_b = rule_quest_release.evaluate(borrow world);
+    include(inout out, borrow rule_quest_release_a, borrow rule_quest_release_b,
+        rule_quest_release.verify(borrow world, borrow rule_quest_release_a));
+    let rule_quest_replicate_a = rule_quest_replicate.evaluate(borrow world);
+    let rule_quest_replicate_b = rule_quest_replicate.evaluate(borrow world);
+    include(inout out, borrow rule_quest_replicate_a, borrow rule_quest_replicate_b,
+        rule_quest_replicate.verify(borrow world, borrow rule_quest_replicate_a));
+    let rule_quest_recover_a = rule_quest_recover.evaluate(borrow world);
+    let rule_quest_recover_b = rule_quest_recover.evaluate(borrow world);
+    include(inout out, borrow rule_quest_recover_a, borrow rule_quest_recover_b,
+        rule_quest_recover.verify(borrow world, borrow rule_quest_recover_a));
+    let rule_quest_validate_a = rule_quest_validate.evaluate(borrow world);
+    let rule_quest_validate_b = rule_quest_validate.evaluate(borrow world);
+    include(inout out, borrow rule_quest_validate_a, borrow rule_quest_validate_b,
+        rule_quest_validate.verify(borrow world, borrow rule_quest_validate_a));
+    let rule_quest_explain_a = rule_quest_explain.evaluate(borrow world);
+    let rule_quest_explain_b = rule_quest_explain.evaluate(borrow world);
+    include(inout out, borrow rule_quest_explain_a, borrow rule_quest_explain_b,
+        rule_quest_explain.verify(borrow world, borrow rule_quest_explain_a));
+    let rule_network_normalize_a = rule_network_normalize.evaluate(borrow world);
+    let rule_network_normalize_b = rule_network_normalize.evaluate(borrow world);
+    include(inout out, borrow rule_network_normalize_a, borrow rule_network_normalize_b,
+        rule_network_normalize.verify(borrow world, borrow rule_network_normalize_a));
+    let rule_network_bound_a = rule_network_bound.evaluate(borrow world);
+    let rule_network_bound_b = rule_network_bound.evaluate(borrow world);
+    include(inout out, borrow rule_network_bound_a, borrow rule_network_bound_b,
+        rule_network_bound.verify(borrow world, borrow rule_network_bound_a));
+    let rule_network_merge_a = rule_network_merge.evaluate(borrow world);
+    let rule_network_merge_b = rule_network_merge.evaluate(borrow world);
+    include(inout out, borrow rule_network_merge_a, borrow rule_network_merge_b,
+        rule_network_merge.verify(borrow world, borrow rule_network_merge_a));
+    let rule_network_split_a = rule_network_split.evaluate(borrow world);
+    let rule_network_split_b = rule_network_split.evaluate(borrow world);
+    include(inout out, borrow rule_network_split_a, borrow rule_network_split_b,
+        rule_network_split.verify(borrow world, borrow rule_network_split_a));
+    let rule_network_prioritize_a = rule_network_prioritize.evaluate(borrow world);
+    let rule_network_prioritize_b = rule_network_prioritize.evaluate(borrow world);
+    include(inout out, borrow rule_network_prioritize_a, borrow rule_network_prioritize_b,
+        rule_network_prioritize.verify(borrow world, borrow rule_network_prioritize_a));
+    let rule_network_defer_a = rule_network_defer.evaluate(borrow world);
+    let rule_network_defer_b = rule_network_defer.evaluate(borrow world);
+    include(inout out, borrow rule_network_defer_a, borrow rule_network_defer_b,
+        rule_network_defer.verify(borrow world, borrow rule_network_defer_a));
+    let rule_network_reserve_a = rule_network_reserve.evaluate(borrow world);
+    let rule_network_reserve_b = rule_network_reserve.evaluate(borrow world);
+    include(inout out, borrow rule_network_reserve_a, borrow rule_network_reserve_b,
+        rule_network_reserve.verify(borrow world, borrow rule_network_reserve_a));
+    let rule_network_release_a = rule_network_release.evaluate(borrow world);
+    let rule_network_release_b = rule_network_release.evaluate(borrow world);
+    include(inout out, borrow rule_network_release_a, borrow rule_network_release_b,
+        rule_network_release.verify(borrow world, borrow rule_network_release_a));
+    let rule_network_replicate_a = rule_network_replicate.evaluate(borrow world);
+    let rule_network_replicate_b = rule_network_replicate.evaluate(borrow world);
+    include(inout out, borrow rule_network_replicate_a, borrow rule_network_replicate_b,
+        rule_network_replicate.verify(borrow world, borrow rule_network_replicate_a));
+    let rule_network_recover_a = rule_network_recover.evaluate(borrow world);
+    let rule_network_recover_b = rule_network_recover.evaluate(borrow world);
+    include(inout out, borrow rule_network_recover_a, borrow rule_network_recover_b,
+        rule_network_recover.verify(borrow world, borrow rule_network_recover_a));
+    let rule_network_validate_a = rule_network_validate.evaluate(borrow world);
+    let rule_network_validate_b = rule_network_validate.evaluate(borrow world);
+    include(inout out, borrow rule_network_validate_a, borrow rule_network_validate_b,
+        rule_network_validate.verify(borrow world, borrow rule_network_validate_a));
+    let rule_network_explain_a = rule_network_explain.evaluate(borrow world);
+    let rule_network_explain_b = rule_network_explain.evaluate(borrow world);
+    include(inout out, borrow rule_network_explain_a, borrow rule_network_explain_b,
+        rule_network_explain.verify(borrow world, borrow rule_network_explain_a));
+    let rule_render_normalize_a = rule_render_normalize.evaluate(borrow world);
+    let rule_render_normalize_b = rule_render_normalize.evaluate(borrow world);
+    include(inout out, borrow rule_render_normalize_a, borrow rule_render_normalize_b,
+        rule_render_normalize.verify(borrow world, borrow rule_render_normalize_a));
+    let rule_render_bound_a = rule_render_bound.evaluate(borrow world);
+    let rule_render_bound_b = rule_render_bound.evaluate(borrow world);
+    include(inout out, borrow rule_render_bound_a, borrow rule_render_bound_b,
+        rule_render_bound.verify(borrow world, borrow rule_render_bound_a));
+    let rule_render_merge_a = rule_render_merge.evaluate(borrow world);
+    let rule_render_merge_b = rule_render_merge.evaluate(borrow world);
+    include(inout out, borrow rule_render_merge_a, borrow rule_render_merge_b,
+        rule_render_merge.verify(borrow world, borrow rule_render_merge_a));
+    let rule_render_split_a = rule_render_split.evaluate(borrow world);
+    let rule_render_split_b = rule_render_split.evaluate(borrow world);
+    include(inout out, borrow rule_render_split_a, borrow rule_render_split_b,
+        rule_render_split.verify(borrow world, borrow rule_render_split_a));
+    let rule_render_prioritize_a = rule_render_prioritize.evaluate(borrow world);
+    let rule_render_prioritize_b = rule_render_prioritize.evaluate(borrow world);
+    include(inout out, borrow rule_render_prioritize_a, borrow rule_render_prioritize_b,
+        rule_render_prioritize.verify(borrow world, borrow rule_render_prioritize_a));
+    let rule_render_defer_a = rule_render_defer.evaluate(borrow world);
+    let rule_render_defer_b = rule_render_defer.evaluate(borrow world);
+    include(inout out, borrow rule_render_defer_a, borrow rule_render_defer_b,
+        rule_render_defer.verify(borrow world, borrow rule_render_defer_a));
+    let rule_render_reserve_a = rule_render_reserve.evaluate(borrow world);
+    let rule_render_reserve_b = rule_render_reserve.evaluate(borrow world);
+    include(inout out, borrow rule_render_reserve_a, borrow rule_render_reserve_b,
+        rule_render_reserve.verify(borrow world, borrow rule_render_reserve_a));
+    let rule_render_release_a = rule_render_release.evaluate(borrow world);
+    let rule_render_release_b = rule_render_release.evaluate(borrow world);
+    include(inout out, borrow rule_render_release_a, borrow rule_render_release_b,
+        rule_render_release.verify(borrow world, borrow rule_render_release_a));
+    let rule_render_replicate_a = rule_render_replicate.evaluate(borrow world);
+    let rule_render_replicate_b = rule_render_replicate.evaluate(borrow world);
+    include(inout out, borrow rule_render_replicate_a, borrow rule_render_replicate_b,
+        rule_render_replicate.verify(borrow world, borrow rule_render_replicate_a));
+    let rule_render_recover_a = rule_render_recover.evaluate(borrow world);
+    let rule_render_recover_b = rule_render_recover.evaluate(borrow world);
+    include(inout out, borrow rule_render_recover_a, borrow rule_render_recover_b,
+        rule_render_recover.verify(borrow world, borrow rule_render_recover_a));
+    let rule_render_validate_a = rule_render_validate.evaluate(borrow world);
+    let rule_render_validate_b = rule_render_validate.evaluate(borrow world);
+    include(inout out, borrow rule_render_validate_a, borrow rule_render_validate_b,
+        rule_render_validate.verify(borrow world, borrow rule_render_validate_a));
+    let rule_render_explain_a = rule_render_explain.evaluate(borrow world);
+    let rule_render_explain_b = rule_render_explain.evaluate(borrow world);
+    include(inout out, borrow rule_render_explain_a, borrow rule_render_explain_b,
+        rule_render_explain.verify(borrow world, borrow rule_render_explain_a));
+    out.valid = out.rules == 96 && out.deterministic_mismatches == 0; out
+}

@@ -1,0 +1,22 @@
+const vector = @import("vector.rue");
+
+pub struct Box { minimum: vector.Vec2, maximum: vector.Vec2 }
+
+pub fn from_points(borrow a: vector.Vec2, borrow b: vector.Vec2) -> Box {
+    let min_x = if a.x.raw < b.x.raw { a.x } else { b.x };
+    let min_y = if a.y.raw < b.y.raw { a.y } else { b.y };
+    let max_x = if a.x.raw > b.x.raw { a.x } else { b.x };
+    let max_y = if a.y.raw > b.y.raw { a.y } else { b.y };
+    Box { minimum: vector.Vec2 { x: min_x, y: min_y },
+        maximum: vector.Vec2 { x: max_x, y: max_y } }
+}
+
+pub fn overlaps(borrow a: Box, borrow b: Box) -> bool {
+    a.minimum.x.raw <= b.maximum.x.raw && a.maximum.x.raw >= b.minimum.x.raw &&
+        a.minimum.y.raw <= b.maximum.y.raw && a.maximum.y.raw >= b.minimum.y.raw
+}
+
+pub fn contains(borrow area: Box, borrow point: vector.Vec2) -> bool {
+    point.x.raw >= area.minimum.x.raw && point.x.raw <= area.maximum.x.raw &&
+        point.y.raw >= area.minimum.y.raw && point.y.raw <= area.maximum.y.raw
+}

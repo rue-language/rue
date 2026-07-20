@@ -1,0 +1,51 @@
+// Breadth-first grid navigation with stable neighbor ordering.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+
+pub struct Path { reached: bool, distance: u64, visited: u64,
+    digest: u64, valid: bool }
+
+fn visit(borrow world: model.World, inout queue: model.U64s,
+    inout distances: model.U64s, x: i64, y: i64, next_distance: u64) {
+    if x < 0 || y < 0 { return; }
+    let ux: u64 = @intCast(x);
+    let uy: u64 = @intCast(y);
+    let index = model.tile_index(borrow world, ux, uy);
+    if index == model.NONE() || !world.tiles.get_or(index, model.empty_tile()).walkable { return; }
+    if distances.get_or(index, model.NONE()) == model.NONE() {
+        distances.set(index, next_distance);
+        queue.push(index);
+    }
+}
+
+pub fn find(borrow world: model.World, sx: u64, sy: u64, gx: u64, gy: u64) -> Path {
+    let start = model.tile_index(borrow world, sx, sy);
+    let goal = model.tile_index(borrow world, gx, gy);
+    let mut out = Path { reached: false, distance: model.NONE(), visited: 0,
+        digest: metric.mix(14695981039346656037, start), valid: false };
+    if start == model.NONE() || goal == model.NONE() { return out; }
+    let mut distances = model.U64s.new();
+    let mut i: u64 = 0;
+    while i < world.tiles.len() { distances.push(model.NONE()); i = i + 1; }
+    let mut queue = model.U64s.new();
+    distances.set(start, 0); queue.push(start);
+    let mut head: u64 = 0;
+    while head < queue.len() {
+        let index = queue.get_or(head, model.NONE()); head = head + 1;
+        let tile = world.tiles.get_or(index, model.empty_tile());
+        let distance = distances.get_or(index, model.NONE());
+        out.visited = out.visited + 1;
+        out.digest = metric.mix(out.digest, index);
+        if index == goal { out.reached = true; out.distance = distance; break; }
+        visit(borrow world, inout queue, inout distances,
+            @intCast(tile.x) + 1, @intCast(tile.y), distance + 1);
+        visit(borrow world, inout queue, inout distances,
+            @intCast(tile.x), @intCast(tile.y) + 1, distance + 1);
+        visit(borrow world, inout queue, inout distances,
+            @intCast(tile.x) - 1, @intCast(tile.y), distance + 1);
+        visit(borrow world, inout queue, inout distances,
+            @intCast(tile.x), @intCast(tile.y) - 1, distance + 1);
+    }
+    out.valid = !out.reached || out.distance < world.tiles.len();
+    out
+}

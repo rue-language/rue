@@ -1,0 +1,27 @@
+// Input-to-command translation and stable validation.
+const model = @import("model.rue");
+
+pub fn enqueue_move(inout world: model.World, actor: u64, dx: i64, dy: i64) {
+    let index = model.find_entity(borrow world, actor);
+    let accepted = index != model.NONE() &&
+        world.entities.get_or(index, model.empty_entity()).alive;
+    world.commands.push(model.Command { tick: world.tick, kind: 1,
+        actor: actor, x: dx, y: dy, value: 0, accepted: accepted });
+}
+
+pub fn enqueue_action(inout world: model.World, actor: u64, kind: u64, value: u64) {
+    let index = model.find_entity(borrow world, actor);
+    world.commands.push(model.Command { tick: world.tick, kind: kind,
+        actor: actor, x: 0, y: 0, value: value,
+        accepted: index != model.NONE() });
+}
+
+pub fn accepted(borrow world: model.World) -> u64 {
+    let mut count: u64 = 0;
+    let mut i: u64 = 0;
+    while i < world.commands.len() {
+        if world.commands.get_or(i, model.empty_command()).accepted { count = count + 1; }
+        i = i + 1;
+    }
+    count
+}

@@ -1,0 +1,659 @@
+// Canonical registry for every Caldera agent behavior.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+const result = @import("behavior_result.rue");
+const behavior_worker_idle = @import("behavior_worker_idle.rue");
+const behavior_worker_explore = @import("behavior_worker_explore.rue");
+const behavior_worker_gather = @import("behavior_worker_gather.rue");
+const behavior_worker_deliver = @import("behavior_worker_deliver.rue");
+const behavior_worker_craft = @import("behavior_worker_craft.rue");
+const behavior_worker_construct = @import("behavior_worker_construct.rue");
+const behavior_worker_repair = @import("behavior_worker_repair.rue");
+const behavior_worker_defend = @import("behavior_worker_defend.rue");
+const behavior_worker_pursue = @import("behavior_worker_pursue.rue");
+const behavior_worker_evade = @import("behavior_worker_evade.rue");
+const behavior_worker_assist = @import("behavior_worker_assist.rue");
+const behavior_worker_trade = @import("behavior_worker_trade.rue");
+const behavior_worker_rest = @import("behavior_worker_rest.rue");
+const behavior_worker_learn = @import("behavior_worker_learn.rue");
+const behavior_worker_coordinate = @import("behavior_worker_coordinate.rue");
+const behavior_worker_celebrate = @import("behavior_worker_celebrate.rue");
+const behavior_scout_idle = @import("behavior_scout_idle.rue");
+const behavior_scout_explore = @import("behavior_scout_explore.rue");
+const behavior_scout_gather = @import("behavior_scout_gather.rue");
+const behavior_scout_deliver = @import("behavior_scout_deliver.rue");
+const behavior_scout_craft = @import("behavior_scout_craft.rue");
+const behavior_scout_construct = @import("behavior_scout_construct.rue");
+const behavior_scout_repair = @import("behavior_scout_repair.rue");
+const behavior_scout_defend = @import("behavior_scout_defend.rue");
+const behavior_scout_pursue = @import("behavior_scout_pursue.rue");
+const behavior_scout_evade = @import("behavior_scout_evade.rue");
+const behavior_scout_assist = @import("behavior_scout_assist.rue");
+const behavior_scout_trade = @import("behavior_scout_trade.rue");
+const behavior_scout_rest = @import("behavior_scout_rest.rue");
+const behavior_scout_learn = @import("behavior_scout_learn.rue");
+const behavior_scout_coordinate = @import("behavior_scout_coordinate.rue");
+const behavior_scout_celebrate = @import("behavior_scout_celebrate.rue");
+const behavior_builder_idle = @import("behavior_builder_idle.rue");
+const behavior_builder_explore = @import("behavior_builder_explore.rue");
+const behavior_builder_gather = @import("behavior_builder_gather.rue");
+const behavior_builder_deliver = @import("behavior_builder_deliver.rue");
+const behavior_builder_craft = @import("behavior_builder_craft.rue");
+const behavior_builder_construct = @import("behavior_builder_construct.rue");
+const behavior_builder_repair = @import("behavior_builder_repair.rue");
+const behavior_builder_defend = @import("behavior_builder_defend.rue");
+const behavior_builder_pursue = @import("behavior_builder_pursue.rue");
+const behavior_builder_evade = @import("behavior_builder_evade.rue");
+const behavior_builder_assist = @import("behavior_builder_assist.rue");
+const behavior_builder_trade = @import("behavior_builder_trade.rue");
+const behavior_builder_rest = @import("behavior_builder_rest.rue");
+const behavior_builder_learn = @import("behavior_builder_learn.rue");
+const behavior_builder_coordinate = @import("behavior_builder_coordinate.rue");
+const behavior_builder_celebrate = @import("behavior_builder_celebrate.rue");
+const behavior_guard_idle = @import("behavior_guard_idle.rue");
+const behavior_guard_explore = @import("behavior_guard_explore.rue");
+const behavior_guard_gather = @import("behavior_guard_gather.rue");
+const behavior_guard_deliver = @import("behavior_guard_deliver.rue");
+const behavior_guard_craft = @import("behavior_guard_craft.rue");
+const behavior_guard_construct = @import("behavior_guard_construct.rue");
+const behavior_guard_repair = @import("behavior_guard_repair.rue");
+const behavior_guard_defend = @import("behavior_guard_defend.rue");
+const behavior_guard_pursue = @import("behavior_guard_pursue.rue");
+const behavior_guard_evade = @import("behavior_guard_evade.rue");
+const behavior_guard_assist = @import("behavior_guard_assist.rue");
+const behavior_guard_trade = @import("behavior_guard_trade.rue");
+const behavior_guard_rest = @import("behavior_guard_rest.rue");
+const behavior_guard_learn = @import("behavior_guard_learn.rue");
+const behavior_guard_coordinate = @import("behavior_guard_coordinate.rue");
+const behavior_guard_celebrate = @import("behavior_guard_celebrate.rue");
+const behavior_trader_idle = @import("behavior_trader_idle.rue");
+const behavior_trader_explore = @import("behavior_trader_explore.rue");
+const behavior_trader_gather = @import("behavior_trader_gather.rue");
+const behavior_trader_deliver = @import("behavior_trader_deliver.rue");
+const behavior_trader_craft = @import("behavior_trader_craft.rue");
+const behavior_trader_construct = @import("behavior_trader_construct.rue");
+const behavior_trader_repair = @import("behavior_trader_repair.rue");
+const behavior_trader_defend = @import("behavior_trader_defend.rue");
+const behavior_trader_pursue = @import("behavior_trader_pursue.rue");
+const behavior_trader_evade = @import("behavior_trader_evade.rue");
+const behavior_trader_assist = @import("behavior_trader_assist.rue");
+const behavior_trader_trade = @import("behavior_trader_trade.rue");
+const behavior_trader_rest = @import("behavior_trader_rest.rue");
+const behavior_trader_learn = @import("behavior_trader_learn.rue");
+const behavior_trader_coordinate = @import("behavior_trader_coordinate.rue");
+const behavior_trader_celebrate = @import("behavior_trader_celebrate.rue");
+const behavior_healer_idle = @import("behavior_healer_idle.rue");
+const behavior_healer_explore = @import("behavior_healer_explore.rue");
+const behavior_healer_gather = @import("behavior_healer_gather.rue");
+const behavior_healer_deliver = @import("behavior_healer_deliver.rue");
+const behavior_healer_craft = @import("behavior_healer_craft.rue");
+const behavior_healer_construct = @import("behavior_healer_construct.rue");
+const behavior_healer_repair = @import("behavior_healer_repair.rue");
+const behavior_healer_defend = @import("behavior_healer_defend.rue");
+const behavior_healer_pursue = @import("behavior_healer_pursue.rue");
+const behavior_healer_evade = @import("behavior_healer_evade.rue");
+const behavior_healer_assist = @import("behavior_healer_assist.rue");
+const behavior_healer_trade = @import("behavior_healer_trade.rue");
+const behavior_healer_rest = @import("behavior_healer_rest.rue");
+const behavior_healer_learn = @import("behavior_healer_learn.rue");
+const behavior_healer_coordinate = @import("behavior_healer_coordinate.rue");
+const behavior_healer_celebrate = @import("behavior_healer_celebrate.rue");
+const behavior_leader_idle = @import("behavior_leader_idle.rue");
+const behavior_leader_explore = @import("behavior_leader_explore.rue");
+const behavior_leader_gather = @import("behavior_leader_gather.rue");
+const behavior_leader_deliver = @import("behavior_leader_deliver.rue");
+const behavior_leader_craft = @import("behavior_leader_craft.rue");
+const behavior_leader_construct = @import("behavior_leader_construct.rue");
+const behavior_leader_repair = @import("behavior_leader_repair.rue");
+const behavior_leader_defend = @import("behavior_leader_defend.rue");
+const behavior_leader_pursue = @import("behavior_leader_pursue.rue");
+const behavior_leader_evade = @import("behavior_leader_evade.rue");
+const behavior_leader_assist = @import("behavior_leader_assist.rue");
+const behavior_leader_trade = @import("behavior_leader_trade.rue");
+const behavior_leader_rest = @import("behavior_leader_rest.rue");
+const behavior_leader_learn = @import("behavior_leader_learn.rue");
+const behavior_leader_coordinate = @import("behavior_leader_coordinate.rue");
+const behavior_leader_celebrate = @import("behavior_leader_celebrate.rue");
+const behavior_citizen_idle = @import("behavior_citizen_idle.rue");
+const behavior_citizen_explore = @import("behavior_citizen_explore.rue");
+const behavior_citizen_gather = @import("behavior_citizen_gather.rue");
+const behavior_citizen_deliver = @import("behavior_citizen_deliver.rue");
+const behavior_citizen_craft = @import("behavior_citizen_craft.rue");
+const behavior_citizen_construct = @import("behavior_citizen_construct.rue");
+const behavior_citizen_repair = @import("behavior_citizen_repair.rue");
+const behavior_citizen_defend = @import("behavior_citizen_defend.rue");
+const behavior_citizen_pursue = @import("behavior_citizen_pursue.rue");
+const behavior_citizen_evade = @import("behavior_citizen_evade.rue");
+const behavior_citizen_assist = @import("behavior_citizen_assist.rue");
+const behavior_citizen_trade = @import("behavior_citizen_trade.rue");
+const behavior_citizen_rest = @import("behavior_citizen_rest.rue");
+const behavior_citizen_learn = @import("behavior_citizen_learn.rue");
+const behavior_citizen_coordinate = @import("behavior_citizen_coordinate.rue");
+const behavior_citizen_celebrate = @import("behavior_citizen_celebrate.rue");
+pub struct Summary { behaviors: u64, agents: u64, selected: u64, transitions: u64,
+    deterministic_mismatches: u64, digest: u64, valid: bool }
+fn include(inout out: Summary, borrow first: result.Result, borrow second: result.Result, verified: bool) {
+    out.behaviors = out.behaviors + 1; out.agents = out.agents + first.agents;
+    out.selected = out.selected + first.selected; out.transitions = out.transitions + first.transitions;
+    if first.digest != second.digest || first.utility != second.utility || !verified {
+        out.deterministic_mismatches = out.deterministic_mismatches + 1;
+    }
+    out.digest = metric.mix(out.digest, first.digest);
+}
+pub fn run(borrow world: model.World) -> Summary {
+    let mut out = Summary { behaviors: 0, agents: 0, selected: 0, transitions: 0,
+        deterministic_mismatches: 0, digest: 14695981039346656037, valid: false };
+    let behavior_worker_idle_a = behavior_worker_idle.evaluate(borrow world);
+    let behavior_worker_idle_b = behavior_worker_idle.evaluate(borrow world);
+    include(inout out, borrow behavior_worker_idle_a, borrow behavior_worker_idle_b,
+        behavior_worker_idle.verify(borrow world, borrow behavior_worker_idle_a));
+    let behavior_worker_explore_a = behavior_worker_explore.evaluate(borrow world);
+    let behavior_worker_explore_b = behavior_worker_explore.evaluate(borrow world);
+    include(inout out, borrow behavior_worker_explore_a, borrow behavior_worker_explore_b,
+        behavior_worker_explore.verify(borrow world, borrow behavior_worker_explore_a));
+    let behavior_worker_gather_a = behavior_worker_gather.evaluate(borrow world);
+    let behavior_worker_gather_b = behavior_worker_gather.evaluate(borrow world);
+    include(inout out, borrow behavior_worker_gather_a, borrow behavior_worker_gather_b,
+        behavior_worker_gather.verify(borrow world, borrow behavior_worker_gather_a));
+    let behavior_worker_deliver_a = behavior_worker_deliver.evaluate(borrow world);
+    let behavior_worker_deliver_b = behavior_worker_deliver.evaluate(borrow world);
+    include(inout out, borrow behavior_worker_deliver_a, borrow behavior_worker_deliver_b,
+        behavior_worker_deliver.verify(borrow world, borrow behavior_worker_deliver_a));
+    let behavior_worker_craft_a = behavior_worker_craft.evaluate(borrow world);
+    let behavior_worker_craft_b = behavior_worker_craft.evaluate(borrow world);
+    include(inout out, borrow behavior_worker_craft_a, borrow behavior_worker_craft_b,
+        behavior_worker_craft.verify(borrow world, borrow behavior_worker_craft_a));
+    let behavior_worker_construct_a = behavior_worker_construct.evaluate(borrow world);
+    let behavior_worker_construct_b = behavior_worker_construct.evaluate(borrow world);
+    include(inout out, borrow behavior_worker_construct_a, borrow behavior_worker_construct_b,
+        behavior_worker_construct.verify(borrow world, borrow behavior_worker_construct_a));
+    let behavior_worker_repair_a = behavior_worker_repair.evaluate(borrow world);
+    let behavior_worker_repair_b = behavior_worker_repair.evaluate(borrow world);
+    include(inout out, borrow behavior_worker_repair_a, borrow behavior_worker_repair_b,
+        behavior_worker_repair.verify(borrow world, borrow behavior_worker_repair_a));
+    let behavior_worker_defend_a = behavior_worker_defend.evaluate(borrow world);
+    let behavior_worker_defend_b = behavior_worker_defend.evaluate(borrow world);
+    include(inout out, borrow behavior_worker_defend_a, borrow behavior_worker_defend_b,
+        behavior_worker_defend.verify(borrow world, borrow behavior_worker_defend_a));
+    let behavior_worker_pursue_a = behavior_worker_pursue.evaluate(borrow world);
+    let behavior_worker_pursue_b = behavior_worker_pursue.evaluate(borrow world);
+    include(inout out, borrow behavior_worker_pursue_a, borrow behavior_worker_pursue_b,
+        behavior_worker_pursue.verify(borrow world, borrow behavior_worker_pursue_a));
+    let behavior_worker_evade_a = behavior_worker_evade.evaluate(borrow world);
+    let behavior_worker_evade_b = behavior_worker_evade.evaluate(borrow world);
+    include(inout out, borrow behavior_worker_evade_a, borrow behavior_worker_evade_b,
+        behavior_worker_evade.verify(borrow world, borrow behavior_worker_evade_a));
+    let behavior_worker_assist_a = behavior_worker_assist.evaluate(borrow world);
+    let behavior_worker_assist_b = behavior_worker_assist.evaluate(borrow world);
+    include(inout out, borrow behavior_worker_assist_a, borrow behavior_worker_assist_b,
+        behavior_worker_assist.verify(borrow world, borrow behavior_worker_assist_a));
+    let behavior_worker_trade_a = behavior_worker_trade.evaluate(borrow world);
+    let behavior_worker_trade_b = behavior_worker_trade.evaluate(borrow world);
+    include(inout out, borrow behavior_worker_trade_a, borrow behavior_worker_trade_b,
+        behavior_worker_trade.verify(borrow world, borrow behavior_worker_trade_a));
+    let behavior_worker_rest_a = behavior_worker_rest.evaluate(borrow world);
+    let behavior_worker_rest_b = behavior_worker_rest.evaluate(borrow world);
+    include(inout out, borrow behavior_worker_rest_a, borrow behavior_worker_rest_b,
+        behavior_worker_rest.verify(borrow world, borrow behavior_worker_rest_a));
+    let behavior_worker_learn_a = behavior_worker_learn.evaluate(borrow world);
+    let behavior_worker_learn_b = behavior_worker_learn.evaluate(borrow world);
+    include(inout out, borrow behavior_worker_learn_a, borrow behavior_worker_learn_b,
+        behavior_worker_learn.verify(borrow world, borrow behavior_worker_learn_a));
+    let behavior_worker_coordinate_a = behavior_worker_coordinate.evaluate(borrow world);
+    let behavior_worker_coordinate_b = behavior_worker_coordinate.evaluate(borrow world);
+    include(inout out, borrow behavior_worker_coordinate_a, borrow behavior_worker_coordinate_b,
+        behavior_worker_coordinate.verify(borrow world, borrow behavior_worker_coordinate_a));
+    let behavior_worker_celebrate_a = behavior_worker_celebrate.evaluate(borrow world);
+    let behavior_worker_celebrate_b = behavior_worker_celebrate.evaluate(borrow world);
+    include(inout out, borrow behavior_worker_celebrate_a, borrow behavior_worker_celebrate_b,
+        behavior_worker_celebrate.verify(borrow world, borrow behavior_worker_celebrate_a));
+    let behavior_scout_idle_a = behavior_scout_idle.evaluate(borrow world);
+    let behavior_scout_idle_b = behavior_scout_idle.evaluate(borrow world);
+    include(inout out, borrow behavior_scout_idle_a, borrow behavior_scout_idle_b,
+        behavior_scout_idle.verify(borrow world, borrow behavior_scout_idle_a));
+    let behavior_scout_explore_a = behavior_scout_explore.evaluate(borrow world);
+    let behavior_scout_explore_b = behavior_scout_explore.evaluate(borrow world);
+    include(inout out, borrow behavior_scout_explore_a, borrow behavior_scout_explore_b,
+        behavior_scout_explore.verify(borrow world, borrow behavior_scout_explore_a));
+    let behavior_scout_gather_a = behavior_scout_gather.evaluate(borrow world);
+    let behavior_scout_gather_b = behavior_scout_gather.evaluate(borrow world);
+    include(inout out, borrow behavior_scout_gather_a, borrow behavior_scout_gather_b,
+        behavior_scout_gather.verify(borrow world, borrow behavior_scout_gather_a));
+    let behavior_scout_deliver_a = behavior_scout_deliver.evaluate(borrow world);
+    let behavior_scout_deliver_b = behavior_scout_deliver.evaluate(borrow world);
+    include(inout out, borrow behavior_scout_deliver_a, borrow behavior_scout_deliver_b,
+        behavior_scout_deliver.verify(borrow world, borrow behavior_scout_deliver_a));
+    let behavior_scout_craft_a = behavior_scout_craft.evaluate(borrow world);
+    let behavior_scout_craft_b = behavior_scout_craft.evaluate(borrow world);
+    include(inout out, borrow behavior_scout_craft_a, borrow behavior_scout_craft_b,
+        behavior_scout_craft.verify(borrow world, borrow behavior_scout_craft_a));
+    let behavior_scout_construct_a = behavior_scout_construct.evaluate(borrow world);
+    let behavior_scout_construct_b = behavior_scout_construct.evaluate(borrow world);
+    include(inout out, borrow behavior_scout_construct_a, borrow behavior_scout_construct_b,
+        behavior_scout_construct.verify(borrow world, borrow behavior_scout_construct_a));
+    let behavior_scout_repair_a = behavior_scout_repair.evaluate(borrow world);
+    let behavior_scout_repair_b = behavior_scout_repair.evaluate(borrow world);
+    include(inout out, borrow behavior_scout_repair_a, borrow behavior_scout_repair_b,
+        behavior_scout_repair.verify(borrow world, borrow behavior_scout_repair_a));
+    let behavior_scout_defend_a = behavior_scout_defend.evaluate(borrow world);
+    let behavior_scout_defend_b = behavior_scout_defend.evaluate(borrow world);
+    include(inout out, borrow behavior_scout_defend_a, borrow behavior_scout_defend_b,
+        behavior_scout_defend.verify(borrow world, borrow behavior_scout_defend_a));
+    let behavior_scout_pursue_a = behavior_scout_pursue.evaluate(borrow world);
+    let behavior_scout_pursue_b = behavior_scout_pursue.evaluate(borrow world);
+    include(inout out, borrow behavior_scout_pursue_a, borrow behavior_scout_pursue_b,
+        behavior_scout_pursue.verify(borrow world, borrow behavior_scout_pursue_a));
+    let behavior_scout_evade_a = behavior_scout_evade.evaluate(borrow world);
+    let behavior_scout_evade_b = behavior_scout_evade.evaluate(borrow world);
+    include(inout out, borrow behavior_scout_evade_a, borrow behavior_scout_evade_b,
+        behavior_scout_evade.verify(borrow world, borrow behavior_scout_evade_a));
+    let behavior_scout_assist_a = behavior_scout_assist.evaluate(borrow world);
+    let behavior_scout_assist_b = behavior_scout_assist.evaluate(borrow world);
+    include(inout out, borrow behavior_scout_assist_a, borrow behavior_scout_assist_b,
+        behavior_scout_assist.verify(borrow world, borrow behavior_scout_assist_a));
+    let behavior_scout_trade_a = behavior_scout_trade.evaluate(borrow world);
+    let behavior_scout_trade_b = behavior_scout_trade.evaluate(borrow world);
+    include(inout out, borrow behavior_scout_trade_a, borrow behavior_scout_trade_b,
+        behavior_scout_trade.verify(borrow world, borrow behavior_scout_trade_a));
+    let behavior_scout_rest_a = behavior_scout_rest.evaluate(borrow world);
+    let behavior_scout_rest_b = behavior_scout_rest.evaluate(borrow world);
+    include(inout out, borrow behavior_scout_rest_a, borrow behavior_scout_rest_b,
+        behavior_scout_rest.verify(borrow world, borrow behavior_scout_rest_a));
+    let behavior_scout_learn_a = behavior_scout_learn.evaluate(borrow world);
+    let behavior_scout_learn_b = behavior_scout_learn.evaluate(borrow world);
+    include(inout out, borrow behavior_scout_learn_a, borrow behavior_scout_learn_b,
+        behavior_scout_learn.verify(borrow world, borrow behavior_scout_learn_a));
+    let behavior_scout_coordinate_a = behavior_scout_coordinate.evaluate(borrow world);
+    let behavior_scout_coordinate_b = behavior_scout_coordinate.evaluate(borrow world);
+    include(inout out, borrow behavior_scout_coordinate_a, borrow behavior_scout_coordinate_b,
+        behavior_scout_coordinate.verify(borrow world, borrow behavior_scout_coordinate_a));
+    let behavior_scout_celebrate_a = behavior_scout_celebrate.evaluate(borrow world);
+    let behavior_scout_celebrate_b = behavior_scout_celebrate.evaluate(borrow world);
+    include(inout out, borrow behavior_scout_celebrate_a, borrow behavior_scout_celebrate_b,
+        behavior_scout_celebrate.verify(borrow world, borrow behavior_scout_celebrate_a));
+    let behavior_builder_idle_a = behavior_builder_idle.evaluate(borrow world);
+    let behavior_builder_idle_b = behavior_builder_idle.evaluate(borrow world);
+    include(inout out, borrow behavior_builder_idle_a, borrow behavior_builder_idle_b,
+        behavior_builder_idle.verify(borrow world, borrow behavior_builder_idle_a));
+    let behavior_builder_explore_a = behavior_builder_explore.evaluate(borrow world);
+    let behavior_builder_explore_b = behavior_builder_explore.evaluate(borrow world);
+    include(inout out, borrow behavior_builder_explore_a, borrow behavior_builder_explore_b,
+        behavior_builder_explore.verify(borrow world, borrow behavior_builder_explore_a));
+    let behavior_builder_gather_a = behavior_builder_gather.evaluate(borrow world);
+    let behavior_builder_gather_b = behavior_builder_gather.evaluate(borrow world);
+    include(inout out, borrow behavior_builder_gather_a, borrow behavior_builder_gather_b,
+        behavior_builder_gather.verify(borrow world, borrow behavior_builder_gather_a));
+    let behavior_builder_deliver_a = behavior_builder_deliver.evaluate(borrow world);
+    let behavior_builder_deliver_b = behavior_builder_deliver.evaluate(borrow world);
+    include(inout out, borrow behavior_builder_deliver_a, borrow behavior_builder_deliver_b,
+        behavior_builder_deliver.verify(borrow world, borrow behavior_builder_deliver_a));
+    let behavior_builder_craft_a = behavior_builder_craft.evaluate(borrow world);
+    let behavior_builder_craft_b = behavior_builder_craft.evaluate(borrow world);
+    include(inout out, borrow behavior_builder_craft_a, borrow behavior_builder_craft_b,
+        behavior_builder_craft.verify(borrow world, borrow behavior_builder_craft_a));
+    let behavior_builder_construct_a = behavior_builder_construct.evaluate(borrow world);
+    let behavior_builder_construct_b = behavior_builder_construct.evaluate(borrow world);
+    include(inout out, borrow behavior_builder_construct_a, borrow behavior_builder_construct_b,
+        behavior_builder_construct.verify(borrow world, borrow behavior_builder_construct_a));
+    let behavior_builder_repair_a = behavior_builder_repair.evaluate(borrow world);
+    let behavior_builder_repair_b = behavior_builder_repair.evaluate(borrow world);
+    include(inout out, borrow behavior_builder_repair_a, borrow behavior_builder_repair_b,
+        behavior_builder_repair.verify(borrow world, borrow behavior_builder_repair_a));
+    let behavior_builder_defend_a = behavior_builder_defend.evaluate(borrow world);
+    let behavior_builder_defend_b = behavior_builder_defend.evaluate(borrow world);
+    include(inout out, borrow behavior_builder_defend_a, borrow behavior_builder_defend_b,
+        behavior_builder_defend.verify(borrow world, borrow behavior_builder_defend_a));
+    let behavior_builder_pursue_a = behavior_builder_pursue.evaluate(borrow world);
+    let behavior_builder_pursue_b = behavior_builder_pursue.evaluate(borrow world);
+    include(inout out, borrow behavior_builder_pursue_a, borrow behavior_builder_pursue_b,
+        behavior_builder_pursue.verify(borrow world, borrow behavior_builder_pursue_a));
+    let behavior_builder_evade_a = behavior_builder_evade.evaluate(borrow world);
+    let behavior_builder_evade_b = behavior_builder_evade.evaluate(borrow world);
+    include(inout out, borrow behavior_builder_evade_a, borrow behavior_builder_evade_b,
+        behavior_builder_evade.verify(borrow world, borrow behavior_builder_evade_a));
+    let behavior_builder_assist_a = behavior_builder_assist.evaluate(borrow world);
+    let behavior_builder_assist_b = behavior_builder_assist.evaluate(borrow world);
+    include(inout out, borrow behavior_builder_assist_a, borrow behavior_builder_assist_b,
+        behavior_builder_assist.verify(borrow world, borrow behavior_builder_assist_a));
+    let behavior_builder_trade_a = behavior_builder_trade.evaluate(borrow world);
+    let behavior_builder_trade_b = behavior_builder_trade.evaluate(borrow world);
+    include(inout out, borrow behavior_builder_trade_a, borrow behavior_builder_trade_b,
+        behavior_builder_trade.verify(borrow world, borrow behavior_builder_trade_a));
+    let behavior_builder_rest_a = behavior_builder_rest.evaluate(borrow world);
+    let behavior_builder_rest_b = behavior_builder_rest.evaluate(borrow world);
+    include(inout out, borrow behavior_builder_rest_a, borrow behavior_builder_rest_b,
+        behavior_builder_rest.verify(borrow world, borrow behavior_builder_rest_a));
+    let behavior_builder_learn_a = behavior_builder_learn.evaluate(borrow world);
+    let behavior_builder_learn_b = behavior_builder_learn.evaluate(borrow world);
+    include(inout out, borrow behavior_builder_learn_a, borrow behavior_builder_learn_b,
+        behavior_builder_learn.verify(borrow world, borrow behavior_builder_learn_a));
+    let behavior_builder_coordinate_a = behavior_builder_coordinate.evaluate(borrow world);
+    let behavior_builder_coordinate_b = behavior_builder_coordinate.evaluate(borrow world);
+    include(inout out, borrow behavior_builder_coordinate_a, borrow behavior_builder_coordinate_b,
+        behavior_builder_coordinate.verify(borrow world, borrow behavior_builder_coordinate_a));
+    let behavior_builder_celebrate_a = behavior_builder_celebrate.evaluate(borrow world);
+    let behavior_builder_celebrate_b = behavior_builder_celebrate.evaluate(borrow world);
+    include(inout out, borrow behavior_builder_celebrate_a, borrow behavior_builder_celebrate_b,
+        behavior_builder_celebrate.verify(borrow world, borrow behavior_builder_celebrate_a));
+    let behavior_guard_idle_a = behavior_guard_idle.evaluate(borrow world);
+    let behavior_guard_idle_b = behavior_guard_idle.evaluate(borrow world);
+    include(inout out, borrow behavior_guard_idle_a, borrow behavior_guard_idle_b,
+        behavior_guard_idle.verify(borrow world, borrow behavior_guard_idle_a));
+    let behavior_guard_explore_a = behavior_guard_explore.evaluate(borrow world);
+    let behavior_guard_explore_b = behavior_guard_explore.evaluate(borrow world);
+    include(inout out, borrow behavior_guard_explore_a, borrow behavior_guard_explore_b,
+        behavior_guard_explore.verify(borrow world, borrow behavior_guard_explore_a));
+    let behavior_guard_gather_a = behavior_guard_gather.evaluate(borrow world);
+    let behavior_guard_gather_b = behavior_guard_gather.evaluate(borrow world);
+    include(inout out, borrow behavior_guard_gather_a, borrow behavior_guard_gather_b,
+        behavior_guard_gather.verify(borrow world, borrow behavior_guard_gather_a));
+    let behavior_guard_deliver_a = behavior_guard_deliver.evaluate(borrow world);
+    let behavior_guard_deliver_b = behavior_guard_deliver.evaluate(borrow world);
+    include(inout out, borrow behavior_guard_deliver_a, borrow behavior_guard_deliver_b,
+        behavior_guard_deliver.verify(borrow world, borrow behavior_guard_deliver_a));
+    let behavior_guard_craft_a = behavior_guard_craft.evaluate(borrow world);
+    let behavior_guard_craft_b = behavior_guard_craft.evaluate(borrow world);
+    include(inout out, borrow behavior_guard_craft_a, borrow behavior_guard_craft_b,
+        behavior_guard_craft.verify(borrow world, borrow behavior_guard_craft_a));
+    let behavior_guard_construct_a = behavior_guard_construct.evaluate(borrow world);
+    let behavior_guard_construct_b = behavior_guard_construct.evaluate(borrow world);
+    include(inout out, borrow behavior_guard_construct_a, borrow behavior_guard_construct_b,
+        behavior_guard_construct.verify(borrow world, borrow behavior_guard_construct_a));
+    let behavior_guard_repair_a = behavior_guard_repair.evaluate(borrow world);
+    let behavior_guard_repair_b = behavior_guard_repair.evaluate(borrow world);
+    include(inout out, borrow behavior_guard_repair_a, borrow behavior_guard_repair_b,
+        behavior_guard_repair.verify(borrow world, borrow behavior_guard_repair_a));
+    let behavior_guard_defend_a = behavior_guard_defend.evaluate(borrow world);
+    let behavior_guard_defend_b = behavior_guard_defend.evaluate(borrow world);
+    include(inout out, borrow behavior_guard_defend_a, borrow behavior_guard_defend_b,
+        behavior_guard_defend.verify(borrow world, borrow behavior_guard_defend_a));
+    let behavior_guard_pursue_a = behavior_guard_pursue.evaluate(borrow world);
+    let behavior_guard_pursue_b = behavior_guard_pursue.evaluate(borrow world);
+    include(inout out, borrow behavior_guard_pursue_a, borrow behavior_guard_pursue_b,
+        behavior_guard_pursue.verify(borrow world, borrow behavior_guard_pursue_a));
+    let behavior_guard_evade_a = behavior_guard_evade.evaluate(borrow world);
+    let behavior_guard_evade_b = behavior_guard_evade.evaluate(borrow world);
+    include(inout out, borrow behavior_guard_evade_a, borrow behavior_guard_evade_b,
+        behavior_guard_evade.verify(borrow world, borrow behavior_guard_evade_a));
+    let behavior_guard_assist_a = behavior_guard_assist.evaluate(borrow world);
+    let behavior_guard_assist_b = behavior_guard_assist.evaluate(borrow world);
+    include(inout out, borrow behavior_guard_assist_a, borrow behavior_guard_assist_b,
+        behavior_guard_assist.verify(borrow world, borrow behavior_guard_assist_a));
+    let behavior_guard_trade_a = behavior_guard_trade.evaluate(borrow world);
+    let behavior_guard_trade_b = behavior_guard_trade.evaluate(borrow world);
+    include(inout out, borrow behavior_guard_trade_a, borrow behavior_guard_trade_b,
+        behavior_guard_trade.verify(borrow world, borrow behavior_guard_trade_a));
+    let behavior_guard_rest_a = behavior_guard_rest.evaluate(borrow world);
+    let behavior_guard_rest_b = behavior_guard_rest.evaluate(borrow world);
+    include(inout out, borrow behavior_guard_rest_a, borrow behavior_guard_rest_b,
+        behavior_guard_rest.verify(borrow world, borrow behavior_guard_rest_a));
+    let behavior_guard_learn_a = behavior_guard_learn.evaluate(borrow world);
+    let behavior_guard_learn_b = behavior_guard_learn.evaluate(borrow world);
+    include(inout out, borrow behavior_guard_learn_a, borrow behavior_guard_learn_b,
+        behavior_guard_learn.verify(borrow world, borrow behavior_guard_learn_a));
+    let behavior_guard_coordinate_a = behavior_guard_coordinate.evaluate(borrow world);
+    let behavior_guard_coordinate_b = behavior_guard_coordinate.evaluate(borrow world);
+    include(inout out, borrow behavior_guard_coordinate_a, borrow behavior_guard_coordinate_b,
+        behavior_guard_coordinate.verify(borrow world, borrow behavior_guard_coordinate_a));
+    let behavior_guard_celebrate_a = behavior_guard_celebrate.evaluate(borrow world);
+    let behavior_guard_celebrate_b = behavior_guard_celebrate.evaluate(borrow world);
+    include(inout out, borrow behavior_guard_celebrate_a, borrow behavior_guard_celebrate_b,
+        behavior_guard_celebrate.verify(borrow world, borrow behavior_guard_celebrate_a));
+    let behavior_trader_idle_a = behavior_trader_idle.evaluate(borrow world);
+    let behavior_trader_idle_b = behavior_trader_idle.evaluate(borrow world);
+    include(inout out, borrow behavior_trader_idle_a, borrow behavior_trader_idle_b,
+        behavior_trader_idle.verify(borrow world, borrow behavior_trader_idle_a));
+    let behavior_trader_explore_a = behavior_trader_explore.evaluate(borrow world);
+    let behavior_trader_explore_b = behavior_trader_explore.evaluate(borrow world);
+    include(inout out, borrow behavior_trader_explore_a, borrow behavior_trader_explore_b,
+        behavior_trader_explore.verify(borrow world, borrow behavior_trader_explore_a));
+    let behavior_trader_gather_a = behavior_trader_gather.evaluate(borrow world);
+    let behavior_trader_gather_b = behavior_trader_gather.evaluate(borrow world);
+    include(inout out, borrow behavior_trader_gather_a, borrow behavior_trader_gather_b,
+        behavior_trader_gather.verify(borrow world, borrow behavior_trader_gather_a));
+    let behavior_trader_deliver_a = behavior_trader_deliver.evaluate(borrow world);
+    let behavior_trader_deliver_b = behavior_trader_deliver.evaluate(borrow world);
+    include(inout out, borrow behavior_trader_deliver_a, borrow behavior_trader_deliver_b,
+        behavior_trader_deliver.verify(borrow world, borrow behavior_trader_deliver_a));
+    let behavior_trader_craft_a = behavior_trader_craft.evaluate(borrow world);
+    let behavior_trader_craft_b = behavior_trader_craft.evaluate(borrow world);
+    include(inout out, borrow behavior_trader_craft_a, borrow behavior_trader_craft_b,
+        behavior_trader_craft.verify(borrow world, borrow behavior_trader_craft_a));
+    let behavior_trader_construct_a = behavior_trader_construct.evaluate(borrow world);
+    let behavior_trader_construct_b = behavior_trader_construct.evaluate(borrow world);
+    include(inout out, borrow behavior_trader_construct_a, borrow behavior_trader_construct_b,
+        behavior_trader_construct.verify(borrow world, borrow behavior_trader_construct_a));
+    let behavior_trader_repair_a = behavior_trader_repair.evaluate(borrow world);
+    let behavior_trader_repair_b = behavior_trader_repair.evaluate(borrow world);
+    include(inout out, borrow behavior_trader_repair_a, borrow behavior_trader_repair_b,
+        behavior_trader_repair.verify(borrow world, borrow behavior_trader_repair_a));
+    let behavior_trader_defend_a = behavior_trader_defend.evaluate(borrow world);
+    let behavior_trader_defend_b = behavior_trader_defend.evaluate(borrow world);
+    include(inout out, borrow behavior_trader_defend_a, borrow behavior_trader_defend_b,
+        behavior_trader_defend.verify(borrow world, borrow behavior_trader_defend_a));
+    let behavior_trader_pursue_a = behavior_trader_pursue.evaluate(borrow world);
+    let behavior_trader_pursue_b = behavior_trader_pursue.evaluate(borrow world);
+    include(inout out, borrow behavior_trader_pursue_a, borrow behavior_trader_pursue_b,
+        behavior_trader_pursue.verify(borrow world, borrow behavior_trader_pursue_a));
+    let behavior_trader_evade_a = behavior_trader_evade.evaluate(borrow world);
+    let behavior_trader_evade_b = behavior_trader_evade.evaluate(borrow world);
+    include(inout out, borrow behavior_trader_evade_a, borrow behavior_trader_evade_b,
+        behavior_trader_evade.verify(borrow world, borrow behavior_trader_evade_a));
+    let behavior_trader_assist_a = behavior_trader_assist.evaluate(borrow world);
+    let behavior_trader_assist_b = behavior_trader_assist.evaluate(borrow world);
+    include(inout out, borrow behavior_trader_assist_a, borrow behavior_trader_assist_b,
+        behavior_trader_assist.verify(borrow world, borrow behavior_trader_assist_a));
+    let behavior_trader_trade_a = behavior_trader_trade.evaluate(borrow world);
+    let behavior_trader_trade_b = behavior_trader_trade.evaluate(borrow world);
+    include(inout out, borrow behavior_trader_trade_a, borrow behavior_trader_trade_b,
+        behavior_trader_trade.verify(borrow world, borrow behavior_trader_trade_a));
+    let behavior_trader_rest_a = behavior_trader_rest.evaluate(borrow world);
+    let behavior_trader_rest_b = behavior_trader_rest.evaluate(borrow world);
+    include(inout out, borrow behavior_trader_rest_a, borrow behavior_trader_rest_b,
+        behavior_trader_rest.verify(borrow world, borrow behavior_trader_rest_a));
+    let behavior_trader_learn_a = behavior_trader_learn.evaluate(borrow world);
+    let behavior_trader_learn_b = behavior_trader_learn.evaluate(borrow world);
+    include(inout out, borrow behavior_trader_learn_a, borrow behavior_trader_learn_b,
+        behavior_trader_learn.verify(borrow world, borrow behavior_trader_learn_a));
+    let behavior_trader_coordinate_a = behavior_trader_coordinate.evaluate(borrow world);
+    let behavior_trader_coordinate_b = behavior_trader_coordinate.evaluate(borrow world);
+    include(inout out, borrow behavior_trader_coordinate_a, borrow behavior_trader_coordinate_b,
+        behavior_trader_coordinate.verify(borrow world, borrow behavior_trader_coordinate_a));
+    let behavior_trader_celebrate_a = behavior_trader_celebrate.evaluate(borrow world);
+    let behavior_trader_celebrate_b = behavior_trader_celebrate.evaluate(borrow world);
+    include(inout out, borrow behavior_trader_celebrate_a, borrow behavior_trader_celebrate_b,
+        behavior_trader_celebrate.verify(borrow world, borrow behavior_trader_celebrate_a));
+    let behavior_healer_idle_a = behavior_healer_idle.evaluate(borrow world);
+    let behavior_healer_idle_b = behavior_healer_idle.evaluate(borrow world);
+    include(inout out, borrow behavior_healer_idle_a, borrow behavior_healer_idle_b,
+        behavior_healer_idle.verify(borrow world, borrow behavior_healer_idle_a));
+    let behavior_healer_explore_a = behavior_healer_explore.evaluate(borrow world);
+    let behavior_healer_explore_b = behavior_healer_explore.evaluate(borrow world);
+    include(inout out, borrow behavior_healer_explore_a, borrow behavior_healer_explore_b,
+        behavior_healer_explore.verify(borrow world, borrow behavior_healer_explore_a));
+    let behavior_healer_gather_a = behavior_healer_gather.evaluate(borrow world);
+    let behavior_healer_gather_b = behavior_healer_gather.evaluate(borrow world);
+    include(inout out, borrow behavior_healer_gather_a, borrow behavior_healer_gather_b,
+        behavior_healer_gather.verify(borrow world, borrow behavior_healer_gather_a));
+    let behavior_healer_deliver_a = behavior_healer_deliver.evaluate(borrow world);
+    let behavior_healer_deliver_b = behavior_healer_deliver.evaluate(borrow world);
+    include(inout out, borrow behavior_healer_deliver_a, borrow behavior_healer_deliver_b,
+        behavior_healer_deliver.verify(borrow world, borrow behavior_healer_deliver_a));
+    let behavior_healer_craft_a = behavior_healer_craft.evaluate(borrow world);
+    let behavior_healer_craft_b = behavior_healer_craft.evaluate(borrow world);
+    include(inout out, borrow behavior_healer_craft_a, borrow behavior_healer_craft_b,
+        behavior_healer_craft.verify(borrow world, borrow behavior_healer_craft_a));
+    let behavior_healer_construct_a = behavior_healer_construct.evaluate(borrow world);
+    let behavior_healer_construct_b = behavior_healer_construct.evaluate(borrow world);
+    include(inout out, borrow behavior_healer_construct_a, borrow behavior_healer_construct_b,
+        behavior_healer_construct.verify(borrow world, borrow behavior_healer_construct_a));
+    let behavior_healer_repair_a = behavior_healer_repair.evaluate(borrow world);
+    let behavior_healer_repair_b = behavior_healer_repair.evaluate(borrow world);
+    include(inout out, borrow behavior_healer_repair_a, borrow behavior_healer_repair_b,
+        behavior_healer_repair.verify(borrow world, borrow behavior_healer_repair_a));
+    let behavior_healer_defend_a = behavior_healer_defend.evaluate(borrow world);
+    let behavior_healer_defend_b = behavior_healer_defend.evaluate(borrow world);
+    include(inout out, borrow behavior_healer_defend_a, borrow behavior_healer_defend_b,
+        behavior_healer_defend.verify(borrow world, borrow behavior_healer_defend_a));
+    let behavior_healer_pursue_a = behavior_healer_pursue.evaluate(borrow world);
+    let behavior_healer_pursue_b = behavior_healer_pursue.evaluate(borrow world);
+    include(inout out, borrow behavior_healer_pursue_a, borrow behavior_healer_pursue_b,
+        behavior_healer_pursue.verify(borrow world, borrow behavior_healer_pursue_a));
+    let behavior_healer_evade_a = behavior_healer_evade.evaluate(borrow world);
+    let behavior_healer_evade_b = behavior_healer_evade.evaluate(borrow world);
+    include(inout out, borrow behavior_healer_evade_a, borrow behavior_healer_evade_b,
+        behavior_healer_evade.verify(borrow world, borrow behavior_healer_evade_a));
+    let behavior_healer_assist_a = behavior_healer_assist.evaluate(borrow world);
+    let behavior_healer_assist_b = behavior_healer_assist.evaluate(borrow world);
+    include(inout out, borrow behavior_healer_assist_a, borrow behavior_healer_assist_b,
+        behavior_healer_assist.verify(borrow world, borrow behavior_healer_assist_a));
+    let behavior_healer_trade_a = behavior_healer_trade.evaluate(borrow world);
+    let behavior_healer_trade_b = behavior_healer_trade.evaluate(borrow world);
+    include(inout out, borrow behavior_healer_trade_a, borrow behavior_healer_trade_b,
+        behavior_healer_trade.verify(borrow world, borrow behavior_healer_trade_a));
+    let behavior_healer_rest_a = behavior_healer_rest.evaluate(borrow world);
+    let behavior_healer_rest_b = behavior_healer_rest.evaluate(borrow world);
+    include(inout out, borrow behavior_healer_rest_a, borrow behavior_healer_rest_b,
+        behavior_healer_rest.verify(borrow world, borrow behavior_healer_rest_a));
+    let behavior_healer_learn_a = behavior_healer_learn.evaluate(borrow world);
+    let behavior_healer_learn_b = behavior_healer_learn.evaluate(borrow world);
+    include(inout out, borrow behavior_healer_learn_a, borrow behavior_healer_learn_b,
+        behavior_healer_learn.verify(borrow world, borrow behavior_healer_learn_a));
+    let behavior_healer_coordinate_a = behavior_healer_coordinate.evaluate(borrow world);
+    let behavior_healer_coordinate_b = behavior_healer_coordinate.evaluate(borrow world);
+    include(inout out, borrow behavior_healer_coordinate_a, borrow behavior_healer_coordinate_b,
+        behavior_healer_coordinate.verify(borrow world, borrow behavior_healer_coordinate_a));
+    let behavior_healer_celebrate_a = behavior_healer_celebrate.evaluate(borrow world);
+    let behavior_healer_celebrate_b = behavior_healer_celebrate.evaluate(borrow world);
+    include(inout out, borrow behavior_healer_celebrate_a, borrow behavior_healer_celebrate_b,
+        behavior_healer_celebrate.verify(borrow world, borrow behavior_healer_celebrate_a));
+    let behavior_leader_idle_a = behavior_leader_idle.evaluate(borrow world);
+    let behavior_leader_idle_b = behavior_leader_idle.evaluate(borrow world);
+    include(inout out, borrow behavior_leader_idle_a, borrow behavior_leader_idle_b,
+        behavior_leader_idle.verify(borrow world, borrow behavior_leader_idle_a));
+    let behavior_leader_explore_a = behavior_leader_explore.evaluate(borrow world);
+    let behavior_leader_explore_b = behavior_leader_explore.evaluate(borrow world);
+    include(inout out, borrow behavior_leader_explore_a, borrow behavior_leader_explore_b,
+        behavior_leader_explore.verify(borrow world, borrow behavior_leader_explore_a));
+    let behavior_leader_gather_a = behavior_leader_gather.evaluate(borrow world);
+    let behavior_leader_gather_b = behavior_leader_gather.evaluate(borrow world);
+    include(inout out, borrow behavior_leader_gather_a, borrow behavior_leader_gather_b,
+        behavior_leader_gather.verify(borrow world, borrow behavior_leader_gather_a));
+    let behavior_leader_deliver_a = behavior_leader_deliver.evaluate(borrow world);
+    let behavior_leader_deliver_b = behavior_leader_deliver.evaluate(borrow world);
+    include(inout out, borrow behavior_leader_deliver_a, borrow behavior_leader_deliver_b,
+        behavior_leader_deliver.verify(borrow world, borrow behavior_leader_deliver_a));
+    let behavior_leader_craft_a = behavior_leader_craft.evaluate(borrow world);
+    let behavior_leader_craft_b = behavior_leader_craft.evaluate(borrow world);
+    include(inout out, borrow behavior_leader_craft_a, borrow behavior_leader_craft_b,
+        behavior_leader_craft.verify(borrow world, borrow behavior_leader_craft_a));
+    let behavior_leader_construct_a = behavior_leader_construct.evaluate(borrow world);
+    let behavior_leader_construct_b = behavior_leader_construct.evaluate(borrow world);
+    include(inout out, borrow behavior_leader_construct_a, borrow behavior_leader_construct_b,
+        behavior_leader_construct.verify(borrow world, borrow behavior_leader_construct_a));
+    let behavior_leader_repair_a = behavior_leader_repair.evaluate(borrow world);
+    let behavior_leader_repair_b = behavior_leader_repair.evaluate(borrow world);
+    include(inout out, borrow behavior_leader_repair_a, borrow behavior_leader_repair_b,
+        behavior_leader_repair.verify(borrow world, borrow behavior_leader_repair_a));
+    let behavior_leader_defend_a = behavior_leader_defend.evaluate(borrow world);
+    let behavior_leader_defend_b = behavior_leader_defend.evaluate(borrow world);
+    include(inout out, borrow behavior_leader_defend_a, borrow behavior_leader_defend_b,
+        behavior_leader_defend.verify(borrow world, borrow behavior_leader_defend_a));
+    let behavior_leader_pursue_a = behavior_leader_pursue.evaluate(borrow world);
+    let behavior_leader_pursue_b = behavior_leader_pursue.evaluate(borrow world);
+    include(inout out, borrow behavior_leader_pursue_a, borrow behavior_leader_pursue_b,
+        behavior_leader_pursue.verify(borrow world, borrow behavior_leader_pursue_a));
+    let behavior_leader_evade_a = behavior_leader_evade.evaluate(borrow world);
+    let behavior_leader_evade_b = behavior_leader_evade.evaluate(borrow world);
+    include(inout out, borrow behavior_leader_evade_a, borrow behavior_leader_evade_b,
+        behavior_leader_evade.verify(borrow world, borrow behavior_leader_evade_a));
+    let behavior_leader_assist_a = behavior_leader_assist.evaluate(borrow world);
+    let behavior_leader_assist_b = behavior_leader_assist.evaluate(borrow world);
+    include(inout out, borrow behavior_leader_assist_a, borrow behavior_leader_assist_b,
+        behavior_leader_assist.verify(borrow world, borrow behavior_leader_assist_a));
+    let behavior_leader_trade_a = behavior_leader_trade.evaluate(borrow world);
+    let behavior_leader_trade_b = behavior_leader_trade.evaluate(borrow world);
+    include(inout out, borrow behavior_leader_trade_a, borrow behavior_leader_trade_b,
+        behavior_leader_trade.verify(borrow world, borrow behavior_leader_trade_a));
+    let behavior_leader_rest_a = behavior_leader_rest.evaluate(borrow world);
+    let behavior_leader_rest_b = behavior_leader_rest.evaluate(borrow world);
+    include(inout out, borrow behavior_leader_rest_a, borrow behavior_leader_rest_b,
+        behavior_leader_rest.verify(borrow world, borrow behavior_leader_rest_a));
+    let behavior_leader_learn_a = behavior_leader_learn.evaluate(borrow world);
+    let behavior_leader_learn_b = behavior_leader_learn.evaluate(borrow world);
+    include(inout out, borrow behavior_leader_learn_a, borrow behavior_leader_learn_b,
+        behavior_leader_learn.verify(borrow world, borrow behavior_leader_learn_a));
+    let behavior_leader_coordinate_a = behavior_leader_coordinate.evaluate(borrow world);
+    let behavior_leader_coordinate_b = behavior_leader_coordinate.evaluate(borrow world);
+    include(inout out, borrow behavior_leader_coordinate_a, borrow behavior_leader_coordinate_b,
+        behavior_leader_coordinate.verify(borrow world, borrow behavior_leader_coordinate_a));
+    let behavior_leader_celebrate_a = behavior_leader_celebrate.evaluate(borrow world);
+    let behavior_leader_celebrate_b = behavior_leader_celebrate.evaluate(borrow world);
+    include(inout out, borrow behavior_leader_celebrate_a, borrow behavior_leader_celebrate_b,
+        behavior_leader_celebrate.verify(borrow world, borrow behavior_leader_celebrate_a));
+    let behavior_citizen_idle_a = behavior_citizen_idle.evaluate(borrow world);
+    let behavior_citizen_idle_b = behavior_citizen_idle.evaluate(borrow world);
+    include(inout out, borrow behavior_citizen_idle_a, borrow behavior_citizen_idle_b,
+        behavior_citizen_idle.verify(borrow world, borrow behavior_citizen_idle_a));
+    let behavior_citizen_explore_a = behavior_citizen_explore.evaluate(borrow world);
+    let behavior_citizen_explore_b = behavior_citizen_explore.evaluate(borrow world);
+    include(inout out, borrow behavior_citizen_explore_a, borrow behavior_citizen_explore_b,
+        behavior_citizen_explore.verify(borrow world, borrow behavior_citizen_explore_a));
+    let behavior_citizen_gather_a = behavior_citizen_gather.evaluate(borrow world);
+    let behavior_citizen_gather_b = behavior_citizen_gather.evaluate(borrow world);
+    include(inout out, borrow behavior_citizen_gather_a, borrow behavior_citizen_gather_b,
+        behavior_citizen_gather.verify(borrow world, borrow behavior_citizen_gather_a));
+    let behavior_citizen_deliver_a = behavior_citizen_deliver.evaluate(borrow world);
+    let behavior_citizen_deliver_b = behavior_citizen_deliver.evaluate(borrow world);
+    include(inout out, borrow behavior_citizen_deliver_a, borrow behavior_citizen_deliver_b,
+        behavior_citizen_deliver.verify(borrow world, borrow behavior_citizen_deliver_a));
+    let behavior_citizen_craft_a = behavior_citizen_craft.evaluate(borrow world);
+    let behavior_citizen_craft_b = behavior_citizen_craft.evaluate(borrow world);
+    include(inout out, borrow behavior_citizen_craft_a, borrow behavior_citizen_craft_b,
+        behavior_citizen_craft.verify(borrow world, borrow behavior_citizen_craft_a));
+    let behavior_citizen_construct_a = behavior_citizen_construct.evaluate(borrow world);
+    let behavior_citizen_construct_b = behavior_citizen_construct.evaluate(borrow world);
+    include(inout out, borrow behavior_citizen_construct_a, borrow behavior_citizen_construct_b,
+        behavior_citizen_construct.verify(borrow world, borrow behavior_citizen_construct_a));
+    let behavior_citizen_repair_a = behavior_citizen_repair.evaluate(borrow world);
+    let behavior_citizen_repair_b = behavior_citizen_repair.evaluate(borrow world);
+    include(inout out, borrow behavior_citizen_repair_a, borrow behavior_citizen_repair_b,
+        behavior_citizen_repair.verify(borrow world, borrow behavior_citizen_repair_a));
+    let behavior_citizen_defend_a = behavior_citizen_defend.evaluate(borrow world);
+    let behavior_citizen_defend_b = behavior_citizen_defend.evaluate(borrow world);
+    include(inout out, borrow behavior_citizen_defend_a, borrow behavior_citizen_defend_b,
+        behavior_citizen_defend.verify(borrow world, borrow behavior_citizen_defend_a));
+    let behavior_citizen_pursue_a = behavior_citizen_pursue.evaluate(borrow world);
+    let behavior_citizen_pursue_b = behavior_citizen_pursue.evaluate(borrow world);
+    include(inout out, borrow behavior_citizen_pursue_a, borrow behavior_citizen_pursue_b,
+        behavior_citizen_pursue.verify(borrow world, borrow behavior_citizen_pursue_a));
+    let behavior_citizen_evade_a = behavior_citizen_evade.evaluate(borrow world);
+    let behavior_citizen_evade_b = behavior_citizen_evade.evaluate(borrow world);
+    include(inout out, borrow behavior_citizen_evade_a, borrow behavior_citizen_evade_b,
+        behavior_citizen_evade.verify(borrow world, borrow behavior_citizen_evade_a));
+    let behavior_citizen_assist_a = behavior_citizen_assist.evaluate(borrow world);
+    let behavior_citizen_assist_b = behavior_citizen_assist.evaluate(borrow world);
+    include(inout out, borrow behavior_citizen_assist_a, borrow behavior_citizen_assist_b,
+        behavior_citizen_assist.verify(borrow world, borrow behavior_citizen_assist_a));
+    let behavior_citizen_trade_a = behavior_citizen_trade.evaluate(borrow world);
+    let behavior_citizen_trade_b = behavior_citizen_trade.evaluate(borrow world);
+    include(inout out, borrow behavior_citizen_trade_a, borrow behavior_citizen_trade_b,
+        behavior_citizen_trade.verify(borrow world, borrow behavior_citizen_trade_a));
+    let behavior_citizen_rest_a = behavior_citizen_rest.evaluate(borrow world);
+    let behavior_citizen_rest_b = behavior_citizen_rest.evaluate(borrow world);
+    include(inout out, borrow behavior_citizen_rest_a, borrow behavior_citizen_rest_b,
+        behavior_citizen_rest.verify(borrow world, borrow behavior_citizen_rest_a));
+    let behavior_citizen_learn_a = behavior_citizen_learn.evaluate(borrow world);
+    let behavior_citizen_learn_b = behavior_citizen_learn.evaluate(borrow world);
+    include(inout out, borrow behavior_citizen_learn_a, borrow behavior_citizen_learn_b,
+        behavior_citizen_learn.verify(borrow world, borrow behavior_citizen_learn_a));
+    let behavior_citizen_coordinate_a = behavior_citizen_coordinate.evaluate(borrow world);
+    let behavior_citizen_coordinate_b = behavior_citizen_coordinate.evaluate(borrow world);
+    include(inout out, borrow behavior_citizen_coordinate_a, borrow behavior_citizen_coordinate_b,
+        behavior_citizen_coordinate.verify(borrow world, borrow behavior_citizen_coordinate_a));
+    let behavior_citizen_celebrate_a = behavior_citizen_celebrate.evaluate(borrow world);
+    let behavior_citizen_celebrate_b = behavior_citizen_celebrate.evaluate(borrow world);
+    include(inout out, borrow behavior_citizen_celebrate_a, borrow behavior_citizen_celebrate_b,
+        behavior_citizen_celebrate.verify(borrow world, borrow behavior_citizen_celebrate_a));
+    out.valid = out.behaviors == 128 && out.deterministic_mismatches == 0; out
+}

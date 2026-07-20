@@ -1,0 +1,11 @@
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+pub struct Frame { emitters: u64, cues: u64, voices: u64,
+    digest: u64, valid: bool }
+pub fn build(borrow world: model.World) -> Frame {
+    let emitters = model.alive_count(borrow world);
+    let cues = world.events.len();
+    let voices = if cues < 32 { cues } else { 32 };
+    Frame { emitters: emitters, cues: cues, voices: voices,
+        digest: metric.mix(metric.mix(world.seed, emitters), cues), valid: voices <= cues }
+}

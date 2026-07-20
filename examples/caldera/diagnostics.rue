@@ -1,0 +1,15 @@
+const model = @import("model.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+pub fn render(borrow world: model.World) -> StrBuf {
+    let mut out = StrBuf.new(); let mut i: u64 = 0;
+    while i < world.diagnostics.len() {
+        let item = world.diagnostics.get_or(i, model.Diagnostic { code: 0, subject: 0, detail: 0 });
+        text.append_literal(inout out, "caldera[world] code="); text.append_u64(inout out, item.code);
+        text.append_literal(inout out, " subject="); text.append_u64(inout out, item.subject);
+        text.append_literal(inout out, " detail="); text.append_u64(inout out, item.detail); out.push(10);
+        i = i + 1;
+    }
+    out
+}

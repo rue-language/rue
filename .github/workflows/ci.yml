@@ -196,11 +196,11 @@ jobs:
         run: scripts/ci-timed "${{ matrix.name }} build" -- ./buck2 build //crates/...
 
       - name: Run tests
-        # macOS owns the broad pass and the smaller heavy suites here; its CLI
-        # and spec corpora run on explicit required shards below. Local full
-        # suites and the Linux lanes continue to own every discovered target.
+        # Every platform runs Caldera on an explicit parallel shard below;
+        # macOS also shards its ordinary CLI and spec corpora. Local full suites
+        # still own every discovered target in one invocation.
         env:
-          RUE_CI_DEFER_HEAVY_SUITES: ${{ matrix.name == 'macos' && '//:cli-tests //:spec-tests' || '' }}
+          RUE_CI_DEFER_HEAVY_SUITES: ${{ matrix.name == 'macos' && '//:cli-tests //:cli-tests-caldera //:spec-tests' || '//:cli-tests-caldera' }}
         run: scripts/ci-timed "${{ matrix.name }} tests" -- ./test.sh
 
   # RUE-617/RUE-1019: keep the byte-reproducibility proof independent of the
@@ -236,24 +236,46 @@ jobs:
           path: ${{ runner.temp }}/rue-compiler-repro-artifacts
           if-no-files-found: ignore
 
-  # The macOS CLI and spec corpora dominate that platform's wall clock even
-  # though each harness already uses every available core. Run them on separate
-  # machines while the main macOS lane retains broad discovery, UI, oracle,
-  # reproducible-program, tutorial, and omission-audit coverage.
-  macos-corpus:
+  # The macOS CLI and spec corpora dominate that platform's wall clock, and
+  # Caldera intentionally stresses compiler resources on every architecture.
+  # Run them on separate machines while each main platform lane retains broad
+  # discovery, the smaller corpora, and omission-audit coverage.
+  platform-corpus:
     strategy:
       matrix:
         include:
-          - target: //:cli-tests
+          - os: macos-15
+            cache_name: macos
+            target: //:cli-tests
             name: cli
-          - target: //:spec-tests
+            check_name: macos-cli
+          - os: macos-15
+            cache_name: macos
+            target: //:cli-tests-caldera
+            name: cli-caldera
+            check_name: macos-cli-caldera
+          - os: macos-15
+            cache_name: macos
+            target: //:spec-tests
             name: spec
-    runs-on: macos-15
-    name: test (macos-${{ matrix.name }})
+            check_name: macos-spec
+          - os: ubuntu-latest
+            cache_name: linux-x64
+            target: //:cli-tests-caldera
+            name: cli-caldera
+            check_name: linux-x64-cli-caldera
+          - os: ubuntu-24.04-arm
+            cache_name: linux-arm64
+            target: //:cli-tests-caldera
+            name: cli-caldera
+            check_name: linux-arm64-cli-caldera
+    runs-on: ${{ matrix.os }}
+    name: test (${{ matrix.check_name }})
     steps:
       - uses: actions/checkout@v6
 
       - name: Select Xcode 16.2
+        if: runner.os == 'macOS'
         run: sudo xcode-select -s /Applications/Xcode_16.2.app
 
       - name: Install dotslash
@@ -262,10 +284,12 @@ jobs:
       - name: Cache dotslash artifacts
         uses: actions/cache@v5
         with:
-          path: ~/Library/Caches/dotslash
-          key: dotslash-macos-${{ hashFiles('buck2') }}
+          path: |
+            ~/.cache/dotslash
+            ~/Library/Caches/dotslash
+          key: dotslash-${{ matrix.cache_name }}-${{ hashFiles('buck2') }}
           restore-keys: |
-            dotslash-macos-
+            dotslash-${{ matrix.cache_name }}-
 
       - name: Provision remote build cache
         env:
@@ -279,7 +303,7 @@ jobs:
           scripts/provision-build-cache apply
 
       - name: Run ${{ matrix.name }} corpus
-        run: scripts/ci-timed "macos ${{ matrix.name }} corpus" -- scripts/ci-heavy-suite "${{ matrix.target }}"
+        run: scripts/ci-timed "${{ matrix.check_name }} corpus" -- scripts/ci-heavy-suite "${{ matrix.target }}"
 
   # Release-mode build + test (RUE-45). Every other job builds the compiler in
   # debug, so release-only miscompiles — the ones previously masked by a

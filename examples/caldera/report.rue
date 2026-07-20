@@ -1,0 +1,26 @@
+const checksum = @import("checksum.rue");
+const model = @import("model.rue");
+const simulation = @import("simulation.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+pub fn summary(borrow world: model.World, borrow run: simulation.Result) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "engine=caldera\n");
+    text.line(inout out, "tick=", world.tick);
+    text.line(inout out, "width=", world.width);
+    text.line(inout out, "height=", world.height);
+    text.line(inout out, "entities=", world.entities.len());
+    text.line(inout out, "alive=", model.alive_count(borrow world));
+    text.line(inout out, "tiles=", world.tiles.len());
+    text.line(inout out, "events=", world.events.len());
+    text.line(inout out, "snapshots=", world.snapshots.len());
+    text.line(inout out, "moved=", run.moved);
+    text.line(inout out, "ai_changes=", run.ai_changes);
+    text.line(inout out, "produced=", run.produced);
+    text.line(inout out, "collisions=", run.collisions);
+    text.line(inout out, "resources=", world.resources);
+    text.line(inout out, "treasury=", world.treasury);
+    text.line(inout out, "checksum=", checksum.world(borrow world));
+    text.bool_line(inout out, "valid=", run.valid && world.valid); out
+}

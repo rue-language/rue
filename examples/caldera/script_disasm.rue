@@ -1,0 +1,19 @@
+const bytecode = @import("script_bytecode.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+pub fn render(borrow program: bytecode.Program) -> StrBuf {
+    let mut out = StrBuf.new();
+    let mut i: u64 = 0;
+    while i < program.ops.len() {
+        let op = program.ops.get_or(i, bytecode.empty());
+        text.append_u64(inout out, i); text.append_literal(inout out, ":");
+        if op.kind == bytecode.PUSH() { text.append_literal(inout out, "PUSH "); text.append_u64(inout out, op.operand); }
+        else if op.kind == bytecode.ADD() { text.append_literal(inout out, "ADD"); }
+        else if op.kind == bytecode.MUL() { text.append_literal(inout out, "MUL"); }
+        else if op.kind == bytecode.MIX() { text.append_literal(inout out, "MIX"); }
+        else { text.append_literal(inout out, "HALT"); }
+        out.push(10); i = i + 1;
+    }
+    out
+}

@@ -1,0 +1,22 @@
+// Parsed scenario declarations stay separate from live world state.
+const std = @import("std");
+
+pub struct EntitySpec { kind: u64, faction: u64, x: u64, y: u64 }
+pub struct TileSpec { x: u64, y: u64, terrain: u64 }
+pub const EntitySpecs = std.arraybuf.ArrayBuf(EntitySpec);
+pub const TileSpecs = std.arraybuf.ArrayBuf(TileSpec);
+
+pub struct Scenario {
+    width: u64, height: u64, ticks: u64,
+    entities: EntitySpecs, tiles: TileSpecs,
+    expected_entities: u64, errors: u64, valid: bool,
+}
+
+pub fn new() -> Scenario {
+    Scenario { width: 8, height: 8, ticks: 4,
+        entities: EntitySpecs.new(), tiles: TileSpecs.new(),
+        expected_entities: 0, errors: 0, valid: true }
+}
+
+pub fn empty_entity() -> EntitySpec { EntitySpec { kind: 0, faction: 0, x: 0, y: 0 } }
+pub fn empty_tile() -> TileSpec { TileSpec { x: 0, y: 0, terrain: 0 } }

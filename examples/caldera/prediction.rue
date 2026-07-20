@@ -1,0 +1,10 @@
+const model = @import("model.rue");
+const replay = @import("replay.rue");
+pub struct Prediction { horizon: u64, predicted_checksum: u64,
+    confidence: u64, valid: bool }
+pub fn run(borrow baseline: model.World, horizon: u64) -> Prediction {
+    let result = replay.run(borrow baseline, horizon);
+    Prediction { horizon: horizon, predicted_checksum: result.final_checksum,
+        confidence: if result.valid { 100 } else { 0 },
+        valid: result.valid && result.ticks == horizon }
+}

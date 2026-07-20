@@ -1,0 +1,58 @@
+// Deterministic integer-grid integration with blocked-tile response.
+const model = @import("model.rue");
+
+fn direction(id: u64, tick: u64, axis: u64) -> i64 {
+    let mode = (id * 17 + tick * 13 + axis * 7) % 5;
+    if mode == 0 { -1 } else if mode == 1 { 1 } else { 0 }
+}
+
+pub fn prepare(inout world: model.World) {
+    let mut i: u64 = 0;
+    while i < world.entities.len() {
+        let entity = world.entities.get_or(i, model.empty_entity());
+        if entity.alive {
+            world.entities.set(i, model.Entity { id: entity.id, kind: entity.kind,
+                faction: entity.faction, x: entity.x, y: entity.y,
+                previous_x: entity.x, previous_y: entity.y,
+                velocity_x: direction(entity.id, world.tick, 0),
+                velocity_y: direction(entity.id, world.tick, 1),
+                health: entity.health, energy: entity.energy, state: entity.state,
+                goal: entity.goal, inventory: entity.inventory, credits: entity.credits,
+                experience: entity.experience, born_tick: entity.born_tick,
+                updated_tick: world.tick, alive: entity.alive });
+        }
+        i = i + 1;
+    }
+}
+
+pub fn integrate(inout world: model.World) -> u64 {
+    let mut moved: u64 = 0;
+    let mut i: u64 = 0;
+    while i < world.entities.len() {
+        let entity = world.entities.get_or(i, model.empty_entity());
+        if entity.alive {
+            let nx = entity.x + entity.velocity_x;
+            let ny = entity.y + entity.velocity_y;
+            let allowed = model.walkable(borrow world, nx, ny);
+            let next_x = if allowed { nx } else { entity.x };
+            let next_y = if allowed { ny } else { entity.y };
+            if next_x != entity.x || next_y != entity.y { moved = moved + 1; }
+            if !allowed { model.add_event(inout world, 2, entity.id, model.NONE(), 1); }
+            world.entities.set(i, model.Entity { id: entity.id, kind: entity.kind,
+                faction: entity.faction, x: next_x, y: next_y,
+                previous_x: entity.previous_x, previous_y: entity.previous_y,
+                velocity_x: entity.velocity_x, velocity_y: entity.velocity_y,
+                health: entity.health, energy: if entity.energy > 0 { entity.energy - 1 } else { 0 },
+                state: entity.state, goal: entity.goal, inventory: entity.inventory,
+                credits: entity.credits, experience: entity.experience + if allowed { 1 } else { 0 },
+                born_tick: entity.born_tick, updated_tick: world.tick, alive: entity.alive });
+        }
+        i = i + 1;
+    }
+    moved
+}
+
+pub fn step(inout world: model.World) -> u64 {
+    prepare(inout world);
+    integrate(inout world)
+}

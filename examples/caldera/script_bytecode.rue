@@ -1,0 +1,11 @@
+const std = @import("std");
+pub fn PUSH() -> u64 { 1 }
+pub fn ADD() -> u64 { 2 }
+pub fn MUL() -> u64 { 3 }
+pub fn MIX() -> u64 { 4 }
+pub fn HALT() -> u64 { 5 }
+pub struct Op { kind: u64, operand: u64 }
+pub const Ops = std.arraybuf.ArrayBuf(Op);
+pub struct Program { ops: Ops, entities: u64, valid: bool }
+pub fn new() -> Program { Program { ops: Ops.new(), entities: 0, valid: true } }
+pub fn empty() -> Op { Op { kind: HALT(), operand: 0 } }

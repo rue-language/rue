@@ -1,0 +1,100 @@
+// Deterministic terrain, entity, and scenario materialization.
+const model = @import("model.rue");
+const scenario = @import("scenario_model.rue");
+
+fn terrain(seed: u64, x: u64, y: u64) -> u64 {
+    let value = @wrapping_mul(seed ^ (x + 17) ^ @wrapping_mul(y + 31, 97), 1099511628211);
+    if value % 23 == 0 { model.WATER() }
+    else if value % 17 == 0 { model.FOREST() }
+    else { model.PLAIN() }
+}
+
+fn add_tiles(inout world: model.World) {
+    let mut y: u64 = 0;
+    while y < world.height {
+        let mut x: u64 = 0;
+        while x < world.width {
+            let kind = terrain(world.seed, x, y);
+            world.tiles.push(model.Tile { x: x, y: y, terrain: kind,
+                height: (x * 7 + y * 11 + world.seed) % 19,
+                resource: (x * 13 + y * 5 + world.seed) % 29,
+                occupant: model.NONE(), region: (x / 4) + (y / 4) * 8,
+                walkable: kind != model.WATER() && kind != model.WALL(),
+                visible: false });
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+}
+
+pub fn add_entity(inout world: model.World, kind: u64, faction: u64,
+    x: u64, y: u64) -> u64 {
+    let id = world.next_entity;
+    world.next_entity = world.next_entity + 1;
+    world.entities.push(model.Entity { id: id, kind: kind, faction: faction,
+        x: @intCast(x), y: @intCast(y), previous_x: @intCast(x), previous_y: @intCast(y),
+        velocity_x: 0, velocity_y: 0, health: 100, energy: 100,
+        state: 1, goal: model.NONE(), inventory: kind * 2,
+        credits: 10 + faction * 3, experience: 0,
+        born_tick: world.tick, updated_tick: world.tick, alive: true });
+    let tile = model.tile_index(borrow world, x, y);
+    if tile != model.NONE() {
+        let current = world.tiles.get_or(tile, model.empty_tile());
+        world.tiles.set(tile, model.Tile { x: current.x, y: current.y,
+            terrain: current.terrain, height: current.height,
+            resource: current.resource, occupant: id, region: current.region,
+            walkable: current.walkable, visible: true });
+    }
+    id
+}
+
+pub fn demo(scale: u64) -> model.World {
+    let size = 8 + scale * 2;
+    let mut world = model.new_world(0xCADA1078 + scale, size, size);
+    add_tiles(inout world);
+    let mut i: u64 = 0;
+    while i < 8 * scale {
+        let kind = (i % 4) + 1;
+        let faction = (i % 3) + 1;
+        let x = 1 + (i * 3) % (size - 2);
+        let y = 1 + (i * 5) % (size - 2);
+        let _ = add_entity(inout world, kind, faction, x, y);
+        i = i + 1;
+    }
+    world.resources = 400 * scale;
+    world.treasury = 250 * scale;
+    world
+}
+
+pub fn from_scenario(borrow input: scenario.Scenario) -> model.World {
+    let mut world = model.new_world(0xCADA1078, input.width, input.height);
+    add_tiles(inout world);
+    let mut i: u64 = 0;
+    while i < input.tiles.len() {
+        let spec = input.tiles.get_or(i, scenario.empty_tile());
+        let index = model.tile_index(borrow world, spec.x, spec.y);
+        if index == model.NONE() { model.add_diagnostic(inout world, 1001, i, 1); }
+        else {
+            let old = world.tiles.get_or(index, model.empty_tile());
+            world.tiles.set(index, model.Tile { x: old.x, y: old.y,
+                terrain: spec.terrain, height: old.height, resource: old.resource,
+                occupant: old.occupant, region: old.region,
+                walkable: spec.terrain != model.WALL() && spec.terrain != model.WATER(),
+                visible: old.visible });
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < input.entities.len() {
+        let spec = input.entities.get_or(i, scenario.empty_entity());
+        if spec.x >= world.width || spec.y >= world.height {
+            model.add_diagnostic(inout world, 1002, i, 2);
+        } else {
+            let _ = add_entity(inout world, spec.kind, spec.faction, spec.x, spec.y);
+        }
+        i = i + 1;
+    }
+    world.resources = input.entities.len() * 50;
+    world.treasury = input.entities.len() * 25;
+    world
+}

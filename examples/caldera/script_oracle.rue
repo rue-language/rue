@@ -1,0 +1,14 @@
+const bytecode = @import("script_bytecode.rue");
+const interpreter = @import("script_interpreter.rue");
+const scenario = @import("scenario_model.rue");
+const vm = @import("script_vm.rue");
+
+pub struct Agreement { vm_value: u64, interpreter_value: u64,
+    vm_steps: u64, valid: bool }
+pub fn verify(borrow input: scenario.Scenario, borrow program: bytecode.Program) -> Agreement {
+    let actual = vm.execute(borrow program);
+    let expected = interpreter.execute(borrow input);
+    Agreement { vm_value: actual.value, interpreter_value: expected.value,
+        vm_steps: actual.steps, valid: actual.valid && expected.valid &&
+            actual.value == expected.value && program.entities == expected.entities }
+}

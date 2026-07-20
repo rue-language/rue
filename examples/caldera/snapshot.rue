@@ -1,0 +1,29 @@
+const checksum = @import("checksum.rue");
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+
+pub fn capture(inout world: model.World) -> model.Snapshot {
+    let value = model.Snapshot { tick: world.tick,
+        entity_count: world.entities.len(), event_count: world.events.len(),
+        command_count: world.commands.len(), checksum: checksum.world(borrow world) };
+    world.snapshots.push(model.Snapshot { tick: value.tick,
+        entity_count: value.entity_count, event_count: value.event_count,
+        command_count: value.command_count, checksum: value.checksum });
+    value
+}
+
+pub struct Audit { snapshots: u64, monotonic: bool, digest: u64, valid: bool }
+pub fn audit(borrow world: model.World) -> Audit {
+    let mut out = Audit { snapshots: world.snapshots.len(), monotonic: true,
+        digest: 14695981039346656037, valid: false };
+    let mut previous: u64 = 0;
+    let mut i: u64 = 0;
+    while i < world.snapshots.len() {
+        let item = world.snapshots.get_or(i, model.empty_snapshot());
+        if i > 0 && item.tick <= previous { out.monotonic = false; }
+        previous = item.tick;
+        out.digest = metric.mix(out.digest, item.checksum);
+        i = i + 1;
+    }
+    out.valid = out.monotonic && out.snapshots <= world.tick + 1; out
+}

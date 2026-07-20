@@ -1,0 +1,25 @@
+// Deterministic replay from a baseline world and a requested tick count.
+const checksum = @import("checksum.rue");
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+const tick = @import("tick.rue");
+const world_clone = @import("world_clone.rue");
+
+pub struct Result { ticks: u64, final_checksum: u64, timeline_digest: u64,
+    valid: bool }
+
+pub fn run(borrow baseline: model.World, count: u64) -> Result {
+    let mut world = world_clone.clone(borrow baseline);
+    let mut out = Result { ticks: 0, final_checksum: 0,
+        timeline_digest: 14695981039346656037, valid: true };
+    let mut i: u64 = 0;
+    while i < count {
+        let result = tick.step(inout world);
+        out.ticks = out.ticks + 1;
+        out.timeline_digest = metric.mix(out.timeline_digest, result.checksum);
+        if !result.valid { out.valid = false; }
+        i = i + 1;
+    }
+    out.final_checksum = checksum.world(borrow world);
+    out.valid = out.valid && out.ticks == count; out
+}

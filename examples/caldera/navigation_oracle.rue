@@ -1,0 +1,50 @@
+// Independent relaxation-based shortest-path oracle.
+const model = @import("model.rue");
+const navigation = @import("navigation.rue");
+
+fn relax(borrow world: model.World, inout distances: model.U64s,
+    from: u64, x: i64, y: i64) -> bool {
+    if x < 0 || y < 0 { return false; }
+    let target = model.tile_index(borrow world, @intCast(x), @intCast(y));
+    if target == model.NONE() || !world.tiles.get_or(target, model.empty_tile()).walkable { return false; }
+    let source_distance = distances.get_or(from, model.NONE());
+    let target_distance = distances.get_or(target, model.NONE());
+    if source_distance != model.NONE() &&
+        (target_distance == model.NONE() || source_distance + 1 < target_distance) {
+        distances.set(target, source_distance + 1); return true;
+    }
+    false
+}
+
+pub fn distance(borrow world: model.World, sx: u64, sy: u64, gx: u64, gy: u64) -> u64 {
+    let start = model.tile_index(borrow world, sx, sy);
+    let goal = model.tile_index(borrow world, gx, gy);
+    if start == model.NONE() || goal == model.NONE() { return model.NONE(); }
+    let mut distances = model.U64s.new();
+    let mut i: u64 = 0;
+    while i < world.tiles.len() { distances.push(model.NONE()); i = i + 1; }
+    distances.set(start, 0);
+    let mut pass: u64 = 0;
+    while pass < world.tiles.len() {
+        let mut changed = false;
+        i = 0;
+        while i < world.tiles.len() {
+            let tile = world.tiles.get_or(i, model.empty_tile());
+            if relax(borrow world, inout distances, i, @intCast(tile.x) + 1, @intCast(tile.y)) { changed = true; }
+            if relax(borrow world, inout distances, i, @intCast(tile.x), @intCast(tile.y) + 1) { changed = true; }
+            if relax(borrow world, inout distances, i, @intCast(tile.x) - 1, @intCast(tile.y)) { changed = true; }
+            if relax(borrow world, inout distances, i, @intCast(tile.x), @intCast(tile.y) - 1) { changed = true; }
+            i = i + 1;
+        }
+        if !changed { break; }
+        pass = pass + 1;
+    }
+    distances.get_or(goal, model.NONE())
+}
+
+pub fn agrees(borrow world: model.World, sx: u64, sy: u64, gx: u64, gy: u64,
+    borrow actual: navigation.Path) -> bool {
+    let expected = distance(borrow world, sx, sy, gx, gy);
+    (actual.reached && actual.distance == expected) ||
+        (!actual.reached && expected == model.NONE())
+}

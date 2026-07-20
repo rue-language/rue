@@ -1,0 +1,18 @@
+// Direct scenario evaluator independent of bytecode lowering and VM dispatch.
+const metric = @import("metric.rue");
+const scenario = @import("scenario_model.rue");
+
+pub struct Result { value: u64, entities: u64, valid: bool }
+
+pub fn execute(borrow input: scenario.Scenario) -> Result {
+    let mut value = input.width * input.height;
+    let mut i: u64 = 0;
+    while i < input.entities.len() {
+        let item = input.entities.get_or(i, scenario.empty_entity());
+        value = value + item.kind * item.faction;
+        value = metric.mix(value, item.x + item.y);
+        i = i + 1;
+    }
+    value = metric.mix(value, input.ticks);
+    Result { value: value, entities: input.entities.len(), valid: input.valid }
+}

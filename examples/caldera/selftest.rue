@@ -1,0 +1,169 @@
+// Cross-oracle verification for every Caldera subsystem and generated family.
+const ai_oracle = @import("ai_oracle.rue");
+const assets = @import("assets.rue");
+const audio_commands = @import("audio_commands.rue");
+const audit_suite = @import("audit_suite.rue");
+const behavior_suite = @import("behavior_suite.rue");
+const checksum = @import("checksum.rue");
+const crafting = @import("crafting.rue");
+const delta = @import("delta.rue");
+const desync = @import("desync.rue");
+const dialogue = @import("dialogue.rue");
+const events = @import("events.rue");
+const factions = @import("factions.rue");
+const inventory = @import("inventory.rue");
+const lexer = @import("lexer.rue");
+const localization = @import("localization.rue");
+const lockstep = @import("lockstep.rue");
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+const navigation = @import("navigation.rue");
+const navigation_oracle = @import("navigation_oracle.rue");
+const parser = @import("parser.rue");
+const persistence = @import("persistence.rue");
+const prediction = @import("prediction.rue");
+const quests = @import("quests.rue");
+const render_commands = @import("render_commands.rue");
+const replay = @import("replay.rue");
+const replay_oracle = @import("replay_oracle.rue");
+const report_suite = @import("report_suite.rue");
+const rollback = @import("rollback.rue");
+const rule_suite = @import("rule_suite.rue");
+const scenario_source = @import("scenario_source.rue");
+const scheduler = @import("scheduler.rue");
+const scheduler_oracle = @import("scheduler_oracle.rue");
+const script_disasm = @import("script_disasm.rue");
+const script_lower = @import("script_lower.rue");
+const script_oracle = @import("script_oracle.rue");
+const simulation = @import("simulation.rue");
+const snapshot = @import("snapshot.rue");
+const spatial = @import("spatial.rue");
+const std = @import("std");
+const system_suite = @import("system_suite.rue");
+const text = @import("text.rue");
+const world_clone = @import("world_clone.rue");
+const worldgen = @import("worldgen.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct Result {
+    checks: u64, failures: u64, entities: u64, ticks: u64,
+    audit_passes: u64, systems: u64, behaviors: u64, rules: u64,
+    report_documents: u64, vm_steps: u64, oracle_mismatches: u64,
+    deterministic_mismatches: u64, digest: u64, valid: bool,
+}
+
+fn check(inout out: Result, condition: bool, fingerprint: u64) {
+    out.checks = out.checks + 1; out.digest = metric.mix(out.digest, fingerprint);
+    if !condition { out.failures = out.failures + 1; }
+}
+
+pub fn run() -> Result {
+    let baseline = worldgen.demo(1);
+    let mut out = Result { checks: 0, failures: 0, entities: baseline.entities.len(),
+        ticks: 0, audit_passes: 0, systems: 0, behaviors: 0, rules: 0,
+        report_documents: 0, vm_steps: 0, oracle_mismatches: 0,
+        deterministic_mismatches: 0, digest: 14695981039346656037, valid: false };
+
+    let schedule = scheduler.build(borrow baseline);
+    check(inout out, schedule.valid && scheduler_oracle.agrees(borrow baseline, borrow schedule), schedule.digest);
+    check(inout out, ai_oracle.verify(borrow baseline), baseline.entities.len());
+    let first = baseline.entities.get_or(0, model.empty_entity());
+    let path = navigation.find(borrow baseline, @intCast(first.x), @intCast(first.y),
+        @intCast(first.x), @intCast(first.y));
+    check(inout out, path.valid && navigation_oracle.agrees(borrow baseline,
+        @intCast(first.x), @intCast(first.y), @intCast(first.x), @intCast(first.y), borrow path), path.digest);
+    let nearby = spatial.region(borrow baseline, first.x, first.y, 4);
+    check(inout out, nearby.valid && nearby.matches > 0 &&
+        spatial.nearest(borrow baseline, first.x, first.y) == first.id, nearby.digest);
+
+    let scanned = lexer.scan(scenario_source.demo());
+    check(inout out, scanned.errors == 0, scanned.tokens.len());
+    let scenario = parser.parse(scanned.tokens);
+    check(inout out, scenario.valid && scenario.entities.len() == 4, scenario.ticks);
+    let program = script_lower.lower(borrow scenario);
+    let agreement = script_oracle.verify(borrow scenario, borrow program);
+    out.vm_steps = agreement.vm_steps;
+    check(inout out, agreement.valid, agreement.vm_value);
+    let disassembly = script_disasm.render(borrow program);
+    check(inout out, disassembly.len() > 32 && text.fnv1a(borrow disassembly) != 0, disassembly.len());
+
+    let mut world = world_clone.clone(borrow baseline);
+    let run_result = simulation.run(inout world, 4);
+    out.ticks = run_result.ticks;
+    check(inout out, run_result.valid && world.tick == 4, run_result.checksum);
+    let replayed = replay.run(borrow baseline, 4);
+    let replay_ok = replay_oracle.agrees(borrow baseline, 4, borrow replayed);
+    if !replay_ok { out.oracle_mismatches = out.oracle_mismatches + 1; }
+    check(inout out, replay_ok && replayed.final_checksum == checksum.world(borrow world), replayed.timeline_digest);
+    check(inout out, rollback.agrees(borrow baseline, 4, checksum.world(borrow world)), replayed.final_checksum);
+    let synchronized = lockstep.run(borrow baseline, 4);
+    check(inout out, synchronized.valid && synchronized.mismatches == 0, synchronized.checksum);
+    let predicted = prediction.run(borrow baseline, 4);
+    check(inout out, predicted.valid && predicted.predicted_checksum == replayed.final_checksum, predicted.confidence);
+
+    let copy = world_clone.clone(borrow world);
+    let difference = delta.compare(borrow world, borrow copy);
+    let synchronization = desync.compare(borrow world, borrow copy);
+    check(inout out, difference.valid && difference.before == difference.after, difference.digest);
+    check(inout out, synchronization.valid && !synchronization.mismatch, synchronization.digest);
+    let timeline = events.audit(borrow world);
+    let snapshots = snapshot.audit(borrow world);
+    check(inout out, timeline.valid && snapshots.valid && snapshots.snapshots == 4,
+        metric.mix(timeline.digest, snapshots.digest));
+
+    let inventory_audit = inventory.audit(borrow world);
+    let craft_audit = crafting.audit(borrow world);
+    let relations = factions.audit(borrow world);
+    let quest_audit = quests.audit(borrow world);
+    let dialogue_audit = dialogue.audit(borrow world);
+    check(inout out, metric.valid(borrow inventory_audit) && craft_audit.valid &&
+        relations.valid && quest_audit.valid && dialogue_audit.valid,
+        metric.mix(inventory_audit.digest, craft_audit.digest));
+    let asset_audit = assets.audit(borrow world);
+    let locale_audit = localization.audit(borrow world);
+    let render_frame = render_commands.build(borrow world);
+    let audio_frame = audio_commands.build(borrow world);
+    let saved = persistence.save(borrow world);
+    check(inout out, asset_audit.valid && locale_audit.valid && render_frame.valid &&
+        audio_frame.valid && persistence.verify(borrow world, borrow saved),
+        metric.mix(asset_audit.digest, locale_audit.digest));
+
+    let audits = audit_suite.run(borrow world); out.audit_passes = audits.passes;
+    check(inout out, audits.valid && audits.passes == 256, audits.digest);
+    let systems = system_suite.run(borrow world); out.systems = systems.systems;
+    check(inout out, systems.valid && systems.systems == 192, systems.digest);
+    let behaviors = behavior_suite.run(borrow world); out.behaviors = behaviors.behaviors;
+    check(inout out, behaviors.valid && behaviors.behaviors == 128, behaviors.digest);
+    let rules = rule_suite.run(borrow world); out.rules = rules.rules;
+    check(inout out, rules.valid && rules.rules == 96, rules.digest);
+    let suite_digest = metric.mix(metric.mix(audits.digest, systems.digest),
+        metric.mix(behaviors.digest, rules.digest));
+    let reports = report_suite.run(borrow world, suite_digest);
+    out.report_documents = reports.documents;
+    check(inout out, reports.valid && reports.documents == 64, reports.digest);
+    out.deterministic_mismatches = audits.deterministic_mismatches +
+        systems.deterministic_mismatches + behaviors.deterministic_mismatches +
+        rules.deterministic_mismatches + reports.deterministic_mismatches;
+    out.valid = out.failures == 0 && out.oracle_mismatches == 0 &&
+        out.deterministic_mismatches == 0 && out.audit_passes == 256 &&
+        out.systems == 192 && out.behaviors == 128 && out.rules == 96 &&
+        out.report_documents == 64; out
+}
+
+pub fn render(borrow value: Result) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.line(inout out, "selftest checks=", value.checks);
+    text.line(inout out, "failures=", value.failures);
+    text.line(inout out, "entities=", value.entities);
+    text.line(inout out, "ticks=", value.ticks);
+    text.line(inout out, "audit_passes=", value.audit_passes);
+    text.line(inout out, "systems=", value.systems);
+    text.line(inout out, "behaviors=", value.behaviors);
+    text.line(inout out, "rules=", value.rules);
+    text.line(inout out, "report_documents=", value.report_documents);
+    text.line(inout out, "vm_steps=", value.vm_steps);
+    text.line(inout out, "oracle_mismatches=", value.oracle_mismatches);
+    text.line(inout out, "deterministic_mismatches=", value.deterministic_mismatches);
+    text.line(inout out, "digest=", value.digest);
+    text.bool_line(inout out, "valid=", value.valid); out
+}

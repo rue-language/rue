@@ -1,0 +1,18 @@
+const checksum = @import("checksum.rue");
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+pub struct Save { version: u64, tick: u64, entities: u64, tiles: u64,
+    checksum: u64, bytes: u64, valid: bool }
+pub fn save(borrow world: model.World) -> Save {
+    let size = 64 + world.entities.len() * 152 + world.tiles.len() * 72 +
+        world.events.len() * 48 + world.snapshots.len() * 40;
+    Save { version: 1, tick: world.tick, entities: world.entities.len(),
+        tiles: world.tiles.len(), checksum: checksum.world(borrow world),
+        bytes: size, valid: world.valid && size > 64 }
+}
+pub fn verify(borrow world: model.World, borrow value: Save) -> bool {
+    value.valid && value.version == 1 && value.tick == world.tick &&
+        value.entities == world.entities.len() && value.tiles == world.tiles.len() &&
+        value.checksum == checksum.world(borrow world) &&
+        metric.mix(value.checksum, value.bytes) != 0
+}

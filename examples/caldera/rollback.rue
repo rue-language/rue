@@ -1,0 +1,24 @@
+// Restore a baseline snapshot by deep clone, then deterministically resimulate.
+const checksum = @import("checksum.rue");
+const model = @import("model.rue");
+const simulation = @import("simulation.rue");
+const world_clone = @import("world_clone.rue");
+
+pub struct Result { target_tick: u64, resimulated: u64,
+    checksum: u64, valid: bool }
+
+pub fn restore(borrow baseline: model.World, target_tick: u64) -> Result {
+    let mut world = world_clone.clone(borrow baseline);
+    world.rollback_count = world.rollback_count + 1;
+    let count = if target_tick > world.tick { target_tick - world.tick } else { 0 };
+    let run = simulation.run(inout world, count);
+    Result { target_tick: target_tick, resimulated: count,
+        checksum: checksum.world(borrow world),
+        valid: run.valid && world.tick == target_tick && world.rollback_count > baseline.rollback_count }
+}
+
+pub fn agrees(borrow baseline: model.World, target_tick: u64,
+    expected_checksum: u64) -> bool {
+    let value = restore(borrow baseline, target_tick);
+    value.valid && value.checksum == expected_checksum
+}

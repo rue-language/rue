@@ -1,0 +1,38 @@
+// Closed behavior interpreter: a deliberate pre-callback design pressure probe.
+const model = @import("model.rue");
+
+pub fn choose(borrow world: model.World, borrow entity: model.Entity) -> u64 {
+    if !entity.alive { return 0; }
+    if entity.health < 35 { return 5; }
+    if entity.energy < 20 { return 4; }
+    if entity.kind == model.WORKER() && world.resources > 0 { return 1; }
+    if entity.kind == model.SCOUT() { return 2; }
+    if entity.kind == model.BUILDER() && world.treasury >= 10 { return 3; }
+    if entity.kind == model.GUARD() { return 6; }
+    7
+}
+
+pub fn update(inout world: model.World) -> u64 {
+    let mut changed: u64 = 0;
+    let mut i: u64 = 0;
+    while i < world.entities.len() {
+        let entity = world.entities.get_or(i, model.empty_entity());
+        let decision = choose(borrow world, borrow entity);
+        if entity.alive && decision != entity.state {
+            changed = changed + 1;
+            world.entities.set(i, model.Entity { id: entity.id, kind: entity.kind,
+                faction: entity.faction, x: entity.x, y: entity.y,
+                previous_x: entity.previous_x, previous_y: entity.previous_y,
+                velocity_x: entity.velocity_x, velocity_y: entity.velocity_y,
+                health: entity.health, energy: entity.energy, state: decision,
+                goal: if decision == 2 { (entity.id + world.tick) % world.tiles.len() }
+                    else { entity.goal },
+                inventory: entity.inventory, credits: entity.credits,
+                experience: entity.experience, born_tick: entity.born_tick,
+                updated_tick: world.tick, alive: entity.alive });
+            model.add_event(inout world, 10 + decision, entity.id, entity.goal, decision);
+        }
+        i = i + 1;
+    }
+    changed
+}

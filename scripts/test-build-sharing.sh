@@ -249,6 +249,7 @@ printf '%s\n' "$*" >>"$BUCK_LOG"
 if [[ "${1:-}" == "uquery" ]]; then
     printf '%s\n' \
         root//:cli-tests \
+        root//:cli-tests-caldera \
         root//:oracle-diff-generated-smoke \
         root//:reproducible-programs \
         root//:spec-tests \
@@ -280,7 +281,7 @@ EOF
     check "suite: heavy targets are discovered from the live graph" \
         "$(grep -Fxq 'uquery attrfilter(labels, rue_heavy_suite, //...)' "$sb/calls" && echo 0 || echo 1)"
     check "suite: every discovered heavy target runs independently" \
-        "$([ "$(grep -Ec '^test root//:(spec-tests|ui-tests|cli-tests|oracle-diff-generated-smoke|reproducible-programs)$' "$sb/calls")" -eq 5 ] && echo 0 || echo 1)"
+        "$([ "$(grep -Ec '^test root//:(spec-tests|ui-tests|cli-tests(-caldera)?|oracle-diff-generated-smoke|reproducible-programs)$' "$sb/calls")" -eq 6 ] && echo 0 || echo 1)"
     check "suite: no concurrent heavy label sweep occurs" \
         "$(! grep -Fq -- '--include rue_heavy_suite' "$sb/calls" && echo 0 || echo 1)"
     check "suite: host lock is released" "$([[ ! -e "$sb/lock" ]] && echo 0 || echo 1)"

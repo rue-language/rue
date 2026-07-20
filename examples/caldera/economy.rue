@@ -1,0 +1,45 @@
+// Resource harvesting and deterministic transfers between agents and treasury.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+
+pub struct Ledger { produced: u64, consumed: u64, transfers: u64,
+    credits: u64, digest: u64, valid: bool }
+
+pub fn step(inout world: model.World) -> Ledger {
+    let before = world.resources + world.treasury;
+    let mut out = Ledger { produced: 0, consumed: 0, transfers: 0,
+        credits: 0, digest: metric.mix(14695981039346656037, world.tick), valid: false };
+    let mut i: u64 = 0;
+    while i < world.entities.len() {
+        let entity = world.entities.get_or(i, model.empty_entity());
+        if entity.alive {
+            let produced = if entity.kind == model.WORKER() { 3 }
+                else if entity.kind == model.BUILDER() { 1 } else { 0 };
+            let consumed = if entity.kind == model.GUARD() { 2 } else { 1 };
+            out.produced = out.produced + produced;
+            out.consumed = out.consumed + consumed;
+            let next_inventory = entity.inventory + produced;
+            let transfer = if next_inventory >= 8 { 4 } else { 0 };
+            out.transfers = out.transfers + transfer;
+            world.resources = world.resources + produced;
+            if world.resources >= consumed + transfer {
+                world.resources = world.resources - consumed - transfer;
+                world.treasury = world.treasury + transfer;
+            }
+            let credit = transfer / 2;
+            out.credits = out.credits + credit;
+            world.entities.set(i, model.Entity { id: entity.id, kind: entity.kind,
+                faction: entity.faction, x: entity.x, y: entity.y,
+                previous_x: entity.previous_x, previous_y: entity.previous_y,
+                velocity_x: entity.velocity_x, velocity_y: entity.velocity_y,
+                health: entity.health, energy: entity.energy, state: entity.state,
+                goal: entity.goal, inventory: next_inventory - transfer,
+                credits: entity.credits + credit, experience: entity.experience,
+                born_tick: entity.born_tick, updated_tick: world.tick, alive: entity.alive });
+            out.digest = metric.mix(out.digest, entity.id + produced * 17 + transfer * 31);
+        }
+        i = i + 1;
+    }
+    out.valid = world.resources + world.treasury + out.consumed + out.credits >= before;
+    out
+}

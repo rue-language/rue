@@ -521,10 +521,10 @@ const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
         stdout: "",
         stdin: None,
     },
-    // Lattice and Meridian are large maintained Rue applications. Their
-    // automatic smoke invocations stay intentionally lightweight; explicit
-    // CLI cases run the demo and complete stress paths with their own
-    // assertions.
+    // Lattice, Meridian, and Caldera are large maintained Rue applications.
+    // Lattice and Meridian keep their automatic smoke invocations intentionally
+    // lightweight. Caldera's default invocation is its comprehensive self-test,
+    // avoiding repeated compilation of the 100K-line module graph.
     ExampleExpectation {
         path: "lattice/main.rue",
         exit_code: 0,
@@ -535,6 +535,12 @@ const EXAMPLE_EXPECTATIONS: &[ExampleExpectation] = &[
         path: "meridian/main.rue",
         exit_code: 0,
         stdout: "usage: meridian [demo | run FILE | selftest | stress1 | stress2 | stress4 | benchmark | help]\nMeridian parses SQL-like workloads and audits planning, execution, transactions, and recovery.\n",
+        stdin: None,
+    },
+    ExampleExpectation {
+        path: "caldera/main.rue",
+        exit_code: 0,
+        stdout: "selftest checks=23\nfailures=0\nentities=8\nticks=4\naudit_passes=256\nsystems=192\nbehaviors=128\nrules=96\nreport_documents=64\nvm_steps=30\noracle_mismatches=0\ndeterministic_mismatches=0\ndigest=4530453528088162116\nvalid=true\n",
         stdin: None,
     },
     ExampleExpectation {

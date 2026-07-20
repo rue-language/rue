@@ -1,0 +1,14 @@
+// Oracle runs the canonical batch simulation and compares its final state.
+const checksum = @import("checksum.rue");
+const model = @import("model.rue");
+const replay = @import("replay.rue");
+const simulation = @import("simulation.rue");
+const world_clone = @import("world_clone.rue");
+
+pub fn agrees(borrow baseline: model.World, count: u64,
+    borrow actual: replay.Result) -> bool {
+    let mut world = world_clone.clone(borrow baseline);
+    let expected = simulation.run(inout world, count);
+    actual.valid && expected.valid && actual.ticks == expected.ticks &&
+        actual.final_checksum == checksum.world(borrow world)
+}
