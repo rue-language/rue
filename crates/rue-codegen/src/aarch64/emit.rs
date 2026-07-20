@@ -65,6 +65,32 @@ use super::mir::{
 };
 use crate::{EmittedCode, EmittedInst, EmittedRelocation};
 
+/// Scale a folded byte `offset` into the unsigned scaled `imm12` field of a
+/// narrow load/store (RUE-1079). The immediate is scaled by the access `width`
+/// (`ldrb`/`strb` by 1, `ldrh`/`strh` by 2, `ldr w`/`str w` by 4), so the
+/// encoded index is `offset / width`. CFG-lowering only folds an offset the
+/// scaled form can encode; the asserts (kept in release) re-check that invariant
+/// so a mis-threaded offset traps rather than encoding a wrong address.
+fn narrow_scaled_imm12(offset: i32, width: u8) -> u32 {
+    let width = width as i32;
+    assert!(
+        offset >= 0 && offset % width == 0 && offset / width <= 0xFFF,
+        "narrow access offset {offset} not encodable in scaled imm12 for width {width}"
+    );
+    (offset / width) as u32 & 0xFFF
+}
+
+/// Format a folded narrow addressing offset for the textual assembly dump:
+/// `, #N` for a nonzero offset, the empty string for offset 0 (so a zero-offset
+/// narrow access prints `[base]`, byte-identical to before RUE-1079).
+fn fmt_narrow_offset(offset: i32) -> String {
+    if offset == 0 {
+        String::new()
+    } else {
+        format!(", #{offset}")
+    }
+}
+
 // ========== AArch64 Instruction Encoding Constants ==========
 //
 // These constants represent the base opcodes for AArch64 instructions.
@@ -713,44 +739,54 @@ impl<'a> Emitter<'a> {
             Aarch64Inst::NarrowLoad {
                 dst,
                 base,
+                offset,
                 width,
                 signed,
             } => {
                 let rd = dst.as_physical();
                 self.begin_inst();
-                self.emit_narrow_load(rd, *base, *width, *signed);
+                self.emit_narrow_load(rd, *base, *offset, *width, *signed);
                 // A sign-extending load targets the 64-bit X register; a
                 // zero-extending load targets the 32-bit W register (which
                 // implicitly clears the upper half).
+                let disp = fmt_narrow_offset(*offset);
                 if *signed {
                     end_inst!(
                         self,
-                        "{} {}, [{}]",
+                        "{} {}, [{}{}]",
                         narrow_load_mnemonic(*width, *signed),
                         rd,
-                        base
+                        base,
+                        disp
                     );
                 } else {
                     end_inst!(
                         self,
-                        "{} {}, [{}]",
+                        "{} {}, [{}{}]",
                         narrow_load_mnemonic(*width, *signed),
                         rd.as_w(),
-                        base
+                        base,
+                        disp
                     );
                 }
             }
 
-            Aarch64Inst::NarrowStore { src, base, width } => {
+            Aarch64Inst::NarrowStore {
+                src,
+                base,
+                offset,
+                width,
+            } => {
                 let rs = src.as_physical();
                 self.begin_inst();
-                self.emit_narrow_store(rs, *base, *width);
+                self.emit_narrow_store(rs, *base, *offset, *width);
                 end_inst!(
                     self,
-                    "{} {}, [{}]",
+                    "{} {}, [{}{}]",
                     narrow_store_mnemonic(*width),
                     rs.as_w(),
-                    base
+                    base,
+                    fmt_narrow_offset(*offset)
                 );
             }
 
@@ -1699,12 +1735,13 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    /// Emit a narrow (1/2/4-byte) load of `[base]` extended into the 64-bit `rd`
-    /// (RUE-989). The address is fully materialized in `base` (imm12 = 0), so
-    /// there is no offset to scale. The unsigned forms (`ldrb`/`ldrh`/`ldr w`)
-    /// zero-extend into the X register; the signed forms
+    /// Emit a narrow (1/2/4-byte) load of `[base, #offset]` extended into the
+    /// 64-bit `rd` (RUE-989). `offset` is a byte displacement folded into the
+    /// scaled `imm12` field (RUE-1079): the immediate is scaled by the access
+    /// width, so the encoded index is `offset / width`. The unsigned forms
+    /// (`ldrb`/`ldrh`/`ldr w`) zero-extend into the X register; the signed forms
     /// (`ldrsb`/`ldrsh`/`ldrsw`, 64-bit variant) sign-extend into it.
-    fn emit_narrow_load(&mut self, rd: Reg, base: Reg, width: u8, signed: bool) {
+    fn emit_narrow_load(&mut self, rd: Reg, base: Reg, offset: i32, width: u8, signed: bool) {
         let base_opcode: u32 = match (width, signed) {
             (1, false) => 0x3940_0000, // ldrb  w, [base]
             (1, true) => 0x3980_0000,  // ldrsb x, [base]
@@ -1714,20 +1751,25 @@ impl<'a> Emitter<'a> {
             (4, true) => 0xB980_0000,  // ldrsw x, [base]
             _ => unreachable!("narrow load width must be 1, 2, or 4: {width}"),
         };
-        let inst = base_opcode | ((base.encoding() as u32) << 5) | rd.encoding() as u32;
+        let imm12 = narrow_scaled_imm12(offset, width);
+        let inst =
+            base_opcode | (imm12 << 10) | ((base.encoding() as u32) << 5) | rd.encoding() as u32;
         self.emit_u32(inst);
     }
 
     /// Emit a narrow (1/2/4-byte) store of the low `width` bytes of `rs` to
-    /// `[base]` (RUE-989), the address fully materialized in `base` (imm12 = 0).
-    fn emit_narrow_store(&mut self, rs: Reg, base: Reg, width: u8) {
+    /// `[base, #offset]` (RUE-989); `offset` is folded into the scaled `imm12`
+    /// field (RUE-1079), encoded index `offset / width`.
+    fn emit_narrow_store(&mut self, rs: Reg, base: Reg, offset: i32, width: u8) {
         let base_opcode: u32 = match width {
             1 => 0x3900_0000, // strb w, [base]
             2 => 0x7900_0000, // strh w, [base]
             4 => 0xB900_0000, // str  w, [base]
             _ => unreachable!("narrow store width must be 1, 2, or 4: {width}"),
         };
-        let inst = base_opcode | ((base.encoding() as u32) << 5) | rs.encoding() as u32;
+        let imm12 = narrow_scaled_imm12(offset, width);
+        let inst =
+            base_opcode | (imm12 << 10) | ((base.encoding() as u32) << 5) | rs.encoding() as u32;
         self.emit_u32(inst);
     }
 
@@ -2618,6 +2660,7 @@ mod tests {
             let code = emit_single(Aarch64Inst::NarrowLoad {
                 dst: Operand::Physical(Reg::X0),
                 base: Reg::X1,
+                offset: 0,
                 width,
                 signed,
             });
@@ -2631,6 +2674,30 @@ mod tests {
         assert_eq!(word(4, true), 0xB980_0020); // ldrsw x0, [x1]
     }
 
+    /// RUE-1079: a nonzero byte offset folds into the narrow load's scaled imm12
+    /// (encoded index = offset / width), not a materialized `base + offset`.
+    #[test]
+    fn test_narrow_load_encoding_folded_offset() {
+        let word = |base: Reg, offset, width, signed| {
+            let code = emit_single(Aarch64Inst::NarrowLoad {
+                dst: Operand::Physical(Reg::X0),
+                base,
+                offset,
+                width,
+                signed,
+            });
+            u32::from_le_bytes(code[0..4].try_into().unwrap())
+        };
+        // ldr w0, [x1, #4] -> base ldr(w) opcode with scaled imm12 = 4/4 = 1.
+        assert_eq!(word(Reg::X1, 4, 4, false), 0xB940_0020 | (1 << 10));
+        // ldrb w0, [x1, #3] -> ldrb scales by 1, imm12 = 3.
+        assert_eq!(word(Reg::X1, 3, 1, false), 0x3940_0020 | (3 << 10));
+        // ldrh w0, [x1, #2] -> ldrh scales by 2, imm12 = 2/2 = 1.
+        assert_eq!(word(Reg::X1, 2, 2, false), 0x7940_0020 | (1 << 10));
+        // ldr w0, [x1, #12] -> imm12 = 12/4 = 3.
+        assert_eq!(word(Reg::X1, 12, 4, false), 0xB940_0020 | (3 << 10));
+    }
+
     /// RUE-989: the narrow physical store through a pointer selects
     /// strb/strh/str(w) per width. src X2, base X3.
     #[test]
@@ -2639,6 +2706,7 @@ mod tests {
             let code = emit_single(Aarch64Inst::NarrowStore {
                 src: Operand::Physical(Reg::X2),
                 base: Reg::X3,
+                offset: 0,
                 width,
             });
             u32::from_le_bytes(code[0..4].try_into().unwrap())
@@ -2646,6 +2714,27 @@ mod tests {
         assert_eq!(word(1), 0x3900_0062); // strb w2, [x3]
         assert_eq!(word(2), 0x7900_0062); // strh w2, [x3]
         assert_eq!(word(4), 0xB900_0062); // str  w2, [x3]
+    }
+
+    /// RUE-1079: a nonzero byte offset folds into the narrow store's scaled
+    /// imm12 (encoded index = offset / width).
+    #[test]
+    fn test_narrow_store_encoding_folded_offset() {
+        let word = |offset, width| {
+            let code = emit_single(Aarch64Inst::NarrowStore {
+                src: Operand::Physical(Reg::X2),
+                base: Reg::X3,
+                offset,
+                width,
+            });
+            u32::from_le_bytes(code[0..4].try_into().unwrap())
+        };
+        // str w2, [x3, #4] -> str(w) scales by 4, imm12 = 1.
+        assert_eq!(word(4, 4), 0xB900_0062 | (1 << 10));
+        // strb w2, [x3, #3] -> strb scales by 1, imm12 = 3.
+        assert_eq!(word(3, 1), 0x3900_0062 | (3 << 10));
+        // strh w2, [x3, #2] -> strh scales by 2, imm12 = 1.
+        assert_eq!(word(2, 2), 0x7900_0062 | (1 << 10));
     }
 
     #[test]

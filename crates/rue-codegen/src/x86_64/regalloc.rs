@@ -731,6 +731,7 @@ impl RegAlloc {
             X86Inst::NarrowLoadIndexed {
                 dst,
                 base,
+                offset,
                 width,
                 signed,
             } => {
@@ -740,6 +741,7 @@ impl RegAlloc {
                     Some(Allocation::Register(reg)) => mir.push(X86Inst::NarrowLoadRM {
                         dst: Operand::Physical(reg),
                         base: base_phys,
+                        offset,
                         width,
                         signed,
                     }),
@@ -747,6 +749,7 @@ impl RegAlloc {
                         mir.push(X86Inst::NarrowLoadRM {
                             dst: Operand::Physical(Reg::Rdx),
                             base: base_phys,
+                            offset,
                             width,
                             signed,
                         });
@@ -762,18 +765,25 @@ impl RegAlloc {
                     None => mir.push(X86Inst::NarrowLoadRM {
                         dst,
                         base: base_phys,
+                        offset,
                         width,
                         signed,
                     }),
                 }
             }
 
-            X86Inst::NarrowStoreIndexed { base, src, width } => {
+            X86Inst::NarrowStoreIndexed {
+                base,
+                src,
+                offset,
+                width,
+            } => {
                 let src_op = Self::load_operand(context, mir, src, Reg::Rdx)?;
                 let base_reg = Self::load_operand(context, mir, Operand::Virtual(base), Reg::Rax)?;
                 mir.push(X86Inst::NarrowStoreMR {
                     base: base_reg.as_physical(),
                     src: src_op,
+                    offset,
                     width,
                 });
             }
@@ -923,17 +933,27 @@ impl RegAlloc {
             X86Inst::NarrowLoadRM {
                 dst,
                 base,
+                offset,
                 width,
                 signed,
             } => mir.push(X86Inst::NarrowLoadRM {
                 dst,
                 base,
+                offset,
                 width,
                 signed,
             }),
-            X86Inst::NarrowStoreMR { base, src, width } => {
-                mir.push(X86Inst::NarrowStoreMR { base, src, width })
-            }
+            X86Inst::NarrowStoreMR {
+                base,
+                src,
+                offset,
+                width,
+            } => mir.push(X86Inst::NarrowStoreMR {
+                base,
+                src,
+                offset,
+                width,
+            }),
         }
         Ok(())
     }

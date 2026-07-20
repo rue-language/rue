@@ -428,32 +428,50 @@ pub enum Aarch64Inst {
     /// Pre-register-allocation narrow (1/2/4-byte) load through a virtual
     /// address, extended into the 64-bit `dst` (ADR-0052, RUE-989). `signed`
     /// selects `ldrsb`/`ldrsh`/`ldrsw` (sign-extend) versus `ldrb`/`ldrh`/`ldr w`
-    /// (zero-extend). The address is fully materialized in `base`, so no offset
-    /// is encoded. Register allocation lowers this to [`Aarch64Inst::NarrowLoad`].
+    /// (zero-extend). `offset` is a constant byte displacement folded into the
+    /// scaled `imm12` addressing mode (RUE-1079); cfg-lowering only emits an
+    /// `offset` the scaled form can encode (`offset >= 0`, a multiple of `width`,
+    /// scaled index <= 0xFFF), otherwise the base is materialized and `offset` is
+    /// 0. Register allocation lowers this to [`Aarch64Inst::NarrowLoad`].
     NarrowLoadIndexed {
         dst: Operand,
         base: VReg,
+        offset: i32,
         width: u8,
         signed: bool,
     },
 
     /// Pre-register-allocation narrow (1/2/4-byte) store of the low `width` bytes
-    /// of `src` through a virtual address (`strb`/`strh`/`str w`). Register
-    /// allocation lowers this to [`Aarch64Inst::NarrowStore`].
-    NarrowStoreIndexed { src: Operand, base: VReg, width: u8 },
+    /// of `src` through a virtual address (`strb`/`strh`/`str w`). `offset` is a
+    /// constant byte displacement folded into the scaled `imm12` addressing mode
+    /// (RUE-1079); see [`Aarch64Inst::NarrowLoadIndexed`] for the encodability
+    /// rule. Register allocation lowers this to [`Aarch64Inst::NarrowStore`].
+    NarrowStoreIndexed {
+        src: Operand,
+        base: VReg,
+        offset: i32,
+        width: u8,
+    },
 
-    /// Narrow (1/2/4-byte) load of `[base]` extended into the 64-bit `dst`, the
-    /// physical-base form of [`Aarch64Inst::NarrowLoadIndexed`].
+    /// Narrow (1/2/4-byte) load of `[base, #offset]` extended into the 64-bit
+    /// `dst`, the physical-base form of [`Aarch64Inst::NarrowLoadIndexed`].
     NarrowLoad {
         dst: Operand,
         base: Reg,
+        offset: i32,
         width: u8,
         signed: bool,
     },
 
-    /// Narrow (1/2/4-byte) store of the low `width` bytes of `src` to `[base]`,
-    /// the physical-base form of [`Aarch64Inst::NarrowStoreIndexed`].
-    NarrowStore { src: Operand, base: Reg, width: u8 },
+    /// Narrow (1/2/4-byte) store of the low `width` bytes of `src` to
+    /// `[base, #offset]`, the physical-base form of
+    /// [`Aarch64Inst::NarrowStoreIndexed`].
+    NarrowStore {
+        src: Operand,
+        base: Reg,
+        offset: i32,
+        width: u8,
+    },
 
     /// `ldr dst, [base, #offset]` - Load from memory via register with offset.
     LdrIndexedOffset {
@@ -857,6 +875,17 @@ impl Aarch64Inst {
     }
 }
 
+/// Format a constant addressing-mode offset for the `Display` dump: `, #N` for
+/// a nonzero offset, the empty string for offset 0 — so a zero-offset narrow
+/// access prints `[base]`, byte-identical to before RUE-1079.
+fn fmt_addr_offset(offset: i32) -> String {
+    if offset == 0 {
+        String::new()
+    } else {
+        format!(", #{offset}")
+    }
+}
+
 /// The load mnemonic for a narrow access width and extension, used in the
 /// textual MIR dump of the narrow load instructions.
 pub(crate) fn narrow_load_mnemonic(width: u8, signed: bool) -> &'static str {
@@ -906,32 +935,60 @@ impl fmt::Display for Aarch64Inst {
             Aarch64Inst::NarrowLoadIndexed {
                 dst,
                 base,
+                offset,
                 width,
                 signed,
             } => write!(
                 f,
-                "{} {}, [{}]",
+                "{} {}, [{}{}]",
                 narrow_load_mnemonic(*width, *signed),
                 dst,
-                base
+                base,
+                fmt_addr_offset(*offset),
             ),
-            Aarch64Inst::NarrowStoreIndexed { src, base, width } => {
-                write!(f, "{} {}, [{}]", narrow_store_mnemonic(*width), src, base)
+            Aarch64Inst::NarrowStoreIndexed {
+                src,
+                base,
+                offset,
+                width,
+            } => {
+                write!(
+                    f,
+                    "{} {}, [{}{}]",
+                    narrow_store_mnemonic(*width),
+                    src,
+                    base,
+                    fmt_addr_offset(*offset),
+                )
             }
             Aarch64Inst::NarrowLoad {
                 dst,
                 base,
+                offset,
                 width,
                 signed,
             } => write!(
                 f,
-                "{} {}, [{}]",
+                "{} {}, [{}{}]",
                 narrow_load_mnemonic(*width, *signed),
                 dst,
-                base
+                base,
+                fmt_addr_offset(*offset),
             ),
-            Aarch64Inst::NarrowStore { src, base, width } => {
-                write!(f, "{} {}, [{}]", narrow_store_mnemonic(*width), src, base)
+            Aarch64Inst::NarrowStore {
+                src,
+                base,
+                offset,
+                width,
+            } => {
+                write!(
+                    f,
+                    "{} {}, [{}{}]",
+                    narrow_store_mnemonic(*width),
+                    src,
+                    base,
+                    fmt_addr_offset(*offset),
+                )
             }
             Aarch64Inst::LdrIndexedOffset { dst, base, offset } => {
                 if *offset == 0 {

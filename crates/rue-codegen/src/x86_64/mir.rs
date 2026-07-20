@@ -485,37 +485,51 @@ pub enum X86Inst {
         src: Operand,
     },
 
-    /// Pre-register-allocation narrow (1/2/4-byte) load of `[base]` extended
-    /// into the 64-bit `dst` (ADR-0052, RUE-989). `signed` selects `movsx`
-    /// (sign-extend) versus `movzx`/`mov r32` (zero-extend). The pointer address
-    /// is fully materialized in `base`, so no displacement is encoded. Register
+    /// Pre-register-allocation narrow (1/2/4-byte) load of `[base + offset]`
+    /// extended into the 64-bit `dst` (ADR-0052, RUE-989). `signed` selects
+    /// `movsx` (sign-extend) versus `movzx`/`mov r32` (zero-extend). `offset` is
+    /// a constant byte displacement folded into the ModRM addressing mode
+    /// (RUE-1079); any `i32` is encodable on x86 (disp8/disp32). Register
     /// allocation lowers this to [`X86Inst::NarrowLoadRM`].
     NarrowLoadIndexed {
         dst: Operand,
         base: VReg,
+        offset: i32,
         width: u8,
         signed: bool,
     },
 
     /// Pre-register-allocation narrow (1/2/4-byte) store of the low `width`
-    /// bytes of `src` to `[base]` (ADR-0052, RUE-989). Register allocation lowers
-    /// this to [`X86Inst::NarrowStoreMR`].
-    NarrowStoreIndexed { base: VReg, src: Operand, width: u8 },
+    /// bytes of `src` to `[base + offset]` (ADR-0052, RUE-989). `offset` is a
+    /// constant byte displacement folded into the ModRM addressing mode
+    /// (RUE-1079). Register allocation lowers this to [`X86Inst::NarrowStoreMR`].
+    NarrowStoreIndexed {
+        base: VReg,
+        src: Operand,
+        offset: i32,
+        width: u8,
+    },
 
-    /// Narrow (1/2/4-byte) load of `[base]` extended into the 64-bit `dst`
-    /// (`movzx`/`movsx`/`movsxd`/`mov r32`), the physical-base form of
+    /// Narrow (1/2/4-byte) load of `[base + offset]` extended into the 64-bit
+    /// `dst` (`movzx`/`movsx`/`movsxd`/`mov r32`), the physical-base form of
     /// [`X86Inst::NarrowLoadIndexed`].
     NarrowLoadRM {
         dst: Operand,
         base: Reg,
+        offset: i32,
         width: u8,
         signed: bool,
     },
 
-    /// Narrow (1/2/4-byte) store of the low `width` bytes of `src` to `[base]`
-    /// (`mov byte/word/dword [m], r`), the physical-base form of
-    /// [`X86Inst::NarrowStoreIndexed`].
-    NarrowStoreMR { base: Reg, src: Operand, width: u8 },
+    /// Narrow (1/2/4-byte) store of the low `width` bytes of `src` to
+    /// `[base + offset]` (`mov byte/word/dword [m], r`), the physical-base form
+    /// of [`X86Inst::NarrowStoreIndexed`].
+    NarrowStoreMR {
+        base: Reg,
+        src: Operand,
+        offset: i32,
+        width: u8,
+    },
 
     /// `mov dst, [base + index*scale + disp]` - Load from memory with SIB addressing.
     ///
@@ -601,6 +615,13 @@ fn mem_width_keyword(width: u8) -> &'static str {
         4 => "dword ",
         _ => "",
     }
+}
+
+/// Format a constant addressing-mode displacement for `Display`: `+N`/`-N` for
+/// a nonzero offset, the empty string for offset 0 — so zero-offset narrow
+/// accesses print byte-identically to before RUE-1079.
+fn fmt_disp(offset: i32) -> String {
+    crate::format_offset(offset)
 }
 
 impl fmt::Display for X86Inst {
@@ -735,40 +756,68 @@ impl fmt::Display for X86Inst {
             X86Inst::NarrowLoadIndexed {
                 dst,
                 base,
+                offset,
                 width,
                 signed,
             } => {
                 let ext = if *signed { "movsx" } else { "movzx" };
                 write!(
                     f,
-                    "{} {}, {}[{}]",
+                    "{} {}, {}[{}{}]",
                     ext,
                     dst,
                     mem_width_keyword(*width),
-                    base
+                    base,
+                    fmt_disp(*offset),
                 )
             }
-            X86Inst::NarrowStoreIndexed { base, src, width } => {
-                write!(f, "mov {}[{}], {}", mem_width_keyword(*width), base, src)
+            X86Inst::NarrowStoreIndexed {
+                base,
+                src,
+                offset,
+                width,
+            } => {
+                write!(
+                    f,
+                    "mov {}[{}{}], {}",
+                    mem_width_keyword(*width),
+                    base,
+                    fmt_disp(*offset),
+                    src
+                )
             }
             X86Inst::NarrowLoadRM {
                 dst,
                 base,
+                offset,
                 width,
                 signed,
             } => {
                 let ext = if *signed { "movsx" } else { "movzx" };
                 write!(
                     f,
-                    "{} {}, {}[{}]",
+                    "{} {}, {}[{}{}]",
                     ext,
                     dst,
                     mem_width_keyword(*width),
-                    base
+                    base,
+                    fmt_disp(*offset),
                 )
             }
-            X86Inst::NarrowStoreMR { base, src, width } => {
-                write!(f, "mov {}[{}], {}", mem_width_keyword(*width), base, src)
+            X86Inst::NarrowStoreMR {
+                base,
+                src,
+                offset,
+                width,
+            } => {
+                write!(
+                    f,
+                    "mov {}[{}{}], {}",
+                    mem_width_keyword(*width),
+                    base,
+                    fmt_disp(*offset),
+                    src
+                )
             }
             X86Inst::MovRMSib {
                 dst,
