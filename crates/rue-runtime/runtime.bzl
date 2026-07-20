@@ -28,6 +28,7 @@ def _runtime_staticlib_impl(ctx: AnalysisContext) -> list[Provider]:
     # compiling the no_std ABI and runtime crates for the selected target.
     target_sysroot = target_std.project("rust-std-{}".format(target))
     abi_rlib = ctx.actions.declare_output("librue_runtime_abi-{}.rlib".format(target))
+    allocator_rlib = ctx.actions.declare_output("librue_allocator-{}.rlib".format(target))
     archive = ctx.actions.declare_output("librue_runtime-{}.a".format(target))
 
     abi_args = cmd_args(toolchain.compiler)
@@ -53,6 +54,32 @@ def _runtime_staticlib_impl(ctx: AnalysisContext) -> list[Provider]:
         identifier = target,
     )
 
+    allocator_args = cmd_args(toolchain.compiler)
+    allocator_args.add(
+        "--crate-name",
+        "rue_allocator",
+        "--crate-type",
+        "rlib",
+        "--edition",
+        "2024",
+        "--target",
+        target,
+        "--sysroot",
+        target_sysroot,
+    )
+    allocator_args.add(ctx.attrs.rustc_flags)
+    allocator_args.add(
+        ctx.attrs.allocator_crate_root,
+        "-o",
+        allocator_rlib.as_output(),
+    )
+
+    ctx.actions.run(
+        allocator_args,
+        category = "runtime_allocator_rlib",
+        identifier = target,
+    )
+
     args = cmd_args(toolchain.compiler)
     args.add(
         "--crate-name",
@@ -67,6 +94,10 @@ def _runtime_staticlib_impl(ctx: AnalysisContext) -> list[Provider]:
         target_sysroot,
     )
     args.add(ctx.attrs.rustc_flags)
+    args.add(
+        "--extern",
+        cmd_args("rue_allocator=", allocator_rlib, delimiter = ""),
+    )
     args.add(
         "--extern",
         cmd_args("rue_runtime_abi=", abi_rlib, delimiter = ""),
@@ -85,6 +116,7 @@ def _runtime_staticlib_impl(ctx: AnalysisContext) -> list[Provider]:
 _runtime_staticlib = rule(
     impl = _runtime_staticlib_impl,
     attrs = {
+        "allocator_crate_root": attrs.source(),
         "abi_crate_root": attrs.source(),
         "crate_root": attrs.source(),
         "srcs": attrs.list(attrs.source()),
@@ -103,6 +135,7 @@ def runtime_staticlib(name: str, target_triple: str, target_std: str, visibility
 
     _runtime_staticlib(
         name = name,
+        allocator_crate_root = "//crates/rue-allocator:lib.rs",
         abi_crate_root = "//crates/rue-runtime-abi:lib.rs",
         crate_root = "src/lib.rs",
         srcs = glob(["src/**/*.rs"]),

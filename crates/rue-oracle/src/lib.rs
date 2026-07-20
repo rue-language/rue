@@ -606,7 +606,7 @@ const HEAP_BASE: u128 = HEAP_SEG;
 
 /// Largest byte size the modeled allocator satisfies before returning null.
 ///
-/// The real runtime bump allocator fails (returns null) once a request exceeds
+/// The real runtime allocator fails (returns null) once a request exceeds
 /// what `mmap` can back — astronomically large sizes such as the corpus's
 /// `2305843009213693951`-byte `@realloc`. Every legitimate corpus allocation is
 /// a few bytes to kilobytes, so any threshold between them models the platform
@@ -688,11 +688,9 @@ struct Allocation {
     /// projection): its single cell is the scalar, and a redirected `Load` of
     /// the owning slot must unwrap `root[0]` rather than return the aggregate.
     wrapped_scalar: bool,
-    /// `@free`/`@free_bytes` marked this released. The runtime bump allocator's
-    /// `free` is a documented no-op (memory stays valid until process exit), so
-    /// this is diagnostic only and never blocks access — modeling it as an error
-    /// would disagree with every compiled program that reads through a freed
-    /// pointer (see the heap-model notes).
+    /// `@free`/`@free_bytes` released this allocation. Pointer access checks the
+    /// flag so undefined use-after-free remains a typed oracle gap rather than
+    /// receiving a deterministic value that native execution does not promise.
     freed: bool,
 }
 
@@ -3198,7 +3196,8 @@ impl<'a> Interp<'a> {
         }
     }
 
-    /// The zero image of `ty`, matching the runtime's mmap-zeroed fresh cell.
+    /// A deterministic image for storage that Rue specifies as uninitialized.
+    /// Valid modeled programs initialize cells before observing them.
     fn zeroed_value(&self, ty: Type) -> Value {
         match ty.kind() {
             TypeKind::Bool => Value::Bool(false),
@@ -3307,6 +3306,9 @@ impl<'a> Interp<'a> {
             .heap
             .get(target.alloc)
             .ok_or_else(|| unsupported(gap, "pointer to unknown allocation"))?;
+        if alloc.freed {
+            return Err(unsupported(gap, "pointer read after free"));
+        }
         let container = Self::nav(&alloc.root, &target.path)
             .ok_or_else(|| unsupported(gap, "pointer path escapes allocation"))?;
         match container {
@@ -3326,6 +3328,9 @@ impl<'a> Interp<'a> {
             .heap
             .get_mut(target.alloc)
             .ok_or_else(|| unsupported(gap, "pointer to unknown allocation"))?;
+        if alloc.freed {
+            return Err(unsupported(gap, "pointer write after free"));
+        }
         let container = Self::nav_mut(&mut alloc.root, &target.path)
             .ok_or_else(|| unsupported(gap, "pointer path escapes allocation"))?;
         match container {
@@ -3450,14 +3455,16 @@ impl<'a> Interp<'a> {
                 Ok(Some(self.do_alloc_bytes(size)?))
             }
             "free" | "free_bytes" => {
-                // Evaluate every operand (side-effect-free here) then no-op, as
-                // the runtime bump allocator's free does.
+                // Evaluate every operand before releasing the allocation.
                 let p = self.eval(cfg, frame, args[0])?;
                 for a in &args[1..] {
                     self.eval(cfg, frame, *a)?;
                 }
                 if let Value::Ptr(Some(t)) = p {
                     if let Some(alloc) = self.heap.get_mut(t.alloc) {
+                        if alloc.freed {
+                            return Err(unsupported(gap, "double free"));
+                        }
                         alloc.freed = true;
                     }
                 }
@@ -3642,9 +3649,9 @@ impl<'a> Interp<'a> {
     }
 
     /// `@realloc`/`@realloc_bytes`: grow/shrink an allocation, preserving the
-    /// first `min(old, new)` cells and zero-filling growth. Shrinking returns the
-    /// original pointer (the bump runtime does); growing allocates fresh and
-    /// copies. Returns null on `new == 0` or allocator failure, leaving the
+    /// first `min(old, new)` cells and deterministically filling growth. This
+    /// model keeps shrink-in-place and move-on-grow behavior; native pointer
+    /// identity is deliberately unspecified. Returns null on `new == 0` or allocator failure, leaving the
     /// original allocation valid (spec 8.6:3), and traps on a `new * stride`
     /// overflow like the compiled size arithmetic (spec 8.6:1).
     fn do_realloc(
@@ -3668,6 +3675,17 @@ impl<'a> Interp<'a> {
             }
             _ => return Ok(Value::Ptr(None)),
         };
+        if self
+            .heap
+            .get(target.alloc)
+            .is_some_and(|allocation| allocation.freed)
+        {
+            let name = if bytes { "realloc_bytes" } else { "realloc" };
+            return Err(unsupported(
+                unsupported_intrinsic_kind(name),
+                "realloc after free",
+            ));
+        }
         if new_count == 0 {
             if let Some(alloc) = self.heap.get_mut(target.alloc) {
                 alloc.freed = true;
@@ -3701,6 +3719,7 @@ impl<'a> Interp<'a> {
             }
         }
         let alloc = self.heap_alloc(Value::Aggregate(cells), stride, false);
+        self.heap[target.alloc].freed = true;
         Ok(Value::Ptr(Some(PtrTarget {
             alloc,
             path: Vec::new(),

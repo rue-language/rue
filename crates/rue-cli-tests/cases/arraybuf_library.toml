@@ -252,9 +252,8 @@ exit_code = 0
 # ArrayBuf destructor end-to-end (parse + monomorphize + drop-glue + @free), the
 # last gap to a real ArrayBuf (RUE-312). The `drop fn(self)` here mirrors
 # std/arraybuf.rue. Output is the same as the explicit-free dogfood; the
-# destructor's @free is a silent no-op under the bump allocator, so correctness
-# is that the program compiles, runs, and exits cleanly with the buffer released
-# by the destructor rather than a manual call.
+# destructor now returns the buffer to the allocator, so correctness includes
+# running that ownership path exactly once without an explicit free.
 [[case]]
 name = "arraybuf_i32_raii_auto_free"
 description = "ArrayBuf(i32) frees its buffer via its drop fn at scope exit — no explicit free() call (RUE-312)."

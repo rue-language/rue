@@ -12,9 +12,8 @@
 #    statement) leaked its block's scope_stack entry. The enclosing block's
 #    scope pop then drained the LEAKED scope instead of its own, re-emitting
 #    Drop/StorageDead for the inner local on the loop-exit path — a same-path
-#    double drop. (Runtime-silent today because heap::free is a no-op bump
-#    allocator, but pinned by a CFG unit test in rue-cfg; the cases here guard
-#    the construct end-to-end so a future real allocator stays safe.)
+#    double drop. The recycling allocator makes that a real double-free, so the
+#    CFG unit test and these end-to-end cases guard the ownership path directly.
 
 [section]
 id = "cli.divergence"

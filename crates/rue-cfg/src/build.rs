@@ -1796,6 +1796,15 @@ impl<'a> CfgBuilder<'a> {
                 let Some(scrutinee_val) = self.lower_value(*scrutinee) else {
                     return Self::diverged();
                 };
+                // A match evaluates its scrutinee exactly once. In particular,
+                // synthetic wrapper blocks may own temporaries whose cleanup
+                // runs while producing the enum value. Payload reads in the
+                // arms refer back to the same AIR scrutinee; cache its already
+                // lowered value so those reads cannot replay the wrapper and
+                // drop its temporaries a second time. The switch block
+                // dominates every arm, so this cached CFG value is valid on
+                // all of those paths.
+                self.cache(*scrutinee, scrutinee_val);
 
                 // Collect arms into a Vec for iteration
                 let arms: Vec<(AirPattern, AirRef)> = self.air.get_match_arms(arms).collect();
@@ -3642,6 +3651,31 @@ mod tests {
         assert_eq!(
             drop_count, 2,
             "expected exactly one Drop per droppable local (s, t)"
+        );
+        assert_all_blocks_terminated(&cfg);
+    }
+
+    #[test]
+    fn match_scrutinee_wrapper_drops_its_temporary_once() {
+        let cfg = build_cfg(
+            "fn O() -> type { enum { Some(i32), None } }\n\
+             fn make() -> O() { let E = O(); E.Some(1) }\n\
+             fn main() -> i32 {\n\
+                 let E = O();\n\
+                 match {\n\
+                     let scratch = StrBuf.with_capacity(8);\n\
+                     make()\n\
+                 } {\n\
+                     E.Some(value) => value,\n\
+                     E.None => 0,\n\
+                 }\n\
+             }",
+        );
+
+        assert_eq!(
+            count_drops(&cfg),
+            1,
+            "payload reads in match arms must not replay scrutinee cleanup"
         );
         assert_all_blocks_terminated(&cfg);
     }

@@ -494,13 +494,11 @@ macro_rules! for_each_runtime_helper {
             safety: ALLOC_LAYOUT,
             returns: RETURNS
         },
-        Free => safe __rue_free(ptr: *mut u8, size: u64, align: u64) {
+        Free => unsafe __rue_free(ptr: *mut u8, size: u64, align: u64) {
             symbol: "__rue_free",
             parameters: params![MUT_BYTE_POINTER, U64_VALUE, U64_VALUE],
             result: VOID,
-            // The current bump allocator's free operation is a no-op and imposes
-            // no pointer or layout precondition.
-            safety: SafetyContract::NONE,
+            safety: VALID_ALLOC_LAYOUT,
             returns: RETURNS
         },
         Realloc => unsafe __rue_realloc(
@@ -1411,7 +1409,7 @@ mod tests {
             &[RuntimeHelperId::Free],
             &[MUT_BYTE_POINTER, U64_VALUE, U64_VALUE],
             VOID,
-            SafetyContract::NONE,
+            VALID_ALLOC_LAYOUT,
             RETURNS,
         );
         check(
@@ -1722,6 +1720,10 @@ mod tests {
         let realloc = RuntimeHelperId::Realloc.helper().safety;
         assert!(realloc.contains(SafetyContract::VALID_ALLOCATION));
         assert!(realloc.contains(SafetyContract::ALLOCATION_LAYOUT));
+
+        let free = RuntimeHelperId::Free.helper().safety;
+        assert!(free.contains(SafetyContract::VALID_ALLOCATION));
+        assert!(free.contains(SafetyContract::ALLOCATION_LAYOUT));
     }
 
     #[test]

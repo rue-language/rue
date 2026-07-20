@@ -484,14 +484,6 @@ pub use aarch64_linux::{exit, write, write_all, write_stderr};
 #[cfg(test)]
 mod boundary_tests {
     #[test]
-    fn pointer_taking_safe_exports_have_no_pointer_precondition() {
-        // Free is a deliberate bump-allocator no-op, so it never inspects its
-        // pointer argument.
-        let arbitrary = core::ptr::dangling_mut::<u8>();
-        crate::string::__rue_free(arbitrary, u64::MAX, 3);
-    }
-
-    #[test]
     fn null_pointer_is_valid_at_zero_length_boundaries() {
         let null = core::ptr::null();
 
@@ -507,6 +499,7 @@ mod boundary_tests {
             assert_eq!(crate::memory::memcmp(null, null, 0), 0);
             assert_eq!(crate::memory::bcmp(null, null, 0), 0);
             assert_eq!(crate::string::__rue_str_eq(null, 0, null, 0), 1);
+            crate::string::__rue_free(core::ptr::null_mut(), 0, 1);
 
             let mut parsed = crate::parse::OptionIntResult { disc: 0, value: 1 };
             crate::parse::__rue_parse_i32(&mut parsed, null, 0, 7, 9);

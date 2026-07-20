@@ -186,7 +186,8 @@ fn read_line_impl(out: *mut OptionStrBufResult, some_disc: u64, none_disc: u64) 
 
         if result < 0 {
             // Read error - free buffer and panic
-            heap::free(ptr, cap, 1);
+            // SAFETY: ptr is the live cap-byte buffer allocated above.
+            unsafe { heap::free(ptr, cap, 1) };
             let mut msg = [0u8; 19];
             msg[0] = b'e';
             msg[1] = b'r';
@@ -217,7 +218,8 @@ fn read_line_impl(out: *mut OptionStrBufResult, some_disc: u64, none_disc: u64) 
                 // EOF with no data: this is not an error (RUE-6, ADR-0038).
                 // Free the empty buffer and report `None` so a read-until-EOF
                 // loop can terminate cleanly instead of trapping.
-                heap::free(ptr, cap, 1);
+                // SAFETY: ptr is the live cap-byte buffer allocated above.
+                unsafe { heap::free(ptr, cap, 1) };
                 // SAFETY: `out` points to caller-allocated space for the
                 // Option(StrBuf) result (4 slots). We write `None` and zero
                 // the payload; a `None` never has its payload dropped, so the
@@ -249,7 +251,8 @@ fn read_line_impl(out: *mut OptionStrBufResult, some_disc: u64, none_disc: u64) 
                 crate::error::allocation_failure();
             };
             let new_cap = new_cap.max(STRING_MIN_CAPACITY);
-            let new_ptr = heap::realloc(ptr, cap, new_cap, 1);
+            // SAFETY: ptr is live and readable for cap bytes.
+            let new_ptr = unsafe { heap::realloc(ptr, cap, new_cap, 1) };
             if new_ptr.is_null() {
                 // Keep the old allocation intact until the canonical trap.
                 crate::error::allocation_failure();

@@ -143,6 +143,7 @@ Crate ownership, when locating changes:
 | `rue-air`, `rue-cfg` | semantic analysis, typed IR, CFGs, optimization |
 | `rue-codegen` | x86-64 and AArch64 lowering and emission |
 | `rue-linker` | object generation and linking |
+| `rue-allocator`, `rue-runtime`, `rue-runtime-abi` | heap policy, target runtime, and compiler/runtime ABI contract |
 | `rue-error`, `rue-span` | diagnostics and source locations |
 | `rue-spec`, `rue-ui-tests`, `rue-cli-tests` | language and integration tests |
 

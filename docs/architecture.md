@@ -90,8 +90,10 @@ run the resulting executable.
 
 ## Runtime, built-ins, and linking
 
-- **`rue-runtime`** supplies startup, allocation, memory, strings, I/O,
-  parsing, random data, and target-specific syscall support.
+- **`rue-allocator`** owns dependency-free heap policy and bookkeeping over a
+  consumer-supplied page mapper. **`rue-runtime`** supplies that mapper plus
+  startup, memory, strings, I/O, parsing, random data, and target-specific
+  syscall support.
 - **`rue-builtins`** describes compiler-visible built-in types, enums,
   functions, methods, and operators. Built-in aggregate types are injected as
   synthetic declarations so they use ordinary semantic paths where possible.

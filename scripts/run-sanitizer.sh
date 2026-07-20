@@ -23,10 +23,11 @@
 # works out of the box — no ASAN build needed.
 #
 # HOWEVER: memcheck's heap tracking hooks libc malloc/free. Rue's runtime never
-# calls libc; it mmaps 64 KiB arenas and bump-allocates within them
-# (crates/rue-runtime/src/heap.rs), with free() a no-op. To memcheck every Rue
-# program therefore does "0 allocs, 0 frees" — the whole arena is one opaque,
-# addressable, mmap'd region. Consequences:
+# calls libc; small allocations use recycled blocks in 64 KiB mmap'd arenas,
+# while large allocations use dedicated mappings
+# (crates/rue-allocator/src/lib.rs). To memcheck every Rue program therefore
+# still does "0 allocs, 0 frees" — each arena is one opaque, addressable mmap'd
+# region. Consequences:
 #
 #   CAUGHT: wild pointers / accesses outside any mapped region, stack overflow,
 #           jumps to bad addresses, uninitialised values used in branches or

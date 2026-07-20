@@ -17,6 +17,15 @@ superseded-by:
 
 Implemented
 
+### Implementation evolution (2026-07-20)
+
+This ADR records Rue's initial heap design and the ABI it established. The
+original no-op `free` policy has since been replaced by the recycling allocator
+in `crates/rue-allocator`: small allocations use power-of-two free lists over
+64 KiB arenas, allocations larger than 16 KiB use dedicated mappings, and
+`free` now recycles or unmaps the supplied allocation. The three exported
+helpers and their `(size, alignment)` layouts remain unchanged.
+
 ## Summary
 
 Add heap allocation support to the Rue runtime via a simple bump allocator backed by `mmap`/`munmap` syscalls. This provides the foundation for heap-allocated types like `String`, `Vec`, and `Box` without depending on libc. The implementation exposes `__rue_alloc`, `__rue_realloc`, and `__rue_free` functions that can be called from generated code.

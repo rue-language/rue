@@ -3,5 +3,12 @@
 version = 4
 
 [[package]]
+name = "rue-allocator"
+version = "0.0.0"
+
+[[package]]
 name = "rue-runtime-asan"
 version = "0.0.0"
+dependencies = [
+ "rue-allocator",
+]

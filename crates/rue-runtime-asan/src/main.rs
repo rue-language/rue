@@ -1,11 +1,11 @@
-//! AddressSanitizer harness for `rue-runtime`'s arena allocator (RUE-211, RUE-560).
+//! AddressSanitizer harness for Rue's recycling allocator (RUE-211, RUE-560).
 //!
 //! # Why this exists
 //!
 //! The valgrind memcheck sanitizer job (RUE-49, `.github/workflows/sanitizer.yml`)
 //! runs compiled Rue programs under DBI and catches codegen / wild-pointer /
 //! stack / bad-syscall-buffer bugs. But memcheck hooks libc `malloc`/`free`,
-//! and `rue-runtime` bump-allocates inside `mmap`'d arenas without ever calling
+//! and Rue allocates directly inside `mmap`'d arenas without ever calling
 //! libc — so to memcheck every Rue program does "0 allocs". That leaves the
 //! **intra-arena heap overflow** class (RUE-34: a grow path recording more
 //! capacity than was actually reserved) completely uncovered: the overflowed
@@ -13,9 +13,8 @@
 //!
 //! # What it does
 //!
-//! This binary compiles the REAL allocator (`crates/rue-runtime/src/heap.rs`,
-//! pulled in verbatim via `#[path]` so there is nothing to drift) against a
-//! host `platform` shim, and runs it under `-Zsanitizer=address`. Every
+//! This binary uses the same `rue-allocator` crate as `rue-runtime` against a
+//! host page mapper and runs it under `-Zsanitizer=address`. Every
 //! allocation the harness makes goes through [`guarded_alloc`], which reserves
 //! a redzone immediately past the usable block and poisons it with ASan's
 //! manual API (`__asan_poison_memory_region`). A write past an allocation's
@@ -38,12 +37,6 @@
 //! harness's own poisoned redzone whose sole purpose is to make ASan fault; it
 //! exercises no external input and touches no memory outside the harness.
 
-// The real allocator source, included verbatim. It references `crate::platform`
-// and `core::*`; we satisfy the former with the module below and the latter is
-// available in this std crate.
-#[path = "../../rue-runtime/src/heap.rs"]
-mod heap;
-
 use std::process::Command;
 
 /// Environment variable that puts the harness into negative-control (self-test)
@@ -58,40 +51,47 @@ const SELFTEST_ENV: &str = "RUE_ASAN_SELFTEST";
 /// also holds valid bytes).
 const REDZONE: usize = 32;
 
-/// Host stand-in for the runtime's platform layer.
-///
-/// `heap.rs` only needs `mmap`/`munmap` with the same contract as the real
-/// syscall wrappers: `mmap` returns page-aligned, zero-initialized memory (or
-/// null), and `munmap` returns it. We back arenas with the global allocator so
-/// ASan tracks the underlying blocks; the manual poisoning in the harness adds
-/// the intra-arena redzones on top.
-mod platform {
+/// The real allocator with a host-backed mapper so ASan tracks every underlying
+/// arena or dedicated mapping.
+mod heap {
+    use rue_allocator::{Allocator, PAGE_SIZE, PageMapper};
     use std::alloc::{Layout, alloc_zeroed, dealloc};
 
-    /// Real `mmap` returns page-aligned memory; mirror that so `heap.rs`'s
-    /// page-alignment assumptions (it page-aligns arena sizes) hold.
-    const PAGE: usize = 4096;
+    struct HostPageMapper;
 
-    pub fn mmap(size: usize) -> *mut u8 {
-        if size == 0 {
-            return std::ptr::null_mut();
+    // SAFETY: std's allocator returns exclusive page-aligned blocks for the
+    // requested layouts and supports concurrent allocation and deallocation.
+    unsafe impl PageMapper for HostPageMapper {
+        fn map(size: usize) -> *mut u8 {
+            let Ok(layout) = Layout::from_size_align(size, PAGE_SIZE) else {
+                return std::ptr::null_mut();
+            };
+            // SAFETY: the allocator supplies a valid, nonzero mapping size.
+            unsafe { alloc_zeroed(layout) }
         }
-        let Ok(layout) = Layout::from_size_align(size, PAGE) else {
-            return std::ptr::null_mut();
-        };
-        // `alloc_zeroed` mirrors `mmap`'s zero-initialized guarantee.
-        unsafe { alloc_zeroed(layout) }
+
+        unsafe fn unmap(pointer: *mut u8, size: usize) {
+            let layout = Layout::from_size_align(size, PAGE_SIZE)
+                .expect("allocator supplied an invalid mapping layout");
+            // SAFETY: inherited from PageMapper::unmap's contract.
+            unsafe { dealloc(pointer, layout) };
+        }
     }
 
-    pub fn munmap(addr: *mut u8, size: usize) -> i64 {
-        if addr.is_null() || size == 0 {
-            return -1;
-        }
-        let Ok(layout) = Layout::from_size_align(size, PAGE) else {
-            return -1;
-        };
-        unsafe { dealloc(addr, layout) };
-        0
+    static ALLOCATOR: Allocator<HostPageMapper> = Allocator::new();
+
+    pub fn alloc(size: u64, align: u64) -> *mut u8 {
+        ALLOCATOR.allocate(size, align)
+    }
+
+    pub unsafe fn free(pointer: *mut u8, size: u64, align: u64) {
+        // SAFETY: inherited from this function's caller contract.
+        unsafe { ALLOCATOR.deallocate(pointer, size, align) };
+    }
+
+    pub unsafe fn realloc(pointer: *mut u8, old_size: u64, new_size: u64, align: u64) -> *mut u8 {
+        // SAFETY: inherited from this function's caller contract.
+        unsafe { ALLOCATOR.reallocate(pointer, old_size, new_size, align) }
     }
 }
 
@@ -126,6 +126,9 @@ struct Guarded {
     size: usize,
     /// Start of the poisoned redzone, kept so it can be cleared on drop.
     redzone: *mut u8,
+    /// Complete allocation layout, including the redzone.
+    reserved: usize,
+    align: usize,
 }
 
 /// Allocate `size` usable bytes through the REAL allocator with a poisoned
@@ -134,9 +137,8 @@ struct Guarded {
 /// The block reserved from the arena is `align_up_8(size) + REDZONE`; the
 /// caller sees only the first `size` bytes. The redzone begins at the
 /// 8-aligned boundary at or after `ptr+size` so it covers whole shadow
-/// granules. Because the bump allocator hands the *next* allocation an offset
-/// past the full reservation, poisoning the redzone can never collide with a
-/// later block.
+/// granules. The allocator reserves the full block including that redzone, so
+/// poisoning it cannot collide with another live allocation.
 fn guarded_alloc(size: usize, align: usize) -> Guarded {
     assert!(size > 0);
     let usable = align_up_8(size);
@@ -145,7 +147,13 @@ fn guarded_alloc(size: usize, align: usize) -> Guarded {
     assert!(!ptr.is_null(), "guarded_alloc({size}, {align}) OOM");
     let redzone = unsafe { ptr.add(usable) };
     poison(redzone, REDZONE);
-    Guarded { ptr, size, redzone }
+    Guarded {
+        ptr,
+        size,
+        redzone,
+        reserved: total,
+        align,
+    }
 }
 
 impl Guarded {
@@ -165,11 +173,11 @@ impl Guarded {
 
 impl Drop for Guarded {
     fn drop(&mut self) {
-        // Clear the shadow so a later (unrelated) allocation reusing nearby
-        // bytes is not falsely flagged. `free` is a no-op in the bump
-        // allocator, so nothing reclaims the block; this is purely shadow
-        // hygiene for the long-lived process.
+        // Clear the shadow before returning the complete block to its free
+        // list; a later allocation may immediately recycle this storage.
         unpoison(self.redzone, REDZONE);
+        // SAFETY: ptr is live with the complete reserved layout.
+        unsafe { heap::free(self.ptr, self.reserved as u64, self.align as u64) };
     }
 }
 
@@ -236,7 +244,8 @@ fn exercise_allocator() {
             *g.add(i) = (i as u8).wrapping_mul(3);
         }
     }
-    let g2 = heap::realloc(g, 32, 4096, 8);
+    // SAFETY: g is live and readable for 32 bytes.
+    let g2 = unsafe { heap::realloc(g, 32, 4096, 8) };
     assert!(!g2.is_null());
     unsafe {
         for i in 0..32 {
@@ -256,6 +265,13 @@ fn exercise_allocator() {
         *big.add(BIG - 1) = 2;
         assert_eq!(*big, 1);
         assert_eq!(*big.add(BIG - 1), 2);
+
+        heap::free(p, 64, 8);
+        for q in ptrs {
+            heap::free(q, 128, 8);
+        }
+        heap::free(g2, 4096, 8);
+        heap::free(big, BIG as u64, 8);
     }
 }
 
@@ -273,9 +289,8 @@ fn exercise_guarded_allocations() {
         g.write_and_verify(0xAB);
     }
 
-    // Many live guarded allocations at once: each keeps its own redzone, and
-    // the next bump-allocated block starts past the previous redzone, so the
-    // poison of one never overlaps the usable region of another.
+    // Many live guarded allocations at once: each reserves its own redzone, so
+    // one block's poison never overlaps another block's usable region.
     let blocks: Vec<Guarded> = (0..48).map(|i| guarded_alloc(24 + i, 8)).collect();
     for g in &blocks {
         g.write_and_verify(0xCD);

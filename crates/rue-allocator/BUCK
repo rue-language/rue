@@ -1,0 +1,13 @@
+load("//crates:defs.bzl", "rue_crate")
+
+export_file(
+    name = "lib.rs",
+    src = "src/lib.rs",
+    visibility = ["//crates/rue-runtime:"],
+)
+
+# Allocation policy and bookkeeping are independent of the Rue runtime ABI and
+# platform syscall implementations. Consumers provide the page mapper.
+rue_crate(
+    name = "rue-allocator",
+)

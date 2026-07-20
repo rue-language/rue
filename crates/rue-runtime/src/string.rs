@@ -82,8 +82,8 @@ crate::define_runtime_implementation! {
 crate::define_runtime_implementation! {
     /// Allocate memory from the heap.
     ///
-    /// This is the main allocation function for Rue programs. Memory is allocated
-    /// from a bump allocator backed by `mmap`.
+    /// This is the main allocation function for Rue programs. Small allocations
+    /// are recycled by size class and large allocations use dedicated mappings.
     ///
     /// # Arguments
     ///
@@ -93,7 +93,7 @@ crate::define_runtime_implementation! {
     /// # Returns
     ///
     /// A pointer to the allocated memory, or null on failure.
-    /// The memory is zero-initialized.
+    /// The memory is uninitialized.
     ///
     /// # ABI
     ///
@@ -118,19 +118,18 @@ crate::define_runtime_implementation! {
     /// * `size` - Size supplied by the runtime allocation ABI
     /// * `align` - Alignment supplied by the runtime allocation ABI
     ///
-    /// # Bump-allocator contract
-    ///
-    /// This is a **no-op**. Memory is reclaimed when the program exits. The
-    /// pointer, size, and alignment are retained in the generated-code ABI even
-    /// though this allocator does not use them.
-    ///
     /// # ABI
     ///
     /// ```text
     /// extern "C" fn __rue_free(ptr: *mut u8, size: u64, align: u64)
     /// ```
-    pub extern "C" fn __rue_free(ptr: *mut u8, size: u64, align: u64) {
-        heap::free(ptr, size, align)
+    /// # Safety
+    ///
+    /// A non-null `ptr` must identify a live Rue allocation described by
+    /// exactly `size` and `align`, and it must not be used after this call.
+    pub unsafe extern "C" fn __rue_free(ptr: *mut u8, size: u64, align: u64) {
+        // SAFETY: inherited from the exported helper's caller contract.
+        unsafe { heap::free(ptr, size, align) }
     }
 }
 
@@ -152,8 +151,8 @@ crate::define_runtime_implementation! {
     ///
     /// - If `ptr` is null: behaves like `__rue_alloc(new_size, align)`
     /// - If `new_size` is 0: frees the memory and returns null
-    /// - If `new_size <= old_size`: returns `ptr` unchanged
-    /// - If `new_size > old_size`: allocates new block, copies data, returns new pointer
+    /// - If both layouts share one storage class: returns `ptr` unchanged
+    /// - Otherwise: allocates a new block, copies the preserved prefix, and frees `ptr`
     ///
     /// # ABI
     ///
@@ -167,7 +166,8 @@ crate::define_runtime_implementation! {
     /// reads of `old_size` bytes. It must be either null or a pointer returned
     /// by this runtime allocator with the supplied allocation layout.
     pub unsafe extern "C" fn __rue_realloc(ptr: *mut u8, old_size: u64, new_size: u64, align: u64) -> *mut u8 {
-        heap::realloc(ptr, old_size, new_size, align)
+        // SAFETY: inherited from the exported helper's caller contract.
+        unsafe { heap::realloc(ptr, old_size, new_size, align) }
     }
 }
 
