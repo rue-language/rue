@@ -63,6 +63,10 @@ pub enum SemanticImportType<K, M> {
     },
     PtrConst(Box<Self>),
     PtrMut(Box<Self>),
+    Slice {
+        element: Box<Self>,
+        name: Arc<str>,
+    },
     Module(M),
     GenericParameter(u32),
 }
@@ -90,6 +94,7 @@ macro_rules! semantic_import_type_schema {
             Module, SemanticImportType::Module(..), 17, "module";
             GenericParameter, SemanticImportType::GenericParameter(..), 18, "generic_parameter";
             AnonymousNominal, SemanticImportType::AnonymousNominal(..), 19, "anonymous_nominal";
+            Slice, SemanticImportType::Slice { .. }, 20, "slice";
         }
     };
 }
@@ -164,6 +169,10 @@ pub enum SemanticImportTypeFold<'a, K, M, T> {
     },
     PtrConst(T),
     PtrMut(T),
+    Slice {
+        element: T,
+        name: &'a Arc<str>,
+    },
     Module(&'a M),
     GenericParameter(u32),
 }
@@ -266,6 +275,10 @@ impl<K, M> SemanticImportType<K, M> {
             },
             S::PtrConst(value) => F::PtrConst(value.try_fold(fold)?),
             S::PtrMut(value) => F::PtrMut(value.try_fold(fold)?),
+            S::Slice { element, name } => F::Slice {
+                element: element.try_fold(fold)?,
+                name,
+            },
             S::Module(module) => F::Module(module),
             S::GenericParameter(index) => F::GenericParameter(*index),
         };
@@ -310,6 +323,10 @@ impl<K, M> SemanticImportType<K, M> {
                 },
                 F::PtrConst(value) => T::PtrConst(Box::new(value)),
                 F::PtrMut(value) => T::PtrMut(Box::new(value)),
+                F::Slice { element, name } => T::Slice {
+                    element: Box::new(element),
+                    name: name.clone(),
+                },
                 F::Module(value) => T::Module(module(value)?),
                 F::GenericParameter(index) => T::GenericParameter(index),
             })
@@ -1143,6 +1160,33 @@ where
                 F::PtrMut(value) => type_pool
                     .try_intern_ptr_mut(value)
                     .map_err(|_| SemanticImportFailure::InvalidStructuralType)?,
+                F::Slice { element, name } => {
+                    let symbol = self.interner.get_or_intern(name.as_ref());
+                    let pointer = type_pool.intern_ptr_const_from_type(element);
+                    let (id, _) = type_pool.register_struct(
+                        symbol,
+                        StructDef {
+                            name: name.to_string(),
+                            fields: vec![
+                                StructField {
+                                    name: "ptr".to_owned(),
+                                    ty: Type::new_ptr_const(pointer),
+                                },
+                                StructField {
+                                    name: "len".to_owned(),
+                                    ty: Type::U64,
+                                },
+                            ],
+                            is_copy: true,
+                            is_linear: false,
+                            destructor: None,
+                            is_builtin: true,
+                            is_pub: true,
+                            file_id: FileId::DEFAULT,
+                        },
+                    );
+                    Type::new_struct(id)
+                }
                 F::Module(key) => Type::new_module(
                     *self
                         .modules
@@ -1263,7 +1307,21 @@ where
             crate::TypeKind::Never => SemanticImportType::Never,
             crate::TypeKind::ComptimeType => SemanticImportType::ComptimeType,
             crate::TypeKind::Struct(id) => {
-                if let Some(((name, kind), _)) = self
+                let def = self.type_pool.struct_def(id);
+                if def.name.starts_with('[') && def.name.ends_with(']') && !def.name.contains(';') {
+                    let Some(field) = def.fields.first() else {
+                        return Err(SemanticImportFailure::ForeignLocalType);
+                    };
+                    let crate::TypeKind::PtrConst(pointer) = field.ty.kind() else {
+                        return Err(SemanticImportFailure::ForeignLocalType);
+                    };
+                    SemanticImportType::Slice {
+                        element: Box::new(
+                            self.export_type_local(self.type_pool.ptr_const_def(pointer))?,
+                        ),
+                        name: Arc::from(def.name.as_str()),
+                    }
+                } else if let Some(((name, kind), _)) = self
                     .builtins
                     .iter()
                     .find(|(_, local)| **local == LocalNominal::Struct(id))
@@ -1480,7 +1538,7 @@ mod tests {
 
     #[test]
     fn canonical_schema_kinds_have_stable_unique_tags_and_names() {
-        assert_eq!(SEMANTIC_IMPORT_TYPE_KINDS.len(), 20);
+        assert_eq!(SEMANTIC_IMPORT_TYPE_KINDS.len(), 21);
         for (tag, kind) in SEMANTIC_IMPORT_TYPE_KINDS.iter().copied().enumerate() {
             assert_eq!(usize::from(kind.schema_tag()), tag);
             assert_eq!(kind.to_string(), kind.display_name());
@@ -1552,6 +1610,10 @@ mod tests {
                 element: Box::new(ImportType::Nominal("Record")),
                 len: 7,
             },
+            ImportType::Slice {
+                element: Box::new(ImportType::Nominal("Record")),
+                name: Arc::from("[Record]"),
+            },
             ImportType::PtrConst(Box::new(ImportType::Nominal("Record"))),
             ImportType::PtrMut(Box::new(ImportType::Nominal("Record"))),
             ImportType::Module("pkg/main.rue"),
@@ -1583,6 +1645,7 @@ mod tests {
             Builtin,
             Nominal,
             Array,
+            Slice,
             PtrConst,
             PtrMut,
             Module,
@@ -1605,6 +1668,7 @@ mod tests {
             Tag::Builtin,
             Tag::Nominal,
             Tag::Array,
+            Tag::Slice,
             Tag::PtrConst,
             Tag::PtrMut,
             Tag::Module,
@@ -1631,6 +1695,7 @@ mod tests {
                         F::BuiltinNominal { .. } => Tag::Builtin,
                         F::Nominal(_) => Tag::Nominal,
                         F::Array { .. } => Tag::Array,
+                        F::Slice { .. } => Tag::Slice,
                         F::PtrConst(_) => Tag::PtrConst,
                         F::PtrMut(_) => Tag::PtrMut,
                         F::Module(_) => Tag::Module,

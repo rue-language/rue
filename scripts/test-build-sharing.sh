@@ -241,8 +241,9 @@ test_full_suite_orchestration() {
     sb="$(mktemp -d)"
     mkdir -p "$sb/scripts"
     cp "$SRC_ROOT/test.sh" "$sb/test.sh"
+    cp "$SRC_ROOT/scripts/ci-heavy-suite" "$sb/scripts/ci-heavy-suite"
     cp "$SRC_ROOT/scripts/with-full-suite-lock" "$sb/scripts/with-full-suite-lock"
-    chmod +x "$sb/test.sh" "$sb/scripts/with-full-suite-lock"
+    chmod +x "$sb/test.sh" "$sb/scripts/ci-heavy-suite" "$sb/scripts/with-full-suite-lock"
     cat >"$sb/buck2" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$BUCK_LOG"
@@ -257,10 +258,12 @@ if [[ "${1:-}" == "uquery" ]]; then
 elif [[ "${1:-}" == "test" ]]; then
     # Emit buck2's per-test result line so the RUE-924 corpus-omission audit
     # in test.sh sees each required harness actually ran. The heavy-labeled
-    # corpus suites arrive one at a time as "test root//:<suite>"; the
+    # corpus suites arrive one at a time through ci-heavy-suite; the
     # non-heavy tutorial-snippet-tests runs inside the broad "test //..." pass.
     if [[ "${2:-}" == "//..." ]]; then
         printf 'Pass: root//:tutorial-snippet-tests (0.0s)\n'
+    elif [[ "${2:-}" == //:* ]]; then
+        printf 'Pass: root%s (0.0s)\n' "${2:-}"
     else
         printf 'Pass: %s (0.0s)\n' "${2:-}"
     fi
@@ -280,8 +283,12 @@ EOF
         "$(grep -Fxq 'test //... --exclude rue_heavy_suite --always-exclude' "$sb/calls" && echo 0 || echo 1)"
     check "suite: heavy targets are discovered from the live graph" \
         "$(grep -Fxq 'uquery attrfilter(labels, rue_heavy_suite, //...)' "$sb/calls" && echo 0 || echo 1)"
-    check "suite: every discovered heavy target runs independently" \
-        "$([ "$(grep -Ec '^test root//:(spec-tests|ui-tests|cli-tests(-caldera)?|oracle-diff-generated-smoke|reproducible-programs)$' "$sb/calls")" -eq 6 ] && echo 0 || echo 1)"
+    check "suite: ordinary CLI shard receives the extended executor timeout" \
+        "$(grep -Fxq 'test //:cli-tests -- --timeout 1200' "$sb/calls" && echo 0 || echo 1)"
+    check "suite: Caldera shard receives the extended executor timeout" \
+        "$(grep -Fxq 'test //:cli-tests-caldera -- --timeout 1200' "$sb/calls" && echo 0 || echo 1)"
+    check "suite: every other heavy target retains the default executor timeout" \
+        "$([ "$(grep -Ec '^test //:(spec-tests|ui-tests|oracle-diff-generated-smoke|reproducible-programs)$' "$sb/calls")" -eq 4 ] && echo 0 || echo 1)"
     check "suite: no concurrent heavy label sweep occurs" \
         "$(! grep -Fq -- '--include rue_heavy_suite' "$sb/calls" && echo 0 || echo 1)"
     check "suite: host lock is released" "$([[ ! -e "$sb/lock" ]] && echo 0 || echo 1)"

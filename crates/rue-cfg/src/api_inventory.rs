@@ -48,3 +48,24 @@ fn cfg_payload_stores_and_codegen_boundary_stay_typed() {
         );
     }
 }
+
+#[test]
+fn production_cfg_does_not_call_frozen_declaration_test_adapters() {
+    let source = include_str!("build.rs");
+    let production = source
+        .split("\n#[cfg(test)]\nmod ")
+        .next()
+        .expect("CFG production prefix");
+    for adapter in [
+        ".predeclare_declaration_shells_for_test()",
+        ".bind_declarations_for_test()",
+        ".analyze_all_for_test()",
+        ".resolve_declarations_for_test()",
+        ".resolve_declarations_with_work_for_test()",
+    ] {
+        assert!(
+            !production.contains(adapter),
+            "production CFG called frozen declaration test adapter {adapter}"
+        );
+    }
+}

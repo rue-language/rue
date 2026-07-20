@@ -14,6 +14,7 @@
 mod api_inventory;
 pub mod call_abi;
 mod canonical_imports;
+pub mod declaration_validation;
 pub mod drop_glue_names;
 pub mod ffi_predicates;
 mod inference;
@@ -82,12 +83,14 @@ pub use sema::{
     NamedConstDependencyEvent, NamedConstDependencyTargetEvent, NamedDestructorDependencyEvent,
     NamedMethodDependencyEvent, NamedMethodDependencyTargetEvent,
     OrdinaryFreeFunctionDependencyEvent, ParamSlotModes, RirDeclarationIndexWork, Sema,
-    SemaMetadata, SemaOutput, SemanticBinding, SemanticBindingManifest,
+    SemaMetadata, SemaOutput, SemanticAnonymousMethodSignature, SemanticAnonymousMethodType,
+    SemanticAnonymousNominalExport, SemanticAnonymousNominalIdentity,
+    SemanticAnonymousNominalShape, SemanticBinding, SemanticBindingManifest,
     SemanticBindingManifestWork, SemanticDeclarationExport, SemanticDeclarationExportWork,
     SemanticDeclarationPayload, SemanticDeclarationShell, SemanticDeclarationShellIdentity,
-    SemanticExportConstValue, SemanticExportFailure, SemanticExportParameter, SemanticExportType,
-    SemanticNominalIdentity, SemanticParameterMode, SourceParamAbi,
-    SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
+    SemanticDefinitionIdentity, SemanticExportConstValue, SemanticExportFailure,
+    SemanticExportParameter, SemanticExportType, SemanticNominalIdentity, SemanticParameterMode,
+    SourceParamAbi, SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
 };
 pub use semantic_body::{
     SEMANTIC_BODY_INST_KINDS, SemanticBody, SemanticBodyAnchor, SemanticBodyCallArg,
@@ -128,7 +131,7 @@ pub use semantic_type_resolution::{
 pub use types::{
     ArrayLen, ArrayTypeId, EnumDef, EnumId, LangItem, ModuleDef, ModuleId, PtrConstTypeId,
     PtrMutTypeId, PtrMutability, StructDef, StructField, StructId, Type, TypeKind,
-    parse_array_type_syntax, parse_pointer_type_syntax,
+    parse_array_type_syntax, parse_pointer_type_syntax, parse_type_call_syntax,
 };
 
 /// Sentinel value used to encode parameter slots in AIR instructions.

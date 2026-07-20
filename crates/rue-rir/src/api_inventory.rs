@@ -26,7 +26,7 @@ fn rir_payload_storage_and_raw_ranges_stay_owner_private() {
     assert!(!range.contains("pub const fn from_parts("));
     assert!(!range.contains("pub start"));
     assert!(!range.contains("pub extent"));
-    assert!(range.contains("#[derive(PartialEq, Eq)]\n        pub struct $name"));
+    assert!(range.contains("#[derive(Clone, PartialEq, Eq)]\n        pub struct $name"));
     assert!(!range.contains("#[derive(Clone, Copy, PartialEq, Eq)]\n        pub struct $name"));
 
     for raw_api in [

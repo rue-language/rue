@@ -120,6 +120,10 @@ pub enum TypeInstanceKey<D, M> {
         element: Box<Self>,
         len: u64,
     },
+    Slice {
+        element: Box<Self>,
+        name: Arc<str>,
+    },
     PtrConst(Box<Self>),
     PtrMut(Box<Self>),
     Module(M),
@@ -242,6 +246,10 @@ impl<D, M> TypeInstanceKey<D, M> {
             Self::Array { element, len } => TypeInstanceKey::Array {
                 element: Box::new(element.try_map_identities(definition, module)?),
                 len: *len,
+            },
+            Self::Slice { element, name } => TypeInstanceKey::Slice {
+                element: Box::new(element.try_map_identities(definition, module)?),
+                name: name.clone(),
             },
             Self::PtrConst(value) => {
                 TypeInstanceKey::PtrConst(Box::new(value.try_map_identities(definition, module)?))

@@ -114,6 +114,27 @@ pub struct StableDefinitionKey {
 }
 
 impl StableDefinitionKey {
+    pub(crate) fn from_stable_parts(
+        module: ModuleId,
+        namespace: StableDefinitionNamespace,
+        kind: StableDefinitionKind,
+        name: impl Into<Arc<str>>,
+        owner: Option<(StableDefinitionKind, Arc<str>)>,
+    ) -> Self {
+        let owner = owner.map(|(kind, name)| StableNamedTypeKey {
+            module: module.clone(),
+            kind,
+            name,
+        });
+        Self {
+            module,
+            namespace,
+            kind,
+            name: name.into(),
+            owner,
+        }
+    }
+
     pub fn module(&self) -> &ModuleId {
         &self.module
     }
@@ -138,18 +159,7 @@ impl StableDefinitionKey {
         name: impl Into<Arc<str>>,
         owner: Option<(StableDefinitionKind, Arc<str>)>,
     ) -> Self {
-        let owner = owner.map(|(kind, name)| StableNamedTypeKey {
-            module: module.clone(),
-            kind,
-            name,
-        });
-        Self {
-            module,
-            namespace,
-            kind,
-            name: name.into(),
-            owner,
-        }
+        Self::from_stable_parts(module, namespace, kind, name, owner)
     }
 }
 
@@ -1441,7 +1451,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_const_projection_fails_without_partial_install() {
+    fn const_projection_installs_without_partial_fallback() {
         let input = snapshot(
             &[(
                 1,
@@ -1454,18 +1464,14 @@ mod tests {
         let parsed = parse_source_snapshot_modules(&input).unwrap();
         let merged = merge_parsed_modules(&parsed).unwrap();
         let rir = lower_canonical_rir(&merged).unwrap();
-        let error = compare_canonical_durable_declaration_install(
+        compare_canonical_durable_declaration_install(
             &merged,
             &rir,
             PreviewFeatures::new(),
             Target::default(),
         )
-        .unwrap_err();
-        assert!(
-            format!("{error:?}").contains("UnsupportedDeclaration"),
-            "{error:?}"
-        );
-        // The failed candidate was consumed; a fresh ordinary epoch remains valid.
+        .unwrap();
+        // A fresh oracle epoch remains valid after the query-owned install.
         let imports = test_fixture_import_graph(&merged).unwrap();
         crate::canonical_semantic::bind_query_owned_declarations_for_test(
             &merged,
@@ -1595,7 +1601,7 @@ mod tests {
         );
         assert_eq!(
             crate::durable_semantics::durable_module_type("/relocated/project/lib.rue", &merged,),
-            Err(crate::DurableSemanticExportFailure::UnresolvedModule)
+            Err(crate::durable_semantics::DurableSemanticExportFailure::UnresolvedModule)
         );
     }
 

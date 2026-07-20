@@ -147,7 +147,7 @@ mod tests {
         let rir = astgen.finish();
 
         let shells = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
-            .predeclare_declaration_shells()?;
+            .predeclare_declaration_shells_for_test()?;
         let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
         let (_, owners) = authoritative_test_endpoints(&shell_records);
         let mut definition_shells = shell_records;
@@ -250,7 +250,7 @@ mod tests {
         owners: &[crate::BodyOwnerEndpoint],
     ) -> crate::sema::BoundSema<'a> {
         Sema::new_synthetic(rir, interner, PreviewFeatures::new())
-            .predeclare_declaration_shells()
+            .predeclare_declaration_shells_for_test()
             .unwrap()
             .install_stable_identity_endpoints(definitions, &[])
             .unwrap()
@@ -3410,7 +3410,7 @@ fn main() -> i32 {
 "#;
         let (rir, interner) = lower_files(&[(SOURCE, FileId::DEFAULT)]);
         let shells = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
-            .predeclare_declaration_shells()
+            .predeclare_declaration_shells_for_test()
             .unwrap();
         let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
         let (_, owners) = authoritative_test_endpoints(&shell_records);
@@ -3532,7 +3532,7 @@ fn main() -> i32 {
         let rir = astgen.finish();
 
         let shells = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
-            .predeclare_declaration_shells()
+            .predeclare_declaration_shells_for_test()
             .unwrap();
         let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
         let (definitions, owners) = authoritative_test_endpoints(&shell_records);

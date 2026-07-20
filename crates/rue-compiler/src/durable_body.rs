@@ -349,6 +349,10 @@ fn canonical_type(
             element: Box::new(canonical_type(element, merged, index, work)?),
             len: *len,
         },
+        SemanticImportType::Slice { element, name } => SemanticImportType::Slice {
+            element: Box::new(canonical_type(element, merged, index, work)?),
+            name: name.clone(),
+        },
         SemanticImportType::PtrConst(value) => {
             SemanticImportType::PtrConst(Box::new(canonical_type(value, merged, index, work)?))
         }

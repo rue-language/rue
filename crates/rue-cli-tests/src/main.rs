@@ -2453,39 +2453,47 @@ mod tests {
     }
 
     #[test]
-    fn declarative_contract_applies_to_explicit_and_automatic_cases() {
-        let corpus = corpus_from_toml(
-            r#"
-                [section]
-                id = "cli.large"
-                name = "large"
-                contract = "heavy"
+    fn maintained_large_example_sections_share_their_automatic_contract() {
+        for (section_id, example_path) in [
+            ("cli.examples_mosaic", "mosaic/main.rue"),
+            ("cli.examples_rill", "rill/main.rue"),
+        ] {
+            let corpus = corpus_from_toml(&format!(
+                r#"
+                    [section]
+                    id = "{section_id}"
+                    name = "maintained large example"
+                    contract = "heavyweight"
 
-                [contract.heavy]
-                class = "heavyweight"
-                compile_timeout_ms = 30000
-                runtime_timeout_ms = 45000
+                    [contract.heavyweight]
+                    class = "heavyweight"
+                    compile_timeout_ms = 30000
+                    runtime_timeout_ms = 30000
 
-                [[automatic_example]]
-                path = "large/main.rue"
-                contract = "heavy"
+                    [[automatic_example]]
+                    path = "{example_path}"
+                    contract = "heavyweight"
 
-                [[case]]
-                name = "stress"
-            "#,
-        );
-        let discovered = HashSet::from(["large/main.rue".to_string()]);
-        let automatic = validate_contract_metadata(&corpus, &discovered).unwrap();
-        let file = &corpus.files[0].1;
-        let explicit = resolve_contract(
-            &corpus.contracts,
-            case_contract_name(&file.section, &file.cases[0]),
-        );
+                    [[case]]
+                    name = "ordinary_behavior"
 
-        assert_eq!(automatic["large/main.rue"], explicit);
-        assert!(explicit.is_heavyweight());
-        assert_eq!(explicit.compile_timeout(), Duration::from_secs(30));
-        assert_eq!(explicit.runtime_timeout(), Duration::from_secs(45));
+                    [[case]]
+                    name = "scaling_behavior"
+                "#,
+            ));
+            let discovered = HashSet::from([example_path.to_string()]);
+            let automatic = validate_contract_metadata(&corpus, &discovered).unwrap();
+            let file = &corpus.files[0].1;
+            for case in &file.cases {
+                assert!(case.contract.is_none(), "case contract must stay inherited");
+                let explicit =
+                    resolve_contract(&corpus.contracts, case_contract_name(&file.section, case));
+                assert_eq!(automatic[example_path], explicit);
+                assert!(explicit.is_heavyweight());
+                assert_eq!(explicit.compile_timeout(), Duration::from_secs(30));
+                assert_eq!(explicit.runtime_timeout(), Duration::from_secs(30));
+            }
+        }
     }
 
     #[test]

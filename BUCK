@@ -446,6 +446,7 @@ filegroup(
     srcs = [
         "buck2",
         "buck2-bin",
+        "scripts/ci-heavy-suite",
         "scripts/provision-build-cache",
         "scripts/with-full-suite-lock",
         "test.sh",

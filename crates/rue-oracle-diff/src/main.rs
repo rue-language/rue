@@ -48,8 +48,8 @@ mod model_gaps;
 mod trap;
 
 use rue_compiler::unstable::{
-    DiscoverySourceAssembler, ImportDemandMode, begin_import_input_request, import_demand_frontier,
-    import_observation_ledger, publish_import_observation_batch,
+    DiscoverySourceAssembler, ImportDemandMode, begin_import_input_request,
+    import_demand_frontier_for_roots, import_observation_ledger, publish_import_observation_batch,
 };
 use rue_compiler::{
     AcceptedImportSource, CompilerSession, FileMetadataFingerprint, ImportDiscoveryContext,
@@ -714,9 +714,14 @@ fn run_source_with_real_std(
                 ledger.clone(),
             )
             .map_err(|errors| format!("{errors:#?}"))?;
-        let frontier =
-            import_demand_frontier(&mut session, revision, &plan, ImportDemandMode::Rooted)
-                .map_err(|error| error.to_string())?;
+        let frontier = import_demand_frontier_for_roots(
+            &mut session,
+            revision,
+            &plan,
+            ImportDemandMode::Rooted,
+            &plan.demand_roots(),
+        )
+        .map_err(|error| error.to_string())?;
         if frontier.requests().is_empty() {
             session
                 .close_import_discovery(ledger)

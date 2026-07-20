@@ -1166,7 +1166,8 @@ fn option_returning_intrinsics_require_the_exact_payload_type() {
 fn read_line_requires_trusted_source_strbuf_payload_metadata() {
     use rue_compiler::unstable::{
         DiscoverySourceAssembler, ImportDemandMode, begin_import_input_request,
-        import_demand_frontier, import_observation_ledger, publish_import_observation_batch,
+        import_demand_frontier_for_roots, import_observation_ledger,
+        publish_import_observation_batch,
     };
     use rue_compiler::{
         AcceptedImportSource, CompilerSession, FileMetadataFingerprint, ImportDiscoveryContext,
@@ -1234,9 +1235,14 @@ fn read_line_requires_trusted_source_strbuf_payload_metadata() {
                 ledger.clone(),
             )
             .expect("valid trusted std discovery plan");
-        let frontier =
-            import_demand_frontier(&mut session, revision, &plan, ImportDemandMode::Rooted)
-                .expect("trusted std frontier");
+        let frontier = import_demand_frontier_for_roots(
+            &mut session,
+            revision,
+            &plan,
+            ImportDemandMode::Rooted,
+            &plan.demand_roots(),
+        )
+        .expect("trusted std frontier");
         if frontier.requests().is_empty() {
             session
                 .close_import_discovery(ledger)

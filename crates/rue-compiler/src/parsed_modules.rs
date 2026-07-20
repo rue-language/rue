@@ -1527,6 +1527,14 @@ fn collect_imports(
     Ok(imports)
 }
 
+pub(crate) fn exact_syntax_import_sites(
+    ast: &Ast,
+    module: &ModuleId,
+    resolver: &ThreadedRodeo,
+) -> CompileResult<Vec<ImportDirective>> {
+    Ok(collect_imports(ast, module, resolver)?.valid)
+}
+
 fn walk_signature(
     params: &[rue_parser::ast::Param],
     return_type: Option<&TypeExpr>,

@@ -20,7 +20,7 @@ use crate::{
     canonical_merge::merge_parsed_modules_reusing_indexes,
     canonical_semantic::{
         CanonicalSemanticFailure, analyze_prepared_canonical_program_reusing_declarations,
-        analyze_prepared_canonical_program_with_durable_export, prepare_canonical_declarations,
+        prepare_query_declaration_shells,
     },
     parsed_modules::{ParsedProgram, classify_invalidation},
     validate_canonical_import_graph,
@@ -1818,12 +1818,6 @@ impl FrontendQueryDatabase {
 
 #[derive(Debug, Clone)]
 struct DurableDeclarationCache {
-    schema_version: crate::DurableSemanticSchemaVersion,
-    root: crate::ModuleId,
-    imports: CanonicalImportGraph,
-    target: crate::Target,
-    preview_features: crate::PreviewFeatures,
-    fingerprints: Arc<[StableDefinitionInputFingerprint]>,
     semantics: Arc<[DurableDeclarationSemantic]>,
 }
 
@@ -2874,6 +2868,9 @@ impl CompilerSession {
     /// committed discovery artifact.
     #[cfg(test)]
     pub(crate) fn adopt_test_import_graph(&mut self, graph: CanonicalImportGraph) {
+        self.queries
+            .revisioned
+            .adopt_test_import_graph(graph.clone());
         self.supplied_test_import_graph = Some(graph);
     }
     /// Derive the pre-closure import plan for the session's current parsed
@@ -2906,20 +2903,6 @@ impl CompilerSession {
         self.queries
             .revisioned
             .begin_import_inputs(snapshot, context, accepted_reads)
-    }
-
-    /// Evaluates every currently demanded module against one pinned revision
-    /// and returns one deduplicated compiler-ordered frontier.
-    pub(crate) fn import_demand_frontier(
-        &mut self,
-        revision: crate::ImportInputRevision,
-        plan: &crate::ImportDiscoveryPlan,
-        mode: crate::ImportDemandMode,
-    ) -> crate::CompileResult<crate::ImportDemandFrontier> {
-        let roots = crate::ImportDemandRoots::whole_plan(plan);
-        self.queries
-            .revisioned
-            .import_frontier(revision, plan, mode, &roots)
     }
 
     pub(crate) fn import_demand_frontier_for_roots(
@@ -4906,14 +4889,6 @@ impl CompilerSession {
         let previous_body_cache = durable_baseline
             .as_ref()
             .and_then(|entry| entry.successful_body_cache.clone());
-        let previous_declaration_cache = durable_baseline
-            .as_ref()
-            .and_then(|entry| entry.durable_declaration_cache.clone());
-        #[cfg(test)]
-        let previous_declaration_cache = self
-            .durable_declaration_cache
-            .clone()
-            .or(previous_declaration_cache);
         let previous_cfg_cache = durable_baseline
             .as_ref()
             .and_then(|entry| entry.successful_cfg_cache.clone())
@@ -5009,57 +4984,80 @@ impl CompilerSession {
         let runtime_revision = self
             .queries
             .revisioned
-            .current_parse_revision()
-            .expect("semantic preparation observes the selected parse revision");
+            .current_semantic_revision()
+            .expect("semantic preparation observes a published source/import revision");
         let query_shells = self.queries.revisioned.projected_declaration_shells(
             runtime_revision,
             merged.ast(),
             cancellation.clone(),
         );
-        let (mut prepared, query_shells) = match query_shells {
-            Ok(query_shells) => (
-                prepare_canonical_declarations(&merged, &rir, options, &imports, &query_shells),
-                Some(query_shells),
-            ),
+        let mut prepared = match query_shells {
+            Ok(query_shells) => {
+                prepare_query_declaration_shells(&merged, &rir, options, &imports, &query_shells)
+            }
             Err(crate::revisioned_query_database::DeclarationShellBatchFailure::Query(abort)) => {
                 return Err(SemanticRequestControl::Abort(abort));
             }
             Err(crate::revisioned_query_database::DeclarationShellBatchFailure::Stable(
                 failure,
-            )) => (
-                Err(CanonicalSemanticFailure::declaration(
-                    declaration_shell_failure_diagnostics(merged.ast(), &failure),
-                    CanonicalSemanticWork::default(),
-                )),
-                None,
-            ),
+            )) => Err(CanonicalSemanticFailure::declaration(
+                declaration_shell_failure_diagnostics(merged.ast(), &failure),
+                CanonicalSemanticWork::default(),
+            )),
         };
+        let (query_declarations, query_anonymous_nominals, query_declaration_dependencies) =
+            match self.queries.revisioned.projected_declaration_semantics(
+                runtime_revision,
+                merged.ast(),
+                options.target,
+                &options.preview_features,
+                cancellation.clone(),
+            ) {
+                Ok(projection) => (
+                    Some(projection.declarations),
+                    projection.anonymous_nominals,
+                    projection.dependencies,
+                ),
+                Err(crate::revisioned_query_database::SemanticNucleusBatchFailure::Query(
+                    abort,
+                )) => {
+                    return Err(SemanticRequestControl::Abort(abort));
+                }
+                Err(crate::revisioned_query_database::SemanticNucleusBatchFailure::Stable {
+                    declaration,
+                    failure,
+                }) => {
+                    let work = match &prepared {
+                        Ok(prepared) => CanonicalSemanticWork {
+                            declaration_index: prepared.declaration_index_work(),
+                            ..CanonicalSemanticWork::default()
+                        },
+                        Err(preparation_failure) => preparation_failure.failure.work,
+                    };
+                    prepared = Err(CanonicalSemanticFailure::declaration(
+                        semantic_nucleus_failure_diagnostics(
+                            merged.ast(),
+                            declaration.as_ref(),
+                            &failure,
+                        ),
+                        work,
+                    ));
+                    (None, Arc::from([]), Arc::from([]))
+                }
+            };
         let current_fingerprints: Result<Vec<StableDefinitionInputFingerprint>, CompileErrors> =
             match &prepared {
-                Ok(definitions) => (|| {
-                    let mut fingerprints = definitions
-                        .definitions()
-                        .definitions()
-                        .iter()
-                        .map(|record| {
-                            stable_definition_input_fingerprint(
-                                merged.definitions().source_snapshot(),
-                                record,
-                            )
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                    if let (Some(cache), Some(query_shells)) =
-                        (&previous_declaration_cache, query_shells.as_deref())
-                    {
-                        fingerprints.extend(stable_const_candidate_input_fingerprints(
+                Ok(definitions) => definitions
+                    .definitions()
+                    .definitions()
+                    .iter()
+                    .map(|record| {
+                        stable_definition_input_fingerprint(
                             merged.definitions().source_snapshot(),
-                            merged.ast(),
-                            query_shells,
-                            &cache.fingerprints,
-                        )?);
-                    }
-                    Ok(fingerprints)
-                })(),
+                            record,
+                        )
+                    })
+                    .collect(),
                 Err(failure) => Err(failure.errors.clone()),
             };
         let mut durable_body_work = crate::DurableBodyWork::default();
@@ -5168,73 +5166,30 @@ impl CompilerSession {
                 }
             }
         }
-        let mut reuse_plan = crate::canonical_semantic::CanonicalDeclarationReuseWork::default();
-        let reusable = previous_declaration_cache.as_ref().and_then(|cache| {
-            reuse_plan.plan_executions = 1;
-            if !crate::DURABLE_SEMANTIC_SCHEMA_VERSION.accepts(cache.schema_version) {
-                reuse_plan.schema_version_rejections = 1;
-                reuse_plan.fallbacks = 1;
-                reuse_plan.last_fallback_reason = Some(
-                    crate::canonical_semantic::CanonicalDeclarationFallbackReason::SchemaVersionMismatch,
-                );
-                return None;
-            }
-            if cache.root != *merged.ast().root()
-                || cache.imports != imports
-                || cache.target != options.target
-                || cache.preview_features != options.preview_features
-            {
-                return None;
-            }
-            let fingerprints = current_fingerprints.as_ref().ok()?;
-            let (matches, compared) = declaration_surfaces_match(&cache.fingerprints, fingerprints);
-            reuse_plan.durable_records_compared = compared;
-            matches.then(|| cache.semantics.clone())
-        });
-        if let Err(failure) = &mut prepared {
-            failure.failure.work.declaration_reuse.plan_executions += reuse_plan.plan_executions;
-            failure
-                .failure
-                .work
-                .declaration_reuse
-                .durable_records_compared += reuse_plan.durable_records_compared;
-        }
-        let mut cold_durable = None;
+        // Declaration payloads have one production authority: the revisioned
+        // semantic query nucleus. The old durable declaration cache remains a
+        // test-oracle fixture only; it must never select or revive a second
+        // declaration resolver in a real request.
+        let query_declarations_for_cache = query_declarations.clone();
         let analysis = prepared.and_then(|prepared| {
-            if let Some(durable) = reusable {
-                let definitions = prepared.definitions().clone();
-                analyze_prepared_canonical_program_reusing_declarations(
-                    &merged,
-                    &rir,
-                    options,
-                    &imports,
-                    prepared,
-                    &definitions,
-                    &durable,
-                    durable_body_candidates,
-                    durable_specialized_body_candidates,
-                    previous_cfg_cache.clone(),
-                    durable_body_work,
-                )
-            } else {
-                analyze_prepared_canonical_program_with_durable_export(
-                    &merged,
-                    &rir,
-                    options,
-                    prepared,
-                    reuse_plan,
-                    durable_body_candidates,
-                    durable_specialized_body_candidates,
-                    previous_cfg_cache.clone(),
-                    durable_body_work,
-                )
-                .map(|analysis| {
-                    cold_durable = analysis
-                        .durable_declarations
-                        .map(|semantics| (analysis.definitions, semantics));
-                    analysis.output
-                })
-            }
+            let durable = query_declarations
+                .expect("successful semantic-nucleus projection publishes declaration payloads");
+            let definitions = prepared.definitions().clone();
+            analyze_prepared_canonical_program_reusing_declarations(
+                &merged,
+                &rir,
+                options,
+                &imports,
+                prepared,
+                &definitions,
+                &durable,
+                &query_anonymous_nominals,
+                &query_declaration_dependencies,
+                durable_body_candidates,
+                durable_specialized_body_candidates,
+                previous_cfg_cache.clone(),
+                durable_body_work,
+            )
         });
         #[cfg(test)]
         if std::mem::take(&mut self.cancel_semantic_before_publication) {
@@ -5259,7 +5214,11 @@ impl CompilerSession {
         };
         guard.accrue(QueryStructuralWork::Semantic(Box::new(record.clone())));
         *attempt_record = Some(record);
-        let mut published_declaration_cache = previous_declaration_cache;
+        let published_declaration_cache = result
+            .is_ok()
+            .then_some(query_declarations_for_cache)
+            .flatten()
+            .map(|semantics| DurableDeclarationCache { semantics });
         let mut published_body_cache = None;
         let mut published_cfg_cache = None;
         if let Ok(output) = &result {
@@ -5268,34 +5227,6 @@ impl CompilerSession {
             debug_assert_eq!(semantic_work.binding.bind_invocations, 1);
             debug_assert_eq!(semantic_work.manifest.build_invocations, 1);
             debug_assert!(!semantic_work.stable_ids_requested);
-            let reuse = semantic_work.declaration_reuse;
-
-            // Populate or refresh the durable baseline only after a successful
-            // ordinary execution. Reused executions retain the stable payload
-            // and merely advance its exact provenance below.
-            if reuse.ordinary_declaration_resolutions_skipped == 0 {
-                if let Some((definitions, semantics)) = cold_durable {
-                    if let Ok(fingerprints) = stable_definition_input_fingerprints(
-                        merged.definitions().source_snapshot(),
-                        definitions.definitions(),
-                        query_shells.as_deref().unwrap_or(&[]),
-                    ) {
-                        published_declaration_cache = Some(DurableDeclarationCache {
-                            schema_version: crate::DURABLE_SEMANTIC_SCHEMA_VERSION,
-                            root: merged.ast().root().clone(),
-                            imports: imports.clone(),
-                            target: options.target,
-                            preview_features: options.preview_features.clone(),
-                            fingerprints: fingerprints.into(),
-                            semantics,
-                        });
-                    }
-                }
-            } else if let (Some(cache), Ok(fingerprints)) =
-                (published_declaration_cache.as_mut(), current_fingerprints)
-            {
-                cache.fingerprints = fingerprints.into();
-            }
             published_body_cache = build_supported_ordinary_body_cache(
                 output,
                 merged.definitions().source_snapshot(),
@@ -6991,6 +6922,194 @@ fn declaration_shell_failure_diagnostics(
     })
 }
 
+fn semantic_nucleus_failure_diagnostics(
+    program: &crate::canonical_merge::CanonicalMergedAst,
+    declaration: Option<&crate::declaration_candidate::DeclarationCandidateKey>,
+    failure: &crate::semantic_query_nucleus::SemanticNucleusFailure,
+) -> CompileErrors {
+    use crate::semantic_query_nucleus::SemanticNucleusFailure as F;
+    if let (Some(declaration), F::DiagnosticAtParameter { kind, ordinal }) = (declaration, failure)
+        && let Some(module) = program
+            .modules()
+            .iter()
+            .find(|module| module.module_id() == &declaration.module)
+        && let Some(locator) = module.definitions().declaration_locator(declaration)
+    {
+        let parameters = module.ast().items.iter().find_map(|item| match item {
+            rue_parser::ast::Item::Function(function)
+                if function.span == locator.declaration_span =>
+            {
+                Some(function.params.as_slice())
+            }
+            rue_parser::ast::Item::Struct(structure) => structure
+                .methods
+                .iter()
+                .find(|method| method.span == locator.declaration_span)
+                .map(|method| method.params.as_slice()),
+            rue_parser::ast::Item::Extern(block) => block
+                .fns
+                .iter()
+                .find(|function| function.span == locator.declaration_span)
+                .map(|function| function.params.as_slice()),
+            _ => None,
+        });
+        if let Some(parameter) = parameters.and_then(|parameters| parameters.get(*ordinal as usize))
+        {
+            return CompileErrors::from(CompileError::new(kind.clone(), parameter.span));
+        }
+    }
+    if let F::DiagnosticAtDeclaration { kind, declaration } = failure
+        && let Some(span) = program
+            .modules()
+            .iter()
+            .find(|module| module.module_id() == &declaration.module)
+            .and_then(|module| module.definitions().declaration_locator(declaration))
+            .map(|locator| locator.declaration_span)
+    {
+        return CompileErrors::from(CompileError::new(kind.clone(), span));
+    }
+    if let F::OwnershipGate { kind, gate } = failure {
+        let primary_span = declaration.and_then(|key| {
+            program
+                .modules()
+                .iter()
+                .find(|module| module.module_id() == &key.module)
+                .and_then(|module| module.definitions().declaration_locator(key))
+                .map(|locator| locator.declaration_span)
+        });
+        let mut error = match primary_span {
+            Some(span) => CompileError::new(kind.clone(), span),
+            None => CompileError::without_span(kind.clone()),
+        };
+        if let Some(application) = &gate.application
+            && let Some(span) = program
+                .modules()
+                .iter()
+                .find(|module| module.module_id() == &application.declaration.module)
+                .and_then(|module| {
+                    module
+                        .definitions()
+                        .declaration_locator(&application.declaration)
+                })
+                .map(|locator| locator.declaration_span)
+        {
+            error = error.with_label("required by the type-constructor application here", span);
+        }
+        return CompileErrors::from(error);
+    }
+    if let (Some(declaration), F::Diagnostic(ErrorKind::CopyStructWithDestructor { type_name })) =
+        (declaration, failure)
+        && let Some(module) = program
+            .modules()
+            .iter()
+            .find(|module| module.module_id() == &declaration.module)
+    {
+        let destructor_span = module.ast().items.iter().find_map(|item| match item {
+            rue_parser::ast::Item::DropFn(drop)
+                if module.resolve_raw_symbol(drop.type_name.name) == type_name =>
+            {
+                Some(drop.span)
+            }
+            _ => None,
+        });
+        let copy_span = module.ast().items.iter().find_map(|item| match item {
+            rue_parser::ast::Item::Struct(structure)
+                if module.resolve_raw_symbol(structure.name.name) == type_name =>
+            {
+                structure
+                    .directives
+                    .iter()
+                    .find(|directive| module.resolve_raw_symbol(directive.name.name) == "copy")
+                    .map(|directive| directive.span)
+            }
+            _ => None,
+        });
+        if let Some(destructor_span) = destructor_span {
+            let mut error = CompileError::new(
+                ErrorKind::CopyStructWithDestructor {
+                    type_name: type_name.clone(),
+                },
+                destructor_span,
+            )
+            .with_label("destructor defined here", destructor_span)
+            .with_note(
+                "`@copy` values are duplicated implicitly, so the destructor would run \
+                     once per copy — cleaning up the same resource multiple times",
+            )
+            .with_help("remove the `@copy` attribute or remove the `drop fn`");
+            if let Some(copy_span) = copy_span {
+                error = error.with_label("type declared `@copy` here", copy_span);
+            }
+            return CompileErrors::from(error);
+        }
+    }
+    let span = declaration.and_then(|key| {
+        program
+            .modules()
+            .iter()
+            .find(|module| module.module_id() == &key.module)
+            .and_then(|module| module.definitions().declaration_locator(key))
+            .map(|locator| locator.declaration_span)
+    });
+    let (kind, help) = match failure {
+        F::Diagnostic(kind) => (kind.clone(), None),
+        F::DiagnosticAtParameter { kind, .. } => (kind.clone(), None),
+        F::DiagnosticAtDeclaration { kind, .. } => (kind.clone(), None),
+        F::OwnershipGate { kind, .. } => (kind.clone(), None),
+        F::DiagnosticWithHelp { kind, help } => (kind.clone(), Some(help.clone())),
+        F::Cycle(nodes) => (
+            ErrorKind::ConstInitializerCycle {
+                cycle: nodes
+                    .iter()
+                    .map(AsRef::as_ref)
+                    .collect::<Vec<_>>()
+                    .join(" -> "),
+            },
+            None,
+        ),
+        F::SignatureReentry { cycle, .. } => (
+            ErrorKind::UnknownType(
+                cycle
+                    .iter()
+                    .map(AsRef::as_ref)
+                    .collect::<Vec<_>>()
+                    .join(" -> "),
+            ),
+            None,
+        ),
+        F::Resolution(message) if message.starts_with("unknown array length") => (
+            ErrorKind::InvalidArrayLength {
+                reason: message
+                    .strip_prefix("unknown array length `")
+                    .and_then(|name| name.strip_suffix('`'))
+                    .map_or_else(
+                        || message.to_string(),
+                        |name| format!("'{name}' is not a compile-time constant"),
+                    ),
+            },
+            None,
+        ),
+        F::Resolution(message) => (
+            ErrorKind::ComptimeEvaluationFailed {
+                reason: message.to_string(),
+            },
+            None,
+        ),
+        F::Shell(message) | F::Syntax(message) => (
+            ErrorKind::InternalError(format!("semantic query invariant failed: {message}")),
+            None,
+        ),
+    };
+    let error = match span {
+        Some(span) => CompileError::new(kind, span),
+        None => CompileError::without_span(kind),
+    };
+    CompileErrors::from(match help {
+        Some(help) => error.with_help(help.to_string()),
+        None => error,
+    })
+}
+
 pub(crate) fn stable_definition_input_fingerprint(
     snapshot: &SourceSnapshot,
     record: &crate::BoundDefinitionRecord,
@@ -7074,208 +7193,6 @@ fn stable_definition_input_fingerprint_parts(
         body_or_initializer,
         precision,
     })
-}
-
-fn stable_const_candidate_input_fingerprints(
-    snapshot: &SourceSnapshot,
-    merged: &crate::canonical_merge::CanonicalMergedAst,
-    shells: &[rue_air::SemanticDeclarationShell],
-    previous: &[StableDefinitionInputFingerprint],
-) -> Result<Vec<StableDefinitionInputFingerprint>, CompileErrors> {
-    type Input<'a> = (&'a rue_air::SemanticDeclarationShell, Span);
-    let mut shell_by_name = BTreeMap::new();
-    for shell in shells.iter().filter(|shell| {
-        shell.identity.kind == StableDefinitionKind::ValueConst && shell.identity.owner.is_none()
-    }) {
-        let key = (
-            shell.identity.module_path.clone(),
-            shell.identity.name.clone(),
-        );
-        if shell_by_name.insert(key.clone(), Some(shell)).is_some() {
-            shell_by_name.insert(key, None);
-        }
-    }
-
-    let mut inputs = BTreeMap::<(crate::ModuleId, Arc<str>), Option<Input<'_>>>::new();
-    for module in merged.modules() {
-        for item in &module.ast().items {
-            let rue_parser::ast::Item::Const(value) = item else {
-                continue;
-            };
-            let name: Arc<str> = Arc::from(module.resolve_raw_symbol(value.name.name));
-            let Some(Some(shell)) =
-                shell_by_name.get(&(Arc::from(module.module_id().as_str()), name.clone()))
-            else {
-                continue;
-            };
-            let key = (module.module_id().clone(), name);
-            let input =
-                (value.span == shell.declaration_span).then_some((*shell, value.init.span()));
-            if inputs.insert(key.clone(), input).is_some() {
-                inputs.insert(key, None);
-            }
-        }
-    }
-
-    let mut fingerprints = Vec::new();
-    for previous in previous
-        .iter()
-        .filter(|fingerprint| fingerprint.key.kind() == StableDefinitionKind::ModuleBinding)
-    {
-        let lookup = (
-            previous.key.module().clone(),
-            Arc::from(previous.key.name()),
-        );
-        let Some(Some((shell, initializer))) = inputs.get(&lookup).copied() else {
-            continue;
-        };
-        let declaration = shell.declaration_span;
-        if initializer.file_id != declaration.file_id
-            || initializer.start < declaration.start
-            || initializer.end > declaration.end
-            || initializer.start >= initializer.end
-        {
-            return Err(invalid_dependency_manifest(
-                "const-candidate fingerprint has an invalid initializer locator",
-            ));
-        }
-        let signature = Span::with_file(declaration.file_id, declaration.start, initializer.start);
-        let mut fingerprint = stable_definition_input_fingerprint_parts(
-            snapshot,
-            &previous.key,
-            Some(if shell.is_public {
-                rue_parser::ast::Visibility::Public
-            } else {
-                rue_parser::ast::Visibility::Private
-            }),
-            crate::bound_definitions::BoundDefinitionInputPartition::Initializer {
-                signature,
-                initializer,
-            },
-        )?;
-        fingerprint.signature = StableDefinitionFingerprint(shell.signature_fingerprint);
-        fingerprints.push(fingerprint);
-    }
-    Ok(fingerprints)
-}
-
-fn stable_definition_input_fingerprints(
-    snapshot: &SourceSnapshot,
-    records: &[crate::BoundDefinitionRecord],
-    shells: &[rue_air::SemanticDeclarationShell],
-) -> Result<Vec<StableDefinitionInputFingerprint>, CompileErrors> {
-    let const_signatures = shells
-        .iter()
-        .filter(|shell| shell.identity.kind == StableDefinitionKind::ValueConst)
-        .map(|shell| {
-            (
-                (
-                    shell.identity.module_path.clone(),
-                    shell.identity.name.clone(),
-                ),
-                shell.signature_fingerprint,
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    records
-        .iter()
-        .map(|record| {
-            let mut fingerprint = stable_definition_input_fingerprint(snapshot, record)?;
-            if matches!(
-                record.stable_key().kind(),
-                StableDefinitionKind::ValueConst | StableDefinitionKind::ModuleBinding
-            ) && let Some(signature) = const_signatures.get(&(
-                Arc::from(record.stable_key().module().as_str()),
-                Arc::from(record.stable_key().name()),
-            )) {
-                fingerprint.signature = StableDefinitionFingerprint(*signature);
-            }
-            Ok(fingerprint)
-        })
-        .collect()
-}
-
-fn declaration_surfaces_match(
-    previous: &[StableDefinitionInputFingerprint],
-    current: &[StableDefinitionInputFingerprint],
-) -> (bool, usize) {
-    if previous.len() != current.len() {
-        return (false, 0);
-    }
-    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    struct JoinKey {
-        module: crate::ModuleId,
-        namespace: StableDefinitionNamespace,
-        kind: StableDefinitionKind,
-        name: Arc<str>,
-        owner: Option<(crate::ModuleId, StableDefinitionKind, Arc<str>)>,
-    }
-    let join_key = |fingerprint: &StableDefinitionInputFingerprint| {
-        let key = &fingerprint.key;
-        JoinKey {
-            module: key.module().clone(),
-            namespace: key.namespace(),
-            // The current pre-resolution shell cannot distinguish these two
-            // kinds. The cached payload must still be a distinct
-            // ModuleBinding and is checked below.
-            kind: match key.kind() {
-                StableDefinitionKind::ModuleBinding => StableDefinitionKind::ValueConst,
-                kind => kind,
-            },
-            name: Arc::from(key.name()),
-            owner: key.owner().map(|owner| {
-                (
-                    owner.module().clone(),
-                    owner.kind(),
-                    Arc::from(owner.name()),
-                )
-            }),
-        }
-    };
-    let current = current
-        .iter()
-        .map(|fingerprint| (join_key(fingerprint), fingerprint))
-        .collect::<BTreeMap<_, _>>();
-    if current.len() != previous.len() {
-        return (false, 0);
-    }
-    let mut compared = 0;
-    for left in previous {
-        compared += 1;
-        let Some(right) = current.get(&join_key(left)) else {
-            return (false, compared);
-        };
-        let ordinary_supported = matches!(
-            left.key.kind(),
-            StableDefinitionKind::Function
-                | StableDefinitionKind::Struct
-                | StableDefinitionKind::Enum
-                | StableDefinitionKind::Destructor
-                | StableDefinitionKind::Method
-                | StableDefinitionKind::AssociatedFunction
-        ) && !matches!(
-            left.precision,
-            StableDefinitionFingerprintPrecision::SignatureAndInitializer
-        );
-        let module_binding_supported = left.key.kind() == StableDefinitionKind::ModuleBinding
-            && matches!(
-                right.key.kind(),
-                StableDefinitionKind::ValueConst | StableDefinitionKind::ModuleBinding
-            )
-            && left.precision == StableDefinitionFingerprintPrecision::SignatureAndInitializer
-            && right.precision == StableDefinitionFingerprintPrecision::SignatureAndInitializer
-            && left.body_or_initializer == right.body_or_initializer;
-        let matches = (ordinary_supported || module_binding_supported)
-            && left.schema_version == right.schema_version
-            && left.signature == right.signature
-            && left.precision == right.precision
-            && (module_binding_supported
-                || (left.key == right.key && left.declaration == right.declaration));
-        if !matches {
-            return (false, compared);
-        }
-    }
-    (true, compared)
 }
 
 struct FramedDefinitionHasher(Sha256);
@@ -8695,14 +8612,14 @@ mod tests {
             revisioned
                 .matches("RUE-1026 DELETION GATE: this selected-revision compatibility")
                 .count(),
-            1
+            0
         );
         let unstable = include_str!("unstable.rs");
         assert_eq!(
             unstable
                 .matches("Full-plan host compatibility adapter. RUE-1026")
                 .count(),
-            1
+            0
         );
     }
 
@@ -8825,6 +8742,72 @@ mod tests {
             ],
             7,
         )
+    }
+
+    #[test]
+    fn nested_duplicate_parameter_diagnostics_rejoin_the_exact_current_occurrence() {
+        for source_text in [
+            "struct S {\n    fn m(self, a: i32, a: i32) {}\n}\nfn main() {}",
+            "struct S {\n    fn make(a: i32, a: i32) {}\n}\nfn main() {}",
+        ] {
+            let duplicate_start = source_text
+                .rfind("a: i32")
+                .expect("fixture contains the duplicate parameter");
+            let expected = rue_span::Span::with_file(
+                FileId::new(1),
+                duplicate_start as u32,
+                (duplicate_start + "a: i32".len()) as u32,
+            );
+            let source = snapshot(&[(1, "/p/main.rue", "main.rue", source_text)], 1);
+            let mut session = CompilerSession::new();
+            session.update(&source).into_result().unwrap();
+            let errors = session
+                .canonical_semantic(&CompileOptions::default())
+                .unwrap_err();
+            let error = errors.first().expect("duplicate parameter diagnostic");
+            assert!(
+                error.to_string().contains("duplicate parameter name 'a'"),
+                "unexpected diagnostic: {error}"
+            );
+            assert_eq!(error.span(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn keyed_destructor_validity_preserves_production_diagnostics_and_spans() {
+        for (source_text, marker, message) in [
+            (
+                "drop fn Missing(self) {}\nfn main() {}",
+                "drop fn Missing(self) {}",
+                "unknown type 'Missing' in destructor",
+            ),
+            (
+                "struct S {}\ndrop fn S(self) {}\ndrop fn S(self) {}\nfn main() {}",
+                "drop fn S(self) {}",
+                "duplicate destructor for type 'S'",
+            ),
+        ] {
+            let declaration_start = source_text
+                .rfind(marker)
+                .expect("fixture contains the rejected destructor");
+            let expected = rue_span::Span::with_file(
+                FileId::new(1),
+                declaration_start as u32,
+                (declaration_start + marker.len()) as u32,
+            );
+            let source = snapshot(&[(1, "/p/main.rue", "main.rue", source_text)], 1);
+            let mut session = CompilerSession::new();
+            session.update(&source).into_result().unwrap();
+            let errors = session
+                .canonical_semantic(&CompileOptions::default())
+                .unwrap_err();
+            let error = errors.first().expect("destructor validity diagnostic");
+            assert!(
+                error.to_string().contains(message),
+                "unexpected diagnostic: {error}"
+            );
+            assert_eq!(error.span(), Some(expected));
+        }
     }
 
     /// Generate `QUERY_TERMINAL_RETENTION_LIMIT + 1` distinct `CompileOptions`
@@ -9087,7 +9070,7 @@ mod tests {
             rir.semantic_symbols().interner(),
             preview_features,
         )
-        .predeclare_declaration_shells()?
+        .predeclare_declaration_shells_for_test()?
         .declaration_shells()
         .cloned()
         .collect::<Vec<_>>();
@@ -9283,12 +9266,12 @@ mod tests {
         session.update(&first).into_result().unwrap();
         let cold = session.canonical_semantic(&options).unwrap();
         assert_eq!(cold.work().binding.bind_invocations, 1);
-        assert_eq!(cold.work().binding.declaration_resolution_invocations, 1);
+        assert_eq!(cold.work().binding.declaration_resolution_invocations, 0);
         assert_eq!(
             cold.work()
                 .declaration_reuse
                 .durable_cache_population_exports,
-            1
+            0
         );
         assert_eq!(cold.work().manifest.rir_instructions_visited, 256);
         session.update(&second).into_result().unwrap();
@@ -9317,7 +9300,7 @@ mod tests {
         let ordinary = fresh.canonical_semantic(&options).unwrap();
         assert_eq!(
             ordinary.work().binding.declaration_resolution_invocations,
-            1
+            0
         );
         assert_eq!(reused.work().body_analysis, ordinary.work().body_analysis);
         assert_eq!(
@@ -9366,12 +9349,12 @@ mod tests {
         let mut session = CompilerSession::new();
         publish_with_test_imports(&mut session, &original);
         let cold = session.canonical_semantic(&options).unwrap();
-        assert_eq!(cold.work().binding.declaration_resolution_invocations, 1);
+        assert_eq!(cold.work().binding.declaration_resolution_invocations, 0);
         assert_eq!(
             cold.work()
                 .declaration_reuse
                 .durable_cache_population_exports,
-            1
+            0
         );
         let module = session
             .durable_declaration_cache
@@ -9452,16 +9435,11 @@ mod tests {
         let fallback = session.canonical_semantic(&options).unwrap();
         assert_eq!(
             fallback.work().binding.declaration_resolution_invocations,
-            1
+            0
         );
-        assert_eq!(fallback.work().binding.durable_install_invocations, 0);
-        assert_eq!(fallback.work().binding.durable_payloads_installed, 0);
-        assert_eq!(
-            fallback.work().declaration_reuse.fallbacks,
-            1,
-            "{:#?}",
-            fallback.work()
-        );
+        assert_eq!(fallback.work().binding.durable_install_invocations, 1);
+        assert!(fallback.work().binding.durable_payloads_installed > 0);
+        assert_eq!(fallback.work().declaration_reuse.fallbacks, 0);
         assert_eq!(fallback.work().declaration_reuse.fallback_epochs_started, 0);
 
         let mut fresh = CompilerSession::new();
@@ -9782,7 +9760,7 @@ mod tests {
     }
 
     #[test]
-    fn const_presence_forces_fresh_ordinary_resolution_without_partial_install() {
+    fn value_constants_install_from_the_semantic_nucleus_without_fallback() {
         let first = snapshot(
             &[(
                 1,
@@ -9813,9 +9791,9 @@ mod tests {
         let output = session.canonical_semantic(&options).unwrap();
         let second_issuer = output.analyzed_body_owners()[0].token().unwrap().issuer();
         assert_ne!(first_issuer, second_issuer);
-        assert_eq!(output.work().binding.declaration_resolution_invocations, 1);
-        assert_eq!(output.work().binding.durable_install_invocations, 0);
-        assert_eq!(output.work().declaration_reuse.durable_records_reused, 0);
+        assert_eq!(output.work().binding.declaration_resolution_invocations, 0);
+        assert_eq!(output.work().binding.durable_install_invocations, 1);
+        assert_eq!(output.work().declaration_reuse.durable_records_reused, 2);
     }
 
     fn assert_semantic_artifact_parity(
@@ -9956,7 +9934,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_generic_index_corruption_falls_back_without_partial_install() {
+    fn semantic_nucleus_installs_nested_generic_signatures_without_fallback() {
         let source = |value| {
             snapshot(
                 &[(
@@ -9977,94 +9955,20 @@ mod tests {
         session.update(&first).into_result().unwrap();
         session.canonical_semantic(&options).unwrap();
 
-        let cache = session.durable_declaration_cache.as_mut().unwrap();
-        let mut declarations = cache.semantics.to_vec();
-        let declaration = declarations
-            .iter_mut()
-            .find(|declaration| declaration.key.name() == "first")
-            .unwrap();
-        let crate::DurableDeclarationPayload::Callable { parameters, .. } =
-            &mut declaration.payload
-        else {
-            unreachable!();
-        };
-        let mut corrupted = parameters.to_vec();
-        corrupted[1].ty = crate::DurableType::Array {
-            element: Box::new(crate::DurableType::PtrConst(Box::new(
-                crate::DurableType::GenericParameter(9),
-            ))),
-            len: 2,
-        };
-        *parameters = corrupted.into();
-        cache.semantics = declarations.into();
-
         session.update(&edited).into_result().unwrap();
-        let fallback = session.canonical_semantic(&options).unwrap();
-        assert_eq!(
-            fallback.work().binding.declaration_resolution_invocations,
-            1
-        );
-        assert_eq!(fallback.work().declaration_reuse.install_invocations, 1);
-        assert_eq!(fallback.work().declaration_reuse.durable_records_reused, 0);
-        assert_eq!(fallback.work().declaration_reuse.fallbacks, 1);
-        assert_eq!(fallback.work().declaration_reuse.fallback_epochs_started, 1);
-        assert_eq!(fallback.work().declaration_reuse.semantic_epochs_started, 2);
-        assert!(matches!(
-            fallback.work().declaration_reuse.last_fallback_reason,
-            Some(crate::canonical_semantic::CanonicalDeclarationFallbackReason::Import(_))
-        ));
+        let actual = session.canonical_semantic(&options).unwrap();
+        assert_eq!(actual.work().binding.declaration_resolution_invocations, 0);
+        assert_eq!(actual.work().declaration_reuse.install_invocations, 1);
+        assert_eq!(actual.work().declaration_reuse.durable_records_reused, 2);
+        assert_eq!(actual.work().declaration_reuse.fallbacks, 0);
+        assert_eq!(actual.work().declaration_reuse.fallback_epochs_started, 0);
+        assert_eq!(actual.work().declaration_reuse.semantic_epochs_started, 1);
 
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
         let ordinary = fresh.canonical_semantic(&options).unwrap();
-        assert_semantic_artifact_parity(&session, &fallback, &ordinary);
-        assert_eq!(fallback.type_pool().stats(), ordinary.type_pool().stats());
-        assert_diagnostic_parity(&session, &fresh);
-    }
-
-    #[test]
-    fn incompatible_durable_semantic_schema_epoch_is_a_measured_fallback() {
-        let source = |value| {
-            snapshot(
-                &[(
-                    1,
-                    "/p/main.rue",
-                    "main.rue",
-                    &format!("fn answer() -> i32 {{ {value} }} fn main() -> i32 {{ answer() }}"),
-                )],
-                1,
-            )
-        };
-        let first = source(1);
-        let edited = source(2);
-        let options = CompileOptions::default();
-        let mut session = CompilerSession::new();
-        session.update(&first).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
-
-        let cache = session.durable_declaration_cache.as_mut().unwrap();
-        cache.schema_version.implementation_epoch += 1;
-
-        session.update(&edited).into_result().unwrap();
-        let fallback = session.canonical_semantic(&options).unwrap();
-        assert_eq!(
-            fallback.work().declaration_reuse.schema_version_rejections,
-            1
-        );
-        assert_eq!(fallback.work().declaration_reuse.fallbacks, 1);
-        assert_eq!(
-            fallback.work().declaration_reuse.last_fallback_reason,
-            Some(crate::canonical_semantic::CanonicalDeclarationFallbackReason::SchemaVersionMismatch)
-        );
-        assert_eq!(
-            fallback.work().binding.declaration_resolution_invocations,
-            1
-        );
-
-        let mut fresh = CompilerSession::new();
-        fresh.update(&edited).into_result().unwrap();
-        let ordinary = fresh.canonical_semantic(&options).unwrap();
-        assert_semantic_artifact_parity(&session, &fallback, &ordinary);
+        assert_semantic_artifact_parity(&session, &actual, &ordinary);
+        assert_eq!(actual.type_pool().stats(), ordinary.type_pool().stats());
         assert_diagnostic_parity(&session, &fresh);
     }
 
@@ -10083,8 +9987,8 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
         let cold = session.canonical_semantic(&options).unwrap();
-        assert_eq!(cold.work().binding.declaration_resolution_invocations, 1);
-        assert_eq!(cold.work().binding.durable_install_invocations, 0);
+        assert_eq!(cold.work().binding.declaration_resolution_invocations, 0);
+        assert_eq!(cold.work().binding.durable_install_invocations, 1);
 
         session.update(&edited).into_result().unwrap();
         let ordinary = session.canonical_semantic(&options).unwrap();
@@ -10105,8 +10009,8 @@ mod tests {
         // its next body edit can reuse normally.
         session.update(&supported).into_result().unwrap();
         let seeded = session.canonical_semantic(&options).unwrap();
-        assert_eq!(seeded.work().binding.declaration_resolution_invocations, 1);
-        assert_eq!(seeded.work().binding.durable_install_invocations, 0);
+        assert_eq!(seeded.work().binding.declaration_resolution_invocations, 0);
+        assert_eq!(seeded.work().binding.durable_install_invocations, 1);
         session.update(&supported_edit).into_result().unwrap();
         let recovered = session.canonical_semantic(&options).unwrap();
         assert_eq!(
@@ -10140,8 +10044,8 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
         let cold = session.canonical_semantic(&options).unwrap();
-        assert_eq!(cold.work().binding.declaration_resolution_invocations, 1);
-        assert_eq!(cold.work().binding.durable_install_invocations, 0);
+        assert_eq!(cold.work().binding.declaration_resolution_invocations, 0);
+        assert_eq!(cold.work().binding.durable_install_invocations, 1);
 
         session.update(&edited).into_result().unwrap();
         let ordinary = session.canonical_semantic(&options).unwrap();
@@ -10170,8 +10074,8 @@ mod tests {
         );
         session.update(&supported).into_result().unwrap();
         let seeded = session.canonical_semantic(&options).unwrap();
-        assert_eq!(seeded.work().binding.declaration_resolution_invocations, 1);
-        assert_eq!(seeded.work().binding.durable_install_invocations, 0);
+        assert_eq!(seeded.work().binding.declaration_resolution_invocations, 0);
+        assert_eq!(seeded.work().binding.durable_install_invocations, 1);
         session.update(&supported_edit).into_result().unwrap();
         let recovered = session.canonical_semantic(&options).unwrap();
         assert_eq!(
@@ -10226,7 +10130,7 @@ mod tests {
 
         session.update(&signature).into_result().unwrap();
         let changed = session.canonical_semantic(&options).unwrap();
-        assert_eq!(changed.work().binding.declaration_resolution_invocations, 1);
+        assert_eq!(changed.work().binding.declaration_resolution_invocations, 0);
 
         session.update(&broken_body).into_result().unwrap();
         assert!(session.canonical_semantic(&options).is_err());
@@ -10249,7 +10153,7 @@ mod tests {
                 .work()
                 .binding
                 .declaration_resolution_invocations,
-            1
+            0
         );
     }
 
@@ -11312,10 +11216,10 @@ mod tests {
             CanonicalSemanticFailurePhase::Declaration
         );
         assert_eq!(record.work.declaration_index.build_invocations, 1);
-        assert_eq!(record.work.binding.bind_invocations, 1);
-        assert_eq!(record.work.binding.namespace_setup_invocations, 1);
-        assert_eq!(record.work.binding.declaration_resolution_invocations, 1);
-        assert_eq!(record.work.binding.declaration_resolution_failures, 1);
+        assert_eq!(record.work.binding.bind_invocations, 0);
+        assert_eq!(record.work.binding.namespace_setup_invocations, 0);
+        assert_eq!(record.work.binding.declaration_resolution_invocations, 0);
+        assert_eq!(record.work.binding.declaration_resolution_failures, 0);
         assert_eq!(
             record.work.binding.body_readiness_finalization_invocations,
             0
@@ -11412,7 +11316,8 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .all(|error| error.kind.code().to_string() != "E1400")
+                .all(|error| error.kind.code().to_string() != "E1400"),
+            "unexpected internal diagnostic: {errors:?}"
         );
         assert_eq!(session.work().semantic_entries, 1);
         assert_eq!(session.work().semantic_records.len(), 1);
@@ -11688,24 +11593,19 @@ fn main() -> i32 { 0 }
             let parsed = crate::parsed_modules::parse_source_snapshot_modules(&source).unwrap();
             let merged = crate::merge_parsed_modules(&parsed).unwrap();
             let rir = crate::lower_canonical_rir(&merged).unwrap();
-            let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
             let retired = match rue_air::Sema::new_synthetic(
                 rir.rir(),
                 rir.semantic_symbols().interner(),
                 PreviewFeatures::new(),
             )
-            .bind_declarations()
+            .bind_declarations_for_test()
             {
                 Err(errors) => errors,
                 Ok(_) => panic!("retired AIR path unexpectedly accepted failure fixture"),
             };
-            let query = match crate::canonical_semantic::bind_query_owned_declarations_for_test(
-                &merged,
-                &rir,
-                PreviewFeatures::new(),
-                Target::default(),
-                &imports,
-            ) {
+            let mut session = CompilerSession::new();
+            session.update(&source).into_result().unwrap();
+            let query = match session.canonical_semantic(&CompileOptions::default()) {
                 Err(errors) => errors,
                 Ok(_) => panic!("query path unexpectedly accepted failure fixture"),
             };
@@ -11713,6 +11613,87 @@ fn main() -> i32 { 0 }
                 |errors: CompileErrors| errors.iter().map(ToString::to_string).collect::<Vec<_>>();
             assert_eq!(messages(retired), messages(query));
         }
+    }
+
+    #[test]
+    fn production_query_semantics_match_the_independent_retired_air_oracle() {
+        let source = snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                r#"
+const base: i32 = 40;
+const alias: i32 = base + 2;
+fn increment(value: i32) -> i32 { value + 1 }
+const callable = increment;
+fn main() -> i32 {
+    callable(alias)
+}
+"#,
+            )],
+            1,
+        );
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let rir = session.canonical_rir().unwrap();
+        let merged = session
+            .queries
+            .rir
+            .selected_record(&session.queries.graph)
+            .and_then(|entry| entry.merged.clone())
+            .unwrap();
+        let revision = session
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .unwrap();
+        let production = session
+            .queries
+            .revisioned
+            .projected_declaration_semantics(
+                revision,
+                merged.ast(),
+                options.target,
+                &options.preview_features,
+                rue_query::CancellationToken::new(),
+            )
+            .unwrap()
+            .declarations;
+        let definitions = session.stable_definitions(&options).unwrap();
+
+        // This producer is deliberately test-only and starts from a fresh AIR
+        // epoch that resolves declarations through the retired source-owned
+        // implementation. Production never evaluates this path or both paths.
+        let retired_bound = rue_air::Sema::new_synthetic(
+            rir.rir(),
+            rir.semantic_symbols().interner(),
+            options.preview_features.clone(),
+        )
+        .bind_declarations_for_test()
+        .unwrap();
+        let retired = retired_bound
+            .with_declaration_semantics(|exports, _| {
+                crate::durable_semantics::convert_declaration_semantics(
+                    &merged,
+                    &definitions,
+                    exports,
+                )
+                .unwrap_or_else(|failure| {
+                    panic!(
+                        "retired export conversion failed: {failure:?}; exports={exports:?}; definitions={:?}",
+                        definitions
+                            .definitions()
+                            .iter()
+                            .map(|record| record.stable_key())
+                            .collect::<Vec<_>>()
+                    )
+                })
+            })
+            .unwrap();
+
+        assert_eq!(production, retired, "declaration producers diverged");
     }
 
     #[test]
@@ -13455,7 +13436,10 @@ fn main() -> i32 { 0 }
                 )
             })
             .collect::<Vec<_>>();
-        assert!(consume_targets.contains(&("main.rue", "Alias", StableDefinitionKind::ValueConst)));
+        assert!(
+            consume_targets.contains(&("main.rue", "Alias", StableDefinitionKind::ValueConst)),
+            "{consume_targets:#?}"
+        );
         assert!(consume_targets.contains(&("lib.rue", "Leaf", StableDefinitionKind::Struct)));
         assert!(first.declaration_type_dependencies_complete());
         assert!(
@@ -14936,7 +14920,7 @@ fn main() -> i32 { selected.value() }"#,
     }
 
     #[test]
-    fn unsupported_callable_alias_is_rejected_before_specialization() {
+    fn callable_alias_is_rejected_as_comptime_value_argument() {
         let source = snapshot(
             &[(
                 42,
@@ -14948,18 +14932,14 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session
+        let errors = session
             .canonical_semantic(&CompileOptions::default())
             .unwrap_err();
-        let failure = session.work().semantic_records.last().unwrap();
-        assert!(failure.failure.is_some());
-        assert_eq!(failure.work.durable_bodies.import_attempts, 0);
-        assert_eq!(
-            failure.work.body_analysis.specialized_body_import_attempts,
-            0
-        );
-        assert_eq!(failure.work.body_analysis.specialized_bodies_attempted, 0);
-        assert!(session.last_successful_body_cache.is_none());
+        assert!(errors.iter().any(|error| {
+            error
+                .to_string()
+                .contains("callable alias cannot be passed as a comptime value argument")
+        }));
     }
 
     #[test]

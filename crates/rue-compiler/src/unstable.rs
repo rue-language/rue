@@ -33,17 +33,6 @@ pub fn begin_import_input_request(
     session.begin_import_input_request(snapshot, context, accepted_reads)
 }
 
-/// Full-plan host compatibility adapter. RUE-1026 deletes this after callers
-/// supply exact occurrence roots directly rather than selecting every site.
-pub fn import_demand_frontier(
-    session: &mut crate::CompilerSession,
-    revision: ImportInputRevision,
-    plan: &crate::ImportDiscoveryPlan,
-    mode: ImportDemandMode,
-) -> crate::CompileResult<ImportDemandFrontier> {
-    session.import_demand_frontier(revision, plan, mode)
-}
-
 pub fn import_demand_frontier_for_roots(
     session: &mut crate::CompilerSession,
     revision: ImportInputRevision,

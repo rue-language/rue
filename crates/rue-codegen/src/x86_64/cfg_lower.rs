@@ -3463,7 +3463,7 @@ mod tests {
         let rir = astgen.finish();
 
         let sema = Sema::new_synthetic(&rir, &mut interner, preview);
-        let output = sema.analyze_all().unwrap();
+        let output = sema.analyze_all_for_test().unwrap();
 
         let func = &output.functions[0];
         let type_pool = &output.type_pool;
@@ -3506,7 +3506,7 @@ mod tests {
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
         let output = Sema::new_synthetic(&rir, &mut interner, preview)
-            .analyze_all()
+            .analyze_all_for_test()
             .unwrap();
         let func = match name {
             Some(name) => output
@@ -3802,7 +3802,7 @@ mod tests {
             astgen.append_items(&ast.items);
             let rir = astgen.finish();
             let output = Sema::new_synthetic(&rir, &mut interner, preview)
-                .analyze_all()
+                .analyze_all_for_test()
                 .unwrap();
             let func = output.functions.iter().find(|f| f.name == "take").unwrap();
             let type_pool = &output.type_pool;

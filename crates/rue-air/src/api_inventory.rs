@@ -395,3 +395,48 @@ fn semantic_definition_taxonomy_has_one_enum_declaration() {
     assert!(!bindings.contains("pub enum StableDefinitionNamespace"));
     assert!(!bodies.contains("pub enum StableDefinitionKind"));
 }
+
+#[test]
+fn source_owned_declaration_producers_are_test_only_entrypoints() {
+    let sema = include_str!("sema/mod.rs");
+    let shells = include_str!("sema/binding_manifest.rs");
+    let declarations = include_str!("sema/declarations.rs");
+
+    for gated_entrypoint in [
+        "#[cfg(test)]\n    pub fn analyze_all(",
+        "#[cfg(test)]\n    pub fn bind_declarations(",
+    ] {
+        assert!(
+            sema.contains(gated_entrypoint),
+            "source-owned producer escaped its test-only gate: {gated_entrypoint}"
+        );
+    }
+    for gated_entrypoint in [
+        "#[cfg(test)]\n    pub fn resolve_declarations(",
+        "#[cfg(test)]\n    pub fn resolve_declarations_with_work(",
+    ] {
+        assert!(
+            shells.contains(gated_entrypoint),
+            "source-owned shell producer escaped its test-only gate: {gated_entrypoint}"
+        );
+    }
+    assert!(
+        declarations.contains("#[cfg(test)]\n    pub(crate) fn resolve_declarations("),
+        "source-owned resolver escaped its test-only gate"
+    );
+    assert!(sema.contains("#[doc(hidden)]\n    pub fn predeclare_declaration_shells_for_test("));
+    assert_eq!(
+        sema.matches(".predeclare_declaration_shells_for_test()")
+            .count(),
+        1,
+        "only the frozen bind_declarations_for_test adapter may call the shell producer"
+    );
+    let shell_production = shells
+        .split("\n#[cfg(test)]\nmod ")
+        .next()
+        .expect("binding manifest production prefix");
+    assert!(
+        !shell_production.contains(".predeclare_declaration_shells_for_test()"),
+        "AIR production called the frozen declaration-shell adapter"
+    );
+}

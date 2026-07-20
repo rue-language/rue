@@ -1150,10 +1150,10 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
     );
     assert_query_executions(cold, 1, 1, 1, 0);
     assert_semantic_work(cold, 1, 1, 1);
-    assert_declaration_epoch_work(cold, 1, 1, 1, 1, 0);
+    assert_declaration_epoch_work(cold, 1, 1, 1, 0, 0);
     assert_eq!(
         cold["semantic_work"]["declaration_reuse"]["plan_executions"],
-        0
+        1
     );
 
     let noop = get("exact_noop");
@@ -1438,7 +1438,7 @@ fn assert_completion_structure(scenarios: &[Value], functions: usize) {
             cold,
             &["semantic_work", "declaration_resolution_invocations"]
         ),
-        1
+        0
     );
     assert_eq!(
         count(cold, &["semantic_work", "declaration_resolution_failures"]),
@@ -1476,10 +1476,10 @@ fn assert_completion_structure(scenarios: &[Value], functions: usize) {
                 "durable_cache_population_exports"
             ]
         ),
-        1,
-        "cold cache population must export from the one analysis epoch"
+        0,
+        "query-owned declarations require no post-analysis cache export"
     );
-    assert_declaration_epoch_work(cold, 1, 1, 1, 1, 0);
+    assert_declaration_epoch_work(cold, 1, 1, 1, 0, 0);
 
     let noop = get("completion_exact_noop");
     assert_eq!(count(noop, &["queries", "semantic_executions"]), 0);
