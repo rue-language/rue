@@ -1215,6 +1215,12 @@ impl<'a> Sema<'a> {
         Ok(())
     }
 
+    /// Whether `ty` is a by-value aggregate (struct or fixed array) — the types
+    /// the P4 export thunk cannot yet repack across the C boundary.
+    fn is_aggregate_type(ty: Type) -> bool {
+        matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_))
+    }
+
     /// Enforce one `extern "C"` parameter or return type (ADR-0064 P1 +
     /// Amendment 1).
     ///
@@ -1239,12 +1245,6 @@ impl<'a> Sema<'a> {
     /// 3. Any remaining type that is not passable in this phase (enums, and — once
     ///    RUE-714 adds them — floats) takes the phase diagnostic via the
     ///    `c_passable_by_value` predicate seam.
-    /// Whether `ty` is a by-value aggregate (struct or fixed array) — the types
-    /// the P4 export thunk cannot yet repack across the C boundary.
-    fn is_aggregate_type(ty: Type) -> bool {
-        matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_))
-    }
-
     fn check_extern_signature_type(&self, ty: Type, span: Span) -> CompileResult<()> {
         match ty.kind() {
             TypeKind::Array(_) => Err(CompileError::new(
