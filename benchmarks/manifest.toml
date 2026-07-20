@@ -45,7 +45,7 @@ scenarios = [
   { name = "widely_depended_definition_edit", modules = [1, 6], semantic_bodies = [6, 0], cfgs = [4, 2], semantic_queries = [1, 0] },
   { name = "import_change", modules = [2, 5], semantic_bodies = [6, 0], cfgs = [4, 2], semantic_queries = [1, 0] },
   { name = "diagnostic_error_edit", modules = [1, 6], semantic_bodies = [5, 0], cfgs = [0, 0], semantic_queries = [1, 0] },
-  { name = "diagnostic_recovery", modules = [2, 5], semantic_bodies = [6, 0], cfgs = [4, 2], semantic_queries = [1, 0] },
+  { name = "diagnostic_recovery", modules = [1, 6], semantic_bodies = [6, 0], cfgs = [4, 2], semantic_queries = [1, 0] },
 ]
 
 [[benchmark]]
