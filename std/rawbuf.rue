@@ -1,0 +1,104 @@
+// RawBuf(T) — the shared growable heap-buffer core (RUE-1066).
+//
+// This is the single raw-pointer allocation primitive that both `ArrayBuf(T)`
+// (`arraybuf.rue`) and `StrBuf` (`strbuf.rue`) build on — the Rue analog of
+// Rust's `RawVec<T>`, which backs both `Vec<T>` and `String`. It owns nothing
+// but a heap allocation of `cap` elements addressed by a raw `ptr mut T`, and
+// confines every unchecked heap intrinsic (`@realloc`/`@ptr_read`/`@ptr_write`/
+// `@ptr_offset`/`@free`) behind a safe method API.
+//
+// Deliberately NOT a container: it has no `len`, runs no element drop glue, and
+// makes no growth-policy decision. Length, the amortized growth policy and its
+// floor, the trivially-droppable read gate (RUE-651), and ascending element
+// drop (RUE-646) all live in the wrapper types. Keeping exactly the raw-pointer
+// surface here means memory ownership — allocate/reallocate/free, and the
+// buffer's teardown — has one home for both containers.
+//
+//   * OWNING (`cap > 0`): `ptr` addresses `cap` live cells the value owns and
+//     frees at teardown.
+//   * EMPTY (`cap == 0`): `ptr` is null; no allocation is held. No `T` is ever
+//     read or written in this state (the wrapper's `len` is 0), so the null
+//     pointer is never dereferenced.
+//
+// A future non-owning literal-backed state (a `StrBuf` built from a static
+// string literal, §6.13.4) belongs here too, as a third case of the same
+// invariant, so both containers can share it; it is not modeled yet.
+
+pub fn RawBuf(comptime T: type) -> type {
+    struct {
+        buf: ptr mut T,
+        cap: u64,
+
+        // An empty buffer. No allocation until the first `grow_to`.
+        fn new() -> Self {
+            let zero: u64 = 0;
+            Self { buf: checked { @int_to_ptr(zero) }, cap: 0 }
+        }
+
+        fn capacity(borrow self) -> u64 { self.cap }
+
+        // Reallocate to exactly `new_cap` cells (the caller decides the growth
+        // policy and only ever grows, so `new_cap > cap`). Allocation is
+        // fail-fast: a byte-size overflow or a null result is
+        // `@panic("out of memory")`, and the owner's pointer is replaced only
+        // after the new block is known good — the header never publishes a
+        // nonzero capacity backed by null. A zero-sized `T` needs no storage, so
+        // the capacity is recorded without touching the allocator.
+        fn grow_to(inout self, new_cap: u64) {
+            let element_size: u64 = @intCast(@size_of(T));
+            if element_size > 0 {
+                if new_cap > 18446744073709551615 / element_size {
+                    @panic("out of memory");
+                }
+                checked {
+                    let grown = @realloc(self.buf, self.cap, new_cap);
+                    if @ptr_to_int(grown) == 0 {
+                        @panic("out of memory");
+                    }
+                    self.buf = grown;
+                };
+            }
+            self.cap = new_cap;
+        }
+
+        // Read cell `i` out by copy (`@ptr_read`). This is the raw byte move: it
+        // does NOT run drop glue and does not retire the cell, so the caller owns
+        // the drop discipline — a wrapper reads a cell out exactly once to move
+        // it (`pop`), or `@drop`s the copy after overwriting the cell (`set`).
+        // The bounds precondition (`i < len`) is the wrapper's; this never reads
+        // outside `0 .. cap`.
+        fn read_at(borrow self, i: u64) -> T {
+            checked { @ptr_read(@ptr_offset(self.buf, i)) }
+        }
+
+        // Write `value` into cell `i` (`@ptr_write`), overwriting the raw bytes
+        // without dropping whatever was there. The caller ensures the slot is
+        // either uninitialized spare capacity or has already had its old value
+        // read out or dropped.
+        fn write_at(inout self, i: u64, value: T) {
+            checked {
+                @ptr_write(@ptr_offset(self.buf, i), value);
+            };
+        }
+
+        // Release the allocation and reset to the empty state. Idempotent and
+        // safe on an empty buffer: `@free(null, 0)` is a no-op. Callers that have
+        // already moved/dropped the live cells use this for early release; the
+        // destructor calls the same path at scope exit.
+        fn free(inout self) {
+            checked { @free(self.buf, self.cap); };
+            let zero: u64 = 0;
+            self.buf = checked { @int_to_ptr(zero) };
+            self.cap = 0;
+        }
+
+        // Free the backing allocation when the buffer goes out of scope. The
+        // wrapper's destructor runs first (spec 3.9: user destructor, then fields
+        // in declaration order), so by the time this field is dropped the wrapper
+        // has already run its elements' drop glue and this only reclaims storage.
+        // After an explicit `free()` the pointer is null and this is a no-op.
+        drop fn(self) {
+            checked { @free(self.buf, self.cap); };
+        }
+    }
+}

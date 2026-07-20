@@ -83,6 +83,7 @@
 // blocker (RUE-511); now that they resolve, ArrayBuf imports option.rue directly
 // (RUE-509).
 const option = @import("option.rue");
+const rawbuf = @import("rawbuf.rue");
 
 pub fn ArrayBuf(comptime T: type) -> type {
     // Well-formedness gate (RUE-388/RUE-646): ArrayBuf owns a heap buffer of `T`
@@ -98,44 +99,26 @@ pub fn ArrayBuf(comptime T: type) -> type {
     // bearing structs, nested containers) pass.
     @require_droppable(T);
     struct {
-        buf: ptr mut T,
+        // The raw growable allocation (shared core, RUE-1066). ArrayBuf adds the
+        // length, the element drop discipline, and the growth policy on top.
+        core: rawbuf.RawBuf(T),
         len: u64,
-        cap: u64,
 
         // --- construction ---
 
         // An empty buffer. No allocation is performed until the first push.
         fn new() -> Self {
-            let zero: u64 = 0;
-            Self {
-                buf: checked { @int_to_ptr(zero) },
-                len: 0,
-                cap: 0,
-            }
+            let R = rawbuf.RawBuf(T);
+            Self { core: R.new(), len: 0 }
         }
 
-        // An empty buffer with room pre-reserved for `n` elements.
+        // An empty buffer with room pre-reserved for exactly `n` elements. The
+        // core's `grow_to` performs the byte-size overflow and null checks.
         fn with_capacity(n: u64) -> Self {
-            let zero: u64 = 0;
-            let mut v = Self { buf: checked { @int_to_ptr(zero) }, len: 0, cap: 0 };
+            let R = rawbuf.RawBuf(T);
+            let mut v = Self { core: R.new(), len: 0 };
             if n > 0 {
-                let element_size: u64 = @intCast(@size_of(T));
-                if element_size > 0 {
-                    if n > 18446744073709551615 / element_size {
-                        @panic("out of memory");
-                    }
-                    // `@realloc` of the null buffer allocates a fresh block;
-                    // install the result only after checking it so the owner
-                    // never publishes nonzero capacity backed by null.
-                    checked {
-                        let grown = @realloc(v.buf, v.cap, n);
-                        if @ptr_to_int(grown) == 0 {
-                            @panic("out of memory");
-                        }
-                        v.buf = grown;
-                    };
-                }
-                v.cap = n;
+                v.core.grow_to(n);
             }
             v
         }
@@ -154,7 +137,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
         // --- reads ---
 
         fn len(borrow self) -> u64 { self.len }
-        fn capacity(borrow self) -> u64 { self.cap }
+        fn capacity(borrow self) -> u64 { self.core.capacity() }
         fn is_empty(borrow self) -> bool { self.len == 0 }
 
         // Element `i` by copy, wrapped in `option.Option(T)`: `Some(x)` when in
@@ -174,7 +157,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
             @require_trivially_droppable(T);
             let O = option.Option(T);
             if i < self.len {
-                O.Some(checked { @ptr_read(@ptr_offset(self.buf, i)) })
+                O.Some(self.core.read_at(i))
             } else {
                 O.None
             }
@@ -190,7 +173,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
             // (double-free). Read owned elements out with `pop_or` instead.
             @require_trivially_droppable(T);
             if i < self.len {
-                checked { @ptr_read(@ptr_offset(self.buf, i)) }
+                self.core.read_at(i)
             } else {
                 default
             }
@@ -212,10 +195,17 @@ pub fn ArrayBuf(comptime T: type) -> type {
                 @panic("out of memory");
             }
             let required = self.len + additional;
-            if required <= self.cap {
+            if required <= self.core.capacity() {
                 return;
             }
-            let mut new_cap: u64 = if self.cap == 0 { 4 } else { self.cap };
+            // Amortized-2x growth with a floor of 4 (ArrayBuf's policy; StrBuf's
+            // floor is 16). The core reallocates to the exact chosen capacity and
+            // owns the byte-size overflow / null-result checks.
+            let mut new_cap: u64 = if self.core.capacity() == 0 {
+                4
+            } else {
+                self.core.capacity()
+            };
             while new_cap < required {
                 if new_cap > 9223372036854775807 {
                     new_cap = required;
@@ -223,29 +213,13 @@ pub fn ArrayBuf(comptime T: type) -> type {
                     new_cap = new_cap * 2;
                 }
             }
-            let element_size: u64 = @intCast(@size_of(T));
-            if element_size > 0 {
-                if new_cap > 18446744073709551615 / element_size {
-                    @panic("out of memory");
-                }
-                checked {
-                    let grown = @realloc(self.buf, self.cap, new_cap);
-                    if @ptr_to_int(grown) == 0 {
-                        @panic("out of memory");
-                    }
-                    self.buf = grown;
-                };
-            }
-            self.cap = new_cap;
+            self.core.grow_to(new_cap);
         }
 
         // Append `x` to the end, growing if necessary.
         fn push(inout self, x: T) {
             self.reserve(1);
-            checked {
-                let slot = @ptr_offset(self.buf, self.len);
-                @ptr_write(slot, x);
-            };
+            self.core.write_at(self.len, x);
             self.len = self.len + 1;
         }
 
@@ -259,10 +233,8 @@ pub fn ArrayBuf(comptime T: type) -> type {
             self.reserve(other.len);
             let mut i: u64 = 0;
             while i < other.len {
-                let value = checked { @ptr_read(@ptr_offset(other.buf, i)) };
-                checked {
-                    @ptr_write(@ptr_offset(self.buf, self.len), value);
-                };
+                let value = other.core.read_at(i);
+                self.core.write_at(self.len, value);
                 self.len = self.len + 1;
                 i = i + 1;
             }
@@ -288,7 +260,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
                 O.None
             } else {
                 self.len = self.len - 1;
-                O.Some(checked { @ptr_read(@ptr_offset(self.buf, self.len)) })
+                O.Some(self.core.read_at(self.len))
             }
         }
 
@@ -300,7 +272,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
                 default
             } else {
                 self.len = self.len - 1;
-                checked { @ptr_read(@ptr_offset(self.buf, self.len)) }
+                self.core.read_at(self.len)
             }
         }
 
@@ -311,11 +283,8 @@ pub fn ArrayBuf(comptime T: type) -> type {
         // has no glue and this is free.
         fn set(inout self, i: u64, x: T) {
             if i < self.len {
-                @drop(checked { @ptr_read(@ptr_offset(self.buf, i)) });
-                checked {
-                    let slot = @ptr_offset(self.buf, i);
-                    @ptr_write(slot, x);
-                };
+                @drop(self.core.read_at(i));
+                self.core.write_at(i, x);
             }
         }
 
@@ -326,12 +295,10 @@ pub fn ArrayBuf(comptime T: type) -> type {
         // `T` (RUE-651); a swap of owned elements would need in-place borrows.
         fn swap(inout self, i: u64, j: u64) {
             if i < self.len && j < self.len && i != j {
-                let a = checked { @ptr_read(@ptr_offset(self.buf, i)) };
-                let b = checked { @ptr_read(@ptr_offset(self.buf, j)) };
-                checked {
-                    @ptr_write(@ptr_offset(self.buf, i), b);
-                    @ptr_write(@ptr_offset(self.buf, j), a);
-                };
+                let a = self.core.read_at(i);
+                let b = self.core.read_at(j);
+                self.core.write_at(i, b);
+                self.core.write_at(j, a);
             }
         }
 
@@ -367,7 +334,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
             let O = option.Option(u64);
             let mut i: u64 = 0;
             while i < self.len {
-                let e = checked { @ptr_read(@ptr_offset(self.buf, i)) };
+                let e = self.core.read_at(i);
                 if e == x {
                     return O.Some(i);
                 }
@@ -391,7 +358,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
         fn clear(inout self) {
             let mut i: u64 = 0;
             while i < self.len {
-                @drop(checked { @ptr_read(@ptr_offset(self.buf, i)) });
+                @drop(self.core.read_at(i));
                 i = i + 1;
             }
             self.len = 0;
@@ -406,33 +373,31 @@ pub fn ArrayBuf(comptime T: type) -> type {
         fn free(inout self) {
             let mut i: u64 = 0;
             while i < self.len {
-                @drop(checked { @ptr_read(@ptr_offset(self.buf, i)) });
+                @drop(self.core.read_at(i));
                 i = i + 1;
             }
-            checked { @free(self.buf, self.cap); };
-            let zero: u64 = 0;
-            self.buf = checked { @int_to_ptr(zero) };
+            self.core.free();
             self.len = 0;
-            self.cap = 0;
         }
 
-        // Destructor: run each live element's drop glue, then free the backing
-        // buffer, when an `ArrayBuf` value goes out of scope (RUE-312, RUE-646).
-        // A `drop fn(self)` inside the anonymous struct is monomorphized with
-        // the type and registered as the concrete type's destructor, so the
-        // ordinary scope-exit drop glue runs it — the same machinery a named
-        // struct's top-level `drop fn` uses. Elements 0..len are read out and
-        // `@drop`ped in ascending index order (Rust's `Vec<T>` drop order); for
-        // a `Copy` `T` there is no per-element glue and this loop is free.
-        // (After an explicit `free()`, `len` is 0 so the loop is empty, `buf`
-        // is null, and `@free(null, 0)` is a no-op.)
+        // Destructor: run each live element's drop glue when an `ArrayBuf` value
+        // goes out of scope (RUE-312, RUE-646). A `drop fn(self)` inside the
+        // anonymous struct is monomorphized with the type and registered as the
+        // concrete type's destructor, so the ordinary scope-exit drop glue runs
+        // it — the same machinery a named struct's top-level `drop fn` uses.
+        // Elements 0..len are read out and `@drop`ped in ascending index order
+        // (Rust's `Vec<T>` drop order); for a `Copy` `T` there is no per-element
+        // glue and this loop is free. Freeing the backing allocation is then the
+        // `core` field's own destructor, which runs after this user destructor
+        // (spec 3.9: user destructor, then fields in declaration order). After an
+        // explicit `free()`, `len` is 0 so the loop is empty and the core is
+        // already null, so its later drop is a no-op.
         drop fn(self) {
             let mut i: u64 = 0;
             while i < self.len {
-                @drop(checked { @ptr_read(@ptr_offset(self.buf, i)) });
+                @drop(self.core.read_at(i));
                 i = i + 1;
             }
-            checked { @free(self.buf, self.cap); };
         }
     }
 }
