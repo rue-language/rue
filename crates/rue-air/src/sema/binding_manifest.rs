@@ -404,10 +404,11 @@ impl<'a> DeclarationShells<'a> {
     pub fn resolve_declarations_with_work(
         mut self,
     ) -> Result<BoundSema<'a>, DeclarationResolutionFailure> {
-        // This is the explicit payload-install boundary. The ordinary adapter
-        // deliberately resolves from the authoritative current-revision RIR in
-        // historical order. A future importer may validate durable payloads
-        // against these shells before choosing an installation path.
+        // This is the explicit payload-install boundary. Const resolution may
+        // inspect only the exact occurrence set admitted by these shells. In a
+        // canonical epoch that set came from keyed compiler queries; the RIR
+        // supplies current-epoch locators and initializer payloads, not an
+        // independent declaration-discovery authority.
         debug_assert!(
             self.pending_payloads
                 .iter()
@@ -427,6 +428,14 @@ impl<'a> DeclarationShells<'a> {
                 .iter()
                 .all(|pending| pending.declaration.as_u32() < self.sema.rir.len() as u32)
         );
+        self.sema.bound_const_candidates =
+            Some(super::declaration_index::BoundConstCandidateIndex::new(
+                self.sema.rir,
+                self.pending_payloads.iter().filter_map(|pending| {
+                    matches!(pending.source, DeclarationPayloadSource::Const { .. })
+                        .then_some((pending.shell.source_order, pending.declaration))
+                }),
+            ));
         self.binding_work.declaration_resolution_invocations += 1;
         if let Err(error) = self.sema.resolve_declarations() {
             self.binding_work.declaration_resolution_failures += 1;

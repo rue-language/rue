@@ -1134,7 +1134,16 @@ impl<'a> Sema<'a> {
                     // May already be collected: another constant's
                     // initializer can pull declarations in early (the
                     // collector is dependency-ordered, RUE-171).
-                    self.collect_const_by_key((inst.span.file_id, *name))?;
+                    if self
+                        .bound_const_candidates
+                        .as_ref()
+                        .expect(
+                            "const candidate authority must be installed before declaration resolution",
+                        )
+                        .contains(inst_ref)
+                    {
+                        self.collect_const_by_key((inst.span.file_id, *name))?;
+                    }
                 }
 
                 _ => {}
@@ -1995,8 +2004,10 @@ impl<'a> Sema<'a> {
 
     fn indexed_const(&self, key: (FileId, Spur)) -> Option<PendingConst> {
         let declaration = *self
-            .declaration_index
-            .const_candidates(key.0, key.1)
+            .bound_const_candidates
+            .as_ref()
+            .expect("const candidate authority must be installed before declaration resolution")
+            .candidates(key.0, key.1)
             .first()?;
         let inst = self.rir.get(declaration);
         let InstData::ConstDecl {
@@ -2015,7 +2026,12 @@ impl<'a> Sema<'a> {
 
     fn validate_indexed_const_declarations(&self) -> CompileResult<()> {
         let mut seen = HashSet::new();
-        for &declaration in self.declaration_index.all_const_candidates() {
+        for &declaration in self
+            .bound_const_candidates
+            .as_ref()
+            .expect("const candidate authority must be installed before declaration resolution")
+            .all_candidates()
+        {
             let inst = self.rir.get(declaration);
             let InstData::ConstDecl { name, .. } = inst.data else {
                 unreachable!("constant declaration index contains only ConstDecl instructions")
@@ -2042,8 +2058,10 @@ impl<'a> Sema<'a> {
     ) -> CompileResult<()> {
         let same_file_key = (referencing_file, name);
         if !self
-            .declaration_index
-            .const_candidates(referencing_file, name)
+            .bound_const_candidates
+            .as_ref()
+            .expect("const candidate authority must be installed before declaration resolution")
+            .candidates(referencing_file, name)
             .is_empty()
         {
             self.collect_const_by_key(same_file_key)?;

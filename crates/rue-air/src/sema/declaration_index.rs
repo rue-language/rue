@@ -78,10 +78,65 @@ pub(super) struct RirDeclarationIndex {
     /// receiverless `FnDecl` counts, including associated functions.
     non_receiver_name_multiplicity: HashMap<Spur, usize>,
     destructors: Vec<RirDestructorDeclaration>,
-    const_candidates: Vec<InstRef>,
-    const_candidates_by_file_name: HashMap<(FileId, Spur), Vec<InstRef>>,
     shell_declarations: Vec<RirShellDeclaration>,
     work: RirDeclarationIndexWork,
+}
+
+/// Exact current-epoch locators for the const occurrence set admitted at the
+/// declaration-shell boundary.
+///
+/// Canonical compiler epochs build this index from query-owned shells after
+/// they have been joined to the current RIR arena. Synthetic component tests
+/// use shells discovered from that synthetic arena. The declaration resolver
+/// never falls back to the independent RIR declaration index.
+#[derive(Debug)]
+pub(super) struct BoundConstCandidateIndex {
+    candidates: Vec<InstRef>,
+    candidate_set: HashSet<InstRef>,
+    candidates_by_file_name: HashMap<(FileId, Spur), Vec<InstRef>>,
+}
+
+impl BoundConstCandidateIndex {
+    pub(super) fn new(rir: &Rir, candidates: impl IntoIterator<Item = (u32, InstRef)>) -> Self {
+        let mut candidates = candidates.into_iter().collect::<Vec<_>>();
+        candidates.sort_by_key(|(source_order, declaration)| (*source_order, declaration.as_u32()));
+        let mut candidates_by_file_name = HashMap::<(FileId, Spur), Vec<InstRef>>::new();
+        let candidates: Vec<InstRef> = candidates
+            .into_iter()
+            .map(|(_, declaration)| {
+                let inst = rir.get(declaration);
+                let InstData::ConstDecl { name, .. } = inst.data else {
+                    unreachable!("bound const candidate must locate a ConstDecl")
+                };
+                candidates_by_file_name
+                    .entry((inst.span.file_id, name))
+                    .or_default()
+                    .push(declaration);
+                declaration
+            })
+            .collect();
+        let candidate_set = candidates.iter().copied().collect();
+        Self {
+            candidates,
+            candidate_set,
+            candidates_by_file_name,
+        }
+    }
+
+    pub(super) fn candidates(&self, file_id: FileId, name: Spur) -> &[InstRef] {
+        self.candidates_by_file_name
+            .get(&(file_id, name))
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    pub(super) fn all_candidates(&self) -> &[InstRef] {
+        &self.candidates
+    }
+
+    pub(super) fn contains(&self, declaration: InstRef) -> bool {
+        self.candidate_set.contains(&declaration)
+    }
 }
 
 impl RirDeclarationIndex {
@@ -93,8 +148,7 @@ impl RirDeclarationIndex {
         let mut declaration_source_orders = HashMap::new();
         let mut non_receiver_name_multiplicity = HashMap::<Spur, usize>::new();
         let mut destructors = Vec::new();
-        let mut const_candidates = Vec::new();
-        let mut const_candidates_by_file_name = HashMap::<(FileId, Spur), Vec<InstRef>>::new();
+        let mut const_shell_declarations = Vec::new();
         let mut work = RirDeclarationIndexWork {
             build_invocations: 1,
             ..RirDeclarationIndexWork::default()
@@ -145,13 +199,12 @@ impl RirDeclarationIndex {
                         span: inst.span,
                     });
                 }
-                InstData::ConstDecl { name, .. } => {
-                    declaration_source_orders.insert(inst_ref, source_order as u32);
-                    const_candidates.push(inst_ref);
-                    const_candidates_by_file_name
-                        .entry((inst.span.file_id, *name))
-                        .or_default()
-                        .push(inst_ref);
+                InstData::ConstDecl { .. } => {
+                    const_shell_declarations.push(RirShellDeclaration {
+                        declaration: inst_ref,
+                        source_order: source_order as u32,
+                        named_method_owner: None,
+                    });
                 }
                 InstData::EnumDecl { .. } => {
                     nominal_candidates.push((source_order as u32, inst_ref));
@@ -204,20 +257,14 @@ impl RirDeclarationIndex {
             source_order: declaration_source_orders[&candidate.declaration],
             named_method_owner: None,
         }));
-        shell_declarations.extend(const_candidates.iter().map(|&declaration| {
-            RirShellDeclaration {
-                declaration,
-                source_order: declaration_source_orders[&declaration],
-                named_method_owner: None,
-            }
-        }));
+        work.const_candidates_indexed = const_shell_declarations.len();
+        shell_declarations.extend(const_shell_declarations);
         shell_declarations.sort_by_key(|candidate| candidate.source_order);
 
         work.free_functions_indexed = free_functions.len();
         work.named_methods_indexed = named_methods.len();
         work.anonymous_methods_indexed = anonymous_methods.len();
         work.destructors_indexed = destructors.len();
-        work.const_candidates_indexed = const_candidates.len();
 
         Self {
             free_functions,
@@ -229,8 +276,6 @@ impl RirDeclarationIndex {
             anonymous_method_refs,
             non_receiver_name_multiplicity,
             destructors,
-            const_candidates,
-            const_candidates_by_file_name,
             shell_declarations,
             work,
         }
@@ -245,17 +290,6 @@ impl RirDeclarationIndex {
             self.anonymous_methods.len()
         );
         debug_assert_eq!(self.work.destructors_indexed, self.destructors.len());
-        debug_assert_eq!(
-            self.work.const_candidates_indexed,
-            self.const_candidates.len()
-        );
-        debug_assert_eq!(
-            self.const_candidates_by_file_name
-                .values()
-                .map(Vec::len)
-                .sum::<usize>(),
-            self.const_candidates.len()
-        );
         self.work
     }
 
@@ -335,17 +369,6 @@ impl RirDeclarationIndex {
     pub(super) fn destructors(&self) -> &[RirDestructorDeclaration] {
         &self.destructors
     }
-
-    pub(super) fn const_candidates(&self, file_id: FileId, name: Spur) -> &[InstRef] {
-        self.const_candidates_by_file_name
-            .get(&(file_id, name))
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-    }
-
-    pub(super) fn all_const_candidates(&self) -> &[InstRef] {
-        &self.const_candidates
-    }
 }
 
 #[cfg(test)]
@@ -396,6 +419,19 @@ mod tests {
                 .all(|pair| pair[0].as_u32() < pair[1].as_u32()),
             "declarations are not in RIR order: {refs:?}"
         );
+    }
+
+    fn bound_const_candidates(rir: &Rir, index: &RirDeclarationIndex) -> BoundConstCandidateIndex {
+        BoundConstCandidateIndex::new(
+            rir,
+            index.shell_declarations().iter().filter_map(|candidate| {
+                matches!(
+                    rir.get(candidate.declaration).data,
+                    InstData::ConstDecl { .. }
+                )
+                .then_some((candidate.source_order, candidate.declaration))
+            }),
+        )
     }
 
     #[test]
@@ -464,8 +500,9 @@ mod tests {
         ));
 
         let alias = interner.get("alias").unwrap();
-        assert_eq!(index.const_candidates(FileId::new(7), alias).len(), 1);
-        assert_eq!(index.all_const_candidates().len(), 1);
+        let bound_consts = bound_const_candidates(&rir, &index);
+        assert_eq!(bound_consts.candidates(FileId::new(7), alias).len(), 1);
+        assert_eq!(bound_consts.all_candidates().len(), 1);
 
         let expected_work = RirDeclarationIndexWork {
             build_invocations: 1,
@@ -523,15 +560,46 @@ mod tests {
             second_candidates.first().copied()
         );
         assert_eq!(index.non_receiver_name_multiplicity(same), 3);
-        assert_eq!(index.const_candidates(second, same).len(), 1);
+        let bound_consts = bound_const_candidates(&rir, &index);
+        assert_eq!(bound_consts.candidates(second, same).len(), 1);
 
         let rebuilt = RirDeclarationIndex::new(&rir);
+        let rebuilt_bound_consts = bound_const_candidates(&rir, &rebuilt);
         assert_eq!(rebuilt.work(), index.work());
         assert_eq!(rebuilt.free_functions(), index.free_functions());
         assert_eq!(
-            rebuilt.const_candidates(second, same),
-            index.const_candidates(second, same)
+            rebuilt_bound_consts.candidates(second, same),
+            bound_consts.candidates(second, same)
         );
+    }
+
+    #[test]
+    fn bound_const_index_admits_only_the_supplied_occurrence_set() {
+        let file = FileId::new(12);
+        let (rir, interner) = lower_files(&[(
+            "const first = 1; const second = 2; fn main() -> i32 { first }",
+            file,
+        )]);
+        let index = RirDeclarationIndex::new(&rir);
+        let const_locators = index
+            .shell_declarations()
+            .iter()
+            .filter(|candidate| {
+                matches!(
+                    rir.get(candidate.declaration).data,
+                    InstData::ConstDecl { .. }
+                )
+            })
+            .map(|candidate| (candidate.source_order, candidate.declaration))
+            .collect::<Vec<_>>();
+        assert_eq!(const_locators.len(), 2);
+
+        let bound = BoundConstCandidateIndex::new(&rir, [const_locators[0]]);
+        let first = interner.get("first").unwrap();
+        let second = interner.get("second").unwrap();
+        assert_eq!(bound.all_candidates(), [const_locators[0].1]);
+        assert_eq!(bound.candidates(file, first), [const_locators[0].1]);
+        assert!(bound.candidates(file, second).is_empty());
     }
 
     #[test]
