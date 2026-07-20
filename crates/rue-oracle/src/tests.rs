@@ -1142,11 +1142,10 @@ fn ptr_offset_strides_by_element() {
     assert_eq!(run(src).stdout, "20\n20\n");
 }
 
-/// A heap buffer round-trips values, and reads after `@free` still observe the
-/// stored bytes — the runtime bump allocator's `free` is a no-op, so the whole
-/// program is well defined and the oracle must agree with it.
+/// Use-after-free is undefined and stays a typed oracle gap rather than being
+/// assigned the stale bytes that happened to remain in the old bump allocator.
 #[test]
-fn alloc_write_read_survives_free() {
+fn alloc_read_after_free_is_unsupported() {
     let src = r#"fn main() -> i32 {
         checked {
             let p: ptr mut i32 = @alloc(3);
@@ -1160,9 +1159,14 @@ fn alloc_write_read_survives_free() {
             @ptr_read(p) + @ptr_read(@ptr_offset(p, 1)) + @ptr_read(@ptr_offset(p, 2))
         }
     }"#;
-    let outcome = run(src);
-    assert_eq!(outcome.stdout, "10\n20\n30\n");
-    assert_eq!(outcome.exit_code, 60);
+    let unsupported = expect_unsupported(src);
+    assert_eq!(
+        unsupported.kind(),
+        UnsupportedKind::SemanticGap(SemanticGapKind::Intrinsic(
+            UnsupportedIntrinsicKind::PointerRead,
+        ))
+    );
+    assert_eq!(unsupported.detail(), "pointer read after free");
 }
 
 /// `@alloc` round-trips an aggregate element written and read whole.

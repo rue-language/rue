@@ -25,8 +25,9 @@ fn main() -> i32 {
         @dbg(@ptr_read(p));
         @dbg(@ptr_read(@ptr_offset(p, 1)));
         @dbg(@ptr_read(@ptr_offset(p, 2)));
+        let sum = @ptr_read(p) + @ptr_read(@ptr_offset(p, 1)) + @ptr_read(@ptr_offset(p, 2));
         @free(p, 3);
-        @ptr_read(p) + @ptr_read(@ptr_offset(p, 1)) + @ptr_read(@ptr_offset(p, 2))
+        sum
     }
 }
 """ }]

@@ -7,14 +7,17 @@
 # cargo crate driven by nightly rustc in a dedicated CI job is the minimal path
 # that actually works. See `src/main.rs` for the full rationale.
 #
-# It compiles the REAL allocator source (crates/rue-runtime/src/heap.rs) via a
-# `#[path]` include, so there is no copy to drift out of sync.
+# It depends on the same `rue-allocator` crate as `rue-runtime`, supplying a
+# host-backed page mapper so there is no allocator copy to drift out of sync.
 
 [package]
 name = "rue-runtime-asan"
 version = "0.0.0"
 edition = "2024"
 publish = false
+
+[dependencies]
+rue-allocator = { path = "../rue-allocator" }
 
 # No top-level Cargo workspace exists in this buck2 repo; declare an empty
 # workspace table so cargo does not walk upward hunting for one.

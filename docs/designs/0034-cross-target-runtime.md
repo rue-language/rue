@@ -77,8 +77,9 @@ configuration transition (or `configured_alias`) to build
 
 ### B. Per-target staticlib build rules using the hermetic rustc directly
 
-`rue-runtime` is `#![no_std]`, has **zero dependencies**, and needs only
-`core`/`compiler_builtins`. Compiling it for a foreign target needs just:
+`rue-runtime` is `#![no_std]` and depends only on the no-std
+`rue-runtime-abi` and `rue-allocator` leaf crates. Compiling those crates for a
+foreign target needs just:
 
 1. The already-vendored host `rustc` invoked with `--target <triple>`.
 2. The target's std component: pin three extra

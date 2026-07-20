@@ -97,6 +97,7 @@ Long-form Buck commands remain useful when working on build targets:
 | `crates/rue-cfg` | control flow and target-independent optimization |
 | `crates/rue-codegen` | x86-64 and AArch64 backends |
 | `crates/rue-linker` | ELF/Mach-O objects and linking |
+| `crates/rue-allocator` | target-independent runtime heap policy |
 | `crates/rue-runtime` | target runtime support |
 | `crates/rue-{spec,ui-tests,cli-tests}` | behavioral test harnesses |
 | `crates/rue-{oracle,oracle-diff}` | independent evaluator and differential tests |

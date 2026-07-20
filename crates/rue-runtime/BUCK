@@ -15,6 +15,7 @@ rue_crate(
     tests = False,
     crate = "rue_runtime",
     deps = [
+        "//crates/rue-allocator:rue-allocator",
         "//crates/rue-runtime-abi:rue-runtime-abi",
     ],
     # Force static linkage to ensure the [staticlib] subtarget is available
@@ -72,6 +73,7 @@ rust_test(
     srcs = glob(["src/**/*.rs"]),
     crate = "rue_runtime",
     deps = [
+        "//crates/rue-allocator:rue-allocator",
         "//crates/rue-runtime-abi:rue-runtime-abi",
     ],
 )
