@@ -322,37 +322,37 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "types.strings",
         "to_string_i32_default_literal",
-        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
         "types.strings",
         "to_string_i64_extremes",
-        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
         "types.strings",
         "to_string_negative_and_zero",
-        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
         "types.strings",
         "to_string_positive",
-        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
         "types.strings",
         "to_string_signed_widths",
-        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
         "types.strings",
         "to_string_unsigned_widths_high_bit",
-        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(

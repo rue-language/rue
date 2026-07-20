@@ -86,7 +86,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.aggregate_slots",
         "dbg_string_from_field",
-        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(
@@ -768,7 +768,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.string_phase1",
         "to_string_demo",
-        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
+        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     Entry::new(

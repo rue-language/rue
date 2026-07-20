@@ -424,6 +424,36 @@ impl<'a> BodySema<'a> {
         Ok((ptr_ref, len_ref, prefix))
     }
 
+    /// Build a by-value, layout-stable `str` view `{ptr, len}` from a StrBuf
+    /// source.
+    ///
+    /// The `{ptr, len}` prefix is read through the trusted `as_ptr()`/`len()`
+    /// accessors (see [`Self::project_strbuf_text_fields`]), then packed into
+    /// the synthetic `str` struct — whose 2-word `{ptr, len}` layout is fixed
+    /// (ADR-0043 Phase 3). Routing `@dbg`/`@panic`/`borrow str` coercion
+    /// through this view means no consumer ever depends on StrBuf's own field
+    /// layout (RUE-1066): the runtime text helpers see a `str`, and StrBuf's
+    /// header can be reordered freely.
+    ///
+    /// The returned prefix must wrap the view (or a value derived from it) via
+    /// [`Self::wrap_value_with_temp_scope`] so any materialized owner stays
+    /// live across the borrow — the view is a second-class borrow into the
+    /// StrBuf's buffer and must not outlive it.
+    pub(crate) fn strbuf_text_view(
+        &mut self,
+        air: &mut Air,
+        value: AirRef,
+        ty: Type,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<(AirRef, Vec<AirRef>)> {
+        let (ptr, len, prefix) = self.project_strbuf_text_fields(air, value, ty, span, ctx)?;
+        let str_ty = self.get_or_create_str_struct(span)?;
+        let str_struct_id = str_ty.as_struct().expect("str is a synthetic struct");
+        let view = air.add_struct_init(str_struct_id, &[ptr, len], &[0, 1], str_ty, span)?;
+        Ok((view, prefix))
+    }
+
     /// Peel the synthetic scope produced by [`Self::emit_projected_rvalue_read`].
     ///
     /// A projected read from a computed owner must keep that owner alive when
@@ -4415,30 +4445,22 @@ impl<'a> BodySema<'a> {
             }));
         }
 
-        // `StrBuf` source: the view is the `{ptr, len}` prefix of the 3-word
-        // buffer header, read field-by-field from the borrowed place.
+        // `StrBuf` source: narrow the buffer header to the `{ptr, len}` view.
+        // The prefix is read through the trusted `as_ptr()`/`len()` accessors
+        // rather than by projecting fields 0/1, so this coercion is independent
+        // of StrBuf's internal layout (RUE-1066). Reading the whole StrBuf as a
+        // `PlaceRead` keeps it addressable, so the accessor calls borrow it in
+        // place without moving it.
         if self.is_strbuf(src_ty) {
-            let buf_struct_id = src_ty.as_struct().expect("StrBuf lang item is a struct");
-            let str_struct_id = str_ty.as_struct().expect("str is a synthetic struct");
-            let mut field_words = Vec::with_capacity(2);
-            for field_index in 0..2u32 {
-                let mut projs: Vec<AirProjection> =
-                    trace.projections.iter().map(|p| p.proj).collect();
-                projs.push(AirProjection::Field {
-                    struct_id: buf_struct_id,
-                    field_index,
-                });
-                let place_ref = air.make_place(trace.base, trace.base_type, projs)?;
-                let field_ty =
-                    self.type_pool.struct_def(buf_struct_id).fields[field_index as usize].ty;
-                let word = air.add_inst(AirInst {
-                    data: AirInstData::PlaceRead { place: place_ref },
-                    ty: field_ty,
-                    span,
-                });
-                field_words.push(word);
-            }
-            return Ok(air.add_struct_init(str_struct_id, &field_words, &[0, 1], str_ty, span)?);
+            let projs: Vec<AirProjection> = trace.projections.iter().map(|p| p.proj).collect();
+            let place_ref = air.make_place(trace.base, trace.base_type, projs)?;
+            let strbuf_read = air.add_inst(AirInst {
+                data: AirInstData::PlaceRead { place: place_ref },
+                ty: src_ty,
+                span,
+            });
+            let (view, prefix) = self.strbuf_text_view(air, strbuf_read, src_ty, span, ctx)?;
+            return self.wrap_value_with_temp_scope(air, view, str_ty, span, prefix);
         }
 
         Err(self.type_mismatch_error(str_ty, src_ty, span))

@@ -767,6 +767,9 @@ pub struct StrBuf {
     fn concat_borrowed(borrow first: Self, borrow second: Self) -> Self {
         Self { buf: first.buf, len: first.len + second.len, cap: 0 }
     }
+
+    fn len(borrow self) -> u64 { self.len }
+    fn as_ptr(borrow self) -> ptr mut u8 { self.buf }
 }
 
 drop fn StrBuf(self) { }

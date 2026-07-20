@@ -579,9 +579,6 @@ pub struct ValuePlan {
     pub comparison: Option<ComparisonPreparation>,
     pub storage: StoragePolicy,
     pub aggregate_primary: AggregatePrimary,
-    /// StrBuf has a fixed three-slot ownership representation even though it
-    /// is otherwise handled through the ordinary aggregate slot machinery.
-    pub is_strbuf: bool,
 }
 
 impl ValuePlan {
@@ -615,7 +612,6 @@ impl ValuePlan {
             } else {
                 AggregatePrimary::FirstSlot
             },
-            is_strbuf: ctx.is_strbuf(ty),
         };
 
         plan.storage = match &inst.data {
@@ -2752,7 +2748,6 @@ mod tests {
                 comparison: None,
                 storage: super::StoragePolicy::None,
                 aggregate_primary: super::AggregatePrimary::FirstSlot,
-                is_strbuf: false,
             },
             2,
         );
@@ -2950,7 +2945,6 @@ mod tests {
         strbuf_cfg.set_return(strbuf_entry, Some(strbuf_value));
         let strbuf_ctx = crate::cfg_lower::CfgLowerContext::new(&strbuf_cfg, &strbuf_pool);
         let strbuf_plan = ValuePlan::for_value(&strbuf_ctx, dummy_value());
-        assert!(strbuf_plan.is_strbuf);
         assert_eq!(strbuf_plan.shape.slot_count(), 3);
         assert!(strbuf_plan.shape.requires_complete_slots());
     }
