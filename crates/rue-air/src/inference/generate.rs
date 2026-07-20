@@ -21,6 +21,121 @@ use rue_rir::{InstData, InstRef, RepeatCount, Rir};
 use rue_span::{FileId, Span};
 use std::collections::HashMap;
 
+/// Exact callable selections made while the test-only one-body transaction is
+/// generating constraints.  These observations are consumed only when HM
+/// unification fails before AIR analysis can publish its normal dependencies.
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) enum InferenceCallRoute {
+    Unqualified {
+        alias: Option<Spur>,
+    },
+    Module {
+        module: crate::types::ModuleId,
+        member: Spur,
+        via_alias: bool,
+    },
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) enum InferenceBodyDependency {
+    Function {
+        function: Spur,
+        span: Span,
+        route: InferenceCallRoute,
+        checked: bool,
+    },
+    Method {
+        structure: StructId,
+        method: Spur,
+        span: Span,
+        associated: bool,
+    },
+    ModuleBinding(FileId, Spur),
+    ValueConst {
+        file: FileId,
+        name: Spur,
+        access_file: FileId,
+        qualified: bool,
+    },
+    Specialization {
+        function: Spur,
+        type_arguments: Vec<Type>,
+        value_arguments: Vec<ConstValue>,
+        span: Span,
+        route: InferenceCallRoute,
+        checked: bool,
+    },
+    IncompleteCallable,
+}
+
+#[cfg(test)]
+fn generic_body_dependency(
+    function: Spur,
+    signature: &FunctionSig,
+    type_subst: &HashMap<Spur, Type>,
+    value_subst: &HashMap<Spur, i128>,
+    span: Span,
+    route: InferenceCallRoute,
+    checked: bool,
+) -> InferenceBodyDependency {
+    let mut type_arguments = Vec::new();
+    let mut value_arguments = Vec::new();
+    for (index, name) in signature.param_names.iter().enumerate() {
+        if !signature
+            .param_comptime
+            .get(index)
+            .copied()
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        if signature
+            .param_comptime_type
+            .get(index)
+            .copied()
+            .unwrap_or(false)
+        {
+            let Some(argument) = type_subst.get(name).copied() else {
+                return InferenceBodyDependency::IncompleteCallable;
+            };
+            type_arguments.push(argument);
+        } else {
+            let Some(argument) = value_subst.get(name).copied() else {
+                return InferenceBodyDependency::IncompleteCallable;
+            };
+            value_arguments.push(ConstValue::Integer(argument));
+        }
+    }
+    InferenceBodyDependency::Specialization {
+        function,
+        type_arguments,
+        value_arguments,
+        span,
+        route,
+        checked,
+    }
+}
+
+#[cfg(test)]
+fn call_contract_matches<A>(args: A, param_modes: &[rue_rir::RirParamMode]) -> bool
+where
+    A: IntoIterator,
+    A::IntoIter: ExactSizeIterator,
+    A::Item: std::ops::Deref<Target = rue_rir::RirCallArg>,
+{
+    use rue_rir::{RirArgMode as A, RirParamMode as P};
+    let args = args.into_iter();
+    args.len() == param_modes.len()
+        && args.zip(param_modes).all(|(arg, mode)| {
+            matches!(
+                (arg.mode, mode),
+                (A::Normal, P::Normal) | (A::Inout, P::Inout) | (A::Borrow, P::Borrow)
+            )
+        })
+}
+
 /// Information about a local variable during constraint generation.
 #[derive(Debug, Clone)]
 pub struct LocalVarInfo {
@@ -118,6 +233,8 @@ pub struct ConstraintContext<'a> {
     /// `break` targeting that loop is seen. An infinite loop containing a
     /// break has type `()`; without one it has type `!` (see spec 4.8).
     pub loop_break_stack: Vec<bool>,
+    #[cfg(test)]
+    checked_depth: u32,
     /// Scope stack for efficient scope management.
     scope_stack: Vec<Vec<(Spur, Option<LocalVarInfo>)>>,
 }
@@ -131,6 +248,8 @@ impl<'a> ConstraintContext<'a> {
             return_type,
             loop_depth: 0,
             loop_break_stack: Vec::new(),
+            #[cfg(test)]
+            checked_depth: 0,
             scope_stack: Vec::new(),
         }
     }
@@ -293,6 +412,9 @@ pub struct ConstraintGenerator<'a> {
     comptime_values: Option<&'a HashMap<Spur, ConstValue>>,
     /// Type intern pool for creating pointer and array types during constraint generation.
     type_pool: &'a TypeInternPool,
+    /// Test-only exact dependency selections made before unification.
+    #[cfg(test)]
+    body_dependencies: Vec<InferenceBodyDependency>,
 }
 
 impl<'a> ConstraintGenerator<'a> {
@@ -367,6 +489,8 @@ impl<'a> ConstraintGenerator<'a> {
             const_function_aliases: None,
             comptime_values: None,
             type_pool,
+            #[cfg(test)]
+            body_dependencies: Vec::new(),
         }
     }
 
@@ -712,6 +836,11 @@ impl<'a> ConstraintGenerator<'a> {
         &self.expr_types
     }
 
+    #[cfg(test)]
+    pub(crate) fn body_dependencies(&self) -> &[InferenceBodyDependency] {
+        &self.body_dependencies
+    }
+
     /// Consume the constraint generator and return its generated constraints,
     /// literal variables, expression types, and allocated variable count.
     ///
@@ -938,6 +1067,9 @@ impl<'a> ConstraintGenerator<'a> {
                     .module_binding_types
                     .and_then(|bindings| bindings.get(&(span.file_id, *name)))
                 {
+                    #[cfg(test)]
+                    self.body_dependencies
+                        .push(InferenceBodyDependency::ModuleBinding(span.file_id, *name));
                     // Module binding declared in this file (`const m =
                     // @import(...)`): per-file scoped and distinct from the
                     // file's value-constant namespace (RUE-113).
@@ -946,6 +1078,14 @@ impl<'a> ConstraintGenerator<'a> {
                     .const_types
                     .and_then(|consts| consts.get(&(span.file_id, *name)))
                 {
+                    #[cfg(test)]
+                    self.body_dependencies
+                        .push(InferenceBodyDependency::ValueConst {
+                            file: span.file_id,
+                            name: *name,
+                            access_file: span.file_id,
+                            qualified: false,
+                        });
                     // File-level constant: its type was resolved during
                     // declaration gathering (i32/bool/unit literals, module
                     // types for `const m = @import(...)`). Yielding it here
@@ -1125,6 +1265,16 @@ impl<'a> ConstraintGenerator<'a> {
                         .copied()
                 });
                 let args = self.rir.call_args(args);
+                #[cfg(test)]
+                if alias_target.is_some() {
+                    self.body_dependencies
+                        .push(InferenceBodyDependency::ValueConst {
+                            file: span.file_id,
+                            name: *name,
+                            access_file: span.file_id,
+                            qualified: false,
+                        });
+                }
                 // `print(s)` / `println(s)` builtin free functions (RUE-1):
                 // generate the argument and yield unit. Semantic analysis
                 // validates the shared text family (`StrBuf`, `str`, `Str(N)`),
@@ -1140,6 +1290,19 @@ impl<'a> ConstraintGenerator<'a> {
                     }
                     InferType::Concrete(Type::UNIT)
                 } else if let Some(func) = function_key.and_then(|key| self.functions.get(&key)) {
+                    #[cfg(test)]
+                    if !func.is_generic && call_contract_matches(&args, &func.param_modes) {
+                        self.body_dependencies
+                            .push(InferenceBodyDependency::Function {
+                                function: function_key
+                                    .expect("resolved signature has a function key"),
+                                span,
+                                route: InferenceCallRoute::Unqualified {
+                                    alias: alias_target.map(|_| *name),
+                                },
+                                checked: ctx.checked_depth > 0,
+                            });
+                    }
                     // For generic functions, build the type substitution map from the
                     // comptime type arguments, then constrain each runtime argument
                     // against its (substituted) parameter type. When a type parameter
@@ -1178,6 +1341,21 @@ impl<'a> ConstraintGenerator<'a> {
                             } else if let Some(v) = self.extract_int_argument(arg.value) {
                                 value_subst.insert(func.param_names[i], v);
                             }
+                        }
+
+                        #[cfg(test)]
+                        if call_contract_matches(&args, &func.param_modes) {
+                            self.body_dependencies.push(generic_body_dependency(
+                                function_key.expect("resolved signature has a function key"),
+                                func,
+                                &type_subst,
+                                &value_subst,
+                                span,
+                                InferenceCallRoute::Unqualified {
+                                    alias: alias_target.map(|_| *name),
+                                },
+                                ctx.checked_depth > 0,
+                            ));
                         }
 
                         // Constrain each runtime argument to its parameter type, with
@@ -2216,7 +2394,7 @@ impl<'a> ConstraintGenerator<'a> {
                         // uses like `m.CONST + 1` are anchored (RUE-160).
                         // Resolved authoritatively in the receiver module's
                         // defining file (RUE-140, RUE-638).
-                        let member_const_ty = match &base_info.ty {
+                        let member_const = match &base_info.ty {
                             InferType::Concrete(ty) if ty.is_module() => ty
                                 .as_module()
                                 .and_then(|module_id| {
@@ -2228,9 +2406,21 @@ impl<'a> ConstraintGenerator<'a> {
                                     self.const_types
                                         .and_then(|consts| consts.get(&(file_id, *field)))
                                         .copied()
+                                        .map(|ty| (file_id, ty))
                                 }),
                             _ => None,
                         };
+                        #[cfg(test)]
+                        if let Some((file, _)) = member_const {
+                            self.body_dependencies
+                                .push(InferenceBodyDependency::ValueConst {
+                                    file,
+                                    name: *field,
+                                    access_file: span.file_id,
+                                    qualified: true,
+                                });
+                        }
+                        let member_const_ty = member_const.map(|(_, ty)| ty);
                         // A module member that is itself a (re-exported) module:
                         // `std.cmp` where std's file has `pub const cmp =
                         // @import("cmp.rue")`. Resolve it to the member module's
@@ -2458,7 +2648,7 @@ impl<'a> ConstraintGenerator<'a> {
                         .struct_type_for_module(module_ref, &type_name)
                         .or_else(|| self.enum_type_for_module(module_ref, &type_name))
                     && let Some(result) =
-                        self.generate_call_on_reduced_type(member_ty, *method, args, ctx)
+                        self.generate_call_on_reduced_type(member_ty, *method, args, span, ctx)
                 {
                     self.record_type(inst_ref, result.clone());
                     return ExprInfo::new(result, span);
@@ -2480,6 +2670,16 @@ impl<'a> ConstraintGenerator<'a> {
                     && let Some(string_id) = string_ty.as_struct()
                     && let Some(method_sig) = self.method_sig(&(string_id, *method))
                 {
+                    #[cfg(test)]
+                    if call_contract_matches(&call_args, &method_sig.param_modes) {
+                        self.body_dependencies
+                            .push(InferenceBodyDependency::Method {
+                                structure: string_id,
+                                method: *method,
+                                span,
+                                associated: false,
+                            });
+                    }
                     let shared_str_method = self.string_literal_default_is_str()
                         && self.interner.resolve(method) == "len";
                     if !shared_str_method {
@@ -2518,19 +2718,51 @@ impl<'a> ConstraintGenerator<'a> {
                     // the exact member's return type anchors uses like
                     // `m.go() + 1` to the member declaration (RUE-142).
                     InferType::Concrete(ty) if ty.is_module() => {
-                        let function_key = ty
-                            .as_module()
-                            .and_then(|module_id| {
-                                self.module_file_ids
-                                    .and_then(|ids| ids.get(&module_id))
-                                    .copied()
-                            })
-                            .and_then(|file_id| {
+                        let module_id = ty.as_module().expect("module type has a module id");
+                        let module_file = self
+                            .module_file_ids
+                            .and_then(|ids| ids.get(&module_id))
+                            .copied();
+                        let alias_target = module_file.and_then(|file_id| {
+                            self.const_function_aliases
+                                .and_then(|aliases| aliases.get(&(file_id, *method)))
+                                .copied()
+                        });
+                        let function_key = alias_target.or_else(|| {
+                            module_file.and_then(|file_id| {
                                 self.functions_by_file_name
                                     .and_then(|m| m.get(&(file_id, *method)))
                                     .copied()
-                            });
+                            })
+                        });
+                        #[cfg(test)]
+                        if let (Some(file), Some(_)) = (module_file, alias_target) {
+                            self.body_dependencies
+                                .push(InferenceBodyDependency::ValueConst {
+                                    file,
+                                    name: *method,
+                                    access_file: span.file_id,
+                                    qualified: true,
+                                });
+                        }
                         if let Some(func) = function_key.and_then(|key| self.functions.get(&key)) {
+                            #[cfg(test)]
+                            if !func.is_generic
+                                && call_contract_matches(&call_args, &func.param_modes)
+                            {
+                                self.body_dependencies
+                                    .push(InferenceBodyDependency::Function {
+                                        function: function_key
+                                            .expect("resolved module signature has a function key"),
+                                        span,
+                                        route: InferenceCallRoute::Module {
+                                            module: module_id,
+                                            member: *method,
+                                            via_alias: alias_target.is_some(),
+                                        },
+                                        checked: ctx.checked_depth > 0,
+                                    });
+                            }
                             if !func.is_generic && call_args.len() == func.param_types.len() {
                                 // Constrain each argument against its declared
                                 // parameter type (same as a direct Call).
@@ -2586,6 +2818,23 @@ impl<'a> ConstraintGenerator<'a> {
                                     } else if let Some(v) = self.extract_int_argument(arg.value) {
                                         value_subst.insert(func.param_names[i], v);
                                     }
+                                }
+                                #[cfg(test)]
+                                if call_contract_matches(&call_args, &func.param_modes) {
+                                    self.body_dependencies.push(generic_body_dependency(
+                                        function_key
+                                            .expect("resolved module signature has a function key"),
+                                        func,
+                                        &type_subst,
+                                        &value_subst,
+                                        span,
+                                        InferenceCallRoute::Module {
+                                            module: module_id,
+                                            member: *method,
+                                            via_alias: alias_target.is_some(),
+                                        },
+                                        ctx.checked_depth > 0,
+                                    ));
                                 }
                                 for (i, arg_info) in arg_infos.iter().enumerate() {
                                     if i >= func.param_types.len() || i >= func.param_comptime.len()
@@ -2678,11 +2927,14 @@ impl<'a> ConstraintGenerator<'a> {
                             .inline_ctor_head_types
                             .and_then(|heads| heads.get(receiver).copied())
                             .or(module_member_ty)
-                            && let Some(result) =
-                                self.generate_call_on_reduced_type(reduced, *method, args, ctx)
+                            && let Some(result) = self
+                                .generate_call_on_reduced_type(reduced, *method, args, span, ctx)
                         {
                             result
                         } else {
+                            #[cfg(test)]
+                            self.body_dependencies
+                                .push(InferenceBodyDependency::IncompleteCallable);
                             for arg in call_args.iter() {
                                 self.generate(arg.value, ctx);
                             }
@@ -2696,6 +2948,16 @@ impl<'a> ConstraintGenerator<'a> {
                             // signatures, RUE-164)
                             let method_key = (struct_id, *method);
                             if let Some(method_sig) = self.method_sig(&method_key) {
+                                #[cfg(test)]
+                                if call_contract_matches(&call_args, &method_sig.param_modes) {
+                                    self.body_dependencies
+                                        .push(InferenceBodyDependency::Method {
+                                            structure: struct_id,
+                                            method: *method,
+                                            span,
+                                            associated: false,
+                                        });
+                                }
                                 // Generate constraints for arguments
                                 for (arg, param_type) in
                                     call_args.iter().zip(method_sig.param_types.iter())
@@ -2757,11 +3019,14 @@ impl<'a> ConstraintGenerator<'a> {
                         if let Some(reduced) = self
                             .inline_ctor_head_types
                             .and_then(|heads| heads.get(receiver).copied())
-                            && let Some(result) =
-                                self.generate_call_on_reduced_type(reduced, *method, args, ctx)
+                            && let Some(result) = self
+                                .generate_call_on_reduced_type(reduced, *method, args, span, ctx)
                         {
                             result
                         } else {
+                            #[cfg(test)]
+                            self.body_dependencies
+                                .push(InferenceBodyDependency::IncompleteCallable);
                             for arg in call_args.iter() {
                                 self.generate(arg.value, ctx);
                             }
@@ -2796,7 +3061,15 @@ impl<'a> ConstraintGenerator<'a> {
             // The actual checking of unchecked operations happens in sema
             InstData::Checked { expr } => {
                 // Generate constraints for the inner expression
+                #[cfg(test)]
+                {
+                    ctx.checked_depth += 1;
+                }
                 let inner_info = self.generate(*expr, ctx);
+                #[cfg(test)]
+                {
+                    ctx.checked_depth -= 1;
+                }
                 inner_info.ty
             }
 
@@ -2974,7 +3247,8 @@ impl<'a> ConstraintGenerator<'a> {
         // Checked first so it takes precedence over the struct-method path
         // below.
         if let Some(enum_ty) = self.enum_type_for(&type_name, span.file_id)
-            && let Some(result) = self.generate_call_on_reduced_type(enum_ty, function, args, ctx)
+            && let Some(result) =
+                self.generate_call_on_reduced_type(enum_ty, function, args, span, ctx)
         {
             return result;
         }
@@ -2988,7 +3262,8 @@ impl<'a> ConstraintGenerator<'a> {
         if let Some(struct_ty) = self.struct_type_for(&type_name, span.file_id)
             && struct_ty.as_struct().is_some()
         {
-            if let Some(result) = self.generate_call_on_reduced_type(struct_ty, function, args, ctx)
+            if let Some(result) =
+                self.generate_call_on_reduced_type(struct_ty, function, args, span, ctx)
             {
                 return result;
             }
@@ -3024,6 +3299,7 @@ impl<'a> ConstraintGenerator<'a> {
         ty: Type,
         function: Spur,
         args: &rue_rir::RirCallArgsRange,
+        _span: Span,
         ctx: &mut ConstraintContext,
     ) -> Option<InferType> {
         if let Some(enum_id) = ty.as_enum() {
@@ -3048,6 +3324,16 @@ impl<'a> ConstraintGenerator<'a> {
         let struct_id = ty.as_struct()?;
         let method_sig = self.method_sig(&(struct_id, function))?;
         let args = self.rir.call_args(args);
+        #[cfg(test)]
+        if call_contract_matches(&args, &method_sig.param_modes) {
+            self.body_dependencies
+                .push(InferenceBodyDependency::Method {
+                    structure: struct_id,
+                    method: function,
+                    span: _span,
+                    associated: true,
+                });
+        }
         for (arg, param_type) in args.iter().zip(method_sig.param_types.iter()) {
             let defer_equality = self.is_slice_struct_type(param_type.clone());
             let arg_info = self.generate(arg.value, ctx);

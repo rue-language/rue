@@ -98,6 +98,32 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         self.export_body(owner, body_span, analyzed, strings, warnings, None)
     }
 
+    /// Test-only exact-body export after generic-call selection has rewritten
+    /// the caller.  Production keeps its established pre-specialization export
+    /// ordering until the compiler body-query cutover.
+    #[cfg(test)]
+    pub(in crate::sema) fn export_one_body_with_specializations(
+        &self,
+        owner: BodyOwnerToken,
+        body_span: Span,
+        analyzed: &AnalyzedFunction,
+        strings: &[String],
+        warnings: &[CompileWarning],
+        specialized_calls: &HashMap<
+            Spur,
+            SemanticSpecializationIdentity<SemanticDefinitionToken, SemanticModuleToken>,
+        >,
+    ) -> Result<SemanticBodyExport, F> {
+        self.export_body(
+            owner,
+            body_span,
+            analyzed,
+            strings,
+            warnings,
+            Some(specialized_calls),
+        )
+    }
+
     fn export_body(
         &self,
         owner: BodyOwnerToken,
@@ -560,7 +586,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         )
     }
 
-    fn body_function_identity(
+    pub(in crate::sema) fn body_function_identity(
         &self,
         symbol: Spur,
     ) -> Result<crate::FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>, F> {

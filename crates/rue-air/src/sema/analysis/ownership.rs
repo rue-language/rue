@@ -394,6 +394,11 @@ impl<'a> BodySema<'a> {
         };
         ctx.referenced_methods.insert((struct_id, ptr_method));
         ctx.referenced_methods.insert((struct_id, len_method));
+        #[cfg(test)]
+        {
+            self.record_body_method_dependency((struct_id, ptr_method));
+            self.record_body_method_dependency((struct_id, len_method));
+        }
         let (receiver, prefix) = self.materialize_borrow_argument(air, value, ty, span, ctx)?;
         let ptr_call_name = self
             .interner
@@ -2628,6 +2633,8 @@ impl<'a> BodySema<'a> {
             ));
         }
         ctx.referenced_methods.insert((struct_id, method));
+        #[cfg(test)]
+        self.record_body_method_dependency((struct_id, method));
         let (receiver, temp_scope) =
             self.materialize_borrow_argument(air, base_result.air_ref, base_result.ty, span, ctx)?;
         let call_name =

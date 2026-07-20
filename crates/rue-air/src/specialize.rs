@@ -611,6 +611,130 @@ fn rewrite_call_generic(
     }
 }
 
+/// Select and rewrite the concrete generic calls in one completed body without
+/// expanding any selected specialization body.
+///
+/// This is the extraction seam for the test-only one-body transaction work in
+/// RUE-1084.  The production fixed-point driver deliberately continues to own
+/// its existing expansion policy until the compiler query cutover.  Keeping
+/// selection here ensures the transaction does not guess specialization edges
+/// by rescanning RIR syntax.
+#[cfg(test)]
+pub(crate) fn select_one_body_specializations(
+    sema: &crate::sema::BodySema<'_>,
+    mut function: AnalyzedFunction,
+) -> CompileResult<(
+    AnalyzedFunction,
+    Vec<(
+        Spur,
+        crate::SemanticSpecializationIdentity<
+            crate::SemanticDefinitionToken,
+            crate::SemanticModuleToken,
+        >,
+    )>,
+)> {
+    let mut specializations = HashMap::new();
+    let mut pending = Vec::new();
+    let mut work = crate::BodyAnalysisWork::default();
+    if collect_specializations(
+        &function.air,
+        sema.interner,
+        &mut specializations,
+        &mut pending,
+        &mut work,
+    ) {
+        let mut editor = function.air.into_editor();
+        rewrite_call_generic(&mut editor, &specializations, &mut work);
+        function.air = editor.finish(crate::AirValidationContext::SemanticWithSymbols(
+            &sema.type_pool,
+            sema.interner,
+        ))?;
+    }
+    let mut selected = pending
+        .iter()
+        .map(|key| {
+            Ok((
+                specializations[key].mangled_name,
+                Specializer::stable_identity(key, sema).map_err(|failure| {
+                    CompileError::new(
+                        ErrorKind::InternalError(format!(
+                            "failed to select a canonical specialization reference: {failure:?}"
+                        )),
+                        specializations[key].call_site_span,
+                    )
+                })?,
+            ))
+        })
+        .collect::<CompileResult<Vec<_>>>()?;
+    selected.sort_by(|left, right| left.1.cmp(&right.1));
+    selected.dedup_by(|left, right| left.1 == right.1);
+    Ok((function, selected))
+}
+
+#[cfg(test)]
+pub(crate) struct OneSpecializedBody {
+    pub(crate) key: SpecializationKey,
+    pub(crate) function: AnalyzedFunction,
+    pub(crate) warnings: Vec<CompileWarning>,
+    pub(crate) local_strings: Vec<String>,
+    pub(crate) referenced_functions: HashSet<Spur>,
+    pub(crate) referenced_methods: HashSet<(StructId, Spur)>,
+    pub(crate) dependencies: Vec<crate::SemanticDefinitionToken>,
+    pub(crate) dependency_boundary_complete: bool,
+    pub(crate) identity: crate::SemanticSpecializationIdentity<
+        crate::SemanticDefinitionToken,
+        crate::SemanticModuleToken,
+    >,
+}
+
+/// Analyze exactly one concrete specialization.  No call-site scan or
+/// specialization fixed point is performed here; the caller supplies the
+/// already-selected local key and receives references for later scheduling.
+#[cfg(test)]
+pub(crate) fn analyze_one_specialization(
+    sema: &mut crate::sema::BodySema<'_>,
+    infer_ctx: &InferenceContext,
+    key: SpecializationKey,
+) -> CompileResult<OneSpecializedBody> {
+    let base_info = sema.function_info(key.base_name).cloned().ok_or_else(|| {
+        CompileError::without_span(ErrorKind::UndefinedFunction(
+            sema.interner.resolve(&key.base_name).to_owned(),
+        ))
+    })?;
+    let specialized_name = sema.interner.get_or_intern(&mangle_specialized_name(
+        sema.interner.resolve(&key.base_name),
+        &key.type_args,
+        &key.value_args,
+    ));
+    let identity = Specializer::stable_identity(&key, sema).map_err(|failure| {
+        CompileError::new(
+            ErrorKind::InternalError(format!(
+                "failed to issue one-body specialization identity: {failure:?}"
+            )),
+            base_info.span,
+        )
+    })?;
+    let body = create_specialized_function(
+        sema,
+        infer_ctx,
+        &key,
+        specialized_name,
+        &base_info,
+        sema.interner,
+    )?;
+    Ok(OneSpecializedBody {
+        key,
+        function: body.function,
+        warnings: body.warnings,
+        local_strings: body.local_strings,
+        referenced_functions: body.referenced_functions,
+        referenced_methods: body.referenced_methods,
+        dependencies: body.dependencies,
+        dependency_boundary_complete: body.dependency_boundary_complete,
+        identity,
+    })
+}
+
 /// Separator between mangled segments in a specialized symbol name.
 ///
 /// A `.` is deliberately *illegal* in a Rue identifier (which is

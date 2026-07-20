@@ -1790,11 +1790,39 @@ impl<'a> BodySema<'a> {
         let num_insts = inst_refs.len();
         for (i, inst_ref) in inst_refs.values().enumerate() {
             let is_last = i == num_insts - 1;
-            let result = if is_last {
-                self.analyze_inst(air, inst_ref, ctx)?
+            // Test-only statement recovery starts after body-wide inference has
+            // succeeded. Inference failures use the exact selections observed
+            // during constraint generation instead; substitution-dependent
+            // selections make that transaction non-terminal.
+            #[cfg(test)]
+            let recovery_checkpoint = self
+                .one_body_error_recovery
+                .then(|| (air.checkpoint(), ctx.clone()));
+            let outcome = if is_last {
+                self.analyze_inst(air, inst_ref, ctx)
             } else {
-                ctx.with_expected_type(None, |ctx| self.analyze_inst(air, inst_ref, ctx))?
+                ctx.with_expected_type(None, |ctx| self.analyze_inst(air, inst_ref, ctx))
             };
+            #[cfg(test)]
+            let result = match outcome {
+                Ok(result) => result,
+                Err(error) if self.one_body_error_recovery => {
+                    let (air_checkpoint, ctx_checkpoint) = recovery_checkpoint
+                        .expect("one-body recovery checkpoint must accompany recovery mode");
+                    air.rollback(air_checkpoint);
+                    *ctx = ctx_checkpoint;
+                    self.one_body_recovered_errors.push(error);
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::UnitConst,
+                        ty: Type::ERROR,
+                        span: self.rir.get(inst_ref).span,
+                    });
+                    AnalysisResult::new(air_ref, Type::ERROR)
+                }
+                Err(error) => return Err(error),
+            };
+            #[cfg(not(test))]
+            let result = outcome?;
 
             if is_last {
                 last_result = Some(result);
