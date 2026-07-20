@@ -408,6 +408,8 @@ pub(crate) struct RevisionedQueryDatabase {
     raw_declaration_bodies: QueryFamily<RawDeclarationBodyQueryKey, RawDeclarationBodyQueryValue>,
     module_rirs: QueryFamily<ModuleQueryKey, ModuleRirValue>,
     resolve_imports: QueryFamily<ResolveImportKey, ResolveImportValue>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    declaration_imports: QueryFamily<DeclarationImportQueryKey, DeclarationImportQueryValue>,
     lookup_names: QueryFamily<LookupNameKey, LookupNameValue>,
     next_import_request: u64,
     current_import_revision: Option<ImportInputRevision>,
@@ -581,8 +583,9 @@ struct ResolveImportKey {
 impl QueryKey for ResolveImportKey {
     fn stable_identity(&self) -> String {
         format!(
-            "{}:{}..{}:{}",
+            "{}:{:?}:{}..{}:{}",
             self.occurrence.importer(),
+            self.mode,
             self.occurrence.source_offset(),
             self.occurrence.source_end(),
             self.occurrence.specifier()
@@ -592,9 +595,26 @@ impl QueryKey for ResolveImportKey {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResolveImportValue {
+    site_found: bool,
     groups: Arc<[Arc<[ImportDiscoveryRequest]>]>,
     requests: Arc<[ImportDiscoveryRequest]>,
     speculative_blocked: bool,
+    resolution: Option<crate::CanonicalImportResolution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeclarationImportQueryKey(crate::declaration_candidate::DeclarationImportSiteKey);
+
+impl QueryKey for DeclarationImportQueryKey {
+    fn stable_identity(&self) -> String {
+        self.0.stable_identity()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DeclarationImportQueryValue {
+    Available(crate::CanonicalImportResolution),
+    Failure(crate::declaration_candidate::DeclarationImportFailure),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -671,6 +691,13 @@ fn accepted_read_input(module: &ModuleId) -> InputIdentity {
     InputIdentity::new(
         "accepted-read-provenance",
         Arc::<str>::from(module.as_str()),
+    )
+}
+
+fn accepted_import_provenance_input(identity: crate::PhysicalFileIdentity) -> InputIdentity {
+    InputIdentity::new(
+        "accepted-import-provenance",
+        format!("{}:{}", identity.volume(), identity.file()),
     )
 }
 
@@ -1576,7 +1603,7 @@ impl Default for RevisionedQueryDatabase {
             .expect("the ModuleRir family has one canonical name");
         let import_store = Arc::new(Mutex::new(ImportInputStore::default()));
         let evaluator_store = import_store.clone();
-        let index_for_import = module_indexes.clone();
+        let parse_for_import = parse_modules.clone();
         let resolve_imports = runtime
             .family_with_evaluator(
                 "compiler.resolve-import",
@@ -1592,22 +1619,30 @@ impl Default for RevisionedQueryDatabase {
                     }
                     .ok_or_else(|| QueryAbort::UnpublishedRevision(context.revision()))?;
                     context.input(import_context_input())?;
-                    let indexed = context.query_registered(
-                        &index_for_import,
+                    let parsed = context.query_registered(
+                        &parse_for_import,
                         ModuleQueryKey(key.occurrence.importer().clone()),
                     )?;
-                    let rue_query::QueryOutcome::Success(indexed) = indexed.outcome() else {
-                        unreachable!("ModuleIndex publishes typed values")
+                    let rue_query::QueryOutcome::Success(parsed) = parsed.outcome() else {
+                        unreachable!("ParseModule publishes typed values")
                     };
-                    let site = indexed.0.as_ref().ok().and_then(|index| {
-                        index.imports.iter().find(|site| {
+                    let site = parsed.result.as_ref().ok().and_then(|module| {
+                        module.imports().iter().find(|site| {
                             site.importer() == key.occurrence.importer()
                                 && site.source_offset() == key.occurrence.source_offset()
                                 && site.source_end() == key.occurrence.source_end()
                                 && site.specifier() == key.occurrence.specifier()
                         })
                     });
-                    let site = site.expect("ResolveImport key is absent from ModuleIndex");
+                    let Some(site) = site else {
+                        return Ok(QueryOutput::success(ResolveImportValue {
+                            site_found: false,
+                            groups: Arc::from([]),
+                            requests: Arc::from([]),
+                            speculative_blocked: false,
+                            resolution: None,
+                        }));
+                    };
                     context.input(accepted_read_input(key.occurrence.importer()))?;
                     let importer = view
                         .accepted_reads
@@ -1630,7 +1665,53 @@ impl Default for RevisionedQueryDatabase {
                     let pending = pending_occurrence_requests(&groups, &view.ledger);
                     let speculative_blocked =
                         key.mode == ImportDemandMode::Speculative && !pending.is_empty();
+                    let resolution = if pending.is_empty()
+                        && !crate::import_discovery::exact_import_has_failures(
+                            &groups,
+                            &view.ledger,
+                        ) {
+                        enum ProvenanceLookupFailure {
+                            Query(QueryAbort),
+                            Invalid,
+                        }
+
+                        if crate::import_discovery::validate_exact_import_occurrence(
+                            &groups,
+                            &view.ledger,
+                        )
+                        .is_err()
+                        {
+                            None
+                        } else {
+                            let winner = crate::import_discovery::exact_import_winner(
+                                groups.iter(),
+                                &view.ledger,
+                            );
+                            match crate::import_discovery::resolve_exact_import_winner(
+                                winner,
+                                |source| {
+                                    context
+                                        .input(accepted_import_provenance_input(
+                                            source.metadata_identity(),
+                                        ))
+                                        .map_err(ProvenanceLookupFailure::Query)?;
+                                    crate::import_discovery::accepted_import_module(
+                                        source,
+                                        &view.accepted_reads,
+                                    )
+                                    .map_err(|_| ProvenanceLookupFailure::Invalid)
+                                },
+                            ) {
+                                Ok(resolution) => Some(resolution),
+                                Err(ProvenanceLookupFailure::Query(abort)) => return Err(abort),
+                                Err(ProvenanceLookupFailure::Invalid) => None,
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     Ok(QueryOutput::success(ResolveImportValue {
+                        site_found: true,
                         groups: groups.into(),
                         requests: if speculative_blocked {
                             Arc::from([])
@@ -1638,10 +1719,215 @@ impl Default for RevisionedQueryDatabase {
                             pending.into()
                         },
                         speculative_blocked,
+                        resolution,
                     }))
                 },
             )
             .expect("the ResolveImport family has one canonical name");
+        let occurrences_for_declaration_import = declaration_occurrence_indexes.clone();
+        let shells_for_declaration_import = declaration_shells.clone();
+        let parse_for_declaration_import = parse_modules.clone();
+        let resolve_for_declaration_import = resolve_imports.clone();
+        let declaration_imports = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.declaration-import",
+                MODULE_QUERY_MEMO_RETENTION,
+                |left: &DeclarationImportQueryValue, right: &DeclarationImportQueryValue| {
+                    left == right
+                },
+                move |context, _, key: &DeclarationImportQueryKey| {
+                    use crate::declaration_candidate::{
+                        DeclarationCandidateCategory, DeclarationImportFailure,
+                        DeclarationOccurrenceCapability, DeclarationShellFailure,
+                    };
+                    use crate::parsed_modules::ParsedDeclarationImportFailure;
+
+                    let indexed = context.query_registered(
+                        &occurrences_for_declaration_import,
+                        ModuleQueryKey(key.0.declaration.module.clone()),
+                    )?;
+                    let rue_query::QueryOutcome::Success(indexed) = indexed.outcome() else {
+                        unreachable!("DeclarationOccurrenceIndex publishes typed values")
+                    };
+                    let value = match indexed {
+                        DeclarationOccurrenceIndexValue::Failure(failure) => {
+                            DeclarationImportQueryValue::Failure(
+                                DeclarationImportFailure::OccurrencesUnavailable(failure.clone()),
+                            )
+                        }
+                        DeclarationOccurrenceIndexValue::Available(index) => {
+                            match index.capabilities.get(&key.0.declaration) {
+                                None => DeclarationImportQueryValue::Failure(
+                                    DeclarationImportFailure::AbsentDeclaration(key.0.clone()),
+                                ),
+                                Some(DeclarationOccurrenceCapability::Ambiguous { .. }) => {
+                                    DeclarationImportQueryValue::Failure(
+                                        DeclarationImportFailure::AmbiguousDeclaration(
+                                            key.0.clone(),
+                                        ),
+                                    )
+                                }
+                                Some(DeclarationOccurrenceCapability::Exact {
+                                    duplicate_multiplicity: 0,
+                                    ..
+                                }) => DeclarationImportQueryValue::Failure(
+                                    DeclarationImportFailure::ParserCapabilityMismatch(
+                                        key.0.clone(),
+                                    ),
+                                ),
+                                Some(DeclarationOccurrenceCapability::Exact { .. }) => {
+                                    let shell = context.query_registered(
+                                        &shells_for_declaration_import,
+                                        DeclarationShellQueryKey(key.0.declaration.clone()),
+                                    )?;
+                                    let rue_query::QueryOutcome::Success(shell) = shell.outcome()
+                                    else {
+                                        unreachable!("DeclarationShell publishes typed values")
+                                    };
+                                    match shell {
+                                        DeclarationShellQueryValue::Failure(failure) => {
+                                            let failure = match failure {
+                                                DeclarationShellFailure::OccurrencesUnavailable(
+                                                    failure,
+                                                ) => DeclarationImportFailure::OccurrencesUnavailable(
+                                                    failure.clone(),
+                                                ),
+                                                DeclarationShellFailure::Absent(_) => {
+                                                    DeclarationImportFailure::AbsentDeclaration(
+                                                        key.0.clone(),
+                                                    )
+                                                }
+                                                DeclarationShellFailure::Ambiguous(_) => {
+                                                    DeclarationImportFailure::AmbiguousDeclaration(
+                                                        key.0.clone(),
+                                                    )
+                                                }
+                                                DeclarationShellFailure::ParserCapabilityMismatch(
+                                                    _,
+                                                ) => DeclarationImportFailure::ParserCapabilityMismatch(
+                                                    key.0.clone(),
+                                                ),
+                                            };
+                                            DeclarationImportQueryValue::Failure(failure)
+                                        }
+                                        DeclarationShellQueryValue::Available(fact)
+                                            if !matches!(
+                                                fact.key.category,
+                                                DeclarationCandidateCategory::ConstCandidate
+                                                    | DeclarationCandidateCategory::Function
+                                                    | DeclarationCandidateCategory::Method
+                                                    | DeclarationCandidateCategory::AssociatedFunction
+                                                    | DeclarationCandidateCategory::Destructor
+                                            ) =>
+                                        {
+                                            DeclarationImportQueryValue::Failure(
+                                                DeclarationImportFailure::CategoryMismatch(
+                                                    key.0.clone(),
+                                                ),
+                                            )
+                                        }
+                                        DeclarationShellQueryValue::Available(fact)
+                                            if fact.key != key.0.declaration =>
+                                        {
+                                            DeclarationImportQueryValue::Failure(
+                                                DeclarationImportFailure::ParserCapabilityMismatch(
+                                                    key.0.clone(),
+                                                ),
+                                            )
+                                        }
+                                        DeclarationShellQueryValue::Available(_) => {
+                                            let parsed = context.query_registered(
+                                                &parse_for_declaration_import,
+                                                ModuleQueryKey(key.0.declaration.module.clone()),
+                                            )?;
+                                            let rue_query::QueryOutcome::Success(parsed) =
+                                                parsed.outcome()
+                                            else {
+                                                unreachable!("ParseModule publishes typed values")
+                                            };
+                                            match &parsed.result {
+                                                Err(_) => DeclarationImportQueryValue::Failure(
+                                                    DeclarationImportFailure::OccurrencesUnavailable(
+                                                        crate::declaration_candidate::DeclarationOccurrenceFailure::ParseRejected {
+                                                            module: key.0.declaration.module.clone(),
+                                                        },
+                                                    ),
+                                                ),
+                                                Ok(module) => match module.declaration_import(&key.0)
+                                                {
+                                                    Err(ParsedDeclarationImportFailure::SiteOutOfRange {
+                                                        available,
+                                                    }) => DeclarationImportQueryValue::Failure(
+                                                        DeclarationImportFailure::SiteOutOfRange {
+                                                            key: key.0.clone(),
+                                                            available,
+                                                        },
+                                                    ),
+                                                    Err(ParsedDeclarationImportFailure::SpecifierMismatch {
+                                                        actual,
+                                                    }) => DeclarationImportQueryValue::Failure(
+                                                        DeclarationImportFailure::SpecifierMismatch {
+                                                            key: key.0.clone(),
+                                                            actual,
+                                                        },
+                                                    ),
+                                                    Err(ParsedDeclarationImportFailure::CapabilityMismatch) => {
+                                                        DeclarationImportQueryValue::Failure(
+                                                            DeclarationImportFailure::ParserCapabilityMismatch(
+                                                                key.0.clone(),
+                                                            ),
+                                                        )
+                                                    }
+                                                    Ok(site) => {
+                                                        let resolved = context.query_registered(
+                                                            &resolve_for_declaration_import,
+                                                            ResolveImportKey {
+                                                                occurrence: crate::ImportOccurrenceKey::from_directive(&site),
+                                                                mode: ImportDemandMode::Rooted,
+                                                            },
+                                                        )?;
+                                                        let rue_query::QueryOutcome::Success(resolved) =
+                                                            resolved.outcome()
+                                                        else {
+                                                            unreachable!("ResolveImport publishes typed values")
+                                                        };
+                                                        if !resolved.site_found {
+                                                            DeclarationImportQueryValue::Failure(
+                                                                DeclarationImportFailure::ParserCapabilityMismatch(
+                                                                    key.0.clone(),
+                                                                ),
+                                                            )
+                                                        } else if let Some(resolution) =
+                                                            &resolved.resolution
+                                                        {
+                                                            DeclarationImportQueryValue::Available(
+                                                                resolution.clone(),
+                                                            )
+                                                        } else {
+                                                            DeclarationImportQueryValue::Failure(
+                                                                DeclarationImportFailure::ResolutionUnavailable(
+                                                                    key.0.clone(),
+                                                                ),
+                                                            )
+                                                        }
+                                                    }
+                                                },
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    let kind = if matches!(value, DeclarationImportQueryValue::Available(_)) {
+                        QueryTerminalKind::Success
+                    } else {
+                        QueryTerminalKind::Failure
+                    };
+                    Ok(QueryOutput::success(value).with_terminal_kind(kind))
+                },
+            )
+            .expect("the DeclarationImport family has one canonical name");
         Self {
             parse: RevisionedFamily::new(&runtime, "compiler.parse"),
             runtime,
@@ -1659,6 +1945,7 @@ impl Default for RevisionedQueryDatabase {
             raw_declaration_bodies,
             module_rirs,
             resolve_imports,
+            declaration_imports,
             lookup_names,
             next_import_request: 0,
             current_import_revision: None,
@@ -1866,6 +2153,11 @@ impl RevisionedQueryDatabase {
             let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
                 unreachable!("ResolveImport publishes typed success values")
             };
+            if !value.site_found {
+                return Err(import_input_error(
+                    "import demand occurrence is absent from the current parsed module",
+                ));
+            }
             speculative_blocked |= value.speculative_blocked;
             for request in value.requests.iter() {
                 let operation = ImportHostOperationKey::new(request);
@@ -1927,6 +2219,11 @@ impl RevisionedQueryDatabase {
             let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
                 unreachable!("ResolveImport publishes typed values")
             };
+            if !value.site_found {
+                return Err(import_input_error(
+                    "exact import projection occurrence is absent from the current parsed module",
+                ));
+            }
             groups.extend(value.groups.iter().cloned());
         }
         groups.sort_by(|left, right| left[0].cmp(&right[0]));
@@ -2014,6 +2311,12 @@ impl RevisionedQueryDatabase {
             .iter()
             .map(|entry| (entry.module(), entry))
             .collect::<BTreeMap<_, _>>();
+        crate::import_discovery::validate_accepted_import_manifest(&accepted_reads)?;
+        if provenance.len() != accepted_reads.len() {
+            return Err(import_input_error(
+                "accepted read manifest contains duplicate logical modules",
+            ));
+        }
         if sources
             .iter()
             .any(|source| !provenance.contains_key(&source.module))
@@ -2029,6 +2332,9 @@ impl RevisionedQueryDatabase {
             return Err(import_input_error(
                 "import observation belongs to a different discovery epoch",
             ));
+        }
+        for source in ledger.iter().filter_map(ImportObservation::accepted_source) {
+            crate::import_discovery::accepted_import_module(source, &accepted_reads)?;
         }
         let revision = Revision::new(self.next_revision, generation);
         self.next_revision += 1;
@@ -2050,6 +2356,12 @@ impl RevisionedQueryDatabase {
                 let accepted = provenance[&source.module];
                 leaves.push((
                     accepted_read_input(&source.module),
+                    exact_value_stamp(next_stamp, provenance_stamps, accepted),
+                ));
+            }
+            for accepted in accepted_reads.iter() {
+                leaves.push((
+                    accepted_import_provenance_input(accepted.metadata_identity()),
                     exact_value_stamp(next_stamp, provenance_stamps, accepted),
                 ));
             }
@@ -4158,6 +4470,959 @@ mod tests {
             )
             .unwrap();
         (revision, plan)
+    }
+
+    fn begin_database_plan(
+        database: &mut RevisionedQueryDatabase,
+        assembler: &DiscoverySourceAssembler,
+        context: ImportDiscoveryContext,
+    ) -> (
+        SourceSnapshot,
+        Arc<[crate::AcceptedReadManifestEntry]>,
+        ImportInputRevision,
+        ImportDiscoveryPlan,
+    ) {
+        let snapshot = assembler.snapshot().unwrap();
+        let reads = assembler.accepted_read_manifest();
+        let revision = database
+            .begin_import_inputs(&snapshot, context.clone(), reads.clone())
+            .unwrap();
+        let runtime_revision = Revision::new(revision.revision_id, revision.request_generation);
+        let root = ModuleId::from_logical_path("main.rue").unwrap();
+        let modules = snapshot
+            .source_revision()
+            .modules()
+            .iter()
+            .map(|module| module.module.clone())
+            .collect::<Vec<_>>();
+        let (program, _) = database.parse_program(runtime_revision, &root, modules);
+        let plan = ImportDiscoveryPlan::new(&program.unwrap(), context).unwrap();
+        (snapshot, reads, revision, plan)
+    }
+
+    fn publish_manifest_observations(
+        database: &mut RevisionedQueryDatabase,
+        snapshot: &SourceSnapshot,
+        reads: Arc<[crate::AcceptedReadManifestEntry]>,
+        plan: &ImportDiscoveryPlan,
+        mut revision: ImportInputRevision,
+    ) -> ImportInputRevision {
+        let roots = ImportDemandRoots::whole_plan(plan);
+        loop {
+            let frontier = database
+                .import_frontier(revision, plan, ImportDemandMode::Rooted, &roots)
+                .unwrap();
+            if frontier.requests().is_empty() {
+                return revision;
+            }
+            let observations = frontier
+                .requests()
+                .iter()
+                .cloned()
+                .map(|request| {
+                    let Some(entry) = reads
+                        .iter()
+                        .find(|entry| entry.requested_path() == request.requested_path())
+                    else {
+                        return ImportObservation::absent(request);
+                    };
+                    let file_id = snapshot
+                        .files()
+                        .find(|source| snapshot.module_id(source.file_id) == Some(entry.module()))
+                        .unwrap()
+                        .file_id;
+                    let accepted = crate::AcceptedImportSource::new(
+                        entry.requested_path(),
+                        entry.canonical_path(),
+                        entry.metadata_identity(),
+                        entry.metadata_fingerprint(),
+                        snapshot.shared_source_text(file_id).unwrap(),
+                    )
+                    .unwrap();
+                    ImportObservation::accepted(request, accepted).unwrap()
+                })
+                .collect();
+            revision = database
+                .publish_import_batch(&frontier, snapshot, reads.clone(), observations)
+                .unwrap();
+        }
+    }
+
+    fn publish_remapped_observations(
+        database: &mut RevisionedQueryDatabase,
+        snapshot: &SourceSnapshot,
+        reads: Arc<[crate::AcceptedReadManifestEntry]>,
+        plan: &ImportDiscoveryPlan,
+        mut revision: ImportInputRevision,
+        remaps: &[(&str, PhysicalFileIdentity)],
+    ) -> ImportInputRevision {
+        let roots = ImportDemandRoots::whole_plan(plan);
+        loop {
+            let frontier = database
+                .import_frontier(revision, plan, ImportDemandMode::Rooted, &roots)
+                .unwrap();
+            if frontier.requests().is_empty() {
+                return revision;
+            }
+            let observations = frontier
+                .requests()
+                .iter()
+                .cloned()
+                .map(|request| {
+                    let Some((_, identity)) = remaps
+                        .iter()
+                        .find(|(path, _)| *path == request.requested_path())
+                    else {
+                        return ImportObservation::absent(request);
+                    };
+                    let entry = reads
+                        .iter()
+                        .find(|entry| entry.metadata_identity() == *identity)
+                        .unwrap();
+                    let file_id = snapshot
+                        .files()
+                        .find(|source| snapshot.module_id(source.file_id) == Some(entry.module()))
+                        .unwrap()
+                        .file_id;
+                    let accepted = crate::AcceptedImportSource::new(
+                        request.requested_path(),
+                        entry.canonical_path(),
+                        entry.metadata_identity(),
+                        entry.metadata_fingerprint(),
+                        snapshot.shared_source_text(file_id).unwrap(),
+                    )
+                    .unwrap();
+                    ImportObservation::accepted(request, accepted).unwrap()
+                })
+                .collect();
+            revision = database
+                .publish_import_batch(&frontier, snapshot, reads.clone(), observations)
+                .unwrap();
+        }
+    }
+
+    fn declaration_import_key(
+        module: &ModuleId,
+        category: crate::declaration_candidate::DeclarationCandidateCategory,
+        name: impl Into<Arc<str>>,
+        owner: Option<crate::declaration_candidate::DeclarationCandidateOwner>,
+        occurrence: u32,
+        specifier: &str,
+    ) -> DeclarationImportQueryKey {
+        DeclarationImportQueryKey(crate::declaration_candidate::DeclarationImportSiteKey {
+            declaration: crate::declaration_candidate::DeclarationCandidateKey {
+                module: module.clone(),
+                category,
+                name: name.into(),
+                owner,
+                duplicate_discriminator: 0,
+            },
+            occurrence,
+            specifier: Arc::from(specifier),
+        })
+    }
+
+    #[test]
+    fn declaration_imports_are_exact_lazy_and_distinguish_duplicate_specifiers() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+
+        let source = "const selected = if true { @import(\"same\") } else { @import(\"same\") }; const untouched = @import(\"other\"); fn main() {}";
+        let (_, assembler, context) = import_fixture(301, source);
+        let mut database = RevisionedQueryDatabase::default();
+        let (snapshot, reads, revision, plan) =
+            begin_database_plan(&mut database, &assembler, context);
+        let revision =
+            publish_manifest_observations(&mut database, &snapshot, reads, &plan, revision);
+        let runtime_revision = Revision::new(revision.revision_id, revision.request_generation);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let parsed = database.runtime.request_registered(
+            &database.parse_modules,
+            runtime_revision,
+            ModuleQueryKey(module.clone()),
+            CancellationToken::new(),
+        );
+        let parsed_module = match parsed.terminal().unwrap().outcome() {
+            rue_query::QueryOutcome::Success(value) => value.result.clone().unwrap(),
+            rue_query::QueryOutcome::Failure(_) => unreachable!(),
+        };
+        assert_eq!(
+            parsed_module.declaration_import_locator_materialization_count(),
+            0,
+            "indexing and import discovery must retain only fixed parser locators"
+        );
+
+        let first_key = declaration_import_key(
+            &module,
+            Category::ConstCandidate,
+            "selected",
+            None,
+            0,
+            "same",
+        );
+        let second_key = declaration_import_key(
+            &module,
+            Category::ConstCandidate,
+            "selected",
+            None,
+            1,
+            "same",
+        );
+        assert_ne!(first_key.stable_identity(), second_key.stable_identity());
+        for key in [first_key.clone(), second_key] {
+            let requested = database.runtime.request_registered(
+                &database.declaration_imports,
+                runtime_revision,
+                key,
+                CancellationToken::new(),
+            );
+            assert_eq!(execution(&requested), RequestExecution::Computed);
+            assert_eq!(
+                requested
+                    .dependencies()
+                    .iter()
+                    .map(|dependency| dependency.node.family())
+                    .collect::<Vec<_>>(),
+                vec![
+                    "compiler.declaration-occurrence-index",
+                    "compiler.declaration-shell",
+                    "compiler.parse-module",
+                    "compiler.resolve-import",
+                ]
+            );
+            let terminal = requested.terminal().unwrap();
+            assert_eq!(terminal.kind(), QueryTerminalKind::Success);
+            assert!(matches!(
+                terminal.outcome(),
+                rue_query::QueryOutcome::Success(DeclarationImportQueryValue::Available(
+                    crate::CanonicalImportResolution::Missing
+                ))
+            ));
+        }
+        assert_eq!(
+            parsed_module.declaration_import_locator_materialization_count(),
+            2,
+            "only the two demanded sites in selected may materialize"
+        );
+        let warm = database.runtime.request_registered(
+            &database.declaration_imports,
+            runtime_revision,
+            first_key,
+            CancellationToken::new(),
+        );
+        assert_eq!(execution(&warm), RequestExecution::Reused);
+        assert_eq!(
+            parsed_module.declaration_import_locator_materialization_count(),
+            2
+        );
+        let out_of_range = database.runtime.request_registered(
+            &database.declaration_imports,
+            runtime_revision,
+            declaration_import_key(
+                &module,
+                Category::ConstCandidate,
+                "selected",
+                None,
+                2,
+                "same",
+            ),
+            CancellationToken::new(),
+        );
+        assert!(matches!(
+            out_of_range.terminal().unwrap().outcome(),
+            rue_query::QueryOutcome::Success(DeclarationImportQueryValue::Failure(
+                crate::declaration_candidate::DeclarationImportFailure::SiteOutOfRange {
+                    available: 2,
+                    ..
+                }
+            ))
+        ));
+        let wrong_specifier = database.runtime.request_registered(
+            &database.declaration_imports,
+            runtime_revision,
+            declaration_import_key(
+                &module,
+                Category::ConstCandidate,
+                "selected",
+                None,
+                0,
+                "different",
+            ),
+            CancellationToken::new(),
+        );
+        assert!(matches!(
+            wrong_specifier.terminal().unwrap().outcome(),
+            rue_query::QueryOutcome::Success(DeclarationImportQueryValue::Failure(
+                crate::declaration_candidate::DeclarationImportFailure::SpecifierMismatch {
+                    actual,
+                    ..
+                }
+            )) if actual.as_ref() == "same"
+        ));
+    }
+
+    #[test]
+    fn declaration_import_relocation_reuses_and_stale_absolute_site_fails_typed() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+
+        let first_source = "const selected = @import(\"missing\"); fn main() {}";
+        let (_, first_assembler, first_context) = import_fixture(302, first_source);
+        let mut database = RevisionedQueryDatabase::default();
+        let (first_snapshot, first_reads, first_revision, first_plan) =
+            begin_database_plan(&mut database, &first_assembler, first_context);
+        let old_occurrence = first_plan.groups()[0][0].occurrence().clone();
+        assert_ne!(
+            ResolveImportKey {
+                occurrence: old_occurrence.clone(),
+                mode: ImportDemandMode::Rooted,
+            }
+            .stable_identity(),
+            ResolveImportKey {
+                occurrence: old_occurrence.clone(),
+                mode: ImportDemandMode::Speculative,
+            }
+            .stable_identity(),
+            "resolve-import stable identities must include demand mode"
+        );
+        let first_revision = publish_manifest_observations(
+            &mut database,
+            &first_snapshot,
+            first_reads,
+            &first_plan,
+            first_revision,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let key = declaration_import_key(
+            &module,
+            Category::ConstCandidate,
+            "selected",
+            None,
+            0,
+            "missing",
+        );
+        let first = database.runtime.request_registered(
+            &database.declaration_imports,
+            Revision::new(
+                first_revision.revision_id,
+                first_revision.request_generation,
+            ),
+            key.clone(),
+            CancellationToken::new(),
+        );
+        let first_stamp = first.terminal().unwrap().stamp();
+
+        let shifted_source =
+            "// position-only relocation\n\nconst selected = @import(\"missing\"); fn main() {}";
+        let (_, shifted_assembler, shifted_context) = import_fixture(303, shifted_source);
+        let (shifted_snapshot, shifted_reads, shifted_revision, shifted_plan) =
+            begin_database_plan(&mut database, &shifted_assembler, shifted_context);
+        let shifted_revision = publish_manifest_observations(
+            &mut database,
+            &shifted_snapshot,
+            shifted_reads,
+            &shifted_plan,
+            shifted_revision,
+        );
+        let shifted_runtime = Revision::new(
+            shifted_revision.revision_id,
+            shifted_revision.request_generation,
+        );
+        let relocated = database.runtime.request_registered(
+            &database.declaration_imports,
+            shifted_runtime,
+            key,
+            CancellationToken::new(),
+        );
+        assert_eq!(
+            relocated.terminal().unwrap().stamp(),
+            first_stamp,
+            "position-free declaration import results must stay green across trivia relocation"
+        );
+
+        let stale = database.runtime.request_registered(
+            &database.resolve_imports,
+            shifted_runtime,
+            ResolveImportKey {
+                occurrence: old_occurrence,
+                mode: ImportDemandMode::Rooted,
+            },
+            CancellationToken::new(),
+        );
+        assert!(matches!(
+            stale.terminal().unwrap().outcome(),
+            rue_query::QueryOutcome::Success(ResolveImportValue {
+                site_found: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn declaration_import_recovers_when_resolution_observations_arrive() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+
+        let (_, assembler, context) =
+            import_fixture(306, "const selected = @import(\"missing\"); fn main() {}");
+        let mut database = RevisionedQueryDatabase::default();
+        let (snapshot, reads, revision, plan) =
+            begin_database_plan(&mut database, &assembler, context);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let key = declaration_import_key(
+            &module,
+            Category::ConstCandidate,
+            "selected",
+            None,
+            0,
+            "missing",
+        );
+        let pending = database.runtime.request_registered(
+            &database.declaration_imports,
+            Revision::new(revision.revision_id, revision.request_generation),
+            key.clone(),
+            CancellationToken::new(),
+        );
+        assert!(matches!(
+            pending.terminal().unwrap().outcome(),
+            rue_query::QueryOutcome::Success(DeclarationImportQueryValue::Failure(
+                crate::declaration_candidate::DeclarationImportFailure::ResolutionUnavailable(_)
+            ))
+        ));
+
+        let completed =
+            publish_manifest_observations(&mut database, &snapshot, reads, &plan, revision);
+        let recovered = database.runtime.request_registered(
+            &database.declaration_imports,
+            Revision::new(completed.revision_id, completed.request_generation),
+            key,
+            CancellationToken::new(),
+        );
+        assert_eq!(execution(&recovered), RequestExecution::Computed);
+        assert!(matches!(
+            recovered.terminal().unwrap().outcome(),
+            rue_query::QueryOutcome::Success(DeclarationImportQueryValue::Available(
+                crate::CanonicalImportResolution::Missing
+            ))
+        ));
+    }
+
+    #[test]
+    fn declaration_imports_preserve_canonical_ambiguity_and_category_boundaries() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+
+        let source = "const selected = @import(\"dep\"); struct Box { value: i32, fn get(borrow self) { @import(\"method\"); } fn make() -> Box { @import(\"associated\"); Box { value: 0 } } } drop fn Box(self) { @import(\"drop\"); } fn free() { @import(\"free\"); } enum Choice { A } extern \"C\" { fn foreign() -> i32; }";
+        let (_, mut assembler, context) = import_fixture(304, source);
+        assembler
+            .add_explicit(
+                "/project/dep.rue",
+                "/physical/dep-file.rue",
+                PhysicalFileIdentity::new(2, 1),
+                FileMetadataFingerprint::new(2, 2, 3),
+                Arc::new("const value = 1;".to_owned()),
+            )
+            .unwrap();
+        assembler
+            .add_explicit(
+                "/project/dep/_dep.rue",
+                "/physical/dep-dir.rue",
+                PhysicalFileIdentity::new(3, 1),
+                FileMetadataFingerprint::new(3, 2, 3),
+                Arc::new("const value = 2;".to_owned()),
+            )
+            .unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let (snapshot, reads, revision, plan) =
+            begin_database_plan(&mut database, &assembler, context);
+        let revision =
+            publish_manifest_observations(&mut database, &snapshot, reads, &plan, revision);
+        let runtime_revision = Revision::new(revision.revision_id, revision.request_generation);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let selected = database.runtime.request_registered(
+            &database.declaration_imports,
+            runtime_revision,
+            declaration_import_key(
+                &module,
+                Category::ConstCandidate,
+                "selected",
+                None,
+                0,
+                "dep",
+            ),
+            CancellationToken::new(),
+        );
+        let selected_terminal = selected.terminal().unwrap();
+        assert!(
+            matches!(
+                selected_terminal.outcome(),
+                rue_query::QueryOutcome::Success(DeclarationImportQueryValue::Available(
+                    crate::CanonicalImportResolution::Ambiguous { .. }
+                ))
+            ),
+            "unexpected declaration import outcome: {:#?}",
+            selected_terminal.outcome()
+        );
+
+        let owner = crate::declaration_candidate::DeclarationCandidateOwner {
+            category: Category::Struct,
+            name: Arc::from("Box"),
+        };
+        for (category, name, owner, specifier) in [
+            (Category::Method, "get", Some(owner.clone()), "method"),
+            (
+                Category::AssociatedFunction,
+                "make",
+                Some(owner.clone()),
+                "associated",
+            ),
+            (Category::Destructor, "Box", Some(owner), "drop"),
+            (Category::Function, "free", None, "free"),
+        ] {
+            let requested = database.runtime.request_registered(
+                &database.declaration_imports,
+                runtime_revision,
+                declaration_import_key(&module, category, name, owner, 0, specifier),
+                CancellationToken::new(),
+            );
+            assert!(matches!(
+                requested.terminal().unwrap().outcome(),
+                rue_query::QueryOutcome::Success(DeclarationImportQueryValue::Available(
+                    crate::CanonicalImportResolution::Missing
+                ))
+            ));
+        }
+
+        for (category, name) in [
+            (Category::Struct, "Box"),
+            (Category::Enum, "Choice"),
+            (Category::ExternFunction, "foreign"),
+        ] {
+            let key = declaration_import_key(&module, category, name, None, 0, "none");
+            let requested = database.runtime.request_registered(
+                &database.declaration_imports,
+                runtime_revision,
+                key.clone(),
+                CancellationToken::new(),
+            );
+            assert!(matches!(
+                requested.terminal().unwrap().outcome(),
+                rue_query::QueryOutcome::Success(DeclarationImportQueryValue::Failure(
+                    crate::declaration_candidate::DeclarationImportFailure::CategoryMismatch(
+                        actual
+                    )
+                )) if actual == &key.0
+            ));
+        }
+    }
+
+    #[test]
+    fn resolved_declaration_import_observes_only_winning_physical_provenance() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+
+        let source = "const selected = @import(\"dep.rue\"); fn main() {}";
+        let (_, mut first_assembler, first_context) = import_fixture(307, source);
+        first_assembler
+            .add_explicit(
+                "/project/dep.rue",
+                "/physical/dep.rue",
+                PhysicalFileIdentity::new(2, 1),
+                FileMetadataFingerprint::new(4, 5, 6),
+                Arc::new("const value = 1;".to_owned()),
+            )
+            .unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let (first_snapshot, first_reads, first_revision, first_plan) =
+            begin_database_plan(&mut database, &first_assembler, first_context);
+        let first_revision = publish_manifest_observations(
+            &mut database,
+            &first_snapshot,
+            first_reads,
+            &first_plan,
+            first_revision,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let key = declaration_import_key(
+            &module,
+            Category::ConstCandidate,
+            "selected",
+            None,
+            0,
+            "dep.rue",
+        );
+        let first = database.runtime.request_registered(
+            &database.declaration_imports,
+            Revision::new(
+                first_revision.revision_id,
+                first_revision.request_generation,
+            ),
+            key.clone(),
+            CancellationToken::new(),
+        );
+        assert!(matches!(
+            first.terminal().unwrap().outcome(),
+            rue_query::QueryOutcome::Success(DeclarationImportQueryValue::Available(
+                crate::CanonicalImportResolution::Resolved(target)
+            )) if target.as_str() == "dep.rue"
+        ));
+        let first_stamp = first.terminal().unwrap().stamp();
+
+        let (_, mut remapped_assembler, remapped_context) = import_fixture(307, source);
+        remapped_assembler
+            .add_explicit(
+                "/project/other.rue",
+                "/physical/other.rue",
+                PhysicalFileIdentity::new(2, 1),
+                FileMetadataFingerprint::new(4, 5, 6),
+                Arc::new("const value = 1;".to_owned()),
+            )
+            .unwrap();
+        let (remapped_snapshot, remapped_reads, remapped_revision, remapped_plan) =
+            begin_database_plan(&mut database, &remapped_assembler, remapped_context);
+        let remapped_revision = publish_remapped_observations(
+            &mut database,
+            &remapped_snapshot,
+            remapped_reads,
+            &remapped_plan,
+            remapped_revision,
+            &[("/project/dep.rue", PhysicalFileIdentity::new(2, 1))],
+        );
+        let remapped = database.runtime.request_registered(
+            &database.declaration_imports,
+            Revision::new(
+                remapped_revision.revision_id,
+                remapped_revision.request_generation,
+            ),
+            key.clone(),
+            CancellationToken::new(),
+        );
+        let remapped_terminal = remapped.terminal().unwrap();
+        assert_ne!(remapped_terminal.stamp(), first_stamp);
+        assert!(matches!(
+            remapped_terminal.outcome(),
+            rue_query::QueryOutcome::Success(DeclarationImportQueryValue::Available(
+                crate::CanonicalImportResolution::Resolved(target)
+            )) if target.as_str() == "other.rue"
+        ));
+        let remapped_stamp = remapped_terminal.stamp();
+
+        let mut green_assembler = remapped_assembler.clone();
+        green_assembler
+            .add_explicit(
+                "/project/unrelated.rue",
+                "/physical/unrelated.rue",
+                PhysicalFileIdentity::new(9, 1),
+                FileMetadataFingerprint::new(9, 2, 3),
+                Arc::new("const unrelated = 9;".to_owned()),
+            )
+            .unwrap();
+        let green_context =
+            ImportDiscoveryContext::new(307, "/project", Some("/sdk"), "test-policy").unwrap();
+        let (green_snapshot, green_reads, green_revision, green_plan) =
+            begin_database_plan(&mut database, &green_assembler, green_context);
+        let green_revision = publish_remapped_observations(
+            &mut database,
+            &green_snapshot,
+            green_reads,
+            &green_plan,
+            green_revision,
+            &[("/project/dep.rue", PhysicalFileIdentity::new(2, 1))],
+        );
+        let green = database.runtime.request_registered(
+            &database.declaration_imports,
+            Revision::new(
+                green_revision.revision_id,
+                green_revision.request_generation,
+            ),
+            key,
+            CancellationToken::new(),
+        );
+        assert_eq!(green.terminal().unwrap().stamp(), remapped_stamp);
+    }
+
+    #[test]
+    fn ambiguous_declaration_import_observes_both_winning_provenance_leaves() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+
+        let source = "const selected = @import(\"dep\"); fn main() {}";
+        let (_, mut first_assembler, first_context) = import_fixture(308, source);
+        for (path, canonical, identity, value) in [
+            (
+                "/project/dep.rue",
+                "/physical/dep-file.rue",
+                PhysicalFileIdentity::new(2, 1),
+                1,
+            ),
+            (
+                "/project/dep/_dep.rue",
+                "/physical/dep-dir.rue",
+                PhysicalFileIdentity::new(3, 1),
+                2,
+            ),
+        ] {
+            first_assembler
+                .add_explicit(
+                    path,
+                    canonical,
+                    identity,
+                    FileMetadataFingerprint::new(value, 5, 6),
+                    Arc::new(format!("const value = {value};")),
+                )
+                .unwrap();
+        }
+        let mut database = RevisionedQueryDatabase::default();
+        let (first_snapshot, first_reads, first_revision, first_plan) =
+            begin_database_plan(&mut database, &first_assembler, first_context);
+        let first_revision = publish_manifest_observations(
+            &mut database,
+            &first_snapshot,
+            first_reads,
+            &first_plan,
+            first_revision,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let key = declaration_import_key(
+            &module,
+            Category::ConstCandidate,
+            "selected",
+            None,
+            0,
+            "dep",
+        );
+        let first = database.runtime.request_registered(
+            &database.declaration_imports,
+            Revision::new(
+                first_revision.revision_id,
+                first_revision.request_generation,
+            ),
+            key.clone(),
+            CancellationToken::new(),
+        );
+        assert!(matches!(
+            first.terminal().unwrap().outcome(),
+            rue_query::QueryOutcome::Success(DeclarationImportQueryValue::Available(
+                crate::CanonicalImportResolution::Ambiguous {
+                    file_module,
+                    directory_module,
+                }
+            )) if file_module.as_str() == "dep.rue"
+                && directory_module.as_str() == "dep/_dep.rue"
+        ));
+        let first_stamp = first.terminal().unwrap().stamp();
+
+        let (_, mut remapped_assembler, remapped_context) = import_fixture(308, source);
+        for (path, canonical, identity, value) in [
+            (
+                "/project/left.rue",
+                "/physical/left.rue",
+                PhysicalFileIdentity::new(2, 1),
+                1,
+            ),
+            (
+                "/project/right.rue",
+                "/physical/right.rue",
+                PhysicalFileIdentity::new(3, 1),
+                2,
+            ),
+        ] {
+            remapped_assembler
+                .add_explicit(
+                    path,
+                    canonical,
+                    identity,
+                    FileMetadataFingerprint::new(value, 5, 6),
+                    Arc::new(format!("const value = {value};")),
+                )
+                .unwrap();
+        }
+        let (remapped_snapshot, remapped_reads, remapped_revision, remapped_plan) =
+            begin_database_plan(&mut database, &remapped_assembler, remapped_context);
+        let remaps = [
+            ("/project/dep.rue", PhysicalFileIdentity::new(2, 1)),
+            ("/project/dep/_dep.rue", PhysicalFileIdentity::new(3, 1)),
+        ];
+        let remapped_revision = publish_remapped_observations(
+            &mut database,
+            &remapped_snapshot,
+            remapped_reads,
+            &remapped_plan,
+            remapped_revision,
+            &remaps,
+        );
+        let remapped = database.runtime.request_registered(
+            &database.declaration_imports,
+            Revision::new(
+                remapped_revision.revision_id,
+                remapped_revision.request_generation,
+            ),
+            key.clone(),
+            CancellationToken::new(),
+        );
+        let remapped_terminal = remapped.terminal().unwrap();
+        assert_ne!(remapped_terminal.stamp(), first_stamp);
+        assert!(matches!(
+            remapped_terminal.outcome(),
+            rue_query::QueryOutcome::Success(DeclarationImportQueryValue::Available(
+                crate::CanonicalImportResolution::Ambiguous {
+                    file_module,
+                    directory_module,
+                }
+            )) if file_module.as_str() == "left.rue"
+                && directory_module.as_str() == "right.rue"
+        ));
+        let remapped_stamp = remapped_terminal.stamp();
+
+        let mut green_assembler = remapped_assembler.clone();
+        green_assembler
+            .add_explicit(
+                "/project/unrelated.rue",
+                "/physical/unrelated.rue",
+                PhysicalFileIdentity::new(9, 1),
+                FileMetadataFingerprint::new(9, 2, 3),
+                Arc::new("const unrelated = 9;".to_owned()),
+            )
+            .unwrap();
+        let green_context =
+            ImportDiscoveryContext::new(308, "/project", Some("/sdk"), "test-policy").unwrap();
+        let (green_snapshot, green_reads, green_revision, green_plan) =
+            begin_database_plan(&mut database, &green_assembler, green_context);
+        let green_revision = publish_remapped_observations(
+            &mut database,
+            &green_snapshot,
+            green_reads,
+            &green_plan,
+            green_revision,
+            &remaps,
+        );
+        let green = database.runtime.request_registered(
+            &database.declaration_imports,
+            Revision::new(
+                green_revision.revision_id,
+                green_revision.request_generation,
+            ),
+            key,
+            CancellationToken::new(),
+        );
+        assert_eq!(green.terminal().unwrap().stamp(), remapped_stamp);
+    }
+
+    #[test]
+    fn import_publication_rejects_duplicate_and_unmatched_physical_provenance() {
+        let source = "const selected = @import(\"dep\"); fn main() {}";
+        let (_, assembler, context) = import_fixture(309, source);
+        let snapshot = assembler.snapshot().unwrap();
+        let reads = assembler.accepted_read_manifest();
+        let duplicated = reads
+            .iter()
+            .cloned()
+            .chain(std::iter::once(reads[0].clone()))
+            .collect::<Vec<_>>();
+        let mut database = RevisionedQueryDatabase::default();
+        assert!(
+            database
+                .begin_import_inputs(&snapshot, context.clone(), duplicated.into())
+                .is_err(),
+            "duplicate physical provenance must fail before revision publication"
+        );
+
+        let (snapshot, reads, revision, plan) =
+            begin_database_plan(&mut database, &assembler, context);
+        let roots = ImportDemandRoots::whole_plan(&plan);
+        let frontier = database
+            .import_frontier(revision, &plan, ImportDemandMode::Rooted, &roots)
+            .unwrap();
+        let observations = frontier
+            .requests()
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, request)| {
+                if index == 0 {
+                    let accepted = crate::AcceptedImportSource::new(
+                        request.requested_path(),
+                        request.requested_path(),
+                        PhysicalFileIdentity::new(99, 99),
+                        FileMetadataFingerprint::new(1, 2, 3),
+                        Arc::new("const value = 1;".to_owned()),
+                    )
+                    .unwrap();
+                    ImportObservation::accepted(request, accepted).unwrap()
+                } else {
+                    ImportObservation::absent(request)
+                }
+            })
+            .collect();
+        assert!(
+            database
+                .publish_import_batch(&frontier, &snapshot, reads, observations)
+                .is_err(),
+            "accepted observations without exact manifest provenance must not publish"
+        );
+        assert_eq!(database.current_import_revision(), Some(revision));
+    }
+
+    #[test]
+    fn canceled_and_evicted_declaration_import_requests_recover() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+
+        let source_text = (0..=MODULE_QUERY_MEMO_RETENTION)
+            .map(|index| format!("const c{index} = @import(\"x{index}\");"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (_, assembler, context) = import_fixture(305, &source_text);
+        let snapshot = assembler.snapshot().unwrap();
+        let reads = assembler.accepted_read_manifest();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database
+            .begin_import_inputs(&snapshot, context, reads)
+            .unwrap();
+        let runtime_revision = Revision::new(revision.revision_id, revision.request_generation);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let key = |index| {
+            declaration_import_key(
+                &module,
+                Category::ConstCandidate,
+                format!("c{index}"),
+                None,
+                0,
+                &format!("x{index}"),
+            )
+        };
+
+        let canceled = CancellationToken::new();
+        canceled.cancel();
+        let aborted = database.runtime.request_registered(
+            &database.declaration_imports,
+            runtime_revision,
+            key(0),
+            canceled,
+        );
+        assert_eq!(execution(&aborted), RequestExecution::Aborted);
+        assert!(aborted.terminal().is_none());
+
+        for index in 0..=MODULE_QUERY_MEMO_RETENTION {
+            let requested = database.runtime.request_registered(
+                &database.declaration_imports,
+                runtime_revision,
+                key(index),
+                CancellationToken::new(),
+            );
+            assert!(matches!(
+                requested.terminal().unwrap().outcome(),
+                rue_query::QueryOutcome::Success(DeclarationImportQueryValue::Failure(
+                    crate::declaration_candidate::DeclarationImportFailure::ResolutionUnavailable(
+                        _
+                    )
+                ))
+            ));
+        }
+        assert_eq!(
+            database.declaration_imports.retention().terminals,
+            MODULE_QUERY_MEMO_RETENTION
+        );
+        let recovered = database.runtime.request_registered(
+            &database.declaration_imports,
+            runtime_revision,
+            key(0),
+            CancellationToken::new(),
+        );
+        assert_eq!(execution(&recovered), RequestExecution::Computed);
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]

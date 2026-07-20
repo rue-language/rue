@@ -1563,6 +1563,11 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
             "raw_declaration_body_cache",
             "warm_raw_declaration_body",
             "eager_raw_declaration_body",
+            "legacy_declaration_import",
+            "fallback_declaration_import",
+            "declaration_import_cache",
+            "warm_declaration_import",
+            "eager_declaration_import",
         ] {
             assert!(
                 !source.contains(retired),
@@ -1575,6 +1580,7 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
                 ".evaluate_raw_const_syntax(",
                 ".evaluate_raw_declaration_signature(",
                 ".evaluate_raw_declaration_body(",
+                ".declaration_import(",
                 ".declaration_capabilities()",
                 "project_semantic_shell(",
             ] {
@@ -1609,6 +1615,15 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
             assert!(
                 !source.contains("RawDeclarationBody"),
                 "compiler production module {name} escaped the raw-body authority allowlist"
+            );
+        }
+        if !matches!(
+            *name,
+            "declaration_candidate" | "parsed_modules" | "revisioned_query_database"
+        ) {
+            assert!(
+                !source.contains("DeclarationImport"),
+                "compiler production module {name} escaped the declaration-import authority allowlist"
             );
         }
     }
@@ -1652,6 +1667,12 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         1
     );
     assert_eq!(parsed.matches("RawDeclarationBodySyntax {").count(), 1);
+    assert_eq!(runtime.matches(".declaration_import(").count(), 1);
+    assert_eq!(parsed.matches("fn declaration_import(").count(), 1);
+    assert_eq!(
+        runtime.matches("\"compiler.declaration-import\"").count(),
+        1
+    );
     assert!(!runtime.contains("Vec::remove"));
 
     let raw_body_evaluator = runtime
@@ -1775,6 +1796,28 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
             "raw-body terminal regained positioned/live parser or semantic payload: {forbidden}"
         );
     }
+    let declaration_import_terminal = runtime
+        .split("enum DeclarationImportQueryValue")
+        .nth(1)
+        .and_then(|tail| tail.split("struct LookupNameKey").next())
+        .unwrap();
+    for forbidden in [
+        "CompileErrors",
+        "Span",
+        "FileId",
+        "Spur",
+        "Ast",
+        "InstRef",
+        "Rir",
+        "TypeId",
+        "SemanticDefinitionToken",
+        "SemanticModuleToken",
+    ] {
+        assert!(
+            !declaration_import_terminal.contains(forbidden),
+            "declaration-import terminal regained positioned/live parser or semantic payload: {forbidden}"
+        );
+    }
     let raw_const_payload = module("declaration_candidate")
         .split("pub(crate) struct RawConstSyntax")
         .nth(1)
@@ -1814,6 +1857,28 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
             "raw-body payload regained a positioned or live parser/semantic handle: {forbidden}"
         );
     }
+    let declaration_import_payload = module("declaration_candidate")
+        .split("pub(crate) struct DeclarationImportSiteKey")
+        .nth(1)
+        .and_then(|tail| tail.split("impl DeclarationCandidateKey").next())
+        .unwrap();
+    for forbidden in [
+        "CompileErrors",
+        "Span",
+        "FileId",
+        "Spur",
+        "Ast",
+        "Rir",
+        "InstRef",
+        "TypeId",
+        "SemanticDefinitionToken",
+        "SemanticModuleToken",
+    ] {
+        assert!(
+            !declaration_import_payload.contains(forbidden),
+            "declaration-import payload regained a positioned or live parser/semantic handle: {forbidden}"
+        );
+    }
     let raw_signature_locator = parsed
         .split("enum RawDeclarationSignatureLocator")
         .nth(1)
@@ -1832,6 +1897,89 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         assert!(
             raw_signature_locator.contains(required),
             "raw-signature parser locator lost bounded inline shape {required}"
+        );
+    }
+    let declaration_import_locator = parsed
+        .split("struct RawDeclarationImportRange")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("pub(crate) enum ParsedDeclarationImportFailure")
+                .next()
+        })
+        .unwrap();
+    for forbidden in ["Vec<", "Arc<", "Box<"] {
+        assert!(
+            !declaration_import_locator.contains(forbidden),
+            "declaration-import parser locator regained per-declaration heap storage: {forbidden}"
+        );
+    }
+    for required in ["start: u32", "len: u32"] {
+        assert!(
+            declaration_import_locator.contains(required),
+            "declaration-import parser locator lost fixed range field {required}"
+        );
+    }
+    let declaration_import_evaluator = runtime
+        .split("let occurrences_for_declaration_import")
+        .nth(1)
+        .and_then(|tail| tail.split("        Self {").next())
+        .unwrap();
+    for forbidden in [
+        "module_rirs",
+        "lower_module_rir",
+        "CanonicalMergedProgram",
+        "Sema",
+        "SemanticView",
+    ] {
+        assert!(
+            !declaration_import_evaluator.contains(forbidden),
+            "declaration-import evaluator gained a broad compiler dependency: {forbidden}"
+        );
+    }
+    for required in [
+        ".query_registered(",
+        "ResolveImportKey",
+        "ImportDemandMode::Rooted",
+    ] {
+        assert!(
+            declaration_import_evaluator.contains(required),
+            "declaration-import evaluator lost canonical query delegation: {required}"
+        );
+    }
+    let resolve_import_evaluator = runtime
+        .split("let parse_for_import")
+        .nth(1)
+        .and_then(|tail| tail.split("let occurrences_for_declaration_import").next())
+        .unwrap();
+    for required in [
+        "exact_import_winner(",
+        "resolve_exact_import_winner(",
+        "accepted_import_provenance_input(",
+        "source.metadata_identity()",
+    ] {
+        assert!(
+            resolve_import_evaluator.contains(required),
+            "resolve-import lost exact winning-provenance dependency: {required}"
+        );
+    }
+    for forbidden in [
+        "reduce_exact_import_graph(",
+        "canonical ResolveImport inputs reduce deterministically",
+    ] {
+        assert!(
+            !resolve_import_evaluator.contains(forbidden),
+            "resolve-import regained broad or panicking reduction: {forbidden}"
+        );
+    }
+    let physical_provenance_identity = runtime
+        .split("fn accepted_import_provenance_input")
+        .nth(1)
+        .and_then(|tail| tail.split("fn import_observation_input").next())
+        .unwrap();
+    for required in ["identity.volume()", "identity.file()"] {
+        assert!(
+            physical_provenance_identity.contains(required),
+            "accepted-import provenance input lost exact physical identity component: {required}"
         );
     }
     let failure_algebra = module("declaration_candidate")

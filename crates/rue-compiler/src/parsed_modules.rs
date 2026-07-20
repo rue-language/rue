@@ -161,6 +161,8 @@ pub struct ParsedDefinitionIndex {
     #[cfg(test)]
     raw_declaration_body_terminal_materializations: Arc<AtomicUsize>,
     #[cfg(test)]
+    declaration_import_locator_materializations: Arc<AtomicUsize>,
+    #[cfg(test)]
     by_name: BTreeMap<(DefinitionNamespace, Arc<str>), Arc<[ParsedDefinitionOccurrence]>>,
 }
 
@@ -311,6 +313,23 @@ impl ParsedDefinitionIndex {
             .load(Ordering::Relaxed)
     }
 
+    fn declaration_import_range(
+        &self,
+        key: &DeclarationCandidateKey,
+    ) -> Option<RawDeclarationImportRange> {
+        let index = self.declaration_by_key.get(key).copied()?;
+        let candidate = self.declarations.get(index)?;
+        (candidate.fact.key == *key)
+            .then_some(candidate.raw_import_range)
+            .flatten()
+    }
+
+    #[cfg(test)]
+    fn declaration_import_locator_materialization_count(&self) -> usize {
+        self.declaration_import_locator_materializations
+            .load(Ordering::Relaxed)
+    }
+
     pub(crate) fn declaration_locator(
         &self,
         key: &DeclarationCandidateKey,
@@ -346,6 +365,7 @@ pub(crate) struct ParsedDeclarationCandidate {
     raw_const_syntax_spans: Option<RawConstSyntaxSpans>,
     raw_signature_locator: Option<RawDeclarationSignatureLocator>,
     raw_body_span: Option<Span>,
+    raw_import_range: Option<RawDeclarationImportRange>,
 }
 
 /// Parser-private locators for syntax that is materialized only after an exact
@@ -373,6 +393,21 @@ enum RawDeclarationSignatureLocator {
         declaration: Span,
         abi: Span,
     },
+}
+
+/// Parser-private range into the module's source-ordered import table for one
+/// declaration. Runtime query values retain neither field.
+#[derive(Debug, Clone, Copy)]
+struct RawDeclarationImportRange {
+    start: u32,
+    len: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ParsedDeclarationImportFailure {
+    SiteOutOfRange { available: u32 },
+    SpecifierMismatch { actual: Arc<str> },
+    CapabilityMismatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -531,6 +566,55 @@ impl ParsedModule {
     pub(crate) fn raw_declaration_body_terminal_materialization_count(&self) -> usize {
         self.definitions
             .raw_declaration_body_terminal_materialization_count()
+    }
+
+    pub(crate) fn declaration_import(
+        &self,
+        key: &crate::declaration_candidate::DeclarationImportSiteKey,
+    ) -> Result<ImportDirective, ParsedDeclarationImportFailure> {
+        let range = self
+            .definitions
+            .declaration_import_range(&key.declaration)
+            .ok_or(ParsedDeclarationImportFailure::CapabilityMismatch)?;
+        if key.occurrence >= range.len {
+            return Err(ParsedDeclarationImportFailure::SiteOutOfRange {
+                available: range.len,
+            });
+        }
+        let index = range
+            .start
+            .checked_add(key.occurrence)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or(ParsedDeclarationImportFailure::CapabilityMismatch)?;
+        let site = self
+            .imports
+            .get(index)
+            .ok_or(ParsedDeclarationImportFailure::CapabilityMismatch)?;
+        let Some(locator) = self.definitions.declaration_locator(&key.declaration) else {
+            return Err(ParsedDeclarationImportFailure::CapabilityMismatch);
+        };
+        if site.importer() != self.module_id()
+            || site.source_offset() < locator.declaration_span.start
+            || site.source_end() > locator.declaration_span.end
+        {
+            return Err(ParsedDeclarationImportFailure::CapabilityMismatch);
+        }
+        if site.specifier() != key.specifier.as_ref() {
+            return Err(ParsedDeclarationImportFailure::SpecifierMismatch {
+                actual: Arc::from(site.specifier()),
+            });
+        }
+        #[cfg(test)]
+        self.definitions
+            .declaration_import_locator_materializations
+            .fetch_add(1, Ordering::Relaxed);
+        Ok(site.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn declaration_import_locator_materialization_count(&self) -> usize {
+        self.definitions
+            .declaration_import_locator_materialization_count()
     }
 
     #[cfg(test)]
@@ -1208,6 +1292,7 @@ fn build_module_with_resolver(
         &tokens,
         &provenanced_ast.ast,
         &resolver,
+        &import_sites.valid,
     )?;
     let payload = Arc::new(ParsedSyntaxPayload {
         source,
@@ -1311,6 +1396,7 @@ fn bind_payload(
                     },
                 ),
                 raw_body_span: candidate.raw_body_span.map(remap_span),
+                raw_import_range: candidate.raw_import_range,
             })
             .collect::<Vec<_>>()
             .into(),
@@ -1330,6 +1416,11 @@ fn bind_payload(
         raw_declaration_body_terminal_materializations: payload
             .definitions
             .raw_declaration_body_terminal_materializations
+            .clone(),
+        #[cfg(test)]
+        declaration_import_locator_materializations: payload
+            .definitions
+            .declaration_import_locator_materializations
             .clone(),
         #[cfg(test)]
         by_name: payload.definitions.by_name.clone(),
@@ -1706,6 +1797,27 @@ fn validate_pair(
     Ok(())
 }
 
+fn declaration_import_range(
+    declaration: Span,
+    import_sites: &[ImportDirective],
+) -> CompileResult<RawDeclarationImportRange> {
+    let start_index = import_sites.partition_point(|site| site.source_offset() < declaration.start);
+    let end = import_sites.partition_point(|site| site.source_offset() < declaration.end);
+    if import_sites[start_index..end]
+        .iter()
+        .any(|site| site.source_end() > declaration.end)
+    {
+        return Err(invalid_input(
+            "declaration import site crosses its declaration boundary",
+        ));
+    }
+    let start =
+        u32::try_from(start_index).map_err(|_| invalid_input("module import index exceeds u32"))?;
+    let len = u32::try_from(end - start_index)
+        .map_err(|_| invalid_input("declaration import count exceeds u32"))?;
+    Ok(RawDeclarationImportRange { start, len })
+}
+
 fn build_definition_index(
     module: ModuleId,
     file_id: FileId,
@@ -1713,7 +1825,16 @@ fn build_definition_index(
     tokens: &[rue_lexer::Token],
     ast: &Ast,
     resolver: &FrozenSymbolResolver,
+    import_sites: &[ImportDirective],
 ) -> CompileResult<ParsedDefinitionIndex> {
+    if import_sites.windows(2).any(|sites| {
+        (sites[0].source_offset(), sites[0].source_end())
+            > (sites[1].source_offset(), sites[1].source_end())
+    }) {
+        return Err(invalid_input(
+            "module import sites are not in canonical source order",
+        ));
+    }
     let mut pending = Vec::new();
     let mut pending_declarations = Vec::<(
         DeclarationShellFact,
@@ -1721,6 +1842,7 @@ fn build_definition_index(
         Option<RawConstSyntaxSpans>,
         Option<RawDeclarationSignatureLocator>,
         Option<Span>,
+        Option<RawDeclarationImportRange>,
     )>::new();
     let resolve_name = |ident: rue_parser::Ident| -> CompileResult<Arc<str>> {
         let symbol = resolver.symbol(ident.name)?;
@@ -1833,6 +1955,18 @@ fn build_definition_index(
             if let Some(body) = raw_body_span {
                 validate_span("raw declaration body", body, file_id, source_text)?;
             }
+            let raw_import_range = if matches!(
+                category,
+                DeclarationCandidateCategory::Function
+                    | DeclarationCandidateCategory::ConstCandidate
+                    | DeclarationCandidateCategory::Destructor
+                    | DeclarationCandidateCategory::Method
+                    | DeclarationCandidateCategory::AssociatedFunction
+            ) {
+                Some(declaration_import_range(declaration_span, import_sites)?)
+            } else {
+                None
+            };
             pending_declarations.push((
                 DeclarationShellFact {
                     key: DeclarationCandidateKey {
@@ -1855,6 +1989,7 @@ fn build_definition_index(
                 raw_const_syntax_spans,
                 raw_signature_locator,
                 raw_body_span,
+                raw_import_range,
             ));
             Ok(())
         };
@@ -2112,6 +2247,7 @@ fn build_definition_index(
                 raw_const_syntax_spans,
                 raw_signature_locator,
                 raw_body_span,
+                raw_import_range,
             )| {
                 let duplicate = duplicate_counts
                     .entry((
@@ -2130,6 +2266,7 @@ fn build_definition_index(
                     raw_const_syntax_spans,
                     raw_signature_locator,
                     raw_body_span,
+                    raw_import_range,
                 })
             },
         )
@@ -2165,6 +2302,8 @@ fn build_definition_index(
         raw_declaration_signature_terminal_materializations: Arc::new(AtomicUsize::new(0)),
         #[cfg(test)]
         raw_declaration_body_terminal_materializations: Arc::new(AtomicUsize::new(0)),
+        #[cfg(test)]
+        declaration_import_locator_materializations: Arc::new(AtomicUsize::new(0)),
         #[cfg(test)]
         by_name,
     })
