@@ -1,0 +1,27 @@
+// Explicit deep clone keeps ownership transitions visible to the compiler.
+const model = @import("model.rue");
+
+pub fn clone(borrow source: model.World) -> model.World {
+    let mut out = model.new_world(source.seed, source.width, source.height);
+    out.tick = source.tick; out.resources = source.resources;
+    out.treasury = source.treasury; out.quests_completed = source.quests_completed;
+    out.script_steps = source.script_steps; out.rollback_count = source.rollback_count;
+    out.next_entity = source.next_entity; out.next_sequence = source.next_sequence;
+    out.valid = source.valid;
+    let mut i: u64 = 0;
+    while i < source.entities.len() { out.entities.push(source.entities.get_or(i, model.empty_entity())); i = i + 1; }
+    i = 0;
+    while i < source.tiles.len() { out.tiles.push(source.tiles.get_or(i, model.empty_tile())); i = i + 1; }
+    i = 0;
+    while i < source.events.len() { out.events.push(source.events.get_or(i, model.empty_event())); i = i + 1; }
+    i = 0;
+    while i < source.commands.len() { out.commands.push(source.commands.get_or(i, model.empty_command())); i = i + 1; }
+    i = 0;
+    while i < source.snapshots.len() { out.snapshots.push(source.snapshots.get_or(i, model.empty_snapshot())); i = i + 1; }
+    i = 0;
+    while i < source.diagnostics.len() {
+        let item = source.diagnostics.get_or(i, model.Diagnostic { code: 0, subject: 0, detail: 0 });
+        out.diagnostics.push(item); i = i + 1;
+    }
+    out
+}

@@ -1,0 +1,26 @@
+// Fixed-point vectors used by movement, steering, and collision.
+const fixed = @import("fixed.rue");
+
+pub struct Vec2 { x: fixed.Fixed, y: fixed.Fixed }
+
+pub fn zero() -> Vec2 { Vec2 { x: fixed.zero(), y: fixed.zero() } }
+pub fn from_ints(x: i64, y: i64) -> Vec2 {
+    Vec2 { x: fixed.from_int(x), y: fixed.from_int(y) }
+}
+pub fn add(borrow a: Vec2, borrow b: Vec2) -> Vec2 {
+    Vec2 { x: fixed.add(borrow a.x, borrow b.x), y: fixed.add(borrow a.y, borrow b.y) }
+}
+pub fn sub(borrow a: Vec2, borrow b: Vec2) -> Vec2 {
+    Vec2 { x: fixed.sub(borrow a.x, borrow b.x), y: fixed.sub(borrow a.y, borrow b.y) }
+}
+pub fn scale(borrow a: Vec2, borrow amount: fixed.Fixed) -> Vec2 {
+    Vec2 { x: fixed.mul(borrow a.x, borrow amount), y: fixed.mul(borrow a.y, borrow amount) }
+}
+pub fn manhattan(borrow a: Vec2, borrow b: Vec2) -> u64 {
+    let dx = fixed.abs(borrow fixed.sub(borrow a.x, borrow b.x));
+    let dy = fixed.abs(borrow fixed.sub(borrow a.y, borrow b.y));
+    @intCast((dx.raw + dy.raw) / fixed.SCALE())
+}
+pub fn equal(borrow a: Vec2, borrow b: Vec2) -> bool {
+    a.x.raw == b.x.raw && a.y.raw == b.y.raw
+}

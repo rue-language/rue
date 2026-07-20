@@ -1,0 +1,10 @@
+const std = @import("std");
+pub const Bytes = std.arraybuf.ArrayBuf(u8);
+pub fn bytes(value: str) -> Bytes {
+    let mut out = Bytes.new(); let mut i: u64 = 0;
+    while i < value.len() { out.push(value[i]); i = i + 1; }
+    out
+}
+pub fn demo() -> Bytes {
+    bytes("WORLD 10 10; ENTITY WORKER 1 1 1; ENTITY SCOUT 1 2 2; ENTITY BUILDER 2 3 3; ENTITY GUARD 2 4 4; TILE 5 5 WALL; TILE 6 5 FOREST; TICK 4; EXPECT ENTITIES 4;")
+}

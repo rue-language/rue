@@ -1,0 +1,54 @@
+// Text building and stable hashing without a formatting runtime.
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn append_literal(inout out: StrBuf, value: str) {
+    let mut i: u64 = 0;
+    while i < value.len() { out.push(value[i]); i = i + 1; }
+}
+
+pub fn append_string(inout out: StrBuf, borrow value: StrBuf) {
+    let mut i: u64 = 0;
+    while i < value.len() {
+        out.push(StrBuf.byte_at_borrowed(borrow value, i));
+        i = i + 1;
+    }
+}
+
+pub fn append_u64(inout out: StrBuf, value: u64) {
+    let rendered = @to_string(value);
+    append_string(inout out, borrow rendered);
+}
+
+pub fn append_i64(inout out: StrBuf, value: i64) {
+    let rendered = @to_string(value);
+    append_string(inout out, borrow rendered);
+}
+
+pub fn append_bool(inout out: StrBuf, value: bool) {
+    if value { append_literal(inout out, "true"); }
+    else { append_literal(inout out, "false"); }
+}
+
+pub fn line(inout out: StrBuf, label: str, value: u64) {
+    append_literal(inout out, label); append_u64(inout out, value); out.push(10);
+}
+
+pub fn signed_line(inout out: StrBuf, label: str, value: i64) {
+    append_literal(inout out, label); append_i64(inout out, value); out.push(10);
+}
+
+pub fn bool_line(inout out: StrBuf, label: str, value: bool) {
+    append_literal(inout out, label); append_bool(inout out, value); out.push(10);
+}
+
+pub fn fnv1a(borrow value: StrBuf) -> u64 {
+    let mut hash: u64 = 14695981039346656037;
+    let mut i: u64 = 0;
+    while i < value.len() {
+        hash = hash ^ @intCast(StrBuf.byte_at_borrowed(borrow value, i));
+        hash = @wrapping_mul(hash, 1099511628211);
+        i = i + 1;
+    }
+    hash
+}

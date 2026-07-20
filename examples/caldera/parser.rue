@@ -1,0 +1,81 @@
+// Predictive parser and validator for scenario declarations.
+const model = @import("model.rue");
+const scenario = @import("scenario_model.rue");
+const token = @import("token.rue");
+
+struct State { tokens: token.Tokens, cursor: u64, errors: u64 }
+
+fn peek(borrow state: State) -> token.Token {
+    state.tokens.get_or(state.cursor, token.empty())
+}
+fn advance(inout state: State) -> token.Token {
+    let value = peek(borrow state);
+    if state.cursor < state.tokens.len() { state.cursor = state.cursor + 1; }
+    value
+}
+fn take(inout state: State, kind: u64) -> token.Token {
+    let value = advance(inout state);
+    if value.kind != kind { state.errors = state.errors + 1; }
+    value
+}
+fn entity_kind(kind: u64) -> u64 {
+    if kind == token.WORKER() { model.WORKER() }
+    else if kind == token.SCOUT() { model.SCOUT() }
+    else if kind == token.BUILDER() { model.BUILDER() }
+    else if kind == token.GUARD() { model.GUARD() }
+    else { 0 }
+}
+fn terrain_kind(kind: u64) -> u64 {
+    if kind == token.PLAIN() { model.PLAIN() }
+    else if kind == token.WALL() { model.WALL() }
+    else if kind == token.WATER() { model.WATER() }
+    else if kind == token.FOREST() { model.FOREST() }
+    else { 0 }
+}
+
+pub fn parse(tokens: token.Tokens) -> scenario.Scenario {
+    let mut state = State { tokens: tokens, cursor: 0, errors: 0 };
+    let mut out = scenario.new();
+    while peek(borrow state).kind != token.EOF() {
+        let statement = advance(inout state);
+        if statement.kind == token.WORLD() {
+            out.width = take(inout state, token.NUMBER()).number;
+            out.height = take(inout state, token.NUMBER()).number;
+            let _ = take(inout state, token.SEMI());
+        } else if statement.kind == token.ENTITY() {
+            let kind_token = advance(inout state);
+            let faction = take(inout state, token.NUMBER()).number;
+            let x = take(inout state, token.NUMBER()).number;
+            let y = take(inout state, token.NUMBER()).number;
+            let _ = take(inout state, token.SEMI());
+            let kind = entity_kind(kind_token.kind);
+            if kind == 0 { state.errors = state.errors + 1; }
+            out.entities.push(scenario.EntitySpec { kind: kind, faction: faction, x: x, y: y });
+        } else if statement.kind == token.TILE() {
+            let x = take(inout state, token.NUMBER()).number;
+            let y = take(inout state, token.NUMBER()).number;
+            let terrain_token = advance(inout state);
+            let _ = take(inout state, token.SEMI());
+            let terrain = terrain_kind(terrain_token.kind);
+            if terrain == 0 { state.errors = state.errors + 1; }
+            out.tiles.push(scenario.TileSpec { x: x, y: y, terrain: terrain });
+        } else if statement.kind == token.TICK() {
+            out.ticks = take(inout state, token.NUMBER()).number;
+            let _ = take(inout state, token.SEMI());
+        } else if statement.kind == token.EXPECT() {
+            let _ = take(inout state, token.ENTITIES());
+            out.expected_entities = take(inout state, token.NUMBER()).number;
+            let _ = take(inout state, token.SEMI());
+        } else {
+            state.errors = state.errors + 1;
+            while peek(borrow state).kind != token.SEMI() &&
+                peek(borrow state).kind != token.EOF() { let _ = advance(inout state); }
+            if peek(borrow state).kind == token.SEMI() { let _ = advance(inout state); }
+        }
+    }
+    out.errors = state.errors;
+    out.valid = state.errors == 0 && out.width > 0 && out.height > 0 &&
+        out.entities.len() > 0 && (out.expected_entities == 0 ||
+            out.expected_entities == out.entities.len());
+    out
+}

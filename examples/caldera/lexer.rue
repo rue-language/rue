@@ -1,0 +1,76 @@
+// Lexer for Caldera's compact deterministic scenario language.
+const std = @import("std");
+const token = @import("token.rue");
+const Bytes = std.arraybuf.ArrayBuf(u8);
+
+pub struct Scan { tokens: token.Tokens, errors: u64 }
+
+fn alpha(byte: u8) -> bool {
+    (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || byte == 95
+}
+fn digit(byte: u8) -> bool { byte >= 48 && byte <= 57 }
+fn upper(byte: u8) -> u8 { if byte >= 97 && byte <= 122 { byte - 32 } else { byte } }
+
+fn word_eq(borrow source: Bytes, start: u64, end: u64, value: str) -> bool {
+    if end - start != value.len() { return false; }
+    let mut i: u64 = 0;
+    while i < value.len() {
+        if upper(source.get_or(start + i, 0)) != value[i] { return false; }
+        i = i + 1;
+    }
+    true
+}
+
+fn word_kind(borrow source: Bytes, start: u64, end: u64) -> u64 {
+    if word_eq(borrow source, start, end, "WORLD") { token.WORLD() }
+    else if word_eq(borrow source, start, end, "ENTITY") { token.ENTITY() }
+    else if word_eq(borrow source, start, end, "TILE") { token.TILE() }
+    else if word_eq(borrow source, start, end, "TICK") { token.TICK() }
+    else if word_eq(borrow source, start, end, "EXPECT") { token.EXPECT() }
+    else if word_eq(borrow source, start, end, "WORKER") { token.WORKER() }
+    else if word_eq(borrow source, start, end, "SCOUT") { token.SCOUT() }
+    else if word_eq(borrow source, start, end, "BUILDER") { token.BUILDER() }
+    else if word_eq(borrow source, start, end, "GUARD") { token.GUARD() }
+    else if word_eq(borrow source, start, end, "PLAIN") { token.PLAIN() }
+    else if word_eq(borrow source, start, end, "WALL") { token.WALL() }
+    else if word_eq(borrow source, start, end, "WATER") { token.WATER() }
+    else if word_eq(borrow source, start, end, "FOREST") { token.FOREST() }
+    else if word_eq(borrow source, start, end, "ENTITIES") { token.ENTITIES() }
+    else { token.INVALID() }
+}
+
+pub fn scan(source: Bytes) -> Scan {
+    let mut out = Scan { tokens: token.Tokens.new(), errors: 0 };
+    let mut i: u64 = 0;
+    while i < source.len() {
+        let byte = source.get_or(i, 0);
+        if byte == 32 || byte == 9 || byte == 10 || byte == 13 {
+            i = i + 1;
+        } else if byte == 35 {
+            while i < source.len() && source.get_or(i, 0) != 10 { i = i + 1; }
+        } else if byte == 59 {
+            out.tokens.push(token.Token { kind: token.SEMI(), number: 0, offset: i });
+            i = i + 1;
+        } else if digit(byte) {
+            let start = i;
+            let mut number: u64 = 0;
+            while i < source.len() && digit(source.get_or(i, 0)) {
+                number = number * 10 + @intCast(source.get_or(i, 0) - 48);
+                i = i + 1;
+            }
+            out.tokens.push(token.Token { kind: token.NUMBER(), number: number, offset: start });
+        } else if alpha(byte) {
+            let start = i;
+            while i < source.len() && alpha(source.get_or(i, 0)) { i = i + 1; }
+            let kind = word_kind(borrow source, start, i);
+            if kind == token.INVALID() { out.errors = out.errors + 1; }
+            out.tokens.push(token.Token { kind: kind, number: 0, offset: start });
+        } else {
+            out.errors = out.errors + 1;
+            out.tokens.push(token.Token { kind: token.INVALID(), number: 0, offset: i });
+            i = i + 1;
+        }
+    }
+    out.tokens.push(token.Token { kind: token.EOF(), number: 0, offset: source.len() });
+    out
+}

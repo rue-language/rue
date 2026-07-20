@@ -1,0 +1,20 @@
+const checksum = @import("checksum.rue");
+const model = @import("model.rue");
+const tick = @import("tick.rue");
+const world_clone = @import("world_clone.rue");
+
+pub struct Result { ticks: u64, mismatches: u64, checksum: u64, valid: bool }
+pub fn run(borrow baseline: model.World, count: u64) -> Result {
+    let mut left = world_clone.clone(borrow baseline);
+    let mut right = world_clone.clone(borrow baseline);
+    let mut out = Result { ticks: 0, mismatches: 0, checksum: 0, valid: true };
+    let mut i: u64 = 0;
+    while i < count {
+        let a = tick.step(inout left); let b = tick.step(inout right);
+        if a.checksum != b.checksum { out.mismatches = out.mismatches + 1; }
+        out.ticks = out.ticks + 1; i = i + 1;
+    }
+    out.checksum = checksum.world(borrow left);
+    out.valid = out.mismatches == 0 && out.checksum == checksum.world(borrow right);
+    out
+}

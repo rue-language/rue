@@ -1,0 +1,57 @@
+// Caldera deterministic report adapter: report_physics_ndjson.
+const checksum = @import("checksum.rue");
+const model = @import("model.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn PROFILE() -> u64 { 60019 }
+
+fn separator(inout out: StrBuf) {
+    if PROFILE() % 4 == 0 { text.append_literal(inout out, ","); }
+    else if PROFILE() % 4 == 1 { text.append_literal(inout out, ":"); }
+    else if PROFILE() % 4 == 2 { text.append_literal(inout out, "="); }
+    else { text.append_literal(inout out, " "); }
+}
+
+fn field(inout out: StrBuf, label: str, value: u64) {
+    text.append_literal(inout out, label); separator(inout out);
+    text.append_u64(inout out, value); out.push(10);
+}
+
+pub fn render(borrow world: model.World, suite_digest: u64) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "format=report_physics_ndjson\n");
+    field(inout out, "profile", PROFILE());
+    field(inout out, "tick", world.tick);
+    field(inout out, "width", world.width);
+    field(inout out, "height", world.height);
+    field(inout out, "entities", world.entities.len());
+    field(inout out, "alive", model.alive_count(borrow world));
+    field(inout out, "tiles", world.tiles.len());
+    field(inout out, "events", world.events.len());
+    field(inout out, "commands", world.commands.len());
+    field(inout out, "snapshots", world.snapshots.len());
+    field(inout out, "resources", world.resources);
+    field(inout out, "treasury", world.treasury);
+    field(inout out, "quests", world.quests_completed);
+    let mut i: u64 = 0;
+    while i < world.entities.len() {
+        let entity = world.entities.get_or(i, model.empty_entity());
+        text.append_literal(inout out, "entity"); separator(inout out);
+        text.append_u64(inout out, entity.id); separator(inout out);
+        text.append_u64(inout out, entity.kind); separator(inout out);
+        text.append_i64(inout out, entity.x); separator(inout out);
+        text.append_i64(inout out, entity.y); separator(inout out);
+        text.append_u64(inout out, entity.health); separator(inout out);
+        text.append_u64(inout out, entity.state); out.push(10);
+        i = i + 1;
+    }
+    field(inout out, "world_checksum", checksum.world(borrow world));
+    field(inout out, "suite_digest", suite_digest);
+    out
+}
+
+pub fn verify(borrow document: StrBuf) -> bool {
+    document.len() > 48 && text.fnv1a(borrow document) != 0
+}

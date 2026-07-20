@@ -1,0 +1,27 @@
+// Signed fixed-point arithmetic with three decimal places.
+pub fn SCALE() -> i64 { 1000 }
+
+pub struct Fixed { raw: i64 }
+
+pub fn zero() -> Fixed { Fixed { raw: 0 } }
+pub fn from_int(value: i64) -> Fixed { Fixed { raw: value * SCALE() } }
+pub fn from_parts(integer: i64, milli: i64) -> Fixed {
+    Fixed { raw: integer * SCALE() + milli }
+}
+pub fn add(borrow a: Fixed, borrow b: Fixed) -> Fixed { Fixed { raw: a.raw + b.raw } }
+pub fn sub(borrow a: Fixed, borrow b: Fixed) -> Fixed { Fixed { raw: a.raw - b.raw } }
+pub fn mul(borrow a: Fixed, borrow b: Fixed) -> Fixed {
+    Fixed { raw: (a.raw * b.raw) / SCALE() }
+}
+pub fn div(borrow a: Fixed, borrow b: Fixed) -> Fixed {
+    if b.raw == 0 { zero() } else { Fixed { raw: (a.raw * SCALE()) / b.raw } }
+}
+pub fn abs(borrow value: Fixed) -> Fixed {
+    Fixed { raw: if value.raw < 0 { 0 - value.raw } else { value.raw } }
+}
+pub fn clamp(borrow value: Fixed, borrow low: Fixed, borrow high: Fixed) -> Fixed {
+    if value.raw < low.raw { Fixed { raw: low.raw } }
+    else if value.raw > high.raw { Fixed { raw: high.raw } }
+    else { Fixed { raw: value.raw } }
+}
+pub fn floor(borrow value: Fixed) -> i64 { value.raw / SCALE() }

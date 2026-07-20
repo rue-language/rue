@@ -1,0 +1,32 @@
+const checksum = @import("checksum.rue");
+const collision = @import("collision.rue");
+const events = @import("events.rue");
+const model = @import("model.rue");
+const tick = @import("tick.rue");
+
+pub struct Result { ticks: u64, entities: u64, moved: u64,
+    ai_changes: u64, produced: u64, events: u64,
+    collisions: u64, checksum: u64, valid: bool }
+
+pub fn run(inout world: model.World, count: u64) -> Result {
+    let mut out = Result { ticks: 0, entities: world.entities.len(), moved: 0,
+        ai_changes: 0, produced: 0, events: 0, collisions: 0,
+        checksum: 0, valid: true };
+    let mut i: u64 = 0;
+    while i < count {
+        let value = tick.step(inout world);
+        out.ticks = out.ticks + 1; out.moved = out.moved + value.moved;
+        out.ai_changes = out.ai_changes + value.ai_changes;
+        out.produced = out.produced + value.produced;
+        if !value.valid { out.valid = false; }
+        i = i + 1;
+    }
+    let collision_audit = collision.audit(borrow world);
+    let event_audit = events.audit(borrow world);
+    out.events = world.events.len();
+    out.collisions = collision_audit.tile_hits + collision_audit.entity_hits;
+    out.checksum = checksum.world(borrow world);
+    out.valid = out.valid && collision_audit.valid && event_audit.valid &&
+        out.ticks == count && world.tick >= count;
+    out
+}

@@ -1,0 +1,23 @@
+const std = @import("std");
+pub fn EOF() -> u64 { 0 }
+pub fn NUMBER() -> u64 { 1 }
+pub fn WORLD() -> u64 { 2 }
+pub fn ENTITY() -> u64 { 3 }
+pub fn TILE() -> u64 { 4 }
+pub fn TICK() -> u64 { 5 }
+pub fn EXPECT() -> u64 { 6 }
+pub fn WORKER() -> u64 { 7 }
+pub fn SCOUT() -> u64 { 8 }
+pub fn BUILDER() -> u64 { 9 }
+pub fn GUARD() -> u64 { 10 }
+pub fn PLAIN() -> u64 { 11 }
+pub fn WALL() -> u64 { 12 }
+pub fn WATER() -> u64 { 13 }
+pub fn FOREST() -> u64 { 14 }
+pub fn ENTITIES() -> u64 { 15 }
+pub fn SEMI() -> u64 { 16 }
+pub fn INVALID() -> u64 { 17 }
+
+pub struct Token { kind: u64, number: u64, offset: u64 }
+pub const Tokens = std.arraybuf.ArrayBuf(Token);
+pub fn empty() -> Token { Token { kind: INVALID(), number: 0, offset: 0 } }

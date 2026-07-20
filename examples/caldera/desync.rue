@@ -1,0 +1,21 @@
+const checksum = @import("checksum.rue");
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+pub struct Audit { left: u64, right: u64, mismatch: bool,
+    first_entity: u64, digest: u64, valid: bool }
+pub fn compare(borrow a: model.World, borrow b: model.World) -> Audit {
+    let left = checksum.world(borrow a); let right = checksum.world(borrow b);
+    let mut first = model.NONE();
+    let limit = if a.entities.len() < b.entities.len() { a.entities.len() } else { b.entities.len() };
+    let mut i: u64 = 0;
+    while i < limit {
+        let x = a.entities.get_or(i, model.empty_entity());
+        let y = b.entities.get_or(i, model.empty_entity());
+        if first == model.NONE() && (x.x != y.x || x.y != y.y || x.health != y.health) { first = i; }
+        i = i + 1;
+    }
+    Audit { left: left, right: right, mismatch: left != right,
+        first_entity: first, digest: metric.mix(left, right),
+        valid: (left == right) == (first == model.NONE() &&
+            a.entities.len() == b.entities.len() && a.tick == b.tick) }
+}

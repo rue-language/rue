@@ -1,0 +1,57 @@
+// Canonical whole-world checksum used by replay and rollback oracles.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+
+pub fn world(borrow value: model.World) -> u64 {
+    let mut hash = metric.mix(14695981039346656037, value.seed);
+    hash = metric.mix(hash, value.tick);
+    hash = metric.mix(hash, value.width);
+    hash = metric.mix(hash, value.height);
+    hash = metric.mix(hash, value.resources);
+    hash = metric.mix(hash, value.treasury);
+    hash = metric.mix(hash, value.quests_completed);
+    hash = metric.mix(hash, value.script_steps);
+    let mut i: u64 = 0;
+    while i < value.entities.len() {
+        let entity = value.entities.get_or(i, model.empty_entity());
+        hash = metric.mix(hash, entity.id);
+        hash = metric.mix(hash, entity.kind);
+        hash = metric.mix(hash, entity.faction);
+        hash = metric.mix(hash, @intCast(entity.x + 4096));
+        hash = metric.mix(hash, @intCast(entity.y + 4096));
+        hash = metric.mix(hash, @intCast(entity.velocity_x + 4096));
+        hash = metric.mix(hash, @intCast(entity.velocity_y + 4096));
+        hash = metric.mix(hash, entity.health);
+        hash = metric.mix(hash, entity.energy);
+        hash = metric.mix(hash, entity.state);
+        hash = metric.mix(hash, entity.inventory);
+        hash = metric.mix(hash, entity.credits);
+        hash = metric.mix(hash, entity.experience);
+        hash = metric.mix(hash, if entity.alive { 1 } else { 0 });
+        i = i + 1;
+    }
+    i = 0;
+    while i < value.tiles.len() {
+        let tile = value.tiles.get_or(i, model.empty_tile());
+        hash = metric.mix(hash, tile.x);
+        hash = metric.mix(hash, tile.y);
+        hash = metric.mix(hash, tile.terrain);
+        hash = metric.mix(hash, tile.height);
+        hash = metric.mix(hash, tile.resource);
+        hash = metric.mix(hash, tile.region);
+        hash = metric.mix(hash, if tile.walkable { 1 } else { 0 });
+        i = i + 1;
+    }
+    i = 0;
+    while i < value.events.len() {
+        let event = value.events.get_or(i, model.empty_event());
+        hash = metric.mix(hash, event.tick);
+        hash = metric.mix(hash, event.kind);
+        hash = metric.mix(hash, event.actor);
+        hash = metric.mix(hash, event.target);
+        hash = metric.mix(hash, event.value);
+        hash = metric.mix(hash, event.sequence);
+        i = i + 1;
+    }
+    hash
+}

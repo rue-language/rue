@@ -1,0 +1,19 @@
+const metric = @import("metric.rue");
+const std = @import("std");
+const stress = @import("stress.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+pub struct Result { tiers: u64, entities: u64, ticks: u64,
+    digest: u64, valid: bool }
+pub fn run() -> Result {
+    let one = stress.run(1); let two = stress.run(2);
+    Result { tiers: 2, entities: one.entities + two.entities,
+        ticks: one.ticks + two.ticks, digest: metric.mix(one.digest, two.digest),
+        valid: one.valid && two.valid && two.entities == one.entities * 2 &&
+            two.ticks == one.ticks * 2 }
+}
+pub fn render(borrow value: Result) -> StrBuf {
+    let mut out = StrBuf.new(); text.line(inout out, "benchmark tiers=", value.tiers);
+    text.line(inout out, "entities=", value.entities); text.line(inout out, "ticks=", value.ticks);
+    text.line(inout out, "digest=", value.digest); text.bool_line(inout out, "valid=", value.valid); out
+}

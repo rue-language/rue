@@ -1,0 +1,114 @@
+// caldera — deterministic simulation, scripting, rollback, and content lab.
+const diagnostics = @import("diagnostics.rue");
+const lexer = @import("lexer.rue");
+const parser = @import("parser.rue");
+const report = @import("report.rue");
+const scenario_source = @import("scenario_source.rue");
+const script_lower = @import("script_lower.rue");
+const script_oracle = @import("script_oracle.rue");
+const selftest = @import("selftest.rue");
+const simulation = @import("simulation.rue");
+const std = @import("std");
+const stress = @import("stress.rue");
+const text = @import("text.rue");
+const workload = @import("workload.rue");
+const worldgen = @import("worldgen.rue");
+const StrBuf = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+const OptStr = std.option.Option(StrBuf);
+const OptBytes = std.option.Option(Bytes);
+const FileRes = std.result.Result(std.fs.File, std.fs.FileError);
+const ReadRes = std.result.Result(u64, std.fs.FileError);
+
+fn same(borrow value: StrBuf, expected: StrBuf) -> bool {
+    StrBuf.equals_borrowed(borrow value, borrow expected)
+}
+
+fn read_file(borrow path: StrBuf) -> OptBytes {
+    let O = OptBytes; let mut data = Bytes.new();
+    let mut file = match std.fs.File.open(borrow path) {
+        FileRes.Ok(value) => value,
+        FileRes.Err(error) => { return O.None; },
+    };
+    loop {
+        data.reserve(65536);
+        let count = match file.read(inout data) {
+            ReadRes.Ok(value) => value,
+            ReadRes.Err(error) => { return O.None; },
+        };
+        if count == 0 { break; }
+    }
+    let _ = file.close(); O.Some(data)
+}
+
+fn execute(source: Bytes) -> i32 {
+    let scanned = lexer.scan(source);
+    if scanned.errors > 0 { println("caldera[syntax]: unrecognized token"); return 1; }
+    let scenario = parser.parse(scanned.tokens);
+    if scenario.errors > 0 { println("caldera[syntax]: malformed scenario"); return 1; }
+    if !scenario.valid {
+        println("caldera[semantic]: EXPECT ENTITIES does not match declarations"); return 1;
+    }
+    let program = script_lower.lower(borrow scenario);
+    let script = script_oracle.verify(borrow scenario, borrow program);
+    if !script.valid { println("caldera[script]: VM and interpreter disagree"); return 1; }
+    let mut world = worldgen.from_scenario(borrow scenario);
+    if world.diagnostics.len() > 0 { print(diagnostics.render(borrow world)); return 1; }
+    world.script_steps = script.vm_steps;
+    let run = simulation.run(inout world, scenario.ticks);
+    let mut out = report.summary(borrow world, borrow run);
+    text.line(inout out, "script_steps=", script.vm_steps);
+    text.bool_line(inout out, "script_oracle=", script.valid);
+    print(out); if run.valid && script.valid { 0 } else { 1 }
+}
+
+fn demo() -> i32 {
+    let mut world = worldgen.demo(1);
+    let run = simulation.run(inout world, 4);
+    print(report.summary(borrow world, borrow run));
+    if run.valid { 0 } else { 1 }
+}
+
+fn help() -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "usage: caldera [demo | run FILE | selftest | stress1 | stress2 | stress4 | benchmark | help]\n");
+    text.append_literal(inout out, "Caldera simulates deterministic worlds, scripts, rollback, replay, and content systems.\n"); out
+}
+
+fn run_selftest() -> i32 {
+    let value = selftest.run(); print(selftest.render(borrow value));
+    if value.valid { 0 } else { 1 }
+}
+
+fn main() -> i32 {
+    let command = match std.env.arg(1) {
+        OptStr.Some(value) => value,
+        OptStr.None => { return run_selftest(); },
+    };
+    if same(borrow command, "demo") { return demo(); }
+    if same(borrow command, "selftest") { return run_selftest(); }
+    if same(borrow command, "stress1") || same(borrow command, "stress2") ||
+        same(borrow command, "stress4") {
+        let scale: u64 = if same(borrow command, "stress1") { 1 }
+            else if same(borrow command, "stress2") { 2 } else { 4 };
+        let value = stress.run(scale); print(stress.render(borrow value));
+        return if value.valid { 0 } else { 1 };
+    }
+    if same(borrow command, "benchmark") {
+        let value = workload.run(); print(workload.render(borrow value));
+        return if value.valid { 0 } else { 1 };
+    }
+    if same(borrow command, "help") || same(borrow command, "--help") {
+        print(help()); return 0;
+    }
+    if same(borrow command, "run") {
+        return match std.env.arg(2) {
+            OptStr.Some(path) => match read_file(borrow path) {
+                OptBytes.Some(bytes) => execute(bytes),
+                OptBytes.None => { println("caldera[filesystem]: cannot read scenario"); 2 },
+            },
+            OptStr.None => { println("caldera: run requires a scenario path"); 2 },
+        };
+    }
+    println("caldera: command is not implemented yet"); 2
+}

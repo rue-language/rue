@@ -1,0 +1,86 @@
+// Caldera agent behavior: behavior_leader_evade.
+const model = @import("model.rue");
+const result = @import("behavior_result.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn BEHAVIOR() -> u64 { 40105 }
+pub fn PROFILE() -> u64 { 106 }
+
+fn role_matches(borrow entity: model.Entity) -> bool {
+    if PROFILE() % 8 == 0 { entity.kind == model.WORKER() }
+    else if PROFILE() % 8 == 1 { entity.kind == model.SCOUT() }
+    else if PROFILE() % 8 == 2 { entity.kind == model.BUILDER() }
+    else if PROFILE() % 8 == 3 { entity.kind == model.GUARD() }
+    else if PROFILE() % 8 == 4 { entity.inventory > 4 }
+    else if PROFILE() % 8 == 5 { entity.health < 80 }
+    else if PROFILE() % 8 == 6 { entity.credits > 12 }
+    else { entity.alive }
+}
+
+fn need(borrow world: model.World, borrow entity: model.Entity) -> u64 {
+    if PROFILE() % 8 == 0 { 100 - entity.energy }
+    else if PROFILE() % 8 == 1 { entity.inventory * 5 + world.resources % 37 }
+    else if PROFILE() % 8 == 2 { entity.credits + world.treasury % 41 }
+    else if PROFILE() % 8 == 3 { 100 - entity.health }
+    else if PROFILE() % 8 == 4 { entity.experience + world.tick * 3 }
+    else if PROFILE() % 8 == 5 { entity.faction * 19 + entity.kind * 23 }
+    else if PROFILE() % 8 == 6 { entity.state * 29 + entity.goal % 101 }
+    else { entity.id * 7 + world.quests_completed * 31 }
+}
+
+fn opportunity(borrow world: model.World, borrow entity: model.Entity) -> u64 {
+    let index = model.tile_index(borrow world, @intCast(entity.x), @intCast(entity.y));
+    let tile = world.tiles.get_or(index, model.empty_tile());
+    tile.resource + tile.height + tile.terrain * 11 +
+        world.resources % 97 + world.treasury % 89
+}
+
+fn utility(borrow world: model.World, borrow entity: model.Entity) -> u64 {
+    let raw = need(borrow world, borrow entity) * (PROFILE() % 5 + 1) +
+        opportunity(borrow world, borrow entity) * (PROFILE() % 7 + 1);
+    raw / (PROFILE() % 3 + 1)
+}
+
+fn transition(borrow world: model.World, borrow entity: model.Entity, score: u64) -> bool {
+    role_matches(borrow entity) && score > 20 + PROFILE() % 60 &&
+        (entity.id + world.tick + PROFILE()) % 4 != 0
+}
+
+pub fn evaluate(borrow world: model.World) -> result.Result {
+    let mut out = result.new(BEHAVIOR());
+    let mut i: u64 = 0;
+    while i < world.entities.len() {
+        let entity = world.entities.get_or(i, model.empty_entity());
+        let score = utility(borrow world, borrow entity);
+        let selected = role_matches(borrow entity) &&
+            score >= (PROFILE() % 13) + entity.kind;
+        result.record(inout out, selected, score,
+            selected && transition(borrow world, borrow entity, score));
+        i = i + 1;
+    }
+    let mut faction: u64 = 1;
+    while faction <= 3 {
+        let proxy = world.resources / faction + world.treasury / (faction + 1) + PROFILE();
+        result.record(inout out, proxy % 2 == 0, proxy, proxy % 5 == 0);
+        faction = faction + 1;
+    }
+    result.finish(inout out); out
+}
+
+pub fn verify(borrow world: model.World, borrow value: result.Result) -> bool {
+    value.behavior == BEHAVIOR() && value.agents == world.entities.len() + 3 && value.valid
+}
+
+pub fn render(borrow world: model.World) -> StrBuf {
+    let value = evaluate(borrow world); let mut out = StrBuf.new();
+    text.append_literal(inout out, "behavior_leader_evade\n");
+    text.line(inout out, "behavior=", value.behavior);
+    text.line(inout out, "agents=", value.agents);
+    text.line(inout out, "selected=", value.selected);
+    text.line(inout out, "utility=", value.utility);
+    text.line(inout out, "transitions=", value.transitions);
+    text.line(inout out, "digest=", value.digest);
+    text.bool_line(inout out, "verified=", verify(borrow world, borrow value)); out
+}

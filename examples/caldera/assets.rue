@@ -1,0 +1,11 @@
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+pub struct Audit { assets: u64, referenced: u64, missing: u64,
+    digest: u64, valid: bool }
+pub fn audit(borrow world: model.World) -> Audit {
+    let assets = 48 + world.entities.len() * 3;
+    let referenced = world.entities.len() + 12;
+    Audit { assets: assets, referenced: referenced, missing: 0,
+        digest: metric.mix(metric.mix(world.seed, assets), referenced),
+        valid: referenced <= assets }
+}

@@ -1,0 +1,32 @@
+// Stack VM with explicit underflow and opcode validation.
+const bytecode = @import("script_bytecode.rue");
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+
+pub struct Result { value: u64, steps: u64, maximum_stack: u64,
+    digest: u64, valid: bool }
+
+pub fn execute(borrow program: bytecode.Program) -> Result {
+    let mut stack = model.U64s.new();
+    let mut out = Result { value: 0, steps: 0, maximum_stack: 0,
+        digest: 14695981039346656037, valid: program.valid };
+    let mut pc: u64 = 0;
+    while pc < program.ops.len() {
+        let op = program.ops.get_or(pc, bytecode.empty());
+        out.steps = out.steps + 1;
+        out.digest = metric.mix(out.digest, op.kind * 257 + op.operand);
+        if op.kind == bytecode.PUSH() { stack.push(op.operand); }
+        else if op.kind == bytecode.ADD() || op.kind == bytecode.MUL() || op.kind == bytecode.MIX() {
+            if stack.len() < 2 { out.valid = false; break; }
+            let right = stack.pop_or(0); let left = stack.pop_or(0);
+            if op.kind == bytecode.ADD() { stack.push(left + right); }
+            else if op.kind == bytecode.MUL() { stack.push(left * right); }
+            else { stack.push(metric.mix(left, right)); }
+        } else if op.kind == bytecode.HALT() { break; }
+        else { out.valid = false; break; }
+        if stack.len() > out.maximum_stack { out.maximum_stack = stack.len(); }
+        pc = pc + 1;
+    }
+    if stack.len() != 1 { out.valid = false; }
+    out.value = stack.get_or(0, 0); out
+}

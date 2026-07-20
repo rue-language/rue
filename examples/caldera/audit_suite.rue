@@ -1,0 +1,1302 @@
+// Canonical registry for every Caldera audit pass.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+const audit_world_density = @import("audit_world_density.rue");
+const audit_world_balance = @import("audit_world_balance.rue");
+const audit_world_pressure = @import("audit_world_pressure.rue");
+const audit_world_locality = @import("audit_world_locality.rue");
+const audit_world_fanout = @import("audit_world_fanout.rue");
+const audit_world_continuity = @import("audit_world_continuity.rue");
+const audit_world_coverage = @import("audit_world_coverage.rue");
+const audit_world_skew = @import("audit_world_skew.rue");
+const audit_world_capacity = @import("audit_world_capacity.rue");
+const audit_world_latency = @import("audit_world_latency.rue");
+const audit_world_stability = @import("audit_world_stability.rue");
+const audit_world_integrity = @import("audit_world_integrity.rue");
+const audit_world_cost = @import("audit_world_cost.rue");
+const audit_world_risk = @import("audit_world_risk.rue");
+const audit_world_throughput = @import("audit_world_throughput.rue");
+const audit_world_entropy = @import("audit_world_entropy.rue");
+const audit_entity_density = @import("audit_entity_density.rue");
+const audit_entity_balance = @import("audit_entity_balance.rue");
+const audit_entity_pressure = @import("audit_entity_pressure.rue");
+const audit_entity_locality = @import("audit_entity_locality.rue");
+const audit_entity_fanout = @import("audit_entity_fanout.rue");
+const audit_entity_continuity = @import("audit_entity_continuity.rue");
+const audit_entity_coverage = @import("audit_entity_coverage.rue");
+const audit_entity_skew = @import("audit_entity_skew.rue");
+const audit_entity_capacity = @import("audit_entity_capacity.rue");
+const audit_entity_latency = @import("audit_entity_latency.rue");
+const audit_entity_stability = @import("audit_entity_stability.rue");
+const audit_entity_integrity = @import("audit_entity_integrity.rue");
+const audit_entity_cost = @import("audit_entity_cost.rue");
+const audit_entity_risk = @import("audit_entity_risk.rue");
+const audit_entity_throughput = @import("audit_entity_throughput.rue");
+const audit_entity_entropy = @import("audit_entity_entropy.rue");
+const audit_component_density = @import("audit_component_density.rue");
+const audit_component_balance = @import("audit_component_balance.rue");
+const audit_component_pressure = @import("audit_component_pressure.rue");
+const audit_component_locality = @import("audit_component_locality.rue");
+const audit_component_fanout = @import("audit_component_fanout.rue");
+const audit_component_continuity = @import("audit_component_continuity.rue");
+const audit_component_coverage = @import("audit_component_coverage.rue");
+const audit_component_skew = @import("audit_component_skew.rue");
+const audit_component_capacity = @import("audit_component_capacity.rue");
+const audit_component_latency = @import("audit_component_latency.rue");
+const audit_component_stability = @import("audit_component_stability.rue");
+const audit_component_integrity = @import("audit_component_integrity.rue");
+const audit_component_cost = @import("audit_component_cost.rue");
+const audit_component_risk = @import("audit_component_risk.rue");
+const audit_component_throughput = @import("audit_component_throughput.rue");
+const audit_component_entropy = @import("audit_component_entropy.rue");
+const audit_terrain_density = @import("audit_terrain_density.rue");
+const audit_terrain_balance = @import("audit_terrain_balance.rue");
+const audit_terrain_pressure = @import("audit_terrain_pressure.rue");
+const audit_terrain_locality = @import("audit_terrain_locality.rue");
+const audit_terrain_fanout = @import("audit_terrain_fanout.rue");
+const audit_terrain_continuity = @import("audit_terrain_continuity.rue");
+const audit_terrain_coverage = @import("audit_terrain_coverage.rue");
+const audit_terrain_skew = @import("audit_terrain_skew.rue");
+const audit_terrain_capacity = @import("audit_terrain_capacity.rue");
+const audit_terrain_latency = @import("audit_terrain_latency.rue");
+const audit_terrain_stability = @import("audit_terrain_stability.rue");
+const audit_terrain_integrity = @import("audit_terrain_integrity.rue");
+const audit_terrain_cost = @import("audit_terrain_cost.rue");
+const audit_terrain_risk = @import("audit_terrain_risk.rue");
+const audit_terrain_throughput = @import("audit_terrain_throughput.rue");
+const audit_terrain_entropy = @import("audit_terrain_entropy.rue");
+const audit_spatial_density = @import("audit_spatial_density.rue");
+const audit_spatial_balance = @import("audit_spatial_balance.rue");
+const audit_spatial_pressure = @import("audit_spatial_pressure.rue");
+const audit_spatial_locality = @import("audit_spatial_locality.rue");
+const audit_spatial_fanout = @import("audit_spatial_fanout.rue");
+const audit_spatial_continuity = @import("audit_spatial_continuity.rue");
+const audit_spatial_coverage = @import("audit_spatial_coverage.rue");
+const audit_spatial_skew = @import("audit_spatial_skew.rue");
+const audit_spatial_capacity = @import("audit_spatial_capacity.rue");
+const audit_spatial_latency = @import("audit_spatial_latency.rue");
+const audit_spatial_stability = @import("audit_spatial_stability.rue");
+const audit_spatial_integrity = @import("audit_spatial_integrity.rue");
+const audit_spatial_cost = @import("audit_spatial_cost.rue");
+const audit_spatial_risk = @import("audit_spatial_risk.rue");
+const audit_spatial_throughput = @import("audit_spatial_throughput.rue");
+const audit_spatial_entropy = @import("audit_spatial_entropy.rue");
+const audit_physics_density = @import("audit_physics_density.rue");
+const audit_physics_balance = @import("audit_physics_balance.rue");
+const audit_physics_pressure = @import("audit_physics_pressure.rue");
+const audit_physics_locality = @import("audit_physics_locality.rue");
+const audit_physics_fanout = @import("audit_physics_fanout.rue");
+const audit_physics_continuity = @import("audit_physics_continuity.rue");
+const audit_physics_coverage = @import("audit_physics_coverage.rue");
+const audit_physics_skew = @import("audit_physics_skew.rue");
+const audit_physics_capacity = @import("audit_physics_capacity.rue");
+const audit_physics_latency = @import("audit_physics_latency.rue");
+const audit_physics_stability = @import("audit_physics_stability.rue");
+const audit_physics_integrity = @import("audit_physics_integrity.rue");
+const audit_physics_cost = @import("audit_physics_cost.rue");
+const audit_physics_risk = @import("audit_physics_risk.rue");
+const audit_physics_throughput = @import("audit_physics_throughput.rue");
+const audit_physics_entropy = @import("audit_physics_entropy.rue");
+const audit_navigation_density = @import("audit_navigation_density.rue");
+const audit_navigation_balance = @import("audit_navigation_balance.rue");
+const audit_navigation_pressure = @import("audit_navigation_pressure.rue");
+const audit_navigation_locality = @import("audit_navigation_locality.rue");
+const audit_navigation_fanout = @import("audit_navigation_fanout.rue");
+const audit_navigation_continuity = @import("audit_navigation_continuity.rue");
+const audit_navigation_coverage = @import("audit_navigation_coverage.rue");
+const audit_navigation_skew = @import("audit_navigation_skew.rue");
+const audit_navigation_capacity = @import("audit_navigation_capacity.rue");
+const audit_navigation_latency = @import("audit_navigation_latency.rue");
+const audit_navigation_stability = @import("audit_navigation_stability.rue");
+const audit_navigation_integrity = @import("audit_navigation_integrity.rue");
+const audit_navigation_cost = @import("audit_navigation_cost.rue");
+const audit_navigation_risk = @import("audit_navigation_risk.rue");
+const audit_navigation_throughput = @import("audit_navigation_throughput.rue");
+const audit_navigation_entropy = @import("audit_navigation_entropy.rue");
+const audit_ai_density = @import("audit_ai_density.rue");
+const audit_ai_balance = @import("audit_ai_balance.rue");
+const audit_ai_pressure = @import("audit_ai_pressure.rue");
+const audit_ai_locality = @import("audit_ai_locality.rue");
+const audit_ai_fanout = @import("audit_ai_fanout.rue");
+const audit_ai_continuity = @import("audit_ai_continuity.rue");
+const audit_ai_coverage = @import("audit_ai_coverage.rue");
+const audit_ai_skew = @import("audit_ai_skew.rue");
+const audit_ai_capacity = @import("audit_ai_capacity.rue");
+const audit_ai_latency = @import("audit_ai_latency.rue");
+const audit_ai_stability = @import("audit_ai_stability.rue");
+const audit_ai_integrity = @import("audit_ai_integrity.rue");
+const audit_ai_cost = @import("audit_ai_cost.rue");
+const audit_ai_risk = @import("audit_ai_risk.rue");
+const audit_ai_throughput = @import("audit_ai_throughput.rue");
+const audit_ai_entropy = @import("audit_ai_entropy.rue");
+const audit_economy_density = @import("audit_economy_density.rue");
+const audit_economy_balance = @import("audit_economy_balance.rue");
+const audit_economy_pressure = @import("audit_economy_pressure.rue");
+const audit_economy_locality = @import("audit_economy_locality.rue");
+const audit_economy_fanout = @import("audit_economy_fanout.rue");
+const audit_economy_continuity = @import("audit_economy_continuity.rue");
+const audit_economy_coverage = @import("audit_economy_coverage.rue");
+const audit_economy_skew = @import("audit_economy_skew.rue");
+const audit_economy_capacity = @import("audit_economy_capacity.rue");
+const audit_economy_latency = @import("audit_economy_latency.rue");
+const audit_economy_stability = @import("audit_economy_stability.rue");
+const audit_economy_integrity = @import("audit_economy_integrity.rue");
+const audit_economy_cost = @import("audit_economy_cost.rue");
+const audit_economy_risk = @import("audit_economy_risk.rue");
+const audit_economy_throughput = @import("audit_economy_throughput.rue");
+const audit_economy_entropy = @import("audit_economy_entropy.rue");
+const audit_inventory_density = @import("audit_inventory_density.rue");
+const audit_inventory_balance = @import("audit_inventory_balance.rue");
+const audit_inventory_pressure = @import("audit_inventory_pressure.rue");
+const audit_inventory_locality = @import("audit_inventory_locality.rue");
+const audit_inventory_fanout = @import("audit_inventory_fanout.rue");
+const audit_inventory_continuity = @import("audit_inventory_continuity.rue");
+const audit_inventory_coverage = @import("audit_inventory_coverage.rue");
+const audit_inventory_skew = @import("audit_inventory_skew.rue");
+const audit_inventory_capacity = @import("audit_inventory_capacity.rue");
+const audit_inventory_latency = @import("audit_inventory_latency.rue");
+const audit_inventory_stability = @import("audit_inventory_stability.rue");
+const audit_inventory_integrity = @import("audit_inventory_integrity.rue");
+const audit_inventory_cost = @import("audit_inventory_cost.rue");
+const audit_inventory_risk = @import("audit_inventory_risk.rue");
+const audit_inventory_throughput = @import("audit_inventory_throughput.rue");
+const audit_inventory_entropy = @import("audit_inventory_entropy.rue");
+const audit_faction_density = @import("audit_faction_density.rue");
+const audit_faction_balance = @import("audit_faction_balance.rue");
+const audit_faction_pressure = @import("audit_faction_pressure.rue");
+const audit_faction_locality = @import("audit_faction_locality.rue");
+const audit_faction_fanout = @import("audit_faction_fanout.rue");
+const audit_faction_continuity = @import("audit_faction_continuity.rue");
+const audit_faction_coverage = @import("audit_faction_coverage.rue");
+const audit_faction_skew = @import("audit_faction_skew.rue");
+const audit_faction_capacity = @import("audit_faction_capacity.rue");
+const audit_faction_latency = @import("audit_faction_latency.rue");
+const audit_faction_stability = @import("audit_faction_stability.rue");
+const audit_faction_integrity = @import("audit_faction_integrity.rue");
+const audit_faction_cost = @import("audit_faction_cost.rue");
+const audit_faction_risk = @import("audit_faction_risk.rue");
+const audit_faction_throughput = @import("audit_faction_throughput.rue");
+const audit_faction_entropy = @import("audit_faction_entropy.rue");
+const audit_quest_density = @import("audit_quest_density.rue");
+const audit_quest_balance = @import("audit_quest_balance.rue");
+const audit_quest_pressure = @import("audit_quest_pressure.rue");
+const audit_quest_locality = @import("audit_quest_locality.rue");
+const audit_quest_fanout = @import("audit_quest_fanout.rue");
+const audit_quest_continuity = @import("audit_quest_continuity.rue");
+const audit_quest_coverage = @import("audit_quest_coverage.rue");
+const audit_quest_skew = @import("audit_quest_skew.rue");
+const audit_quest_capacity = @import("audit_quest_capacity.rue");
+const audit_quest_latency = @import("audit_quest_latency.rue");
+const audit_quest_stability = @import("audit_quest_stability.rue");
+const audit_quest_integrity = @import("audit_quest_integrity.rue");
+const audit_quest_cost = @import("audit_quest_cost.rue");
+const audit_quest_risk = @import("audit_quest_risk.rue");
+const audit_quest_throughput = @import("audit_quest_throughput.rue");
+const audit_quest_entropy = @import("audit_quest_entropy.rue");
+const audit_script_density = @import("audit_script_density.rue");
+const audit_script_balance = @import("audit_script_balance.rue");
+const audit_script_pressure = @import("audit_script_pressure.rue");
+const audit_script_locality = @import("audit_script_locality.rue");
+const audit_script_fanout = @import("audit_script_fanout.rue");
+const audit_script_continuity = @import("audit_script_continuity.rue");
+const audit_script_coverage = @import("audit_script_coverage.rue");
+const audit_script_skew = @import("audit_script_skew.rue");
+const audit_script_capacity = @import("audit_script_capacity.rue");
+const audit_script_latency = @import("audit_script_latency.rue");
+const audit_script_stability = @import("audit_script_stability.rue");
+const audit_script_integrity = @import("audit_script_integrity.rue");
+const audit_script_cost = @import("audit_script_cost.rue");
+const audit_script_risk = @import("audit_script_risk.rue");
+const audit_script_throughput = @import("audit_script_throughput.rue");
+const audit_script_entropy = @import("audit_script_entropy.rue");
+const audit_network_density = @import("audit_network_density.rue");
+const audit_network_balance = @import("audit_network_balance.rue");
+const audit_network_pressure = @import("audit_network_pressure.rue");
+const audit_network_locality = @import("audit_network_locality.rue");
+const audit_network_fanout = @import("audit_network_fanout.rue");
+const audit_network_continuity = @import("audit_network_continuity.rue");
+const audit_network_coverage = @import("audit_network_coverage.rue");
+const audit_network_skew = @import("audit_network_skew.rue");
+const audit_network_capacity = @import("audit_network_capacity.rue");
+const audit_network_latency = @import("audit_network_latency.rue");
+const audit_network_stability = @import("audit_network_stability.rue");
+const audit_network_integrity = @import("audit_network_integrity.rue");
+const audit_network_cost = @import("audit_network_cost.rue");
+const audit_network_risk = @import("audit_network_risk.rue");
+const audit_network_throughput = @import("audit_network_throughput.rue");
+const audit_network_entropy = @import("audit_network_entropy.rue");
+const audit_replay_density = @import("audit_replay_density.rue");
+const audit_replay_balance = @import("audit_replay_balance.rue");
+const audit_replay_pressure = @import("audit_replay_pressure.rue");
+const audit_replay_locality = @import("audit_replay_locality.rue");
+const audit_replay_fanout = @import("audit_replay_fanout.rue");
+const audit_replay_continuity = @import("audit_replay_continuity.rue");
+const audit_replay_coverage = @import("audit_replay_coverage.rue");
+const audit_replay_skew = @import("audit_replay_skew.rue");
+const audit_replay_capacity = @import("audit_replay_capacity.rue");
+const audit_replay_latency = @import("audit_replay_latency.rue");
+const audit_replay_stability = @import("audit_replay_stability.rue");
+const audit_replay_integrity = @import("audit_replay_integrity.rue");
+const audit_replay_cost = @import("audit_replay_cost.rue");
+const audit_replay_risk = @import("audit_replay_risk.rue");
+const audit_replay_throughput = @import("audit_replay_throughput.rue");
+const audit_replay_entropy = @import("audit_replay_entropy.rue");
+const audit_render_density = @import("audit_render_density.rue");
+const audit_render_balance = @import("audit_render_balance.rue");
+const audit_render_pressure = @import("audit_render_pressure.rue");
+const audit_render_locality = @import("audit_render_locality.rue");
+const audit_render_fanout = @import("audit_render_fanout.rue");
+const audit_render_continuity = @import("audit_render_continuity.rue");
+const audit_render_coverage = @import("audit_render_coverage.rue");
+const audit_render_skew = @import("audit_render_skew.rue");
+const audit_render_capacity = @import("audit_render_capacity.rue");
+const audit_render_latency = @import("audit_render_latency.rue");
+const audit_render_stability = @import("audit_render_stability.rue");
+const audit_render_integrity = @import("audit_render_integrity.rue");
+const audit_render_cost = @import("audit_render_cost.rue");
+const audit_render_risk = @import("audit_render_risk.rue");
+const audit_render_throughput = @import("audit_render_throughput.rue");
+const audit_render_entropy = @import("audit_render_entropy.rue");
+
+pub struct Summary { passes: u64, observations: u64, warnings: u64,
+    deterministic_mismatches: u64, digest: u64, valid: bool }
+
+fn include(inout out: Summary, borrow first: metric.Metric, borrow second: metric.Metric, verified: bool) {
+    out.passes = out.passes + 1; out.observations = out.observations + first.observations;
+    out.warnings = out.warnings + first.warnings;
+    if first.digest != second.digest || first.total != second.total || !verified {
+        out.deterministic_mismatches = out.deterministic_mismatches + 1;
+    }
+    out.digest = metric.mix(out.digest, first.digest);
+}
+
+pub fn run(borrow world: model.World) -> Summary {
+    let mut out = Summary { passes: 0, observations: 0, warnings: 0,
+        deterministic_mismatches: 0, digest: 14695981039346656037, valid: false };
+    let audit_world_density_a = audit_world_density.analyze(borrow world);
+    let audit_world_density_b = audit_world_density.analyze(borrow world);
+    include(inout out, borrow audit_world_density_a, borrow audit_world_density_b,
+        audit_world_density.verify(borrow world, borrow audit_world_density_a));
+    let audit_world_balance_a = audit_world_balance.analyze(borrow world);
+    let audit_world_balance_b = audit_world_balance.analyze(borrow world);
+    include(inout out, borrow audit_world_balance_a, borrow audit_world_balance_b,
+        audit_world_balance.verify(borrow world, borrow audit_world_balance_a));
+    let audit_world_pressure_a = audit_world_pressure.analyze(borrow world);
+    let audit_world_pressure_b = audit_world_pressure.analyze(borrow world);
+    include(inout out, borrow audit_world_pressure_a, borrow audit_world_pressure_b,
+        audit_world_pressure.verify(borrow world, borrow audit_world_pressure_a));
+    let audit_world_locality_a = audit_world_locality.analyze(borrow world);
+    let audit_world_locality_b = audit_world_locality.analyze(borrow world);
+    include(inout out, borrow audit_world_locality_a, borrow audit_world_locality_b,
+        audit_world_locality.verify(borrow world, borrow audit_world_locality_a));
+    let audit_world_fanout_a = audit_world_fanout.analyze(borrow world);
+    let audit_world_fanout_b = audit_world_fanout.analyze(borrow world);
+    include(inout out, borrow audit_world_fanout_a, borrow audit_world_fanout_b,
+        audit_world_fanout.verify(borrow world, borrow audit_world_fanout_a));
+    let audit_world_continuity_a = audit_world_continuity.analyze(borrow world);
+    let audit_world_continuity_b = audit_world_continuity.analyze(borrow world);
+    include(inout out, borrow audit_world_continuity_a, borrow audit_world_continuity_b,
+        audit_world_continuity.verify(borrow world, borrow audit_world_continuity_a));
+    let audit_world_coverage_a = audit_world_coverage.analyze(borrow world);
+    let audit_world_coverage_b = audit_world_coverage.analyze(borrow world);
+    include(inout out, borrow audit_world_coverage_a, borrow audit_world_coverage_b,
+        audit_world_coverage.verify(borrow world, borrow audit_world_coverage_a));
+    let audit_world_skew_a = audit_world_skew.analyze(borrow world);
+    let audit_world_skew_b = audit_world_skew.analyze(borrow world);
+    include(inout out, borrow audit_world_skew_a, borrow audit_world_skew_b,
+        audit_world_skew.verify(borrow world, borrow audit_world_skew_a));
+    let audit_world_capacity_a = audit_world_capacity.analyze(borrow world);
+    let audit_world_capacity_b = audit_world_capacity.analyze(borrow world);
+    include(inout out, borrow audit_world_capacity_a, borrow audit_world_capacity_b,
+        audit_world_capacity.verify(borrow world, borrow audit_world_capacity_a));
+    let audit_world_latency_a = audit_world_latency.analyze(borrow world);
+    let audit_world_latency_b = audit_world_latency.analyze(borrow world);
+    include(inout out, borrow audit_world_latency_a, borrow audit_world_latency_b,
+        audit_world_latency.verify(borrow world, borrow audit_world_latency_a));
+    let audit_world_stability_a = audit_world_stability.analyze(borrow world);
+    let audit_world_stability_b = audit_world_stability.analyze(borrow world);
+    include(inout out, borrow audit_world_stability_a, borrow audit_world_stability_b,
+        audit_world_stability.verify(borrow world, borrow audit_world_stability_a));
+    let audit_world_integrity_a = audit_world_integrity.analyze(borrow world);
+    let audit_world_integrity_b = audit_world_integrity.analyze(borrow world);
+    include(inout out, borrow audit_world_integrity_a, borrow audit_world_integrity_b,
+        audit_world_integrity.verify(borrow world, borrow audit_world_integrity_a));
+    let audit_world_cost_a = audit_world_cost.analyze(borrow world);
+    let audit_world_cost_b = audit_world_cost.analyze(borrow world);
+    include(inout out, borrow audit_world_cost_a, borrow audit_world_cost_b,
+        audit_world_cost.verify(borrow world, borrow audit_world_cost_a));
+    let audit_world_risk_a = audit_world_risk.analyze(borrow world);
+    let audit_world_risk_b = audit_world_risk.analyze(borrow world);
+    include(inout out, borrow audit_world_risk_a, borrow audit_world_risk_b,
+        audit_world_risk.verify(borrow world, borrow audit_world_risk_a));
+    let audit_world_throughput_a = audit_world_throughput.analyze(borrow world);
+    let audit_world_throughput_b = audit_world_throughput.analyze(borrow world);
+    include(inout out, borrow audit_world_throughput_a, borrow audit_world_throughput_b,
+        audit_world_throughput.verify(borrow world, borrow audit_world_throughput_a));
+    let audit_world_entropy_a = audit_world_entropy.analyze(borrow world);
+    let audit_world_entropy_b = audit_world_entropy.analyze(borrow world);
+    include(inout out, borrow audit_world_entropy_a, borrow audit_world_entropy_b,
+        audit_world_entropy.verify(borrow world, borrow audit_world_entropy_a));
+    let audit_entity_density_a = audit_entity_density.analyze(borrow world);
+    let audit_entity_density_b = audit_entity_density.analyze(borrow world);
+    include(inout out, borrow audit_entity_density_a, borrow audit_entity_density_b,
+        audit_entity_density.verify(borrow world, borrow audit_entity_density_a));
+    let audit_entity_balance_a = audit_entity_balance.analyze(borrow world);
+    let audit_entity_balance_b = audit_entity_balance.analyze(borrow world);
+    include(inout out, borrow audit_entity_balance_a, borrow audit_entity_balance_b,
+        audit_entity_balance.verify(borrow world, borrow audit_entity_balance_a));
+    let audit_entity_pressure_a = audit_entity_pressure.analyze(borrow world);
+    let audit_entity_pressure_b = audit_entity_pressure.analyze(borrow world);
+    include(inout out, borrow audit_entity_pressure_a, borrow audit_entity_pressure_b,
+        audit_entity_pressure.verify(borrow world, borrow audit_entity_pressure_a));
+    let audit_entity_locality_a = audit_entity_locality.analyze(borrow world);
+    let audit_entity_locality_b = audit_entity_locality.analyze(borrow world);
+    include(inout out, borrow audit_entity_locality_a, borrow audit_entity_locality_b,
+        audit_entity_locality.verify(borrow world, borrow audit_entity_locality_a));
+    let audit_entity_fanout_a = audit_entity_fanout.analyze(borrow world);
+    let audit_entity_fanout_b = audit_entity_fanout.analyze(borrow world);
+    include(inout out, borrow audit_entity_fanout_a, borrow audit_entity_fanout_b,
+        audit_entity_fanout.verify(borrow world, borrow audit_entity_fanout_a));
+    let audit_entity_continuity_a = audit_entity_continuity.analyze(borrow world);
+    let audit_entity_continuity_b = audit_entity_continuity.analyze(borrow world);
+    include(inout out, borrow audit_entity_continuity_a, borrow audit_entity_continuity_b,
+        audit_entity_continuity.verify(borrow world, borrow audit_entity_continuity_a));
+    let audit_entity_coverage_a = audit_entity_coverage.analyze(borrow world);
+    let audit_entity_coverage_b = audit_entity_coverage.analyze(borrow world);
+    include(inout out, borrow audit_entity_coverage_a, borrow audit_entity_coverage_b,
+        audit_entity_coverage.verify(borrow world, borrow audit_entity_coverage_a));
+    let audit_entity_skew_a = audit_entity_skew.analyze(borrow world);
+    let audit_entity_skew_b = audit_entity_skew.analyze(borrow world);
+    include(inout out, borrow audit_entity_skew_a, borrow audit_entity_skew_b,
+        audit_entity_skew.verify(borrow world, borrow audit_entity_skew_a));
+    let audit_entity_capacity_a = audit_entity_capacity.analyze(borrow world);
+    let audit_entity_capacity_b = audit_entity_capacity.analyze(borrow world);
+    include(inout out, borrow audit_entity_capacity_a, borrow audit_entity_capacity_b,
+        audit_entity_capacity.verify(borrow world, borrow audit_entity_capacity_a));
+    let audit_entity_latency_a = audit_entity_latency.analyze(borrow world);
+    let audit_entity_latency_b = audit_entity_latency.analyze(borrow world);
+    include(inout out, borrow audit_entity_latency_a, borrow audit_entity_latency_b,
+        audit_entity_latency.verify(borrow world, borrow audit_entity_latency_a));
+    let audit_entity_stability_a = audit_entity_stability.analyze(borrow world);
+    let audit_entity_stability_b = audit_entity_stability.analyze(borrow world);
+    include(inout out, borrow audit_entity_stability_a, borrow audit_entity_stability_b,
+        audit_entity_stability.verify(borrow world, borrow audit_entity_stability_a));
+    let audit_entity_integrity_a = audit_entity_integrity.analyze(borrow world);
+    let audit_entity_integrity_b = audit_entity_integrity.analyze(borrow world);
+    include(inout out, borrow audit_entity_integrity_a, borrow audit_entity_integrity_b,
+        audit_entity_integrity.verify(borrow world, borrow audit_entity_integrity_a));
+    let audit_entity_cost_a = audit_entity_cost.analyze(borrow world);
+    let audit_entity_cost_b = audit_entity_cost.analyze(borrow world);
+    include(inout out, borrow audit_entity_cost_a, borrow audit_entity_cost_b,
+        audit_entity_cost.verify(borrow world, borrow audit_entity_cost_a));
+    let audit_entity_risk_a = audit_entity_risk.analyze(borrow world);
+    let audit_entity_risk_b = audit_entity_risk.analyze(borrow world);
+    include(inout out, borrow audit_entity_risk_a, borrow audit_entity_risk_b,
+        audit_entity_risk.verify(borrow world, borrow audit_entity_risk_a));
+    let audit_entity_throughput_a = audit_entity_throughput.analyze(borrow world);
+    let audit_entity_throughput_b = audit_entity_throughput.analyze(borrow world);
+    include(inout out, borrow audit_entity_throughput_a, borrow audit_entity_throughput_b,
+        audit_entity_throughput.verify(borrow world, borrow audit_entity_throughput_a));
+    let audit_entity_entropy_a = audit_entity_entropy.analyze(borrow world);
+    let audit_entity_entropy_b = audit_entity_entropy.analyze(borrow world);
+    include(inout out, borrow audit_entity_entropy_a, borrow audit_entity_entropy_b,
+        audit_entity_entropy.verify(borrow world, borrow audit_entity_entropy_a));
+    let audit_component_density_a = audit_component_density.analyze(borrow world);
+    let audit_component_density_b = audit_component_density.analyze(borrow world);
+    include(inout out, borrow audit_component_density_a, borrow audit_component_density_b,
+        audit_component_density.verify(borrow world, borrow audit_component_density_a));
+    let audit_component_balance_a = audit_component_balance.analyze(borrow world);
+    let audit_component_balance_b = audit_component_balance.analyze(borrow world);
+    include(inout out, borrow audit_component_balance_a, borrow audit_component_balance_b,
+        audit_component_balance.verify(borrow world, borrow audit_component_balance_a));
+    let audit_component_pressure_a = audit_component_pressure.analyze(borrow world);
+    let audit_component_pressure_b = audit_component_pressure.analyze(borrow world);
+    include(inout out, borrow audit_component_pressure_a, borrow audit_component_pressure_b,
+        audit_component_pressure.verify(borrow world, borrow audit_component_pressure_a));
+    let audit_component_locality_a = audit_component_locality.analyze(borrow world);
+    let audit_component_locality_b = audit_component_locality.analyze(borrow world);
+    include(inout out, borrow audit_component_locality_a, borrow audit_component_locality_b,
+        audit_component_locality.verify(borrow world, borrow audit_component_locality_a));
+    let audit_component_fanout_a = audit_component_fanout.analyze(borrow world);
+    let audit_component_fanout_b = audit_component_fanout.analyze(borrow world);
+    include(inout out, borrow audit_component_fanout_a, borrow audit_component_fanout_b,
+        audit_component_fanout.verify(borrow world, borrow audit_component_fanout_a));
+    let audit_component_continuity_a = audit_component_continuity.analyze(borrow world);
+    let audit_component_continuity_b = audit_component_continuity.analyze(borrow world);
+    include(inout out, borrow audit_component_continuity_a, borrow audit_component_continuity_b,
+        audit_component_continuity.verify(borrow world, borrow audit_component_continuity_a));
+    let audit_component_coverage_a = audit_component_coverage.analyze(borrow world);
+    let audit_component_coverage_b = audit_component_coverage.analyze(borrow world);
+    include(inout out, borrow audit_component_coverage_a, borrow audit_component_coverage_b,
+        audit_component_coverage.verify(borrow world, borrow audit_component_coverage_a));
+    let audit_component_skew_a = audit_component_skew.analyze(borrow world);
+    let audit_component_skew_b = audit_component_skew.analyze(borrow world);
+    include(inout out, borrow audit_component_skew_a, borrow audit_component_skew_b,
+        audit_component_skew.verify(borrow world, borrow audit_component_skew_a));
+    let audit_component_capacity_a = audit_component_capacity.analyze(borrow world);
+    let audit_component_capacity_b = audit_component_capacity.analyze(borrow world);
+    include(inout out, borrow audit_component_capacity_a, borrow audit_component_capacity_b,
+        audit_component_capacity.verify(borrow world, borrow audit_component_capacity_a));
+    let audit_component_latency_a = audit_component_latency.analyze(borrow world);
+    let audit_component_latency_b = audit_component_latency.analyze(borrow world);
+    include(inout out, borrow audit_component_latency_a, borrow audit_component_latency_b,
+        audit_component_latency.verify(borrow world, borrow audit_component_latency_a));
+    let audit_component_stability_a = audit_component_stability.analyze(borrow world);
+    let audit_component_stability_b = audit_component_stability.analyze(borrow world);
+    include(inout out, borrow audit_component_stability_a, borrow audit_component_stability_b,
+        audit_component_stability.verify(borrow world, borrow audit_component_stability_a));
+    let audit_component_integrity_a = audit_component_integrity.analyze(borrow world);
+    let audit_component_integrity_b = audit_component_integrity.analyze(borrow world);
+    include(inout out, borrow audit_component_integrity_a, borrow audit_component_integrity_b,
+        audit_component_integrity.verify(borrow world, borrow audit_component_integrity_a));
+    let audit_component_cost_a = audit_component_cost.analyze(borrow world);
+    let audit_component_cost_b = audit_component_cost.analyze(borrow world);
+    include(inout out, borrow audit_component_cost_a, borrow audit_component_cost_b,
+        audit_component_cost.verify(borrow world, borrow audit_component_cost_a));
+    let audit_component_risk_a = audit_component_risk.analyze(borrow world);
+    let audit_component_risk_b = audit_component_risk.analyze(borrow world);
+    include(inout out, borrow audit_component_risk_a, borrow audit_component_risk_b,
+        audit_component_risk.verify(borrow world, borrow audit_component_risk_a));
+    let audit_component_throughput_a = audit_component_throughput.analyze(borrow world);
+    let audit_component_throughput_b = audit_component_throughput.analyze(borrow world);
+    include(inout out, borrow audit_component_throughput_a, borrow audit_component_throughput_b,
+        audit_component_throughput.verify(borrow world, borrow audit_component_throughput_a));
+    let audit_component_entropy_a = audit_component_entropy.analyze(borrow world);
+    let audit_component_entropy_b = audit_component_entropy.analyze(borrow world);
+    include(inout out, borrow audit_component_entropy_a, borrow audit_component_entropy_b,
+        audit_component_entropy.verify(borrow world, borrow audit_component_entropy_a));
+    let audit_terrain_density_a = audit_terrain_density.analyze(borrow world);
+    let audit_terrain_density_b = audit_terrain_density.analyze(borrow world);
+    include(inout out, borrow audit_terrain_density_a, borrow audit_terrain_density_b,
+        audit_terrain_density.verify(borrow world, borrow audit_terrain_density_a));
+    let audit_terrain_balance_a = audit_terrain_balance.analyze(borrow world);
+    let audit_terrain_balance_b = audit_terrain_balance.analyze(borrow world);
+    include(inout out, borrow audit_terrain_balance_a, borrow audit_terrain_balance_b,
+        audit_terrain_balance.verify(borrow world, borrow audit_terrain_balance_a));
+    let audit_terrain_pressure_a = audit_terrain_pressure.analyze(borrow world);
+    let audit_terrain_pressure_b = audit_terrain_pressure.analyze(borrow world);
+    include(inout out, borrow audit_terrain_pressure_a, borrow audit_terrain_pressure_b,
+        audit_terrain_pressure.verify(borrow world, borrow audit_terrain_pressure_a));
+    let audit_terrain_locality_a = audit_terrain_locality.analyze(borrow world);
+    let audit_terrain_locality_b = audit_terrain_locality.analyze(borrow world);
+    include(inout out, borrow audit_terrain_locality_a, borrow audit_terrain_locality_b,
+        audit_terrain_locality.verify(borrow world, borrow audit_terrain_locality_a));
+    let audit_terrain_fanout_a = audit_terrain_fanout.analyze(borrow world);
+    let audit_terrain_fanout_b = audit_terrain_fanout.analyze(borrow world);
+    include(inout out, borrow audit_terrain_fanout_a, borrow audit_terrain_fanout_b,
+        audit_terrain_fanout.verify(borrow world, borrow audit_terrain_fanout_a));
+    let audit_terrain_continuity_a = audit_terrain_continuity.analyze(borrow world);
+    let audit_terrain_continuity_b = audit_terrain_continuity.analyze(borrow world);
+    include(inout out, borrow audit_terrain_continuity_a, borrow audit_terrain_continuity_b,
+        audit_terrain_continuity.verify(borrow world, borrow audit_terrain_continuity_a));
+    let audit_terrain_coverage_a = audit_terrain_coverage.analyze(borrow world);
+    let audit_terrain_coverage_b = audit_terrain_coverage.analyze(borrow world);
+    include(inout out, borrow audit_terrain_coverage_a, borrow audit_terrain_coverage_b,
+        audit_terrain_coverage.verify(borrow world, borrow audit_terrain_coverage_a));
+    let audit_terrain_skew_a = audit_terrain_skew.analyze(borrow world);
+    let audit_terrain_skew_b = audit_terrain_skew.analyze(borrow world);
+    include(inout out, borrow audit_terrain_skew_a, borrow audit_terrain_skew_b,
+        audit_terrain_skew.verify(borrow world, borrow audit_terrain_skew_a));
+    let audit_terrain_capacity_a = audit_terrain_capacity.analyze(borrow world);
+    let audit_terrain_capacity_b = audit_terrain_capacity.analyze(borrow world);
+    include(inout out, borrow audit_terrain_capacity_a, borrow audit_terrain_capacity_b,
+        audit_terrain_capacity.verify(borrow world, borrow audit_terrain_capacity_a));
+    let audit_terrain_latency_a = audit_terrain_latency.analyze(borrow world);
+    let audit_terrain_latency_b = audit_terrain_latency.analyze(borrow world);
+    include(inout out, borrow audit_terrain_latency_a, borrow audit_terrain_latency_b,
+        audit_terrain_latency.verify(borrow world, borrow audit_terrain_latency_a));
+    let audit_terrain_stability_a = audit_terrain_stability.analyze(borrow world);
+    let audit_terrain_stability_b = audit_terrain_stability.analyze(borrow world);
+    include(inout out, borrow audit_terrain_stability_a, borrow audit_terrain_stability_b,
+        audit_terrain_stability.verify(borrow world, borrow audit_terrain_stability_a));
+    let audit_terrain_integrity_a = audit_terrain_integrity.analyze(borrow world);
+    let audit_terrain_integrity_b = audit_terrain_integrity.analyze(borrow world);
+    include(inout out, borrow audit_terrain_integrity_a, borrow audit_terrain_integrity_b,
+        audit_terrain_integrity.verify(borrow world, borrow audit_terrain_integrity_a));
+    let audit_terrain_cost_a = audit_terrain_cost.analyze(borrow world);
+    let audit_terrain_cost_b = audit_terrain_cost.analyze(borrow world);
+    include(inout out, borrow audit_terrain_cost_a, borrow audit_terrain_cost_b,
+        audit_terrain_cost.verify(borrow world, borrow audit_terrain_cost_a));
+    let audit_terrain_risk_a = audit_terrain_risk.analyze(borrow world);
+    let audit_terrain_risk_b = audit_terrain_risk.analyze(borrow world);
+    include(inout out, borrow audit_terrain_risk_a, borrow audit_terrain_risk_b,
+        audit_terrain_risk.verify(borrow world, borrow audit_terrain_risk_a));
+    let audit_terrain_throughput_a = audit_terrain_throughput.analyze(borrow world);
+    let audit_terrain_throughput_b = audit_terrain_throughput.analyze(borrow world);
+    include(inout out, borrow audit_terrain_throughput_a, borrow audit_terrain_throughput_b,
+        audit_terrain_throughput.verify(borrow world, borrow audit_terrain_throughput_a));
+    let audit_terrain_entropy_a = audit_terrain_entropy.analyze(borrow world);
+    let audit_terrain_entropy_b = audit_terrain_entropy.analyze(borrow world);
+    include(inout out, borrow audit_terrain_entropy_a, borrow audit_terrain_entropy_b,
+        audit_terrain_entropy.verify(borrow world, borrow audit_terrain_entropy_a));
+    let audit_spatial_density_a = audit_spatial_density.analyze(borrow world);
+    let audit_spatial_density_b = audit_spatial_density.analyze(borrow world);
+    include(inout out, borrow audit_spatial_density_a, borrow audit_spatial_density_b,
+        audit_spatial_density.verify(borrow world, borrow audit_spatial_density_a));
+    let audit_spatial_balance_a = audit_spatial_balance.analyze(borrow world);
+    let audit_spatial_balance_b = audit_spatial_balance.analyze(borrow world);
+    include(inout out, borrow audit_spatial_balance_a, borrow audit_spatial_balance_b,
+        audit_spatial_balance.verify(borrow world, borrow audit_spatial_balance_a));
+    let audit_spatial_pressure_a = audit_spatial_pressure.analyze(borrow world);
+    let audit_spatial_pressure_b = audit_spatial_pressure.analyze(borrow world);
+    include(inout out, borrow audit_spatial_pressure_a, borrow audit_spatial_pressure_b,
+        audit_spatial_pressure.verify(borrow world, borrow audit_spatial_pressure_a));
+    let audit_spatial_locality_a = audit_spatial_locality.analyze(borrow world);
+    let audit_spatial_locality_b = audit_spatial_locality.analyze(borrow world);
+    include(inout out, borrow audit_spatial_locality_a, borrow audit_spatial_locality_b,
+        audit_spatial_locality.verify(borrow world, borrow audit_spatial_locality_a));
+    let audit_spatial_fanout_a = audit_spatial_fanout.analyze(borrow world);
+    let audit_spatial_fanout_b = audit_spatial_fanout.analyze(borrow world);
+    include(inout out, borrow audit_spatial_fanout_a, borrow audit_spatial_fanout_b,
+        audit_spatial_fanout.verify(borrow world, borrow audit_spatial_fanout_a));
+    let audit_spatial_continuity_a = audit_spatial_continuity.analyze(borrow world);
+    let audit_spatial_continuity_b = audit_spatial_continuity.analyze(borrow world);
+    include(inout out, borrow audit_spatial_continuity_a, borrow audit_spatial_continuity_b,
+        audit_spatial_continuity.verify(borrow world, borrow audit_spatial_continuity_a));
+    let audit_spatial_coverage_a = audit_spatial_coverage.analyze(borrow world);
+    let audit_spatial_coverage_b = audit_spatial_coverage.analyze(borrow world);
+    include(inout out, borrow audit_spatial_coverage_a, borrow audit_spatial_coverage_b,
+        audit_spatial_coverage.verify(borrow world, borrow audit_spatial_coverage_a));
+    let audit_spatial_skew_a = audit_spatial_skew.analyze(borrow world);
+    let audit_spatial_skew_b = audit_spatial_skew.analyze(borrow world);
+    include(inout out, borrow audit_spatial_skew_a, borrow audit_spatial_skew_b,
+        audit_spatial_skew.verify(borrow world, borrow audit_spatial_skew_a));
+    let audit_spatial_capacity_a = audit_spatial_capacity.analyze(borrow world);
+    let audit_spatial_capacity_b = audit_spatial_capacity.analyze(borrow world);
+    include(inout out, borrow audit_spatial_capacity_a, borrow audit_spatial_capacity_b,
+        audit_spatial_capacity.verify(borrow world, borrow audit_spatial_capacity_a));
+    let audit_spatial_latency_a = audit_spatial_latency.analyze(borrow world);
+    let audit_spatial_latency_b = audit_spatial_latency.analyze(borrow world);
+    include(inout out, borrow audit_spatial_latency_a, borrow audit_spatial_latency_b,
+        audit_spatial_latency.verify(borrow world, borrow audit_spatial_latency_a));
+    let audit_spatial_stability_a = audit_spatial_stability.analyze(borrow world);
+    let audit_spatial_stability_b = audit_spatial_stability.analyze(borrow world);
+    include(inout out, borrow audit_spatial_stability_a, borrow audit_spatial_stability_b,
+        audit_spatial_stability.verify(borrow world, borrow audit_spatial_stability_a));
+    let audit_spatial_integrity_a = audit_spatial_integrity.analyze(borrow world);
+    let audit_spatial_integrity_b = audit_spatial_integrity.analyze(borrow world);
+    include(inout out, borrow audit_spatial_integrity_a, borrow audit_spatial_integrity_b,
+        audit_spatial_integrity.verify(borrow world, borrow audit_spatial_integrity_a));
+    let audit_spatial_cost_a = audit_spatial_cost.analyze(borrow world);
+    let audit_spatial_cost_b = audit_spatial_cost.analyze(borrow world);
+    include(inout out, borrow audit_spatial_cost_a, borrow audit_spatial_cost_b,
+        audit_spatial_cost.verify(borrow world, borrow audit_spatial_cost_a));
+    let audit_spatial_risk_a = audit_spatial_risk.analyze(borrow world);
+    let audit_spatial_risk_b = audit_spatial_risk.analyze(borrow world);
+    include(inout out, borrow audit_spatial_risk_a, borrow audit_spatial_risk_b,
+        audit_spatial_risk.verify(borrow world, borrow audit_spatial_risk_a));
+    let audit_spatial_throughput_a = audit_spatial_throughput.analyze(borrow world);
+    let audit_spatial_throughput_b = audit_spatial_throughput.analyze(borrow world);
+    include(inout out, borrow audit_spatial_throughput_a, borrow audit_spatial_throughput_b,
+        audit_spatial_throughput.verify(borrow world, borrow audit_spatial_throughput_a));
+    let audit_spatial_entropy_a = audit_spatial_entropy.analyze(borrow world);
+    let audit_spatial_entropy_b = audit_spatial_entropy.analyze(borrow world);
+    include(inout out, borrow audit_spatial_entropy_a, borrow audit_spatial_entropy_b,
+        audit_spatial_entropy.verify(borrow world, borrow audit_spatial_entropy_a));
+    let audit_physics_density_a = audit_physics_density.analyze(borrow world);
+    let audit_physics_density_b = audit_physics_density.analyze(borrow world);
+    include(inout out, borrow audit_physics_density_a, borrow audit_physics_density_b,
+        audit_physics_density.verify(borrow world, borrow audit_physics_density_a));
+    let audit_physics_balance_a = audit_physics_balance.analyze(borrow world);
+    let audit_physics_balance_b = audit_physics_balance.analyze(borrow world);
+    include(inout out, borrow audit_physics_balance_a, borrow audit_physics_balance_b,
+        audit_physics_balance.verify(borrow world, borrow audit_physics_balance_a));
+    let audit_physics_pressure_a = audit_physics_pressure.analyze(borrow world);
+    let audit_physics_pressure_b = audit_physics_pressure.analyze(borrow world);
+    include(inout out, borrow audit_physics_pressure_a, borrow audit_physics_pressure_b,
+        audit_physics_pressure.verify(borrow world, borrow audit_physics_pressure_a));
+    let audit_physics_locality_a = audit_physics_locality.analyze(borrow world);
+    let audit_physics_locality_b = audit_physics_locality.analyze(borrow world);
+    include(inout out, borrow audit_physics_locality_a, borrow audit_physics_locality_b,
+        audit_physics_locality.verify(borrow world, borrow audit_physics_locality_a));
+    let audit_physics_fanout_a = audit_physics_fanout.analyze(borrow world);
+    let audit_physics_fanout_b = audit_physics_fanout.analyze(borrow world);
+    include(inout out, borrow audit_physics_fanout_a, borrow audit_physics_fanout_b,
+        audit_physics_fanout.verify(borrow world, borrow audit_physics_fanout_a));
+    let audit_physics_continuity_a = audit_physics_continuity.analyze(borrow world);
+    let audit_physics_continuity_b = audit_physics_continuity.analyze(borrow world);
+    include(inout out, borrow audit_physics_continuity_a, borrow audit_physics_continuity_b,
+        audit_physics_continuity.verify(borrow world, borrow audit_physics_continuity_a));
+    let audit_physics_coverage_a = audit_physics_coverage.analyze(borrow world);
+    let audit_physics_coverage_b = audit_physics_coverage.analyze(borrow world);
+    include(inout out, borrow audit_physics_coverage_a, borrow audit_physics_coverage_b,
+        audit_physics_coverage.verify(borrow world, borrow audit_physics_coverage_a));
+    let audit_physics_skew_a = audit_physics_skew.analyze(borrow world);
+    let audit_physics_skew_b = audit_physics_skew.analyze(borrow world);
+    include(inout out, borrow audit_physics_skew_a, borrow audit_physics_skew_b,
+        audit_physics_skew.verify(borrow world, borrow audit_physics_skew_a));
+    let audit_physics_capacity_a = audit_physics_capacity.analyze(borrow world);
+    let audit_physics_capacity_b = audit_physics_capacity.analyze(borrow world);
+    include(inout out, borrow audit_physics_capacity_a, borrow audit_physics_capacity_b,
+        audit_physics_capacity.verify(borrow world, borrow audit_physics_capacity_a));
+    let audit_physics_latency_a = audit_physics_latency.analyze(borrow world);
+    let audit_physics_latency_b = audit_physics_latency.analyze(borrow world);
+    include(inout out, borrow audit_physics_latency_a, borrow audit_physics_latency_b,
+        audit_physics_latency.verify(borrow world, borrow audit_physics_latency_a));
+    let audit_physics_stability_a = audit_physics_stability.analyze(borrow world);
+    let audit_physics_stability_b = audit_physics_stability.analyze(borrow world);
+    include(inout out, borrow audit_physics_stability_a, borrow audit_physics_stability_b,
+        audit_physics_stability.verify(borrow world, borrow audit_physics_stability_a));
+    let audit_physics_integrity_a = audit_physics_integrity.analyze(borrow world);
+    let audit_physics_integrity_b = audit_physics_integrity.analyze(borrow world);
+    include(inout out, borrow audit_physics_integrity_a, borrow audit_physics_integrity_b,
+        audit_physics_integrity.verify(borrow world, borrow audit_physics_integrity_a));
+    let audit_physics_cost_a = audit_physics_cost.analyze(borrow world);
+    let audit_physics_cost_b = audit_physics_cost.analyze(borrow world);
+    include(inout out, borrow audit_physics_cost_a, borrow audit_physics_cost_b,
+        audit_physics_cost.verify(borrow world, borrow audit_physics_cost_a));
+    let audit_physics_risk_a = audit_physics_risk.analyze(borrow world);
+    let audit_physics_risk_b = audit_physics_risk.analyze(borrow world);
+    include(inout out, borrow audit_physics_risk_a, borrow audit_physics_risk_b,
+        audit_physics_risk.verify(borrow world, borrow audit_physics_risk_a));
+    let audit_physics_throughput_a = audit_physics_throughput.analyze(borrow world);
+    let audit_physics_throughput_b = audit_physics_throughput.analyze(borrow world);
+    include(inout out, borrow audit_physics_throughput_a, borrow audit_physics_throughput_b,
+        audit_physics_throughput.verify(borrow world, borrow audit_physics_throughput_a));
+    let audit_physics_entropy_a = audit_physics_entropy.analyze(borrow world);
+    let audit_physics_entropy_b = audit_physics_entropy.analyze(borrow world);
+    include(inout out, borrow audit_physics_entropy_a, borrow audit_physics_entropy_b,
+        audit_physics_entropy.verify(borrow world, borrow audit_physics_entropy_a));
+    let audit_navigation_density_a = audit_navigation_density.analyze(borrow world);
+    let audit_navigation_density_b = audit_navigation_density.analyze(borrow world);
+    include(inout out, borrow audit_navigation_density_a, borrow audit_navigation_density_b,
+        audit_navigation_density.verify(borrow world, borrow audit_navigation_density_a));
+    let audit_navigation_balance_a = audit_navigation_balance.analyze(borrow world);
+    let audit_navigation_balance_b = audit_navigation_balance.analyze(borrow world);
+    include(inout out, borrow audit_navigation_balance_a, borrow audit_navigation_balance_b,
+        audit_navigation_balance.verify(borrow world, borrow audit_navigation_balance_a));
+    let audit_navigation_pressure_a = audit_navigation_pressure.analyze(borrow world);
+    let audit_navigation_pressure_b = audit_navigation_pressure.analyze(borrow world);
+    include(inout out, borrow audit_navigation_pressure_a, borrow audit_navigation_pressure_b,
+        audit_navigation_pressure.verify(borrow world, borrow audit_navigation_pressure_a));
+    let audit_navigation_locality_a = audit_navigation_locality.analyze(borrow world);
+    let audit_navigation_locality_b = audit_navigation_locality.analyze(borrow world);
+    include(inout out, borrow audit_navigation_locality_a, borrow audit_navigation_locality_b,
+        audit_navigation_locality.verify(borrow world, borrow audit_navigation_locality_a));
+    let audit_navigation_fanout_a = audit_navigation_fanout.analyze(borrow world);
+    let audit_navigation_fanout_b = audit_navigation_fanout.analyze(borrow world);
+    include(inout out, borrow audit_navigation_fanout_a, borrow audit_navigation_fanout_b,
+        audit_navigation_fanout.verify(borrow world, borrow audit_navigation_fanout_a));
+    let audit_navigation_continuity_a = audit_navigation_continuity.analyze(borrow world);
+    let audit_navigation_continuity_b = audit_navigation_continuity.analyze(borrow world);
+    include(inout out, borrow audit_navigation_continuity_a, borrow audit_navigation_continuity_b,
+        audit_navigation_continuity.verify(borrow world, borrow audit_navigation_continuity_a));
+    let audit_navigation_coverage_a = audit_navigation_coverage.analyze(borrow world);
+    let audit_navigation_coverage_b = audit_navigation_coverage.analyze(borrow world);
+    include(inout out, borrow audit_navigation_coverage_a, borrow audit_navigation_coverage_b,
+        audit_navigation_coverage.verify(borrow world, borrow audit_navigation_coverage_a));
+    let audit_navigation_skew_a = audit_navigation_skew.analyze(borrow world);
+    let audit_navigation_skew_b = audit_navigation_skew.analyze(borrow world);
+    include(inout out, borrow audit_navigation_skew_a, borrow audit_navigation_skew_b,
+        audit_navigation_skew.verify(borrow world, borrow audit_navigation_skew_a));
+    let audit_navigation_capacity_a = audit_navigation_capacity.analyze(borrow world);
+    let audit_navigation_capacity_b = audit_navigation_capacity.analyze(borrow world);
+    include(inout out, borrow audit_navigation_capacity_a, borrow audit_navigation_capacity_b,
+        audit_navigation_capacity.verify(borrow world, borrow audit_navigation_capacity_a));
+    let audit_navigation_latency_a = audit_navigation_latency.analyze(borrow world);
+    let audit_navigation_latency_b = audit_navigation_latency.analyze(borrow world);
+    include(inout out, borrow audit_navigation_latency_a, borrow audit_navigation_latency_b,
+        audit_navigation_latency.verify(borrow world, borrow audit_navigation_latency_a));
+    let audit_navigation_stability_a = audit_navigation_stability.analyze(borrow world);
+    let audit_navigation_stability_b = audit_navigation_stability.analyze(borrow world);
+    include(inout out, borrow audit_navigation_stability_a, borrow audit_navigation_stability_b,
+        audit_navigation_stability.verify(borrow world, borrow audit_navigation_stability_a));
+    let audit_navigation_integrity_a = audit_navigation_integrity.analyze(borrow world);
+    let audit_navigation_integrity_b = audit_navigation_integrity.analyze(borrow world);
+    include(inout out, borrow audit_navigation_integrity_a, borrow audit_navigation_integrity_b,
+        audit_navigation_integrity.verify(borrow world, borrow audit_navigation_integrity_a));
+    let audit_navigation_cost_a = audit_navigation_cost.analyze(borrow world);
+    let audit_navigation_cost_b = audit_navigation_cost.analyze(borrow world);
+    include(inout out, borrow audit_navigation_cost_a, borrow audit_navigation_cost_b,
+        audit_navigation_cost.verify(borrow world, borrow audit_navigation_cost_a));
+    let audit_navigation_risk_a = audit_navigation_risk.analyze(borrow world);
+    let audit_navigation_risk_b = audit_navigation_risk.analyze(borrow world);
+    include(inout out, borrow audit_navigation_risk_a, borrow audit_navigation_risk_b,
+        audit_navigation_risk.verify(borrow world, borrow audit_navigation_risk_a));
+    let audit_navigation_throughput_a = audit_navigation_throughput.analyze(borrow world);
+    let audit_navigation_throughput_b = audit_navigation_throughput.analyze(borrow world);
+    include(inout out, borrow audit_navigation_throughput_a, borrow audit_navigation_throughput_b,
+        audit_navigation_throughput.verify(borrow world, borrow audit_navigation_throughput_a));
+    let audit_navigation_entropy_a = audit_navigation_entropy.analyze(borrow world);
+    let audit_navigation_entropy_b = audit_navigation_entropy.analyze(borrow world);
+    include(inout out, borrow audit_navigation_entropy_a, borrow audit_navigation_entropy_b,
+        audit_navigation_entropy.verify(borrow world, borrow audit_navigation_entropy_a));
+    let audit_ai_density_a = audit_ai_density.analyze(borrow world);
+    let audit_ai_density_b = audit_ai_density.analyze(borrow world);
+    include(inout out, borrow audit_ai_density_a, borrow audit_ai_density_b,
+        audit_ai_density.verify(borrow world, borrow audit_ai_density_a));
+    let audit_ai_balance_a = audit_ai_balance.analyze(borrow world);
+    let audit_ai_balance_b = audit_ai_balance.analyze(borrow world);
+    include(inout out, borrow audit_ai_balance_a, borrow audit_ai_balance_b,
+        audit_ai_balance.verify(borrow world, borrow audit_ai_balance_a));
+    let audit_ai_pressure_a = audit_ai_pressure.analyze(borrow world);
+    let audit_ai_pressure_b = audit_ai_pressure.analyze(borrow world);
+    include(inout out, borrow audit_ai_pressure_a, borrow audit_ai_pressure_b,
+        audit_ai_pressure.verify(borrow world, borrow audit_ai_pressure_a));
+    let audit_ai_locality_a = audit_ai_locality.analyze(borrow world);
+    let audit_ai_locality_b = audit_ai_locality.analyze(borrow world);
+    include(inout out, borrow audit_ai_locality_a, borrow audit_ai_locality_b,
+        audit_ai_locality.verify(borrow world, borrow audit_ai_locality_a));
+    let audit_ai_fanout_a = audit_ai_fanout.analyze(borrow world);
+    let audit_ai_fanout_b = audit_ai_fanout.analyze(borrow world);
+    include(inout out, borrow audit_ai_fanout_a, borrow audit_ai_fanout_b,
+        audit_ai_fanout.verify(borrow world, borrow audit_ai_fanout_a));
+    let audit_ai_continuity_a = audit_ai_continuity.analyze(borrow world);
+    let audit_ai_continuity_b = audit_ai_continuity.analyze(borrow world);
+    include(inout out, borrow audit_ai_continuity_a, borrow audit_ai_continuity_b,
+        audit_ai_continuity.verify(borrow world, borrow audit_ai_continuity_a));
+    let audit_ai_coverage_a = audit_ai_coverage.analyze(borrow world);
+    let audit_ai_coverage_b = audit_ai_coverage.analyze(borrow world);
+    include(inout out, borrow audit_ai_coverage_a, borrow audit_ai_coverage_b,
+        audit_ai_coverage.verify(borrow world, borrow audit_ai_coverage_a));
+    let audit_ai_skew_a = audit_ai_skew.analyze(borrow world);
+    let audit_ai_skew_b = audit_ai_skew.analyze(borrow world);
+    include(inout out, borrow audit_ai_skew_a, borrow audit_ai_skew_b,
+        audit_ai_skew.verify(borrow world, borrow audit_ai_skew_a));
+    let audit_ai_capacity_a = audit_ai_capacity.analyze(borrow world);
+    let audit_ai_capacity_b = audit_ai_capacity.analyze(borrow world);
+    include(inout out, borrow audit_ai_capacity_a, borrow audit_ai_capacity_b,
+        audit_ai_capacity.verify(borrow world, borrow audit_ai_capacity_a));
+    let audit_ai_latency_a = audit_ai_latency.analyze(borrow world);
+    let audit_ai_latency_b = audit_ai_latency.analyze(borrow world);
+    include(inout out, borrow audit_ai_latency_a, borrow audit_ai_latency_b,
+        audit_ai_latency.verify(borrow world, borrow audit_ai_latency_a));
+    let audit_ai_stability_a = audit_ai_stability.analyze(borrow world);
+    let audit_ai_stability_b = audit_ai_stability.analyze(borrow world);
+    include(inout out, borrow audit_ai_stability_a, borrow audit_ai_stability_b,
+        audit_ai_stability.verify(borrow world, borrow audit_ai_stability_a));
+    let audit_ai_integrity_a = audit_ai_integrity.analyze(borrow world);
+    let audit_ai_integrity_b = audit_ai_integrity.analyze(borrow world);
+    include(inout out, borrow audit_ai_integrity_a, borrow audit_ai_integrity_b,
+        audit_ai_integrity.verify(borrow world, borrow audit_ai_integrity_a));
+    let audit_ai_cost_a = audit_ai_cost.analyze(borrow world);
+    let audit_ai_cost_b = audit_ai_cost.analyze(borrow world);
+    include(inout out, borrow audit_ai_cost_a, borrow audit_ai_cost_b,
+        audit_ai_cost.verify(borrow world, borrow audit_ai_cost_a));
+    let audit_ai_risk_a = audit_ai_risk.analyze(borrow world);
+    let audit_ai_risk_b = audit_ai_risk.analyze(borrow world);
+    include(inout out, borrow audit_ai_risk_a, borrow audit_ai_risk_b,
+        audit_ai_risk.verify(borrow world, borrow audit_ai_risk_a));
+    let audit_ai_throughput_a = audit_ai_throughput.analyze(borrow world);
+    let audit_ai_throughput_b = audit_ai_throughput.analyze(borrow world);
+    include(inout out, borrow audit_ai_throughput_a, borrow audit_ai_throughput_b,
+        audit_ai_throughput.verify(borrow world, borrow audit_ai_throughput_a));
+    let audit_ai_entropy_a = audit_ai_entropy.analyze(borrow world);
+    let audit_ai_entropy_b = audit_ai_entropy.analyze(borrow world);
+    include(inout out, borrow audit_ai_entropy_a, borrow audit_ai_entropy_b,
+        audit_ai_entropy.verify(borrow world, borrow audit_ai_entropy_a));
+    let audit_economy_density_a = audit_economy_density.analyze(borrow world);
+    let audit_economy_density_b = audit_economy_density.analyze(borrow world);
+    include(inout out, borrow audit_economy_density_a, borrow audit_economy_density_b,
+        audit_economy_density.verify(borrow world, borrow audit_economy_density_a));
+    let audit_economy_balance_a = audit_economy_balance.analyze(borrow world);
+    let audit_economy_balance_b = audit_economy_balance.analyze(borrow world);
+    include(inout out, borrow audit_economy_balance_a, borrow audit_economy_balance_b,
+        audit_economy_balance.verify(borrow world, borrow audit_economy_balance_a));
+    let audit_economy_pressure_a = audit_economy_pressure.analyze(borrow world);
+    let audit_economy_pressure_b = audit_economy_pressure.analyze(borrow world);
+    include(inout out, borrow audit_economy_pressure_a, borrow audit_economy_pressure_b,
+        audit_economy_pressure.verify(borrow world, borrow audit_economy_pressure_a));
+    let audit_economy_locality_a = audit_economy_locality.analyze(borrow world);
+    let audit_economy_locality_b = audit_economy_locality.analyze(borrow world);
+    include(inout out, borrow audit_economy_locality_a, borrow audit_economy_locality_b,
+        audit_economy_locality.verify(borrow world, borrow audit_economy_locality_a));
+    let audit_economy_fanout_a = audit_economy_fanout.analyze(borrow world);
+    let audit_economy_fanout_b = audit_economy_fanout.analyze(borrow world);
+    include(inout out, borrow audit_economy_fanout_a, borrow audit_economy_fanout_b,
+        audit_economy_fanout.verify(borrow world, borrow audit_economy_fanout_a));
+    let audit_economy_continuity_a = audit_economy_continuity.analyze(borrow world);
+    let audit_economy_continuity_b = audit_economy_continuity.analyze(borrow world);
+    include(inout out, borrow audit_economy_continuity_a, borrow audit_economy_continuity_b,
+        audit_economy_continuity.verify(borrow world, borrow audit_economy_continuity_a));
+    let audit_economy_coverage_a = audit_economy_coverage.analyze(borrow world);
+    let audit_economy_coverage_b = audit_economy_coverage.analyze(borrow world);
+    include(inout out, borrow audit_economy_coverage_a, borrow audit_economy_coverage_b,
+        audit_economy_coverage.verify(borrow world, borrow audit_economy_coverage_a));
+    let audit_economy_skew_a = audit_economy_skew.analyze(borrow world);
+    let audit_economy_skew_b = audit_economy_skew.analyze(borrow world);
+    include(inout out, borrow audit_economy_skew_a, borrow audit_economy_skew_b,
+        audit_economy_skew.verify(borrow world, borrow audit_economy_skew_a));
+    let audit_economy_capacity_a = audit_economy_capacity.analyze(borrow world);
+    let audit_economy_capacity_b = audit_economy_capacity.analyze(borrow world);
+    include(inout out, borrow audit_economy_capacity_a, borrow audit_economy_capacity_b,
+        audit_economy_capacity.verify(borrow world, borrow audit_economy_capacity_a));
+    let audit_economy_latency_a = audit_economy_latency.analyze(borrow world);
+    let audit_economy_latency_b = audit_economy_latency.analyze(borrow world);
+    include(inout out, borrow audit_economy_latency_a, borrow audit_economy_latency_b,
+        audit_economy_latency.verify(borrow world, borrow audit_economy_latency_a));
+    let audit_economy_stability_a = audit_economy_stability.analyze(borrow world);
+    let audit_economy_stability_b = audit_economy_stability.analyze(borrow world);
+    include(inout out, borrow audit_economy_stability_a, borrow audit_economy_stability_b,
+        audit_economy_stability.verify(borrow world, borrow audit_economy_stability_a));
+    let audit_economy_integrity_a = audit_economy_integrity.analyze(borrow world);
+    let audit_economy_integrity_b = audit_economy_integrity.analyze(borrow world);
+    include(inout out, borrow audit_economy_integrity_a, borrow audit_economy_integrity_b,
+        audit_economy_integrity.verify(borrow world, borrow audit_economy_integrity_a));
+    let audit_economy_cost_a = audit_economy_cost.analyze(borrow world);
+    let audit_economy_cost_b = audit_economy_cost.analyze(borrow world);
+    include(inout out, borrow audit_economy_cost_a, borrow audit_economy_cost_b,
+        audit_economy_cost.verify(borrow world, borrow audit_economy_cost_a));
+    let audit_economy_risk_a = audit_economy_risk.analyze(borrow world);
+    let audit_economy_risk_b = audit_economy_risk.analyze(borrow world);
+    include(inout out, borrow audit_economy_risk_a, borrow audit_economy_risk_b,
+        audit_economy_risk.verify(borrow world, borrow audit_economy_risk_a));
+    let audit_economy_throughput_a = audit_economy_throughput.analyze(borrow world);
+    let audit_economy_throughput_b = audit_economy_throughput.analyze(borrow world);
+    include(inout out, borrow audit_economy_throughput_a, borrow audit_economy_throughput_b,
+        audit_economy_throughput.verify(borrow world, borrow audit_economy_throughput_a));
+    let audit_economy_entropy_a = audit_economy_entropy.analyze(borrow world);
+    let audit_economy_entropy_b = audit_economy_entropy.analyze(borrow world);
+    include(inout out, borrow audit_economy_entropy_a, borrow audit_economy_entropy_b,
+        audit_economy_entropy.verify(borrow world, borrow audit_economy_entropy_a));
+    let audit_inventory_density_a = audit_inventory_density.analyze(borrow world);
+    let audit_inventory_density_b = audit_inventory_density.analyze(borrow world);
+    include(inout out, borrow audit_inventory_density_a, borrow audit_inventory_density_b,
+        audit_inventory_density.verify(borrow world, borrow audit_inventory_density_a));
+    let audit_inventory_balance_a = audit_inventory_balance.analyze(borrow world);
+    let audit_inventory_balance_b = audit_inventory_balance.analyze(borrow world);
+    include(inout out, borrow audit_inventory_balance_a, borrow audit_inventory_balance_b,
+        audit_inventory_balance.verify(borrow world, borrow audit_inventory_balance_a));
+    let audit_inventory_pressure_a = audit_inventory_pressure.analyze(borrow world);
+    let audit_inventory_pressure_b = audit_inventory_pressure.analyze(borrow world);
+    include(inout out, borrow audit_inventory_pressure_a, borrow audit_inventory_pressure_b,
+        audit_inventory_pressure.verify(borrow world, borrow audit_inventory_pressure_a));
+    let audit_inventory_locality_a = audit_inventory_locality.analyze(borrow world);
+    let audit_inventory_locality_b = audit_inventory_locality.analyze(borrow world);
+    include(inout out, borrow audit_inventory_locality_a, borrow audit_inventory_locality_b,
+        audit_inventory_locality.verify(borrow world, borrow audit_inventory_locality_a));
+    let audit_inventory_fanout_a = audit_inventory_fanout.analyze(borrow world);
+    let audit_inventory_fanout_b = audit_inventory_fanout.analyze(borrow world);
+    include(inout out, borrow audit_inventory_fanout_a, borrow audit_inventory_fanout_b,
+        audit_inventory_fanout.verify(borrow world, borrow audit_inventory_fanout_a));
+    let audit_inventory_continuity_a = audit_inventory_continuity.analyze(borrow world);
+    let audit_inventory_continuity_b = audit_inventory_continuity.analyze(borrow world);
+    include(inout out, borrow audit_inventory_continuity_a, borrow audit_inventory_continuity_b,
+        audit_inventory_continuity.verify(borrow world, borrow audit_inventory_continuity_a));
+    let audit_inventory_coverage_a = audit_inventory_coverage.analyze(borrow world);
+    let audit_inventory_coverage_b = audit_inventory_coverage.analyze(borrow world);
+    include(inout out, borrow audit_inventory_coverage_a, borrow audit_inventory_coverage_b,
+        audit_inventory_coverage.verify(borrow world, borrow audit_inventory_coverage_a));
+    let audit_inventory_skew_a = audit_inventory_skew.analyze(borrow world);
+    let audit_inventory_skew_b = audit_inventory_skew.analyze(borrow world);
+    include(inout out, borrow audit_inventory_skew_a, borrow audit_inventory_skew_b,
+        audit_inventory_skew.verify(borrow world, borrow audit_inventory_skew_a));
+    let audit_inventory_capacity_a = audit_inventory_capacity.analyze(borrow world);
+    let audit_inventory_capacity_b = audit_inventory_capacity.analyze(borrow world);
+    include(inout out, borrow audit_inventory_capacity_a, borrow audit_inventory_capacity_b,
+        audit_inventory_capacity.verify(borrow world, borrow audit_inventory_capacity_a));
+    let audit_inventory_latency_a = audit_inventory_latency.analyze(borrow world);
+    let audit_inventory_latency_b = audit_inventory_latency.analyze(borrow world);
+    include(inout out, borrow audit_inventory_latency_a, borrow audit_inventory_latency_b,
+        audit_inventory_latency.verify(borrow world, borrow audit_inventory_latency_a));
+    let audit_inventory_stability_a = audit_inventory_stability.analyze(borrow world);
+    let audit_inventory_stability_b = audit_inventory_stability.analyze(borrow world);
+    include(inout out, borrow audit_inventory_stability_a, borrow audit_inventory_stability_b,
+        audit_inventory_stability.verify(borrow world, borrow audit_inventory_stability_a));
+    let audit_inventory_integrity_a = audit_inventory_integrity.analyze(borrow world);
+    let audit_inventory_integrity_b = audit_inventory_integrity.analyze(borrow world);
+    include(inout out, borrow audit_inventory_integrity_a, borrow audit_inventory_integrity_b,
+        audit_inventory_integrity.verify(borrow world, borrow audit_inventory_integrity_a));
+    let audit_inventory_cost_a = audit_inventory_cost.analyze(borrow world);
+    let audit_inventory_cost_b = audit_inventory_cost.analyze(borrow world);
+    include(inout out, borrow audit_inventory_cost_a, borrow audit_inventory_cost_b,
+        audit_inventory_cost.verify(borrow world, borrow audit_inventory_cost_a));
+    let audit_inventory_risk_a = audit_inventory_risk.analyze(borrow world);
+    let audit_inventory_risk_b = audit_inventory_risk.analyze(borrow world);
+    include(inout out, borrow audit_inventory_risk_a, borrow audit_inventory_risk_b,
+        audit_inventory_risk.verify(borrow world, borrow audit_inventory_risk_a));
+    let audit_inventory_throughput_a = audit_inventory_throughput.analyze(borrow world);
+    let audit_inventory_throughput_b = audit_inventory_throughput.analyze(borrow world);
+    include(inout out, borrow audit_inventory_throughput_a, borrow audit_inventory_throughput_b,
+        audit_inventory_throughput.verify(borrow world, borrow audit_inventory_throughput_a));
+    let audit_inventory_entropy_a = audit_inventory_entropy.analyze(borrow world);
+    let audit_inventory_entropy_b = audit_inventory_entropy.analyze(borrow world);
+    include(inout out, borrow audit_inventory_entropy_a, borrow audit_inventory_entropy_b,
+        audit_inventory_entropy.verify(borrow world, borrow audit_inventory_entropy_a));
+    let audit_faction_density_a = audit_faction_density.analyze(borrow world);
+    let audit_faction_density_b = audit_faction_density.analyze(borrow world);
+    include(inout out, borrow audit_faction_density_a, borrow audit_faction_density_b,
+        audit_faction_density.verify(borrow world, borrow audit_faction_density_a));
+    let audit_faction_balance_a = audit_faction_balance.analyze(borrow world);
+    let audit_faction_balance_b = audit_faction_balance.analyze(borrow world);
+    include(inout out, borrow audit_faction_balance_a, borrow audit_faction_balance_b,
+        audit_faction_balance.verify(borrow world, borrow audit_faction_balance_a));
+    let audit_faction_pressure_a = audit_faction_pressure.analyze(borrow world);
+    let audit_faction_pressure_b = audit_faction_pressure.analyze(borrow world);
+    include(inout out, borrow audit_faction_pressure_a, borrow audit_faction_pressure_b,
+        audit_faction_pressure.verify(borrow world, borrow audit_faction_pressure_a));
+    let audit_faction_locality_a = audit_faction_locality.analyze(borrow world);
+    let audit_faction_locality_b = audit_faction_locality.analyze(borrow world);
+    include(inout out, borrow audit_faction_locality_a, borrow audit_faction_locality_b,
+        audit_faction_locality.verify(borrow world, borrow audit_faction_locality_a));
+    let audit_faction_fanout_a = audit_faction_fanout.analyze(borrow world);
+    let audit_faction_fanout_b = audit_faction_fanout.analyze(borrow world);
+    include(inout out, borrow audit_faction_fanout_a, borrow audit_faction_fanout_b,
+        audit_faction_fanout.verify(borrow world, borrow audit_faction_fanout_a));
+    let audit_faction_continuity_a = audit_faction_continuity.analyze(borrow world);
+    let audit_faction_continuity_b = audit_faction_continuity.analyze(borrow world);
+    include(inout out, borrow audit_faction_continuity_a, borrow audit_faction_continuity_b,
+        audit_faction_continuity.verify(borrow world, borrow audit_faction_continuity_a));
+    let audit_faction_coverage_a = audit_faction_coverage.analyze(borrow world);
+    let audit_faction_coverage_b = audit_faction_coverage.analyze(borrow world);
+    include(inout out, borrow audit_faction_coverage_a, borrow audit_faction_coverage_b,
+        audit_faction_coverage.verify(borrow world, borrow audit_faction_coverage_a));
+    let audit_faction_skew_a = audit_faction_skew.analyze(borrow world);
+    let audit_faction_skew_b = audit_faction_skew.analyze(borrow world);
+    include(inout out, borrow audit_faction_skew_a, borrow audit_faction_skew_b,
+        audit_faction_skew.verify(borrow world, borrow audit_faction_skew_a));
+    let audit_faction_capacity_a = audit_faction_capacity.analyze(borrow world);
+    let audit_faction_capacity_b = audit_faction_capacity.analyze(borrow world);
+    include(inout out, borrow audit_faction_capacity_a, borrow audit_faction_capacity_b,
+        audit_faction_capacity.verify(borrow world, borrow audit_faction_capacity_a));
+    let audit_faction_latency_a = audit_faction_latency.analyze(borrow world);
+    let audit_faction_latency_b = audit_faction_latency.analyze(borrow world);
+    include(inout out, borrow audit_faction_latency_a, borrow audit_faction_latency_b,
+        audit_faction_latency.verify(borrow world, borrow audit_faction_latency_a));
+    let audit_faction_stability_a = audit_faction_stability.analyze(borrow world);
+    let audit_faction_stability_b = audit_faction_stability.analyze(borrow world);
+    include(inout out, borrow audit_faction_stability_a, borrow audit_faction_stability_b,
+        audit_faction_stability.verify(borrow world, borrow audit_faction_stability_a));
+    let audit_faction_integrity_a = audit_faction_integrity.analyze(borrow world);
+    let audit_faction_integrity_b = audit_faction_integrity.analyze(borrow world);
+    include(inout out, borrow audit_faction_integrity_a, borrow audit_faction_integrity_b,
+        audit_faction_integrity.verify(borrow world, borrow audit_faction_integrity_a));
+    let audit_faction_cost_a = audit_faction_cost.analyze(borrow world);
+    let audit_faction_cost_b = audit_faction_cost.analyze(borrow world);
+    include(inout out, borrow audit_faction_cost_a, borrow audit_faction_cost_b,
+        audit_faction_cost.verify(borrow world, borrow audit_faction_cost_a));
+    let audit_faction_risk_a = audit_faction_risk.analyze(borrow world);
+    let audit_faction_risk_b = audit_faction_risk.analyze(borrow world);
+    include(inout out, borrow audit_faction_risk_a, borrow audit_faction_risk_b,
+        audit_faction_risk.verify(borrow world, borrow audit_faction_risk_a));
+    let audit_faction_throughput_a = audit_faction_throughput.analyze(borrow world);
+    let audit_faction_throughput_b = audit_faction_throughput.analyze(borrow world);
+    include(inout out, borrow audit_faction_throughput_a, borrow audit_faction_throughput_b,
+        audit_faction_throughput.verify(borrow world, borrow audit_faction_throughput_a));
+    let audit_faction_entropy_a = audit_faction_entropy.analyze(borrow world);
+    let audit_faction_entropy_b = audit_faction_entropy.analyze(borrow world);
+    include(inout out, borrow audit_faction_entropy_a, borrow audit_faction_entropy_b,
+        audit_faction_entropy.verify(borrow world, borrow audit_faction_entropy_a));
+    let audit_quest_density_a = audit_quest_density.analyze(borrow world);
+    let audit_quest_density_b = audit_quest_density.analyze(borrow world);
+    include(inout out, borrow audit_quest_density_a, borrow audit_quest_density_b,
+        audit_quest_density.verify(borrow world, borrow audit_quest_density_a));
+    let audit_quest_balance_a = audit_quest_balance.analyze(borrow world);
+    let audit_quest_balance_b = audit_quest_balance.analyze(borrow world);
+    include(inout out, borrow audit_quest_balance_a, borrow audit_quest_balance_b,
+        audit_quest_balance.verify(borrow world, borrow audit_quest_balance_a));
+    let audit_quest_pressure_a = audit_quest_pressure.analyze(borrow world);
+    let audit_quest_pressure_b = audit_quest_pressure.analyze(borrow world);
+    include(inout out, borrow audit_quest_pressure_a, borrow audit_quest_pressure_b,
+        audit_quest_pressure.verify(borrow world, borrow audit_quest_pressure_a));
+    let audit_quest_locality_a = audit_quest_locality.analyze(borrow world);
+    let audit_quest_locality_b = audit_quest_locality.analyze(borrow world);
+    include(inout out, borrow audit_quest_locality_a, borrow audit_quest_locality_b,
+        audit_quest_locality.verify(borrow world, borrow audit_quest_locality_a));
+    let audit_quest_fanout_a = audit_quest_fanout.analyze(borrow world);
+    let audit_quest_fanout_b = audit_quest_fanout.analyze(borrow world);
+    include(inout out, borrow audit_quest_fanout_a, borrow audit_quest_fanout_b,
+        audit_quest_fanout.verify(borrow world, borrow audit_quest_fanout_a));
+    let audit_quest_continuity_a = audit_quest_continuity.analyze(borrow world);
+    let audit_quest_continuity_b = audit_quest_continuity.analyze(borrow world);
+    include(inout out, borrow audit_quest_continuity_a, borrow audit_quest_continuity_b,
+        audit_quest_continuity.verify(borrow world, borrow audit_quest_continuity_a));
+    let audit_quest_coverage_a = audit_quest_coverage.analyze(borrow world);
+    let audit_quest_coverage_b = audit_quest_coverage.analyze(borrow world);
+    include(inout out, borrow audit_quest_coverage_a, borrow audit_quest_coverage_b,
+        audit_quest_coverage.verify(borrow world, borrow audit_quest_coverage_a));
+    let audit_quest_skew_a = audit_quest_skew.analyze(borrow world);
+    let audit_quest_skew_b = audit_quest_skew.analyze(borrow world);
+    include(inout out, borrow audit_quest_skew_a, borrow audit_quest_skew_b,
+        audit_quest_skew.verify(borrow world, borrow audit_quest_skew_a));
+    let audit_quest_capacity_a = audit_quest_capacity.analyze(borrow world);
+    let audit_quest_capacity_b = audit_quest_capacity.analyze(borrow world);
+    include(inout out, borrow audit_quest_capacity_a, borrow audit_quest_capacity_b,
+        audit_quest_capacity.verify(borrow world, borrow audit_quest_capacity_a));
+    let audit_quest_latency_a = audit_quest_latency.analyze(borrow world);
+    let audit_quest_latency_b = audit_quest_latency.analyze(borrow world);
+    include(inout out, borrow audit_quest_latency_a, borrow audit_quest_latency_b,
+        audit_quest_latency.verify(borrow world, borrow audit_quest_latency_a));
+    let audit_quest_stability_a = audit_quest_stability.analyze(borrow world);
+    let audit_quest_stability_b = audit_quest_stability.analyze(borrow world);
+    include(inout out, borrow audit_quest_stability_a, borrow audit_quest_stability_b,
+        audit_quest_stability.verify(borrow world, borrow audit_quest_stability_a));
+    let audit_quest_integrity_a = audit_quest_integrity.analyze(borrow world);
+    let audit_quest_integrity_b = audit_quest_integrity.analyze(borrow world);
+    include(inout out, borrow audit_quest_integrity_a, borrow audit_quest_integrity_b,
+        audit_quest_integrity.verify(borrow world, borrow audit_quest_integrity_a));
+    let audit_quest_cost_a = audit_quest_cost.analyze(borrow world);
+    let audit_quest_cost_b = audit_quest_cost.analyze(borrow world);
+    include(inout out, borrow audit_quest_cost_a, borrow audit_quest_cost_b,
+        audit_quest_cost.verify(borrow world, borrow audit_quest_cost_a));
+    let audit_quest_risk_a = audit_quest_risk.analyze(borrow world);
+    let audit_quest_risk_b = audit_quest_risk.analyze(borrow world);
+    include(inout out, borrow audit_quest_risk_a, borrow audit_quest_risk_b,
+        audit_quest_risk.verify(borrow world, borrow audit_quest_risk_a));
+    let audit_quest_throughput_a = audit_quest_throughput.analyze(borrow world);
+    let audit_quest_throughput_b = audit_quest_throughput.analyze(borrow world);
+    include(inout out, borrow audit_quest_throughput_a, borrow audit_quest_throughput_b,
+        audit_quest_throughput.verify(borrow world, borrow audit_quest_throughput_a));
+    let audit_quest_entropy_a = audit_quest_entropy.analyze(borrow world);
+    let audit_quest_entropy_b = audit_quest_entropy.analyze(borrow world);
+    include(inout out, borrow audit_quest_entropy_a, borrow audit_quest_entropy_b,
+        audit_quest_entropy.verify(borrow world, borrow audit_quest_entropy_a));
+    let audit_script_density_a = audit_script_density.analyze(borrow world);
+    let audit_script_density_b = audit_script_density.analyze(borrow world);
+    include(inout out, borrow audit_script_density_a, borrow audit_script_density_b,
+        audit_script_density.verify(borrow world, borrow audit_script_density_a));
+    let audit_script_balance_a = audit_script_balance.analyze(borrow world);
+    let audit_script_balance_b = audit_script_balance.analyze(borrow world);
+    include(inout out, borrow audit_script_balance_a, borrow audit_script_balance_b,
+        audit_script_balance.verify(borrow world, borrow audit_script_balance_a));
+    let audit_script_pressure_a = audit_script_pressure.analyze(borrow world);
+    let audit_script_pressure_b = audit_script_pressure.analyze(borrow world);
+    include(inout out, borrow audit_script_pressure_a, borrow audit_script_pressure_b,
+        audit_script_pressure.verify(borrow world, borrow audit_script_pressure_a));
+    let audit_script_locality_a = audit_script_locality.analyze(borrow world);
+    let audit_script_locality_b = audit_script_locality.analyze(borrow world);
+    include(inout out, borrow audit_script_locality_a, borrow audit_script_locality_b,
+        audit_script_locality.verify(borrow world, borrow audit_script_locality_a));
+    let audit_script_fanout_a = audit_script_fanout.analyze(borrow world);
+    let audit_script_fanout_b = audit_script_fanout.analyze(borrow world);
+    include(inout out, borrow audit_script_fanout_a, borrow audit_script_fanout_b,
+        audit_script_fanout.verify(borrow world, borrow audit_script_fanout_a));
+    let audit_script_continuity_a = audit_script_continuity.analyze(borrow world);
+    let audit_script_continuity_b = audit_script_continuity.analyze(borrow world);
+    include(inout out, borrow audit_script_continuity_a, borrow audit_script_continuity_b,
+        audit_script_continuity.verify(borrow world, borrow audit_script_continuity_a));
+    let audit_script_coverage_a = audit_script_coverage.analyze(borrow world);
+    let audit_script_coverage_b = audit_script_coverage.analyze(borrow world);
+    include(inout out, borrow audit_script_coverage_a, borrow audit_script_coverage_b,
+        audit_script_coverage.verify(borrow world, borrow audit_script_coverage_a));
+    let audit_script_skew_a = audit_script_skew.analyze(borrow world);
+    let audit_script_skew_b = audit_script_skew.analyze(borrow world);
+    include(inout out, borrow audit_script_skew_a, borrow audit_script_skew_b,
+        audit_script_skew.verify(borrow world, borrow audit_script_skew_a));
+    let audit_script_capacity_a = audit_script_capacity.analyze(borrow world);
+    let audit_script_capacity_b = audit_script_capacity.analyze(borrow world);
+    include(inout out, borrow audit_script_capacity_a, borrow audit_script_capacity_b,
+        audit_script_capacity.verify(borrow world, borrow audit_script_capacity_a));
+    let audit_script_latency_a = audit_script_latency.analyze(borrow world);
+    let audit_script_latency_b = audit_script_latency.analyze(borrow world);
+    include(inout out, borrow audit_script_latency_a, borrow audit_script_latency_b,
+        audit_script_latency.verify(borrow world, borrow audit_script_latency_a));
+    let audit_script_stability_a = audit_script_stability.analyze(borrow world);
+    let audit_script_stability_b = audit_script_stability.analyze(borrow world);
+    include(inout out, borrow audit_script_stability_a, borrow audit_script_stability_b,
+        audit_script_stability.verify(borrow world, borrow audit_script_stability_a));
+    let audit_script_integrity_a = audit_script_integrity.analyze(borrow world);
+    let audit_script_integrity_b = audit_script_integrity.analyze(borrow world);
+    include(inout out, borrow audit_script_integrity_a, borrow audit_script_integrity_b,
+        audit_script_integrity.verify(borrow world, borrow audit_script_integrity_a));
+    let audit_script_cost_a = audit_script_cost.analyze(borrow world);
+    let audit_script_cost_b = audit_script_cost.analyze(borrow world);
+    include(inout out, borrow audit_script_cost_a, borrow audit_script_cost_b,
+        audit_script_cost.verify(borrow world, borrow audit_script_cost_a));
+    let audit_script_risk_a = audit_script_risk.analyze(borrow world);
+    let audit_script_risk_b = audit_script_risk.analyze(borrow world);
+    include(inout out, borrow audit_script_risk_a, borrow audit_script_risk_b,
+        audit_script_risk.verify(borrow world, borrow audit_script_risk_a));
+    let audit_script_throughput_a = audit_script_throughput.analyze(borrow world);
+    let audit_script_throughput_b = audit_script_throughput.analyze(borrow world);
+    include(inout out, borrow audit_script_throughput_a, borrow audit_script_throughput_b,
+        audit_script_throughput.verify(borrow world, borrow audit_script_throughput_a));
+    let audit_script_entropy_a = audit_script_entropy.analyze(borrow world);
+    let audit_script_entropy_b = audit_script_entropy.analyze(borrow world);
+    include(inout out, borrow audit_script_entropy_a, borrow audit_script_entropy_b,
+        audit_script_entropy.verify(borrow world, borrow audit_script_entropy_a));
+    let audit_network_density_a = audit_network_density.analyze(borrow world);
+    let audit_network_density_b = audit_network_density.analyze(borrow world);
+    include(inout out, borrow audit_network_density_a, borrow audit_network_density_b,
+        audit_network_density.verify(borrow world, borrow audit_network_density_a));
+    let audit_network_balance_a = audit_network_balance.analyze(borrow world);
+    let audit_network_balance_b = audit_network_balance.analyze(borrow world);
+    include(inout out, borrow audit_network_balance_a, borrow audit_network_balance_b,
+        audit_network_balance.verify(borrow world, borrow audit_network_balance_a));
+    let audit_network_pressure_a = audit_network_pressure.analyze(borrow world);
+    let audit_network_pressure_b = audit_network_pressure.analyze(borrow world);
+    include(inout out, borrow audit_network_pressure_a, borrow audit_network_pressure_b,
+        audit_network_pressure.verify(borrow world, borrow audit_network_pressure_a));
+    let audit_network_locality_a = audit_network_locality.analyze(borrow world);
+    let audit_network_locality_b = audit_network_locality.analyze(borrow world);
+    include(inout out, borrow audit_network_locality_a, borrow audit_network_locality_b,
+        audit_network_locality.verify(borrow world, borrow audit_network_locality_a));
+    let audit_network_fanout_a = audit_network_fanout.analyze(borrow world);
+    let audit_network_fanout_b = audit_network_fanout.analyze(borrow world);
+    include(inout out, borrow audit_network_fanout_a, borrow audit_network_fanout_b,
+        audit_network_fanout.verify(borrow world, borrow audit_network_fanout_a));
+    let audit_network_continuity_a = audit_network_continuity.analyze(borrow world);
+    let audit_network_continuity_b = audit_network_continuity.analyze(borrow world);
+    include(inout out, borrow audit_network_continuity_a, borrow audit_network_continuity_b,
+        audit_network_continuity.verify(borrow world, borrow audit_network_continuity_a));
+    let audit_network_coverage_a = audit_network_coverage.analyze(borrow world);
+    let audit_network_coverage_b = audit_network_coverage.analyze(borrow world);
+    include(inout out, borrow audit_network_coverage_a, borrow audit_network_coverage_b,
+        audit_network_coverage.verify(borrow world, borrow audit_network_coverage_a));
+    let audit_network_skew_a = audit_network_skew.analyze(borrow world);
+    let audit_network_skew_b = audit_network_skew.analyze(borrow world);
+    include(inout out, borrow audit_network_skew_a, borrow audit_network_skew_b,
+        audit_network_skew.verify(borrow world, borrow audit_network_skew_a));
+    let audit_network_capacity_a = audit_network_capacity.analyze(borrow world);
+    let audit_network_capacity_b = audit_network_capacity.analyze(borrow world);
+    include(inout out, borrow audit_network_capacity_a, borrow audit_network_capacity_b,
+        audit_network_capacity.verify(borrow world, borrow audit_network_capacity_a));
+    let audit_network_latency_a = audit_network_latency.analyze(borrow world);
+    let audit_network_latency_b = audit_network_latency.analyze(borrow world);
+    include(inout out, borrow audit_network_latency_a, borrow audit_network_latency_b,
+        audit_network_latency.verify(borrow world, borrow audit_network_latency_a));
+    let audit_network_stability_a = audit_network_stability.analyze(borrow world);
+    let audit_network_stability_b = audit_network_stability.analyze(borrow world);
+    include(inout out, borrow audit_network_stability_a, borrow audit_network_stability_b,
+        audit_network_stability.verify(borrow world, borrow audit_network_stability_a));
+    let audit_network_integrity_a = audit_network_integrity.analyze(borrow world);
+    let audit_network_integrity_b = audit_network_integrity.analyze(borrow world);
+    include(inout out, borrow audit_network_integrity_a, borrow audit_network_integrity_b,
+        audit_network_integrity.verify(borrow world, borrow audit_network_integrity_a));
+    let audit_network_cost_a = audit_network_cost.analyze(borrow world);
+    let audit_network_cost_b = audit_network_cost.analyze(borrow world);
+    include(inout out, borrow audit_network_cost_a, borrow audit_network_cost_b,
+        audit_network_cost.verify(borrow world, borrow audit_network_cost_a));
+    let audit_network_risk_a = audit_network_risk.analyze(borrow world);
+    let audit_network_risk_b = audit_network_risk.analyze(borrow world);
+    include(inout out, borrow audit_network_risk_a, borrow audit_network_risk_b,
+        audit_network_risk.verify(borrow world, borrow audit_network_risk_a));
+    let audit_network_throughput_a = audit_network_throughput.analyze(borrow world);
+    let audit_network_throughput_b = audit_network_throughput.analyze(borrow world);
+    include(inout out, borrow audit_network_throughput_a, borrow audit_network_throughput_b,
+        audit_network_throughput.verify(borrow world, borrow audit_network_throughput_a));
+    let audit_network_entropy_a = audit_network_entropy.analyze(borrow world);
+    let audit_network_entropy_b = audit_network_entropy.analyze(borrow world);
+    include(inout out, borrow audit_network_entropy_a, borrow audit_network_entropy_b,
+        audit_network_entropy.verify(borrow world, borrow audit_network_entropy_a));
+    let audit_replay_density_a = audit_replay_density.analyze(borrow world);
+    let audit_replay_density_b = audit_replay_density.analyze(borrow world);
+    include(inout out, borrow audit_replay_density_a, borrow audit_replay_density_b,
+        audit_replay_density.verify(borrow world, borrow audit_replay_density_a));
+    let audit_replay_balance_a = audit_replay_balance.analyze(borrow world);
+    let audit_replay_balance_b = audit_replay_balance.analyze(borrow world);
+    include(inout out, borrow audit_replay_balance_a, borrow audit_replay_balance_b,
+        audit_replay_balance.verify(borrow world, borrow audit_replay_balance_a));
+    let audit_replay_pressure_a = audit_replay_pressure.analyze(borrow world);
+    let audit_replay_pressure_b = audit_replay_pressure.analyze(borrow world);
+    include(inout out, borrow audit_replay_pressure_a, borrow audit_replay_pressure_b,
+        audit_replay_pressure.verify(borrow world, borrow audit_replay_pressure_a));
+    let audit_replay_locality_a = audit_replay_locality.analyze(borrow world);
+    let audit_replay_locality_b = audit_replay_locality.analyze(borrow world);
+    include(inout out, borrow audit_replay_locality_a, borrow audit_replay_locality_b,
+        audit_replay_locality.verify(borrow world, borrow audit_replay_locality_a));
+    let audit_replay_fanout_a = audit_replay_fanout.analyze(borrow world);
+    let audit_replay_fanout_b = audit_replay_fanout.analyze(borrow world);
+    include(inout out, borrow audit_replay_fanout_a, borrow audit_replay_fanout_b,
+        audit_replay_fanout.verify(borrow world, borrow audit_replay_fanout_a));
+    let audit_replay_continuity_a = audit_replay_continuity.analyze(borrow world);
+    let audit_replay_continuity_b = audit_replay_continuity.analyze(borrow world);
+    include(inout out, borrow audit_replay_continuity_a, borrow audit_replay_continuity_b,
+        audit_replay_continuity.verify(borrow world, borrow audit_replay_continuity_a));
+    let audit_replay_coverage_a = audit_replay_coverage.analyze(borrow world);
+    let audit_replay_coverage_b = audit_replay_coverage.analyze(borrow world);
+    include(inout out, borrow audit_replay_coverage_a, borrow audit_replay_coverage_b,
+        audit_replay_coverage.verify(borrow world, borrow audit_replay_coverage_a));
+    let audit_replay_skew_a = audit_replay_skew.analyze(borrow world);
+    let audit_replay_skew_b = audit_replay_skew.analyze(borrow world);
+    include(inout out, borrow audit_replay_skew_a, borrow audit_replay_skew_b,
+        audit_replay_skew.verify(borrow world, borrow audit_replay_skew_a));
+    let audit_replay_capacity_a = audit_replay_capacity.analyze(borrow world);
+    let audit_replay_capacity_b = audit_replay_capacity.analyze(borrow world);
+    include(inout out, borrow audit_replay_capacity_a, borrow audit_replay_capacity_b,
+        audit_replay_capacity.verify(borrow world, borrow audit_replay_capacity_a));
+    let audit_replay_latency_a = audit_replay_latency.analyze(borrow world);
+    let audit_replay_latency_b = audit_replay_latency.analyze(borrow world);
+    include(inout out, borrow audit_replay_latency_a, borrow audit_replay_latency_b,
+        audit_replay_latency.verify(borrow world, borrow audit_replay_latency_a));
+    let audit_replay_stability_a = audit_replay_stability.analyze(borrow world);
+    let audit_replay_stability_b = audit_replay_stability.analyze(borrow world);
+    include(inout out, borrow audit_replay_stability_a, borrow audit_replay_stability_b,
+        audit_replay_stability.verify(borrow world, borrow audit_replay_stability_a));
+    let audit_replay_integrity_a = audit_replay_integrity.analyze(borrow world);
+    let audit_replay_integrity_b = audit_replay_integrity.analyze(borrow world);
+    include(inout out, borrow audit_replay_integrity_a, borrow audit_replay_integrity_b,
+        audit_replay_integrity.verify(borrow world, borrow audit_replay_integrity_a));
+    let audit_replay_cost_a = audit_replay_cost.analyze(borrow world);
+    let audit_replay_cost_b = audit_replay_cost.analyze(borrow world);
+    include(inout out, borrow audit_replay_cost_a, borrow audit_replay_cost_b,
+        audit_replay_cost.verify(borrow world, borrow audit_replay_cost_a));
+    let audit_replay_risk_a = audit_replay_risk.analyze(borrow world);
+    let audit_replay_risk_b = audit_replay_risk.analyze(borrow world);
+    include(inout out, borrow audit_replay_risk_a, borrow audit_replay_risk_b,
+        audit_replay_risk.verify(borrow world, borrow audit_replay_risk_a));
+    let audit_replay_throughput_a = audit_replay_throughput.analyze(borrow world);
+    let audit_replay_throughput_b = audit_replay_throughput.analyze(borrow world);
+    include(inout out, borrow audit_replay_throughput_a, borrow audit_replay_throughput_b,
+        audit_replay_throughput.verify(borrow world, borrow audit_replay_throughput_a));
+    let audit_replay_entropy_a = audit_replay_entropy.analyze(borrow world);
+    let audit_replay_entropy_b = audit_replay_entropy.analyze(borrow world);
+    include(inout out, borrow audit_replay_entropy_a, borrow audit_replay_entropy_b,
+        audit_replay_entropy.verify(borrow world, borrow audit_replay_entropy_a));
+    let audit_render_density_a = audit_render_density.analyze(borrow world);
+    let audit_render_density_b = audit_render_density.analyze(borrow world);
+    include(inout out, borrow audit_render_density_a, borrow audit_render_density_b,
+        audit_render_density.verify(borrow world, borrow audit_render_density_a));
+    let audit_render_balance_a = audit_render_balance.analyze(borrow world);
+    let audit_render_balance_b = audit_render_balance.analyze(borrow world);
+    include(inout out, borrow audit_render_balance_a, borrow audit_render_balance_b,
+        audit_render_balance.verify(borrow world, borrow audit_render_balance_a));
+    let audit_render_pressure_a = audit_render_pressure.analyze(borrow world);
+    let audit_render_pressure_b = audit_render_pressure.analyze(borrow world);
+    include(inout out, borrow audit_render_pressure_a, borrow audit_render_pressure_b,
+        audit_render_pressure.verify(borrow world, borrow audit_render_pressure_a));
+    let audit_render_locality_a = audit_render_locality.analyze(borrow world);
+    let audit_render_locality_b = audit_render_locality.analyze(borrow world);
+    include(inout out, borrow audit_render_locality_a, borrow audit_render_locality_b,
+        audit_render_locality.verify(borrow world, borrow audit_render_locality_a));
+    let audit_render_fanout_a = audit_render_fanout.analyze(borrow world);
+    let audit_render_fanout_b = audit_render_fanout.analyze(borrow world);
+    include(inout out, borrow audit_render_fanout_a, borrow audit_render_fanout_b,
+        audit_render_fanout.verify(borrow world, borrow audit_render_fanout_a));
+    let audit_render_continuity_a = audit_render_continuity.analyze(borrow world);
+    let audit_render_continuity_b = audit_render_continuity.analyze(borrow world);
+    include(inout out, borrow audit_render_continuity_a, borrow audit_render_continuity_b,
+        audit_render_continuity.verify(borrow world, borrow audit_render_continuity_a));
+    let audit_render_coverage_a = audit_render_coverage.analyze(borrow world);
+    let audit_render_coverage_b = audit_render_coverage.analyze(borrow world);
+    include(inout out, borrow audit_render_coverage_a, borrow audit_render_coverage_b,
+        audit_render_coverage.verify(borrow world, borrow audit_render_coverage_a));
+    let audit_render_skew_a = audit_render_skew.analyze(borrow world);
+    let audit_render_skew_b = audit_render_skew.analyze(borrow world);
+    include(inout out, borrow audit_render_skew_a, borrow audit_render_skew_b,
+        audit_render_skew.verify(borrow world, borrow audit_render_skew_a));
+    let audit_render_capacity_a = audit_render_capacity.analyze(borrow world);
+    let audit_render_capacity_b = audit_render_capacity.analyze(borrow world);
+    include(inout out, borrow audit_render_capacity_a, borrow audit_render_capacity_b,
+        audit_render_capacity.verify(borrow world, borrow audit_render_capacity_a));
+    let audit_render_latency_a = audit_render_latency.analyze(borrow world);
+    let audit_render_latency_b = audit_render_latency.analyze(borrow world);
+    include(inout out, borrow audit_render_latency_a, borrow audit_render_latency_b,
+        audit_render_latency.verify(borrow world, borrow audit_render_latency_a));
+    let audit_render_stability_a = audit_render_stability.analyze(borrow world);
+    let audit_render_stability_b = audit_render_stability.analyze(borrow world);
+    include(inout out, borrow audit_render_stability_a, borrow audit_render_stability_b,
+        audit_render_stability.verify(borrow world, borrow audit_render_stability_a));
+    let audit_render_integrity_a = audit_render_integrity.analyze(borrow world);
+    let audit_render_integrity_b = audit_render_integrity.analyze(borrow world);
+    include(inout out, borrow audit_render_integrity_a, borrow audit_render_integrity_b,
+        audit_render_integrity.verify(borrow world, borrow audit_render_integrity_a));
+    let audit_render_cost_a = audit_render_cost.analyze(borrow world);
+    let audit_render_cost_b = audit_render_cost.analyze(borrow world);
+    include(inout out, borrow audit_render_cost_a, borrow audit_render_cost_b,
+        audit_render_cost.verify(borrow world, borrow audit_render_cost_a));
+    let audit_render_risk_a = audit_render_risk.analyze(borrow world);
+    let audit_render_risk_b = audit_render_risk.analyze(borrow world);
+    include(inout out, borrow audit_render_risk_a, borrow audit_render_risk_b,
+        audit_render_risk.verify(borrow world, borrow audit_render_risk_a));
+    let audit_render_throughput_a = audit_render_throughput.analyze(borrow world);
+    let audit_render_throughput_b = audit_render_throughput.analyze(borrow world);
+    include(inout out, borrow audit_render_throughput_a, borrow audit_render_throughput_b,
+        audit_render_throughput.verify(borrow world, borrow audit_render_throughput_a));
+    let audit_render_entropy_a = audit_render_entropy.analyze(borrow world);
+    let audit_render_entropy_b = audit_render_entropy.analyze(borrow world);
+    include(inout out, borrow audit_render_entropy_a, borrow audit_render_entropy_b,
+        audit_render_entropy.verify(borrow world, borrow audit_render_entropy_a));
+    out.valid = out.passes == 256 && out.warnings == 0 &&
+        out.deterministic_mismatches == 0; out
+}

@@ -1,0 +1,119 @@
+// Caldera simulation system: system_lifecycle_discover.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+const result = @import("system_result.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn SYSTEM() -> u64 { 30001 }
+pub fn FOCUS() -> u64 { 2 }
+
+fn eligible_entity(borrow world: model.World, borrow entity: model.Entity) -> bool {
+    if !entity.alive { return false; }
+    if FOCUS() % 8 == 0 { entity.kind == model.WORKER() }
+    else if FOCUS() % 8 == 1 { entity.kind == model.SCOUT() }
+    else if FOCUS() % 8 == 2 { entity.kind == model.BUILDER() }
+    else if FOCUS() % 8 == 3 { entity.kind == model.GUARD() }
+    else if FOCUS() % 8 == 4 { entity.energy < 70 }
+    else if FOCUS() % 8 == 5 { entity.inventory > 3 }
+    else if FOCUS() % 8 == 6 { entity.faction == (FOCUS() % 3) + 1 }
+    else { (entity.id + world.tick + FOCUS()) % 3 == 0 }
+}
+
+fn entity_value(borrow world: model.World, borrow entity: model.Entity) -> u64 {
+    let position: u64 = @intCast(entity.x + entity.y + 8192);
+    let base = if FOCUS() % 6 == 0 { entity.health + entity.energy }
+        else if FOCUS() % 6 == 1 { entity.inventory * 7 + entity.credits }
+        else if FOCUS() % 6 == 2 { position + entity.experience }
+        else if FOCUS() % 6 == 3 { entity.kind * 31 + entity.faction * 17 }
+        else if FOCUS() % 6 == 4 { entity.state * 13 + entity.updated_tick }
+        else { entity.id * 19 + world.tick * 5 };
+    base + FOCUS()
+}
+
+fn inspect_entities(inout out: result.Result, borrow world: model.World) {
+    let mut i: u64 = 0;
+    while i < world.entities.len() {
+        let entity = world.entities.get_or(i, model.empty_entity());
+        let eligible = eligible_entity(borrow world, borrow entity);
+        let command = eligible && (entity.id + FOCUS() + world.tick) % 2 == 0;
+        result.record(inout out, eligible, command, entity_value(borrow world, borrow entity));
+        i = i + 1;
+    }
+}
+
+fn inspect_tiles(inout out: result.Result, borrow world: model.World) {
+    let mut i: u64 = 0;
+    while i < world.tiles.len() {
+        let tile = world.tiles.get_or(i, model.empty_tile());
+        let eligible = tile.walkable && (tile.region + FOCUS()) % 5 == 0;
+        let command = eligible && tile.resource > FOCUS() % 17;
+        result.record(inout out, eligible, command,
+            tile.height + tile.resource + tile.terrain * 11 + i % 97);
+        i = i + 1;
+    }
+}
+
+fn inspect_timeline(inout out: result.Result, borrow world: model.World) {
+    let mut i: u64 = 0;
+    while i < world.events.len() {
+        let event = world.events.get_or(i, model.empty_event());
+        let eligible = (event.kind + FOCUS()) % 4 == 0;
+        result.record(inout out, eligible, eligible && event.value > 0,
+            event.sequence + event.actor % 257 + event.value);
+        i = i + 1;
+    }
+    i = 0;
+    while i < world.commands.len() {
+        let command = world.commands.get_or(i, model.empty_command());
+        let eligible = command.accepted && (command.kind + FOCUS()) % 3 == 0;
+        result.record(inout out, eligible, eligible,
+            command.tick + command.actor % 251 + command.value);
+        i = i + 1;
+    }
+}
+
+fn inspect_regions(inout out: result.Result, borrow world: model.World) {
+    let mut region: u64 = 0;
+    while region < 16 {
+        let mut tiles: u64 = 0;
+        let mut resources: u64 = 0;
+        let mut i: u64 = 0;
+        while i < world.tiles.len() {
+            let tile = world.tiles.get_or(i, model.empty_tile());
+            if tile.region == region { tiles = tiles + 1; resources = resources + tile.resource; }
+            i = i + 1;
+        }
+        let eligible = tiles > 0 && (region + FOCUS()) % 4 == 0;
+        result.record(inout out, eligible, eligible && resources > tiles,
+            resources + tiles * 13 + region);
+        region = region + 1;
+    }
+}
+
+pub fn evaluate(borrow world: model.World) -> result.Result {
+    let mut out = result.new(SYSTEM());
+    inspect_entities(inout out, borrow world);
+    inspect_tiles(inout out, borrow world);
+    inspect_timeline(inout out, borrow world);
+    inspect_regions(inout out, borrow world);
+    result.finish(inout out); out
+}
+
+pub fn verify(borrow world: model.World, borrow value: result.Result) -> bool {
+    value.system == SYSTEM() && value.inspected >= world.entities.len() +
+        world.tiles.len() + world.events.len() + world.commands.len() && value.valid
+}
+
+pub fn render(borrow world: model.World) -> StrBuf {
+    let value = evaluate(borrow world); let mut out = StrBuf.new();
+    text.append_literal(inout out, "system_lifecycle_discover\n");
+    text.line(inout out, "system=", value.system);
+    text.line(inout out, "inspected=", value.inspected);
+    text.line(inout out, "eligible=", value.eligible);
+    text.line(inout out, "commands=", value.commands);
+    text.line(inout out, "energy=", value.energy);
+    text.line(inout out, "digest=", value.digest);
+    text.bool_line(inout out, "verified=", verify(borrow world, borrow value)); out
+}

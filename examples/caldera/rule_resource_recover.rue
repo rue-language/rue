@@ -1,0 +1,102 @@
+// Caldera content and simulation rule: rule_resource_recover.
+const model = @import("model.rue");
+const result = @import("rule_result.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn RULE() -> u64 { 50033 }
+pub fn POLICY() -> u64 { 34 }
+
+fn entity_match(borrow world: model.World, borrow entity: model.Entity) -> bool {
+    if !entity.alive { return false; }
+    if POLICY() % 6 == 0 { entity.health < 75 }
+    else if POLICY() % 6 == 1 { entity.energy < 60 }
+    else if POLICY() % 6 == 2 { entity.inventory > 5 }
+    else if POLICY() % 6 == 3 { entity.credits > 10 }
+    else if POLICY() % 6 == 4 { entity.state == POLICY() % 7 }
+    else { (entity.id + world.tick + POLICY()) % 5 == 0 }
+}
+
+fn entity_benefit(borrow world: model.World, borrow entity: model.Entity) -> u64 {
+    let pressure = (100 - entity.health) + (100 - entity.energy);
+    pressure + entity.inventory * (POLICY() % 5 + 1) +
+        entity.credits + world.resources % 73 + POLICY()
+}
+
+fn inspect_entities(inout out: result.Result, borrow world: model.World) {
+    let mut i: u64 = 0;
+    while i < world.entities.len() {
+        let entity = world.entities.get_or(i, model.empty_entity());
+        let matched = entity_match(borrow world, borrow entity);
+        let benefit = entity_benefit(borrow world, borrow entity);
+        result.record(inout out, matched, matched && benefit > POLICY() % 40, benefit);
+        i = i + 1;
+    }
+}
+
+fn inspect_tiles(inout out: result.Result, borrow world: model.World) {
+    let mut i: u64 = 0;
+    while i < world.tiles.len() {
+        let tile = world.tiles.get_or(i, model.empty_tile());
+        let matched = if POLICY() % 4 == 0 { tile.terrain == model.PLAIN() }
+            else if POLICY() % 4 == 1 { tile.terrain == model.FOREST() }
+            else if POLICY() % 4 == 2 { !tile.walkable }
+            else { tile.resource > POLICY() % 29 };
+        let benefit = tile.resource + tile.height * 3 + tile.region + POLICY();
+        result.record(inout out, matched, matched && benefit % 3 != 0, benefit);
+        i = i + 1;
+    }
+}
+
+fn inspect_events(inout out: result.Result, borrow world: model.World) {
+    let mut i: u64 = 0;
+    while i < world.events.len() {
+        let event = world.events.get_or(i, model.empty_event());
+        let matched = (event.kind + POLICY()) % 5 == 0;
+        let benefit = event.value + event.sequence + event.actor % 211 + POLICY();
+        result.record(inout out, matched, matched && event.tick <= world.tick, benefit);
+        i = i + 1;
+    }
+}
+
+fn inspect_snapshots(inout out: result.Result, borrow world: model.World) {
+    let mut i: u64 = 0;
+    while i < world.snapshots.len() {
+        let item = world.snapshots.get_or(i, model.empty_snapshot());
+        let matched = (item.tick + POLICY()) % 3 == 0;
+        let benefit = item.entity_count * 7 + item.event_count * 5 +
+            item.command_count * 3 + item.checksum % 4093;
+        result.record(inout out, matched, matched && item.checksum != 0, benefit);
+        i = i + 1;
+    }
+}
+
+pub fn evaluate(borrow world: model.World) -> result.Result {
+    let mut out = result.new(RULE());
+    inspect_entities(inout out, borrow world);
+    inspect_tiles(inout out, borrow world);
+    inspect_events(inout out, borrow world);
+    inspect_snapshots(inout out, borrow world);
+    result.record(inout out, world.resources > POLICY(),
+        world.resources > POLICY() && world.treasury > 0,
+        world.resources + world.treasury + POLICY());
+    result.finish(inout out); out
+}
+
+pub fn verify(borrow world: model.World, borrow value: result.Result) -> bool {
+    value.rule == RULE() && value.inspected == world.entities.len() +
+        world.tiles.len() + world.events.len() + world.snapshots.len() + 1 && value.valid
+}
+
+pub fn render(borrow world: model.World) -> StrBuf {
+    let value = evaluate(borrow world); let mut out = StrBuf.new();
+    text.append_literal(inout out, "rule_resource_recover\n");
+    text.line(inout out, "rule=", value.rule);
+    text.line(inout out, "inspected=", value.inspected);
+    text.line(inout out, "matches=", value.matches);
+    text.line(inout out, "actions=", value.actions);
+    text.line(inout out, "benefit=", value.benefit);
+    text.line(inout out, "digest=", value.digest);
+    text.bool_line(inout out, "verified=", verify(borrow world, borrow value)); out
+}

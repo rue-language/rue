@@ -1,0 +1,32 @@
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+
+pub struct Relations { factions: u64, allied: u64, hostile: u64,
+    neutral: u64, digest: u64, valid: bool }
+pub fn audit(borrow world: model.World) -> Relations {
+    let mut max_faction: u64 = 0;
+    let mut i: u64 = 0;
+    while i < world.entities.len() {
+        let value = world.entities.get_or(i, model.empty_entity()).faction;
+        if value > max_faction { max_faction = value; }
+        i = i + 1;
+    }
+    let mut out = Relations { factions: max_faction, allied: 0, hostile: 0,
+        neutral: 0, digest: 14695981039346656037, valid: false };
+    let mut a: u64 = 1;
+    while a <= max_faction {
+        let mut b = a;
+        while b <= max_faction {
+            let relation = if a == b { 1 } else if (a + b + world.tick) % 3 == 0 { 2 } else { 3 };
+            if relation == 1 { out.allied = out.allied + 1; }
+            else if relation == 2 { out.hostile = out.hostile + 1; }
+            else { out.neutral = out.neutral + 1; }
+            out.digest = metric.mix(out.digest, a * 101 + b * 17 + relation);
+            b = b + 1;
+        }
+        a = a + 1;
+    }
+    out.valid = out.allied + out.hostile + out.neutral ==
+        (max_faction * (max_faction + 1)) / 2;
+    out
+}

@@ -1,0 +1,20 @@
+const metric = @import("metric.rue");
+pub struct Result { behavior: u64, agents: u64, selected: u64,
+    utility: u64, transitions: u64, digest: u64, valid: bool }
+pub fn new(behavior: u64) -> Result {
+    Result { behavior: behavior, agents: 0, selected: 0, utility: 0,
+        transitions: 0, digest: metric.mix(14695981039346656037, behavior), valid: false }
+}
+pub fn record(inout out: Result, selected: bool, utility: u64, transition: bool) {
+    out.agents = out.agents + 1;
+    if selected { out.selected = out.selected + 1; }
+    if transition { out.transitions = out.transitions + 1; }
+    out.utility = @wrapping_add(out.utility, utility);
+    out.digest = metric.mix(out.digest, utility + out.agents * 31);
+}
+pub fn finish(inout out: Result) {
+    out.digest = metric.mix(out.digest, out.selected);
+    out.digest = metric.mix(out.digest, out.transitions);
+    out.valid = out.agents > 0 && out.selected <= out.agents &&
+        out.transitions <= out.agents;
+}

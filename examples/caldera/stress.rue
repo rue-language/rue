@@ -1,0 +1,80 @@
+// Complete scaling tier executes every generated family and oracle twice.
+const audit_suite = @import("audit_suite.rue");
+const behavior_suite = @import("behavior_suite.rue");
+const checksum = @import("checksum.rue");
+const metric = @import("metric.rue");
+const navigation = @import("navigation.rue");
+const navigation_oracle = @import("navigation_oracle.rue");
+const replay = @import("replay.rue");
+const replay_oracle = @import("replay_oracle.rue");
+const report_suite = @import("report_suite.rue");
+const rule_suite = @import("rule_suite.rue");
+const simulation = @import("simulation.rue");
+const std = @import("std");
+const system_suite = @import("system_suite.rue");
+const text = @import("text.rue");
+const world_clone = @import("world_clone.rue");
+const worldgen = @import("worldgen.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct Result { scale: u64, entities: u64, tiles: u64, ticks: u64,
+    events: u64, audit_passes: u64, systems: u64, behaviors: u64,
+    rules: u64, report_documents: u64, oracle_mismatches: u64,
+    deterministic_mismatches: u64, digest: u64, valid: bool }
+
+fn once(scale: u64) -> Result {
+    let baseline = worldgen.demo(scale);
+    let mut world = world_clone.clone(borrow baseline);
+    let run = simulation.run(inout world, scale * 2);
+    let audits = audit_suite.run(borrow world);
+    let systems = system_suite.run(borrow world);
+    let behaviors = behavior_suite.run(borrow world);
+    let rules = rule_suite.run(borrow world);
+    let suite_digest = metric.mix(metric.mix(audits.digest, systems.digest),
+        metric.mix(behaviors.digest, rules.digest));
+    let reports = report_suite.run(borrow world, suite_digest);
+    let path = navigation.find(borrow world, 0, 0, world.width - 1, world.height - 1);
+    let path_ok = navigation_oracle.agrees(borrow world, 0, 0,
+        world.width - 1, world.height - 1, borrow path);
+    let replayed = replay.run(borrow baseline, scale * 2);
+    let replay_ok = replay_oracle.agrees(borrow baseline, scale * 2, borrow replayed) &&
+        replayed.final_checksum == checksum.world(borrow world);
+    let oracle_mismatches = if path_ok && replay_ok { 0 } else { 1 };
+    let deterministic = audits.deterministic_mismatches + systems.deterministic_mismatches +
+        behaviors.deterministic_mismatches + rules.deterministic_mismatches +
+        reports.deterministic_mismatches;
+    let digest = metric.mix(metric.mix(suite_digest, reports.digest),
+        metric.mix(run.checksum, replayed.timeline_digest));
+    Result { scale: scale, entities: world.entities.len(), tiles: world.tiles.len(),
+        ticks: run.ticks, events: world.events.len(), audit_passes: audits.passes,
+        systems: systems.systems, behaviors: behaviors.behaviors, rules: rules.rules,
+        report_documents: reports.documents, oracle_mismatches: oracle_mismatches,
+        deterministic_mismatches: deterministic, digest: digest,
+        valid: run.valid && audits.valid && systems.valid && behaviors.valid &&
+            rules.valid && reports.valid && oracle_mismatches == 0 && deterministic == 0 }
+}
+
+pub fn run(scale: u64) -> Result {
+    let first = once(scale); let second = once(scale);
+    let mismatch = if first.digest == second.digest && first.entities == second.entities &&
+        first.events == second.events && first.ticks == second.ticks { 0 } else { 1 };
+    Result { scale: first.scale, entities: first.entities, tiles: first.tiles,
+        ticks: first.ticks, events: first.events, audit_passes: first.audit_passes,
+        systems: first.systems, behaviors: first.behaviors, rules: first.rules,
+        report_documents: first.report_documents,
+        oracle_mismatches: first.oracle_mismatches,
+        deterministic_mismatches: first.deterministic_mismatches + mismatch,
+        digest: first.digest, valid: first.valid && second.valid && mismatch == 0 }
+}
+
+pub fn render(borrow value: Result) -> StrBuf {
+    let mut out = StrBuf.new(); text.line(inout out, "stress scale=", value.scale);
+    text.line(inout out, "entities=", value.entities); text.line(inout out, "tiles=", value.tiles);
+    text.line(inout out, "ticks=", value.ticks); text.line(inout out, "events=", value.events);
+    text.line(inout out, "audit_passes=", value.audit_passes);
+    text.line(inout out, "systems=", value.systems); text.line(inout out, "behaviors=", value.behaviors);
+    text.line(inout out, "rules=", value.rules); text.line(inout out, "report_documents=", value.report_documents);
+    text.line(inout out, "oracle_mismatches=", value.oracle_mismatches);
+    text.line(inout out, "deterministic_mismatches=", value.deterministic_mismatches);
+    text.line(inout out, "digest=", value.digest); text.bool_line(inout out, "valid=", value.valid); out
+}

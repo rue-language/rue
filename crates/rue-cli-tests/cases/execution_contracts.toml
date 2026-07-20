@@ -17,6 +17,11 @@ class = "heavyweight"
 compile_timeout_ms = 120000
 runtime_timeout_ms = 120000
 
+[contract.heavyweight_extra_long]
+class = "heavyweight"
+compile_timeout_ms = 300000
+runtime_timeout_ms = 120000
+
 [[automatic_example]]
 path = "harbor/main.rue"
 contract = "heavyweight"
@@ -32,3 +37,7 @@ contract = "heavyweight"
 [[automatic_example]]
 path = "meridian/main.rue"
 contract = "heavyweight_long"
+
+[[automatic_example]]
+path = "caldera/main.rue"
+contract = "heavyweight_extra_long"

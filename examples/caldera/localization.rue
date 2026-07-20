@@ -1,0 +1,10 @@
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+pub struct Audit { messages: u64, locales: u64, missing: u64,
+    digest: u64, valid: bool }
+pub fn audit(borrow world: model.World) -> Audit {
+    let messages = 96 + world.quests_completed * 2;
+    let locales = 5;
+    Audit { messages: messages, locales: locales, missing: 0,
+        digest: metric.mix(metric.mix(world.seed, messages), locales), valid: messages > locales }
+}

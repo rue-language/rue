@@ -1,0 +1,70 @@
+// Deterministic measurements shared by every Caldera subsystem.
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct Metric {
+    tag: u64,
+    observations: u64,
+    total: u64,
+    minimum: u64,
+    maximum: u64,
+    warnings: u64,
+    digest: u64,
+    valid: bool,
+}
+
+pub fn mix(value: u64, next: u64) -> u64 {
+    @wrapping_mul(value ^ next, 1099511628211)
+}
+
+pub fn new(tag: u64) -> Metric {
+    Metric { tag: tag, observations: 0, total: 0,
+        minimum: 18446744073709551615, maximum: 0, warnings: 0,
+        digest: mix(14695981039346656037, tag), valid: false }
+}
+
+pub fn observe(inout value: Metric, sample: u64, weight: u64) {
+    value.observations = value.observations + 1;
+    value.total = @wrapping_add(value.total, @wrapping_mul(sample, weight));
+    if sample < value.minimum { value.minimum = sample; }
+    if sample > value.maximum { value.maximum = sample; }
+    value.digest = mix(value.digest, sample);
+    value.digest = mix(value.digest, weight);
+}
+
+pub fn warn(inout value: Metric, condition: bool) {
+    if condition {
+        value.warnings = value.warnings + 1;
+        value.digest = mix(value.digest, 18446744073709551557);
+    }
+}
+
+pub fn finish(inout value: Metric) {
+    if value.observations == 0 { value.minimum = 0; }
+    value.digest = mix(value.digest, value.observations);
+    value.digest = mix(value.digest, value.total);
+    value.digest = mix(value.digest, value.minimum);
+    value.digest = mix(value.digest, value.maximum);
+    value.digest = mix(value.digest, value.warnings);
+    value.valid = value.observations > 0 && value.warnings == 0;
+}
+
+pub fn valid(borrow value: Metric) -> bool {
+    value.valid && value.observations > 0 && value.minimum <= value.maximum
+}
+
+pub fn average(borrow value: Metric) -> u64 {
+    if value.observations == 0 { 0 } else { value.total / value.observations }
+}
+
+pub fn combine(borrow left: Metric, borrow right: Metric) -> Metric {
+    let mut out = new(mix(left.tag, right.tag));
+    observe(inout out, left.total, left.observations + 1);
+    observe(inout out, right.total, right.observations + 1);
+    out.warnings = left.warnings + right.warnings;
+    out.digest = mix(out.digest, left.digest);
+    out.digest = mix(out.digest, right.digest);
+    finish(inout out);
+    out.valid = left.valid && right.valid && out.warnings == 0;
+    out
+}

@@ -1,0 +1,13 @@
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+pub struct Frame { sprites: u64, tiles: u64, overlays: u64,
+    batches: u64, digest: u64, valid: bool }
+pub fn build(borrow world: model.World) -> Frame {
+    let sprites = model.alive_count(borrow world);
+    let tiles = world.tiles.len();
+    let overlays = world.events.len() + world.diagnostics.len();
+    let batches = (sprites + tiles + overlays + 15) / 16;
+    Frame { sprites: sprites, tiles: tiles, overlays: overlays, batches: batches,
+        digest: metric.mix(metric.mix(world.seed, sprites + tiles), overlays),
+        valid: batches > 0 && sprites <= world.entities.len() }
+}

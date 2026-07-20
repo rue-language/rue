@@ -1,0 +1,12 @@
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+pub struct QuestAudit { offered: u64, active: u64, complete: u64,
+    digest: u64, valid: bool }
+pub fn audit(borrow world: model.World) -> QuestAudit {
+    let offered = 8 + world.entities.len();
+    let active = model.alive_count(borrow world) / 2;
+    let complete = world.quests_completed;
+    QuestAudit { offered: offered, active: active, complete: complete,
+        digest: metric.mix(metric.mix(world.seed, offered), active + complete),
+        valid: active <= offered && complete <= offered + world.tick }
+}

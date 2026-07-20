@@ -1,0 +1,22 @@
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+
+pub struct Audit { events: u64, monotonic: bool, digest: u64, valid: bool }
+
+pub fn audit(borrow world: model.World) -> Audit {
+    let mut out = Audit { events: world.events.len(), monotonic: true,
+        digest: 14695981039346656037, valid: false };
+    let mut previous: u64 = 0;
+    let mut i: u64 = 0;
+    while i < world.events.len() {
+        let event = world.events.get_or(i, model.empty_event());
+        if i > 0 && event.sequence <= previous { out.monotonic = false; }
+        previous = event.sequence;
+        out.digest = metric.mix(out.digest, event.sequence);
+        out.digest = metric.mix(out.digest, event.kind);
+        out.digest = metric.mix(out.digest, event.actor);
+        i = i + 1;
+    }
+    out.valid = out.monotonic && (out.events == 0 || previous < world.next_sequence);
+    out
+}

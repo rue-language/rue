@@ -1,0 +1,40 @@
+// Selection-based scheduler oracle, intentionally independent of insertion sort.
+const model = @import("model.rue");
+const scheduler = @import("scheduler.rue");
+
+pub fn build(borrow world: model.World) -> model.U64s {
+    let mut used = model.Bools.new();
+    let mut i: u64 = 0;
+    while i < world.entities.len() { used.push(false); i = i + 1; }
+    let mut order = model.U64s.new();
+    while order.len() < model.alive_count(borrow world) {
+        let mut best = model.NONE();
+        let mut best_priority = model.NONE();
+        i = 0;
+        while i < world.entities.len() {
+            let entity = world.entities.get_or(i, model.empty_entity());
+            if entity.alive && !used.get_or(i, true) {
+                let current = scheduler.priority(borrow entity);
+                if best == model.NONE() || current < best_priority ||
+                    (current == best_priority && i < best) {
+                    best = i; best_priority = current;
+                }
+            }
+            i = i + 1;
+        }
+        if best == model.NONE() { break; }
+        used.set(best, true); order.push(best);
+    }
+    order
+}
+
+pub fn agrees(borrow world: model.World, borrow actual: scheduler.Schedule) -> bool {
+    let expected = build(borrow world);
+    if expected.len() != actual.order.len() { return false; }
+    let mut i: u64 = 0;
+    while i < expected.len() {
+        if expected.get_or(i, model.NONE()) != actual.order.get_or(i, model.NONE()) { return false; }
+        i = i + 1;
+    }
+    true
+}

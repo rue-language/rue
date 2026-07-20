@@ -1,0 +1,202 @@
+// Caldera audit pass: audit_component_coverage.
+// Every pass traverses the canonical world while its mode selects a
+// distinct projection and weighting policy.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn TAG() -> u64 { 20038 }
+pub fn MODE() -> u64 { 39 }
+
+fn entity_projection(borrow world: model.World, index: u64) -> u64 {
+    let item = world.entities.get_or(index, model.empty_entity());
+    let position: u64 = @intCast(item.x + item.y + 8192);
+    let motion: u64 = @intCast(item.velocity_x + item.velocity_y + 128);
+    let base = if MODE() % 8 == 0 { item.health + item.energy }
+        else if MODE() % 8 == 1 { position * (item.kind + 1) }
+        else if MODE() % 8 == 2 { item.inventory + item.credits * 3 }
+        else if MODE() % 8 == 3 { item.experience + item.updated_tick * 5 }
+        else if MODE() % 8 == 4 { motion + item.state * 11 }
+        else if MODE() % 8 == 5 { item.faction * 17 + item.kind * 23 }
+        else if MODE() % 8 == 6 { item.born_tick + item.goal % 1009 }
+        else { item.id * (MODE() + 1) + if item.alive { 7 } else { 0 } };
+    base + MODE()
+}
+
+fn tile_projection(borrow world: model.World, index: u64) -> u64 {
+    let item = world.tiles.get_or(index, model.empty_tile());
+    let flags = (if item.walkable { 3 } else { 11 }) +
+        (if item.visible { 5 } else { 0 });
+    if MODE() % 6 == 0 { item.x + item.y * world.width + flags }
+    else if MODE() % 6 == 1 { item.terrain * 31 + item.height * 7 + flags }
+    else if MODE() % 6 == 2 { item.resource * (MODE() + 1) + item.region }
+    else if MODE() % 6 == 3 { index + item.height + item.resource + flags }
+    else if MODE() % 6 == 4 { (item.x + 1) * (item.y + 1) + item.terrain }
+    else { item.region * 19 + item.occupant % 1021 + flags }
+}
+
+fn event_projection(borrow world: model.World, index: u64) -> u64 {
+    let item = world.events.get_or(index, model.empty_event());
+    item.tick * (MODE() % 7 + 1) + item.kind * 13 + item.actor % 997 +
+        item.target % 991 + item.value + item.sequence
+}
+
+fn command_projection(borrow world: model.World, index: u64) -> u64 {
+    let item = world.commands.get_or(index, model.empty_command());
+    let position: u64 = @intCast(item.x + item.y + 256);
+    item.tick + item.kind * 17 + item.actor % 983 + position + item.value +
+        if item.accepted { MODE() + 1 } else { 0 }
+}
+
+fn snapshot_projection(borrow world: model.World, index: u64) -> u64 {
+    let item = world.snapshots.get_or(index, model.empty_snapshot());
+    item.tick + item.entity_count * 3 + item.event_count * 5 +
+        item.command_count * 7 + item.checksum % 65521 + MODE()
+}
+
+fn observe_entities(inout out: metric.Metric, borrow world: model.World) {
+    let mut i: u64 = 0;
+    while i < world.entities.len() {
+        let item = world.entities.get_or(i, model.empty_entity());
+        metric.observe(inout out, entity_projection(borrow world, i), (i % 11) + 1);
+        metric.warn(inout out, item.alive && (item.x < 0 || item.y < 0 ||
+            @intCast(item.x) >= world.width || @intCast(item.y) >= world.height));
+        i = i + 1;
+    }
+}
+
+fn observe_tiles(inout out: metric.Metric, borrow world: model.World) {
+    let mut i: u64 = 0;
+    while i < world.tiles.len() {
+        let item = world.tiles.get_or(i, model.empty_tile());
+        metric.observe(inout out, tile_projection(borrow world, i), (i % 13) + 1);
+        metric.warn(inout out, item.x >= world.width || item.y >= world.height);
+        i = i + 1;
+    }
+}
+
+fn observe_timeline(inout out: metric.Metric, borrow world: model.World) {
+    let mut i: u64 = 0;
+    while i < world.events.len() {
+        metric.observe(inout out, event_projection(borrow world, i), (i % 5) + 1);
+        metric.warn(inout out, world.events.get_or(i, model.empty_event()).tick > world.tick);
+        i = i + 1;
+    }
+    i = 0;
+    while i < world.commands.len() {
+        metric.observe(inout out, command_projection(borrow world, i), (i % 7) + 1);
+        metric.warn(inout out, world.commands.get_or(i, model.empty_command()).tick > world.tick);
+        i = i + 1;
+    }
+    i = 0;
+    while i < world.snapshots.len() {
+        metric.observe(inout out, snapshot_projection(borrow world, i), i + 1);
+        i = i + 1;
+    }
+}
+
+fn observe_pairs(inout out: metric.Metric, borrow world: model.World) {
+    let mut i: u64 = 0;
+    while i < world.entities.len() {
+        let left = world.entities.get_or(i, model.empty_entity());
+        let mut j = i + 1;
+        while j < world.entities.len() {
+            let right = world.entities.get_or(j, model.empty_entity());
+            let dx = if left.x > right.x { left.x - right.x } else { right.x - left.x };
+            let dy = if left.y > right.y { left.y - right.y } else { right.y - left.y };
+            metric.observe(inout out, @intCast(dx + dy) +
+                left.faction * 3 + right.faction * 5 + MODE(), i + j + 1);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
+fn observe_factions(inout out: metric.Metric, borrow world: model.World) {
+    let mut faction: u64 = 1;
+    while faction <= 4 {
+        let mut agents: u64 = 0;
+        let mut health: u64 = 0;
+        let mut energy: u64 = 0;
+        let mut inventory: u64 = 0;
+        let mut i: u64 = 0;
+        while i < world.entities.len() {
+            let entity = world.entities.get_or(i, model.empty_entity());
+            if entity.faction == faction && entity.alive {
+                agents = agents + 1;
+                health = health + entity.health;
+                energy = energy + entity.energy;
+                inventory = inventory + entity.inventory;
+            }
+            i = i + 1;
+        }
+        let projection = agents * (MODE() % 11 + 1) + health * 3 +
+            energy * 5 + inventory * 7 + faction;
+        metric.observe(inout out, projection, faction + MODE() % 5 + 1);
+        faction = faction + 1;
+    }
+}
+
+fn observe_regions(inout out: metric.Metric, borrow world: model.World) {
+    let mut region: u64 = 0;
+    while region < 16 {
+        let mut tiles: u64 = 0;
+        let mut walkable: u64 = 0;
+        let mut resources: u64 = 0;
+        let mut elevation: u64 = 0;
+        let mut i: u64 = 0;
+        while i < world.tiles.len() {
+            let tile = world.tiles.get_or(i, model.empty_tile());
+            if tile.region == region {
+                tiles = tiles + 1;
+                if tile.walkable { walkable = walkable + 1; }
+                resources = resources + tile.resource;
+                elevation = elevation + tile.height;
+            }
+            i = i + 1;
+        }
+        let projection = tiles * (MODE() % 13 + 1) + walkable * 3 +
+            resources * 5 + elevation * 7 + region;
+        metric.observe(inout out, projection, region % 7 + 1);
+        region = region + 1;
+    }
+}
+
+pub fn analyze(borrow world: model.World) -> metric.Metric {
+    let mut out = metric.new(TAG());
+    observe_entities(inout out, borrow world);
+    observe_tiles(inout out, borrow world);
+    observe_timeline(inout out, borrow world);
+    observe_pairs(inout out, borrow world);
+    observe_factions(inout out, borrow world);
+    observe_regions(inout out, borrow world);
+    metric.observe(inout out, world.resources + MODE(), 3);
+    metric.observe(inout out, world.treasury + MODE(), 5);
+    metric.observe(inout out, world.quests_completed + world.script_steps + MODE(), 7);
+    metric.warn(inout out, world.tiles.len() != world.width * world.height);
+    metric.warn(inout out, world.entities.len() == 0);
+    metric.finish(inout out); out
+}
+
+pub fn verify(borrow world: model.World, borrow value: metric.Metric) -> bool {
+    let floor = world.entities.len() + world.tiles.len() + world.events.len() +
+        world.commands.len() + world.snapshots.len() + 3;
+    value.tag == TAG() && value.observations >= floor && metric.valid(borrow value)
+}
+
+pub fn render(borrow world: model.World) -> StrBuf {
+    let value = analyze(borrow world);
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "audit_component_coverage\n");
+    text.line(inout out, "tag=", value.tag);
+    text.line(inout out, "observations=", value.observations);
+    text.line(inout out, "total=", value.total);
+    text.line(inout out, "minimum=", value.minimum);
+    text.line(inout out, "maximum=", value.maximum);
+    text.line(inout out, "warnings=", value.warnings);
+    text.line(inout out, "digest=", value.digest);
+    text.bool_line(inout out, "verified=", verify(borrow world, borrow value));
+    out
+}

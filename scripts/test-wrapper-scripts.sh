@@ -821,7 +821,7 @@ exit 90
 EOF
   chmod +x "$sb/buck2"
 
-  local all="//:cli-tests //:spec-tests //:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests"
+  local all="//:cli-tests //:cli-tests-caldera //:spec-tests //:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests"
 
   # (1) Full corpus present + buck2 green -> test.sh reports success.
   local rc=0 out
@@ -831,7 +831,7 @@ EOF
 
   # (2) A corpus harness OMITTED while every buck2 invocation still exits 0 is
   #     the RUE-924 false-green: it must become a hard failure naming the suite.
-  local partial="//:spec-tests //:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests"
+  local partial="//:cli-tests-caldera //:spec-tests //:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests"
   rc=0
   out="$(cd "$sb" && RUE_CI_DEFER_HEAVY_SUITES= RUE_FULL_SUITE_LOCK_HELD=1 FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$partial" ./test.sh 2>&1)" || rc=$?
   check "test.sh: a silently omitted corpus harness fails the run" \
@@ -854,13 +854,13 @@ EOF
   local owned="//:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests"
   : >"$sb/calls.log"; rc=0
   out="$(cd "$sb" && CI=true RUE_FULL_SUITE_LOCK_HELD=1 \
-      RUE_CI_DEFER_HEAVY_SUITES='//:cli-tests //:spec-tests' \
+      RUE_CI_DEFER_HEAVY_SUITES='//:cli-tests //:cli-tests-caldera //:spec-tests' \
       FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$owned" \
       FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
   check "test.sh: required CI may defer live heavy suites" \
     "$([ "$rc" -eq 0 ] && grep -Fq 'Deferring heavy suite root//:cli-tests' <<<"$out" && echo 0 || echo 1)"
   check "test.sh: deferred suites are not executed by the owning shard" \
-    "$(! grep -Eq '^test (root)?//:(cli|spec)-tests' "$sb/calls.log" && echo 0 || echo 1)"
+    "$(! grep -Eq '^test (root)?//:(cli-tests(-caldera)?|spec-tests)' "$sb/calls.log" && echo 0 || echo 1)"
 
   # (5) A stale shard name or local attempt to suppress coverage fails closed.
   rc=0

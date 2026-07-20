@@ -1,0 +1,26 @@
+// Table-shaped independent oracle for the closed behavior interpreter.
+const ai = @import("ai.rue");
+const model = @import("model.rue");
+
+fn expected(borrow world: model.World, borrow entity: model.Entity) -> u64 {
+    if !entity.alive { 0 }
+    else if entity.health < 35 { 5 }
+    else if entity.energy < 20 { 4 }
+    else if entity.kind == 1 && world.resources > 0 { 1 }
+    else if entity.kind == 2 { 2 }
+    else if entity.kind == 3 && world.treasury >= 10 { 3 }
+    else if entity.kind == 4 { 6 }
+    else { 7 }
+}
+
+pub fn verify(borrow world: model.World) -> bool {
+    let mut i: u64 = 0;
+    while i < world.entities.len() {
+        let entity = world.entities.get_or(i, model.empty_entity());
+        if ai.choose(borrow world, borrow entity) != expected(borrow world, borrow entity) {
+            return false;
+        }
+        i = i + 1;
+    }
+    true
+}

@@ -1,0 +1,146 @@
+// Canonical compact-index simulation state. All generated passes consume
+// this representation, keeping one source of truth across Caldera.
+const std = @import("std");
+
+pub fn NONE() -> u64 { 18446744073709551615 }
+pub fn WORKER() -> u64 { 1 }
+pub fn SCOUT() -> u64 { 2 }
+pub fn BUILDER() -> u64 { 3 }
+pub fn GUARD() -> u64 { 4 }
+pub fn PLAIN() -> u64 { 1 }
+pub fn WALL() -> u64 { 2 }
+pub fn WATER() -> u64 { 3 }
+pub fn FOREST() -> u64 { 4 }
+
+pub struct Entity {
+    id: u64, kind: u64, faction: u64,
+    x: i64, y: i64, previous_x: i64, previous_y: i64,
+    velocity_x: i64, velocity_y: i64,
+    health: u64, energy: u64, state: u64, goal: u64,
+    inventory: u64, credits: u64, experience: u64,
+    born_tick: u64, updated_tick: u64, alive: bool,
+}
+
+pub struct Tile {
+    x: u64, y: u64, terrain: u64, height: u64,
+    resource: u64, occupant: u64, region: u64,
+    walkable: bool, visible: bool,
+}
+
+pub struct Event {
+    tick: u64, kind: u64, actor: u64, target: u64,
+    value: u64, sequence: u64,
+}
+
+pub struct Command {
+    tick: u64, kind: u64, actor: u64,
+    x: i64, y: i64, value: u64, accepted: bool,
+}
+
+pub struct Snapshot {
+    tick: u64, entity_count: u64, event_count: u64,
+    command_count: u64, checksum: u64,
+}
+
+pub struct Diagnostic { code: u64, subject: u64, detail: u64 }
+
+pub const Entities = std.arraybuf.ArrayBuf(Entity);
+pub const Tiles = std.arraybuf.ArrayBuf(Tile);
+pub const Events = std.arraybuf.ArrayBuf(Event);
+pub const Commands = std.arraybuf.ArrayBuf(Command);
+pub const Snapshots = std.arraybuf.ArrayBuf(Snapshot);
+pub const Diagnostics = std.arraybuf.ArrayBuf(Diagnostic);
+pub const U64s = std.arraybuf.ArrayBuf(u64);
+pub const I64s = std.arraybuf.ArrayBuf(i64);
+pub const Bools = std.arraybuf.ArrayBuf(bool);
+
+pub struct World {
+    seed: u64, tick: u64, width: u64, height: u64,
+    entities: Entities, tiles: Tiles, events: Events,
+    commands: Commands, snapshots: Snapshots,
+    diagnostics: Diagnostics,
+    resources: u64, treasury: u64, quests_completed: u64,
+    script_steps: u64, rollback_count: u64,
+    next_entity: u64, next_sequence: u64, valid: bool,
+}
+
+pub fn new_world(seed: u64, width: u64, height: u64) -> World {
+    World { seed: seed, tick: 0, width: width, height: height,
+        entities: Entities.new(), tiles: Tiles.new(), events: Events.new(),
+        commands: Commands.new(), snapshots: Snapshots.new(),
+        diagnostics: Diagnostics.new(), resources: 0, treasury: 0,
+        quests_completed: 0, script_steps: 0, rollback_count: 0,
+        next_entity: 1, next_sequence: 1, valid: true }
+}
+
+pub fn empty_entity() -> Entity {
+    Entity { id: NONE(), kind: 0, faction: 0, x: 0, y: 0,
+        previous_x: 0, previous_y: 0, velocity_x: 0, velocity_y: 0,
+        health: 0, energy: 0, state: 0, goal: NONE(), inventory: 0,
+        credits: 0, experience: 0, born_tick: 0, updated_tick: 0,
+        alive: false }
+}
+
+pub fn empty_tile() -> Tile {
+    Tile { x: 0, y: 0, terrain: PLAIN(), height: 0, resource: 0,
+        occupant: NONE(), region: 0, walkable: true, visible: false }
+}
+
+pub fn empty_event() -> Event {
+    Event { tick: 0, kind: 0, actor: NONE(), target: NONE(),
+        value: 0, sequence: 0 }
+}
+
+pub fn empty_command() -> Command {
+    Command { tick: 0, kind: 0, actor: NONE(), x: 0, y: 0,
+        value: 0, accepted: false }
+}
+
+pub fn empty_snapshot() -> Snapshot {
+    Snapshot { tick: 0, entity_count: 0, event_count: 0,
+        command_count: 0, checksum: 0 }
+}
+
+pub fn tile_index(borrow world: World, x: u64, y: u64) -> u64 {
+    if x >= world.width || y >= world.height { NONE() }
+    else { y * world.width + x }
+}
+
+pub fn find_entity(borrow world: World, id: u64) -> u64 {
+    let mut i: u64 = 0;
+    while i < world.entities.len() {
+        if world.entities.get_or(i, empty_entity()).id == id { return i; }
+        i = i + 1;
+    }
+    NONE()
+}
+
+pub fn alive_count(borrow world: World) -> u64 {
+    let mut count: u64 = 0;
+    let mut i: u64 = 0;
+    while i < world.entities.len() {
+        if world.entities.get_or(i, empty_entity()).alive { count = count + 1; }
+        i = i + 1;
+    }
+    count
+}
+
+pub fn walkable(borrow world: World, x: i64, y: i64) -> bool {
+    if x < 0 || y < 0 { return false; }
+    let ux: u64 = @intCast(x);
+    let uy: u64 = @intCast(y);
+    let index = tile_index(borrow world, ux, uy);
+    index != NONE() && world.tiles.get_or(index, empty_tile()).walkable
+}
+
+pub fn add_event(inout world: World, kind: u64, actor: u64,
+    target: u64, value: u64) {
+    world.events.push(Event { tick: world.tick, kind: kind, actor: actor,
+        target: target, value: value, sequence: world.next_sequence });
+    world.next_sequence = world.next_sequence + 1;
+}
+
+pub fn add_diagnostic(inout world: World, code: u64, subject: u64, detail: u64) {
+    world.diagnostics.push(Diagnostic { code: code, subject: subject, detail: detail });
+    world.valid = false;
+}

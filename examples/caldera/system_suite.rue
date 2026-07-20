@@ -1,0 +1,980 @@
+// Canonical registry for every Caldera simulation system.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+const result = @import("system_result.rue");
+const system_lifecycle_bootstrap = @import("system_lifecycle_bootstrap.rue");
+const system_lifecycle_discover = @import("system_lifecycle_discover.rue");
+const system_lifecycle_validate = @import("system_lifecycle_validate.rue");
+const system_lifecycle_schedule = @import("system_lifecycle_schedule.rue");
+const system_lifecycle_prepare = @import("system_lifecycle_prepare.rue");
+const system_lifecycle_dispatch = @import("system_lifecycle_dispatch.rue");
+const system_lifecycle_apply = @import("system_lifecycle_apply.rue");
+const system_lifecycle_resolve = @import("system_lifecycle_resolve.rue");
+const system_lifecycle_reconcile = @import("system_lifecycle_reconcile.rue");
+const system_lifecycle_compact = @import("system_lifecycle_compact.rue");
+const system_lifecycle_checkpoint = @import("system_lifecycle_checkpoint.rue");
+const system_lifecycle_replicate = @import("system_lifecycle_replicate.rue");
+const system_lifecycle_recover = @import("system_lifecycle_recover.rue");
+const system_lifecycle_observe = @import("system_lifecycle_observe.rue");
+const system_lifecycle_finalize = @import("system_lifecycle_finalize.rue");
+const system_lifecycle_audit = @import("system_lifecycle_audit.rue");
+const system_movement_bootstrap = @import("system_movement_bootstrap.rue");
+const system_movement_discover = @import("system_movement_discover.rue");
+const system_movement_validate = @import("system_movement_validate.rue");
+const system_movement_schedule = @import("system_movement_schedule.rue");
+const system_movement_prepare = @import("system_movement_prepare.rue");
+const system_movement_dispatch = @import("system_movement_dispatch.rue");
+const system_movement_apply = @import("system_movement_apply.rue");
+const system_movement_resolve = @import("system_movement_resolve.rue");
+const system_movement_reconcile = @import("system_movement_reconcile.rue");
+const system_movement_compact = @import("system_movement_compact.rue");
+const system_movement_checkpoint = @import("system_movement_checkpoint.rue");
+const system_movement_replicate = @import("system_movement_replicate.rue");
+const system_movement_recover = @import("system_movement_recover.rue");
+const system_movement_observe = @import("system_movement_observe.rue");
+const system_movement_finalize = @import("system_movement_finalize.rue");
+const system_movement_audit = @import("system_movement_audit.rue");
+const system_collision_bootstrap = @import("system_collision_bootstrap.rue");
+const system_collision_discover = @import("system_collision_discover.rue");
+const system_collision_validate = @import("system_collision_validate.rue");
+const system_collision_schedule = @import("system_collision_schedule.rue");
+const system_collision_prepare = @import("system_collision_prepare.rue");
+const system_collision_dispatch = @import("system_collision_dispatch.rue");
+const system_collision_apply = @import("system_collision_apply.rue");
+const system_collision_resolve = @import("system_collision_resolve.rue");
+const system_collision_reconcile = @import("system_collision_reconcile.rue");
+const system_collision_compact = @import("system_collision_compact.rue");
+const system_collision_checkpoint = @import("system_collision_checkpoint.rue");
+const system_collision_replicate = @import("system_collision_replicate.rue");
+const system_collision_recover = @import("system_collision_recover.rue");
+const system_collision_observe = @import("system_collision_observe.rue");
+const system_collision_finalize = @import("system_collision_finalize.rue");
+const system_collision_audit = @import("system_collision_audit.rue");
+const system_visibility_bootstrap = @import("system_visibility_bootstrap.rue");
+const system_visibility_discover = @import("system_visibility_discover.rue");
+const system_visibility_validate = @import("system_visibility_validate.rue");
+const system_visibility_schedule = @import("system_visibility_schedule.rue");
+const system_visibility_prepare = @import("system_visibility_prepare.rue");
+const system_visibility_dispatch = @import("system_visibility_dispatch.rue");
+const system_visibility_apply = @import("system_visibility_apply.rue");
+const system_visibility_resolve = @import("system_visibility_resolve.rue");
+const system_visibility_reconcile = @import("system_visibility_reconcile.rue");
+const system_visibility_compact = @import("system_visibility_compact.rue");
+const system_visibility_checkpoint = @import("system_visibility_checkpoint.rue");
+const system_visibility_replicate = @import("system_visibility_replicate.rue");
+const system_visibility_recover = @import("system_visibility_recover.rue");
+const system_visibility_observe = @import("system_visibility_observe.rue");
+const system_visibility_finalize = @import("system_visibility_finalize.rue");
+const system_visibility_audit = @import("system_visibility_audit.rue");
+const system_perception_bootstrap = @import("system_perception_bootstrap.rue");
+const system_perception_discover = @import("system_perception_discover.rue");
+const system_perception_validate = @import("system_perception_validate.rue");
+const system_perception_schedule = @import("system_perception_schedule.rue");
+const system_perception_prepare = @import("system_perception_prepare.rue");
+const system_perception_dispatch = @import("system_perception_dispatch.rue");
+const system_perception_apply = @import("system_perception_apply.rue");
+const system_perception_resolve = @import("system_perception_resolve.rue");
+const system_perception_reconcile = @import("system_perception_reconcile.rue");
+const system_perception_compact = @import("system_perception_compact.rue");
+const system_perception_checkpoint = @import("system_perception_checkpoint.rue");
+const system_perception_replicate = @import("system_perception_replicate.rue");
+const system_perception_recover = @import("system_perception_recover.rue");
+const system_perception_observe = @import("system_perception_observe.rue");
+const system_perception_finalize = @import("system_perception_finalize.rue");
+const system_perception_audit = @import("system_perception_audit.rue");
+const system_decision_bootstrap = @import("system_decision_bootstrap.rue");
+const system_decision_discover = @import("system_decision_discover.rue");
+const system_decision_validate = @import("system_decision_validate.rue");
+const system_decision_schedule = @import("system_decision_schedule.rue");
+const system_decision_prepare = @import("system_decision_prepare.rue");
+const system_decision_dispatch = @import("system_decision_dispatch.rue");
+const system_decision_apply = @import("system_decision_apply.rue");
+const system_decision_resolve = @import("system_decision_resolve.rue");
+const system_decision_reconcile = @import("system_decision_reconcile.rue");
+const system_decision_compact = @import("system_decision_compact.rue");
+const system_decision_checkpoint = @import("system_decision_checkpoint.rue");
+const system_decision_replicate = @import("system_decision_replicate.rue");
+const system_decision_recover = @import("system_decision_recover.rue");
+const system_decision_observe = @import("system_decision_observe.rue");
+const system_decision_finalize = @import("system_decision_finalize.rue");
+const system_decision_audit = @import("system_decision_audit.rue");
+const system_economy_bootstrap = @import("system_economy_bootstrap.rue");
+const system_economy_discover = @import("system_economy_discover.rue");
+const system_economy_validate = @import("system_economy_validate.rue");
+const system_economy_schedule = @import("system_economy_schedule.rue");
+const system_economy_prepare = @import("system_economy_prepare.rue");
+const system_economy_dispatch = @import("system_economy_dispatch.rue");
+const system_economy_apply = @import("system_economy_apply.rue");
+const system_economy_resolve = @import("system_economy_resolve.rue");
+const system_economy_reconcile = @import("system_economy_reconcile.rue");
+const system_economy_compact = @import("system_economy_compact.rue");
+const system_economy_checkpoint = @import("system_economy_checkpoint.rue");
+const system_economy_replicate = @import("system_economy_replicate.rue");
+const system_economy_recover = @import("system_economy_recover.rue");
+const system_economy_observe = @import("system_economy_observe.rue");
+const system_economy_finalize = @import("system_economy_finalize.rue");
+const system_economy_audit = @import("system_economy_audit.rue");
+const system_production_bootstrap = @import("system_production_bootstrap.rue");
+const system_production_discover = @import("system_production_discover.rue");
+const system_production_validate = @import("system_production_validate.rue");
+const system_production_schedule = @import("system_production_schedule.rue");
+const system_production_prepare = @import("system_production_prepare.rue");
+const system_production_dispatch = @import("system_production_dispatch.rue");
+const system_production_apply = @import("system_production_apply.rue");
+const system_production_resolve = @import("system_production_resolve.rue");
+const system_production_reconcile = @import("system_production_reconcile.rue");
+const system_production_compact = @import("system_production_compact.rue");
+const system_production_checkpoint = @import("system_production_checkpoint.rue");
+const system_production_replicate = @import("system_production_replicate.rue");
+const system_production_recover = @import("system_production_recover.rue");
+const system_production_observe = @import("system_production_observe.rue");
+const system_production_finalize = @import("system_production_finalize.rue");
+const system_production_audit = @import("system_production_audit.rue");
+const system_logistics_bootstrap = @import("system_logistics_bootstrap.rue");
+const system_logistics_discover = @import("system_logistics_discover.rue");
+const system_logistics_validate = @import("system_logistics_validate.rue");
+const system_logistics_schedule = @import("system_logistics_schedule.rue");
+const system_logistics_prepare = @import("system_logistics_prepare.rue");
+const system_logistics_dispatch = @import("system_logistics_dispatch.rue");
+const system_logistics_apply = @import("system_logistics_apply.rue");
+const system_logistics_resolve = @import("system_logistics_resolve.rue");
+const system_logistics_reconcile = @import("system_logistics_reconcile.rue");
+const system_logistics_compact = @import("system_logistics_compact.rue");
+const system_logistics_checkpoint = @import("system_logistics_checkpoint.rue");
+const system_logistics_replicate = @import("system_logistics_replicate.rue");
+const system_logistics_recover = @import("system_logistics_recover.rue");
+const system_logistics_observe = @import("system_logistics_observe.rue");
+const system_logistics_finalize = @import("system_logistics_finalize.rue");
+const system_logistics_audit = @import("system_logistics_audit.rue");
+const system_combat_bootstrap = @import("system_combat_bootstrap.rue");
+const system_combat_discover = @import("system_combat_discover.rue");
+const system_combat_validate = @import("system_combat_validate.rue");
+const system_combat_schedule = @import("system_combat_schedule.rue");
+const system_combat_prepare = @import("system_combat_prepare.rue");
+const system_combat_dispatch = @import("system_combat_dispatch.rue");
+const system_combat_apply = @import("system_combat_apply.rue");
+const system_combat_resolve = @import("system_combat_resolve.rue");
+const system_combat_reconcile = @import("system_combat_reconcile.rue");
+const system_combat_compact = @import("system_combat_compact.rue");
+const system_combat_checkpoint = @import("system_combat_checkpoint.rue");
+const system_combat_replicate = @import("system_combat_replicate.rue");
+const system_combat_recover = @import("system_combat_recover.rue");
+const system_combat_observe = @import("system_combat_observe.rue");
+const system_combat_finalize = @import("system_combat_finalize.rue");
+const system_combat_audit = @import("system_combat_audit.rue");
+const system_quest_bootstrap = @import("system_quest_bootstrap.rue");
+const system_quest_discover = @import("system_quest_discover.rue");
+const system_quest_validate = @import("system_quest_validate.rue");
+const system_quest_schedule = @import("system_quest_schedule.rue");
+const system_quest_prepare = @import("system_quest_prepare.rue");
+const system_quest_dispatch = @import("system_quest_dispatch.rue");
+const system_quest_apply = @import("system_quest_apply.rue");
+const system_quest_resolve = @import("system_quest_resolve.rue");
+const system_quest_reconcile = @import("system_quest_reconcile.rue");
+const system_quest_compact = @import("system_quest_compact.rue");
+const system_quest_checkpoint = @import("system_quest_checkpoint.rue");
+const system_quest_replicate = @import("system_quest_replicate.rue");
+const system_quest_recover = @import("system_quest_recover.rue");
+const system_quest_observe = @import("system_quest_observe.rue");
+const system_quest_finalize = @import("system_quest_finalize.rue");
+const system_quest_audit = @import("system_quest_audit.rue");
+const system_network_bootstrap = @import("system_network_bootstrap.rue");
+const system_network_discover = @import("system_network_discover.rue");
+const system_network_validate = @import("system_network_validate.rue");
+const system_network_schedule = @import("system_network_schedule.rue");
+const system_network_prepare = @import("system_network_prepare.rue");
+const system_network_dispatch = @import("system_network_dispatch.rue");
+const system_network_apply = @import("system_network_apply.rue");
+const system_network_resolve = @import("system_network_resolve.rue");
+const system_network_reconcile = @import("system_network_reconcile.rue");
+const system_network_compact = @import("system_network_compact.rue");
+const system_network_checkpoint = @import("system_network_checkpoint.rue");
+const system_network_replicate = @import("system_network_replicate.rue");
+const system_network_recover = @import("system_network_recover.rue");
+const system_network_observe = @import("system_network_observe.rue");
+const system_network_finalize = @import("system_network_finalize.rue");
+const system_network_audit = @import("system_network_audit.rue");
+
+pub struct Summary { systems: u64, inspected: u64, eligible: u64, commands: u64,
+    deterministic_mismatches: u64, digest: u64, valid: bool }
+fn include(inout out: Summary, borrow first: result.Result, borrow second: result.Result, verified: bool) {
+    out.systems = out.systems + 1; out.inspected = out.inspected + first.inspected;
+    out.eligible = out.eligible + first.eligible; out.commands = out.commands + first.commands;
+    if first.digest != second.digest || first.energy != second.energy || !verified {
+        out.deterministic_mismatches = out.deterministic_mismatches + 1;
+    }
+    out.digest = metric.mix(out.digest, first.digest);
+}
+pub fn run(borrow world: model.World) -> Summary {
+    let mut out = Summary { systems: 0, inspected: 0, eligible: 0, commands: 0,
+        deterministic_mismatches: 0, digest: 14695981039346656037, valid: false };
+    let system_lifecycle_bootstrap_a = system_lifecycle_bootstrap.evaluate(borrow world);
+    let system_lifecycle_bootstrap_b = system_lifecycle_bootstrap.evaluate(borrow world);
+    include(inout out, borrow system_lifecycle_bootstrap_a, borrow system_lifecycle_bootstrap_b,
+        system_lifecycle_bootstrap.verify(borrow world, borrow system_lifecycle_bootstrap_a));
+    let system_lifecycle_discover_a = system_lifecycle_discover.evaluate(borrow world);
+    let system_lifecycle_discover_b = system_lifecycle_discover.evaluate(borrow world);
+    include(inout out, borrow system_lifecycle_discover_a, borrow system_lifecycle_discover_b,
+        system_lifecycle_discover.verify(borrow world, borrow system_lifecycle_discover_a));
+    let system_lifecycle_validate_a = system_lifecycle_validate.evaluate(borrow world);
+    let system_lifecycle_validate_b = system_lifecycle_validate.evaluate(borrow world);
+    include(inout out, borrow system_lifecycle_validate_a, borrow system_lifecycle_validate_b,
+        system_lifecycle_validate.verify(borrow world, borrow system_lifecycle_validate_a));
+    let system_lifecycle_schedule_a = system_lifecycle_schedule.evaluate(borrow world);
+    let system_lifecycle_schedule_b = system_lifecycle_schedule.evaluate(borrow world);
+    include(inout out, borrow system_lifecycle_schedule_a, borrow system_lifecycle_schedule_b,
+        system_lifecycle_schedule.verify(borrow world, borrow system_lifecycle_schedule_a));
+    let system_lifecycle_prepare_a = system_lifecycle_prepare.evaluate(borrow world);
+    let system_lifecycle_prepare_b = system_lifecycle_prepare.evaluate(borrow world);
+    include(inout out, borrow system_lifecycle_prepare_a, borrow system_lifecycle_prepare_b,
+        system_lifecycle_prepare.verify(borrow world, borrow system_lifecycle_prepare_a));
+    let system_lifecycle_dispatch_a = system_lifecycle_dispatch.evaluate(borrow world);
+    let system_lifecycle_dispatch_b = system_lifecycle_dispatch.evaluate(borrow world);
+    include(inout out, borrow system_lifecycle_dispatch_a, borrow system_lifecycle_dispatch_b,
+        system_lifecycle_dispatch.verify(borrow world, borrow system_lifecycle_dispatch_a));
+    let system_lifecycle_apply_a = system_lifecycle_apply.evaluate(borrow world);
+    let system_lifecycle_apply_b = system_lifecycle_apply.evaluate(borrow world);
+    include(inout out, borrow system_lifecycle_apply_a, borrow system_lifecycle_apply_b,
+        system_lifecycle_apply.verify(borrow world, borrow system_lifecycle_apply_a));
+    let system_lifecycle_resolve_a = system_lifecycle_resolve.evaluate(borrow world);
+    let system_lifecycle_resolve_b = system_lifecycle_resolve.evaluate(borrow world);
+    include(inout out, borrow system_lifecycle_resolve_a, borrow system_lifecycle_resolve_b,
+        system_lifecycle_resolve.verify(borrow world, borrow system_lifecycle_resolve_a));
+    let system_lifecycle_reconcile_a = system_lifecycle_reconcile.evaluate(borrow world);
+    let system_lifecycle_reconcile_b = system_lifecycle_reconcile.evaluate(borrow world);
+    include(inout out, borrow system_lifecycle_reconcile_a, borrow system_lifecycle_reconcile_b,
+        system_lifecycle_reconcile.verify(borrow world, borrow system_lifecycle_reconcile_a));
+    let system_lifecycle_compact_a = system_lifecycle_compact.evaluate(borrow world);
+    let system_lifecycle_compact_b = system_lifecycle_compact.evaluate(borrow world);
+    include(inout out, borrow system_lifecycle_compact_a, borrow system_lifecycle_compact_b,
+        system_lifecycle_compact.verify(borrow world, borrow system_lifecycle_compact_a));
+    let system_lifecycle_checkpoint_a = system_lifecycle_checkpoint.evaluate(borrow world);
+    let system_lifecycle_checkpoint_b = system_lifecycle_checkpoint.evaluate(borrow world);
+    include(inout out, borrow system_lifecycle_checkpoint_a, borrow system_lifecycle_checkpoint_b,
+        system_lifecycle_checkpoint.verify(borrow world, borrow system_lifecycle_checkpoint_a));
+    let system_lifecycle_replicate_a = system_lifecycle_replicate.evaluate(borrow world);
+    let system_lifecycle_replicate_b = system_lifecycle_replicate.evaluate(borrow world);
+    include(inout out, borrow system_lifecycle_replicate_a, borrow system_lifecycle_replicate_b,
+        system_lifecycle_replicate.verify(borrow world, borrow system_lifecycle_replicate_a));
+    let system_lifecycle_recover_a = system_lifecycle_recover.evaluate(borrow world);
+    let system_lifecycle_recover_b = system_lifecycle_recover.evaluate(borrow world);
+    include(inout out, borrow system_lifecycle_recover_a, borrow system_lifecycle_recover_b,
+        system_lifecycle_recover.verify(borrow world, borrow system_lifecycle_recover_a));
+    let system_lifecycle_observe_a = system_lifecycle_observe.evaluate(borrow world);
+    let system_lifecycle_observe_b = system_lifecycle_observe.evaluate(borrow world);
+    include(inout out, borrow system_lifecycle_observe_a, borrow system_lifecycle_observe_b,
+        system_lifecycle_observe.verify(borrow world, borrow system_lifecycle_observe_a));
+    let system_lifecycle_finalize_a = system_lifecycle_finalize.evaluate(borrow world);
+    let system_lifecycle_finalize_b = system_lifecycle_finalize.evaluate(borrow world);
+    include(inout out, borrow system_lifecycle_finalize_a, borrow system_lifecycle_finalize_b,
+        system_lifecycle_finalize.verify(borrow world, borrow system_lifecycle_finalize_a));
+    let system_lifecycle_audit_a = system_lifecycle_audit.evaluate(borrow world);
+    let system_lifecycle_audit_b = system_lifecycle_audit.evaluate(borrow world);
+    include(inout out, borrow system_lifecycle_audit_a, borrow system_lifecycle_audit_b,
+        system_lifecycle_audit.verify(borrow world, borrow system_lifecycle_audit_a));
+    let system_movement_bootstrap_a = system_movement_bootstrap.evaluate(borrow world);
+    let system_movement_bootstrap_b = system_movement_bootstrap.evaluate(borrow world);
+    include(inout out, borrow system_movement_bootstrap_a, borrow system_movement_bootstrap_b,
+        system_movement_bootstrap.verify(borrow world, borrow system_movement_bootstrap_a));
+    let system_movement_discover_a = system_movement_discover.evaluate(borrow world);
+    let system_movement_discover_b = system_movement_discover.evaluate(borrow world);
+    include(inout out, borrow system_movement_discover_a, borrow system_movement_discover_b,
+        system_movement_discover.verify(borrow world, borrow system_movement_discover_a));
+    let system_movement_validate_a = system_movement_validate.evaluate(borrow world);
+    let system_movement_validate_b = system_movement_validate.evaluate(borrow world);
+    include(inout out, borrow system_movement_validate_a, borrow system_movement_validate_b,
+        system_movement_validate.verify(borrow world, borrow system_movement_validate_a));
+    let system_movement_schedule_a = system_movement_schedule.evaluate(borrow world);
+    let system_movement_schedule_b = system_movement_schedule.evaluate(borrow world);
+    include(inout out, borrow system_movement_schedule_a, borrow system_movement_schedule_b,
+        system_movement_schedule.verify(borrow world, borrow system_movement_schedule_a));
+    let system_movement_prepare_a = system_movement_prepare.evaluate(borrow world);
+    let system_movement_prepare_b = system_movement_prepare.evaluate(borrow world);
+    include(inout out, borrow system_movement_prepare_a, borrow system_movement_prepare_b,
+        system_movement_prepare.verify(borrow world, borrow system_movement_prepare_a));
+    let system_movement_dispatch_a = system_movement_dispatch.evaluate(borrow world);
+    let system_movement_dispatch_b = system_movement_dispatch.evaluate(borrow world);
+    include(inout out, borrow system_movement_dispatch_a, borrow system_movement_dispatch_b,
+        system_movement_dispatch.verify(borrow world, borrow system_movement_dispatch_a));
+    let system_movement_apply_a = system_movement_apply.evaluate(borrow world);
+    let system_movement_apply_b = system_movement_apply.evaluate(borrow world);
+    include(inout out, borrow system_movement_apply_a, borrow system_movement_apply_b,
+        system_movement_apply.verify(borrow world, borrow system_movement_apply_a));
+    let system_movement_resolve_a = system_movement_resolve.evaluate(borrow world);
+    let system_movement_resolve_b = system_movement_resolve.evaluate(borrow world);
+    include(inout out, borrow system_movement_resolve_a, borrow system_movement_resolve_b,
+        system_movement_resolve.verify(borrow world, borrow system_movement_resolve_a));
+    let system_movement_reconcile_a = system_movement_reconcile.evaluate(borrow world);
+    let system_movement_reconcile_b = system_movement_reconcile.evaluate(borrow world);
+    include(inout out, borrow system_movement_reconcile_a, borrow system_movement_reconcile_b,
+        system_movement_reconcile.verify(borrow world, borrow system_movement_reconcile_a));
+    let system_movement_compact_a = system_movement_compact.evaluate(borrow world);
+    let system_movement_compact_b = system_movement_compact.evaluate(borrow world);
+    include(inout out, borrow system_movement_compact_a, borrow system_movement_compact_b,
+        system_movement_compact.verify(borrow world, borrow system_movement_compact_a));
+    let system_movement_checkpoint_a = system_movement_checkpoint.evaluate(borrow world);
+    let system_movement_checkpoint_b = system_movement_checkpoint.evaluate(borrow world);
+    include(inout out, borrow system_movement_checkpoint_a, borrow system_movement_checkpoint_b,
+        system_movement_checkpoint.verify(borrow world, borrow system_movement_checkpoint_a));
+    let system_movement_replicate_a = system_movement_replicate.evaluate(borrow world);
+    let system_movement_replicate_b = system_movement_replicate.evaluate(borrow world);
+    include(inout out, borrow system_movement_replicate_a, borrow system_movement_replicate_b,
+        system_movement_replicate.verify(borrow world, borrow system_movement_replicate_a));
+    let system_movement_recover_a = system_movement_recover.evaluate(borrow world);
+    let system_movement_recover_b = system_movement_recover.evaluate(borrow world);
+    include(inout out, borrow system_movement_recover_a, borrow system_movement_recover_b,
+        system_movement_recover.verify(borrow world, borrow system_movement_recover_a));
+    let system_movement_observe_a = system_movement_observe.evaluate(borrow world);
+    let system_movement_observe_b = system_movement_observe.evaluate(borrow world);
+    include(inout out, borrow system_movement_observe_a, borrow system_movement_observe_b,
+        system_movement_observe.verify(borrow world, borrow system_movement_observe_a));
+    let system_movement_finalize_a = system_movement_finalize.evaluate(borrow world);
+    let system_movement_finalize_b = system_movement_finalize.evaluate(borrow world);
+    include(inout out, borrow system_movement_finalize_a, borrow system_movement_finalize_b,
+        system_movement_finalize.verify(borrow world, borrow system_movement_finalize_a));
+    let system_movement_audit_a = system_movement_audit.evaluate(borrow world);
+    let system_movement_audit_b = system_movement_audit.evaluate(borrow world);
+    include(inout out, borrow system_movement_audit_a, borrow system_movement_audit_b,
+        system_movement_audit.verify(borrow world, borrow system_movement_audit_a));
+    let system_collision_bootstrap_a = system_collision_bootstrap.evaluate(borrow world);
+    let system_collision_bootstrap_b = system_collision_bootstrap.evaluate(borrow world);
+    include(inout out, borrow system_collision_bootstrap_a, borrow system_collision_bootstrap_b,
+        system_collision_bootstrap.verify(borrow world, borrow system_collision_bootstrap_a));
+    let system_collision_discover_a = system_collision_discover.evaluate(borrow world);
+    let system_collision_discover_b = system_collision_discover.evaluate(borrow world);
+    include(inout out, borrow system_collision_discover_a, borrow system_collision_discover_b,
+        system_collision_discover.verify(borrow world, borrow system_collision_discover_a));
+    let system_collision_validate_a = system_collision_validate.evaluate(borrow world);
+    let system_collision_validate_b = system_collision_validate.evaluate(borrow world);
+    include(inout out, borrow system_collision_validate_a, borrow system_collision_validate_b,
+        system_collision_validate.verify(borrow world, borrow system_collision_validate_a));
+    let system_collision_schedule_a = system_collision_schedule.evaluate(borrow world);
+    let system_collision_schedule_b = system_collision_schedule.evaluate(borrow world);
+    include(inout out, borrow system_collision_schedule_a, borrow system_collision_schedule_b,
+        system_collision_schedule.verify(borrow world, borrow system_collision_schedule_a));
+    let system_collision_prepare_a = system_collision_prepare.evaluate(borrow world);
+    let system_collision_prepare_b = system_collision_prepare.evaluate(borrow world);
+    include(inout out, borrow system_collision_prepare_a, borrow system_collision_prepare_b,
+        system_collision_prepare.verify(borrow world, borrow system_collision_prepare_a));
+    let system_collision_dispatch_a = system_collision_dispatch.evaluate(borrow world);
+    let system_collision_dispatch_b = system_collision_dispatch.evaluate(borrow world);
+    include(inout out, borrow system_collision_dispatch_a, borrow system_collision_dispatch_b,
+        system_collision_dispatch.verify(borrow world, borrow system_collision_dispatch_a));
+    let system_collision_apply_a = system_collision_apply.evaluate(borrow world);
+    let system_collision_apply_b = system_collision_apply.evaluate(borrow world);
+    include(inout out, borrow system_collision_apply_a, borrow system_collision_apply_b,
+        system_collision_apply.verify(borrow world, borrow system_collision_apply_a));
+    let system_collision_resolve_a = system_collision_resolve.evaluate(borrow world);
+    let system_collision_resolve_b = system_collision_resolve.evaluate(borrow world);
+    include(inout out, borrow system_collision_resolve_a, borrow system_collision_resolve_b,
+        system_collision_resolve.verify(borrow world, borrow system_collision_resolve_a));
+    let system_collision_reconcile_a = system_collision_reconcile.evaluate(borrow world);
+    let system_collision_reconcile_b = system_collision_reconcile.evaluate(borrow world);
+    include(inout out, borrow system_collision_reconcile_a, borrow system_collision_reconcile_b,
+        system_collision_reconcile.verify(borrow world, borrow system_collision_reconcile_a));
+    let system_collision_compact_a = system_collision_compact.evaluate(borrow world);
+    let system_collision_compact_b = system_collision_compact.evaluate(borrow world);
+    include(inout out, borrow system_collision_compact_a, borrow system_collision_compact_b,
+        system_collision_compact.verify(borrow world, borrow system_collision_compact_a));
+    let system_collision_checkpoint_a = system_collision_checkpoint.evaluate(borrow world);
+    let system_collision_checkpoint_b = system_collision_checkpoint.evaluate(borrow world);
+    include(inout out, borrow system_collision_checkpoint_a, borrow system_collision_checkpoint_b,
+        system_collision_checkpoint.verify(borrow world, borrow system_collision_checkpoint_a));
+    let system_collision_replicate_a = system_collision_replicate.evaluate(borrow world);
+    let system_collision_replicate_b = system_collision_replicate.evaluate(borrow world);
+    include(inout out, borrow system_collision_replicate_a, borrow system_collision_replicate_b,
+        system_collision_replicate.verify(borrow world, borrow system_collision_replicate_a));
+    let system_collision_recover_a = system_collision_recover.evaluate(borrow world);
+    let system_collision_recover_b = system_collision_recover.evaluate(borrow world);
+    include(inout out, borrow system_collision_recover_a, borrow system_collision_recover_b,
+        system_collision_recover.verify(borrow world, borrow system_collision_recover_a));
+    let system_collision_observe_a = system_collision_observe.evaluate(borrow world);
+    let system_collision_observe_b = system_collision_observe.evaluate(borrow world);
+    include(inout out, borrow system_collision_observe_a, borrow system_collision_observe_b,
+        system_collision_observe.verify(borrow world, borrow system_collision_observe_a));
+    let system_collision_finalize_a = system_collision_finalize.evaluate(borrow world);
+    let system_collision_finalize_b = system_collision_finalize.evaluate(borrow world);
+    include(inout out, borrow system_collision_finalize_a, borrow system_collision_finalize_b,
+        system_collision_finalize.verify(borrow world, borrow system_collision_finalize_a));
+    let system_collision_audit_a = system_collision_audit.evaluate(borrow world);
+    let system_collision_audit_b = system_collision_audit.evaluate(borrow world);
+    include(inout out, borrow system_collision_audit_a, borrow system_collision_audit_b,
+        system_collision_audit.verify(borrow world, borrow system_collision_audit_a));
+    let system_visibility_bootstrap_a = system_visibility_bootstrap.evaluate(borrow world);
+    let system_visibility_bootstrap_b = system_visibility_bootstrap.evaluate(borrow world);
+    include(inout out, borrow system_visibility_bootstrap_a, borrow system_visibility_bootstrap_b,
+        system_visibility_bootstrap.verify(borrow world, borrow system_visibility_bootstrap_a));
+    let system_visibility_discover_a = system_visibility_discover.evaluate(borrow world);
+    let system_visibility_discover_b = system_visibility_discover.evaluate(borrow world);
+    include(inout out, borrow system_visibility_discover_a, borrow system_visibility_discover_b,
+        system_visibility_discover.verify(borrow world, borrow system_visibility_discover_a));
+    let system_visibility_validate_a = system_visibility_validate.evaluate(borrow world);
+    let system_visibility_validate_b = system_visibility_validate.evaluate(borrow world);
+    include(inout out, borrow system_visibility_validate_a, borrow system_visibility_validate_b,
+        system_visibility_validate.verify(borrow world, borrow system_visibility_validate_a));
+    let system_visibility_schedule_a = system_visibility_schedule.evaluate(borrow world);
+    let system_visibility_schedule_b = system_visibility_schedule.evaluate(borrow world);
+    include(inout out, borrow system_visibility_schedule_a, borrow system_visibility_schedule_b,
+        system_visibility_schedule.verify(borrow world, borrow system_visibility_schedule_a));
+    let system_visibility_prepare_a = system_visibility_prepare.evaluate(borrow world);
+    let system_visibility_prepare_b = system_visibility_prepare.evaluate(borrow world);
+    include(inout out, borrow system_visibility_prepare_a, borrow system_visibility_prepare_b,
+        system_visibility_prepare.verify(borrow world, borrow system_visibility_prepare_a));
+    let system_visibility_dispatch_a = system_visibility_dispatch.evaluate(borrow world);
+    let system_visibility_dispatch_b = system_visibility_dispatch.evaluate(borrow world);
+    include(inout out, borrow system_visibility_dispatch_a, borrow system_visibility_dispatch_b,
+        system_visibility_dispatch.verify(borrow world, borrow system_visibility_dispatch_a));
+    let system_visibility_apply_a = system_visibility_apply.evaluate(borrow world);
+    let system_visibility_apply_b = system_visibility_apply.evaluate(borrow world);
+    include(inout out, borrow system_visibility_apply_a, borrow system_visibility_apply_b,
+        system_visibility_apply.verify(borrow world, borrow system_visibility_apply_a));
+    let system_visibility_resolve_a = system_visibility_resolve.evaluate(borrow world);
+    let system_visibility_resolve_b = system_visibility_resolve.evaluate(borrow world);
+    include(inout out, borrow system_visibility_resolve_a, borrow system_visibility_resolve_b,
+        system_visibility_resolve.verify(borrow world, borrow system_visibility_resolve_a));
+    let system_visibility_reconcile_a = system_visibility_reconcile.evaluate(borrow world);
+    let system_visibility_reconcile_b = system_visibility_reconcile.evaluate(borrow world);
+    include(inout out, borrow system_visibility_reconcile_a, borrow system_visibility_reconcile_b,
+        system_visibility_reconcile.verify(borrow world, borrow system_visibility_reconcile_a));
+    let system_visibility_compact_a = system_visibility_compact.evaluate(borrow world);
+    let system_visibility_compact_b = system_visibility_compact.evaluate(borrow world);
+    include(inout out, borrow system_visibility_compact_a, borrow system_visibility_compact_b,
+        system_visibility_compact.verify(borrow world, borrow system_visibility_compact_a));
+    let system_visibility_checkpoint_a = system_visibility_checkpoint.evaluate(borrow world);
+    let system_visibility_checkpoint_b = system_visibility_checkpoint.evaluate(borrow world);
+    include(inout out, borrow system_visibility_checkpoint_a, borrow system_visibility_checkpoint_b,
+        system_visibility_checkpoint.verify(borrow world, borrow system_visibility_checkpoint_a));
+    let system_visibility_replicate_a = system_visibility_replicate.evaluate(borrow world);
+    let system_visibility_replicate_b = system_visibility_replicate.evaluate(borrow world);
+    include(inout out, borrow system_visibility_replicate_a, borrow system_visibility_replicate_b,
+        system_visibility_replicate.verify(borrow world, borrow system_visibility_replicate_a));
+    let system_visibility_recover_a = system_visibility_recover.evaluate(borrow world);
+    let system_visibility_recover_b = system_visibility_recover.evaluate(borrow world);
+    include(inout out, borrow system_visibility_recover_a, borrow system_visibility_recover_b,
+        system_visibility_recover.verify(borrow world, borrow system_visibility_recover_a));
+    let system_visibility_observe_a = system_visibility_observe.evaluate(borrow world);
+    let system_visibility_observe_b = system_visibility_observe.evaluate(borrow world);
+    include(inout out, borrow system_visibility_observe_a, borrow system_visibility_observe_b,
+        system_visibility_observe.verify(borrow world, borrow system_visibility_observe_a));
+    let system_visibility_finalize_a = system_visibility_finalize.evaluate(borrow world);
+    let system_visibility_finalize_b = system_visibility_finalize.evaluate(borrow world);
+    include(inout out, borrow system_visibility_finalize_a, borrow system_visibility_finalize_b,
+        system_visibility_finalize.verify(borrow world, borrow system_visibility_finalize_a));
+    let system_visibility_audit_a = system_visibility_audit.evaluate(borrow world);
+    let system_visibility_audit_b = system_visibility_audit.evaluate(borrow world);
+    include(inout out, borrow system_visibility_audit_a, borrow system_visibility_audit_b,
+        system_visibility_audit.verify(borrow world, borrow system_visibility_audit_a));
+    let system_perception_bootstrap_a = system_perception_bootstrap.evaluate(borrow world);
+    let system_perception_bootstrap_b = system_perception_bootstrap.evaluate(borrow world);
+    include(inout out, borrow system_perception_bootstrap_a, borrow system_perception_bootstrap_b,
+        system_perception_bootstrap.verify(borrow world, borrow system_perception_bootstrap_a));
+    let system_perception_discover_a = system_perception_discover.evaluate(borrow world);
+    let system_perception_discover_b = system_perception_discover.evaluate(borrow world);
+    include(inout out, borrow system_perception_discover_a, borrow system_perception_discover_b,
+        system_perception_discover.verify(borrow world, borrow system_perception_discover_a));
+    let system_perception_validate_a = system_perception_validate.evaluate(borrow world);
+    let system_perception_validate_b = system_perception_validate.evaluate(borrow world);
+    include(inout out, borrow system_perception_validate_a, borrow system_perception_validate_b,
+        system_perception_validate.verify(borrow world, borrow system_perception_validate_a));
+    let system_perception_schedule_a = system_perception_schedule.evaluate(borrow world);
+    let system_perception_schedule_b = system_perception_schedule.evaluate(borrow world);
+    include(inout out, borrow system_perception_schedule_a, borrow system_perception_schedule_b,
+        system_perception_schedule.verify(borrow world, borrow system_perception_schedule_a));
+    let system_perception_prepare_a = system_perception_prepare.evaluate(borrow world);
+    let system_perception_prepare_b = system_perception_prepare.evaluate(borrow world);
+    include(inout out, borrow system_perception_prepare_a, borrow system_perception_prepare_b,
+        system_perception_prepare.verify(borrow world, borrow system_perception_prepare_a));
+    let system_perception_dispatch_a = system_perception_dispatch.evaluate(borrow world);
+    let system_perception_dispatch_b = system_perception_dispatch.evaluate(borrow world);
+    include(inout out, borrow system_perception_dispatch_a, borrow system_perception_dispatch_b,
+        system_perception_dispatch.verify(borrow world, borrow system_perception_dispatch_a));
+    let system_perception_apply_a = system_perception_apply.evaluate(borrow world);
+    let system_perception_apply_b = system_perception_apply.evaluate(borrow world);
+    include(inout out, borrow system_perception_apply_a, borrow system_perception_apply_b,
+        system_perception_apply.verify(borrow world, borrow system_perception_apply_a));
+    let system_perception_resolve_a = system_perception_resolve.evaluate(borrow world);
+    let system_perception_resolve_b = system_perception_resolve.evaluate(borrow world);
+    include(inout out, borrow system_perception_resolve_a, borrow system_perception_resolve_b,
+        system_perception_resolve.verify(borrow world, borrow system_perception_resolve_a));
+    let system_perception_reconcile_a = system_perception_reconcile.evaluate(borrow world);
+    let system_perception_reconcile_b = system_perception_reconcile.evaluate(borrow world);
+    include(inout out, borrow system_perception_reconcile_a, borrow system_perception_reconcile_b,
+        system_perception_reconcile.verify(borrow world, borrow system_perception_reconcile_a));
+    let system_perception_compact_a = system_perception_compact.evaluate(borrow world);
+    let system_perception_compact_b = system_perception_compact.evaluate(borrow world);
+    include(inout out, borrow system_perception_compact_a, borrow system_perception_compact_b,
+        system_perception_compact.verify(borrow world, borrow system_perception_compact_a));
+    let system_perception_checkpoint_a = system_perception_checkpoint.evaluate(borrow world);
+    let system_perception_checkpoint_b = system_perception_checkpoint.evaluate(borrow world);
+    include(inout out, borrow system_perception_checkpoint_a, borrow system_perception_checkpoint_b,
+        system_perception_checkpoint.verify(borrow world, borrow system_perception_checkpoint_a));
+    let system_perception_replicate_a = system_perception_replicate.evaluate(borrow world);
+    let system_perception_replicate_b = system_perception_replicate.evaluate(borrow world);
+    include(inout out, borrow system_perception_replicate_a, borrow system_perception_replicate_b,
+        system_perception_replicate.verify(borrow world, borrow system_perception_replicate_a));
+    let system_perception_recover_a = system_perception_recover.evaluate(borrow world);
+    let system_perception_recover_b = system_perception_recover.evaluate(borrow world);
+    include(inout out, borrow system_perception_recover_a, borrow system_perception_recover_b,
+        system_perception_recover.verify(borrow world, borrow system_perception_recover_a));
+    let system_perception_observe_a = system_perception_observe.evaluate(borrow world);
+    let system_perception_observe_b = system_perception_observe.evaluate(borrow world);
+    include(inout out, borrow system_perception_observe_a, borrow system_perception_observe_b,
+        system_perception_observe.verify(borrow world, borrow system_perception_observe_a));
+    let system_perception_finalize_a = system_perception_finalize.evaluate(borrow world);
+    let system_perception_finalize_b = system_perception_finalize.evaluate(borrow world);
+    include(inout out, borrow system_perception_finalize_a, borrow system_perception_finalize_b,
+        system_perception_finalize.verify(borrow world, borrow system_perception_finalize_a));
+    let system_perception_audit_a = system_perception_audit.evaluate(borrow world);
+    let system_perception_audit_b = system_perception_audit.evaluate(borrow world);
+    include(inout out, borrow system_perception_audit_a, borrow system_perception_audit_b,
+        system_perception_audit.verify(borrow world, borrow system_perception_audit_a));
+    let system_decision_bootstrap_a = system_decision_bootstrap.evaluate(borrow world);
+    let system_decision_bootstrap_b = system_decision_bootstrap.evaluate(borrow world);
+    include(inout out, borrow system_decision_bootstrap_a, borrow system_decision_bootstrap_b,
+        system_decision_bootstrap.verify(borrow world, borrow system_decision_bootstrap_a));
+    let system_decision_discover_a = system_decision_discover.evaluate(borrow world);
+    let system_decision_discover_b = system_decision_discover.evaluate(borrow world);
+    include(inout out, borrow system_decision_discover_a, borrow system_decision_discover_b,
+        system_decision_discover.verify(borrow world, borrow system_decision_discover_a));
+    let system_decision_validate_a = system_decision_validate.evaluate(borrow world);
+    let system_decision_validate_b = system_decision_validate.evaluate(borrow world);
+    include(inout out, borrow system_decision_validate_a, borrow system_decision_validate_b,
+        system_decision_validate.verify(borrow world, borrow system_decision_validate_a));
+    let system_decision_schedule_a = system_decision_schedule.evaluate(borrow world);
+    let system_decision_schedule_b = system_decision_schedule.evaluate(borrow world);
+    include(inout out, borrow system_decision_schedule_a, borrow system_decision_schedule_b,
+        system_decision_schedule.verify(borrow world, borrow system_decision_schedule_a));
+    let system_decision_prepare_a = system_decision_prepare.evaluate(borrow world);
+    let system_decision_prepare_b = system_decision_prepare.evaluate(borrow world);
+    include(inout out, borrow system_decision_prepare_a, borrow system_decision_prepare_b,
+        system_decision_prepare.verify(borrow world, borrow system_decision_prepare_a));
+    let system_decision_dispatch_a = system_decision_dispatch.evaluate(borrow world);
+    let system_decision_dispatch_b = system_decision_dispatch.evaluate(borrow world);
+    include(inout out, borrow system_decision_dispatch_a, borrow system_decision_dispatch_b,
+        system_decision_dispatch.verify(borrow world, borrow system_decision_dispatch_a));
+    let system_decision_apply_a = system_decision_apply.evaluate(borrow world);
+    let system_decision_apply_b = system_decision_apply.evaluate(borrow world);
+    include(inout out, borrow system_decision_apply_a, borrow system_decision_apply_b,
+        system_decision_apply.verify(borrow world, borrow system_decision_apply_a));
+    let system_decision_resolve_a = system_decision_resolve.evaluate(borrow world);
+    let system_decision_resolve_b = system_decision_resolve.evaluate(borrow world);
+    include(inout out, borrow system_decision_resolve_a, borrow system_decision_resolve_b,
+        system_decision_resolve.verify(borrow world, borrow system_decision_resolve_a));
+    let system_decision_reconcile_a = system_decision_reconcile.evaluate(borrow world);
+    let system_decision_reconcile_b = system_decision_reconcile.evaluate(borrow world);
+    include(inout out, borrow system_decision_reconcile_a, borrow system_decision_reconcile_b,
+        system_decision_reconcile.verify(borrow world, borrow system_decision_reconcile_a));
+    let system_decision_compact_a = system_decision_compact.evaluate(borrow world);
+    let system_decision_compact_b = system_decision_compact.evaluate(borrow world);
+    include(inout out, borrow system_decision_compact_a, borrow system_decision_compact_b,
+        system_decision_compact.verify(borrow world, borrow system_decision_compact_a));
+    let system_decision_checkpoint_a = system_decision_checkpoint.evaluate(borrow world);
+    let system_decision_checkpoint_b = system_decision_checkpoint.evaluate(borrow world);
+    include(inout out, borrow system_decision_checkpoint_a, borrow system_decision_checkpoint_b,
+        system_decision_checkpoint.verify(borrow world, borrow system_decision_checkpoint_a));
+    let system_decision_replicate_a = system_decision_replicate.evaluate(borrow world);
+    let system_decision_replicate_b = system_decision_replicate.evaluate(borrow world);
+    include(inout out, borrow system_decision_replicate_a, borrow system_decision_replicate_b,
+        system_decision_replicate.verify(borrow world, borrow system_decision_replicate_a));
+    let system_decision_recover_a = system_decision_recover.evaluate(borrow world);
+    let system_decision_recover_b = system_decision_recover.evaluate(borrow world);
+    include(inout out, borrow system_decision_recover_a, borrow system_decision_recover_b,
+        system_decision_recover.verify(borrow world, borrow system_decision_recover_a));
+    let system_decision_observe_a = system_decision_observe.evaluate(borrow world);
+    let system_decision_observe_b = system_decision_observe.evaluate(borrow world);
+    include(inout out, borrow system_decision_observe_a, borrow system_decision_observe_b,
+        system_decision_observe.verify(borrow world, borrow system_decision_observe_a));
+    let system_decision_finalize_a = system_decision_finalize.evaluate(borrow world);
+    let system_decision_finalize_b = system_decision_finalize.evaluate(borrow world);
+    include(inout out, borrow system_decision_finalize_a, borrow system_decision_finalize_b,
+        system_decision_finalize.verify(borrow world, borrow system_decision_finalize_a));
+    let system_decision_audit_a = system_decision_audit.evaluate(borrow world);
+    let system_decision_audit_b = system_decision_audit.evaluate(borrow world);
+    include(inout out, borrow system_decision_audit_a, borrow system_decision_audit_b,
+        system_decision_audit.verify(borrow world, borrow system_decision_audit_a));
+    let system_economy_bootstrap_a = system_economy_bootstrap.evaluate(borrow world);
+    let system_economy_bootstrap_b = system_economy_bootstrap.evaluate(borrow world);
+    include(inout out, borrow system_economy_bootstrap_a, borrow system_economy_bootstrap_b,
+        system_economy_bootstrap.verify(borrow world, borrow system_economy_bootstrap_a));
+    let system_economy_discover_a = system_economy_discover.evaluate(borrow world);
+    let system_economy_discover_b = system_economy_discover.evaluate(borrow world);
+    include(inout out, borrow system_economy_discover_a, borrow system_economy_discover_b,
+        system_economy_discover.verify(borrow world, borrow system_economy_discover_a));
+    let system_economy_validate_a = system_economy_validate.evaluate(borrow world);
+    let system_economy_validate_b = system_economy_validate.evaluate(borrow world);
+    include(inout out, borrow system_economy_validate_a, borrow system_economy_validate_b,
+        system_economy_validate.verify(borrow world, borrow system_economy_validate_a));
+    let system_economy_schedule_a = system_economy_schedule.evaluate(borrow world);
+    let system_economy_schedule_b = system_economy_schedule.evaluate(borrow world);
+    include(inout out, borrow system_economy_schedule_a, borrow system_economy_schedule_b,
+        system_economy_schedule.verify(borrow world, borrow system_economy_schedule_a));
+    let system_economy_prepare_a = system_economy_prepare.evaluate(borrow world);
+    let system_economy_prepare_b = system_economy_prepare.evaluate(borrow world);
+    include(inout out, borrow system_economy_prepare_a, borrow system_economy_prepare_b,
+        system_economy_prepare.verify(borrow world, borrow system_economy_prepare_a));
+    let system_economy_dispatch_a = system_economy_dispatch.evaluate(borrow world);
+    let system_economy_dispatch_b = system_economy_dispatch.evaluate(borrow world);
+    include(inout out, borrow system_economy_dispatch_a, borrow system_economy_dispatch_b,
+        system_economy_dispatch.verify(borrow world, borrow system_economy_dispatch_a));
+    let system_economy_apply_a = system_economy_apply.evaluate(borrow world);
+    let system_economy_apply_b = system_economy_apply.evaluate(borrow world);
+    include(inout out, borrow system_economy_apply_a, borrow system_economy_apply_b,
+        system_economy_apply.verify(borrow world, borrow system_economy_apply_a));
+    let system_economy_resolve_a = system_economy_resolve.evaluate(borrow world);
+    let system_economy_resolve_b = system_economy_resolve.evaluate(borrow world);
+    include(inout out, borrow system_economy_resolve_a, borrow system_economy_resolve_b,
+        system_economy_resolve.verify(borrow world, borrow system_economy_resolve_a));
+    let system_economy_reconcile_a = system_economy_reconcile.evaluate(borrow world);
+    let system_economy_reconcile_b = system_economy_reconcile.evaluate(borrow world);
+    include(inout out, borrow system_economy_reconcile_a, borrow system_economy_reconcile_b,
+        system_economy_reconcile.verify(borrow world, borrow system_economy_reconcile_a));
+    let system_economy_compact_a = system_economy_compact.evaluate(borrow world);
+    let system_economy_compact_b = system_economy_compact.evaluate(borrow world);
+    include(inout out, borrow system_economy_compact_a, borrow system_economy_compact_b,
+        system_economy_compact.verify(borrow world, borrow system_economy_compact_a));
+    let system_economy_checkpoint_a = system_economy_checkpoint.evaluate(borrow world);
+    let system_economy_checkpoint_b = system_economy_checkpoint.evaluate(borrow world);
+    include(inout out, borrow system_economy_checkpoint_a, borrow system_economy_checkpoint_b,
+        system_economy_checkpoint.verify(borrow world, borrow system_economy_checkpoint_a));
+    let system_economy_replicate_a = system_economy_replicate.evaluate(borrow world);
+    let system_economy_replicate_b = system_economy_replicate.evaluate(borrow world);
+    include(inout out, borrow system_economy_replicate_a, borrow system_economy_replicate_b,
+        system_economy_replicate.verify(borrow world, borrow system_economy_replicate_a));
+    let system_economy_recover_a = system_economy_recover.evaluate(borrow world);
+    let system_economy_recover_b = system_economy_recover.evaluate(borrow world);
+    include(inout out, borrow system_economy_recover_a, borrow system_economy_recover_b,
+        system_economy_recover.verify(borrow world, borrow system_economy_recover_a));
+    let system_economy_observe_a = system_economy_observe.evaluate(borrow world);
+    let system_economy_observe_b = system_economy_observe.evaluate(borrow world);
+    include(inout out, borrow system_economy_observe_a, borrow system_economy_observe_b,
+        system_economy_observe.verify(borrow world, borrow system_economy_observe_a));
+    let system_economy_finalize_a = system_economy_finalize.evaluate(borrow world);
+    let system_economy_finalize_b = system_economy_finalize.evaluate(borrow world);
+    include(inout out, borrow system_economy_finalize_a, borrow system_economy_finalize_b,
+        system_economy_finalize.verify(borrow world, borrow system_economy_finalize_a));
+    let system_economy_audit_a = system_economy_audit.evaluate(borrow world);
+    let system_economy_audit_b = system_economy_audit.evaluate(borrow world);
+    include(inout out, borrow system_economy_audit_a, borrow system_economy_audit_b,
+        system_economy_audit.verify(borrow world, borrow system_economy_audit_a));
+    let system_production_bootstrap_a = system_production_bootstrap.evaluate(borrow world);
+    let system_production_bootstrap_b = system_production_bootstrap.evaluate(borrow world);
+    include(inout out, borrow system_production_bootstrap_a, borrow system_production_bootstrap_b,
+        system_production_bootstrap.verify(borrow world, borrow system_production_bootstrap_a));
+    let system_production_discover_a = system_production_discover.evaluate(borrow world);
+    let system_production_discover_b = system_production_discover.evaluate(borrow world);
+    include(inout out, borrow system_production_discover_a, borrow system_production_discover_b,
+        system_production_discover.verify(borrow world, borrow system_production_discover_a));
+    let system_production_validate_a = system_production_validate.evaluate(borrow world);
+    let system_production_validate_b = system_production_validate.evaluate(borrow world);
+    include(inout out, borrow system_production_validate_a, borrow system_production_validate_b,
+        system_production_validate.verify(borrow world, borrow system_production_validate_a));
+    let system_production_schedule_a = system_production_schedule.evaluate(borrow world);
+    let system_production_schedule_b = system_production_schedule.evaluate(borrow world);
+    include(inout out, borrow system_production_schedule_a, borrow system_production_schedule_b,
+        system_production_schedule.verify(borrow world, borrow system_production_schedule_a));
+    let system_production_prepare_a = system_production_prepare.evaluate(borrow world);
+    let system_production_prepare_b = system_production_prepare.evaluate(borrow world);
+    include(inout out, borrow system_production_prepare_a, borrow system_production_prepare_b,
+        system_production_prepare.verify(borrow world, borrow system_production_prepare_a));
+    let system_production_dispatch_a = system_production_dispatch.evaluate(borrow world);
+    let system_production_dispatch_b = system_production_dispatch.evaluate(borrow world);
+    include(inout out, borrow system_production_dispatch_a, borrow system_production_dispatch_b,
+        system_production_dispatch.verify(borrow world, borrow system_production_dispatch_a));
+    let system_production_apply_a = system_production_apply.evaluate(borrow world);
+    let system_production_apply_b = system_production_apply.evaluate(borrow world);
+    include(inout out, borrow system_production_apply_a, borrow system_production_apply_b,
+        system_production_apply.verify(borrow world, borrow system_production_apply_a));
+    let system_production_resolve_a = system_production_resolve.evaluate(borrow world);
+    let system_production_resolve_b = system_production_resolve.evaluate(borrow world);
+    include(inout out, borrow system_production_resolve_a, borrow system_production_resolve_b,
+        system_production_resolve.verify(borrow world, borrow system_production_resolve_a));
+    let system_production_reconcile_a = system_production_reconcile.evaluate(borrow world);
+    let system_production_reconcile_b = system_production_reconcile.evaluate(borrow world);
+    include(inout out, borrow system_production_reconcile_a, borrow system_production_reconcile_b,
+        system_production_reconcile.verify(borrow world, borrow system_production_reconcile_a));
+    let system_production_compact_a = system_production_compact.evaluate(borrow world);
+    let system_production_compact_b = system_production_compact.evaluate(borrow world);
+    include(inout out, borrow system_production_compact_a, borrow system_production_compact_b,
+        system_production_compact.verify(borrow world, borrow system_production_compact_a));
+    let system_production_checkpoint_a = system_production_checkpoint.evaluate(borrow world);
+    let system_production_checkpoint_b = system_production_checkpoint.evaluate(borrow world);
+    include(inout out, borrow system_production_checkpoint_a, borrow system_production_checkpoint_b,
+        system_production_checkpoint.verify(borrow world, borrow system_production_checkpoint_a));
+    let system_production_replicate_a = system_production_replicate.evaluate(borrow world);
+    let system_production_replicate_b = system_production_replicate.evaluate(borrow world);
+    include(inout out, borrow system_production_replicate_a, borrow system_production_replicate_b,
+        system_production_replicate.verify(borrow world, borrow system_production_replicate_a));
+    let system_production_recover_a = system_production_recover.evaluate(borrow world);
+    let system_production_recover_b = system_production_recover.evaluate(borrow world);
+    include(inout out, borrow system_production_recover_a, borrow system_production_recover_b,
+        system_production_recover.verify(borrow world, borrow system_production_recover_a));
+    let system_production_observe_a = system_production_observe.evaluate(borrow world);
+    let system_production_observe_b = system_production_observe.evaluate(borrow world);
+    include(inout out, borrow system_production_observe_a, borrow system_production_observe_b,
+        system_production_observe.verify(borrow world, borrow system_production_observe_a));
+    let system_production_finalize_a = system_production_finalize.evaluate(borrow world);
+    let system_production_finalize_b = system_production_finalize.evaluate(borrow world);
+    include(inout out, borrow system_production_finalize_a, borrow system_production_finalize_b,
+        system_production_finalize.verify(borrow world, borrow system_production_finalize_a));
+    let system_production_audit_a = system_production_audit.evaluate(borrow world);
+    let system_production_audit_b = system_production_audit.evaluate(borrow world);
+    include(inout out, borrow system_production_audit_a, borrow system_production_audit_b,
+        system_production_audit.verify(borrow world, borrow system_production_audit_a));
+    let system_logistics_bootstrap_a = system_logistics_bootstrap.evaluate(borrow world);
+    let system_logistics_bootstrap_b = system_logistics_bootstrap.evaluate(borrow world);
+    include(inout out, borrow system_logistics_bootstrap_a, borrow system_logistics_bootstrap_b,
+        system_logistics_bootstrap.verify(borrow world, borrow system_logistics_bootstrap_a));
+    let system_logistics_discover_a = system_logistics_discover.evaluate(borrow world);
+    let system_logistics_discover_b = system_logistics_discover.evaluate(borrow world);
+    include(inout out, borrow system_logistics_discover_a, borrow system_logistics_discover_b,
+        system_logistics_discover.verify(borrow world, borrow system_logistics_discover_a));
+    let system_logistics_validate_a = system_logistics_validate.evaluate(borrow world);
+    let system_logistics_validate_b = system_logistics_validate.evaluate(borrow world);
+    include(inout out, borrow system_logistics_validate_a, borrow system_logistics_validate_b,
+        system_logistics_validate.verify(borrow world, borrow system_logistics_validate_a));
+    let system_logistics_schedule_a = system_logistics_schedule.evaluate(borrow world);
+    let system_logistics_schedule_b = system_logistics_schedule.evaluate(borrow world);
+    include(inout out, borrow system_logistics_schedule_a, borrow system_logistics_schedule_b,
+        system_logistics_schedule.verify(borrow world, borrow system_logistics_schedule_a));
+    let system_logistics_prepare_a = system_logistics_prepare.evaluate(borrow world);
+    let system_logistics_prepare_b = system_logistics_prepare.evaluate(borrow world);
+    include(inout out, borrow system_logistics_prepare_a, borrow system_logistics_prepare_b,
+        system_logistics_prepare.verify(borrow world, borrow system_logistics_prepare_a));
+    let system_logistics_dispatch_a = system_logistics_dispatch.evaluate(borrow world);
+    let system_logistics_dispatch_b = system_logistics_dispatch.evaluate(borrow world);
+    include(inout out, borrow system_logistics_dispatch_a, borrow system_logistics_dispatch_b,
+        system_logistics_dispatch.verify(borrow world, borrow system_logistics_dispatch_a));
+    let system_logistics_apply_a = system_logistics_apply.evaluate(borrow world);
+    let system_logistics_apply_b = system_logistics_apply.evaluate(borrow world);
+    include(inout out, borrow system_logistics_apply_a, borrow system_logistics_apply_b,
+        system_logistics_apply.verify(borrow world, borrow system_logistics_apply_a));
+    let system_logistics_resolve_a = system_logistics_resolve.evaluate(borrow world);
+    let system_logistics_resolve_b = system_logistics_resolve.evaluate(borrow world);
+    include(inout out, borrow system_logistics_resolve_a, borrow system_logistics_resolve_b,
+        system_logistics_resolve.verify(borrow world, borrow system_logistics_resolve_a));
+    let system_logistics_reconcile_a = system_logistics_reconcile.evaluate(borrow world);
+    let system_logistics_reconcile_b = system_logistics_reconcile.evaluate(borrow world);
+    include(inout out, borrow system_logistics_reconcile_a, borrow system_logistics_reconcile_b,
+        system_logistics_reconcile.verify(borrow world, borrow system_logistics_reconcile_a));
+    let system_logistics_compact_a = system_logistics_compact.evaluate(borrow world);
+    let system_logistics_compact_b = system_logistics_compact.evaluate(borrow world);
+    include(inout out, borrow system_logistics_compact_a, borrow system_logistics_compact_b,
+        system_logistics_compact.verify(borrow world, borrow system_logistics_compact_a));
+    let system_logistics_checkpoint_a = system_logistics_checkpoint.evaluate(borrow world);
+    let system_logistics_checkpoint_b = system_logistics_checkpoint.evaluate(borrow world);
+    include(inout out, borrow system_logistics_checkpoint_a, borrow system_logistics_checkpoint_b,
+        system_logistics_checkpoint.verify(borrow world, borrow system_logistics_checkpoint_a));
+    let system_logistics_replicate_a = system_logistics_replicate.evaluate(borrow world);
+    let system_logistics_replicate_b = system_logistics_replicate.evaluate(borrow world);
+    include(inout out, borrow system_logistics_replicate_a, borrow system_logistics_replicate_b,
+        system_logistics_replicate.verify(borrow world, borrow system_logistics_replicate_a));
+    let system_logistics_recover_a = system_logistics_recover.evaluate(borrow world);
+    let system_logistics_recover_b = system_logistics_recover.evaluate(borrow world);
+    include(inout out, borrow system_logistics_recover_a, borrow system_logistics_recover_b,
+        system_logistics_recover.verify(borrow world, borrow system_logistics_recover_a));
+    let system_logistics_observe_a = system_logistics_observe.evaluate(borrow world);
+    let system_logistics_observe_b = system_logistics_observe.evaluate(borrow world);
+    include(inout out, borrow system_logistics_observe_a, borrow system_logistics_observe_b,
+        system_logistics_observe.verify(borrow world, borrow system_logistics_observe_a));
+    let system_logistics_finalize_a = system_logistics_finalize.evaluate(borrow world);
+    let system_logistics_finalize_b = system_logistics_finalize.evaluate(borrow world);
+    include(inout out, borrow system_logistics_finalize_a, borrow system_logistics_finalize_b,
+        system_logistics_finalize.verify(borrow world, borrow system_logistics_finalize_a));
+    let system_logistics_audit_a = system_logistics_audit.evaluate(borrow world);
+    let system_logistics_audit_b = system_logistics_audit.evaluate(borrow world);
+    include(inout out, borrow system_logistics_audit_a, borrow system_logistics_audit_b,
+        system_logistics_audit.verify(borrow world, borrow system_logistics_audit_a));
+    let system_combat_bootstrap_a = system_combat_bootstrap.evaluate(borrow world);
+    let system_combat_bootstrap_b = system_combat_bootstrap.evaluate(borrow world);
+    include(inout out, borrow system_combat_bootstrap_a, borrow system_combat_bootstrap_b,
+        system_combat_bootstrap.verify(borrow world, borrow system_combat_bootstrap_a));
+    let system_combat_discover_a = system_combat_discover.evaluate(borrow world);
+    let system_combat_discover_b = system_combat_discover.evaluate(borrow world);
+    include(inout out, borrow system_combat_discover_a, borrow system_combat_discover_b,
+        system_combat_discover.verify(borrow world, borrow system_combat_discover_a));
+    let system_combat_validate_a = system_combat_validate.evaluate(borrow world);
+    let system_combat_validate_b = system_combat_validate.evaluate(borrow world);
+    include(inout out, borrow system_combat_validate_a, borrow system_combat_validate_b,
+        system_combat_validate.verify(borrow world, borrow system_combat_validate_a));
+    let system_combat_schedule_a = system_combat_schedule.evaluate(borrow world);
+    let system_combat_schedule_b = system_combat_schedule.evaluate(borrow world);
+    include(inout out, borrow system_combat_schedule_a, borrow system_combat_schedule_b,
+        system_combat_schedule.verify(borrow world, borrow system_combat_schedule_a));
+    let system_combat_prepare_a = system_combat_prepare.evaluate(borrow world);
+    let system_combat_prepare_b = system_combat_prepare.evaluate(borrow world);
+    include(inout out, borrow system_combat_prepare_a, borrow system_combat_prepare_b,
+        system_combat_prepare.verify(borrow world, borrow system_combat_prepare_a));
+    let system_combat_dispatch_a = system_combat_dispatch.evaluate(borrow world);
+    let system_combat_dispatch_b = system_combat_dispatch.evaluate(borrow world);
+    include(inout out, borrow system_combat_dispatch_a, borrow system_combat_dispatch_b,
+        system_combat_dispatch.verify(borrow world, borrow system_combat_dispatch_a));
+    let system_combat_apply_a = system_combat_apply.evaluate(borrow world);
+    let system_combat_apply_b = system_combat_apply.evaluate(borrow world);
+    include(inout out, borrow system_combat_apply_a, borrow system_combat_apply_b,
+        system_combat_apply.verify(borrow world, borrow system_combat_apply_a));
+    let system_combat_resolve_a = system_combat_resolve.evaluate(borrow world);
+    let system_combat_resolve_b = system_combat_resolve.evaluate(borrow world);
+    include(inout out, borrow system_combat_resolve_a, borrow system_combat_resolve_b,
+        system_combat_resolve.verify(borrow world, borrow system_combat_resolve_a));
+    let system_combat_reconcile_a = system_combat_reconcile.evaluate(borrow world);
+    let system_combat_reconcile_b = system_combat_reconcile.evaluate(borrow world);
+    include(inout out, borrow system_combat_reconcile_a, borrow system_combat_reconcile_b,
+        system_combat_reconcile.verify(borrow world, borrow system_combat_reconcile_a));
+    let system_combat_compact_a = system_combat_compact.evaluate(borrow world);
+    let system_combat_compact_b = system_combat_compact.evaluate(borrow world);
+    include(inout out, borrow system_combat_compact_a, borrow system_combat_compact_b,
+        system_combat_compact.verify(borrow world, borrow system_combat_compact_a));
+    let system_combat_checkpoint_a = system_combat_checkpoint.evaluate(borrow world);
+    let system_combat_checkpoint_b = system_combat_checkpoint.evaluate(borrow world);
+    include(inout out, borrow system_combat_checkpoint_a, borrow system_combat_checkpoint_b,
+        system_combat_checkpoint.verify(borrow world, borrow system_combat_checkpoint_a));
+    let system_combat_replicate_a = system_combat_replicate.evaluate(borrow world);
+    let system_combat_replicate_b = system_combat_replicate.evaluate(borrow world);
+    include(inout out, borrow system_combat_replicate_a, borrow system_combat_replicate_b,
+        system_combat_replicate.verify(borrow world, borrow system_combat_replicate_a));
+    let system_combat_recover_a = system_combat_recover.evaluate(borrow world);
+    let system_combat_recover_b = system_combat_recover.evaluate(borrow world);
+    include(inout out, borrow system_combat_recover_a, borrow system_combat_recover_b,
+        system_combat_recover.verify(borrow world, borrow system_combat_recover_a));
+    let system_combat_observe_a = system_combat_observe.evaluate(borrow world);
+    let system_combat_observe_b = system_combat_observe.evaluate(borrow world);
+    include(inout out, borrow system_combat_observe_a, borrow system_combat_observe_b,
+        system_combat_observe.verify(borrow world, borrow system_combat_observe_a));
+    let system_combat_finalize_a = system_combat_finalize.evaluate(borrow world);
+    let system_combat_finalize_b = system_combat_finalize.evaluate(borrow world);
+    include(inout out, borrow system_combat_finalize_a, borrow system_combat_finalize_b,
+        system_combat_finalize.verify(borrow world, borrow system_combat_finalize_a));
+    let system_combat_audit_a = system_combat_audit.evaluate(borrow world);
+    let system_combat_audit_b = system_combat_audit.evaluate(borrow world);
+    include(inout out, borrow system_combat_audit_a, borrow system_combat_audit_b,
+        system_combat_audit.verify(borrow world, borrow system_combat_audit_a));
+    let system_quest_bootstrap_a = system_quest_bootstrap.evaluate(borrow world);
+    let system_quest_bootstrap_b = system_quest_bootstrap.evaluate(borrow world);
+    include(inout out, borrow system_quest_bootstrap_a, borrow system_quest_bootstrap_b,
+        system_quest_bootstrap.verify(borrow world, borrow system_quest_bootstrap_a));
+    let system_quest_discover_a = system_quest_discover.evaluate(borrow world);
+    let system_quest_discover_b = system_quest_discover.evaluate(borrow world);
+    include(inout out, borrow system_quest_discover_a, borrow system_quest_discover_b,
+        system_quest_discover.verify(borrow world, borrow system_quest_discover_a));
+    let system_quest_validate_a = system_quest_validate.evaluate(borrow world);
+    let system_quest_validate_b = system_quest_validate.evaluate(borrow world);
+    include(inout out, borrow system_quest_validate_a, borrow system_quest_validate_b,
+        system_quest_validate.verify(borrow world, borrow system_quest_validate_a));
+    let system_quest_schedule_a = system_quest_schedule.evaluate(borrow world);
+    let system_quest_schedule_b = system_quest_schedule.evaluate(borrow world);
+    include(inout out, borrow system_quest_schedule_a, borrow system_quest_schedule_b,
+        system_quest_schedule.verify(borrow world, borrow system_quest_schedule_a));
+    let system_quest_prepare_a = system_quest_prepare.evaluate(borrow world);
+    let system_quest_prepare_b = system_quest_prepare.evaluate(borrow world);
+    include(inout out, borrow system_quest_prepare_a, borrow system_quest_prepare_b,
+        system_quest_prepare.verify(borrow world, borrow system_quest_prepare_a));
+    let system_quest_dispatch_a = system_quest_dispatch.evaluate(borrow world);
+    let system_quest_dispatch_b = system_quest_dispatch.evaluate(borrow world);
+    include(inout out, borrow system_quest_dispatch_a, borrow system_quest_dispatch_b,
+        system_quest_dispatch.verify(borrow world, borrow system_quest_dispatch_a));
+    let system_quest_apply_a = system_quest_apply.evaluate(borrow world);
+    let system_quest_apply_b = system_quest_apply.evaluate(borrow world);
+    include(inout out, borrow system_quest_apply_a, borrow system_quest_apply_b,
+        system_quest_apply.verify(borrow world, borrow system_quest_apply_a));
+    let system_quest_resolve_a = system_quest_resolve.evaluate(borrow world);
+    let system_quest_resolve_b = system_quest_resolve.evaluate(borrow world);
+    include(inout out, borrow system_quest_resolve_a, borrow system_quest_resolve_b,
+        system_quest_resolve.verify(borrow world, borrow system_quest_resolve_a));
+    let system_quest_reconcile_a = system_quest_reconcile.evaluate(borrow world);
+    let system_quest_reconcile_b = system_quest_reconcile.evaluate(borrow world);
+    include(inout out, borrow system_quest_reconcile_a, borrow system_quest_reconcile_b,
+        system_quest_reconcile.verify(borrow world, borrow system_quest_reconcile_a));
+    let system_quest_compact_a = system_quest_compact.evaluate(borrow world);
+    let system_quest_compact_b = system_quest_compact.evaluate(borrow world);
+    include(inout out, borrow system_quest_compact_a, borrow system_quest_compact_b,
+        system_quest_compact.verify(borrow world, borrow system_quest_compact_a));
+    let system_quest_checkpoint_a = system_quest_checkpoint.evaluate(borrow world);
+    let system_quest_checkpoint_b = system_quest_checkpoint.evaluate(borrow world);
+    include(inout out, borrow system_quest_checkpoint_a, borrow system_quest_checkpoint_b,
+        system_quest_checkpoint.verify(borrow world, borrow system_quest_checkpoint_a));
+    let system_quest_replicate_a = system_quest_replicate.evaluate(borrow world);
+    let system_quest_replicate_b = system_quest_replicate.evaluate(borrow world);
+    include(inout out, borrow system_quest_replicate_a, borrow system_quest_replicate_b,
+        system_quest_replicate.verify(borrow world, borrow system_quest_replicate_a));
+    let system_quest_recover_a = system_quest_recover.evaluate(borrow world);
+    let system_quest_recover_b = system_quest_recover.evaluate(borrow world);
+    include(inout out, borrow system_quest_recover_a, borrow system_quest_recover_b,
+        system_quest_recover.verify(borrow world, borrow system_quest_recover_a));
+    let system_quest_observe_a = system_quest_observe.evaluate(borrow world);
+    let system_quest_observe_b = system_quest_observe.evaluate(borrow world);
+    include(inout out, borrow system_quest_observe_a, borrow system_quest_observe_b,
+        system_quest_observe.verify(borrow world, borrow system_quest_observe_a));
+    let system_quest_finalize_a = system_quest_finalize.evaluate(borrow world);
+    let system_quest_finalize_b = system_quest_finalize.evaluate(borrow world);
+    include(inout out, borrow system_quest_finalize_a, borrow system_quest_finalize_b,
+        system_quest_finalize.verify(borrow world, borrow system_quest_finalize_a));
+    let system_quest_audit_a = system_quest_audit.evaluate(borrow world);
+    let system_quest_audit_b = system_quest_audit.evaluate(borrow world);
+    include(inout out, borrow system_quest_audit_a, borrow system_quest_audit_b,
+        system_quest_audit.verify(borrow world, borrow system_quest_audit_a));
+    let system_network_bootstrap_a = system_network_bootstrap.evaluate(borrow world);
+    let system_network_bootstrap_b = system_network_bootstrap.evaluate(borrow world);
+    include(inout out, borrow system_network_bootstrap_a, borrow system_network_bootstrap_b,
+        system_network_bootstrap.verify(borrow world, borrow system_network_bootstrap_a));
+    let system_network_discover_a = system_network_discover.evaluate(borrow world);
+    let system_network_discover_b = system_network_discover.evaluate(borrow world);
+    include(inout out, borrow system_network_discover_a, borrow system_network_discover_b,
+        system_network_discover.verify(borrow world, borrow system_network_discover_a));
+    let system_network_validate_a = system_network_validate.evaluate(borrow world);
+    let system_network_validate_b = system_network_validate.evaluate(borrow world);
+    include(inout out, borrow system_network_validate_a, borrow system_network_validate_b,
+        system_network_validate.verify(borrow world, borrow system_network_validate_a));
+    let system_network_schedule_a = system_network_schedule.evaluate(borrow world);
+    let system_network_schedule_b = system_network_schedule.evaluate(borrow world);
+    include(inout out, borrow system_network_schedule_a, borrow system_network_schedule_b,
+        system_network_schedule.verify(borrow world, borrow system_network_schedule_a));
+    let system_network_prepare_a = system_network_prepare.evaluate(borrow world);
+    let system_network_prepare_b = system_network_prepare.evaluate(borrow world);
+    include(inout out, borrow system_network_prepare_a, borrow system_network_prepare_b,
+        system_network_prepare.verify(borrow world, borrow system_network_prepare_a));
+    let system_network_dispatch_a = system_network_dispatch.evaluate(borrow world);
+    let system_network_dispatch_b = system_network_dispatch.evaluate(borrow world);
+    include(inout out, borrow system_network_dispatch_a, borrow system_network_dispatch_b,
+        system_network_dispatch.verify(borrow world, borrow system_network_dispatch_a));
+    let system_network_apply_a = system_network_apply.evaluate(borrow world);
+    let system_network_apply_b = system_network_apply.evaluate(borrow world);
+    include(inout out, borrow system_network_apply_a, borrow system_network_apply_b,
+        system_network_apply.verify(borrow world, borrow system_network_apply_a));
+    let system_network_resolve_a = system_network_resolve.evaluate(borrow world);
+    let system_network_resolve_b = system_network_resolve.evaluate(borrow world);
+    include(inout out, borrow system_network_resolve_a, borrow system_network_resolve_b,
+        system_network_resolve.verify(borrow world, borrow system_network_resolve_a));
+    let system_network_reconcile_a = system_network_reconcile.evaluate(borrow world);
+    let system_network_reconcile_b = system_network_reconcile.evaluate(borrow world);
+    include(inout out, borrow system_network_reconcile_a, borrow system_network_reconcile_b,
+        system_network_reconcile.verify(borrow world, borrow system_network_reconcile_a));
+    let system_network_compact_a = system_network_compact.evaluate(borrow world);
+    let system_network_compact_b = system_network_compact.evaluate(borrow world);
+    include(inout out, borrow system_network_compact_a, borrow system_network_compact_b,
+        system_network_compact.verify(borrow world, borrow system_network_compact_a));
+    let system_network_checkpoint_a = system_network_checkpoint.evaluate(borrow world);
+    let system_network_checkpoint_b = system_network_checkpoint.evaluate(borrow world);
+    include(inout out, borrow system_network_checkpoint_a, borrow system_network_checkpoint_b,
+        system_network_checkpoint.verify(borrow world, borrow system_network_checkpoint_a));
+    let system_network_replicate_a = system_network_replicate.evaluate(borrow world);
+    let system_network_replicate_b = system_network_replicate.evaluate(borrow world);
+    include(inout out, borrow system_network_replicate_a, borrow system_network_replicate_b,
+        system_network_replicate.verify(borrow world, borrow system_network_replicate_a));
+    let system_network_recover_a = system_network_recover.evaluate(borrow world);
+    let system_network_recover_b = system_network_recover.evaluate(borrow world);
+    include(inout out, borrow system_network_recover_a, borrow system_network_recover_b,
+        system_network_recover.verify(borrow world, borrow system_network_recover_a));
+    let system_network_observe_a = system_network_observe.evaluate(borrow world);
+    let system_network_observe_b = system_network_observe.evaluate(borrow world);
+    include(inout out, borrow system_network_observe_a, borrow system_network_observe_b,
+        system_network_observe.verify(borrow world, borrow system_network_observe_a));
+    let system_network_finalize_a = system_network_finalize.evaluate(borrow world);
+    let system_network_finalize_b = system_network_finalize.evaluate(borrow world);
+    include(inout out, borrow system_network_finalize_a, borrow system_network_finalize_b,
+        system_network_finalize.verify(borrow world, borrow system_network_finalize_a));
+    let system_network_audit_a = system_network_audit.evaluate(borrow world);
+    let system_network_audit_b = system_network_audit.evaluate(borrow world);
+    include(inout out, borrow system_network_audit_a, borrow system_network_audit_b,
+        system_network_audit.verify(borrow world, borrow system_network_audit_a));
+    out.valid = out.systems == 192 && out.deterministic_mismatches == 0; out
+}

@@ -207,7 +207,24 @@ sh_test(
     name = "cli-tests",
     labels = ["rue_heavy_suite"],
     test = "//crates/rue-cli-tests:rue-cli-tests",
-    args = ["--quiet"],
+    args = ["--quiet", "--skip", "cli.examples::caldera::main"],
+    env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_CLI_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
+        "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
+        "RUE_REPO_DIR": "$(location :cli-test-fixtures)",
+        "RUE_STD_DIR": "$(location :std)/std",
+    },
+)
+
+# Caldera deliberately pushes a single compiler invocation past the ordinary
+# CLI corpus's aggregate budget. Keep it in the required corpus, but isolate it
+# so CI can run the stress program in parallel with the ordinary CLI cases.
+sh_test(
+    name = "cli-tests-caldera",
+    labels = ["rue_heavy_suite"],
+    test = "//crates/rue-cli-tests:rue-cli-tests",
+    args = ["--quiet", "caldera"],
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
         "RUE_CLI_CASES": "$(location //crates/rue-cli-tests:cases)/cases",

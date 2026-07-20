@@ -85,6 +85,7 @@ REPOSITORY_QUALITY_GATES=(
 # unfiltered path audits that every one of these produced a result line.
 REQUIRED_CORPUS_HARNESSES=(
     //:cli-tests
+    //:cli-tests-caldera
     //:spec-tests
     //:ui-tests
     //:oracle-diff-generated-smoke
