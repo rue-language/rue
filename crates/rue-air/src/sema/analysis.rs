@@ -1395,6 +1395,20 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
         // Work queue: functions/methods to analyze
         // Start with main().
         let mut pending_functions: Vec<Spur> = vec![main_sym];
+        // Rue-to-C exports (`pub extern "C" fn`, ADR-0064 P4) are additional
+        // reachability roots: a separately compiled C caller may invoke an
+        // exported function even when nothing in this program calls it, so its
+        // body must be analyzed and code-generated exactly like `main`. Seeded
+        // in a deterministic (interned-symbol) order so analysis order — and the
+        // resulting object/link layout — stays reproducible.
+        let mut export_roots: Vec<Spur> = sema
+            .functions
+            .iter()
+            .filter(|(_, info)| info.is_c_export)
+            .map(|(name, _)| *name)
+            .collect();
+        export_roots.sort_unstable();
+        pending_functions.extend(export_roots);
         let mut analyzed_functions: HashSet<Spur> = HashSet::new();
         let mut pending_methods: Vec<(StructId, Spur)> = Vec::new();
         let mut analyzed_methods: HashSet<(StructId, Spur)> = HashSet::new();

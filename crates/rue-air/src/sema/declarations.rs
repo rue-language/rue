@@ -1087,6 +1087,7 @@ impl<'a> Sema<'a> {
                     is_pub,
                     is_unchecked,
                     is_extern,
+                    is_c_export,
                     name,
                     params,
                     return_type,
@@ -1131,6 +1132,7 @@ impl<'a> Sema<'a> {
                         *is_pub,
                         *is_unchecked,
                         *is_extern,
+                        *is_c_export,
                     )?;
                 }
 
@@ -1237,6 +1239,12 @@ impl<'a> Sema<'a> {
     /// 3. Any remaining type that is not passable in this phase (enums, and — once
     ///    RUE-714 adds them — floats) takes the phase diagnostic via the
     ///    `c_passable_by_value` predicate seam.
+    /// Whether `ty` is a by-value aggregate (struct or fixed array) — the types
+    /// the P4 export thunk cannot yet repack across the C boundary.
+    fn is_aggregate_type(ty: Type) -> bool {
+        matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_))
+    }
+
     fn check_extern_signature_type(&self, ty: Type, span: Span) -> CompileResult<()> {
         match ty.kind() {
             TypeKind::Array(_) => Err(CompileError::new(
@@ -1477,6 +1485,7 @@ impl<'a> Sema<'a> {
         is_pub: bool,
         is_unchecked: bool,
         is_extern: bool,
+        is_c_export: bool,
     ) -> CompileResult<()> {
         // Reject user functions whose name collides with a runtime/codegen helper
         // symbol (e.g. `__rue_str_eq`, `__rue_alloc`, `_start`). Without this, such a
@@ -1627,6 +1636,86 @@ impl<'a> Sema<'a> {
             }
         }
 
+        // Rue-to-C exports (`pub extern "C" fn`, ADR-0064 P4) share the FFI
+        // signature-type contract with imports, and add the P4 export-thunk's
+        // narrower scope: the callee thunk marshals only integer/pointer scalars
+        // that fit the argument-register budget shared by both targets, so an
+        // aggregate parameter/return, a by-reference or generic parameter, or a
+        // parameter list wider than that budget is rejected rather than
+        // silently mis-marshaled. The C name must also not collide with the
+        // program entry point.
+        if is_c_export {
+            self.require_preview(PreviewFeature::CFfi, "a `pub extern \"C\" fn` export", span)?;
+            let reject = |reason: String| -> CompileResult<()> {
+                Err(CompileError::new(
+                    ErrorKind::ExportSignatureUnsupported {
+                        name: name_str.to_string(),
+                        reason,
+                    },
+                    span,
+                ))
+            };
+            if name_str == "main" {
+                reject(
+                    "an export named `main` collides with the program entry point; \
+                     give it a different C name"
+                        .to_string(),
+                )?;
+            }
+            if is_generic {
+                reject(
+                    "a generic function has no single C symbol; export a concrete \
+                     (non-`comptime`) function"
+                        .to_string(),
+                )?;
+            }
+            // Shared FFI-safety type gate (rejects floats, enums, by-value
+            // arrays, and non-`@repr(c)` aggregates with their own diagnostics).
+            for &param_type in &param_types {
+                self.check_extern_signature_type(param_type, span)?;
+            }
+            if ret_type != Type::UNIT {
+                self.check_extern_signature_type(ret_type, span)?;
+            }
+            // P4 thunk scope: integer/pointer scalars only, within the smaller
+            // (SysV, 6) register budget so one export is valid on both targets.
+            const P4_EXPORT_REGISTER_BUDGET: usize = 6;
+            for (index, mode) in param_modes.iter().enumerate() {
+                if *mode != RirParamMode::Normal {
+                    reject(format!(
+                        "parameter {} uses a by-reference (`borrow`/`inout`) mode, which \
+                         does not cross a C boundary; pass a raw pointer instead",
+                        index + 1
+                    ))?;
+                }
+            }
+            for &param_type in &param_types {
+                if Self::is_aggregate_type(param_type) {
+                    reject(format!(
+                        "aggregate parameter `{}` is not supported by the P4 export thunk \
+                         (register repacking of `@repr(c)` aggregates across the export \
+                         boundary is future work); pass a pointer to the aggregate instead",
+                        self.format_type_name(param_type)
+                    ))?;
+                }
+            }
+            if ret_type != Type::UNIT && Self::is_aggregate_type(ret_type) {
+                reject(format!(
+                    "aggregate return `{}` is not supported by the P4 export thunk; \
+                     return a scalar or write through an out-pointer parameter instead",
+                    self.format_type_name(ret_type)
+                ))?;
+            }
+            if param_types.len() > P4_EXPORT_REGISTER_BUDGET {
+                reject(format!(
+                    "{} scalar parameters exceed the {}-register argument budget the P4 \
+                     export thunk supports; reduce the parameter count",
+                    param_types.len(),
+                    P4_EXPORT_REGISTER_BUDGET
+                ))?;
+            }
+        }
+
         // Allocate parameter data in the arena
         let params_range = self.param_arena.alloc(
             param_names.into_iter(),
@@ -1653,6 +1742,7 @@ impl<'a> Sema<'a> {
                 is_pub,
                 is_unchecked,
                 is_extern,
+                is_c_export,
                 allow_unused_function,
                 allow_unused_variable,
                 allow_unreachable_code,
@@ -2938,7 +3028,7 @@ impl<'a> Sema<'a> {
         let Some(inst_ref) = self.declaration_index.first_free_function(target, file_id) else {
             return Ok(None);
         };
-        let (span, is_pub, return_type, body, is_unchecked, is_extern) = {
+        let (span, is_pub, return_type, body, is_unchecked, is_extern, is_c_export) = {
             let inst = self.rir.get(inst_ref);
             let InstData::FnDecl {
                 is_pub,
@@ -2946,6 +3036,7 @@ impl<'a> Sema<'a> {
                 body,
                 is_unchecked,
                 is_extern,
+                is_c_export,
                 ..
             } = &inst.data
             else {
@@ -2958,6 +3049,7 @@ impl<'a> Sema<'a> {
                 *body,
                 *is_unchecked,
                 *is_extern,
+                *is_c_export,
             )
         };
 
@@ -2980,6 +3072,7 @@ impl<'a> Sema<'a> {
                 is_pub,
                 is_unchecked,
                 is_extern,
+                is_c_export,
             );
             self.fn_signatures_in_flight.remove(&internal_target);
             collected?;

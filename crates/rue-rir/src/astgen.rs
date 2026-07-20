@@ -574,6 +574,8 @@ impl<'a> AstGen<'a> {
                 false,
                 false,
                 false,
+                // Methods are never C exports.
+                false,
                 name,
                 &params,
                 return_type,
@@ -680,6 +682,8 @@ impl<'a> AstGen<'a> {
                 func.visibility == Visibility::Public,
                 func.is_unchecked,
                 false,
+                // `pub extern "C" fn` marks a Rue-to-C export (ADR-0064 P4).
+                func.export_abi.is_some(),
                 name,
                 &params,
                 return_type,
@@ -741,6 +745,8 @@ impl<'a> AstGen<'a> {
                 false,
                 false,
                 true,
+                // A foreign import is not an export.
+                false,
                 name,
                 &params,
                 return_type,

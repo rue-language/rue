@@ -590,3 +590,224 @@ executable_target = "aarch64-linux"
 execute_if_native = true
 stdout = "11\n11\ntrue\n11\n"
 exit_code = 0
+
+# ===========================================================================
+# P4: Rue-to-C export thunks (ADR-0064 P4, RUE-1058)
+# ===========================================================================
+# A `pub extern "C" fn` exposes a Rue function to C callers under its unmangled
+# name via a C-ABI entry thunk. The proof is the inverse of every case above: a
+# C-convention caller (a synthesized archive member) invokes the Rue export and
+# observes its result. The Rue program keeps a `main` (the compiler requires one
+# and it is the process entry), imports the archive caller as an ordinary
+# `extern "C"` leaf, and prints what the C code observed. Each pinned pair
+# compiles+links+structurally-validates on every host and executes only the
+# native one.
+
+[[case]]
+name = "x86_64_linux_export_called_from_c"
+description = "A C caller (archive member) invokes two Rue exports through their C-ABI thunks; rue_add(3,5)=8 and the order-sensitive rue_sub(10,4)=6 encode to 806 on x86-64 (SysV)."
+files = [{ path = "main.rue", source = """
+pub extern "C" fn rue_add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+pub extern "C" fn rue_sub(a: i32, b: i32) -> i32 {
+    a - b
+}
+
+extern "C" {
+    fn ffi_call_exports() -> i64;
+}
+
+fn main() -> i32 {
+    @dbg(checked { ffi_call_exports() });
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "x86-64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = "806\n"
+exit_code = 0
+
+[[case]]
+name = "aarch64_linux_export_called_from_c"
+description = "A C caller (archive member) invokes two Rue exports through their C-ABI thunks; rue_add(3,5)=8 and the order-sensitive rue_sub(10,4)=6 encode to 806 on AArch64 (AAPCS64)."
+files = [{ path = "main.rue", source = """
+pub extern "C" fn rue_add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+pub extern "C" fn rue_sub(a: i32, b: i32) -> i32 {
+    a - b
+}
+
+extern "C" {
+    fn ffi_call_exports() -> i64;
+}
+
+fn main() -> i32 {
+    @dbg(checked { ffi_call_exports() });
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "aarch64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = "806\n"
+exit_code = 0
+
+[[case]]
+name = "x86_64_linux_trapping_export_aborts_at_boundary"
+description = "A Rue export that overflows under a C caller aborts the process (exit 101) rather than unwinding the C frame; the C caller's post-call code never runs (ADR-0064 abort-at-boundary), x86-64."
+files = [{ path = "main.rue", source = """
+pub extern "C" fn rue_trap(x: i32) -> i32 {
+    x + x
+}
+
+extern "C" {
+    fn ffi_call_trap() -> i64;
+}
+
+fn main() -> i32 {
+    @dbg(checked { ffi_call_trap() });
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "x86-64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "x86-64-linux"
+execute_if_native = true
+stdout = ""
+runtime_error_contains = ["integer overflow"]
+exit_code = 101
+
+[[case]]
+name = "aarch64_linux_trapping_export_aborts_at_boundary"
+description = "A Rue export that overflows under a C caller aborts the process (exit 101) rather than unwinding the C frame; the C caller's post-call code never runs (ADR-0064 abort-at-boundary), AArch64."
+files = [{ path = "main.rue", source = """
+pub extern "C" fn rue_trap(x: i32) -> i32 {
+    x + x
+}
+
+extern "C" {
+    fn ffi_call_trap() -> i64;
+}
+
+fn main() -> i32 {
+    @dbg(checked { ffi_call_trap() });
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "--link-archive", "${FFI_ARCHIVE}", "--target", "aarch64-linux", "-o", "prog"]
+ffi_answer_archive = true
+executable_target = "aarch64-linux"
+execute_if_native = true
+stdout = ""
+runtime_error_contains = ["integer overflow"]
+exit_code = 101
+
+# --- P4 export diagnostics (compile-fail) -----------------------------------
+
+[[case]]
+name = "export_aggregate_parameter_rejected"
+description = "An aggregate parameter in a `pub extern \"C\" fn` export is rejected: the P4 thunk marshals only register scalars (E1106)."
+files = [{ path = "main.rue", source = """
+@repr(c)
+struct Pair { a: i32, b: i32 }
+
+pub extern "C" fn f(p: Pair) -> i32 {
+    p.a
+}
+
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+compile_fail = true
+error_contains = ["E1106", "export `f`", "aggregate parameter"]
+
+[[case]]
+name = "export_too_many_parameters_rejected"
+description = "A scalar parameter list wider than the shared argument-register budget is rejected by the P4 export thunk (E1106)."
+files = [{ path = "main.rue", source = """
+pub extern "C" fn f(a: i32, b: i32, c: i32, d: i32, e: i32, g: i32, h: i32) -> i32 {
+    a
+}
+
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+compile_fail = true
+error_contains = ["E1106", "exceed", "budget"]
+
+[[case]]
+name = "export_named_main_rejected"
+description = "An export whose C name collides with the program entry point (`main`) is rejected (E1106)."
+files = [{ path = "main.rue", source = """
+pub extern "C" fn main() -> i32 {
+    0
+}
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+compile_fail = true
+error_contains = ["E1106", "collides with the program entry point"]
+
+[[case]]
+name = "export_enum_parameter_rejected"
+description = "An enum parameter is not FFI-safe and is rejected in an export signature (E1101), same as an import."
+files = [{ path = "main.rue", source = """
+enum Color { Red, Green }
+
+pub extern "C" fn f(c: Color) -> i32 {
+    0
+}
+
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+compile_fail = true
+error_contains = ["E1101", "enums are not FFI-safe"]
+
+[[case]]
+name = "export_reserved_name_rejected"
+description = "An export whose name collides with a reserved runtime symbol (`_start`) is rejected (E0435), same guard as any function."
+files = [{ path = "main.rue", source = """
+pub extern "C" fn _start() -> i32 {
+    0
+}
+
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0435", "_start", "reserved"]
+
+[[case]]
+name = "export_c_unwind_abi_rejected"
+description = "`\"C-unwind\"` stays reserved: an export declared with it is rejected, only `\"C\"` is accepted (ADR-0064)."
+files = [{ path = "main.rue", source = """
+pub extern "C-unwind" fn f() -> i32 {
+    0
+}
+
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+compile_fail = true
+error_contains = ["unsupported extern ABI", "C-unwind"]
+
+[[case]]
+name = "export_requires_c_ffi_preview"
+description = "A `pub extern \"C\" fn` export is gated behind the `c_ffi` preview feature (E1100)."
+files = [{ path = "main.rue", source = """
+pub extern "C" fn f(a: i32) -> i32 {
+    a
+}
+
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["c_ffi"]

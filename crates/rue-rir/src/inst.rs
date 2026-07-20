@@ -1194,6 +1194,7 @@ impl RirEditor {
         is_pub: bool,
         is_unchecked: bool,
         is_extern: bool,
+        is_c_export: bool,
         name: Spur,
         params: &[RirParam],
         return_type: Spur,
@@ -1212,6 +1213,7 @@ impl RirEditor {
                     is_pub,
                     is_unchecked,
                     is_extern,
+                    is_c_export,
                     name,
                     params,
                     return_type,
@@ -1655,6 +1657,7 @@ impl RirEditor {
                         is_pub,
                         is_unchecked,
                         is_extern,
+                        is_c_export,
                         name,
                         params,
                         return_type,
@@ -1680,6 +1683,7 @@ impl RirEditor {
                             *is_pub,
                             *is_unchecked,
                             *is_extern,
+                            *is_c_export,
                             symbol(*name),
                             &params,
                             symbol(*return_type),
@@ -4186,6 +4190,13 @@ pub enum InstData {
         /// `body` is a synthesized placeholder that is never analyzed or
         /// code-generated.
         is_extern: bool,
+        /// Whether this is a Rue-to-C export (`pub extern "C" fn`, ADR-0064 P4):
+        /// an ordinary Rue function body that is *also* exposed to C callers
+        /// under its unmangled source name via a C-ABI callee thunk. Unlike
+        /// `is_extern`, an export keeps a real body, is analyzed, gets a CFG,
+        /// and is code-generated; the flag only marks that a C entry thunk must
+        /// be emitted and that the signature is validated for the C boundary.
+        is_c_export: bool,
         name: Spur,
         /// Index into extra data where params start
         params: RirParamsRange,
@@ -4939,6 +4950,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     is_pub,
                     is_unchecked,
                     is_extern,
+                    is_c_export,
                     name,
                     params,
                     return_type,
@@ -4947,7 +4959,13 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     self_mode,
                     self_is_mut,
                 } => {
-                    let pub_str = if *is_pub { "pub " } else { "" };
+                    let pub_str = if *is_c_export {
+                        "pub extern \"C\" "
+                    } else if *is_pub {
+                        "pub "
+                    } else {
+                        ""
+                    };
                     let unchecked_str = if *is_unchecked {
                         "unchecked "
                     } else if *is_extern {
@@ -5602,6 +5620,7 @@ mod typed_payload_tests {
             .add_fn_decl(
                 &directives,
                 true,
+                false,
                 false,
                 false,
                 a,
@@ -6340,6 +6359,7 @@ mod typed_payload_tests {
                 is_pub: false,
                 is_unchecked: false,
                 is_extern: false,
+                is_c_export: false,
                 name: a,
                 params,
                 return_type: a,

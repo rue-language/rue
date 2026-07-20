@@ -384,6 +384,7 @@ impl ErrorCode {
     pub const EXTERN_ARRAY_BY_VALUE: Self = Self(1103);
     pub const REPR_C_STRUCT_INELIGIBLE: Self = Self(1104);
     pub const EXTERN_VARIADIC_UNSUPPORTED: Self = Self(1105);
+    pub const EXPORT_SIGNATURE_UNSUPPORTED: Self = Self(1106);
 
     // ========================================================================
     // Comptime errors (E1200-E1299)
@@ -1650,6 +1651,21 @@ pub enum ErrorKind {
     )]
     ExternVariadicUnsupported,
 
+    /// A `pub extern "C" fn` Rue-to-C export (ADR-0064 P4) has a signature the
+    /// export-thunk lowering cannot bridge yet. The P4 export thunk marshals
+    /// only integer/pointer scalars that fit the target's argument-register
+    /// budget: an aggregate parameter or return, or a scalar parameter list
+    /// wider than the register budget, is rejected here rather than silently
+    /// mis-marshaled, and an export whose C name collides with the program
+    /// entry point (`main`) is rejected to keep the entry symbol unambiguous.
+    #[error("`pub extern \"C\" fn` export `{name}` is not supported: {reason} (ADR-0064 P4)")]
+    ExportSignatureUnsupported {
+        /// The export's C symbol name.
+        name: String,
+        /// Why the export cannot be lowered, phrased for the user.
+        reason: String,
+    },
+
     /// A `@repr(c)` struct failed the reject-don't-guess eligibility check
     /// (ADR-0064 Amendment 1): an empty struct, an enum/aggregate field without
     /// its own `@repr(c)` marker, or a linear / destructor-bearing field. The
@@ -1900,6 +1916,7 @@ impl ErrorKind {
             ErrorKind::ExternAggregateNotReprC { .. } => ErrorCode::EXTERN_AGGREGATE_NOT_REPR_C,
             ErrorKind::ExternArrayByValue { .. } => ErrorCode::EXTERN_ARRAY_BY_VALUE,
             ErrorKind::ExternVariadicUnsupported => ErrorCode::EXTERN_VARIADIC_UNSUPPORTED,
+            ErrorKind::ExportSignatureUnsupported { .. } => ErrorCode::EXPORT_SIGNATURE_UNSUPPORTED,
             ErrorKind::ReprCStructIneligible(_) => ErrorCode::REPR_C_STRUCT_INELIGIBLE,
             ErrorKind::SliceNotYetImplemented => ErrorCode::SLICE_NOT_YET_IMPLEMENTED,
             ErrorKind::SliceReturnNotAllowed => ErrorCode::SLICE_RETURN_NOT_ALLOWED,

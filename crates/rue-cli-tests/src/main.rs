@@ -299,6 +299,92 @@ fn synthesize_answer_archive(target: Target) -> TestResult<Vec<u8>> {
         ));
     }
 
+    // --- P4 export-thunk C-caller members (ADR-0064 P4, RUE-1058) ------------
+    //
+    // These are the *inverse* of every member above: instead of a leaf a Rue
+    // program calls, each is a C-convention caller that invokes a Rue function
+    // *exported* to C (`pub extern "C" fn`) through its C-ABI entry thunk. A P4
+    // program imports one of these as an ordinary `extern "C"` leaf; the member
+    // then calls back into the Rue export, proving a separately compiled C
+    // caller reaches an exported Rue function across the target-C boundary. The
+    // bytes are the `.text` of `cc`/`clang -O2` output for the callers below,
+    // with the call sites left as relocations against the Rue export symbols
+    // (resolved from the main program's own objects at link time), exactly as a
+    // real C object references an external function.
+    //
+    //   long ffi_call_exports(void) {          // success driver
+    //       long a = rue_add(3, 5);            // 8
+    //       long b = rue_sub(10, 4);           // 6  (order-sensitive)
+    //       return a * 100 + b;                // 806
+    //   }
+    //   long ffi_call_trap(void) {             // abort driver
+    //       rue_trap(2000000000);              // overflows -> aborts (exit 101)
+    //       return 999;                        // unreachable
+    //   }
+    let plt = |offset: u64, symbol: &str| rue_linker::CodeRelocation {
+        offset,
+        symbol: symbol.to_string(),
+        rel_type: match target.arch() {
+            Arch::X86_64 => rue_linker::RelocationType::Plt32,
+            Arch::Aarch64 => rue_linker::RelocationType::Call26,
+        },
+        addend: match target.arch() {
+            Arch::X86_64 => -4,
+            Arch::Aarch64 => 0,
+        },
+    };
+    let (call_exports_code, call_exports_relocs): (Vec<u8>, Vec<(u64, &str)>) = match target.arch()
+    {
+        Arch::X86_64 => (
+            vec![
+                0x53, 0xBE, 0x05, 0x00, 0x00, 0x00, 0xBF, 0x03, 0x00, 0x00, 0x00, 0xE8, 0x00, 0x00,
+                0x00, 0x00, 0xBE, 0x04, 0x00, 0x00, 0x00, 0xBF, 0x0A, 0x00, 0x00, 0x00, 0x89, 0xC3,
+                0xE8, 0x00, 0x00, 0x00, 0x00, 0x89, 0xC2, 0x48, 0x63, 0xC3, 0x5B, 0x48, 0x8D, 0x04,
+                0x80, 0x48, 0x8D, 0x0C, 0x80, 0x48, 0x63, 0xC2, 0x48, 0x8D, 0x04, 0x88, 0xC3,
+            ],
+            vec![(12, "rue_add"), (29, "rue_sub")],
+        ),
+        Arch::Aarch64 => (
+            vec![
+                0xFD, 0x7B, 0xBE, 0xA9, 0xF3, 0x0B, 0x00, 0xF9, 0xFD, 0x03, 0x00, 0x91, 0x60, 0x00,
+                0x80, 0x52, 0xA1, 0x00, 0x80, 0x52, 0x00, 0x00, 0x00, 0x94, 0xF3, 0x03, 0x00, 0x2A,
+                0x40, 0x01, 0x80, 0x52, 0x81, 0x00, 0x80, 0x52, 0x00, 0x00, 0x00, 0x94, 0x09, 0x7C,
+                0x40, 0x93, 0x88, 0x0C, 0x80, 0x52, 0x60, 0x26, 0x28, 0x9B, 0xF3, 0x0B, 0x40, 0xF9,
+                0xFD, 0x7B, 0xC2, 0xA8, 0xC0, 0x03, 0x5F, 0xD6,
+            ],
+            vec![(20, "rue_add"), (36, "rue_sub")],
+        ),
+    };
+    let (call_trap_code, call_trap_relocs): (Vec<u8>, Vec<(u64, &str)>) = match target.arch() {
+        Arch::X86_64 => (
+            vec![
+                0x48, 0x83, 0xEC, 0x08, 0xBF, 0x00, 0x94, 0x35, 0x77, 0xE8, 0x00, 0x00, 0x00, 0x00,
+                0xB8, 0xE7, 0x03, 0x00, 0x00, 0x48, 0x83, 0xC4, 0x08, 0xC3,
+            ],
+            vec![(10, "rue_trap")],
+        ),
+        Arch::Aarch64 => (
+            vec![
+                0xFD, 0x7B, 0xBF, 0xA9, 0xFD, 0x03, 0x00, 0x91, 0x00, 0x80, 0x92, 0x52, 0xA0, 0xE6,
+                0xAE, 0x72, 0x00, 0x00, 0x00, 0x94, 0xE0, 0x7C, 0x80, 0x52, 0xFD, 0x7B, 0xC1, 0xA8,
+                0xC0, 0x03, 0x5F, 0xD6,
+            ],
+            vec![(16, "rue_trap")],
+        ),
+    };
+    let mut caller_objects: Vec<(String, Vec<u8>)> = Vec::new();
+    for (symbol, code, relocs) in [
+        ("ffi_call_exports", call_exports_code, call_exports_relocs),
+        ("ffi_call_trap", call_trap_code, call_trap_relocs),
+    ] {
+        let mut builder = rue_linker::ObjectBuilder::new(target, symbol).code(code);
+        for (offset, target_symbol) in relocs {
+            builder = builder.relocation(plt(offset, target_symbol));
+        }
+        caller_objects.push((format!("{symbol}.o"), builder.build()));
+    }
+    objects.extend(caller_objects);
+
     let members: Vec<(&str, &[u8])> = objects
         .iter()
         .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))

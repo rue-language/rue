@@ -45,6 +45,14 @@ impl Parser {
             TokenKind::Drop if directives.is_empty() && visibility == Visibility::Private => {
                 self.drop_fn(start).map(Item::DropFn)
             }
+            // `pub extern "C" fn name(...) { body }` is a Rue-to-C *export*
+            // (ADR-0064 P4): an ordinary Rue function body also exposed to C
+            // callers under its unmangled name. It is distinguished from the
+            // private import block below purely by its `pub` visibility and its
+            // trailing `fn` (the block form has no `fn` after the ABI string).
+            TokenKind::Extern if directives.is_empty() && visibility == Visibility::Public => self
+                .extern_export_fn(start, directives, visibility)
+                .map(Item::Function),
             TokenKind::Extern if directives.is_empty() && visibility == Visibility::Private => {
                 self.extern_block(start).map(Item::Extern)
             }
@@ -64,6 +72,51 @@ impl Parser {
         directives: Directives,
         visibility: Visibility,
     ) -> PResult<Function> {
+        self.function_inner(start, directives, visibility, None)
+    }
+
+    /// Parse a `pub extern "C" fn name(...) { body }` Rue-to-C export
+    /// (ADR-0064 P4). The `extern` token is consumed here, then the ABI string
+    /// is captured verbatim and validated (`"C"` only) exactly as the import
+    /// block does, and the rest is an ordinary function with a body. The parsed
+    /// ABI is attached to the `Function` so semantic analysis can gate it behind
+    /// the `c_ffi` preview and validate the C-boundary signature.
+    fn extern_export_fn(
+        &mut self,
+        start: u32,
+        directives: Directives,
+        visibility: Visibility,
+    ) -> PResult<Function> {
+        self.expect(TokenKind::Extern)?;
+        let (abi, abi_span) = match self.kind() {
+            TokenKind::String(spur) => {
+                let span = self.bump().span;
+                (self.interner.resolve(&spur).to_string(), span)
+            }
+            _ => {
+                self.unexpected("an ABI string such as \"C\"");
+                return Err(());
+            }
+        };
+        if abi != "C" {
+            self.error_at(
+                format!(
+                    "unsupported extern ABI \"{abi}\": only \"C\" is supported \
+                     (ADR-0064 C FFI)"
+                ),
+                abi_span,
+            );
+        }
+        self.function_inner(start, directives, visibility, Some(abi))
+    }
+
+    fn function_inner(
+        &mut self,
+        start: u32,
+        directives: Directives,
+        visibility: Visibility,
+        export_abi: Option<String>,
+    ) -> PResult<Function> {
         let is_unchecked = self.eat(TokenKind::Unchecked);
         self.expect(TokenKind::Fn)?;
         let name = self.ident()?;
@@ -82,6 +135,7 @@ impl Parser {
             params,
             return_type,
             body,
+            export_abi,
             span: self.span_from(start),
         })
     }

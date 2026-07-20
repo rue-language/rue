@@ -271,6 +271,12 @@ pub struct Function {
     pub return_type: Option<TypeExpr>,
     /// Function body
     pub body: Expr,
+    /// The C ABI string when this function is a `pub extern "C" fn` export
+    /// (ADR-0064 P4): `Some("C")` for an export exposed to C callers under its
+    /// unmangled name, `None` for an ordinary Rue function. The slot reserves
+    /// room for later ABI variants without a re-spelling, exactly as the import
+    /// `extern` block does.
+    pub export_abi: Option<String>,
     /// Span covering the entire function
     pub span: Span,
 }
@@ -1877,6 +1883,9 @@ fn fmt_call_arg(f: &mut fmt::Formatter<'_>, arg: &CallArg, level: usize) -> fmt:
 
 fn fmt_function(f: &mut fmt::Formatter<'_>, func: &Function, level: usize) -> fmt::Result {
     indent(f, level)?;
+    if let Some(abi) = &func.export_abi {
+        write!(f, "pub extern \"{abi}\" ")?;
+    }
     if func.is_unchecked {
         write!(f, "unchecked ")?;
     }

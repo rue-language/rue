@@ -862,6 +862,8 @@ pub(crate) fn compile_with_session(
     let session_work = session.work();
     let foreign_symbols =
         crate::backend::collect_foreign_symbols(rir.rir(), rir.semantic_symbols().interner());
+    let export_symbols =
+        crate::backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
     let mut output = crate::backend::compile_backend(
         semantic.functions(),
         semantic.type_pool(),
@@ -870,6 +872,7 @@ pub(crate) fn compile_with_session(
         options,
         semantic.warnings(),
         &foreign_symbols,
+        &export_symbols,
     )?;
     output.source_stats = SourceStats {
         files: snapshot.len(),
