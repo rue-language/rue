@@ -106,6 +106,29 @@ pub(crate) enum RawConstSyntaxFailure {
     ParserCapabilityMismatch(DeclarationCandidateKey),
 }
 
+/// Parser-validated syntax for one declaration signature, detached from its
+/// source epoch and parser symbol universe.
+///
+/// Concatenating `declaration_fragments` reconstructs a body-free declaration
+/// for the exact key. Struct fragments omit every method declaration while
+/// retaining the struct header, directives, fields, and closing brace.
+/// `extern_abi` retains the surrounding ABI literal for an extern member.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct RawDeclarationSignatureSyntax {
+    pub(crate) declaration_fragments: Arc<[Arc<str>]>,
+    pub(crate) extern_abi: Option<Arc<str>>,
+}
+
+/// Stable, position-free failure retained by the exact raw-signature family.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RawDeclarationSignatureFailure {
+    OccurrencesUnavailable(DeclarationOccurrenceFailure),
+    Absent(DeclarationCandidateKey),
+    Ambiguous(DeclarationCandidateKey),
+    CategoryMismatch(DeclarationCandidateKey),
+    ParserCapabilityMismatch(DeclarationCandidateKey),
+}
+
 impl DeclarationCandidateKey {
     pub(crate) fn stable_identity(&self) -> String {
         // Length-prefix every user-authored component. Query identities must

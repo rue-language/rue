@@ -32,6 +32,7 @@ use crate::{
         DeclarationCandidateCategory, DeclarationCandidateKey, DeclarationCandidateOwner,
         DeclarationOccurrenceCapability, DeclarationParameterHeader, DeclarationParameterMode,
         DeclarationShellFact, DeclarationShellFailure, RawConstSyntax,
+        RawDeclarationSignatureSyntax,
     },
 };
 
@@ -156,6 +157,8 @@ pub struct ParsedDefinitionIndex {
     #[cfg(test)]
     raw_const_syntax_materializations: Arc<AtomicUsize>,
     #[cfg(test)]
+    raw_declaration_signature_terminal_materializations: Arc<AtomicUsize>,
+    #[cfg(test)]
     by_name: BTreeMap<(DefinitionNamespace, Arc<str>), Arc<[ParsedDefinitionOccurrence]>>,
 }
 
@@ -227,6 +230,56 @@ impl ParsedDefinitionIndex {
             .load(Ordering::Relaxed)
     }
 
+    /// Materialize the body-free syntax for exactly one declaration key.
+    /// Locators are indexed with the module, but source fragments are copied
+    /// only after this exact `declaration_by_key` lookup succeeds.
+    fn materialize_raw_declaration_signature(
+        &self,
+        key: &DeclarationCandidateKey,
+        source_text: &str,
+    ) -> Option<RawDeclarationSignatureSyntax> {
+        let index = self.declaration_by_key.get(key).copied()?;
+        let candidate = self.declarations.get(index)?;
+        if candidate.fact.key != *key {
+            return None;
+        }
+        let locator = candidate.raw_signature_locator?;
+        let fragment = |span: Span| {
+            source_text
+                .get(span.start as usize..span.end as usize)
+                .map(Arc::from)
+        };
+        let (declaration_fragments, extern_abi) = match locator {
+            RawDeclarationSignatureLocator::Contiguous { declaration } => {
+                (vec![fragment(declaration)?].into(), None)
+            }
+            RawDeclarationSignatureLocator::SplitStruct {
+                retained_prefix,
+                closing_brace,
+            } => (
+                vec![fragment(retained_prefix)?, fragment(closing_brace)?].into(),
+                None,
+            ),
+            RawDeclarationSignatureLocator::Extern { declaration, abi } => {
+                (vec![fragment(declaration)?].into(), Some(fragment(abi)?))
+            }
+        };
+        let syntax = RawDeclarationSignatureSyntax {
+            declaration_fragments,
+            extern_abi,
+        };
+        #[cfg(test)]
+        self.raw_declaration_signature_terminal_materializations
+            .fetch_add(1, Ordering::Relaxed);
+        Some(syntax)
+    }
+
+    #[cfg(test)]
+    fn raw_declaration_signature_terminal_materialization_count(&self) -> usize {
+        self.raw_declaration_signature_terminal_materializations
+            .load(Ordering::Relaxed)
+    }
+
     pub(crate) fn declaration_locator(
         &self,
         key: &DeclarationCandidateKey,
@@ -260,6 +313,7 @@ pub(crate) struct ParsedDeclarationCandidate {
     fact: DeclarationShellFact,
     declaration_span: Span,
     raw_const_syntax_spans: Option<RawConstSyntaxSpans>,
+    raw_signature_locator: Option<RawDeclarationSignatureLocator>,
 }
 
 /// Parser-private locators for syntax that is materialized only after an exact
@@ -269,6 +323,24 @@ pub(crate) struct ParsedDeclarationCandidate {
 struct RawConstSyntaxSpans {
     declared_type: Option<Span>,
     initializer: Span,
+}
+
+/// Parser-private signature locators. These current-epoch spans are also the
+/// only source of future diagnostic projection; they never enter the durable
+/// raw-signature terminal.
+#[derive(Debug, Clone, Copy)]
+enum RawDeclarationSignatureLocator {
+    Contiguous {
+        declaration: Span,
+    },
+    SplitStruct {
+        retained_prefix: Span,
+        closing_brace: Span,
+    },
+    Extern {
+        declaration: Span,
+        abi: Span,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -399,6 +471,20 @@ impl ParsedModule {
     #[cfg(test)]
     pub(crate) fn raw_const_syntax_materialization_count(&self) -> usize {
         self.definitions.raw_const_syntax_materialization_count()
+    }
+
+    pub(crate) fn evaluate_raw_declaration_signature(
+        &self,
+        key: &DeclarationCandidateKey,
+    ) -> Option<RawDeclarationSignatureSyntax> {
+        self.definitions
+            .materialize_raw_declaration_signature(key, self.source_text())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn raw_declaration_signature_terminal_materialization_count(&self) -> usize {
+        self.definitions
+            .raw_declaration_signature_terminal_materialization_count()
     }
 
     #[cfg(test)]
@@ -1156,6 +1242,28 @@ fn bind_payload(
                         initializer: remap_span(spans.initializer),
                     }
                 }),
+                raw_signature_locator: candidate.raw_signature_locator.map(
+                    |locator| match locator {
+                        RawDeclarationSignatureLocator::Contiguous { declaration } => {
+                            RawDeclarationSignatureLocator::Contiguous {
+                                declaration: remap_span(declaration),
+                            }
+                        }
+                        RawDeclarationSignatureLocator::SplitStruct {
+                            retained_prefix,
+                            closing_brace,
+                        } => RawDeclarationSignatureLocator::SplitStruct {
+                            retained_prefix: remap_span(retained_prefix),
+                            closing_brace: remap_span(closing_brace),
+                        },
+                        RawDeclarationSignatureLocator::Extern { declaration, abi } => {
+                            RawDeclarationSignatureLocator::Extern {
+                                declaration: remap_span(declaration),
+                                abi: remap_span(abi),
+                            }
+                        }
+                    },
+                ),
             })
             .collect::<Vec<_>>()
             .into(),
@@ -1165,6 +1273,11 @@ fn bind_payload(
         raw_const_syntax_materializations: payload
             .definitions
             .raw_const_syntax_materializations
+            .clone(),
+        #[cfg(test)]
+        raw_declaration_signature_terminal_materializations: payload
+            .definitions
+            .raw_declaration_signature_terminal_materializations
             .clone(),
         #[cfg(test)]
         by_name: payload.definitions.by_name.clone(),
@@ -1550,8 +1663,12 @@ fn build_definition_index(
     resolver: &FrozenSymbolResolver,
 ) -> CompileResult<ParsedDefinitionIndex> {
     let mut pending = Vec::new();
-    let mut pending_declarations =
-        Vec::<(DeclarationShellFact, Span, Option<RawConstSyntaxSpans>)>::new();
+    let mut pending_declarations = Vec::<(
+        DeclarationShellFact,
+        Span,
+        Option<RawConstSyntaxSpans>,
+        Option<RawDeclarationSignatureLocator>,
+    )>::new();
     let resolve_name = |ident: rue_parser::Ident| -> CompileResult<Arc<str>> {
         let symbol = resolver.symbol(ident.name)?;
         Ok(Arc::from(resolver.resolve(&symbol)?))
@@ -1628,7 +1745,8 @@ fn build_definition_index(
                         is_extern,
                         declaration_span,
                         signature_spans: Vec<Span>,
-                        raw_const_syntax_spans: Option<RawConstSyntaxSpans>|
+                        raw_const_syntax_spans: Option<RawConstSyntaxSpans>,
+                        raw_signature_locator: Option<RawDeclarationSignatureLocator>|
          -> CompileResult<()> {
             let signature_fingerprint = declaration_signature_fingerprint(
                 file_id,
@@ -1637,6 +1755,27 @@ fn build_definition_index(
                 resolver,
                 &signature_spans,
             )?;
+            if let Some(locator) = raw_signature_locator {
+                let (first, second, abi) = match locator {
+                    RawDeclarationSignatureLocator::Contiguous { declaration } => {
+                        (declaration, None, None)
+                    }
+                    RawDeclarationSignatureLocator::SplitStruct {
+                        retained_prefix,
+                        closing_brace,
+                    } => (retained_prefix, Some(closing_brace), None),
+                    RawDeclarationSignatureLocator::Extern { declaration, abi } => {
+                        (declaration, None, Some(abi))
+                    }
+                };
+                validate_span("raw declaration signature", first, file_id, source_text)?;
+                if let Some(span) = second {
+                    validate_span("raw declaration signature", span, file_id, source_text)?;
+                }
+                if let Some(span) = abi {
+                    validate_span("raw extern ABI", span, file_id, source_text)?;
+                }
+            }
             pending_declarations.push((
                 DeclarationShellFact {
                     key: DeclarationCandidateKey {
@@ -1657,6 +1796,7 @@ fn build_definition_index(
                 },
                 declaration_span,
                 raw_const_syntax_spans,
+                raw_signature_locator,
             ));
             Ok(())
         };
@@ -1676,6 +1816,13 @@ fn build_definition_index(
                 function.span,
                 vec![signature_prefix(function.span, function.body.span())?],
                 None,
+                Some(RawDeclarationSignatureLocator::Contiguous {
+                    declaration: token_bounded_signature_prefix(
+                        function.span,
+                        function.body.span(),
+                        tokens,
+                    )?,
+                }),
             )?,
             Item::Struct(structure) => {
                 let owner_name = resolve_name(structure.name)?;
@@ -1693,6 +1840,7 @@ fn build_definition_index(
                     structure.span,
                     signature_fragments_excluding_method_bodies(structure)?,
                     None,
+                    Some(struct_signature_locator(structure, tokens)?),
                 )?;
                 let owner = DeclarationCandidateOwner {
                     category: DeclarationCandidateCategory::Struct,
@@ -1724,6 +1872,13 @@ fn build_definition_index(
                         method.span,
                         vec![signature_prefix(method.span, method.body.span())?],
                         None,
+                        Some(RawDeclarationSignatureLocator::Contiguous {
+                            declaration: token_bounded_signature_prefix(
+                                method.span,
+                                method.body.span(),
+                                tokens,
+                            )?,
+                        }),
                     )?;
                 }
             }
@@ -1741,6 +1896,9 @@ fn build_definition_index(
                 value.span,
                 vec![value.span],
                 None,
+                Some(RawDeclarationSignatureLocator::Contiguous {
+                    declaration: token_bounded_declaration(value.span, tokens)?,
+                }),
             )?,
             Item::Const(value) => {
                 let declared_type = value.ty.as_ref().map(TypeExpr::span);
@@ -1767,6 +1925,7 @@ fn build_definition_index(
                     value.span,
                     vec![signature_prefix(value.span, value.init.span())?],
                     Some(raw_const_syntax_spans),
+                    None,
                 )?;
             }
             Item::DropFn(value) => push(
@@ -1786,6 +1945,13 @@ fn build_definition_index(
                 value.span,
                 vec![signature_prefix(value.span, value.body.span())?],
                 None,
+                Some(RawDeclarationSignatureLocator::Contiguous {
+                    declaration: token_bounded_signature_prefix(
+                        value.span,
+                        value.body.span(),
+                        tokens,
+                    )?,
+                }),
             )?,
             Item::Extern(block) => {
                 for function in &block.fns {
@@ -1803,6 +1969,10 @@ fn build_definition_index(
                         function.span,
                         vec![function.span],
                         None,
+                        Some(RawDeclarationSignatureLocator::Extern {
+                            declaration: token_bounded_declaration(function.span, tokens)?,
+                            abi: block.abi_span,
+                        }),
                     )?;
                 }
             }
@@ -1870,24 +2040,27 @@ fn build_definition_index(
     let mut duplicate_counts = BTreeMap::new();
     let declarations = pending_declarations
         .into_iter()
-        .map(|(mut fact, declaration_span, raw_const_syntax_spans)| {
-            let duplicate = duplicate_counts
-                .entry((
-                    fact.key.category,
-                    fact.key.name.clone(),
-                    fact.key.owner.clone(),
-                ))
-                .or_insert(0_u32);
-            fact.key.duplicate_discriminator = *duplicate;
-            *duplicate = duplicate
-                .checked_add(1)
-                .ok_or_else(|| invalid_input("declaration duplicate discriminator exceeds u32"))?;
-            Ok(ParsedDeclarationCandidate {
-                fact,
-                declaration_span,
-                raw_const_syntax_spans,
-            })
-        })
+        .map(
+            |(mut fact, declaration_span, raw_const_syntax_spans, raw_signature_locator)| {
+                let duplicate = duplicate_counts
+                    .entry((
+                        fact.key.category,
+                        fact.key.name.clone(),
+                        fact.key.owner.clone(),
+                    ))
+                    .or_insert(0_u32);
+                fact.key.duplicate_discriminator = *duplicate;
+                *duplicate = duplicate.checked_add(1).ok_or_else(|| {
+                    invalid_input("declaration duplicate discriminator exceeds u32")
+                })?;
+                Ok(ParsedDeclarationCandidate {
+                    fact,
+                    declaration_span,
+                    raw_const_syntax_spans,
+                    raw_signature_locator,
+                })
+            },
+        )
         .collect::<CompileResult<Vec<_>>>()?;
     let mut declaration_by_key = BTreeMap::new();
     let mut declaration_capabilities = Vec::with_capacity(declarations.len());
@@ -1916,6 +2089,8 @@ fn build_definition_index(
         declaration_capabilities: declaration_capabilities.into(),
         #[cfg(test)]
         raw_const_syntax_materializations: Arc::new(AtomicUsize::new(0)),
+        #[cfg(test)]
+        raw_declaration_signature_terminal_materializations: Arc::new(AtomicUsize::new(0)),
         #[cfg(test)]
         by_name,
     })
@@ -1972,6 +2147,110 @@ fn signature_fragments_excluding_method_bodies(
         structure.span.end,
     ));
     Ok(fragments)
+}
+
+/// Bound a body-bearing declaration at the last signature token. Lexer trivia
+/// before the body belongs to neither the signature nor the body and therefore
+/// must not perturb the durable signature terminal.
+fn token_bounded_signature_prefix(
+    declaration: Span,
+    body: Span,
+    tokens: &[rue_lexer::Token],
+) -> CompileResult<Span> {
+    signature_prefix(declaration, body)?;
+    let signature_end = tokens
+        .iter()
+        .filter(|token| {
+            token.span.file_id == declaration.file_id
+                && token.span.start >= declaration.start
+                && token.span.end <= body.start
+                && !matches!(token.kind, rue_lexer::TokenKind::Eof)
+        })
+        .map(|token| token.span.end)
+        .max()
+        .ok_or_else(|| invalid_input("declaration signature contains no token before its body"))?;
+    if signature_end <= declaration.start {
+        return Err(invalid_input(
+            "declaration signature token boundary is empty",
+        ));
+    }
+    Ok(Span::with_file(
+        declaration.file_id,
+        declaration.start,
+        signature_end,
+    ))
+}
+
+/// Trim a body-free declaration to its first and last tokens.
+fn token_bounded_declaration(
+    declaration: Span,
+    tokens: &[rue_lexer::Token],
+) -> CompileResult<Span> {
+    let mut declaration_tokens = tokens.iter().filter(|token| {
+        token.span.file_id == declaration.file_id
+            && token.span.start >= declaration.start
+            && token.span.end <= declaration.end
+            && !matches!(token.kind, rue_lexer::TokenKind::Eof)
+    });
+    let first = declaration_tokens
+        .next()
+        .ok_or_else(|| invalid_input("declaration contains no tokens"))?;
+    let last = declaration_tokens.next_back().unwrap_or(first);
+    Ok(Span::with_file(
+        declaration.file_id,
+        first.span.start,
+        last.span.end,
+    ))
+}
+
+/// Retain only a struct's header/directives/fields and its closing-brace token.
+/// The two inline spans exclude the delimiter and all trivia before the first
+/// method, all methods, and all trivia after the last method. Omitting a
+/// trailing field comma is valid Rue syntax, so concatenating these fragments
+/// remains a deterministic, reparsable struct declaration.
+fn struct_signature_locator(
+    structure: &rue_parser::ast::StructDecl,
+    tokens: &[rue_lexer::Token],
+) -> CompileResult<RawDeclarationSignatureLocator> {
+    let declaration_tokens = || {
+        tokens.iter().filter(|token| {
+            token.span.file_id == structure.span.file_id
+                && token.span.start >= structure.span.start
+                && token.span.end <= structure.span.end
+                && !matches!(token.kind, rue_lexer::TokenKind::Eof)
+        })
+    };
+    let first = declaration_tokens()
+        .next()
+        .ok_or_else(|| invalid_input("struct declaration contains no tokens"))?;
+    let opening_brace = declaration_tokens()
+        .find(|token| matches!(token.kind, rue_lexer::TokenKind::LBrace))
+        .ok_or_else(|| invalid_input("struct declaration has no opening-brace token"))?;
+    let closing_brace = declaration_tokens()
+        .rev()
+        .find(|token| matches!(token.kind, rue_lexer::TokenKind::RBrace))
+        .ok_or_else(|| invalid_input("struct declaration has no closing-brace token"))?;
+    let retained_end = if let Some(field) = structure.fields.last() {
+        let field_end_is_token_boundary =
+            declaration_tokens().any(|token| token.span.end == field.span.end);
+        if !field_end_is_token_boundary {
+            return Err(invalid_input(
+                "struct field does not end at a token boundary",
+            ));
+        }
+        field.span.end
+    } else {
+        opening_brace.span.end
+    };
+    if first.span.start >= retained_end || retained_end > closing_brace.span.start {
+        return Err(invalid_input(
+            "struct retained signature tokens are not ordered before its closing brace",
+        ));
+    }
+    Ok(RawDeclarationSignatureLocator::SplitStruct {
+        retained_prefix: Span::with_file(structure.span.file_id, first.span.start, retained_end),
+        closing_brace: closing_brace.span,
+    })
 }
 
 fn declaration_signature_fingerprint(
