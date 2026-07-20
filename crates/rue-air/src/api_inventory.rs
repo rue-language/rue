@@ -50,6 +50,94 @@ fn canonical_import_consumers_do_not_grow_resolution_policy() {
 }
 
 #[test]
+fn const_classification_has_one_tagged_authority_and_no_retired_maps() {
+    let air_production = [
+        include_str!("call_abi.rs"),
+        include_str!("canonical_imports.rs"),
+        include_str!("drop_glue_names.rs"),
+        include_str!("ffi_predicates.rs"),
+        include_str!("inference/constraint.rs"),
+        include_str!("inference/generate.rs"),
+        include_str!("inference/mod.rs"),
+        include_str!("inference/types.rs"),
+        include_str!("inference/unify.rs"),
+        include_str!("inst.rs"),
+        include_str!("inst/payload_support.rs"),
+        include_str!("intern_pool.rs"),
+        include_str!("layout.rs"),
+        include_str!("lib.rs"),
+        include_str!("module_registry.rs"),
+        include_str!("param_arena.rs"),
+        include_str!("path_norm.rs"),
+        include_str!("runtime_call.rs"),
+        include_str!("scope.rs"),
+        include_str!("sema/aggregates.rs"),
+        include_str!("sema/analysis.rs"),
+        include_str!("sema/analysis/anon_methods.rs"),
+        include_str!("sema/analysis/builtin_ops.rs"),
+        include_str!("sema/analysis/calls.rs"),
+        include_str!("sema/analysis/functions.rs"),
+        include_str!("sema/analysis/instructions.rs"),
+        include_str!("sema/analysis/intrinsics.rs"),
+        include_str!("sema/analysis/ownership.rs"),
+        include_str!("sema/analysis/pointers.rs"),
+        include_str!("sema/analysis/type_inference.rs"),
+        include_str!("sema/analyze_ops.rs"),
+        include_str!("sema/anon_structs.rs"),
+        include_str!("sema/binding_manifest.rs"),
+        include_str!("sema/builtins.rs"),
+        include_str!("sema/comptime_eval.rs"),
+        include_str!("sema/context.rs"),
+        include_str!("sema/control_flow.rs"),
+        include_str!("sema/declaration_index.rs"),
+        include_str!("sema/declarations.rs"),
+        include_str!("sema/file_paths.rs"),
+        include_str!("sema/inference_ctx.rs"),
+        include_str!("sema/info.rs"),
+        include_str!("sema/known_symbols.rs"),
+        include_str!("sema/metadata.rs"),
+        include_str!("sema/mod.rs"),
+        include_str!("sema/output.rs"),
+        include_str!("sema/semantic_body_export.rs"),
+        include_str!("sema/typeck.rs"),
+        include_str!("sema/visibility.rs"),
+        include_str!("semantic_body.rs"),
+        include_str!("semantic_identity.rs"),
+        include_str!("semantic_import.rs"),
+        include_str!("semantic_type_resolution.rs"),
+        include_str!("specialize.rs"),
+        include_str!("type_encoding.rs"),
+        include_str!("type_properties.rs"),
+        include_str!("types.rs"),
+    ]
+    .concat();
+
+    assert_eq!(
+        air_production
+            .matches("const_resolutions: HashMap<")
+            .count(),
+        1,
+        "AIR must retain exactly one tagged const-resolution table"
+    );
+    assert_eq!(
+        air_production
+            .matches("pub(crate) enum ConstResolution")
+            .count(),
+        1,
+        "AIR must classify value constants and module bindings in one internal enum"
+    );
+    for retired_map in [
+        ["constants_by_", "file_name: HashMap"].concat(),
+        ["module_", "bindings: HashMap"].concat(),
+    ] {
+        assert!(
+            !air_production.contains(&retired_map),
+            "retired const storage map returned: {retired_map}"
+        );
+    }
+}
+
+#[test]
 fn canonical_type_surface_has_one_checked_handle_and_private_storage_ids() {
     let types = include_str!("types.rs");
     let pool = include_str!("intern_pool.rs");

@@ -33,9 +33,7 @@ impl<'a> BodySema<'a> {
         if let Some(&ty) = ctx.comptime_type_vars.get(&type_name) {
             return ty.as_enum().map(|id| (id, true));
         }
-        if let Some(info) = self
-            .constants_by_file_name
-            .get(&(ctx.current_file_id, type_name))
+        if let Some(info) = self.value_const(&(ctx.current_file_id, type_name))
             && let ConstValue::Type(ty) = info.value
         {
             return ty.as_enum().map(|id| (id, true));
@@ -55,7 +53,7 @@ impl<'a> BodySema<'a> {
     /// through a `let`/`const` binding (an anonymous struct from a comptime type
     /// function), so privacy does not apply — the exact mirror of
     /// `resolve_enum_type_name` for the struct side (RUE-595). Without the
-    /// `constants_by_file_name` arm a module-`const`-bound struct type resolved
+    /// tagged value-const arm a module-`const`-bound struct type resolved
     /// as a type namespace nowhere, so `const C = Counter(i32); C.zero()` failed
     /// (E0413) and `const P = Point(i32); P { .. }` failed (E0204) while the
     /// enum-bound and local-`let`-bound forms worked.
@@ -67,9 +65,7 @@ impl<'a> BodySema<'a> {
         if let Some(&ty) = ctx.comptime_type_vars.get(&type_name) {
             return ty.as_struct().map(|id| (id, true));
         }
-        if let Some(info) = self
-            .constants_by_file_name
-            .get(&(ctx.current_file_id, type_name))
+        if let Some(info) = self.value_const(&(ctx.current_file_id, type_name))
             && let ConstValue::Type(ty) = info.value
         {
             return ty.as_struct().map(|id| (id, true));
@@ -403,7 +399,7 @@ impl<'a> BodySema<'a> {
                     ));
                 }
             }
-        } else if let Some(info) = self.constants_by_file_name.get(&(span.file_id, type_name))
+        } else if let Some(info) = self.value_const(&(span.file_id, type_name))
             && let ConstValue::Type(ty) = info.value
         {
             // Module-level `const P = Point(i32); P { .. }` (RUE-595): the
@@ -735,13 +731,12 @@ impl<'a> BodySema<'a> {
         // facade — where the const's type is itself a module: accessing it
         // yields that module, so chains like `std.math.abs(...)` resolve
         // member-by-member (RUE-136). Module bindings live in the per-file
-        // `module_bindings` table keyed by the facade's FileId (RUE-113);
+        // tagged module-binding variant keyed by the facade's FileId (RUE-113);
         // value consts are found by defining file and member name.
         let member_const = module_file_id
-            .and_then(|file_id| self.module_bindings.get(&(file_id, member_name)))
+            .and_then(|file_id| self.module_binding(&(file_id, member_name)))
             .or_else(|| {
-                module_file_id
-                    .and_then(|file_id| self.constants_by_file_name.get(&(file_id, member_name)))
+                module_file_id.and_then(|file_id| self.value_const(&(file_id, member_name)))
             });
         if let Some(const_info) = member_const.cloned() {
             if !const_info.is_pub {
@@ -923,8 +918,7 @@ impl<'a> BodySema<'a> {
                         return Some(module_id);
                     }
                 }
-                self.module_bindings
-                    .get(&(span.file_id, name))
+                self.module_binding(&(span.file_id, name))
                     .and_then(|binding| binding.ty.as_module())
             }
             // Nested submodule: `parent.sub` where `parent` is a module and `sub`
@@ -934,8 +928,7 @@ impl<'a> BodySema<'a> {
                 let parent_id = self.try_module_id_of(base, span, ctx)?;
                 let parent_def = self.module_registry.get_def(parent_id);
                 let parent_file = parent_def.file_id;
-                self.module_bindings
-                    .get(&(parent_file, field))
+                self.module_binding(&(parent_file, field))
                     .and_then(|binding| binding.ty.as_module())
             }
             _ => None,

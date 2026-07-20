@@ -92,7 +92,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         name: Spur,
         file_id: FileId,
     ) -> Option<&ConstInfo> {
-        self.constants_by_file_name.get(&(file_id, name))
+        self.value_const(&(file_id, name))
     }
 
     pub(crate) fn resolve_builtin_struct_name(&self, name: Spur) -> Option<StructId> {
@@ -229,8 +229,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         // distinct declarations, so every inference lookup carries the
         // reference file or receiver-module identity (RUE-638).
         let const_types: HashMap<(FileId, Spur), Type> = self
-            .constants_by_file_name
-            .iter()
+            .value_consts()
             .map(|(key, info)| {
                 let ty = match info.value {
                     ConstValue::Type(_) => Type::COMPTIME_TYPE,
@@ -245,8 +244,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         // consults this in type positions; expression positions still use
         // `const_types` above and see the binding itself as `type`.
         let const_type_aliases: HashMap<(FileId, Spur), Type> = self
-            .constants_by_file_name
-            .iter()
+            .value_consts()
             .filter_map(|(key, info)| match info.value {
                 ConstValue::Type(ty) => Some((*key, ty)),
                 _ => None,
@@ -256,16 +254,14 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         // Integer constant values, so an array length naming a `const`
         // (`[i32; K]`) resolves to a concrete length during inference (RUE-16).
         let const_values: HashMap<(FileId, Spur), i128> = self
-            .constants_by_file_name
-            .iter()
+            .value_consts()
             .filter_map(|(key, info)| info.value.as_int_value().map(|v| (*key, v)))
             .collect();
 
         // Function-valued constants are callable aliases only. Constraint
         // generation uses this map to type `alias(...)` like the real callee.
         let const_function_aliases: HashMap<(FileId, Spur), Spur> = self
-            .constants_by_file_name
-            .iter()
+            .value_consts()
             .filter_map(|(key, info)| info.value.as_function().map(|callee| (*key, callee)))
             .collect();
 
@@ -273,8 +269,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         // declaring file: bindings are per-file scoped (RUE-113), so a
         // reference resolves against the file it appears in.
         let module_binding_types: HashMap<(FileId, Spur), Type> = self
-            .module_bindings
-            .iter()
+            .module_binding_consts()
             .map(|(key, info)| (*key, info.ty))
             .collect();
 
@@ -343,7 +338,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// This remains a semantic check because only initializer evaluation can
     /// distinguish value constants from per-file module bindings.
     pub(crate) fn check_const_cross_kind_collisions(&self) -> CompileResult<()> {
-        for ((file_id, name), info) in self.constants_by_file_name.iter() {
+        for ((file_id, name), info) in self.value_consts() {
             if self.functions_by_file_name.contains_key(&(*file_id, *name))
                 || self.structs_by_file_name.contains_key(&(*file_id, *name))
                 || self.enums_by_file_name.contains_key(&(*file_id, *name))
@@ -671,8 +666,7 @@ impl<'a> Sema<'a> {
             }
         }
         let constants = self
-            .constants_by_file_name
-            .iter()
+            .value_consts()
             .map(|((file, name), info)| (*file, *name, info.ty))
             .collect::<Vec<_>>();
         for (file, name, ty) in constants {
@@ -1773,7 +1767,7 @@ impl<'a> Sema<'a> {
     ///   of another module binding (`const m = other;`), or a member-access
     ///   chain ending at a re-export (`const math = std.math;`). These are
     ///   **per-file scoped** (ADR-0026: every file writes its own imports),
-    ///   stored in `module_bindings` keyed by the declaring file — two files
+    ///   stored as tagged resolutions keyed by the declaring file — two files
     ///   binding the same name, even to different modules, is fine (RUE-113).
     /// - **Value constants** — everything else: the initializer is evaluated
     ///   through the comptime engine (`sema::comptime_eval`), so negated
@@ -1788,8 +1782,7 @@ impl<'a> Sema<'a> {
     /// declaration order does not matter. Cyclic initializers are E0461.
     fn collect_const_by_key(&mut self, key: (FileId, Spur)) -> CompileResult<()> {
         debug_assert!(self.declaration_binding_active);
-        if self.constants_by_file_name.contains_key(&key) || self.module_bindings.contains_key(&key)
-        {
+        if self.const_resolutions.contains_key(&key) {
             return Ok(());
         }
         if self.const_resolution_in_progress.contains(&key) {
@@ -1862,14 +1855,14 @@ impl<'a> Sema<'a> {
                         p.span,
                     ));
                 }
-                self.module_bindings.insert(
+                self.const_resolutions.insert(
                     (file_id, name),
-                    ConstInfo {
+                    super::ConstResolution::ModuleBinding(ConstInfo {
                         is_pub: p.is_pub,
                         ty: module_ty,
                         value: ConstValue::Type(module_ty),
                         span: p.span,
-                    },
+                    }),
                 );
             }
             ConstInit::Value(value) => {
@@ -1880,7 +1873,8 @@ impl<'a> Sema<'a> {
                     value,
                     span: p.span,
                 };
-                self.constants_by_file_name.insert(key, info);
+                self.const_resolutions
+                    .insert(key, super::ConstResolution::Value(info));
             }
         }
         Ok(())
@@ -2019,7 +2013,7 @@ impl<'a> Sema<'a> {
             InstData::VarRef { name, .. } => {
                 let name = *name;
                 self.ensure_const_collected(name, file_id)?;
-                if let Some(binding) = self.module_bindings.get(&(file_id, name)).cloned() {
+                if let Some(binding) = self.module_binding(&(file_id, name)).cloned() {
                     self.record_named_const_dependency(
                         super::NamedConstDependencyTargetEvent::ModuleBinding {
                             file: file_id.index(),
@@ -2272,14 +2266,11 @@ impl<'a> Sema<'a> {
             InstData::FieldGet { base, field } => {
                 let (base, field) = (*base, *field);
                 let via_module = if let InstData::VarRef { name, .. } = &self.rir.get(base).data {
-                    self.module_bindings
-                        .get(&(file_id, *name))
+                    self.module_binding(&(file_id, *name))
                         .and_then(|info| info.ty.as_module())
                         .map(|module_id| self.module_registry.get_def(module_id).file_id)
                         .and_then(|module_file| {
-                            self.constants_by_file_name
-                                .get(&(module_file, field))
-                                .map(|info| info.ty)
+                            self.value_const(&(module_file, field)).map(|info| info.ty)
                         })
                 } else {
                     None
@@ -2597,7 +2588,7 @@ impl<'a> Sema<'a> {
 
         // A module-binding member (re-export or alias) yields its module.
         if let Some(mfile) = module_file_id {
-            if let Some(info) = self.module_bindings.get(&(mfile, member)) {
+            if let Some(info) = self.module_binding(&(mfile, member)) {
                 let (is_pub, ty) = (info.is_pub, info.ty);
                 self.check_const_member_visibility(
                     is_pub,
@@ -2618,7 +2609,7 @@ impl<'a> Sema<'a> {
 
         // A value constant declared in the module's file yields its value.
         if let Some(mfile) = module_file_id {
-            if let Some(info) = self.constants_by_file_name.get(&(mfile, member)) {
+            if let Some(info) = self.value_const(&(mfile, member)) {
                 let (is_pub, value) = (info.is_pub, info.value);
                 self.check_const_member_visibility(
                     is_pub,

@@ -850,8 +850,8 @@ fn finalize_function_body_analysis(
         supported_type_call_heads_complete: true,
         named_const_dependencies: {
             let bound_constants = sema
-                .constants_by_file_name
-                .keys()
+                .value_consts()
+                .map(|(key, _)| key)
                 .map(|(file, name)| (file.index(), sema.interner.resolve(name).to_owned()))
                 .collect::<HashSet<_>>();
             sema.named_const_dependencies.retain(|event| {

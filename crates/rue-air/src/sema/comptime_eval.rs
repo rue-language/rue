@@ -112,7 +112,7 @@ pub(crate) struct ComptimeEnv<'a> {
     /// module-qualified comptime call written in a `-> type` constructor body
     /// (`let O = b.Mk(T)`) names an import (`b`) of *this* file's import graph,
     /// not of the file that triggered the instantiation — so resolving the
-    /// receiver as a module binding must key `module_bindings` by this file, not
+    /// receiver as a module binding must key the tagged resolution by this file, not
     /// the instantiation site. Set from `ctx.current_file_id` when analyzing a
     /// body, and to the callee's `FunctionInfo.file_id` when reducing a
     /// type-constructor body. `None` where no file context is available (the
@@ -1174,18 +1174,14 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                 //    declaration collector can resolve (module member
                 //    access, RUE-160) and was exponential for const chains.
                 //    Module-typed constants never appear in this table
-                //    (module bindings live in `Sema::module_bindings`).
+                //    (module bindings are a distinct tagged resolution).
                 //    Privacy applies here too (E0460, RUE-183): the table is
                 //    global, so a const initializer in one directory could
                 //    otherwise read a private constant from another. The
                 //    VarRef's own span locates the referencing file;
                 //    speculative callers (`try_evaluate_const*`) swallow the
                 //    error and defer to runtime analysis, which re-checks.
-                if let Some(info) = self
-                    .constants_by_file_name
-                    .get(&(span.file_id, *name))
-                    .cloned()
-                {
+                if let Some(info) = self.value_const(&(span.file_id, *name)).cloned() {
                     self.record_named_const_dependency(
                         super::NamedConstDependencyTargetEvent::ValueConst {
                             file: info.span.file_id.index(),
@@ -1601,9 +1597,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         }
         // The root must name a module import of the current file for this to be
         // a module-qualified member-access path at all.
-        let binding = self
-            .module_bindings
-            .get(&(ctx.current_file_id, root_name))?;
+        let binding = self.module_binding(&(ctx.current_file_id, root_name))?;
         binding.ty.as_module()?;
         let mut segments: Vec<&str> = vec![self.interner.resolve(&root_name)];
         segments.extend(fields_rev.iter().rev().map(|s| self.interner.resolve(s)));

@@ -304,19 +304,14 @@ impl<D: DeclarationPhase>
     ) -> SemaProviderResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
         let file = self.sema.module_registry.get_def(*module).file_id;
         let symbol = self.sema.interner.get_or_intern(name);
-        if self.sema.declaration_binding_active
-            && self
-                .sema
-                .constants_by_file_name
-                .get(&(file, symbol))
-                .is_none()
+        if self.sema.declaration_binding_active && self.sema.value_const(&(file, symbol)).is_none()
         {
             provider_failure(
                 self.sema
                     .try_resolve_indexed_const_during_binding(symbol, file),
             )?;
         }
-        let Some(info) = self.sema.constants_by_file_name.get(&(file, symbol)) else {
+        let Some(info) = self.sema.value_const(&(file, symbol)) else {
             return Ok(None);
         };
         let ConstValue::Type(value) = info.value else {
@@ -2344,7 +2339,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         file_id: FileId,
         name: Spur,
     ) -> CompileResult<Option<super::info::ConstInfo>> {
-        if let Some(binding) = self.module_bindings.get(&(file_id, name)) {
+        if let Some(binding) = self.module_binding(&(file_id, name)) {
             return Ok(Some(binding.clone()));
         }
         if !self.declaration_binding_active {
@@ -2352,7 +2347,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         }
 
         self.try_resolve_indexed_const_during_binding(name, file_id)?;
-        Ok(self.module_bindings.get(&(file_id, name)).cloned())
+        Ok(self.module_binding(&(file_id, name)).cloned())
     }
 
     /// Return one flag per source parameter identifying declarations of the

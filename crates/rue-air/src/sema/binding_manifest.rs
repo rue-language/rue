@@ -814,14 +814,14 @@ impl<'a> DeclarationShells<'a> {
                         .sema
                         .interner
                         .get_or_intern(pending.shell.identity.name.as_ref());
-                    self.sema.module_bindings.insert(
+                    self.sema.const_resolutions.insert(
                         (pending.shell.declaration_span.file_id, name),
-                        super::ConstInfo {
+                        super::ConstResolution::ModuleBinding(super::ConstInfo {
                             is_pub: pending.shell.is_public,
                             ty: target,
                             value: ConstValue::Type(target),
                             span: pending.shell.declaration_span,
-                        },
+                        }),
                     );
                 }
                 (_, DeclarationPayloadSource::Const { .. }) => {
@@ -2146,7 +2146,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
             // the owned declaration boundary.
             let mut identity = identity.clone();
             if identity.kind == StableDefinitionKind::ValueConst
-                && self.module_bindings.contains_key(&(identity.file_id, name))
+                && self.module_binding(&(identity.file_id, name)).is_some()
             {
                 identity.kind = StableDefinitionKind::ModuleBinding;
             }
@@ -2250,8 +2250,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                 }
                 StableDefinitionKind::ValueConst => {
                     let info = self
-                        .constants_by_file_name
-                        .get(&(identity.file_id, name))
+                        .value_const(&(identity.file_id, name))
                         .ok_or(SemanticExportFailure::UnmappedFunction)?;
                     let value = match info.value {
                         ConstValue::Integer(v) => SemanticExportConstValue::Integer(v),
@@ -2283,8 +2282,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                 }
                 StableDefinitionKind::ModuleBinding => {
                     let info = self
-                        .module_bindings
-                        .get(&(identity.file_id, name))
+                        .module_binding(&(identity.file_id, name))
                         .ok_or(SemanticExportFailure::UnmappedFunction)?;
                     SemanticDeclarationPayload::ModuleBinding {
                         target: self.export_type(info.ty, &mut Vec::new())?,
@@ -2424,10 +2422,10 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                 }
                 InstData::ConstDecl { name, is_pub, .. } => {
                     let key = (inst.span.file_id, *name);
-                    let kind = if self.module_bindings.contains_key(&key) {
+                    let kind = if self.module_binding(&key).is_some() {
                         work.module_bindings_emitted += 1;
                         StableDefinitionKind::ModuleBinding
-                    } else if self.constants_by_file_name.contains_key(&key) {
+                    } else if self.value_const(&key).is_some() {
                         work.constants_emitted += 1;
                         StableDefinitionKind::ValueConst
                     } else {

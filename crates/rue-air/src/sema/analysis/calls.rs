@@ -1125,13 +1125,12 @@ impl<'a> BodySema<'a> {
         if function_key.is_none()
             && let Some(mfile) = module_file_id
         {
-            let reexport = self
-                .constants_by_file_name
-                .get(&(mfile, function_name))
-                .and_then(|info| match info.value {
-                    ConstValue::Function(fkey) => Some((fkey, info.is_pub)),
-                    _ => None,
-                });
+            let reexport =
+                self.value_const(&(mfile, function_name))
+                    .and_then(|info| match info.value {
+                        ConstValue::Function(fkey) => Some((fkey, info.is_pub)),
+                        _ => None,
+                    });
             if let Some((fkey, is_pub)) = reexport {
                 if !self.is_accessible(span.file_id, mfile, is_pub) {
                     return Err(CompileError::new(
@@ -1267,9 +1266,7 @@ impl<'a> BodySema<'a> {
                     ));
                 }
             }
-        } else if let Some(info) = self
-            .constants_by_file_name
-            .get(&(ctx.current_file_id, type_name))
+        } else if let Some(info) = self.value_const(&(ctx.current_file_id, type_name))
             && let ConstValue::Type(ty) = info.value
         {
             // Module-level `const C = Counter(i32); C.zero()` (RUE-595): the
