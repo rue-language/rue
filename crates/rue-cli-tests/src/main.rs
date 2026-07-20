@@ -373,6 +373,15 @@ const EXAMPLE_TIMEOUTS: &[ExampleTimeout] = &[
         path: "meridian/main.rue",
         timeout_ms: 120_000,
     },
+    // Harbor is a large multi-module program that instantiates several
+    // ArrayBuf element types; since each now also monomorphizes the shared
+    // RawBuf(T) core (RUE-1066), its compile time sits close enough to the
+    // default budget to time out under heavy parallel CI load. The binary runs
+    // instantly — this allowance covers compilation headroom only.
+    ExampleTimeout {
+        path: "harbor/main.rue",
+        timeout_ms: 30_000,
+    },
 ];
 
 fn example_timeout(relative_path: &str) -> Duration {
