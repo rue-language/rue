@@ -1,0 +1,83 @@
+[section]
+id = "diagnostics.extern-variadic"
+name = "Variadic extern signatures are rejected (ADR-0064 P6)"
+description = """
+C variadic foreign calls are rejected in v0 (ADR-0064 secondary ruling B,
+phase P6): the target-C classifier implements a fixed-signature calling
+convention only, and matching C's variadic argument-promotion and
+register-save-area contract is a later, separate design.
+
+The `...` marker lexes as three `.` tokens, so without dedicated recognition
+an `extern "C"` signature using it reports a generic "unexpected token"
+(E0100). The parser instead recognizes `...` where a foreign parameter is
+expected and routes it to the dedicated E1105 diagnostic, which names the
+ADR. These cases pin the diagnostic text, its E-code, and its span (the caret
+underlines exactly the `...` marker).
+
+Recognition is at parse time, so the diagnostic fires whether or not
+`--preview c_ffi` is supplied — a reader spelling a variadic is told why it is
+rejected before the preview gate is consulted.
+"""
+
+[[case]]
+name = "variadic_after_fixed_param_is_e1105"
+description = "A `...` after a fixed parameter reports E1105 naming the ADR, spanning the marker at 2:34."
+source = """
+extern "C" {
+    fn printf(fmt: ptr const u8, ...) -> i32;
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+# Pins the E-code, the marker span (line:col of the first `.`), the message,
+# and the ADR citation.
+error_contains = [
+    "E1105",
+    "2:34",
+    "variadic parameters (`...`) are not supported",
+    "ADR-0064",
+]
+
+[[case]]
+name = "variadic_span_underlines_the_marker"
+description = "The caret rendering underlines exactly the three-dot `...` marker."
+source = """
+extern "C" {
+    fn printf(fmt: ptr const u8, ...) -> i32;
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+# The golden caret line underlines the whole `...` (three carets), not a single
+# stray dot — the whole marker is the span.
+error_contains = "^^^"
+
+[[case]]
+name = "variadic_as_sole_param_is_e1105"
+description = "A `...` as the only parameter is recognized as a variadic marker (not a missing name)."
+source = """
+extern "C" {
+    fn f(...) -> i32;
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1105", "2:10", "variadic parameters"]
+
+[[case]]
+name = "variadic_rejected_before_preview_gate"
+description = "Recognition is at parse time: the variadic diagnostic fires under --preview c_ffi too, as a single clean error."
+preview = "c_ffi"
+preview_should_pass = true
+source = """
+extern "C" {
+    fn printf(fmt: ptr const u8, ...) -> i32;
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1105", "variadic parameters", "ADR-0064"]

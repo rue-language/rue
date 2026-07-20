@@ -134,7 +134,7 @@ impl Parser {
         let start = self.start();
         self.expect(TokenKind::Fn)?;
         let name = self.ident()?;
-        let params = self.params()?;
+        let params = self.extern_params()?;
         let return_type = if self.eat(TokenKind::Arrow) {
             Some(self.ty()?)
         } else {
@@ -147,6 +147,50 @@ impl Parser {
             return_type,
             span: self.span_from(start),
         })
+    }
+
+    /// Parse a foreign function's parameter list, recognizing the C variadic
+    /// marker `...` where a parameter is expected.
+    ///
+    /// Ordinary parameter lists (`self.params()`) reach `...` only as a stray
+    /// `.` and report a generic "unexpected token". Variadics are a real C
+    /// surface a reader will reach for, so the extern boundary detects the
+    /// marker specifically and routes it to the dedicated
+    /// [`ErrorKind::ExternVariadicUnsupported`] diagnostic (ADR-0064 secondary
+    /// ruling B, P6): variadic foreign calls are rejected in v0. The marker is
+    /// valid only after zero or more fixed parameters, so it is checked at each
+    /// position a parameter would begin — covering both `fn f(...)` and
+    /// `fn f(a: i32, ...)`.
+    fn extern_params(&mut self) -> PResult<Vec<Param>> {
+        self.expect(TokenKind::LParen)?;
+        let mut params = Vec::new();
+        while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
+            if self.at(TokenKind::Dot) {
+                return self.reject_variadic_ellipsis();
+            }
+            params.push(self.param()?);
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen)?;
+        Ok(params)
+    }
+
+    /// Record the variadic-rejection diagnostic spanning the `...` marker and
+    /// abort the current declaration. `...` lexes as three consecutive `.`
+    /// tokens; the span covers the whole marker so the caret underlines it.
+    fn reject_variadic_ellipsis(&mut self) -> PResult<Vec<Param>> {
+        let start = self.start();
+        let mut end = start;
+        while self.at(TokenKind::Dot) {
+            end = self.bump().span.end;
+        }
+        self.record_error(CompileError::new(
+            ErrorKind::ExternVariadicUnsupported,
+            Span::with_file(self.file_id, start, end),
+        ));
+        Err(())
     }
 
     fn struct_decl(
