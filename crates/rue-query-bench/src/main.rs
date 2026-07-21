@@ -24,7 +24,11 @@ impl QueryKey for Key {
 }
 
 fn main() {
-    let (keys, workers) = parse_args();
+    let (keys, workers, memo_hit) = parse_args();
+    if memo_hit {
+        run_memo_hit_benchmark(keys);
+        return;
+    }
     let runtime = QueryRuntime::new(workers);
     let family = runtime
         .family::<Key, u64>("prototype-benchmark", keys * 2 + 1)
@@ -96,6 +100,72 @@ fn main() {
         retention.terminals,
         retention.memo_nodes,
         metrics.evictions,
+    );
+}
+
+/// Isolated memo-hit lookup cost at a chosen retained-node cardinality.
+///
+/// This populates `keys` distinct retained nodes, then times a single-threaded
+/// sweep of pure memo hits (compatible-revision reuse) so the per-hit cost
+/// reflects the family's node-lookup path with negligible surrounding work.
+/// Reports on a dedicated line so the schema-1 JSON above is untouched.
+fn run_memo_hit_benchmark(keys: usize) {
+    let runtime = QueryRuntime::new(1);
+    let family = runtime
+        .family::<Key, u64>("memo-hit-probe", keys * 2 + 1)
+        .expect("benchmark family has a unique name");
+
+    // Populate `keys` retained nodes under a compatible base revision.
+    let populate = Revision::new(1, 1);
+    let reuse = Revision::new(2, 1);
+    runtime
+        .publish_revision(populate, [])
+        .expect("populate revision publishes");
+    runtime
+        .publish_revision(reuse, [])
+        .expect("reuse revision publishes");
+    for key in 0..keys {
+        runtime
+            .query(
+                &family,
+                populate,
+                Key(key),
+                CancellationToken::new(),
+                |_| Ok(QueryOutput::success(key as u64)),
+            )
+            .expect("population query does not cancel or cycle");
+    }
+
+    // Measured sweep: every query is a memo hit (reuse) that exercises the
+    // node-lookup path across the fully populated family. A large prime stride
+    // scatters the probe so successive hits are not index-adjacent.
+    let sweep = keys;
+    let stride = 2_654_435_761usize; // Knuth multiplicative hash constant.
+    let mut checksum = 0u64;
+    let started = Instant::now();
+    for step in 0..sweep {
+        let key = stride.wrapping_mul(step) % keys;
+        let terminal = runtime
+            .query(&family, reuse, Key(key), CancellationToken::new(), |_| {
+                panic!("memo-hit sweep must never compute")
+            })
+            .expect("memo-hit query does not cancel or cycle");
+        checksum = checksum.wrapping_add(terminal.stamp());
+    }
+    let micros = started.elapsed().as_micros();
+    let ns_per_hit = if sweep > 0 {
+        (micros as f64 * 1000.0) / sweep as f64
+    } else {
+        0.0
+    };
+    println!(
+        "{{\"probe\":\"memo-hit\",\"keys\":{},\"sweep\":{},\"total_micros\":{},\"ns_per_hit\":{:.1},\"checksum\":{},\"reuses\":{}}}",
+        keys,
+        sweep,
+        micros,
+        ns_per_hit,
+        checksum,
+        runtime.metrics().reuses,
     );
 }
 
@@ -189,11 +259,16 @@ fn run_batch(
     });
 }
 
-fn parse_args() -> (usize, usize) {
+fn parse_args() -> (usize, usize, bool) {
     let mut keys = DEFAULT_KEYS;
     let mut workers = DEFAULT_WORKERS;
+    let mut memo_hit = false;
     let mut args = env::args().skip(1);
     while let Some(argument) = args.next() {
+        if argument == "--memo-hit" {
+            memo_hit = true;
+            continue;
+        }
         let value = args.next().unwrap_or_else(|| usage(&argument));
         match argument.as_str() {
             "--keys" => keys = parse_positive(&argument, &value),
@@ -201,7 +276,7 @@ fn parse_args() -> (usize, usize) {
             _ => usage(&argument),
         }
     }
-    (keys, workers)
+    (keys, workers, memo_hit)
 }
 
 fn parse_positive(flag: &str, value: &str) -> usize {
@@ -214,6 +289,6 @@ fn parse_positive(flag: &str, value: &str) -> usize {
 
 fn usage(argument: &str) -> ! {
     eprintln!("invalid argument {argument:?}");
-    eprintln!("usage: rue-query-bench [--keys N] [--workers N]");
+    eprintln!("usage: rue-query-bench [--keys N] [--workers N] [--memo-hit]");
     process::exit(2);
 }

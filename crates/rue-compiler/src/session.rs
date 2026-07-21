@@ -884,6 +884,19 @@ pub struct SemanticDependencyInputManifest {
     work: SemanticDependencyManifestWork,
 }
 
+impl SemanticDependencyInputManifest {
+    /// Cheap hash discriminant consistent with `PartialEq`. `Eq` compares the
+    /// full contents, so hashing only these lengths is sound: equal manifests
+    /// share them, and any collision is resolved by exact `Eq`.
+    fn hash_discriminant<H: std::hash::Hasher>(&self, state: &mut H) {
+        use std::hash::Hash;
+        self.definitions.len().hash(state);
+        self.definition_fingerprints.len().hash(state);
+        self.module_imports.len().hash(state);
+        self.body_dependencies.len().hash(state);
+    }
+}
+
 impl std::fmt::Debug for SemanticDependencyInputManifest {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -1775,6 +1788,18 @@ impl PartialEq for InvalidationPlanQueryKey {
 
 impl Eq for InvalidationPlanQueryKey {}
 
+impl std::hash::Hash for InvalidationPlanQueryKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // `Eq` compares the full manifest contents, so any subset of those
+        // fields is a valid hash source: equal keys necessarily agree on the
+        // discriminant, and hash collisions between distinct keys resolve
+        // through exact `Eq` in the memo map. A cheap length discriminant keeps
+        // this low-cardinality control family off a full-manifest hash.
+        self.previous.hash_discriminant(state);
+        self.current.hash_discriminant(state);
+    }
+}
+
 #[derive(Debug, Clone)]
 struct InvalidationPlanCacheEntry {
     key: InvalidationPlanQueryKey,
@@ -1787,7 +1812,7 @@ struct DependencyManifestCacheEntry {
     result: Result<Arc<SemanticDependencyInputManifest>, CompileErrors>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ParseQueryKey {
     source: ExactSourceInput,
     /// Caller-owned source table order. This is presentation state rather than
@@ -1878,7 +1903,7 @@ impl TypedQueryFamily for ParseQuery {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ImportPlanQueryKey {
     source: ExactSourceInput,
     context: crate::ImportDiscoveryContext,
@@ -1932,7 +1957,7 @@ impl TypedQueryFamily for ImportPlanQuery {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ImportClosureQueryKey {
     source: ExactSourceInput,
     context: crate::ImportDiscoveryContext,
@@ -2011,7 +2036,7 @@ struct RirCacheEntry {
     diagnostics: Arc<FrontendDiagnosticSnapshot>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct MergeQueryKey {
     source: ExactSourceInput,
     presentation: Option<Arc<[crate::ModuleId]>>,
@@ -2104,7 +2129,7 @@ impl TypedEquivalentLookupFamily for MergeQuery {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RirQueryKey {
     source: SourceRevision,
 }
@@ -2206,7 +2231,7 @@ impl TypedQueryFamily for ImportDiagnosticQuery {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SemanticQueryKey {
     input: CodegenInputDescriptor,
     imports: CanonicalImportGraph,
@@ -2295,7 +2320,7 @@ impl TypedSecondaryLookupFamily for SemanticQuery {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct DefinitionQueryKey {
     input: SemanticInputDescriptor,
     imports: CanonicalImportGraph,
@@ -2368,7 +2393,7 @@ impl TypedQueryFamily for DefinitionQuery {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct DependencyManifestQueryKey {
     input: SemanticInputDescriptor,
     imports: CanonicalImportGraph,
@@ -2479,7 +2504,7 @@ session_query_metrics_family!(
 );
 
 /// Explicit compiler inputs read by a terminal attempt.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ExactSourceInput {
     revision: SourceRevision,
     metadata: crate::SourceMetadata,

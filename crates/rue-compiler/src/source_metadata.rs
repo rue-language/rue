@@ -30,6 +30,18 @@ pub struct SourceMetadata {
     trusted_standard_library_files: HashSet<FileId>,
 }
 
+impl std::hash::Hash for SourceMetadata {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // This type owns unordered `HashMap`/`HashSet` fields, so `Hash` cannot
+        // be derived. Hashing the root plus the deterministic ascending id index
+        // is consistent with the structural `Eq`: equal metadata necessarily
+        // agree on both, and any collision between distinct metadata is resolved
+        // by exact `Eq` when the typed key indexes the memo map.
+        std::hash::Hash::hash(&self.root_file_id, state);
+        std::hash::Hash::hash(&self.sorted_ids, state);
+    }
+}
+
 impl SourceMetadata {
     /// Validate complete physical and logical path maps for an explicit root.
     ///

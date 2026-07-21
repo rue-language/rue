@@ -77,9 +77,16 @@ impl<K: PartialEq> PartialEq for CompatibilityKey<K> {
 
 impl<K: Eq> Eq for CompatibilityKey<K> {}
 
+impl<K: std::hash::Hash> std::hash::Hash for CompatibilityKey<K> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Agrees with the `PartialEq` above, which compares only `key`.
+        self.key.hash(state);
+    }
+}
+
 impl<K> QueryKey for CompatibilityKey<K>
 where
-    K: Clone + Eq + Send + Sync + 'static,
+    K: Clone + Eq + std::hash::Hash + Send + Sync + 'static,
 {
     fn stable_identity(&self) -> String {
         // Display only. Exact K equality chooses the memo node and the runtime
@@ -451,7 +458,7 @@ pub(crate) struct RevisionedQueryDatabase {
     pub(crate) parse: RevisionedFamily<super::session::ParseQuery>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ModuleQueryKey(ModuleId);
 
 impl QueryKey for ModuleQueryKey {
@@ -526,7 +533,7 @@ enum DeclarationOccurrenceIndexValue {
     Failure(crate::declaration_candidate::DeclarationOccurrenceFailure),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct DeclarationShellQueryKey(crate::declaration_candidate::DeclarationCandidateKey);
 
 impl QueryKey for DeclarationShellQueryKey {
@@ -541,7 +548,7 @@ enum DeclarationShellQueryValue {
     Failure(crate::declaration_candidate::DeclarationShellFailure),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RawConstSyntaxQueryKey(crate::declaration_candidate::DeclarationCandidateKey);
 
 impl QueryKey for RawConstSyntaxQueryKey {
@@ -556,7 +563,7 @@ enum RawConstSyntaxQueryValue {
     Failure(crate::declaration_candidate::RawConstSyntaxFailure),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RawDeclarationSignatureQueryKey(crate::declaration_candidate::DeclarationCandidateKey);
 
 impl QueryKey for RawDeclarationSignatureQueryKey {
@@ -571,7 +578,7 @@ enum RawDeclarationSignatureQueryValue {
     Failure(crate::declaration_candidate::RawDeclarationSignatureFailure),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RawDeclarationBodyQueryKey(crate::declaration_candidate::DeclarationCandidateKey);
 
 impl QueryKey for RawDeclarationBodyQueryKey {
@@ -658,7 +665,7 @@ impl Default for ModuleInputStore {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ResolveImportKey {
     occurrence: crate::ImportOccurrenceKey,
     mode: ImportDemandMode,
@@ -686,7 +693,7 @@ struct ResolveImportValue {
     resolution: Option<crate::CanonicalImportResolution>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct DeclarationImportQueryKey(crate::declaration_candidate::DeclarationImportSiteKey);
 
 impl QueryKey for DeclarationImportQueryKey {
@@ -707,7 +714,7 @@ enum DeclarationImportQueryValue {
     Failure(crate::declaration_candidate::DeclarationImportFailure),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct LookupNameKey {
     module: ModuleId,
     namespace: DefinitionNamespace,
@@ -14291,7 +14298,7 @@ mod tests {
         assert_eq!(execution(&recovered), RequestExecution::Computed);
     }
 
-    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
     struct Key(&'static str);
 
     #[derive(Debug, Clone)]

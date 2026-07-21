@@ -49,7 +49,7 @@ pub(crate) struct TerminalStamp {
 }
 
 pub(crate) trait TypedQueryFamily: std::fmt::Debug + Send + Sync {
-    type Key: Eq + Clone + std::fmt::Debug + Send + Sync;
+    type Key: Eq + std::hash::Hash + Clone + std::fmt::Debug + Send + Sync;
     type Record: std::fmt::Debug + Clone + Send + Sync;
     const MAX_TERMINALS: usize;
     const MAX_TOMBSTONES: usize = Self::MAX_TERMINALS;

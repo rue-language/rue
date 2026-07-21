@@ -3,8 +3,9 @@
 //! This crate owns execution mechanics only. Compiler query families keep
 //! their typed keys, results, equality, and algorithms outside the runtime.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
+use std::hash::Hash;
 use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::rc::Rc;
@@ -14,7 +15,13 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
 
 /// A logical key suitable for a retained query family.
-pub trait QueryKey: Clone + Eq + Send + Sync + 'static {
+///
+/// `Hash` must agree with `Eq`: keys that compare equal must hash equal. The
+/// memo map is keyed by the typed key itself, so hash collisions never conflate
+/// distinct keys — they are resolved by exact `Self::eq`. Implementors that
+/// embed `Arc<[T]>` or map/set payloads must derive or write `Hash`
+/// consistently with their `Eq`.
+pub trait QueryKey: Clone + Eq + Hash + Send + Sync + 'static {
     /// A deterministic user-visible identity within the family.
     ///
     /// This text is presentation only and may collide. Exact `Self::eq`
@@ -861,7 +868,7 @@ impl QueryRuntime {
                 retention_limit,
                 value_equal,
                 evaluator,
-                nodes: Mutex::new(Vec::new()),
+                nodes: Mutex::new(HashMap::new()),
                 retention: Mutex::new(VecDeque::new()),
                 retained_count: AtomicUsize::new(0),
                 retained_nodes: AtomicUsize::new(0),
@@ -1229,8 +1236,14 @@ struct FamilyInner<K: QueryKey, V: Clone + Send + Sync + 'static> {
     retention_limit: usize,
     value_equal: fn(&V, &V) -> bool,
     evaluator: Option<Arc<FamilyEvaluator<K, V>>>,
-    nodes: Mutex<Vec<(K, Arc<Node<V>>)>>,
-    retention: Mutex<VecDeque<RetentionEntry<V>>>,
+    // Hashed typed-key memo index. Exact `K` equality is authoritative: the map
+    // is keyed by the typed key itself, so hash collisions resolve through `Eq`
+    // and never conflate distinct keys. Default `RandomState` (SipHash, keyed
+    // per process) is used deliberately for adversarial resistance. The map is
+    // unordered: eviction order lives in `retention` below (the memo index never
+    // encoded eviction order), so no companion order structure is required.
+    nodes: Mutex<HashMap<K, Arc<Node<K, V>>>>,
+    retention: Mutex<VecDeque<RetentionEntry<K, V>>>,
     retained_count: AtomicUsize,
     retained_nodes: AtomicUsize,
     retained_revisions: Mutex<BTreeMap<Revision, usize>>,
@@ -1255,7 +1268,10 @@ type FamilyEvaluator<K, V> = dyn Fn(&QueryContext, &QueryFamily<K, V>, &K) -> Re
     + Send
     + Sync;
 
-struct Node<V> {
+struct Node<K, V> {
+    /// Typed key owning this node, retained so eviction can locate the node in
+    /// the hashed memo index without a linear scan.
+    key: K,
     identity: NodeIdentity,
     incarnation: u64,
     users: AtomicUsize,
@@ -1264,7 +1280,7 @@ struct Node<V> {
     state: Mutex<NodeState<V>>,
 }
 
-impl<V> fmt::Debug for Node<V> {
+impl<K, V> fmt::Debug for Node<K, V> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Node")
@@ -1283,8 +1299,9 @@ trait ErasedNode: fmt::Debug + Send + Sync {
     ) -> Result<Option<u64>, QueryAbort>;
 }
 
-impl<V> ErasedNode for Node<V>
+impl<K, V> ErasedNode for Node<K, V>
 where
+    K: QueryKey,
     V: Clone + Send + Sync + 'static,
 {
     fn validated_stamp(
@@ -1299,7 +1316,7 @@ where
         if let Some(demand) = &self.demand {
             let request_id = task.next_nested_request();
             let result = demand(task.clone(), request_id);
-            task.record_nested(request_id, self.identity.clone(), &result);
+            task.record_nested(request_id, || self.identity.clone(), &result);
             active.remove(&self.incarnation);
             return match result {
                 TaskQueryResult::Terminal { terminal, .. } => Ok(Some(terminal.stamp)),
@@ -1367,8 +1384,8 @@ struct FamilyToken {
 }
 
 #[derive(Debug)]
-struct RetentionEntry<V> {
-    node: Weak<Node<V>>,
+struct RetentionEntry<K, V> {
+    node: Weak<Node<K, V>>,
     attempt: u64,
 }
 
@@ -1398,7 +1415,7 @@ impl<V> TaskQueryResult<V> {
 struct NodeLease<K: QueryKey, V: Clone + Send + Sync + 'static> {
     family: Weak<FamilyInner<K, V>>,
     key: K,
-    node: Arc<Node<V>>,
+    node: Arc<Node<K, V>>,
 }
 
 impl<K, V> Drop for NodeLease<K, V>
@@ -1420,14 +1437,10 @@ where
         if self.node.users.load(Ordering::Acquire) == 0
             && lock(&self.node.state).attempts.is_empty()
             && nodes
-                .iter()
-                .any(|(key, candidate)| key == &self.key && Arc::ptr_eq(candidate, &self.node))
+                .get(&self.key)
+                .is_some_and(|candidate| Arc::ptr_eq(candidate, &self.node))
         {
-            let index = nodes
-                .iter()
-                .position(|(key, candidate)| key == &self.key && Arc::ptr_eq(candidate, &self.node))
-                .expect("leased node remains indexed");
-            nodes.remove(index);
+            nodes.remove(&self.key);
             family.retained_nodes.fetch_sub(1, Ordering::Relaxed);
         }
     }
@@ -1460,16 +1473,14 @@ where
     /// This exact O(n) Phase 1 bridge supports lifetime-coupled input
     /// identities. ADR-0063 Phase 7 replaces it for high-cardinality families.
     pub fn any_retained_key(&self, mut predicate: impl FnMut(&K) -> bool) -> bool {
-        lock(&self.inner.nodes)
-            .iter()
-            .any(|(key, _)| predicate(key))
+        lock(&self.inner.nodes).keys().any(|key| predicate(key))
     }
 
     /// Caller-owned provenance identities for every retained reusable terminal.
     pub fn retained_origin_request_ids(&self) -> BTreeSet<u64> {
         let nodes = lock(&self.inner.nodes)
-            .iter()
-            .map(|(_, node)| node.clone())
+            .values()
+            .cloned()
             .collect::<Vec<_>>();
         nodes
             .iter()
@@ -1489,11 +1500,13 @@ where
     }
 
     fn node(&self, key: K) -> Result<NodeLease<K, V>, QueryAbort> {
-        // Exact equality, not the display identity, is authoritative. This
-        // Phase 1 O(n) lookup is deliberately retained until the ADR-0063
-        // Phase 7 high-cardinality family migration supplies family hashing.
+        // ADR-0063 Phase 7 hashed memo index. Lookup is O(1) expected on the
+        // typed key's `Hash`, but exact `K` equality remains authoritative:
+        // `HashMap<K, _>` resolves any hash collision through `Eq`, so distinct
+        // keys that hash alike still map to distinct nodes. Display identity is
+        // never consulted for lookup.
         let mut nodes = lock(&self.inner.nodes);
-        let node = if let Some((_, node)) = nodes.iter().find(|(candidate, _)| candidate == &key) {
+        let node = if let Some(node) = nodes.get(&key) {
             node.clone()
         } else {
             let stable_key: Arc<str> = key.stable_identity().into();
@@ -1524,6 +1537,7 @@ where
                     as Arc<dyn Fn(Arc<Task>, u64) -> TaskQueryResult<V> + Send + Sync>
             });
             let node = Arc::new(Node {
+                key: key.clone(),
                 identity: NodeIdentity {
                     family: self.inner.name.clone(),
                     key: stable_key,
@@ -1542,7 +1556,7 @@ where
             let mut registry = lock(&self.core.nodes);
             registry.retain(|_, node| node.strong_count() > 0);
             registry.insert(incarnation, Arc::downgrade(&erased));
-            nodes.push((key.clone(), node.clone()));
+            nodes.insert(key.clone(), node.clone());
             self.inner.retained_nodes.fetch_add(1, Ordering::Relaxed);
             node
         };
@@ -1843,7 +1857,7 @@ where
     fn join(
         &self,
         task: &Arc<Task>,
-        node: &Arc<Node<V>>,
+        node: &Arc<Node<K, V>>,
         attempt_id: u64,
         owner: TaskId,
     ) -> Result<Option<Arc<QueryTerminal<V>>>, QueryAbort> {
@@ -1926,7 +1940,7 @@ where
         result
     }
 
-    fn abort_attempt(&self, node: &Arc<Node<V>>, attempt_id: u64) {
+    fn abort_attempt(&self, node: &Arc<Node<K, V>>, attempt_id: u64) {
         let mut state = lock(&node.state);
         if let Some(index) = state.attempts.iter().position(|item| item.id == attempt_id) {
             state.attempts.remove(index);
@@ -1937,7 +1951,7 @@ where
 
     fn publish(
         &self,
-        node: &Arc<Node<V>>,
+        node: &Arc<Node<K, V>>,
         attempt_id: u64,
         revision: Revision,
         origin_request: u64,
@@ -2065,16 +2079,17 @@ where
                 .fetch_sub(1, Ordering::Relaxed);
             self.inner.retained_count.fetch_sub(1, Ordering::Relaxed);
             if empty && node.users.load(Ordering::Acquire) == 0 {
+                // Reverse-locate the node by its owned typed key (O(1)); the
+                // `ptr_eq` guard ensures a newer incarnation reinserted under
+                // the same key is never evicted in its place.
                 let mut nodes = lock(&self.inner.nodes);
-                let index = nodes
-                    .iter()
-                    .position(|(_, candidate)| Arc::ptr_eq(candidate, &node));
-                if let Some(index) = index
-                    && node.users.load(Ordering::Acquire) == 0
+                if node.users.load(Ordering::Acquire) == 0
                     && lock(&node.state).attempts.is_empty()
-                    && Arc::ptr_eq(&nodes[index].1, &node)
+                    && nodes
+                        .get(&node.key)
+                        .is_some_and(|candidate| Arc::ptr_eq(candidate, &node))
                 {
-                    nodes.remove(index);
+                    nodes.remove(&node.key);
                     self.inner.retained_nodes.fetch_sub(1, Ordering::Relaxed);
                 }
             }
@@ -2289,13 +2304,9 @@ impl QueryContext {
         V: Clone + Send + Sync + 'static,
         F: FnOnce(&QueryContext) -> Result<QueryOutput<V>, QueryAbort>,
     {
-        let node = NodeIdentity {
-            family: family.inner.name.clone(),
-            key: key.stable_identity().into(),
-        };
         let request_id = self.task.next_nested_request();
         let result = if Arc::ptr_eq(&self.task_runtime(), &family.core) {
-            family.query_task(self.task.clone(), key, request_id, compute)
+            family.query_task(self.task.clone(), key.clone(), request_id, compute)
         } else {
             TaskQueryResult::Aborted {
                 abort: QueryAbort::ForeignRuntime,
@@ -2304,7 +2315,16 @@ impl QueryContext {
                 work: Vec::new(),
             }
         };
-        self.task.record_nested(request_id, node, &result);
+        // Lazy display identity: the hot path reuses the terminal's identity in
+        // `record_nested`; the key is only formatted if this request aborted.
+        self.task.record_nested(
+            request_id,
+            move || NodeIdentity {
+                family: family.inner.name.clone(),
+                key: key.stable_identity().into(),
+            },
+            &result,
+        );
         result.into_result()
     }
 
@@ -2322,13 +2342,9 @@ impl QueryContext {
             family.inner.evaluator.is_some(),
             "closure-free dependency requests require a registered evaluator"
         );
-        let node = NodeIdentity {
-            family: family.inner.name.clone(),
-            key: key.stable_identity().into(),
-        };
         let request_id = self.task.next_nested_request();
         let result = if Arc::ptr_eq(&self.task_runtime(), &family.core) {
-            family.query_task_registered(self.task.clone(), key, request_id)
+            family.query_task_registered(self.task.clone(), key.clone(), request_id)
         } else {
             TaskQueryResult::Aborted {
                 abort: QueryAbort::ForeignRuntime,
@@ -2337,7 +2353,16 @@ impl QueryContext {
                 work: Vec::new(),
             }
         };
-        self.task.record_nested(request_id, node, &result);
+        // Lazy display identity: the hot path reuses the terminal's identity in
+        // `record_nested`; the key is only formatted if this request aborted.
+        self.task.record_nested(
+            request_id,
+            move || NodeIdentity {
+                family: family.inner.name.clone(),
+                key: key.stable_identity().into(),
+            },
+            &result,
+        );
         result.into_result()
     }
 
@@ -2373,7 +2398,16 @@ impl Task {
         self.core.next_task.fetch_add(1, Ordering::Relaxed)
     }
 
-    fn record_nested<V>(&self, id: u64, node: NodeIdentity, result: &TaskQueryResult<V>) {
+    /// Records a nested request's lifecycle. The display identity is materialized
+    /// lazily: the hot memo-hit/compute path reuses the terminal's already-built
+    /// `NodeIdentity`, so no `stable_identity()` is formatted per request. Only
+    /// the cold abort branch invokes `fallback_node`, which formats the key.
+    fn record_nested<V>(
+        &self,
+        id: u64,
+        fallback_node: impl FnOnce() -> NodeIdentity,
+        result: &TaskQueryResult<V>,
+    ) {
         let attempt = match result {
             TaskQueryResult::Terminal {
                 terminal,
@@ -2381,7 +2415,7 @@ impl Task {
                 work,
             } => NestedQueryAttempt {
                 id,
-                node,
+                node: terminal.node.clone(),
                 node_incarnation: Some(terminal.node_incarnation),
                 origin_request: terminal.origin_request_id(),
                 execution: *execution,
@@ -2399,7 +2433,7 @@ impl Task {
                 work,
             } => NestedQueryAttempt {
                 id,
-                node,
+                node: fallback_node(),
                 node_incarnation: None,
                 origin_request: id,
                 execution: RequestExecution::Aborted,
@@ -2825,6 +2859,17 @@ mod tests {
 
     fn revision(id: u64) -> Revision {
         Revision::new(id, id)
+    }
+
+    // Deterministic single-hasher probe used only to demonstrate that two keys
+    // land in the same bucket. The live memo map keys on std `RandomState`
+    // (SipHash); this fixed-seed `DefaultHasher` just makes the collision
+    // assertion reproducible.
+    fn hash_of<K: std::hash::Hash>(key: &K) -> u64 {
+        use std::hash::Hasher;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        hasher.finish()
     }
 
     fn publish_empty(runtime: &QueryRuntime, revisions: impl IntoIterator<Item = Revision>) {
@@ -3560,6 +3605,168 @@ mod tests {
         assert_eq!(runtime.metrics().claims, 4);
     }
 
+    // ADR-0063 Phase 7 hashed-memo-index focused coverage.
+
+    #[test]
+    fn forced_hash_collision_keys_resolve_to_distinct_nodes_via_eq() {
+        // A key whose `Hash` is a constant: every value collides in one bucket,
+        // so the memo map must separate distinct keys through exact `Eq` alone.
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        struct OneBucketKey(u64);
+
+        impl std::hash::Hash for OneBucketKey {
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                state.write_u8(0);
+            }
+        }
+
+        impl QueryKey for OneBucketKey {
+            fn stable_identity(&self) -> String {
+                // Distinct display identities to prove lookup never consults the
+                // display string: only typed `Eq` chooses the node.
+                format!("one-bucket:{}", self.0)
+            }
+        }
+
+        assert_ne!(OneBucketKey(1), OneBucketKey(2));
+        assert_eq!(hash_of(&OneBucketKey(1)), hash_of(&OneBucketKey(2)));
+
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let family = runtime
+            .family::<OneBucketKey, u64>("one-bucket", 16)
+            .unwrap();
+        let first = runtime
+            .query(
+                &family,
+                revision(1),
+                OneBucketKey(1),
+                CancellationToken::new(),
+                |_| Ok(QueryOutput::success(10)),
+            )
+            .unwrap();
+        let second = runtime
+            .query(
+                &family,
+                revision(1),
+                OneBucketKey(2),
+                CancellationToken::new(),
+                |_| Ok(QueryOutput::success(20)),
+            )
+            .unwrap();
+        // Two colliding keys produced two distinct memo nodes and two bodies.
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert_ne!(first.outcome(), second.outcome());
+        assert_eq!(family.retention().memo_nodes, 2);
+        assert_eq!(runtime.metrics().claims, 2);
+        // Re-querying an existing colliding key reuses its node (no new claim),
+        // proving the `Eq` fallback finds the right bucket entry.
+        let reuse = runtime
+            .query(
+                &family,
+                revision(1),
+                OneBucketKey(1),
+                CancellationToken::new(),
+                |_| panic!("colliding key 1 must reuse its retained terminal"),
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&first, &reuse));
+        assert_eq!(runtime.metrics().claims, 2);
+    }
+
+    #[test]
+    fn evict_then_recreate_in_hashed_index_yields_new_incarnation() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1), revision(2)]);
+        // Zero-retention leaf: its node is evicted from the hashed index as soon
+        // as no lease holds it, forcing a fresh incarnation on the next request.
+        let leaf = runtime.family::<Key, u64>("recreate-leaf", 0).unwrap();
+        let parent = runtime.family::<Key, u64>("recreate-parent", 4).unwrap();
+        let observe = |revision| {
+            let leaf = leaf.clone();
+            runtime
+                .query(
+                    &parent,
+                    revision,
+                    Key("root"),
+                    CancellationToken::new(),
+                    move |context| {
+                        context.query(&leaf, Key("leaf"), |_| Ok(QueryOutput::success(1)))?;
+                        Ok(QueryOutput::success(0))
+                    },
+                )
+                .unwrap()
+        };
+        let first = observe(revision(1));
+        // The zero-retention leaf node left the hashed index entirely.
+        assert_eq!(leaf.retention().memo_nodes, 0);
+        let second = observe(revision(2));
+        let first_incarnation = first.dependencies()[0].incarnation;
+        let second_incarnation = second.dependencies()[0].incarnation;
+        assert_ne!(
+            first_incarnation, second_incarnation,
+            "eviction followed by recreation must mint a distinct incarnation"
+        );
+    }
+
+    #[test]
+    fn concurrent_same_key_requests_join_one_hashed_computation() {
+        let runtime = QueryRuntime::new(8);
+        publish_empty(&runtime, [revision(1)]);
+        let family = runtime.family::<Key, u64>("concurrent-join", 16).unwrap();
+        let waiters = 6;
+        let (started_tx, started_rx) = mpsc::channel();
+        let (finish_tx, finish_rx) = mpsc::channel();
+        let owner_runtime = runtime.clone();
+        let owner_family = family.clone();
+        let owner = thread::spawn(move || {
+            owner_runtime
+                .query(
+                    &owner_family,
+                    revision(1),
+                    Key("shared"),
+                    CancellationToken::new(),
+                    |_| {
+                        started_tx.send(()).unwrap();
+                        finish_rx.recv().unwrap();
+                        Ok(QueryOutput::success(7))
+                    },
+                )
+                .unwrap()
+        });
+        started_rx.recv().unwrap();
+        let joins_before = runtime.metrics().joins;
+        let mut joiners = Vec::new();
+        for _ in 0..waiters {
+            let runtime = runtime.clone();
+            let family = family.clone();
+            joiners.push(thread::spawn(move || {
+                runtime
+                    .query(
+                        &family,
+                        revision(1),
+                        Key("shared"),
+                        CancellationToken::new(),
+                        |_| panic!("a joiner on the shared key must not compute"),
+                    )
+                    .unwrap()
+            }));
+        }
+        while runtime.metrics().joins < joins_before + waiters as u64 {
+            thread::yield_now();
+        }
+        finish_tx.send(()).unwrap();
+        let owner_terminal = owner.join().unwrap();
+        for joiner in joiners {
+            let terminal = joiner.join().unwrap();
+            assert!(Arc::ptr_eq(&terminal, &owner_terminal));
+        }
+        // Exactly one node was claimed for the shared key; all waiters joined it.
+        assert_eq!(runtime.metrics().claims, 1);
+        assert_eq!(runtime.metrics().joins, waiters as u64);
+        assert_eq!(family.retention().memo_nodes, 1);
+    }
+
     #[test]
     fn cross_revision_reuse_validates_every_exact_input_leaf() {
         let runtime = QueryRuntime::new(1);
@@ -4223,6 +4430,17 @@ mod tests {
         #[derive(Debug, Clone, PartialEq, Eq)]
         struct CollidingKey(u8);
 
+        // Force every key into a single hash bucket. Distinct keys must still
+        // resolve to distinct memo nodes through exact `Eq`; hashing is only a
+        // bucketing hint. `Hash` agrees with `Eq` (all keys hash identically,
+        // which is permitted — only inequality of hashes across equal values
+        // would be a bug).
+        impl std::hash::Hash for CollidingKey {
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                state.write_u8(0);
+            }
+        }
+
         impl QueryKey for CollidingKey {
             fn stable_identity(&self) -> String {
                 "collision".to_owned()
@@ -4258,10 +4476,15 @@ mod tests {
                 |_| Ok(QueryOutput::success(2)),
             )
             .unwrap();
+        // The two keys are deliberately unequal yet hash into one bucket, so the
+        // memo map must fall back to exact `Eq` to keep them apart.
+        assert_ne!(CollidingKey(1), CollidingKey(2));
+        assert_eq!(hash_of(&CollidingKey(1)), hash_of(&CollidingKey(2)));
         assert_eq!(first.node().family(), "colliding-keys");
         assert_eq!(first.node().key(), "collision");
         // The schedule-dependent incarnation stays out of canonical display
-        // ordering while exact K equality still chooses distinct memo nodes.
+        // ordering while exact K equality still chooses distinct memo nodes even
+        // under a forced hash collision.
         assert_eq!(first.node(), second.node());
         assert!(!Arc::ptr_eq(&first, &second));
         assert_ne!(first.outcome(), second.outcome());
