@@ -99,7 +99,7 @@ pub struct FrontendDiagnosticSnapshot {
 
 /// Producer inputs that can change presentation without changing the stable
 /// source revision or public query stage.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum DiagnosticAttemptProvenance {
     Canonical,
     Presentation(Arc<[ModuleId]>),
