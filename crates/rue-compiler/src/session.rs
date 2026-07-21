@@ -5268,18 +5268,67 @@ impl CompilerSession {
                 let mut queried_ordinary = Vec::new();
                 let mut queried_specialized = Vec::new();
                 let mut queried_anonymous = Vec::new();
-                let mut specialization_requests = 0usize;
+                // Chain-depth budget for cross-body specialization runaway.
+                //
+                // Invariant: `instance_depth[S]` is the length of the shortest
+                // chain of *specialization* instantiation edges on any traversal
+                // path from a root to `S`. Root bodies (`main`, destructors,
+                // C-exports, owned-destructor closures) are depth 0. Traversing a
+                // body at depth `d` publishes each referenced callable at depth
+                // `d + 1` when that callable is itself a specialization, or at
+                // depth `d` otherwise (ordinary/anonymous bodies pass the count
+                // through without consuming it). This reproduces the old
+                // whole-program expansion-wave semantics
+                // (`MAX_SPECIALIZATION_ROUNDS` waves), where one wave of newly
+                // discovered specializations advanced the counter once and
+                // ordinary sema worklists did not: the depth of a specialization
+                // equals the wave in which it would first have been produced.
+                // Breadth (arbitrarily many specializations at shallow depth) is
+                // therefore free; only genuine nested instantiation chains
+                // (`f<T>` -> `f<Wrap<T>>` -> `f<Wrap<Wrap<T>>>` -> ...) accrue
+                // depth and eventually exceed the budget.
+                //
+                // All state is re-initialized per `'closure` restart, so the map
+                // is simply recomputed from scratch each time an anonymous
+                // representative changes; no cross-restart carry is required.
+                let mut instance_depth: BTreeMap<crate::FunctionInstanceKey, usize> =
+                    roots.iter().map(|root| (root.clone(), 0usize)).collect();
+                let record_depth =
+                    |instance_depth: &mut BTreeMap<crate::FunctionInstanceKey, usize>,
+                     key: &crate::FunctionInstanceKey,
+                     depth: usize| {
+                        instance_depth
+                            .entry(key.clone())
+                            .and_modify(|existing| *existing = (*existing).min(depth))
+                            .or_insert(depth);
+                    };
+                let child_depth = |parent_depth: usize, child: &crate::FunctionInstanceKey| {
+                    if matches!(child, crate::FunctionInstanceKey::Specialization { .. }) {
+                        parent_depth + 1
+                    } else {
+                        parent_depth
+                    }
+                };
                 body_produced_anonymous = stable_produced_seed.clone();
                 body_query_errors.clear();
                 let mut representative_changed = false;
                 while let Some(mut instance) =
                     priority_pending.pop().or_else(|| pending.pop_first())
                 {
+                    let popped_depth = instance_depth.get(&instance).copied().unwrap_or(0);
                     instance = canonicalize_reached_anonymous_member(
                         &instance,
                         &body_produced_anonymous,
                         &query_anonymous_nominals,
                     );
+                    // Canonicalization may rewrite the popped key to its
+                    // canonical anonymous representative; carry the depth onto
+                    // the canonical key so it survives the rewrite.
+                    record_depth(&mut instance_depth, &instance, popped_depth);
+                    let current_depth = instance_depth
+                        .get(&instance)
+                        .copied()
+                        .unwrap_or(popped_depth);
                     let deferred_producers =
                         crate::revisioned_query_database::collect_instance_anonymous_nominals(
                             &instance,
@@ -5317,6 +5366,13 @@ impl CompilerSession {
                         // keeps this consumer below every exact producer and
                         // therefore retries it only after those bodies have
                         // published terminals.
+                        for producer in deferred_producers.iter() {
+                            record_depth(
+                                &mut instance_depth,
+                                producer,
+                                child_depth(current_depth, producer),
+                            );
+                        }
                         priority_pending.push(instance);
                         priority_pending.extend(deferred_producers);
                         continue;
@@ -5325,31 +5381,34 @@ impl CompilerSession {
                     if !visited.insert(instance.clone()) {
                         continue;
                     }
-                    if matches!(instance, crate::FunctionInstanceKey::Specialization { .. }) {
-                        if specialization_requests == rue_air::specialize::MAX_SPECIALIZATION_ROUNDS
-                        {
-                            // A reached callable may never be omitted from the
-                            // published closure. In the one-body query model the
-                            // coordinator, rather than one persistent specializer,
-                            // observes the transitive runaway and therefore owns
-                            // the ordinary comptime-depth diagnostic.
-                            let name = stable_function_definition_root(&instance)
-                                .map(crate::StableDefinitionKey::name)
-                                .unwrap_or("<anonymous>");
-                            body_query_errors.insert(
-                                instance.clone(),
-                                crate::CompileErrors::from(crate::CompileError::without_span(
-                                    rue_error::ErrorKind::ComptimeEvaluationFailed {
-                                        reason: format!(
-                                            "specialization of '{name}' exceeded the maximum nesting depth ({}); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?",
-                                            rue_air::specialize::MAX_SPECIALIZATION_ROUNDS
-                                        ),
-                                    },
-                                )),
-                            );
-                            break;
-                        }
-                        specialization_requests += 1;
+                    if matches!(instance, crate::FunctionInstanceKey::Specialization { .. })
+                        && current_depth > rue_air::specialize::MAX_SPECIALIZATION_ROUNDS
+                    {
+                        // A reached callable may never be omitted from the
+                        // published closure. In the one-body query model the
+                        // coordinator, rather than one persistent specializer,
+                        // observes the transitive runaway and therefore owns
+                        // the ordinary comptime-depth diagnostic. We fail only
+                        // when this instance's *nesting depth* (its shortest
+                        // specialization instantiation chain from a root)
+                        // exceeds the budget, matching the per-body comptime
+                        // evaluator's `> MAX_SPECIALIZATION_ROUNDS` check and
+                        // permitting arbitrarily many shallow specializations.
+                        let name = stable_function_definition_root(&instance)
+                            .map(crate::StableDefinitionKey::name)
+                            .unwrap_or("<anonymous>");
+                        body_query_errors.insert(
+                            instance.clone(),
+                            crate::CompileErrors::from(crate::CompileError::without_span(
+                                rue_error::ErrorKind::ComptimeEvaluationFailed {
+                                    reason: format!(
+                                        "specialization of '{name}' exceeded the maximum nesting depth ({}); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?",
+                                        rue_air::specialize::MAX_SPECIALIZATION_ROUNDS
+                                    ),
+                                },
+                            )),
+                        );
+                        break;
                     }
                     let key = crate::body_query::BodyQueryKey {
                         instance: instance.clone(),
@@ -5484,6 +5543,11 @@ impl CompilerSession {
                             priority_pending.push(instance.clone());
                             for producer in producers.iter() {
                                 if !visited.contains(producer) {
+                                    record_depth(
+                                        &mut instance_depth,
+                                        producer,
+                                        child_depth(current_depth, producer),
+                                    );
                                     priority_pending.push(producer.clone());
                                     scheduled = true;
                                 }
@@ -5622,7 +5686,7 @@ impl CompilerSession {
                                     method.has_self && method.name.as_ref() == "__drop"
                                 })
                             {
-                                pending.insert(crate::FunctionInstanceKey::AnonymousMember {
+                                let drop_glue = crate::FunctionInstanceKey::AnonymousMember {
                                     owner: Box::new(crate::TypeInstanceKey::Nominal(
                                         crate::NominalInstanceKey::Anonymous(
                                             nominal.identity.clone(),
@@ -5632,7 +5696,13 @@ impl CompilerSession {
                                         kind: crate::AnonymousMemberKind::Destructor,
                                         name: Arc::from("__drop"),
                                     },
-                                });
+                                };
+                                record_depth(
+                                    &mut instance_depth,
+                                    &drop_glue,
+                                    child_depth(current_depth, &drop_glue),
+                                );
+                                pending.insert(drop_glue);
                             }
                         }
                     }
@@ -5647,6 +5717,16 @@ impl CompilerSession {
                             )
                             && callable_has_any_body(callable)
                         {
+                            // Publish each referenced callable at this body's
+                            // depth, +1 when the callable is itself a
+                            // specialization. This is the sole edge through
+                            // which `Specialization` instances enter the
+                            // worklist, so it governs the chain-depth budget.
+                            record_depth(
+                                &mut instance_depth,
+                                callable,
+                                child_depth(current_depth, callable),
+                            );
                             pending.insert(callable.clone());
                         }
                         if let crate::body_query::BodyReference::Type(ty) = reference {
@@ -10986,6 +11066,62 @@ mod tests {
                 ..CompileOptions::default()
             })
             .unwrap();
+    }
+
+    #[test]
+    fn many_shallow_specializations_compile() {
+        // Regression (RUE-1083): breadth is not depth. A program may reach far
+        // more than `MAX_SPECIALIZATION_ROUNDS` distinct specializations as long
+        // as each sits at a shallow instantiation depth. Here `tag` has a
+        // compile-time-known base case, so every `tag(k)` is a leaf
+        // specialization at nesting depth 1; `main` reaches
+        // `MAX_SPECIALIZATION_ROUNDS + 8` of them. The retired total-count budget
+        // failed this program with E1200; the chain-depth budget compiles it.
+        let count = rue_air::specialize::MAX_SPECIALIZATION_ROUNDS + 8;
+        let mut body = String::from("fn main() -> i32 {\n    let mut total = 0;\n");
+        for k in 0..count {
+            body.push_str(&format!("    total = total + tag({k});\n"));
+        }
+        body.push_str("    total\n}\n");
+        let program = format!("fn tag(comptime n: i32) -> i32 {{ n }}\n{body}");
+        let valid = snapshot(&[(1, "/p/main.rue", "main.rue", program.as_str())], 1);
+        let mut session = CompilerSession::new();
+        session.update(&valid).into_result().unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .expect("many shallow specializations must compile");
+    }
+
+    #[test]
+    fn cross_body_specialization_chain_still_overflows() {
+        // The chain-depth budget must still reject unbounded cross-body
+        // instantiation chains: `deepen<n>` instantiates `deepen<n + 1>`, so
+        // each body publishes a strictly deeper specialization and the nesting
+        // depth grows without bound. This must fail with the same E1200
+        // (`maximum nesting depth`) diagnostic as before.
+        let invalid = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn deepen(comptime n: i32) -> i32 { deepen(n + 1) }\n\
+                 fn main() -> i32 { deepen(0) }",
+            )],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&invalid).into_result().unwrap();
+        let errors = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap_err();
+        assert!(
+            matches!(
+                errors.first().map(|error| &error.kind),
+                Some(ErrorKind::ComptimeEvaluationFailed { reason })
+                    if reason.contains("maximum nesting depth")
+            ),
+            "runaway cross-body specialization chain must overflow with E1200"
+        );
     }
 
     #[test]
