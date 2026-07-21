@@ -41,6 +41,16 @@ use crate::typed_query_store::{TerminalKind, TypedQueryFamily};
 
 const IMPORT_INPUT_REVISION_RETENTION: usize = 64;
 const MODULE_QUERY_MEMO_RETENTION: usize = 4096;
+// Body-keyed families must retain the entire reached-body universe of one
+// cold compile. Terminal eviction below that size is not merely a cache miss:
+// the body-produced-anonymous projection resolves through the retained
+// BodyTransaction terminal, so evicting a still-reachable body's terminal
+// makes the projection fail (surfaced as a "did not publish a terminal"
+// internal diagnostic), and every coordinator restart recomputes each evicted
+// body from scratch. examples/caldera reaches more than 10,000 bodies and
+// exceeded the module-family cap (RUE-1083). RUE-1028's database-owned
+// reachability should replace this fixed cap with exact rooted membership.
+const BODY_QUERY_MEMO_RETENTION: usize = 65536;
 // A semantic batch commonly requests hundreds of exact declaration shells.
 // Keep one large batch reusable after its active pins drop; the runtime still
 // bounds global retention deterministically.
@@ -6726,7 +6736,7 @@ impl Default for RevisionedQueryDatabase {
         let body_transactions = runtime
             .family_with_equality(
                 "compiler.body-transaction",
-                MODULE_QUERY_MEMO_RETENTION,
+                BODY_QUERY_MEMO_RETENTION,
                 crate::body_query::transaction_equal,
             )
             .expect("the BodyTransaction family has one canonical name");
@@ -6738,7 +6748,7 @@ impl Default for RevisionedQueryDatabase {
         let body_produced_anonymous = runtime
             .family_with_equality_and_evaluator(
                 "compiler.body-produced-anonymous",
-                MODULE_QUERY_MEMO_RETENTION,
+                BODY_QUERY_MEMO_RETENTION,
                 |left: &crate::body_query::BodyProducedAnonymousNominals,
                  right: &crate::body_query::BodyProducedAnonymousNominals| {
                     left == right
@@ -8048,7 +8058,7 @@ impl Default for RevisionedQueryDatabase {
             canonical_bodies: runtime
                 .family_with_equality(
                     "compiler.canonical-body",
-                    MODULE_QUERY_MEMO_RETENTION,
+                    BODY_QUERY_MEMO_RETENTION,
                     |left: &crate::body_query::CanonicalBody,
                      right: &crate::body_query::CanonicalBody| left == right,
                 )
@@ -8056,7 +8066,7 @@ impl Default for RevisionedQueryDatabase {
             body_references: runtime
                 .family_with_equality(
                     "compiler.body-references",
-                    MODULE_QUERY_MEMO_RETENTION,
+                    BODY_QUERY_MEMO_RETENTION,
                     |left: &crate::body_query::BodyReferences,
                      right: &crate::body_query::BodyReferences| left == right,
                 )
