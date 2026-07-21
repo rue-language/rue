@@ -2,8 +2,8 @@
 
 use super::{InventoryScope, ModelGapAudit, ModelGapRegistration};
 use rue_oracle::{
-    ExternalDependencyKind, ImplementationDefinedKind, ModelGapKind, SemanticGapKind,
-    UnsupportedIntrinsicKind, UnsupportedRuntimeCallKind,
+    ExternalDependencyKind, ModelGapKind, SemanticGapKind, UnsupportedIntrinsicKind,
+    UnsupportedRuntimeCallKind,
 };
 use std::fmt;
 
@@ -72,39 +72,9 @@ impl Entry {
 /// values moved, which the RUE-987 sweep re-verified.
 const ENTRIES: &[Entry] = &[
     Entry::new(
-        "cli.abi",
-        "string_return_by_value",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.abi",
-        "string_return_with_args",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_slots",
-        "dbg_string_from_field",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_slots",
-        "store_string_from_field",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.aggregate_slots",
-        "string_array_pass_by_value",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
         "cli.arraybuf_library",
         "arraybuf_strbuf_elements",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
@@ -114,87 +84,21 @@ const ENTRIES: &[Entry] = &[
         &[],
     ),
     Entry::new(
-        "cli.borrow_sibling_moves",
-        "byref_method_receiver_stays_usable_control",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.builtin_method_infer",
-        "capacity_compare_literal_compiles",
-        implementation_defined(ImplementationDefinedKind::StringCapacityValue),
-        &[],
-    ),
-    Entry::new(
-        "cli.byref_params",
-        "inout_whole_string_reassign",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
         "cli.const_init",
         "string_const_prints_and_measures",
         runtime_call(UnsupportedRuntimeCallKind::Println),
         &[],
     ),
     Entry::new(
-        "cli.differential_opt",
-        "fixed_string_inout_forwarding_and_projected_lvalues_across_opt_levels",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.divergence",
-        "break_mid_block_no_double_drop",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.divergence",
-        "return_mid_block_in_untaken_branch",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
         "cli.enum_payloads",
         "returned_nested_json_drops_safely",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.field_type_inference",
-        "string_field_method_receiver_anchors_literal",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.for_loops",
-        "for_chars_invalid_utf8_traps",
-        semantic(SemanticGapKind::TextProjectionRead),
+        runtime_call(UnsupportedRuntimeCallKind::Println),
         &[],
     ),
     Entry::new(
         "cli.for_loops",
         "for_chars_lossy_replaces_raw_invalid_bytes",
         intrinsic(UnsupportedIntrinsicKind::ByteCopy),
-        &[],
-    ),
-    Entry::new(
-        "cli.for_loops",
-        "for_chars_lossy_valid_dbg",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.for_loops",
-        "for_chars_scalars_dbg",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.for_loops",
-        "for_string_bytes_dbg",
-        semantic(SemanticGapKind::TextProjectionRead),
         &[],
     ),
     // std.fs File IO v0 (RUE-712, ADR-0057): pure-Rue fs over @syscall. The
@@ -206,55 +110,55 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.fs_file_io",
         "fs_roundtrip",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_append",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_drop_close_reopen",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_close_then_reopen_safe",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_read_full_buffer_invalid",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_read_whole_file_loop",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_reserve_then_read_fills",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_open_missing_not_found",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_write_to_readonly",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     // std.fs v1 follow-ups (ADR-0057 "Future Work"): seek/tell, fstat/newfstatat
@@ -266,50 +170,44 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.fs_file_io",
         "fs_seek_set_read_back",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &["aarch64-linux", "x86-64-linux"],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_seek_cur_end_relative",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &["aarch64-linux", "x86-64-linux"],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_stat_size_and_is_file",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &["aarch64-linux", "x86-64-linux"],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_metadata_by_path_size",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &["aarch64-linux", "x86-64-linux"],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_rename_old_gone_new_present",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &["aarch64-linux", "x86-64-linux"],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_remove_file_then_open_notfound",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &["aarch64-linux", "x86-64-linux"],
     ),
     Entry::new(
         "cli.fs_file_io",
         "fs_mkdir_stat_is_dir_then_rmdir",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &["aarch64-linux", "x86-64-linux"],
-    ),
-    Entry::new(
-        "cli.ice_regressions",
-        "struct_field_string_eq_rue94",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
     ),
     // ADR-0052 phase 3 (RUE-974): the compact-layout CLI cases reach a field
     // through `@field_ptr`, which the oracle model does not model (same gap as
@@ -358,18 +256,6 @@ const ENTRIES: &[Entry] = &[
     // RUE-978: the byte-surface behavior cases allocate through @alloc_bytes,
     // which the oracle model does not model.
     Entry::new(
-        "cli.partial_move_depth",
-        "disjoint_sibling_after_subfield_move_ok",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.partial_move_depth",
-        "disjoint_sibling_element_move_ok",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
         "cli.pointers",
         "ptr_offset_forward_on_mmap_pointer",
         external(ExternalDependencyKind::SystemCall),
@@ -378,7 +264,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.print",
         "print_borrows_string_reusable_after_call",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
@@ -408,31 +294,31 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.print",
         "println_composed_with_to_string_and_concat",
-        semantic(SemanticGapKind::TextProjectionRead),
+        runtime_call(UnsupportedRuntimeCallKind::Println),
         &[],
     ),
     Entry::new(
         "cli.programs",
         "dbg_string_then_use",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
         "cli.programs",
         "string_builder_push_str",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
         "cli.raw_ptr_and_method_name",
         "string_push_str_on_mut_ok",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
         "cli.reserved_names",
         "builtin_method_name_allowed",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
@@ -496,12 +382,6 @@ const ENTRIES: &[Entry] = &[
         &[],
     ),
     Entry::new(
-        "cli.std_byte_bridges",
-        "all_three_representations_round_trip_without_consuming_sources",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
         "cli.std_m3",
         "std_sort_m3",
         intrinsic(UnsupportedIntrinsicKind::ByteRead),
@@ -510,19 +390,13 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.std_m3",
         "std_strbuf_chars_share_core_decoder",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_m3",
-        "std_strbuf_chars_strict_invalid_utf8_traps",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
         "cli.std_m3",
         "std_strbuf_compiler_cutover",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
@@ -540,7 +414,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.std_m3",
         "std_strings_m3",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
@@ -557,152 +431,38 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "cli.std_strbuf",
-        "canonical_identity_drives_string_semantics",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_strbuf",
-        "generic_inout_accepts_literal_initialized_strbuf",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_strbuf",
         "mem_swap_exchanges_move_only_strbufs",
         intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
         "cli.std_strbuf",
-        "source_byte_range_out_of_bounds",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_strbuf",
-        "source_literal_promotion_self_append_and_adjacent_bytes",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_strbuf",
         "source_owned_algorithms_use_packed_bytes",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.std_strbuf",
-        "source_zero_capacity_empty_ranges_and_early_free",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
         "cli.std_strmap",
         "std_strmap_smoke",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.str_fixed_type",
-        "str_fixed_exact_borrow_is_by_reference",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.str_fixed_type",
-        "str_fixed_exact_inout_is_by_reference",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.str_fixed_type",
-        "str_fixed_len_and_first_byte",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.str_fixed_type",
-        "str_fixed_len_independent_of_capacity",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.str_fixed_type",
-        "str_fixed_packed_byte_indexing",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.str_fixed_type",
-        "str_fixed_param_roundtrip",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.str_type",
-        "str_preserves_explicit_strbuf_literal_context",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.str_type",
-        "strbuf_field_borrow_str_view",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.str_type",
-        "strbuf_read_through_borrow_str_view_values",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
         "cli.strbuf_library",
         "strbuf_new_push_str_len_print",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
         "cli.strbuf_library",
         "strbuf_with_capacity_concat",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.string_byte_access",
-        "borrow_rooted_strbuf_byte_reads",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.string_byte_access",
-        "substring_byte_range",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.string_byte_access",
-        "substring_out_of_range_traps",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.string_byte_access",
-        "substring_result_is_mutable",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.string_growth",
-        "growth_does_not_corrupt_neighbor",
-        semantic(SemanticGapKind::TextProjectionRead),
+        runtime_call(UnsupportedRuntimeCallKind::Println),
         &[],
     ),
     Entry::new(
         "cli.string_growth",
         "interleaved_repeated_growth_stress",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
@@ -720,73 +480,49 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.string_mutation_receivers",
         "field_receiver_push_str",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
         "cli.string_mutation_receivers",
         "inout_param_receiver_push_str",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
         "cli.string_mutation_receivers",
         "self_field_receiver_via_method",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
         "cli.string_mutation_value_position",
         "statement_position_mutation_still_runs",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.string_phase1",
-        "concat_chained_and_mutable_result",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.string_phase1",
-        "concat_is_concatenation_not_addition",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.string_phase1",
-        "contains_and_starts_with",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
         "cli.string_phase1",
         "to_string_all_integer_widths",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "cli.string_phase1",
-        "to_string_demo",
-        semantic(SemanticGapKind::TextProjectionRead),
+        runtime_call(UnsupportedRuntimeCallKind::Println),
         &[],
     ),
     Entry::new(
         "cli.string_phase1",
         "to_string_i32_no_cast_needed",
-        semantic(SemanticGapKind::TextProjectionRead),
+        runtime_call(UnsupportedRuntimeCallKind::Println),
         &[],
     ),
     Entry::new(
         "cli.try_operator",
         "try_string_payload",
-        semantic(SemanticGapKind::TextProjectionRead),
+        runtime_call(UnsupportedRuntimeCallKind::Println),
         &[],
     ),
     Entry::new(
         "cli.try_operator",
         "try_unwrap_and_short_circuit",
-        semantic(SemanticGapKind::TextProjectionRead),
+        runtime_call(UnsupportedRuntimeCallKind::Println),
         &[],
     ),
     Entry::new(
@@ -798,43 +534,25 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.wildcard_payload_binding",
         "discarded_non_copy_payload_drops_once",
-        semantic(SemanticGapKind::TextProjectionRead),
+        runtime_call(UnsupportedRuntimeCallKind::Println),
         &[],
     ),
     Entry::new(
         "cli.zst_drop_glue",
         "enum_payload_fields_keep_drop_offsets",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
         "cli.zst_drop_glue",
         "nested_struct_array_keeps_drop_offsets_and_stride",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
     Entry::new(
         "cli.zst_drop_glue",
         "struct_fields_keep_drop_offsets",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "string_field",
-        "string_field_rebound_then_eq",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "string_field",
-        "string_struct_field_eq_false",
-        semantic(SemanticGapKind::TextProjectionRead),
-        &[],
-    ),
-    Entry::new(
-        "string_field",
-        "string_struct_field_eq_true",
-        semantic(SemanticGapKind::TextProjectionRead),
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
 ];
@@ -904,16 +622,8 @@ const fn runtime_call(kind: UnsupportedRuntimeCallKind) -> ModelGapKind {
     ModelGapKind::Semantic(SemanticGapKind::RuntimeCall(kind))
 }
 
-const fn semantic(kind: SemanticGapKind) -> ModelGapKind {
-    ModelGapKind::Semantic(kind)
-}
-
 const fn external(kind: ExternalDependencyKind) -> ModelGapKind {
     ModelGapKind::ExternalDependency(kind)
-}
-
-const fn implementation_defined(kind: ImplementationDefinedKind) -> ModelGapKind {
-    ModelGapKind::ImplementationDefined(kind)
 }
 
 #[cfg(test)]
