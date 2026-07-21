@@ -126,10 +126,10 @@ fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
         heap: Vec::new(),
     };
     let mut frame = Frame {
-        // Deliberately inject the oracle's text runtime representation under
-        // non-text Pair projection metadata. Value shape alone must not turn
-        // this broken state into a registrable TextProjection gap.
-        params: vec![Some(Value::string("not a Pair")), None],
+        // Deliberately inject a non-aggregate value under Pair projection
+        // metadata. A field projection of a non-aggregate must be a contract
+        // violation, not a silently-read cell.
+        params: vec![Some(Value::Ptr(None)), None],
         locals: vec![None; cfg.num_locals() as usize],
         cache: HashMap::new(),
         promoted: HashMap::new(),
@@ -357,7 +357,9 @@ fn validated_cfg_rejects_invalid_owned_text_projection_metadata() {
         cache: HashMap::new(),
         promoted: HashMap::new(),
     };
-    view_frame.locals[view_slot as usize] = Some(Value::string("wrong three-slot value"));
+    // A non-aggregate value under str projection metadata: reading a field of
+    // it must be a contract violation, not a silent success.
+    view_frame.locals[view_slot as usize] = Some(Value::Ptr(None));
     let mut view_interp = Interp {
         state: &view_state,
         stdout: String::new(),

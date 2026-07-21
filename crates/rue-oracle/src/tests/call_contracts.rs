@@ -207,7 +207,7 @@ fn find_intrinsic_in_function<'a>(
 fn shared_str_character_builtins_require_and_model_ptr_len_offset() {
     let state = query_cfg_state("struct Probe { pointer: ptr mut u8 } fn main() -> i32 { 0 }")
         .expect("probe must compile");
-    let interp = Interp {
+    let mut interp = Interp {
         state: &state,
         stdout: String::new(),
         stdout_bytes: 0,
@@ -227,8 +227,10 @@ fn shared_str_character_builtins_require_and_model_ptr_len_offset() {
     );
     let types = [ptr, Type::U64, Type::U64];
     let modes = [CfgArgMode::Normal; 3];
-    let bytes = Value::str_view("hé");
-    let args = [bytes.clone(), Value::Int(3), Value::Int(1)];
+    // The projected-char builtins take a raw text pointer + length; back it with
+    // a real heap allocation ("hé" is 3 bytes).
+    let text_ptr = interp.test_alloc_str_ptr("hé".as_bytes());
+    let args = [text_ptr, Value::Int(3), Value::Int(1)];
 
     assert_eq!(
         expect_modeled_value(interp.string_builtin(
@@ -251,11 +253,8 @@ fn shared_str_character_builtins_require_and_model_ptr_len_offset() {
         Some(Value::Int(3))
     );
 
-    let invalid = [
-        Value::str_view_bytes([b'a', 0xff, b'b']),
-        Value::Int(3),
-        Value::Int(1),
-    ];
+    let invalid_ptr = interp.test_alloc_str_ptr(&[b'a', 0xff, b'b']);
+    let invalid = [invalid_ptr, Value::Int(3), Value::Int(1)];
     assert_eq!(
         expect_modeled_value(interp.string_builtin(
             RuntimeCallKind::StrCharScalarLossy,

@@ -628,20 +628,6 @@ enum Value {
     /// variant's payload fields in declaration order (RUE-285). A
     /// discriminant-only enum (or C-like enum) stays a bare `Int` tag.
     Aggregate(Vec<Value>),
-    /// String-like data, modeled as raw byte content plus ABI slot width.
-    ///
-    /// `String`/`StrBuf` occupies three slots (`ptr`, `len`, `cap`), while
-    /// `str`/`Str(N)` occupies two (`ptr`, `len`). Keeping the width on
-    /// the value prevents a `str` parameter from shifting later parameters as if
-    /// it were a growable string. Every width here is the compiler's
-    /// `abi_slot_count` for the corresponding text type; `string_literal_value`
-    /// and `text_struct_slots` derive it from that authority, and the type-free
-    /// constructors below carry the same values for the
-    /// sites that have no type in hand.
-    Str {
-        bytes: Vec<u8>,
-        slots: usize,
-    },
     /// A raw pointer into the abstract heap (RUE model-gap closure). `None` is
     /// the null pointer (`@int_to_ptr(0)`, a failed `@alloc`/`@realloc`); `Some`
     /// names a live cell inside an [`Allocation`]. Heap allocations
@@ -695,54 +681,32 @@ struct Allocation {
 }
 
 impl Value {
-    fn string(text: impl Into<String>) -> Self {
-        Self::string_bytes(text.into().into_bytes())
-    }
-
-    /// The owned-`StrBuf` width `abi_slot_count(StrBuf) == 3`
-    /// ({ptr, len, cap}). Used by the type-free sites (the `@to_string` result,
-    /// which is always a `StrBuf`, and test fixtures); the type-aware paths
-    /// derive the same value from the compiler authority.
-    fn string_bytes(bytes: impl Into<Vec<u8>>) -> Self {
-        Self::Str {
-            bytes: bytes.into(),
-            slots: 3,
-        }
-    }
-
+    /// A detached two-slot `str` view header (`{null, len}`) for shape/
+    /// classification fixtures that never read the bytes.
     #[cfg(test)]
-    fn str_view(text: impl Into<String>) -> Self {
-        Self::str_view_bytes(text.into().into_bytes())
-    }
-
-    /// The `str`/`Str(N)` view width
-    /// `abi_slot_count(str) == 2` ({ptr, len}). The interpreter's live path
-    /// (`string_literal_value`) now derives the width from the compiler
-    /// authority, so this explicit two-slot constructor is a test fixture only.
-    #[cfg(test)]
-    fn str_view_bytes(bytes: impl Into<Vec<u8>>) -> Self {
-        Self::Str {
-            bytes: bytes.into(),
-            slots: 2,
-        }
+    fn str_view(text: impl AsRef<str>) -> Self {
+        Value::Aggregate(vec![
+            Value::Ptr(None),
+            Value::Int(text.as_ref().len() as i128),
+        ])
     }
 
     fn as_int(&self) -> i128 {
         match self {
             Value::Int(n) => *n,
             Value::Bool(b) => *b as i128,
-            // Unreachable for a well-typed program (aggregates/strings/pointers
-            // never reach a bare scalar context; a pointer becomes an integer
-            // only through `@ptr_to_int`, which computes its address explicitly);
+            // Unreachable for a well-typed program (aggregates/pointers never
+            // reach a bare scalar context; a pointer becomes an integer only
+            // through `@ptr_to_int`, which computes its address explicitly);
             // defined so callers need not thread an error.
-            Value::Unit | Value::Aggregate(_) | Value::Str { .. } | Value::Ptr(_) => 0,
+            Value::Unit | Value::Aggregate(_) | Value::Ptr(_) => 0,
         }
     }
     fn as_bool(&self) -> bool {
         match self {
             Value::Bool(b) => *b,
             Value::Int(n) => *n != 0,
-            Value::Unit | Value::Aggregate(_) | Value::Str { .. } | Value::Ptr(_) => false,
+            Value::Unit | Value::Aggregate(_) | Value::Ptr(_) => false,
         }
     }
 }
@@ -947,17 +911,15 @@ enum WritebackPlace<'a> {
 }
 
 impl<'a> Interp<'a> {
-    fn string_literal_value(&self, text: String, ty: Type) -> Value {
-        // Derive the text value's ABI slot width from the
-        // compiler's `abi_slot_count` authority instead of hardcoding
-        // str/Str(N) = 2 and StrBuf = 3. A str/Str(N) view is two slots
-        // ({ptr, len}); an owned StrBuf is three ({ptr, len, cap}). The
-        // value-slot decomposition is preserved across the ADR-0052 migration
-        // (only the physical byte layout compacts), so these widths are stable.
-        Value::Str {
-            bytes: text.into_bytes(),
-            slots: self.text_value_slot_width(ty),
-        }
+    fn string_literal_value(&mut self, text: String, ty: Type) -> Value {
+        // A source string literal materializes as a real text header over an
+        // (immortal) heap byte allocation (RUE-1010 §6.13.2). The ABI slot width
+        // comes from the compiler's `abi_slot_count` authority: a str/Str(N)
+        // view is two slots ({ptr, len}); an owned StrBuf is three
+        // ({buf, cap, len}). A literal is non-owning/static-backed, so its
+        // capacity word is 0 (matching the compiler's `cap = 0` literal state).
+        let slots = self.text_value_slot_width(ty);
+        self.materialize_text(text.into_bytes(), slots, 0)
     }
 
     /// ABI value-slot width the interpreter carries for a text value of type
@@ -1001,124 +963,6 @@ impl<'a> Interp<'a> {
         }
     }
 
-    /// Return the ABI width certified by a real text-field projection.
-    ///
-    /// The oracle stores text as an opaque byte vector instead of exposing its
-    /// compiler ABI fields. Only a field projection whose struct metadata and
-    /// field index match that ABI may therefore become a registrable model
-    /// gap. In particular, an arbitrary `Index` projection or an out-of-range
-    /// field must remain a compiler/oracle contract violation even if a broken
-    /// frame happens to contain a `Value::Str` at runtime.
-    fn text_projection_slots(&self, projection: Projection) -> Option<usize> {
-        let Projection::Field {
-            struct_id,
-            field_index,
-        } = projection
-        else {
-            return None;
-        };
-        // The nested RawBuf core's buffer pointer (`core.buf`, field 0) is the
-        // text pointer of a three-slot owned StrBuf (RUE-1066). The base value
-        // is the two-slot core view left by the `.core` passthrough, so it
-        // certifies the owned width via the `expected == 3` reconciliation in
-        // `is_matching_text_projection`.
-        if self.is_strbuf_core_struct(struct_id) {
-            return (field_index == 0).then_some(3);
-        }
-        let slots = self.text_struct_slots(struct_id)?;
-        let def = self.state.type_pool.struct_def(struct_id);
-        // Flat text struct: str/Str(N) (2 fields) or a legacy flat StrBuf
-        // (3 fields, `{ptr, len, cap}`); its `{ptr, len}` prefix is fields 0/1.
-        if def.field_count() == slots && (field_index as usize) < 2 {
-            return Some(slots);
-        }
-        // Nested StrBuf (RUE-1066): `{core, len}` is two fields but three ABI
-        // slots. Its length header is field 1; the buffer pointer lives in the
-        // core (matched above).
-        if self.is_owned_string_struct(struct_id) && def.field_count() == 2 && field_index == 1 {
-            return Some(slots);
-        }
-        None
-    }
-
-    /// Whether `struct_id` is the nested `RawBuf(u8)` core of an owned StrBuf
-    /// (RUE-1066): a two-field `{buf: ptr, cap: u64}` aggregate that is neither
-    /// a `str`/`Str(N)` view nor the StrBuf wrapper itself. It is only ever
-    /// consulted while projecting an opaque `Value::Str`, where the base is
-    /// already known to be text, so this shape check cannot misfire on an
-    /// unrelated user struct.
-    fn is_strbuf_core_struct(&self, struct_id: rue_air::StructId) -> bool {
-        if self.is_str_like_struct(struct_id) || self.is_owned_string_struct(struct_id) {
-            return false;
-        }
-        let def = self.state.type_pool.struct_def(struct_id);
-        def.field_count() == 2 && def.fields[0].ty.is_ptr() && def.fields[1].ty == Type::U64
-    }
-
-    /// The `.core` step of a nested StrBuf (`{core: RawBuf(u8), len}`, field 0).
-    /// Projecting it leaves the opaque text value in place, narrowed to the
-    /// two-slot core view so the buffer-pointer and capacity projections that
-    /// follow resolve against the RawBuf core.
-    fn is_strbuf_core_projection(&self, projection: Projection) -> bool {
-        let Projection::Field {
-            struct_id,
-            field_index,
-        } = projection
-        else {
-            return false;
-        };
-        field_index == 0
-            && self.is_owned_string_struct(struct_id)
-            && self.state.type_pool.struct_def(struct_id).field_count() == 2
-    }
-
-    fn is_matching_text_projection(&self, projection: Projection, actual_slots: usize) -> bool {
-        matches!(
-            (self.text_projection_slots(projection), actual_slots),
-            (Some(expected), actual) if expected == actual
-                // A literal contextualized as source StrBuf is still carried
-                // as its two-slot static view until the unmodeled projection
-                // materializes the three-slot header.
-                || (expected == 3 && actual == 2)
-        )
-    }
-
-    /// The canonical core `str` length field is part of the stable language
-    /// model, so the oracle can derive it directly from its byte-vector
-    /// representation. Other text-header projections remain explicit model
-    /// gaps: in particular, source `StrBuf` storage and raw pointers are not
-    /// materialized by the interpreter.
-    fn is_core_str_length_projection(&self, projection: Projection, actual_slots: usize) -> bool {
-        let Projection::Field {
-            struct_id,
-            field_index,
-        } = projection
-        else {
-            return false;
-        };
-        let def = self.state.type_pool.struct_def(struct_id);
-        actual_slots == 2 && def.name == "str" && def.field_count() == 2 && field_index == 1
-    }
-
-    fn is_owned_string_capacity_projection(&self, projection: Projection) -> bool {
-        let Projection::Field {
-            struct_id,
-            field_index,
-        } = projection
-        else {
-            return false;
-        };
-        // Legacy flat StrBuf `{ptr, len, cap}`: capacity is field 2.
-        if self.is_owned_string_struct(struct_id)
-            && self.state.type_pool.struct_def(struct_id).field_count() == 3
-            && field_index == 2
-        {
-            return true;
-        }
-        // Nested RawBuf core `{buf, cap}` (RUE-1066): capacity is field 1.
-        self.is_strbuf_core_struct(struct_id) && field_index == 1
-    }
-
     fn is_owned_string_type(&self, ty: Type) -> bool {
         if let TypeKind::Struct(struct_id) = ty.kind() {
             self.is_owned_string_struct(struct_id)
@@ -1129,6 +973,115 @@ impl<'a> Interp<'a> {
 
     fn is_owned_string_struct(&self, struct_id: rue_air::StructId) -> bool {
         self.state.type_pool.is_strbuf(struct_id)
+    }
+
+    /// Whether `ty` is a text type — a `str`/`Str(N)` view or an owned `StrBuf`.
+    /// Text values are ordinary `Value::Aggregate` headers over a real byte
+    /// allocation (RUE-1010 §6.13); this predicate lets a consumer that holds a
+    /// value's static type read its bytes through [`Self::text_bytes`] rather
+    /// than depending on any layout detail.
+    fn is_text_type(&self, ty: Type) -> bool {
+        self.is_str_like_type(ty) || self.is_owned_string_type(ty)
+    }
+
+    /// Extract the `(buffer pointer, length)` pair from a materialized text
+    /// header value. A `str`/`Str(N)` view is a two-slot `{ptr, len}` aggregate;
+    /// an owned `StrBuf` is `{core: {buf, cap}, len}`, so its pointer lives one
+    /// level down in the nested `RawBuf` core (RUE-1066). Returns `None` for a
+    /// value that is not shaped like either header.
+    fn text_ptr_len(val: &Value) -> Option<(Option<PtrTarget>, i128)> {
+        let Value::Aggregate(cells) = val else {
+            return None;
+        };
+        if cells.len() != 2 {
+            return None;
+        }
+        let len = match &cells[1] {
+            Value::Int(n) => *n,
+            _ => return None,
+        };
+        match &cells[0] {
+            // `str`/`Str(N)` view: `{ptr, len}`.
+            Value::Ptr(target) => Some((target.clone(), len)),
+            // Owned `StrBuf`: `{core: {buf, cap}, len}` — the pointer is the
+            // core's field 0.
+            Value::Aggregate(core) => match core.first() {
+                Some(Value::Ptr(target)) => Some((target.clone(), len)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Read the byte content of a materialized text value out of the heap. The
+    /// `len` bytes starting at the header's buffer pointer are read cell by cell
+    /// through the same `byte_at` path the runtime's byte helpers model, so a
+    /// text read rides entirely on the modeled allocation store.
+    fn text_bytes(&self, val: &Value) -> Step<Vec<u8>> {
+        let gap = unsupported_intrinsic_kind("byte_read");
+        let Some((target, len)) = Self::text_ptr_len(val) else {
+            return Err(unsupported(gap, "text value is not a materialized header"));
+        };
+        if len <= 0 {
+            return Ok(Vec::new());
+        }
+        let Some(target) = target else {
+            // A non-null length over a null buffer is a malformed header.
+            return Err(unsupported(
+                gap,
+                "text header has a null buffer with nonzero length",
+            ));
+        };
+        let mut bytes = Vec::with_capacity(len as usize);
+        for i in 0..len {
+            bytes.push(self.byte_at(&target, i, gap)?);
+        }
+        Ok(bytes)
+    }
+
+    /// Materialize a text value: mint a heap byte allocation holding `bytes` and
+    /// build the ABI-shaped header over it. A two-slot `slots` yields a
+    /// `str`/`Str(N)` view `{ptr, len}`; a three-slot `slots` yields an owned
+    /// `StrBuf` `{core: {buf, cap}, len}` (RUE-1066 nested layout). An empty
+    /// value keeps a null buffer (no allocation), matching the source's empty
+    /// state. `cap` is the capacity word stored in an owned header.
+    fn materialize_text(&mut self, bytes: Vec<u8>, slots: usize, cap: i128) -> Value {
+        let len = bytes.len() as i128;
+        let ptr = if bytes.is_empty() {
+            Value::Ptr(None)
+        } else {
+            let cells = bytes.into_iter().map(|b| Value::Int(b as i128)).collect();
+            let alloc = self.heap_alloc(Value::Aggregate(cells), 1, false);
+            Value::Ptr(Some(PtrTarget {
+                alloc,
+                path: Vec::new(),
+                index: 0,
+            }))
+        };
+        if slots >= 3 {
+            // Owned `StrBuf`: `{core: {buf, cap}, len}`.
+            Value::Aggregate(vec![
+                Value::Aggregate(vec![ptr, Value::Int(cap)]),
+                Value::Int(len),
+            ])
+        } else {
+            // `str`/`Str(N)` view: `{ptr, len}`.
+            Value::Aggregate(vec![ptr, Value::Int(len)])
+        }
+    }
+
+    /// Allocate `bytes` into the heap and return a raw pointer to cell 0, for
+    /// tests that drive the projected-char builtins (which take a `ptr`/`len`
+    /// pair) directly.
+    #[cfg(test)]
+    fn test_alloc_str_ptr(&mut self, bytes: &[u8]) -> Value {
+        let cells = bytes.iter().map(|b| Value::Int(*b as i128)).collect();
+        let alloc = self.heap_alloc(Value::Aggregate(cells), 1, false);
+        Value::Ptr(Some(PtrTarget {
+            alloc,
+            path: Vec::new(),
+            index: 0,
+        }))
     }
 
     fn classify_unsupported_runtime_call_static(
@@ -1198,9 +1151,11 @@ impl<'a> Interp<'a> {
                     kind,
                     RuntimeCallKind::StrPrintProjected | RuntimeCallKind::StrPrintlnProjected
                 ) {
-                    matches!(args[0], Value::Str { .. }) && is_int_value(1)
+                    // The projected print path passes a raw text pointer + len.
+                    matches!(args[0], Value::Ptr(_)) && is_int_value(1)
                 } else {
-                    matches!(args[0], Value::Str { .. })
+                    // The aggregate print path passes a materialized text header.
+                    Self::text_ptr_len(&args[0]).is_some()
                 }
             }
         };
@@ -1711,13 +1666,12 @@ impl<'a> Interp<'a> {
         match intrinsic {
             AbortIntrinsic::Panic => match values.as_slice() {
                 [] => self.abort_with_stderr(TrapKind::UserPanic, &[b"panic\n"]),
-                [
-                    Value::Str {
-                        bytes,
-                        slots: 2 | 3,
-                    },
-                ] => self
-                    .abort_with_stderr(TrapKind::UserPanic, &[b"panic: ", bytes.as_slice(), b"\n"]),
+                [message] if Self::text_ptr_len(message).is_some() => {
+                    // The message is a materialized `str` view; read its bytes
+                    // from the heap before aborting (RUE-1010 §6.13).
+                    let bytes = self.text_bytes(message)?;
+                    self.abort_with_stderr(TrapKind::UserPanic, &[b"panic: ", &bytes, b"\n"])
+                }
                 [_] => Err(unsupported(
                     UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
                     "intrinsic @panic runtime value shape",
@@ -1727,13 +1681,9 @@ impl<'a> Interp<'a> {
             AbortIntrinsic::Assert => {
                 let (condition, message) = match values.as_slice() {
                     [Value::Bool(condition)] => (*condition, None),
-                    [
-                        Value::Bool(condition),
-                        Value::Str {
-                            bytes,
-                            slots: 2 | 3,
-                        },
-                    ] => (*condition, Some(bytes.as_slice())),
+                    [Value::Bool(condition), message] if Self::text_ptr_len(message).is_some() => {
+                        (*condition, Some(self.text_bytes(message)?))
+                    }
                     _ => {
                         return Err(unsupported(
                             UnsupportedKind::ContractViolation(
@@ -1748,7 +1698,7 @@ impl<'a> Interp<'a> {
                 } else if let Some(message) = message {
                     // The message-carrying assertion uses the same runtime path
                     // and trap category as `@panic(message)`.
-                    self.abort_with_stderr(TrapKind::UserPanic, &[b"panic: ", message, b"\n"])
+                    self.abort_with_stderr(TrapKind::UserPanic, &[b"panic: ", &message, b"\n"])
                 } else {
                     self.abort_with_stderr(TrapKind::AssertionFailure, &[b"assertion failed\n"])
                 }
@@ -1759,28 +1709,30 @@ impl<'a> Interp<'a> {
     fn write_dbg(&mut self, val: &Value, ty: Type) -> Step<()> {
         let remaining = self.stdout_cap.saturating_sub(self.stdout_bytes);
 
-        // Formatting a String normally clones its complete contents. Reject an
-        // oversized value before formatting so the output limit also bounds
-        // that temporary allocation.
-        if let Value::Str { bytes, .. } = val
-            && bytes.len() >= remaining
-        {
-            return Err(unsupported(
-                UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes),
-                format!(
-                    "stdout byte limit exceeded ({}-byte limit)",
-                    self.stdout_cap
-                ),
-            ));
-        }
-
-        let formatted = format_dbg(val, ty)?;
-        let emitted_len = match val {
-            Value::Str { bytes, .. } => bytes.len(),
-            _ => formatted.len(),
+        // `@dbg` of a text value prints its byte content (matches
+        // __rue_dbg_str), read from the heap through the materialized header
+        // (RUE-1010 §6.13); every other value uses the scalar `format_dbg`.
+        // Reserve one byte for the trailing newline; the comparison form avoids
+        // overflowing while computing `len + 1`, and rejecting an oversized
+        // value before decoding also bounds that temporary allocation.
+        let (formatted, emitted_len) = if self.is_text_type(ty) {
+            let bytes = self.text_bytes(val)?;
+            if bytes.len() >= remaining {
+                return Err(unsupported(
+                    UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes),
+                    format!(
+                        "stdout byte limit exceeded ({}-byte limit)",
+                        self.stdout_cap
+                    ),
+                ));
+            }
+            let len = bytes.len();
+            (String::from_utf8_lossy(&bytes).into_owned(), len)
+        } else {
+            let formatted = format_dbg(val, ty)?;
+            let len = formatted.len();
+            (formatted.into_owned(), len)
         };
-        // Reserve one byte for the newline emitted by this `@dbg` call. Using
-        // the comparison form avoids overflowing while computing `len + 1`.
         if emitted_len >= remaining {
             return Err(unsupported(
                 UnsupportedKind::ResourceLimit(ResourceLimitKind::StdoutBytes),
@@ -2212,7 +2164,7 @@ impl<'a> Interp<'a> {
     /// Dispatch a runtime text builtin. Returns `Ok(None)` when `name` is an
     /// ordinary source-defined function with a CFG body.
     fn string_builtin(
-        &self,
+        &mut self,
         kind: RuntimeCallKind,
         args: &[Value],
         arg_types: &[Type],
@@ -2234,13 +2186,17 @@ impl<'a> Interp<'a> {
                 matches!(args[0], Value::Int(_))
             }
             RuntimeCallKind::StrByteAt => {
-                matches!(args[0], Value::Str { slots: 2, .. }) && matches!(args[1], Value::Int(_))
+                // The receiver is a materialized `str` view `{ptr, len}`
+                // (RUE-1010 §6.13); the index is a scalar.
+                Self::text_ptr_len(&args[0]).is_some() && matches!(args[1], Value::Int(_))
             }
             RuntimeCallKind::StrCharScalar
             | RuntimeCallKind::StrCharScalarLossy
             | RuntimeCallKind::StrCharNext
             | RuntimeCallKind::StrCharNextLossy => {
-                matches!(args[0], Value::Str { .. })
+                // The projected-char path passes a raw text pointer, a length,
+                // and a byte offset.
+                matches!(args[0], Value::Ptr(_))
                     && matches!(args[1], Value::Int(_))
                     && matches!(args[2], Value::Int(_))
             }
@@ -2252,33 +2208,19 @@ impl<'a> Interp<'a> {
                 format!("builtin '{name}' runtime argument shape drift"),
             ));
         }
-        let string_bytes = |value: &Value| -> Result<Vec<u8>, Flow> {
-            match value {
-                Value::Str { bytes, .. } => Ok(bytes.clone()),
-                _ => Err(unsupported(
-                    UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinArgumentType),
-                    format!("builtin '{name}' received a non-string argument"),
-                )),
-            }
-        };
-        let str_bytes = |ptr: &Value, len: &Value| -> Result<Vec<u8>, Flow> {
-            let bytes = string_bytes(ptr)?;
-            let len = len.as_int();
-            if len < 0 || len as u128 > bytes.len() as u128 {
-                return Err(unsupported(
-                    UnsupportedKind::ContractViolation(ContractViolationKind::BuiltinArgumentType),
-                    format!("builtin '{name}' received an invalid str pointer/length pair"),
-                ));
-            }
-            Ok(bytes[..len as usize].to_vec())
-        };
         let out = match kind {
-            RuntimeCallKind::ToString => Value::string((args[0].as_int() as i64).to_string()),
+            RuntimeCallKind::ToString => {
+                let digits = (args[0].as_int() as i64).to_string().into_bytes();
+                let cap = digits.len() as i128;
+                self.materialize_text(digits, self.text_value_slot_width(result_ty), cap)
+            }
             RuntimeCallKind::ToStringUnsigned => {
-                Value::string((args[0].as_int() as u64).to_string())
+                let digits = (args[0].as_int() as u64).to_string().into_bytes();
+                let cap = digits.len() as i128;
+                self.materialize_text(digits, self.text_value_slot_width(result_ty), cap)
             }
             RuntimeCallKind::StrByteAt => {
-                let bytes = string_bytes(&args[0])?;
+                let bytes = self.text_bytes(&args[0])?;
                 let index = args[1].as_int();
                 if index < 0 || index as u128 >= bytes.len() as u128 {
                     return Err(Flow::Panic(Panic::runtime(TrapKind::IndexOutOfBounds)));
@@ -2286,14 +2228,14 @@ impl<'a> Interp<'a> {
                 Value::Int(bytes[index as usize] as i128)
             }
             RuntimeCallKind::StrCharScalar => {
-                let bytes = str_bytes(&args[0], &args[1])?;
+                let bytes = self.bytes_from_ptr(&args[0], args[1].as_int())?;
                 match char_at(&bytes, args[2].as_int()) {
                     Some((scalar, _)) => Value::Int(scalar as i128),
                     None => return Err(Flow::Panic(Panic::runtime(TrapKind::InvalidUtf8))),
                 }
             }
             RuntimeCallKind::StrCharNext => {
-                let bytes = str_bytes(&args[0], &args[1])?;
+                let bytes = self.bytes_from_ptr(&args[0], args[1].as_int())?;
                 let offset = args[2].as_int();
                 match char_at(&bytes, offset) {
                     Some((_, width)) => Value::Int(offset + width as i128),
@@ -2301,17 +2243,37 @@ impl<'a> Interp<'a> {
                 }
             }
             RuntimeCallKind::StrCharScalarLossy => {
-                let bytes = str_bytes(&args[0], &args[1])?;
+                let bytes = self.bytes_from_ptr(&args[0], args[1].as_int())?;
                 Value::Int(char_at_lossy(&bytes, args[2].as_int()).0 as i128)
             }
             RuntimeCallKind::StrCharNextLossy => {
-                let bytes = str_bytes(&args[0], &args[1])?;
+                let bytes = self.bytes_from_ptr(&args[0], args[1].as_int())?;
                 let offset = args[2].as_int();
                 Value::Int(offset + char_at_lossy(&bytes, offset).1 as i128)
             }
             _ => return Ok(None),
         };
         Ok(Some(out))
+    }
+
+    /// Read `len` bytes starting at a raw text pointer (the projected-char
+    /// path's `ptr`/`len` pair), through the modeled allocation store.
+    fn bytes_from_ptr(&self, ptr: &Value, len: i128) -> Step<Vec<u8>> {
+        let gap = unsupported_intrinsic_kind("byte_read");
+        if len <= 0 {
+            return Ok(Vec::new());
+        }
+        let Value::Ptr(Some(target)) = ptr else {
+            return Err(unsupported(
+                gap,
+                "text pointer is not a live buffer pointer",
+            ));
+        };
+        let mut bytes = Vec::with_capacity(len as usize);
+        for i in 0..len {
+            bytes.push(self.byte_at(target, i, gap)?);
+        }
+        Ok(bytes)
     }
 
     /// Run the drop of a value of type `ty`, in the spec-3.9 order: the type's
@@ -2916,6 +2878,80 @@ impl<'a> Interp<'a> {
         range_check(r, ty)
     }
 
+    /// Type-directed structural equality (`==`/`!=`). A text field/element/
+    /// payload compares by byte content (read from the heap), so two equal
+    /// strings held in distinct buffer allocations are equal; everything else
+    /// compares by value, recursing into struct fields, array elements, and the
+    /// active enum variant's payload (mirroring `run_drop`'s aggregate layout).
+    fn values_equal_typed(&self, x: &Value, y: &Value, ty: Type) -> Step<bool> {
+        if self.is_text_type(ty) {
+            return Ok(self.text_bytes(x)? == self.text_bytes(y)?);
+        }
+        match ty.kind() {
+            TypeKind::Struct(sid) => {
+                let (Value::Aggregate(xs), Value::Aggregate(ys)) = (x, y) else {
+                    return Ok(x == y);
+                };
+                let def = self.state.type_pool.struct_def(sid);
+                if xs.len() != ys.len() || xs.len() != def.fields.len() {
+                    return Ok(x == y);
+                }
+                for (i, field) in def.fields.iter().enumerate() {
+                    if !self.values_equal_typed(&xs[i], &ys[i], field.ty)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            TypeKind::Array(aid) => {
+                let (elem_ty, _len) = self.state.type_pool.array_def(aid);
+                let (Value::Aggregate(xs), Value::Aggregate(ys)) = (x, y) else {
+                    return Ok(x == y);
+                };
+                if xs.len() != ys.len() {
+                    return Ok(false);
+                }
+                for (xe, ye) in xs.iter().zip(ys.iter()) {
+                    if !self.values_equal_typed(xe, ye, elem_ty)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            TypeKind::Enum(eid) => {
+                // A discriminant-only variant is a bare `Int` tag; a payload
+                // variant is `[tag, payload...]`. Compare the active variant,
+                // then its payload fields by their declared types.
+                match (x, y) {
+                    (Value::Aggregate(xs), Value::Aggregate(ys)) => {
+                        if xs.is_empty() || ys.is_empty() || xs[0] != ys[0] {
+                            return Ok(false);
+                        }
+                        let tag = xs[0].as_int() as usize;
+                        let payload_tys = self.state.type_pool.enum_def(eid).variant_payload(tag);
+                        if xs.len() != ys.len() {
+                            return Ok(false);
+                        }
+                        for (i, pty) in payload_tys.iter().enumerate() {
+                            match (xs.get(i + 1), ys.get(i + 1)) {
+                                (Some(xe), Some(ye)) => {
+                                    if !self.values_equal_typed(xe, ye, *pty)? {
+                                        return Ok(false);
+                                    }
+                                }
+                                _ => return Ok(false),
+                            }
+                        }
+                        Ok(true)
+                    }
+                    // Same-variant discriminant-only enums (or a mixed shape).
+                    _ => Ok(x == y),
+                }
+            }
+            _ => Ok(x == y),
+        }
+    }
+
     fn cmp(
         &mut self,
         cfg: &'a Cfg,
@@ -2926,24 +2962,36 @@ impl<'a> Interp<'a> {
     ) -> Step<Value> {
         let x = self.eval(cfg, frame, a)?;
         let y = self.eval(cfg, frame, b)?;
-        // Strings compare by content (String ==/!=). Aggregates (structs,
-        // arrays, payload enums) compare STRUCTURALLY, field-by-field /
-        // element-by-element / same-variant-and-equal-payload, via `Value`'s
-        // derived `PartialEq` which recurses into nested aggregates (RUE-285).
-        // Only `==` / `!=` reach an aggregate here (ordering `< > <= >=` is a
-        // type error on aggregates), so we report `Equal` iff structurally
-        // equal and an arbitrary non-`Equal` ordering otherwise — enough for
-        // `pick` to decide `==`/`!=`. Everything else compares by integer value.
-        let ord = match (&x, &y) {
-            (Value::Str { bytes: sx, .. }, Value::Str { bytes: sy, .. }) => sx.cmp(sy),
-            (Value::Aggregate(_), _) | (_, Value::Aggregate(_)) => {
-                if x == y {
-                    std::cmp::Ordering::Equal
-                } else {
-                    std::cmp::Ordering::Less
+        // Strings compare by byte content (str/StrBuf ==/!=/ordering), read from
+        // the heap through the materialized headers (RUE-1010 §6.13). Other
+        // aggregates (structs, arrays, payload enums) compare STRUCTURALLY,
+        // field-by-field / element-by-element / same-variant-and-equal-payload,
+        // via `Value`'s derived `PartialEq` which recurses into nested
+        // aggregates (RUE-285). Only `==` / `!=` reach a non-text aggregate here
+        // (ordering `< > <= >=` is a type error on those), so we report `Equal`
+        // iff structurally equal and an arbitrary non-`Equal` ordering
+        // otherwise — enough for `pick` to decide `==`/`!=`. Everything else
+        // compares by integer value.
+        let ty = cfg.get_inst(a).ty;
+        let ord = if self.is_text_type(ty) {
+            let bx = self.text_bytes(&x)?;
+            let by = self.text_bytes(&y)?;
+            bx.cmp(&by)
+        } else {
+            match (&x, &y) {
+                (Value::Aggregate(_), _) | (_, Value::Aggregate(_)) => {
+                    // Only `==`/`!=` reach an aggregate; compare with text
+                    // awareness so a text field/element/payload is judged by its
+                    // byte content, not by the identity of its heap buffer
+                    // pointer (RUE-1010 §6.13).
+                    if self.values_equal_typed(&x, &y, ty)? {
+                        std::cmp::Ordering::Equal
+                    } else {
+                        std::cmp::Ordering::Less
+                    }
                 }
+                _ => x.as_int().cmp(&y.as_int()),
             }
-            _ => x.as_int().cmp(&y.as_int()),
         };
         Ok(Value::Bool(pick(ord)))
     }
@@ -3064,38 +3112,16 @@ impl<'a> Interp<'a> {
     fn place_read(&mut self, cfg: &'a Cfg, frame: &mut Frame, place: &Place) -> Step<Value> {
         let (base, path) = self.resolve_path(cfg, frame, place)?;
         let mut cur = self.base_value_of(frame, base)?;
-        for (idx, projection) in path {
+        for (idx, _projection) in path {
             cur = match cur {
                 Value::Aggregate(mut v) if idx < v.len() => v.swap_remove(idx),
                 Value::Aggregate(_) => {
                     return Err(Flow::Panic(Panic::runtime(TrapKind::IndexOutOfBounds)));
                 }
-                Value::Str { .. } if self.is_owned_string_capacity_projection(projection) => {
-                    return Err(unsupported(
-                        UnsupportedKind::ImplementationDefined(
-                            ImplementationDefinedKind::StringCapacityValue,
-                        ),
-                        "source StrBuf capacity value",
-                    ));
-                }
-                Value::Str { bytes, slots }
-                    if self.is_core_str_length_projection(projection, slots) =>
-                {
-                    Value::Int(bytes.len() as i128)
-                }
-                Value::Str { slots, .. } if self.is_matching_text_projection(projection, slots) => {
-                    return Err(unsupported(
-                        UnsupportedKind::SemanticGap(SemanticGapKind::TextProjectionRead),
-                        "projection of non-aggregate",
-                    ));
-                }
-                // The `.core` step of a nested StrBuf (RUE-1066) is transparent:
-                // keep the opaque bytes and narrow to the two-slot RawBuf core
-                // so the `core.buf` / `core.cap` projections that follow resolve
-                // to the text-pointer / capacity model gaps.
-                Value::Str { bytes, .. } if self.is_strbuf_core_projection(projection) => {
-                    Value::Str { bytes, slots: 2 }
-                }
+                // Text values (str/StrBuf) are now ordinary aggregate headers
+                // over a real byte allocation (RUE-1010 §6.13), so their
+                // `{ptr, len}` / `{core: {buf, cap}, len}` fields project through
+                // the aggregate arm above — no special text-projection handling.
                 _ => {
                     return Err(unsupported(
                         UnsupportedKind::ContractViolation(
@@ -3275,9 +3301,16 @@ impl<'a> Interp<'a> {
             TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => Value::Ptr(None),
             TypeKind::Struct(sid) => {
                 if self.is_str_like_struct(sid) || self.is_owned_string_struct(sid) {
-                    Value::Str {
-                        bytes: Vec::new(),
-                        slots: self.text_value_slot_width(ty),
+                    // Empty text header: a null buffer with zero length and
+                    // capacity (RUE-1010 §6.13). A str/Str(N) view is
+                    // `{ptr, len}`; an owned StrBuf is `{core: {buf, cap}, len}`.
+                    if self.text_value_slot_width(ty) >= 3 {
+                        Value::Aggregate(vec![
+                            Value::Aggregate(vec![Value::Ptr(None), Value::Int(0)]),
+                            Value::Int(0),
+                        ])
+                    } else {
+                        Value::Aggregate(vec![Value::Ptr(None), Value::Int(0)])
                     }
                 } else {
                     let sd = self.state.type_pool.struct_def(sid);
@@ -4035,10 +4068,8 @@ fn from_bits(bits_val: u128, bits: u32, signed: bool) -> i128 {
 /// Format a value exactly as the `@dbg` runtime intrinsic prints it (decimal for
 /// integers respecting signedness, `true`/`false` for bool), sans the newline.
 fn format_dbg(val: &Value, ty: Type) -> Result<Cow<'_, str>, Flow> {
-    // `@dbg` of a String prints its content (matches __rue_dbg_str).
-    if let Value::Str { bytes, .. } = val {
-        return Ok(String::from_utf8_lossy(bytes));
-    }
+    // Text values (`@dbg` of a str/StrBuf) are decoded from the heap by the
+    // caller (`write_dbg`); this scalar formatter only sees non-text values.
     Ok(match ty.kind() {
         TypeKind::Bool => Cow::Owned(val.as_bool().to_string()),
         k if kind_signed(k) => Cow::Owned(val.as_int().to_string()),
