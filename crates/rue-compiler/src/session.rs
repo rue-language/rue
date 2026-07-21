@@ -5259,6 +5259,12 @@ impl CompilerSession {
                 crate::FunctionInstanceKey::AnonymousMember { .. } => true,
                 crate::FunctionInstanceKey::DropGlue(_) => false,
             };
+            // One coordinator span covers the whole body-traversal closure,
+            // including every `continue 'closure` restart, so `--time-passes`
+            // attributes the aggregate reach-and-analyze cost that RUE-1083
+            // traced to the previously unspanned semantic-query path. The
+            // per-body pipeline stages nest beneath it as timed leaves.
+            let _body_queries_span = tracing::info_span!("body_queries").entered();
             'closure: loop {
                 body_query_reference_cache.clear();
                 let mut pending = roots.clone();
@@ -5375,6 +5381,7 @@ impl CompilerSession {
                         }
                         priority_pending.push(instance);
                         priority_pending.extend(deferred_producers);
+                        queried_body_work.deferred_producer_retries += 1;
                         continue;
                     }
                     deferred_dependency_chain.remove(&instance);
@@ -5554,6 +5561,7 @@ impl CompilerSession {
                             }
                             if scheduled {
                                 visited.remove(&instance);
+                                queried_body_work.deferred_producer_retries += 1;
                                 continue;
                             }
                             priority_pending.pop();
@@ -5960,11 +5968,28 @@ impl CompilerSession {
                     }
                 }
                 if representative_changed {
+                    queried_body_work.closure_restarts += 1;
                     continue 'closure;
                 }
                 durable_body_candidates = queried_ordinary;
                 durable_specialized_body_candidates = queried_specialized;
                 durable_anonymous_body_candidates = queried_anonymous;
+                // Completion snapshots for the published closure. `visited` is
+                // the distinct reached-body set; `instance_depth` holds every
+                // recorded specialization chain depth.
+                queried_body_work.closure_bodies_visited = visited.len();
+                queried_body_work.max_specialization_depth =
+                    instance_depth.values().copied().max().unwrap_or(0);
+                // One wide completion event per successful semantic request,
+                // not per body.
+                tracing::info!(
+                    bodies_attempted = queried_body_work.bodies_attempted,
+                    bodies_visited = queried_body_work.closure_bodies_visited,
+                    closure_restarts = queried_body_work.closure_restarts,
+                    deferred_producer_retries = queried_body_work.deferred_producer_retries,
+                    max_specialization_depth = queried_body_work.max_specialization_depth,
+                    "body closure complete"
+                );
                 break 'closure;
             }
         }
@@ -11261,6 +11286,47 @@ mod tests {
         );
         assert_eq!(record.work.manifest.build_invocations, 0);
         assert_eq!(record.work.body_analysis.bodies_attempted, 0);
+    }
+
+    #[test]
+    fn body_traversal_coordinator_counters_populate_from_a_multi_body_compile() {
+        let source = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn helper() -> i32 { 7 }\n\
+                 fn other() -> i32 { helper() }\n\
+                 fn main() -> i32 { helper() + other() }",
+            )],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
+
+        let record = session.work().semantic_records.last().unwrap();
+        let body = &record.work.body_analysis;
+        // `main`, `helper`, and `other` are each reached and analyzed once, so
+        // the coordinator computes at least three body transactions and
+        // publishes a closure containing all three.
+        assert!(
+            body.bodies_attempted >= 3,
+            "expected at least three attempted bodies, got {}",
+            body.bodies_attempted
+        );
+        assert!(
+            body.closure_bodies_visited >= 3,
+            "expected at least three closure bodies, got {}",
+            body.closure_bodies_visited
+        );
+        // This program has no anonymous producers and no specializations, so
+        // the traversal completes in one pass at depth zero.
+        assert_eq!(body.closure_restarts, 0);
+        assert_eq!(body.deferred_producer_retries, 0);
+        assert_eq!(body.max_specialization_depth, 0);
     }
 
     #[test]

@@ -904,6 +904,56 @@ mod tests {
     }
 
     #[test]
+    fn body_query_stage_spans_report_under_the_coordinator_span() {
+        let snapshot = SourceSnapshot::single(
+            "main.rue",
+            "fn helper() -> i32 { 7 }\nfn main() -> i32 { helper() }",
+        )
+        .unwrap();
+
+        let data = TimingData::new();
+        let subscriber = tracing_subscriber::registry().with(TimingLayer::new(data.clone()));
+        tracing::subscriber::with_default(subscriber, || {
+            let mut session = CompilerSession::new();
+            session.update(&snapshot).into_result().unwrap();
+            session.semantic(&CompileOptions::default()).unwrap();
+        });
+
+        // Every reached body runs the per-body pipeline stages beneath the one
+        // coordinator span, so the timing table can split the semantic query
+        // path that RUE-1083 found unattributed.
+        let edges = data.parent_edges();
+        for stage in [
+            "body_prepare_declarations",
+            "body_project_declarations",
+            "body_install_declarations",
+            "body_analyze",
+            "body_export",
+        ] {
+            assert!(
+                edges.contains(&("body_queries".to_owned(), stage.to_owned())),
+                "missing body_queries -> {stage} edge: {edges:?}"
+            );
+        }
+        let timing = data.to_benchmark_timing_with_metrics("test", "test", None, None);
+        let queries = timing
+            .passes
+            .iter()
+            .find(|pass| pass.name == "body_queries")
+            .unwrap();
+        assert_eq!(queries.invocations, 1);
+        let analyze = timing
+            .passes
+            .iter()
+            .find(|pass| pass.name == "body_analyze")
+            .unwrap();
+        assert!(
+            analyze.invocations >= 2,
+            "helper and main are both analyzed: {analyze:?}"
+        );
+    }
+
+    #[test]
     fn parser_failure_subphases_preserve_parentage() {
         let capture = |source: &str| {
             let snapshot = SourceSnapshot::single("main.rue", source).unwrap();
