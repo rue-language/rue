@@ -70,6 +70,7 @@ thread_local! {
     static INJECT_CFG_FAILURE: Cell<bool> = const { Cell::new(false) };
     static INJECT_DECLARATION_FAILURE: Cell<bool> = const { Cell::new(false) };
     static INJECT_AUTHORITATIVE_KEY_MISMATCH: Cell<bool> = const { Cell::new(false) };
+    static INJECT_BODY_QUERY_STAGE_FAILURE: Cell<bool> = const { Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -104,6 +105,25 @@ pub(crate) fn with_test_declaration_failure_injection<T>(run: impl FnOnce() -> T
         assert!(
             !enabled.replace(true),
             "declaration failure injection is not nestable"
+        );
+    });
+    let _reset = Reset;
+    run()
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_body_query_stage_failure_injection<T>(run: impl FnOnce() -> T) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            INJECT_BODY_QUERY_STAGE_FAILURE.with(|enabled| enabled.set(false));
+        }
+    }
+
+    INJECT_BODY_QUERY_STAGE_FAILURE.with(|enabled| {
+        assert!(
+            !enabled.replace(true),
+            "body query stage failure injection is not nestable"
         );
     });
     let _reset = Reset;
@@ -1643,38 +1663,97 @@ pub(crate) fn analyze_body_query(
     if cancellation.is_canceled() {
         return Err(rue_query::QueryAbort::Canceled);
     }
-    let prepared = prepare_query_declaration_shells(merged, rir, options, imports, query_shells)
-        .map_err(|_| rue_query::QueryAbort::Canceled)?;
+    // Deterministic preparation, projection, and installation failures are
+    // invariant violations, not cancellations. Each is surfaced as a failed body
+    // transaction so the coordinator renders a real compiler diagnostic instead
+    // of a disguised abort that panics the uncanceled session.
+    let deterministic_failure = |stage: &str, detail: String| -> BodyTransaction {
+        BodyTransaction::DeterministicFailure {
+            errors: crate::CompileErrors::from(crate::CompileError::without_span(
+                rue_error::ErrorKind::InternalError(format!(
+                    "canonical body query stage `{stage}` failed for body instance {:?}: {detail}",
+                    key.instance,
+                )),
+            )),
+            references: BodyReferences(Arc::from(Vec::<BodyReference>::new())),
+        }
+    };
+    #[cfg(test)]
+    if INJECT_BODY_QUERY_STAGE_FAILURE.with(Cell::get) {
+        return Ok(deterministic_failure(
+            "injected_body_query_stage",
+            "test body query stage failure injection".into(),
+        ));
+    }
+    let prepared =
+        match prepare_query_declaration_shells(merged, rir, options, imports, query_shells) {
+            Ok(prepared) => prepared,
+            Err(failure) => {
+                return Ok(deterministic_failure(
+                    "prepare_query_declaration_shells",
+                    format!("{} ({:?})", failure.errors, failure.failure),
+                ));
+            }
+        };
     let CanonicalPreparedDeclarations {
         shells,
         shell_records,
         definitions: provisional,
         declaration_index: _,
     } = prepared;
-    let (projected, _) = crate::project_durable_declaration_semantics(
+    let (projected, _) = match crate::project_durable_declaration_semantics(
         merged,
         &provisional,
         &shell_records,
         query_declarations,
-    )
-    .map_err(|_| rue_query::QueryAbort::Canceled)?;
-    let projected_anonymous = crate::durable_semantics::project_durable_anonymous_nominals(
+    ) {
+        Ok(projected) => projected,
+        Err(failure) => {
+            return Ok(deterministic_failure(
+                "project_durable_declaration_semantics",
+                format!("{failure:?}"),
+            ));
+        }
+    };
+    let projected_anonymous = match crate::durable_semantics::project_durable_anonymous_nominals(
         merged,
         &provisional,
         query_anonymous_nominals,
-    )
-    .map_err(|_| rue_query::QueryAbort::Canceled)?;
-    let bound = shells
+    ) {
+        Ok(projected_anonymous) => projected_anonymous,
+        Err(failure) => {
+            return Ok(deterministic_failure(
+                "project_durable_anonymous_nominals",
+                format!("{failure:?}"),
+            ));
+        }
+    };
+    let bound = match shells
         .install_declaration_semantics_with_anonymous(&projected, &projected_anonymous)
-        .map_err(|_| rue_query::QueryAbort::Canceled)?;
+    {
+        Ok(bound) => bound,
+        Err(failure) => {
+            return Ok(deterministic_failure(
+                "install_declaration_semantics_with_anonymous",
+                format!("{failure:?}"),
+            ));
+        }
+    };
     let manifest = bound.binding_manifest();
-    let definitions = issue_bound_definitions(
+    let definitions = match issue_bound_definitions(
         merged,
         rir.source_revision(),
         manifest.bindings(),
         manifest.work(),
-    )
-    .map_err(|_| rue_query::QueryAbort::Canceled)?;
+    ) {
+        Ok(definitions) => definitions,
+        Err(failure) => {
+            return Ok(deterministic_failure(
+                "issue_bound_definitions",
+                format!("{failure:?}"),
+            ));
+        }
+    };
     if provisional
         .definitions()
         .iter()
@@ -1686,16 +1765,32 @@ pub(crate) fn analyze_body_query(
             .filter(|record| record.stable_key().kind().owns_body())
             .map(|record| record.stable_key()))
     {
-        return Err(rue_query::QueryAbort::Canceled);
+        return Ok(deterministic_failure(
+            "provisional_body_owner_key_equality",
+            "provisional body-owner keys do not match the issued definition universe".into(),
+        ));
     }
-    let bound = bound
-        .install_body_owner_tokens(&definitions.body_owner_endpoints())
-        .map_err(|_| rue_query::QueryAbort::Canceled)?
-        .install_stable_identity_endpoints(
-            &definitions.semantic_definition_endpoints(),
-            &definitions.semantic_module_endpoints(merged),
-        )
-        .map_err(|_| rue_query::QueryAbort::Canceled)?;
+    let bound = match bound.install_body_owner_tokens(&definitions.body_owner_endpoints()) {
+        Ok(bound) => bound,
+        Err(failure) => {
+            return Ok(deterministic_failure(
+                "install_body_owner_tokens",
+                format!("{failure:?}"),
+            ));
+        }
+    };
+    let bound = match bound.install_stable_identity_endpoints(
+        &definitions.semantic_definition_endpoints(),
+        &definitions.semantic_module_endpoints(merged),
+    ) {
+        Ok(bound) => bound,
+        Err(failure) => {
+            return Ok(deterministic_failure(
+                "install_stable_identity_endpoints",
+                format!("{failure:?}"),
+            ));
+        }
+    };
     let outcome = bound.analyze_one_body_instance(
         &key.instance,
         |definition| definitions.semantic_token_for_key(definition),
@@ -1747,88 +1842,142 @@ pub(crate) fn analyze_body_query(
             references,
             produced_anonymous_nominals,
         } => {
-            let references =
-                map_references(references).map_err(|_| rue_query::QueryAbort::Canceled)?;
-            let produced_anonymous_nominals = project_produced_anonymous_nominals(
+            let references = match map_references(references) {
+                Ok(references) => references,
+                Err(failure) => {
+                    return Ok(deterministic_failure(
+                        "map_body_references",
+                        format!("{failure:?}"),
+                    ));
+                }
+            };
+            let produced_anonymous_nominals = match project_produced_anonymous_nominals(
                 &produced_anonymous_nominals,
                 merged,
                 &definitions,
-            )
-            .map_err(|_| rue_query::QueryAbort::Canceled)?;
+            ) {
+                Ok(produced_anonymous_nominals) => produced_anonymous_nominals,
+                Err(failure) => {
+                    return Ok(deterministic_failure(
+                        "project_produced_anonymous_nominals",
+                        format!("{failure:?}"),
+                    ));
+                }
+            };
             let body = match artifact {
                 Artifact::Ordinary(export) => {
-                    let owner = definitions
+                    let owner = match definitions
                         .definition_for_body_token(export.owner)
                         .map(|record| record.stable_key().clone())
-                        .map_err(|_| rue_query::QueryAbort::Canceled)?;
-                    let body = export
-                        .body
-                        .try_map_keys(
-                            &|token| definitions.key_for_semantic_token(*token).cloned(),
-                            &|token| {
-                                definitions
-                                    .module_for_semantic_token(merged, *token)
-                                    .cloned()
-                            },
-                        )
-                        .map_err(|_| rue_query::QueryAbort::Canceled)?;
+                    {
+                        Ok(owner) => owner,
+                        Err(failure) => {
+                            return Ok(deterministic_failure(
+                                "resolve_ordinary_body_owner",
+                                format!("{failure:?}"),
+                            ));
+                        }
+                    };
+                    let body = match export.body.try_map_keys(
+                        &|token| definitions.key_for_semantic_token(*token).cloned(),
+                        &|token| {
+                            definitions
+                                .module_for_semantic_token(merged, *token)
+                                .cloned()
+                        },
+                    ) {
+                        Ok(body) => body,
+                        Err(failure) => {
+                            return Ok(deterministic_failure(
+                                "map_ordinary_body_keys",
+                                format!("{failure:?}"),
+                            ));
+                        }
+                    };
                     CanonicalBody::Ordinary { owner, body }
                 }
                 Artifact::Anonymous(export) => {
-                    let identity = export
-                        .identity
-                        .try_map_identities(
-                            &|token| definitions.key_for_semantic_token(*token).cloned(),
-                            &|token| {
-                                definitions
-                                    .module_for_semantic_token(merged, *token)
-                                    .cloned()
-                            },
-                        )
-                        .map_err(|_| rue_query::QueryAbort::Canceled)?;
-                    let body = export
-                        .body
-                        .try_map_keys(
-                            &|token| definitions.key_for_semantic_token(*token).cloned(),
-                            &|token| {
-                                definitions
-                                    .module_for_semantic_token(merged, *token)
-                                    .cloned()
-                            },
-                        )
-                        .map_err(|_| rue_query::QueryAbort::Canceled)?;
+                    let identity = match export.identity.try_map_identities(
+                        &|token| definitions.key_for_semantic_token(*token).cloned(),
+                        &|token| {
+                            definitions
+                                .module_for_semantic_token(merged, *token)
+                                .cloned()
+                        },
+                    ) {
+                        Ok(identity) => identity,
+                        Err(failure) => {
+                            return Ok(deterministic_failure(
+                                "map_anonymous_body_identity",
+                                format!("{failure:?}"),
+                            ));
+                        }
+                    };
+                    let body = match export.body.try_map_keys(
+                        &|token| definitions.key_for_semantic_token(*token).cloned(),
+                        &|token| {
+                            definitions
+                                .module_for_semantic_token(merged, *token)
+                                .cloned()
+                        },
+                    ) {
+                        Ok(body) => body,
+                        Err(failure) => {
+                            return Ok(deterministic_failure(
+                                "map_anonymous_body_keys",
+                                format!("{failure:?}"),
+                            ));
+                        }
+                    };
                     CanonicalBody::Anonymous { identity, body }
                 }
                 Artifact::Specialization(export) => {
-                    let identity = export
-                        .identity
-                        .try_map_keys(
-                            &|token| definitions.key_for_semantic_token(*token).cloned(),
-                            &|token| {
-                                definitions
-                                    .module_for_semantic_token(merged, *token)
-                                    .cloned()
-                            },
-                        )
-                        .map_err(|_| rue_query::QueryAbort::Canceled)?;
-                    let body = export
-                        .body
-                        .try_map_keys(
-                            &|token| definitions.key_for_semantic_token(*token).cloned(),
-                            &|token| {
-                                definitions
-                                    .module_for_semantic_token(merged, *token)
-                                    .cloned()
-                            },
-                        )
-                        .map_err(|_| rue_query::QueryAbort::Canceled)?;
-                    let dependencies = export
+                    let identity = match export.identity.try_map_keys(
+                        &|token| definitions.key_for_semantic_token(*token).cloned(),
+                        &|token| {
+                            definitions
+                                .module_for_semantic_token(merged, *token)
+                                .cloned()
+                        },
+                    ) {
+                        Ok(identity) => identity,
+                        Err(failure) => {
+                            return Ok(deterministic_failure(
+                                "map_specialization_body_identity",
+                                format!("{failure:?}"),
+                            ));
+                        }
+                    };
+                    let body = match export.body.try_map_keys(
+                        &|token| definitions.key_for_semantic_token(*token).cloned(),
+                        &|token| {
+                            definitions
+                                .module_for_semantic_token(merged, *token)
+                                .cloned()
+                        },
+                    ) {
+                        Ok(body) => body,
+                        Err(failure) => {
+                            return Ok(deterministic_failure(
+                                "map_specialization_body_keys",
+                                format!("{failure:?}"),
+                            ));
+                        }
+                    };
+                    let dependencies = match export
                         .dependencies
                         .iter()
                         .map(|token| definitions.key_for_semantic_token(*token).cloned())
                         .collect::<Result<Vec<_>, _>>()
-                        .map_err(|_| rue_query::QueryAbort::Canceled)?
-                        .into();
+                    {
+                        Ok(dependencies) => dependencies.into(),
+                        Err(failure) => {
+                            return Ok(deterministic_failure(
+                                "map_specialization_dependencies",
+                                format!("{failure:?}"),
+                            ));
+                        }
+                    };
                     CanonicalBody::Specialization {
                         identity,
                         body,
@@ -1864,10 +2013,16 @@ pub(crate) fn analyze_body_query(
             })
         }
         rue_air::OneBodyTransactionOutcome::DeterministicFailure { errors, references } => {
-            let references =
-                map_references(references).map_err(|_| rue_query::QueryAbort::Canceled)?;
+            // The failing body already carries authoritative diagnostics. If its
+            // reference set cannot cross the stable bridge, keep those diagnostics
+            // and drop the unresolved references rather than disguising the
+            // invariant violation as a cancellation.
+            let references = map_references(references)
+                .unwrap_or_else(|_| BodyReferences(Arc::from(Vec::<BodyReference>::new())));
             Ok(BodyTransaction::DeterministicFailure { errors, references })
         }
+        // A non-terminal outcome is a request to observe a deferred producer, not
+        // a deterministic failure; the coordinator reschedules it.
         rue_air::OneBodyTransactionOutcome::NonTerminal { .. } => {
             Err(rue_query::QueryAbort::Canceled)
         }
