@@ -11087,6 +11087,39 @@ mod tests {
     }
 
     #[test]
+    fn body_query_stage_failure_surfaces_as_diagnostic_not_panic() {
+        let source = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }")],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        // A deterministic per-body stage failure must reach the caller as a real
+        // compiler diagnostic rather than a disguised abort that panics the
+        // uncanceled session.
+        let errors =
+            crate::canonical_semantic::with_test_body_query_stage_failure_injection(|| {
+                session
+                    .canonical_semantic(&CompileOptions::default())
+                    .unwrap_err()
+            });
+        let rendered = errors.to_string();
+        assert!(
+            rendered.contains("injected_body_query_stage"),
+            "expected the failing stage name in diagnostics, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("body instance"),
+            "expected the failing body instance in diagnostics, got: {rendered}"
+        );
+        let record = session.work().semantic_records.last().unwrap();
+        assert_eq!(
+            record.failure.unwrap().phase,
+            CanonicalSemanticFailurePhase::BodyAnalysis
+        );
+    }
+
+    #[test]
     fn cfg_failure_retains_work_without_replacing_the_last_good_baseline() {
         let valid = snapshot(
             &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }")],
