@@ -26,7 +26,7 @@
                     <a class="note-title" href="{{ page.permalink }}">{{ page.title }}</a>
                     {% if page.extra.authors %}
                     <span class="text-faint text-sm" style="font-style: italic;">
-                        — {% for author in page.extra.authors %}{% if loop.index > 1 %}{% if loop.last %} and {% else %}, {% endif %}{% endif %}{% if author == "steve" %}Steve{% elif author == "claude" %}Claude{% else %}{{ author }}{% endif %}{% endfor %}
+                        — {% for author in page.extra.authors %}{% if loop.index > 1 %}{% if loop.last %} and {% else %}, {% endif %}{% endif %}{% if author == "steve" %}Steve{% elif author == "claude" %}Claude{% elif author == "codex" %}Codex{% else %}{{ author }}{% endif %}{% endfor %}
                     </span>
                     {% endif %}
                     {% if page.summary %}
