@@ -62,7 +62,6 @@ const DECLARATION_QUERY_MEMO_RETENTION: usize = BODY_QUERY_MEMO_RETENTION;
 // A semantic batch commonly requests hundreds of exact declaration shells.
 // Keep one large batch reusable after its active pins drop; the runtime still
 // bounds global retention deterministically.
-const DECLARATION_SHELL_MEMO_RETENTION: usize = DECLARATION_QUERY_MEMO_RETENTION;
 const MODULE_INPUT_REVISION_RETENTION: usize = 4096;
 
 #[derive(Debug, Clone)]
@@ -5627,6 +5626,15 @@ fn resolve_parsed_semantic_signature(
 
 impl Default for RevisionedQueryDatabase {
     fn default() -> Self {
+        Self::with_declaration_memo_retention(DECLARATION_QUERY_MEMO_RETENTION)
+    }
+}
+
+impl RevisionedQueryDatabase {
+    /// Construct the database with an explicit declaration-keyed memo
+    /// retention. Production uses [`DECLARATION_QUERY_MEMO_RETENTION`];
+    /// eviction-lifecycle tests pass a small cap so exceeding it stays cheap.
+    fn with_declaration_memo_retention(declaration_memo_retention: usize) -> Self {
         let runtime = QueryRuntime::new(1);
         let module_store = Arc::new(Mutex::new(ModuleInputStore::default()));
         #[cfg(test)]
@@ -5789,7 +5797,7 @@ impl Default for RevisionedQueryDatabase {
         let declaration_shells = runtime
             .family_with_equality_and_evaluator(
                 "compiler.declaration-shell",
-                DECLARATION_SHELL_MEMO_RETENTION,
+                declaration_memo_retention,
                 |left: &DeclarationShellQueryValue, right: &DeclarationShellQueryValue| {
                     left == right
                 },
@@ -5866,7 +5874,7 @@ impl Default for RevisionedQueryDatabase {
         let raw_const_syntax = runtime
             .family_with_equality_and_evaluator(
                 "compiler.raw-const-syntax",
-                DECLARATION_QUERY_MEMO_RETENTION,
+                declaration_memo_retention,
                 |left: &RawConstSyntaxQueryValue, right: &RawConstSyntaxQueryValue| left == right,
                 move |context, _, key: &RawConstSyntaxQueryKey| {
                     use crate::declaration_candidate::{
@@ -6003,7 +6011,7 @@ impl Default for RevisionedQueryDatabase {
         let raw_declaration_signatures = runtime
             .family_with_equality_and_evaluator(
                 "compiler.raw-declaration-signature",
-                DECLARATION_QUERY_MEMO_RETENTION,
+                declaration_memo_retention,
                 |left: &RawDeclarationSignatureQueryValue,
                  right: &RawDeclarationSignatureQueryValue| { left == right },
                 move |context, _, key: &RawDeclarationSignatureQueryKey| {
@@ -6152,7 +6160,7 @@ impl Default for RevisionedQueryDatabase {
         let raw_declaration_bodies = runtime
             .family_with_equality_and_evaluator(
                 "compiler.raw-declaration-body",
-                DECLARATION_QUERY_MEMO_RETENTION,
+                declaration_memo_retention,
                 |left: &RawDeclarationBodyQueryValue,
                  right: &RawDeclarationBodyQueryValue| { left == right },
                 move |context, _, key: &RawDeclarationBodyQueryKey| {
@@ -6295,7 +6303,7 @@ impl Default for RevisionedQueryDatabase {
         let lookup_names = runtime
             .family_with_equality_and_evaluator(
                 "compiler.lookup-name",
-                DECLARATION_QUERY_MEMO_RETENTION,
+                declaration_memo_retention,
                 |left: &LookupNameValue, right: &LookupNameValue| left == right,
                 move |context, _, key: &LookupNameKey| {
                     let indexed = context
@@ -6487,7 +6495,7 @@ impl Default for RevisionedQueryDatabase {
         let declaration_imports = runtime
             .family_with_equality_and_evaluator(
                 "compiler.declaration-import",
-                DECLARATION_QUERY_MEMO_RETENTION,
+                declaration_memo_retention,
                 |left: &DeclarationImportQueryValue, right: &DeclarationImportQueryValue| {
                     left == right
                 },
@@ -6864,7 +6872,7 @@ impl Default for RevisionedQueryDatabase {
         let semantic_nucleus = runtime
             .family_with_equality_and_evaluator(
                 "compiler.semantic-nucleus",
-                DECLARATION_QUERY_MEMO_RETENTION,
+                declaration_memo_retention,
                 |left: &crate::semantic_query_nucleus::SemanticNucleusValue,
                  right: &crate::semantic_query_nucleus::SemanticNucleusValue| left == right,
                 move |context, family, key: &crate::semantic_query_nucleus::SemanticNucleusKey| {
@@ -11366,7 +11374,8 @@ mod tests {
             .join("\n");
         let source = source_snapshot(&[(1, "/main.rue", "main.rue", &source_text)], 1);
         let module = ModuleId::from_logical_path("main.rue").unwrap();
-        let mut database = RevisionedQueryDatabase::default();
+        let mut database =
+            RevisionedQueryDatabase::with_declaration_memo_retention(MODULE_QUERY_MEMO_RETENTION);
         let revision = database.source_revision(
             &super::super::session::ExactSourceInput::new(&source),
             &source,
@@ -11966,7 +11975,8 @@ mod tests {
             .join("\n");
         let source = source_snapshot(&[(1, "/main.rue", "main.rue", &source_text)], 1);
         let module = ModuleId::from_logical_path("main.rue").unwrap();
-        let mut database = RevisionedQueryDatabase::default();
+        let mut database =
+            RevisionedQueryDatabase::with_declaration_memo_retention(MODULE_QUERY_MEMO_RETENTION);
         let revision = database.source_revision(
             &super::super::session::ExactSourceInput::new(&source),
             &source,
@@ -14223,7 +14233,8 @@ mod tests {
         let (_, assembler, context) = import_fixture(305, &source_text);
         let snapshot = assembler.snapshot().unwrap();
         let reads = assembler.accepted_read_manifest();
-        let mut database = RevisionedQueryDatabase::default();
+        let mut database =
+            RevisionedQueryDatabase::with_declaration_memo_retention(MODULE_QUERY_MEMO_RETENTION);
         let revision = database
             .begin_import_inputs(&snapshot, context, reads)
             .unwrap();
