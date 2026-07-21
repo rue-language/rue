@@ -819,11 +819,20 @@ mod tests {
         assert_eq!(session_parse_file.invocations, 2);
         assert_eq!(session_parse_file.root_invocations, 2);
         // RUE-1027 constructs one declaration-shell epoch plus one isolated
-        // exact-body epoch for the reached `main` terminal. Both remain
-        // top-level leaves; neither is nested beneath whole-program sema.
+        // exact-body epoch for the reached `main` terminal. The shell epoch's
+        // index remains a top-level leaf; the exact-body epoch's index is a
+        // leaf timed beneath its body_prepare_declarations pipeline stage.
+        // Neither is nested beneath whole-program sema.
         assert_eq!(rir_declaration_index.invocations, 2);
-        assert_eq!(rir_declaration_index.root_invocations, 2);
+        assert_eq!(rir_declaration_index.root_invocations, 1);
         assert_eq!(rir_declaration_index.leaf_invocations, 2);
+        assert!(
+            session_edges.contains(&(
+                "body_prepare_declarations".to_owned(),
+                "rir_declaration_index".to_owned()
+            )),
+            "the exact-body epoch's index is timed beneath its pipeline stage: {session_edges:?}"
+        );
         assert_eq!(sema.invocations, 1);
         assert_eq!(sema.root_invocations, 1);
         assert_eq!(sema.leaf_invocations, 1);
