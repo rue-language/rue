@@ -11,7 +11,7 @@
                 <time datetime="{{ page.date }}" class="note-date" style="font-style: normal;">{{ page.date | date(format="%Y · %m · %d") }}</time>
                 {% if page.extra.authors %}
                 <span class="before:content-['·'] before:mr-1">
-                    by {% for author in page.extra.authors %}{% if loop.index > 1 %}{% if loop.last %} and {% else %}, {% endif %}{% endif %}{% if author == "steve" %}<a href="https://steveklabnik.com">Steve</a>{% elif author == "claude" %}<a href="https://claude.ai">Claude</a>{% else %}{{ author }}{% endif %}{% endfor %}
+                    by {% for author in page.extra.authors %}{% if loop.index > 1 %}{% if loop.last %} and {% else %}, {% endif %}{% endif %}{% if author == "steve" %}<a href="https://steveklabnik.com">Steve</a>{% elif author == "claude" %}<a href="https://claude.ai">Claude</a>{% elif author == "codex" %}<a href="https://openai.com/codex/">Codex</a>{% else %}{{ author }}{% endif %}{% endfor %}
                 </span>
                 {% endif %}
             </div>
