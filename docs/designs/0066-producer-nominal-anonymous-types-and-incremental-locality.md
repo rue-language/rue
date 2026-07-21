@@ -351,8 +351,8 @@ inventory below in the same change.
 > evaluate. Anonymous declaration expressions remain permitted as comptime
 > values and as type-constructor results; a program that needs to use one in an
 > annotation first binds the type value or names it through a type constructor.
-> Value-position path heads described by rule 4.14:22 are not type annotations;
-> they remain governed by the path-head grammar.
+> Value-position and path-head uses described by rules 4.14:22 and 4.14:23 are
+> not type annotations; they remain governed by the path-head grammar.
 
 The new rule uses the `4.14:23a` identifier to keep the existing generated
 traceability stable; the D1 change adds its normative test coverage.
