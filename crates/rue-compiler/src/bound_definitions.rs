@@ -734,8 +734,8 @@ pub(crate) fn compare_canonical_durable_declaration_install(
             "projected durable install changed declaration semantics",
         )));
     }
-    let ordinary_bodies = ordinary.analyze_all_bodies();
-    let installed_bodies = installed.analyze_all_bodies();
+    let ordinary_bodies = ordinary.analyze_all_bodies_for_test();
+    let installed_bodies = installed.analyze_all_bodies_for_test();
     match (ordinary_bodies, installed_bodies) {
         (Ok(ordinary), Ok(installed)) => {
             let ordinary_identities =
@@ -1481,7 +1481,7 @@ mod tests {
             &imports,
         )
         .unwrap()
-        .analyze_all_bodies()
+        .analyze_all_bodies_for_test()
         .unwrap();
     }
 

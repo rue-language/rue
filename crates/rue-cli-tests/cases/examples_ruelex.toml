@@ -20,6 +20,7 @@ description = "compile examples/ruelex and tokenize a fixture, asserting the exa
 [[case]]
 name = "ruelex_tokenizes_fixture_matching_emit_tokens"
 description = "ruelex on a small fixture reproduces `rue --emit tokens` exactly, including the uniform AT + IDENT form for @import and shared ident/string interning."
+contract = "heavyweight"
 source_path = "examples/ruelex/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "sample.rue", source = """

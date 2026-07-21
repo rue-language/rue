@@ -1,7 +1,7 @@
 //! Structural guard for AIR's read-only canonical import consumption boundary.
 
 #[test]
-fn one_body_authority_is_repository_wide_and_test_only() {
+fn one_body_authority_is_repository_wide_and_production() {
     fn visit(directory: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
         for entry in std::fs::read_dir(directory).expect("read Rust source directory") {
             let path = entry.expect("read source entry").path();
@@ -37,21 +37,16 @@ fn one_body_authority_is_repository_wide_and_test_only() {
             }
         }
     }
-    let declared_paths = declarations
-        .iter()
-        .map(|(path, _, _)| path.as_path())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        declared_paths,
-        [
-            std::path::Path::new("crates/rue-air/src/sema/binding_manifest.rs"),
-            std::path::Path::new("crates/rue-air/src/sema/one_body.rs"),
-        ],
+    assert!(
+        declarations.iter().all(|(path, _, _)| path
+            == std::path::Path::new("crates/rue-air/src/sema/binding_manifest.rs")
+            || path == std::path::Path::new("crates/rue-air/src/sema/one_body.rs")),
         "another repository source installed a one-body entrypoint: {declarations:?}"
     );
 
     let sema_module = include_str!("sema/mod.rs");
-    assert!(sema_module.contains("#[cfg(test)]\nmod one_body;"));
+    assert!(sema_module.contains("mod one_body;"));
+    assert!(!sema_module.contains("#[cfg(test)]\nmod one_body;"));
     let binding = include_str!("sema/binding_manifest.rs");
     let binding_entrypoint = [
         "#[cfg(test)]\n    pub(crate) fn analyze_",
@@ -59,11 +54,47 @@ fn one_body_authority_is_repository_wide_and_test_only() {
     ]
     .concat();
     assert!(binding.contains(&binding_entrypoint));
+    let stable_instance_entrypoint = ["pub fn analyze_", "one_body_instance<K, M>("].concat();
+    assert!(binding.contains(&stable_instance_entrypoint));
     let transaction_entrypoint = ["pub(super) fn analyze_", "one_body"].concat();
     assert!(
         include_str!("sema/one_body.rs").contains(&transaction_entrypoint),
         "the sole transaction authority moved without updating the inventory"
     );
+}
+
+#[test]
+fn retired_whole_program_body_driver_is_an_explicit_test_oracle_only() {
+    let analysis = include_str!("sema/analysis.rs");
+    let manifest = include_str!("sema/binding_manifest.rs");
+    let sema = include_str!("sema/mod.rs");
+    let sources = [analysis, manifest, sema].concat();
+
+    for retired in [
+        "fn analyze_all_function_bodies(",
+        "fn analyze_all_function_bodies_with_work(",
+        "fn analyze_all_function_bodies_mut(",
+        "fn analyze_all_bodies(",
+        "fn analyze_all_bodies_with_work(",
+        ".analyze_all_bodies()",
+        ".analyze_all_bodies_with_work()",
+    ] {
+        assert!(
+            !sources.contains(retired),
+            "retired production body authority returned: {retired}"
+        );
+    }
+    for oracle in [
+        "fn analyze_all_function_bodies_for_test(",
+        "fn analyze_all_function_bodies_with_work_for_test(",
+        "fn analyze_all_function_bodies_mut_for_test(",
+        "fn analyze_all_bodies_for_test(",
+    ] {
+        assert!(
+            sources.contains(oracle),
+            "missing explicit whole-program test oracle: {oracle}"
+        );
+    }
 }
 
 #[test]

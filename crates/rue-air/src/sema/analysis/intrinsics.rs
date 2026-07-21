@@ -562,7 +562,6 @@ impl<'a> BodySema<'a> {
                 ));
             };
             ctx.referenced_methods.insert((struct_id, method));
-            #[cfg(test)]
             self.record_body_method_dependency((struct_id, method));
             let (receiver, temp_scope) = self.materialize_borrow_argument(
                 air,

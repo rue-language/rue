@@ -404,13 +404,14 @@ EOF
 # std directory supplies the required nested ordinary-file sentinel.
 make_sanitizer_sandbox() {
   local sb; sb="$(mktemp -d)"
-  mkdir -p "$sb/scripts" "$sb/examples/calculator/lib" "$sb/examples/std" \
+  mkdir -p "$sb/scripts" "$sb/examples/calculator/lib" "$sb/examples/caldera" "$sb/examples/std" \
     "$sb/std" "$sb/fakebin" "$sb/tmp"
   cp "$SRC_ROOT/scripts/run-sanitizer.sh" "$sb/scripts/run-sanitizer.sh"
   chmod +x "$sb/scripts/run-sanitizer.sh"
   printf 'fn main() -> i32 { 0 }\n' >"$sb/examples/top.rue"
   printf 'fn main() -> i32 { 0 }\n' >"$sb/examples/calculator/main.rue"
   printf 'pub fn helper() -> i32 { 0 }\n' >"$sb/examples/calculator/lib/helper.rue"
+  printf 'fn main() -> i32 { 0 }\n' >"$sb/examples/caldera/main.rue"
   printf 'fn main() -> i32 { 0 }\n' >"$sb/examples/std/arraybuf_demo.rue"
   echo '// fake bundled standard library' >"$sb/std/_std.rue"
 
@@ -497,6 +498,8 @@ test_sanitizer_recursive_discovery_contract() {
     "$(grep -Fxq "$sb/examples/std/arraybuf_demo.rue" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
   check "run-sanitizer: does not compile a root's helper module independently" \
     "$(! grep -Fxq "$sb/examples/calculator/lib/helper.rue" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
+  check "run-sanitizer: temporarily defers Caldera under RUE-1083" \
+    "$(! grep -Fxq "$sb/examples/caldera/main.rue" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
   rm -rf "$sb"
 }
 

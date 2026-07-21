@@ -101,7 +101,6 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     /// Test-only exact-body export after generic-call selection has rewritten
     /// the caller.  Production keeps its established pre-specialization export
     /// ordering until the compiler body-query cutover.
-    #[cfg(test)]
     pub(in crate::sema) fn export_one_body_with_specializations(
         &self,
         owner: BodyOwnerToken,
@@ -124,6 +123,38 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         )
     }
 
+    pub(in crate::sema) fn export_anonymous_body_with_specializations(
+        &self,
+        identity: crate::FunctionInstanceKey<
+            crate::SemanticDefinitionToken,
+            crate::SemanticModuleToken,
+        >,
+        body_span: Span,
+        analyzed: &AnalyzedFunction,
+        strings: &[String],
+        warnings: &[CompileWarning],
+        specialized_calls: &HashMap<
+            Spur,
+            SemanticSpecializationIdentity<SemanticDefinitionToken, SemanticModuleToken>,
+        >,
+    ) -> Result<crate::SemanticAnonymousBodyExport, F> {
+        // Anonymous bodies have no compiler-issued named owner token. The
+        // shared value exporter does not inspect this placeholder; only its
+        // ordinary wrapper publishes the owner field.
+        let exported = self.export_body(
+            crate::BodyOwnerToken::new(0, 0),
+            body_span,
+            analyzed,
+            strings,
+            warnings,
+            Some(specialized_calls),
+        )?;
+        Ok(crate::SemanticAnonymousBodyExport {
+            identity,
+            body: exported.body,
+        })
+    }
+
     fn export_body(
         &self,
         owner: BodyOwnerToken,
@@ -138,12 +169,66 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             >,
         >,
     ) -> Result<SemanticBodyExport, F> {
-        // CompileWarning carries structured labels, notes, help, and suggestions
-        // which the first durable DTO intentionally does not model. Publishing a
-        // lossy warning record would make a reuse hit observably different.
-        if !warnings.is_empty() {
-            return Err(F::UnsupportedWarningMetadata);
-        }
+        let warning_anchor = |span: Span| {
+            if span.file_id != body_span.file_id
+                || span.start < body_span.start
+                || span.end > body_span.end
+            {
+                return Err(F::ForeignSpan);
+            }
+            Ok(SemanticBodyAnchor {
+                start: span.start - body_span.start,
+                end: span.end - body_span.start,
+            })
+        };
+        let warnings = warnings
+            .iter()
+            .map(|warning| {
+                let anchor = warning
+                    .span()
+                    .ok_or(F::ForeignSpan)
+                    .and_then(warning_anchor)?;
+                let diagnostic = warning.diagnostic();
+                Ok(crate::SemanticBodyWarning {
+                    kind: warning.kind.clone(),
+                    anchor,
+                    labels: diagnostic
+                        .labels
+                        .iter()
+                        .map(|label| {
+                            Ok(crate::SemanticBodyWarningLabel {
+                                message: Arc::from(label.message.as_str()),
+                                anchor: warning_anchor(label.span)?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, F>>()?
+                        .into(),
+                    notes: diagnostic
+                        .notes
+                        .iter()
+                        .map(|note| Arc::from(note.0.as_str()))
+                        .collect(),
+                    helps: diagnostic
+                        .helps
+                        .iter()
+                        .map(|help| Arc::from(help.0.as_str()))
+                        .collect(),
+                    suggestions: diagnostic
+                        .suggestions
+                        .iter()
+                        .map(|suggestion| {
+                            Ok(crate::SemanticBodyWarningSuggestion {
+                                message: Arc::from(suggestion.message.as_str()),
+                                anchor: warning_anchor(suggestion.span)?,
+                                replacement: Arc::from(suggestion.replacement.as_str()),
+                                applicability: suggestion.applicability,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, F>>()?
+                        .into(),
+                })
+            })
+            .collect::<Result<Vec<_>, F>>()?;
         let body = &analyzed.air;
         let instruction_count = body.len();
         let place_count = body.places().len();
@@ -550,7 +635,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                 param_by_ref: Arc::from(analyzed.param_modes.by_ref()),
                 param_writable: Arc::from(analyzed.param_modes.writable()),
                 allow_unreachable_code: analyzed.allow_unreachable_code,
-                warnings: Arc::new([]),
+                warnings: warnings.into(),
             },
         })
     }
@@ -628,6 +713,14 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         let ty = Type::new_struct(id);
         Ok(match self.canonical_anonymous_types.get(&ty) {
             Some(key) => crate::NominalInstanceKey::Anonymous(key.clone()),
+            None if self.type_pool.struct_def(id).is_builtin
+                || self.type_pool.struct_def(id).name == "str" =>
+            {
+                crate::NominalInstanceKey::Builtin {
+                    kind: crate::AnonymousNominalKind::Struct,
+                    name: Arc::from(self.type_pool.struct_def(id).name.as_str()),
+                }
+            }
             None => crate::NominalInstanceKey::Named(self.struct_identity(id)?),
         })
     }
@@ -639,6 +732,15 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         let ty = Type::new_enum(id);
         Ok(match self.canonical_anonymous_types.get(&ty) {
             Some(key) => crate::NominalInstanceKey::Anonymous(key.clone()),
+            None if rue_builtins::BUILTIN_ENUMS
+                .iter()
+                .any(|builtin| builtin.name == self.type_pool.enum_def(id).name) =>
+            {
+                crate::NominalInstanceKey::Builtin {
+                    kind: crate::AnonymousNominalKind::Enum,
+                    name: Arc::from(self.type_pool.enum_def(id).name.as_str()),
+                }
+            }
             None => crate::NominalInstanceKey::Named(self.enum_identity(id)?),
         })
     }
@@ -757,7 +859,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                         element: Box::new(self.export_body_type(element)?),
                         name: Arc::from(def.name.as_str()),
                     }
-                } else if def.is_builtin {
+                } else if def.is_builtin || def.name == "str" {
                     SemanticImportType::BuiltinNominal {
                         name: Arc::from(def.name.as_str()),
                         kind: crate::SemanticImportNominalKind::Struct,

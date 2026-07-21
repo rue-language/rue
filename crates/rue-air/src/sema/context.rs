@@ -334,7 +334,7 @@ impl CallLoanKind {
 ///
 /// Bundles together the mutable state that needs to be threaded through
 /// recursive `analyze_inst` calls.
-#[cfg_attr(test, derive(Clone))]
+#[derive(Clone)]
 pub(crate) struct AnalysisContext<'a> {
     /// RIR body root of the definition producing values in this analysis.
     /// Anonymous structural anchors are relative to this producer.

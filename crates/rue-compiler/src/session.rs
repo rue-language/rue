@@ -1,6 +1,5 @@
 //! In-process canonical parse, merge, and RIR query orchestration.
 
-use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
@@ -612,419 +611,9 @@ impl StableBodyDependencyInputRecord {
     pub fn fingerprint(&self) -> &StableDefinitionInputFingerprint {
         &self.fingerprint
     }
-    pub fn target(&self) -> crate::Target {
-        self.target
-    }
-    pub fn preview_features(&self) -> &StablePreviewFeatures {
-        &self.preview_features
-    }
-    pub fn direct_dependency_inputs(&self) -> &[StableDefinitionInputFingerprint] {
-        &self.direct_dependency_inputs
-    }
-    #[cfg(test)]
-    pub(crate) fn blockers(&self) -> &[SemanticDependencyBlocker] {
-        &self.blockers
-    }
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn reusable_boundary_supported(&self) -> bool {
         self.blockers.is_empty()
-    }
-}
-
-#[cfg(test)]
-mod durable_body_integration_tests {
-    use std::{collections::HashMap, sync::Arc};
-
-    use rue_span::FileId;
-
-    use super::*;
-    use crate::{SourceMetadata, SourceSnapshot};
-
-    fn snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
-        let physical = entries
-            .iter()
-            .map(|(id, path, _, _)| (FileId::new(*id), (*path).to_owned()))
-            .collect::<HashMap<_, _>>();
-        let logical = entries
-            .iter()
-            .map(|(id, _, logical, _)| (FileId::new(*id), (*logical).to_owned()))
-            .collect::<HashMap<_, _>>();
-        SourceSnapshot::new(
-            SourceMetadata::new(FileId::new(root), physical, logical).unwrap(),
-            entries
-                .iter()
-                .map(|(id, _, _, text)| (FileId::new(*id), Arc::new((*text).to_owned())))
-                .collect(),
-        )
-        .unwrap()
-    }
-
-    fn durable_candidates(source: &SourceSnapshot) -> Arc<[crate::DurableOrdinaryBody]> {
-        let mut session = CompilerSession::new();
-        let program = session.update(source).into_owner_result().unwrap();
-        if !program.import_directives().is_empty() {
-            let graph = crate::test_support::test_fixture_import_graph(&program).unwrap();
-            session.adopt_test_import_graph(graph);
-        }
-        let semantic = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        assert!(
-            semantic.work().durable_bodies.conversion_completions > 0,
-            "semantic work={:#?}",
-            semantic.work().durable_bodies
-        );
-        assert!(
-            session.durable_declaration_cache.is_some(),
-            "reuse={:#?}",
-            semantic.work().declaration_reuse
-        );
-        let manifest = session
-            .semantic_dependency_inputs(&CompileOptions::default(), None)
-            .unwrap();
-        assert!(
-            !manifest.durable_ordinary_bodies().is_empty(),
-            "manifest work={:#?} blockers={:#?}",
-            manifest.work().durable_bodies,
-            manifest.body_dependency_blockers()
-        );
-        manifest.durable_ordinary_bodies.clone()
-    }
-
-    fn normalize_epoch_symbols(text: &str) -> String {
-        let bytes = text.as_bytes();
-        let mut result = String::with_capacity(text.len());
-        let mut index = 0;
-        while index < bytes.len() {
-            if bytes[index] == b'@' {
-                result.push('@');
-                index += 1;
-                if text[index..].starts_with("sym:") {
-                    result.push_str("sym:");
-                    index += 4;
-                }
-                if index < bytes.len() && bytes[index].is_ascii_digit() {
-                    while index < bytes.len() && bytes[index].is_ascii_digit() {
-                        index += 1;
-                    }
-                    result.push_str("<epoch-symbol>");
-                    continue;
-                }
-                continue;
-            }
-            result.push(bytes[index] as char);
-            index += 1;
-        }
-        result
-    }
-
-    #[test]
-    fn durable_body_candidates_ignore_relocation_file_ids_and_input_order() {
-        let a = "pub fn helper() -> i32 { 20 }";
-        let b = "pub fn helper() -> i32 { 22 }";
-        let main = r#"
-            fn main() -> i32 {
-                let left = @import("a.rue");
-                let right = @import("b.rue");
-                left.helper() + right.helper()
-            }
-        "#;
-        let first = snapshot(
-            &[
-                (1, "/old/main.rue", "main.rue", main),
-                (2, "/old/a.rue", "a.rue", a),
-                (3, "/old/b.rue", "b.rue", b),
-            ],
-            1,
-        );
-        let relocated = snapshot(
-            &[
-                (93, "/new/b.rue", "b.rue", b),
-                (91, "/new/main.rue", "main.rue", main),
-                (92, "/new/a.rue", "a.rue", a),
-            ],
-            91,
-        );
-        let first = durable_candidates(&first);
-        let second = durable_candidates(&relocated);
-        assert_eq!(first.len(), 3, "first={first:#?}");
-        assert_eq!(first, second);
-        let mut helper_modules = first
-            .iter()
-            .filter(|body| body.payload.owner.name() == "helper")
-            .map(|body| body.payload.owner.module().as_str())
-            .collect::<Vec<_>>();
-        helper_modules.sort_unstable();
-        assert_eq!(helper_modules, ["a.rue", "b.rue"]);
-    }
-
-    #[test]
-    fn durable_body_candidates_preserve_recursive_stable_calls() {
-        let source = snapshot(
-            &[(
-                7,
-                "/p/main.rue",
-                "main.rue",
-                r#"
-            fn even(n: i32) -> bool { if n == 0 { true } else { odd(n - 1) } }
-            fn odd(n: i32) -> bool { if n == 0 { false } else { even(n - 1) } }
-            fn main() -> i32 { if even(8) { 0 } else { 1 } }
-        "#,
-            )],
-            7,
-        );
-        let candidates = durable_candidates(&source);
-        assert_eq!(candidates.len(), 3);
-        let calls = candidates
-            .iter()
-            .flat_map(|body| body.payload.instructions.iter())
-            .filter_map(|instruction| match &instruction.data {
-                crate::DurableAirInstData::Call {
-                    function: rue_air::FunctionInstanceKey::Definition(function),
-                    ..
-                } => Some(function.name()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert!(calls.contains(&"even"));
-        assert!(calls.contains(&"odd"));
-    }
-
-    #[test]
-    fn durable_body_candidate_covers_owned_places_abi_and_fresh_import() {
-        let source = snapshot(
-            &[(
-                5,
-                "/p/main.rue",
-                "main.rue",
-                r#"
-            struct Pair { x: i32, values: [i32; 2] }
-            enum Choice { Value(i32), Empty }
-            fn mutate(inout p: Pair) { p.x = 20; p.values[0] = 2; }
-            fn read(borrow p: Pair) -> i32 { p.x + p.values[0] }
-            fn main() -> i32 {
-                let mut p = Pair { x: 1, values: [3, 4] };
-                mutate(inout p);
-                let choice = Choice.Value(read(borrow p));
-                @dbg("durable");
-                match choice { Choice.Value(v) => v, Choice.Empty => 0 }
-            }
-        "#,
-            )],
-            5,
-        );
-        let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
-        let semantic = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        assert!(
-            semantic.work().durable_bodies.conversion_completions > 0,
-            "semantic work={:#?}",
-            semantic.work().durable_bodies
-        );
-        let manifest = session
-            .semantic_dependency_inputs(&CompileOptions::default(), None)
-            .unwrap();
-        let candidates = manifest.durable_ordinary_bodies();
-        assert_eq!(
-            candidates.len(),
-            3,
-            "work={:#?} blockers={:#?}",
-            manifest.work().durable_bodies,
-            manifest.body_dependency_blockers()
-        );
-        let instructions = candidates
-            .iter()
-            .flat_map(|body| body.payload.instructions.iter())
-            .map(|instruction| &instruction.data)
-            .collect::<Vec<_>>();
-        assert!(
-            instructions
-                .iter()
-                .any(|data| matches!(data, crate::DurableAirInstData::StructInit { .. }))
-        );
-        assert!(
-            instructions
-                .iter()
-                .any(|data| matches!(data, crate::DurableAirInstData::ArrayInit { .. }))
-        );
-        assert!(
-            instructions
-                .iter()
-                .any(|data| matches!(data, crate::DurableAirInstData::EnumVariant { .. }))
-        );
-        assert!(
-            instructions
-                .iter()
-                .any(|data| matches!(data, crate::DurableAirInstData::StringConst(_)))
-        );
-        assert!(
-            instructions
-                .iter()
-                .any(|data| matches!(data, crate::DurableAirInstData::Drop { .. }))
-        );
-        assert!(
-            instructions
-                .iter()
-                .any(|data| matches!(data, crate::DurableAirInstData::PlaceWrite { .. }))
-        );
-        assert!(
-            candidates
-                .iter()
-                .any(|body| body.payload.param_by_ref.iter().any(|mode| *mode))
-        );
-        assert!(
-            candidates
-                .iter()
-                .any(|body| body.payload.param_writable.iter().any(|mode| *mode))
-        );
-        let work = manifest.work().durable_bodies;
-        assert_eq!(work.import_attempts, candidates.len());
-        assert_eq!(work.import_successes, candidates.len());
-        assert_eq!(work.import_failures, 0);
-        let declarations = session
-            .durable_declaration_cache
-            .as_ref()
-            .unwrap()
-            .semantics
-            .clone();
-        let epoch = crate::import_durable_declaration_semantics(&declarations).unwrap();
-        let definitions = session
-            .stable_definitions(&CompileOptions::default())
-            .unwrap();
-        for candidate in candidates {
-            let mut work = crate::DurableBodyWork::default();
-            let first = candidate.project_semantic_body(&mut work).unwrap();
-            let second = candidate.project_semantic_body(&mut work).unwrap();
-            assert_eq!(first, second);
-            let record = definitions
-                .definitions()
-                .iter()
-                .find(|record| record.stable_key() == &candidate.payload.owner)
-                .unwrap();
-            let imported = epoch
-                .import_body(&first, record.body_span().unwrap())
-                .unwrap();
-            let ordinary = semantic
-                .functions()
-                .iter()
-                .find(|function| {
-                    function.analyzed.ordinary_owner.is_some_and(|token| {
-                        semantic.body_owner_issuer().key_for_body_token(token).ok()
-                            == Some(&candidate.payload.owner)
-                    })
-                })
-                .unwrap();
-            assert_eq!(
-                normalize_epoch_symbols(&imported.air.to_string()),
-                normalize_epoch_symbols(&ordinary.analyzed.air.to_string())
-            );
-            assert_eq!(
-                imported.strings,
-                candidate
-                    .payload
-                    .strings
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-            );
-            assert_eq!(imported.num_locals, ordinary.analyzed.num_locals);
-            assert_eq!(imported.num_param_slots, ordinary.analyzed.num_param_slots);
-            assert_eq!(imported.param_modes, ordinary.analyzed.param_modes);
-            assert_eq!(
-                imported.allow_unreachable_code,
-                ordinary.analyzed.allow_unreachable_code
-            );
-            assert_eq!(
-                imported.air.param_drops(),
-                ordinary.analyzed.air.param_drops()
-            );
-            for slot in 0..imported.num_locals.max(ordinary.analyzed.num_locals) {
-                assert_eq!(
-                    imported.air.is_borrow_slot(slot),
-                    ordinary.analyzed.air.is_borrow_slot(slot)
-                );
-            }
-            let imported_strings = imported
-                .air
-                .instructions()
-                .iter()
-                .filter_map(|instruction| match instruction.data {
-                    rue_air::AirInstData::StringConst(index) => {
-                        Some(imported.strings[index as usize].as_str())
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            let ordinary_strings = ordinary
-                .analyzed
-                .air
-                .instructions()
-                .iter()
-                .filter_map(|instruction| match instruction.data {
-                    rue_air::AirInstData::StringConst(index) => {
-                        Some(semantic.strings()[index as usize].as_str())
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(imported_strings, ordinary_strings);
-            // The epoch remains mutable for import setup; mirror the real
-            // semantic success boundary before exercising backend consumers.
-            let frozen_types = epoch.type_pool().clone().freeze();
-            let mut cfg_output = rue_cfg::CfgBuilder::build(
-                &imported.air,
-                imported.num_locals,
-                imported.num_param_slots,
-                &ordinary.analyzed.name,
-                &frozen_types,
-                imported.param_modes,
-                epoch.interner(),
-                imported.allow_unreachable_code,
-                ordinary.analyzed.callable_kind,
-            );
-            assert!(cfg_output.errors.is_empty());
-            let cfg = cfg_output.cfg.take().unwrap();
-            cfg_output.cfg =
-                Some(rue_cfg::opt::optimize(cfg, rue_cfg::OptLevel::O0, &frozen_types).unwrap());
-            assert_eq!(
-                normalize_epoch_symbols(&cfg_output.cfg.as_ref().unwrap().to_string()),
-                normalize_epoch_symbols(&ordinary.cfg.to_string())
-            );
-            assert!(cfg_output.warnings.is_empty());
-        }
-        assert!(semantic.warnings().is_empty());
-    }
-
-    #[test]
-    fn unsupported_generic_and_warning_bodies_publish_no_candidates_without_losing_analysis() {
-        for (source, expected) in [
-            (
-                "fn identity(comptime T: type, x: T) -> T { x } fn main() -> i32 { identity(i32, 42) }",
-                rue_air::SemanticBodyExportFailure::UnsupportedGenericCall,
-            ),
-            (
-                "fn main() -> i32 { let unused = 1; 42 }",
-                rue_air::SemanticBodyExportFailure::UnsupportedWarningMetadata,
-            ),
-        ] {
-            let source = snapshot(&[(1, "/p/main.rue", "main.rue", source)], 1);
-            let mut session = CompilerSession::new();
-            session.update(&source).into_result().unwrap();
-            let manifest = session
-                .semantic_dependency_inputs(&CompileOptions::default(), None)
-                .unwrap();
-            assert!(manifest.durable_ordinary_bodies().is_empty());
-            assert!(!manifest.body_dependencies().is_empty());
-            let semantic = session
-                .canonical_semantic(&CompileOptions::default())
-                .unwrap();
-            assert!(!semantic.functions().is_empty());
-            assert_eq!(
-                semantic.work().durable_bodies.last_export_failure,
-                Some(expected)
-            );
-        }
     }
 }
 
@@ -1414,12 +1003,6 @@ impl SemanticDependencyInputManifest {
     pub fn body_dependencies(&self) -> &[StableBodyDependencyInputRecord] {
         &self.body_dependencies
     }
-    /// Test-only inspection of candidates owned by this successful manifest.
-    /// Production cache operations consume the owned field directly.
-    #[cfg(test)]
-    pub(crate) fn durable_ordinary_bodies(&self) -> &[crate::DurableOrdinaryBody] {
-        &self.durable_ordinary_bodies
-    }
     /// Explicitly unstable equality status for durable-cache instrumentation.
     pub fn unstable_durable_artifact_status(&self) -> crate::unstable::DurableArtifactStatus {
         crate::unstable::DurableArtifactStatus::from_debug(&self.durable_ordinary_bodies)
@@ -1714,9 +1297,365 @@ pub struct CompilerSession {
     #[cfg(test)]
     durable_declaration_cache: Option<DurableDeclarationCache>,
     #[cfg(test)]
-    last_successful_body_cache: Option<DurableOrdinaryBodyCache>,
-    #[cfg(test)]
     last_successful_cfg_cache: Option<Arc<[crate::queries::DurableCfgArtifact]>>,
+}
+
+fn canonicalize_reached_anonymous_member(
+    instance: &crate::FunctionInstanceKey,
+    produced: &BTreeMap<
+        crate::AnonymousNominalKey,
+        crate::durable_semantics::DurableAnonymousNominal,
+    >,
+    declarations: &[crate::durable_semantics::DurableAnonymousNominal],
+) -> crate::FunctionInstanceKey {
+    let crate::FunctionInstanceKey::AnonymousMember { owner, member } = instance else {
+        return instance.clone();
+    };
+    let crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(identity)) =
+        owner.as_ref()
+    else {
+        return instance.clone();
+    };
+    let Some(target) = produced.get(identity).or_else(|| {
+        declarations
+            .iter()
+            .find(|nominal| nominal.identity == *identity)
+    }) else {
+        return instance.clone();
+    };
+    let value_specialized = |nominal: &crate::durable_semantics::DurableAnonymousNominal| {
+        matches!(
+            &nominal.identity.producer,
+            crate::StableProducerId::Function(producer)
+                if matches!(
+                    producer.as_ref(),
+                    crate::FunctionInstanceKey::Specialization { arguments, .. }
+                        if !arguments.values.is_empty()
+                )
+        )
+    };
+    let representative = produced
+        .values()
+        .chain(declarations.iter())
+        .filter(|candidate| {
+            candidate.shape == target.shape
+                && candidate.type_captures == target.type_captures
+                && (candidate.value_captures == target.value_captures
+                    || (value_specialized(candidate) && value_specialized(target)))
+        })
+        .map(|candidate| &candidate.identity)
+        .min_by(|left, right| stable_anonymous_nominal_cmp(left, right))
+        .expect("anonymous equivalence class contains its target")
+        .clone();
+    crate::FunctionInstanceKey::AnonymousMember {
+        owner: Box::new(crate::TypeInstanceKey::Nominal(
+            crate::NominalInstanceKey::Anonymous(representative),
+        )),
+        member: member.clone(),
+    }
+}
+
+fn stable_anonymous_nominal_cmp(
+    left: &crate::AnonymousNominalKey,
+    right: &crate::AnonymousNominalKey,
+) -> std::cmp::Ordering {
+    stable_producer_definition_root(&left.producer)
+        .cmp(&stable_producer_definition_root(&right.producer))
+        .then_with(|| left.cmp(right))
+}
+
+fn stable_type_definition_root(
+    value: &crate::TypeInstanceKey,
+) -> Option<&crate::StableDefinitionKey> {
+    use crate::{NominalInstanceKey as N, TypeInstanceKey as T};
+    match value {
+        T::Nominal(N::Named(value)) => Some(value),
+        T::Nominal(N::Anonymous(value)) => stable_producer_definition_root(&value.producer),
+        T::Array { element, .. } | T::PtrConst(element) | T::PtrMut(element) => {
+            stable_type_definition_root(element)
+        }
+        _ => None,
+    }
+}
+
+fn stable_function_definition_root(
+    value: &crate::FunctionInstanceKey,
+) -> Option<&crate::StableDefinitionKey> {
+    use crate::FunctionInstanceKey as F;
+    match value {
+        F::Definition(value) => Some(value),
+        F::Specialization { base, .. } => stable_function_definition_root(base),
+        F::AnonymousMember { owner, .. } | F::DropGlue(owner) => stable_type_definition_root(owner),
+    }
+}
+
+fn stable_producer_definition_root(
+    producer: &crate::StableProducerId,
+) -> Option<&crate::StableDefinitionKey> {
+    match producer {
+        crate::StableProducerId::Definition(definition) => Some(definition),
+        crate::StableProducerId::Function(function) => stable_function_definition_root(function),
+    }
+}
+
+fn produced_anonymous_survives_closure_restart(
+    instance: &crate::FunctionInstanceKey,
+    produced: &BTreeMap<
+        crate::AnonymousNominalKey,
+        crate::durable_semantics::DurableAnonymousNominal,
+    >,
+    declarations: &[crate::durable_semantics::DurableAnonymousNominal],
+) -> bool {
+    canonicalize_reached_anonymous_member(instance, produced, declarations) == *instance
+}
+
+fn enqueue_owned_destructor_closure(
+    ty: &crate::TypeInstanceKey,
+    definitions: &crate::BoundDefinitionSet,
+    declarations: &[crate::durable_semantics::DurableDeclarationSemantic],
+    produced_anonymous: &BTreeMap<
+        crate::AnonymousNominalKey,
+        crate::durable_semantics::DurableAnonymousNominal,
+    >,
+    declaration_anonymous: &[crate::durable_semantics::DurableAnonymousNominal],
+    pending: &mut std::collections::BTreeSet<crate::FunctionInstanceKey>,
+) {
+    fn named(
+        owner: &crate::StableDefinitionKey,
+        definitions: &crate::BoundDefinitionSet,
+        declarations: &[crate::durable_semantics::DurableDeclarationSemantic],
+        produced_anonymous: &BTreeMap<
+            crate::AnonymousNominalKey,
+            crate::durable_semantics::DurableAnonymousNominal,
+        >,
+        declaration_anonymous: &[crate::durable_semantics::DurableAnonymousNominal],
+        pending: &mut std::collections::BTreeSet<crate::FunctionInstanceKey>,
+        visited: &mut std::collections::BTreeSet<crate::TypeInstanceKey>,
+    ) {
+        let identity =
+            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(owner.clone()));
+        if !visited.insert(identity) {
+            return;
+        }
+        for record in definitions.definitions() {
+            let candidate = record.stable_key();
+            let Some(candidate_owner) = candidate.owner() else {
+                continue;
+            };
+            if candidate.kind() == crate::StableDefinitionKind::Destructor
+                && candidate_owner.module() == owner.module()
+                && candidate_owner.kind() == owner.kind()
+                && candidate_owner.name() == owner.name()
+            {
+                pending.insert(crate::FunctionInstanceKey::Definition(candidate.clone()));
+            }
+        }
+        let Some(declaration) = declarations
+            .iter()
+            .find(|declaration| declaration.key == *owner)
+        else {
+            return;
+        };
+        match &declaration.payload {
+            crate::durable_semantics::DurableDeclarationPayload::Struct { fields, .. } => {
+                for (_, field) in fields.iter() {
+                    durable(
+                        field,
+                        definitions,
+                        declarations,
+                        produced_anonymous,
+                        declaration_anonymous,
+                        pending,
+                        visited,
+                    );
+                }
+            }
+            crate::durable_semantics::DurableDeclarationPayload::Enum { variants } => {
+                for (_, fields) in variants.iter() {
+                    for field in fields.iter() {
+                        durable(
+                            field,
+                            definitions,
+                            declarations,
+                            produced_anonymous,
+                            declaration_anonymous,
+                            pending,
+                            visited,
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn anonymous(
+        owner: &crate::AnonymousNominalKey,
+        definitions: &crate::BoundDefinitionSet,
+        declarations: &[crate::durable_semantics::DurableDeclarationSemantic],
+        produced_anonymous: &BTreeMap<
+            crate::AnonymousNominalKey,
+            crate::durable_semantics::DurableAnonymousNominal,
+        >,
+        declaration_anonymous: &[crate::durable_semantics::DurableAnonymousNominal],
+        pending: &mut std::collections::BTreeSet<crate::FunctionInstanceKey>,
+        visited: &mut std::collections::BTreeSet<crate::TypeInstanceKey>,
+    ) {
+        let identity =
+            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(owner.clone()));
+        if !visited.insert(identity.clone()) {
+            return;
+        }
+        let Some(nominal) = produced_anonymous.get(owner).or_else(|| {
+            declaration_anonymous
+                .iter()
+                .find(|nominal| nominal.identity == *owner)
+        }) else {
+            return;
+        };
+        match &nominal.shape {
+            crate::durable_semantics::DurableAnonymousNominalShape::Struct { fields, methods } => {
+                if methods
+                    .iter()
+                    .any(|method| method.has_self && method.name.as_ref() == "__drop")
+                {
+                    pending.insert(crate::FunctionInstanceKey::AnonymousMember {
+                        owner: Box::new(identity),
+                        member: crate::AnonymousMemberKey {
+                            kind: crate::AnonymousMemberKind::Destructor,
+                            name: Arc::from("__drop"),
+                        },
+                    });
+                }
+                for (_, field) in fields.iter() {
+                    durable(
+                        field,
+                        definitions,
+                        declarations,
+                        produced_anonymous,
+                        declaration_anonymous,
+                        pending,
+                        visited,
+                    );
+                }
+            }
+            crate::durable_semantics::DurableAnonymousNominalShape::Enum { variants } => {
+                for (_, fields) in variants.iter() {
+                    for field in fields.iter() {
+                        durable(
+                            field,
+                            definitions,
+                            declarations,
+                            produced_anonymous,
+                            declaration_anonymous,
+                            pending,
+                            visited,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn durable(
+        ty: &crate::durable_semantics::DurableType,
+        definitions: &crate::BoundDefinitionSet,
+        declarations: &[crate::durable_semantics::DurableDeclarationSemantic],
+        produced_anonymous: &BTreeMap<
+            crate::AnonymousNominalKey,
+            crate::durable_semantics::DurableAnonymousNominal,
+        >,
+        declaration_anonymous: &[crate::durable_semantics::DurableAnonymousNominal],
+        pending: &mut std::collections::BTreeSet<crate::FunctionInstanceKey>,
+        visited: &mut std::collections::BTreeSet<crate::TypeInstanceKey>,
+    ) {
+        match ty {
+            crate::durable_semantics::DurableType::Nominal(owner) => named(
+                owner,
+                definitions,
+                declarations,
+                produced_anonymous,
+                declaration_anonymous,
+                pending,
+                visited,
+            ),
+            crate::durable_semantics::DurableType::AnonymousNominal(owner) => anonymous(
+                owner,
+                definitions,
+                declarations,
+                produced_anonymous,
+                declaration_anonymous,
+                pending,
+                visited,
+            ),
+            crate::durable_semantics::DurableType::Array { element, .. } => durable(
+                element,
+                definitions,
+                declarations,
+                produced_anonymous,
+                declaration_anonymous,
+                pending,
+                visited,
+            ),
+            _ => {}
+        }
+    }
+
+    fn instance(
+        ty: &crate::TypeInstanceKey,
+        definitions: &crate::BoundDefinitionSet,
+        declarations: &[crate::durable_semantics::DurableDeclarationSemantic],
+        produced_anonymous: &BTreeMap<
+            crate::AnonymousNominalKey,
+            crate::durable_semantics::DurableAnonymousNominal,
+        >,
+        declaration_anonymous: &[crate::durable_semantics::DurableAnonymousNominal],
+        pending: &mut std::collections::BTreeSet<crate::FunctionInstanceKey>,
+        visited: &mut std::collections::BTreeSet<crate::TypeInstanceKey>,
+    ) {
+        match ty {
+            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(owner)) => named(
+                owner,
+                definitions,
+                declarations,
+                produced_anonymous,
+                declaration_anonymous,
+                pending,
+                visited,
+            ),
+            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(owner)) => {
+                anonymous(
+                    owner,
+                    definitions,
+                    declarations,
+                    produced_anonymous,
+                    declaration_anonymous,
+                    pending,
+                    visited,
+                );
+            }
+            crate::TypeInstanceKey::Array { element, .. } => instance(
+                element,
+                definitions,
+                declarations,
+                produced_anonymous,
+                declaration_anonymous,
+                pending,
+                visited,
+            ),
+            _ => {}
+        }
+    }
+
+    instance(
+        ty,
+        definitions,
+        declarations,
+        produced_anonymous,
+        declaration_anonymous,
+        pending,
+        &mut std::collections::BTreeSet::new(),
+    );
 }
 
 #[derive(Debug)]
@@ -1819,13 +1758,6 @@ impl FrontendQueryDatabase {
 #[derive(Debug, Clone)]
 struct DurableDeclarationCache {
     semantics: Arc<[DurableDeclarationSemantic]>,
-}
-
-#[derive(Debug, Clone)]
-struct DurableOrdinaryBodyCache {
-    manifest: Arc<SemanticDependencyInputManifest>,
-    bodies: Arc<[crate::DurableOrdinaryBody]>,
-    specialized_bodies: Arc<[crate::DurableSpecializedBody]>,
 }
 
 #[derive(Debug, Clone)]
@@ -2293,7 +2225,6 @@ struct SemanticCacheEntry {
     result: Result<Arc<CanonicalSemanticOutput>, CompileErrors>,
     rir: Option<Arc<CanonicalRirOutput>>,
     diagnostics: Arc<FrontendDiagnosticSnapshot>,
-    successful_body_cache: Option<DurableOrdinaryBodyCache>,
     durable_declaration_cache: Option<DurableDeclarationCache>,
     successful_cfg_cache: Option<Arc<[crate::queries::DurableCfgArtifact]>>,
     oracle_injected: bool,
@@ -2623,7 +2554,6 @@ impl CompilerSession {
                 let mut injected = current;
                 injected.result = stale.result.clone();
                 injected.rir = stale.rir.clone();
-                injected.successful_body_cache = stale.successful_body_cache.clone();
                 injected.durable_declaration_cache = stale.durable_declaration_cache.clone();
                 injected.successful_cfg_cache = stale.successful_cfg_cache.clone();
                 injected.oracle_injected = true;
@@ -4873,7 +4803,6 @@ impl CompilerSession {
             guard.attach_diagnostics(entry.diagnostics.clone());
             #[cfg(test)]
             if result.is_ok() {
-                self.last_successful_body_cache = entry.successful_body_cache.clone();
                 self.last_successful_cfg_cache = entry.successful_cfg_cache.clone();
                 self.durable_declaration_cache = entry.durable_declaration_cache.clone();
             }
@@ -4886,18 +4815,10 @@ impl CompilerSession {
             return result.map_err(SemanticRequestControl::Compile);
         }
         let durable_baseline = self.queries.semantic.last_good_record().cloned();
-        let previous_body_cache = durable_baseline
-            .as_ref()
-            .and_then(|entry| entry.successful_body_cache.clone());
         let previous_cfg_cache = durable_baseline
             .as_ref()
             .and_then(|entry| entry.successful_cfg_cache.clone())
             .unwrap_or_else(|| Arc::from([]));
-        #[cfg(test)]
-        let previous_body_cache = self
-            .last_successful_body_cache
-            .clone()
-            .or(previous_body_cache);
         #[cfg(test)]
         let previous_cfg_cache = self
             .last_successful_cfg_cache
@@ -4948,7 +4869,6 @@ impl CompilerSession {
                             result: Err(errors.clone()),
                             rir: None,
                             diagnostics,
-                            successful_body_cache: None,
                             durable_declaration_cache: None,
                             successful_cfg_cache: None,
                             oracle_injected: false,
@@ -4991,8 +4911,10 @@ impl CompilerSession {
             merged.ast(),
             cancellation.clone(),
         );
+        let mut body_query_shells = None;
         let mut prepared = match query_shells {
             Ok(query_shells) => {
+                body_query_shells = Some(query_shells.clone());
                 prepare_query_declaration_shells(&merged, &rir, options, &imports, &query_shells)
             }
             Err(crate::revisioned_query_database::DeclarationShellBatchFailure::Query(abort)) => {
@@ -5005,177 +4927,931 @@ impl CompilerSession {
                 CanonicalSemanticWork::default(),
             )),
         };
-        let (query_declarations, query_anonymous_nominals, query_declaration_dependencies) =
-            match self.queries.revisioned.projected_declaration_semantics(
-                runtime_revision,
-                merged.ast(),
-                options.target,
-                &options.preview_features,
-                cancellation.clone(),
+        let (
+            query_declarations,
+            query_anonymous_nominals,
+            query_declaration_dependencies,
+            query_c_export_roots,
+        ) = match self.queries.revisioned.projected_declaration_semantics(
+            runtime_revision,
+            merged.ast(),
+            options.target,
+            &options.preview_features,
+            cancellation.clone(),
+        ) {
+            Ok(projection) => (
+                Some(projection.declarations),
+                projection.anonymous_nominals,
+                projection.dependencies,
+                projection.c_export_roots,
+            ),
+            Err(crate::revisioned_query_database::SemanticNucleusBatchFailure::Query(abort)) => {
+                return Err(SemanticRequestControl::Abort(abort));
+            }
+            Err(crate::revisioned_query_database::SemanticNucleusBatchFailure::Stable {
+                declaration,
+                failure,
+            }) => {
+                let work = match &prepared {
+                    Ok(prepared) => CanonicalSemanticWork {
+                        declaration_index: prepared.declaration_index_work(),
+                        ..CanonicalSemanticWork::default()
+                    },
+                    Err(preparation_failure) => preparation_failure.failure.work,
+                };
+                prepared = Err(CanonicalSemanticFailure::declaration(
+                    semantic_nucleus_failure_diagnostics(
+                        merged.ast(),
+                        declaration.as_ref(),
+                        &failure,
+                    ),
+                    work,
+                ));
+                (None, Arc::from([]), Arc::from([]), Arc::from([]))
+            }
+        };
+        if let (Some(declarations), Ok(prepared_definitions)) =
+            (query_declarations.as_deref(), prepared.as_ref())
+            && let Some(main) = prepared_definitions
+                .definitions()
+                .definitions()
+                .iter()
+                .find(|record| {
+                    let key = record.stable_key();
+                    key.kind() == crate::StableDefinitionKind::Function
+                        && key.name() == "main"
+                        && key.module() == merged.ast().root()
+                })
+            && let Some(declaration) = declarations
+                .iter()
+                .find(|declaration| declaration.key == *main.stable_key())
+            && let crate::durable_semantics::DurableDeclarationPayload::Callable {
+                parameters,
+                result,
+                ..
+            } = &declaration.payload
+        {
+            let reason = if !parameters.is_empty() {
+                Some("`main` must not declare parameters")
+            } else if !matches!(
+                result,
+                crate::durable_semantics::DurableType::I32
+                    | crate::durable_semantics::DurableType::Unit
             ) {
-                Ok(projection) => (
-                    Some(projection.declarations),
-                    projection.anonymous_nominals,
-                    projection.dependencies,
-                ),
-                Err(crate::revisioned_query_database::SemanticNucleusBatchFailure::Query(
-                    abort,
-                )) => {
-                    return Err(SemanticRequestControl::Abort(abort));
-                }
-                Err(crate::revisioned_query_database::SemanticNucleusBatchFailure::Stable {
-                    declaration,
-                    failure,
-                }) => {
-                    let work = match &prepared {
-                        Ok(prepared) => CanonicalSemanticWork {
-                            declaration_index: prepared.declaration_index_work(),
-                            ..CanonicalSemanticWork::default()
-                        },
-                        Err(preparation_failure) => preparation_failure.failure.work,
-                    };
-                    prepared = Err(CanonicalSemanticFailure::declaration(
-                        semantic_nucleus_failure_diagnostics(
-                            merged.ast(),
-                            declaration.as_ref(),
-                            &failure,
-                        ),
-                        work,
-                    ));
-                    (None, Arc::from([]), Arc::from([]))
-                }
+                Some("`main` must return `i32` or `()`")
+            } else {
+                None
             };
-        let current_fingerprints: Result<Vec<StableDefinitionInputFingerprint>, CompileErrors> =
-            match &prepared {
-                Ok(definitions) => definitions
+            if let Some(reason) = reason {
+                let work = CanonicalSemanticWork {
+                    declaration_index: prepared_definitions.declaration_index_work(),
+                    ..CanonicalSemanticWork::default()
+                };
+                prepared = Err(CanonicalSemanticFailure::declaration(
+                    CompileErrors::from(CompileError::new(
+                        ErrorKind::InvalidMainSignature { reason },
+                        main.declaration_span(),
+                    )),
+                    work,
+                ));
+            }
+        }
+        let durable_body_work = crate::DurableBodyWork::default();
+        let mut durable_body_candidates = Vec::new();
+        let mut durable_specialized_body_candidates = Vec::new();
+        let mut durable_anonymous_body_candidates = Vec::new();
+        let mut queried_body_work = rue_air::BodyAnalysisWork::default();
+        let mut body_produced_anonymous = BTreeMap::new();
+        let mut body_query_errors = BTreeMap::new();
+        let mut body_query_reference_cache = BTreeMap::new();
+        // RUE-1027 production boundary: derive the reached callable frontier
+        // serially from the references owned by each body transaction. Ordinary
+        // call recursion is worklist state, never a query dependency cycle.
+        // RUE-1028 replaces this deterministic coordinator with database-owned
+        // reachability and parallel frontier scheduling.
+        if let (Some(query_shells), Ok(prepared_definitions)) =
+            (body_query_shells.as_ref(), prepared.as_ref())
+        {
+            let mut declaration_candidates = BTreeMap::new();
+            for shell in query_shells.iter() {
+                let Some(definition) = prepared_definitions
                     .definitions()
                     .definitions()
                     .iter()
-                    .map(|record| {
-                        stable_definition_input_fingerprint(
-                            merged.definitions().source_snapshot(),
-                            record,
-                        )
+                    .find(|record| {
+                        let key = record.stable_key();
+                        let kind_matches = key.kind() == shell.identity.kind
+                            || matches!(
+                                (key.kind(), shell.identity.kind),
+                                (
+                                    crate::StableDefinitionKind::ValueConst,
+                                    crate::StableDefinitionKind::ModuleBinding
+                                ) | (
+                                    crate::StableDefinitionKind::ModuleBinding,
+                                    crate::StableDefinitionKind::ValueConst
+                                )
+                            );
+                        key.module().as_str() == shell.identity.module_path.as_ref()
+                            && kind_matches
+                            && key.name() == shell.identity.name.as_ref()
+                            && key.owner().map(|owner| owner.name())
+                                == shell.identity.owner.as_deref()
                     })
-                    .collect(),
-                Err(failure) => Err(failure.errors.clone()),
-            };
-        let mut durable_body_work = crate::DurableBodyWork::default();
-        let mut durable_body_candidates = Vec::new();
-        let mut durable_specialized_body_candidates = Vec::new();
-        if let (Some(previous), Ok(fingerprints), Ok(prepared_definitions)) = (
-            previous_body_cache.as_ref(),
-            current_fingerprints.as_ref(),
-            prepared.as_ref(),
-        ) {
-            let current = fingerprints
-                .iter()
-                .map(|fingerprint| (fingerprint.key.clone(), fingerprint))
-                .collect::<BTreeMap<_, _>>();
-            let preflight = preflight_body_invalidation_manifest(
-                &previous.manifest,
-                input.semantic.clone(),
-                imports.clone(),
-                fingerprints,
-            );
-            let invalidation = plan_semantic_invalidation(&previous.manifest, &preflight);
-            for candidate in previous.bodies.iter() {
-                durable_body_work.candidate_comparisons += 1;
-                let inputs = candidate.inputs();
-                let exact = inputs.reusable_boundary_supported()
-                    && invalidation
-                        .reusable()
-                        .binary_search(candidate.owner())
-                        .is_ok()
-                    && current
-                        .get(candidate.owner())
-                        .is_some_and(|value| *value == inputs.fingerprint())
-                    && inputs.direct_dependency_inputs().iter().all(|dependency| {
-                        current
-                            .get(&dependency.key)
-                            .is_some_and(|value| *value == dependency)
-                    });
-                let Some(record) = prepared_definitions
-                    .definitions()
-                    .definition_by_key(candidate.owner())
-                    .filter(|_| exact)
+                    .map(|record| record.stable_key().clone())
                 else {
-                    durable_body_work.candidate_fallbacks += 1;
                     continue;
                 };
-                let Some(body_span) = record.body_span() else {
-                    durable_body_work.candidate_fallbacks += 1;
-                    continue;
+                use crate::StableDefinitionKind as K;
+                use crate::declaration_candidate::DeclarationCandidateCategory as C;
+                let category = match definition.kind() {
+                    K::Function if shell.is_extern => C::ExternFunction,
+                    K::Function => C::Function,
+                    K::Struct => C::Struct,
+                    K::Enum => C::Enum,
+                    K::ValueConst | K::ModuleBinding => C::ConstCandidate,
+                    K::Destructor => C::Destructor,
+                    K::Method => C::Method,
+                    K::AssociatedFunction => C::AssociatedFunction,
                 };
-                match candidate.project_semantic_body(&mut durable_body_work) {
-                    Ok(body) => durable_body_candidates.push(
-                        crate::canonical_semantic::PreparedDurableBodyCandidate {
-                            owner: candidate.owner().clone(),
-                            body_span,
-                            body,
+                let owner = definition.owner().map(|owner| {
+                    crate::declaration_candidate::DeclarationCandidateOwner {
+                        category: match owner.kind() {
+                            K::Struct => C::Struct,
+                            K::Enum => C::Enum,
+                            _ => unreachable!("callable owners are nominal types"),
                         },
-                    ),
-                    Err(reason) => {
-                        durable_body_work.candidate_fallbacks += 1;
-                        durable_body_work.last_projection_failure = Some(reason);
+                        name: Arc::from(owner.name()),
                     }
+                });
+                declaration_candidates.insert(
+                    definition.clone(),
+                    crate::declaration_candidate::DeclarationCandidateKey {
+                        module: definition.module().clone(),
+                        category,
+                        name: Arc::from(definition.name()),
+                        owner,
+                        duplicate_discriminator: 0,
+                    },
+                );
+            }
+            for declaration in query_declarations
+                .as_deref()
+                .expect("body traversal follows a successful declaration projection")
+            {
+                if matches!(
+                    declaration.key.kind(),
+                    crate::StableDefinitionKind::ValueConst
+                        | crate::StableDefinitionKind::ModuleBinding
+                ) {
+                    declaration_candidates
+                        .entry(declaration.key.clone())
+                        .or_insert_with(|| {
+                            crate::declaration_candidate::DeclarationCandidateKey {
+                                module: declaration.key.module().clone(),
+                                category: crate::declaration_candidate::DeclarationCandidateCategory::ConstCandidate,
+                                name: Arc::from(declaration.key.name()),
+                                owner: None,
+                                duplicate_discriminator: 0,
+                            }
+                        });
                 }
             }
-            for candidate in previous.specialized_bodies.iter() {
-                durable_body_work.candidate_comparisons += 1;
-                let base = &candidate.identity().base;
-                let inputs = candidate.inputs();
-                let exact = inputs.reusable_boundary_supported()
-                    && inputs.target() == options.target
-                    && inputs.preview_features()
-                        == &StablePreviewFeatures::new(&options.preview_features)
-                    && current
-                        .get(base)
-                        .is_some_and(|value| *value == inputs.fingerprint())
-                    && inputs.direct_dependency_inputs().iter().all(|dependency| {
-                        current
-                            .get(&dependency.key)
-                            .is_some_and(|value| *value == dependency)
-                    });
-                let Some(record) = prepared_definitions
-                    .definitions()
-                    .definition_by_key(base)
-                    .filter(|_| exact)
-                else {
-                    durable_body_work.candidate_fallbacks += 1;
-                    continue;
-                };
-                // Specialized exports are anchored to FunctionInfo::span,
-                // which is the full declaration span (ordinary exports use
-                // the AST body span).
-                let body_span = record.declaration_span();
-                match candidate.project_semantic_candidate(body_span, &mut durable_body_work) {
-                    Ok(candidate) => durable_specialized_body_candidates.push(
-                        crate::canonical_semantic::PreparedDurableSpecializedBodyCandidate {
-                            identity: candidate.identity,
-                            body_span: candidate.body_span,
-                            body: candidate.body,
-                            dependencies: candidate.dependencies,
-                            dependency_boundary_complete: candidate.dependency_boundary_complete,
-                        },
-                    ),
-                    Err(reason) => {
-                        durable_body_work.candidate_fallbacks += 1;
-                        durable_body_work.last_projection_failure = Some(reason);
+            let declaration_candidates = Arc::new(declaration_candidates);
+            let mut declaration_modules = BTreeSet::from([imports.root().clone()]);
+            for record in imports.records() {
+                declaration_modules.insert(record.importer().clone());
+                if let crate::CanonicalImportResolution::Resolved(target) = record.resolution() {
+                    declaration_modules.insert(target.clone());
+                }
+            }
+            let declaration_modules: Arc<[crate::ModuleId]> =
+                declaration_modules.into_iter().collect::<Vec<_>>().into();
+            let configuration = crate::semantic_query_nucleus::SemanticQueryConfiguration {
+                target: options.target,
+                preview_features: StablePreviewFeatures::new(&options.preview_features),
+            };
+            let mut pending = std::collections::BTreeSet::new();
+            for record in prepared_definitions.definitions().definitions() {
+                let stable = record.stable_key();
+                if (stable.kind() == crate::StableDefinitionKind::Function
+                    && stable.name() == "main"
+                    && stable.module() == merged.ast().root())
+                    || stable.kind() == crate::StableDefinitionKind::Destructor
+                {
+                    pending.insert(crate::FunctionInstanceKey::Definition(stable.clone()));
+                }
+            }
+            pending.extend(
+                query_c_export_roots
+                    .iter()
+                    .cloned()
+                    .map(crate::FunctionInstanceKey::Definition),
+            );
+            let no_body_produced_anonymous = BTreeMap::new();
+            for record in prepared_definitions.definitions().definitions() {
+                let stable = record.stable_key();
+                if matches!(
+                    stable.kind(),
+                    crate::StableDefinitionKind::Struct | crate::StableDefinitionKind::Enum
+                ) {
+                    enqueue_owned_destructor_closure(
+                        &crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(
+                            stable.clone(),
+                        )),
+                        prepared_definitions.definitions(),
+                        query_declarations
+                            .as_deref()
+                            .expect("body traversal follows a successful declaration projection"),
+                        &no_body_produced_anonymous,
+                        &query_anonymous_nominals,
+                        &mut pending,
+                    );
+                }
+            }
+            let roots = pending;
+            let mut stable_produced_seed = BTreeMap::new();
+            let callable_has_source_body = |callable: &crate::FunctionInstanceKey| {
+                let mut current = callable;
+                loop {
+                    match current {
+                        crate::FunctionInstanceKey::Definition(definition) => {
+                            let has_runtime_result = query_declarations
+                                .as_deref()
+                                .is_some_and(|declarations| {
+                                    declarations.iter().any(|declaration| {
+                                        declaration.key == *definition
+                                            && (matches!(
+                                                &declaration.payload,
+                                                crate::durable_semantics::DurableDeclarationPayload::Callable {
+                                                    result,
+                                                    ..
+                                                } if !matches!(result, crate::durable_semantics::DurableType::ComptimeType)
+                                            ) || matches!(
+                                                &declaration.payload,
+                                                crate::durable_semantics::DurableDeclarationPayload::Destructor
+                                            ))
+                                    })
+                                });
+                            return has_runtime_result
+                                && declaration_candidates.get(definition).is_some_and(|candidate| {
+                                    candidate.category
+                                        != crate::declaration_candidate::DeclarationCandidateCategory::ExternFunction
+                                });
+                        }
+                        crate::FunctionInstanceKey::Specialization { base, .. } => {
+                            current = base;
+                        }
+                        crate::FunctionInstanceKey::AnonymousMember { .. } => return true,
+                        crate::FunctionInstanceKey::DropGlue(_) => return false,
                     }
                 }
+            };
+            let callable_has_query_body = |callable: &crate::FunctionInstanceKey| {
+                if let crate::FunctionInstanceKey::Specialization { base, .. } = callable {
+                    let mut base = base.as_ref();
+                    while let crate::FunctionInstanceKey::Specialization { base: next, .. } = base {
+                        base = next;
+                    }
+                    if let crate::FunctionInstanceKey::Definition(definition) = base {
+                        return declaration_candidates.get(definition).is_some_and(|candidate| {
+                            candidate.category
+                                != crate::declaration_candidate::DeclarationCandidateCategory::ExternFunction
+                        });
+                    }
+                }
+                callable_has_source_body(callable)
+            };
+            let callable_has_any_body = |callable: &crate::FunctionInstanceKey| match callable {
+                crate::FunctionInstanceKey::Definition(definition) => {
+                    let concrete_definition = query_declarations.as_deref().is_some_and(
+                            |declarations| {
+                                declarations.iter().any(|declaration| {
+                                    declaration.key == *definition
+                                        && match &declaration.payload {
+                                            crate::durable_semantics::DurableDeclarationPayload::Callable {
+                                                parameters,
+                                                ..
+                                            } => parameters
+                                                .iter()
+                                                .all(|parameter| !parameter.is_comptime),
+                                            crate::durable_semantics::DurableDeclarationPayload::Destructor => true,
+                                            _ => false,
+                                        }
+                                })
+                            },
+                        );
+                    concrete_definition
+                            && declaration_candidates.get(definition).is_some_and(|candidate| {
+                                candidate.category
+                                    != crate::declaration_candidate::DeclarationCandidateCategory::ExternFunction
+                            })
+                }
+                crate::FunctionInstanceKey::Specialization { base, .. } => {
+                    let mut base = base.as_ref();
+                    while let crate::FunctionInstanceKey::Specialization { base: next, .. } = base {
+                        base = next;
+                    }
+                    matches!(base, crate::FunctionInstanceKey::Definition(definition) if declaration_candidates.get(definition).is_some_and(|candidate| {
+                        candidate.category
+                            != crate::declaration_candidate::DeclarationCandidateCategory::ExternFunction
+                    }))
+                }
+                crate::FunctionInstanceKey::AnonymousMember { .. } => true,
+                crate::FunctionInstanceKey::DropGlue(_) => false,
+            };
+            'closure: loop {
+                body_query_reference_cache.clear();
+                let mut pending = roots.clone();
+                let mut priority_pending = Vec::new();
+                let mut deferred_dependency_chain = BTreeSet::new();
+                let mut visited = std::collections::BTreeSet::new();
+                let mut queried_ordinary = Vec::new();
+                let mut queried_specialized = Vec::new();
+                let mut queried_anonymous = Vec::new();
+                let mut specialization_requests = 0usize;
+                body_produced_anonymous = stable_produced_seed.clone();
+                body_query_errors.clear();
+                let mut representative_changed = false;
+                while let Some(mut instance) =
+                    priority_pending.pop().or_else(|| pending.pop_first())
+                {
+                    instance = canonicalize_reached_anonymous_member(
+                        &instance,
+                        &body_produced_anonymous,
+                        &query_anonymous_nominals,
+                    );
+                    let deferred_producers =
+                        crate::revisioned_query_database::collect_instance_anonymous_nominals(
+                            &instance,
+                        )
+                        .into_iter()
+                        .filter_map(|identity| match identity.producer {
+                            crate::StableProducerId::Function(producer)
+                                if callable_has_any_body(&producer)
+                                    && !visited.contains(producer.as_ref()) =>
+                            {
+                                Some(*producer)
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    if !deferred_producers.is_empty() {
+                        if deferred_producers
+                            .iter()
+                            .any(|producer| deferred_dependency_chain.contains(producer))
+                        {
+                            body_query_errors.insert(
+                                instance.clone(),
+                                crate::CompileErrors::from(crate::CompileError::without_span(
+                                    rue_error::ErrorKind::InternalError(format!(
+                                        "anonymous producer dependency cycle while scheduling {instance:?}"
+                                    )),
+                                )),
+                            );
+                            break;
+                        }
+                        deferred_dependency_chain.insert(instance.clone());
+                        // `pending` is an ordered set, so reinserting a
+                        // lexically earlier consumer there can starve its
+                        // later-sorting producer forever. The priority stack
+                        // keeps this consumer below every exact producer and
+                        // therefore retries it only after those bodies have
+                        // published terminals.
+                        priority_pending.push(instance);
+                        priority_pending.extend(deferred_producers);
+                        continue;
+                    }
+                    deferred_dependency_chain.remove(&instance);
+                    if !visited.insert(instance.clone()) {
+                        continue;
+                    }
+                    if matches!(instance, crate::FunctionInstanceKey::Specialization { .. }) {
+                        if specialization_requests == rue_air::specialize::MAX_SPECIALIZATION_ROUNDS
+                        {
+                            // A reached callable may never be omitted from the
+                            // published closure. In the one-body query model the
+                            // coordinator, rather than one persistent specializer,
+                            // observes the transitive runaway and therefore owns
+                            // the ordinary comptime-depth diagnostic.
+                            let name = stable_function_definition_root(&instance)
+                                .map(crate::StableDefinitionKey::name)
+                                .unwrap_or("<anonymous>");
+                            body_query_errors.insert(
+                                instance.clone(),
+                                crate::CompileErrors::from(crate::CompileError::without_span(
+                                    rue_error::ErrorKind::ComptimeEvaluationFailed {
+                                        reason: format!(
+                                            "specialization of '{name}' exceeded the maximum nesting depth ({}); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?",
+                                            rue_air::specialize::MAX_SPECIALIZATION_ROUNDS
+                                        ),
+                                    },
+                                )),
+                            );
+                            break;
+                        }
+                        specialization_requests += 1;
+                    }
+                    let key = crate::body_query::BodyQueryKey {
+                        instance: instance.clone(),
+                        configuration: configuration.clone(),
+                    };
+                    let producer_body_terminal_required = match &instance {
+                        crate::FunctionInstanceKey::AnonymousMember { owner, .. } => {
+                            if let crate::TypeInstanceKey::Nominal(
+                                crate::NominalInstanceKey::Anonymous(identity),
+                            ) = owner.as_ref()
+                                && let crate::StableProducerId::Function(producer) =
+                                    &identity.producer
+                            {
+                                callable_has_any_body(producer)
+                                    && (matches!(
+                                        producer.as_ref(),
+                                        crate::FunctionInstanceKey::Specialization { .. }
+                                    ) || !query_anonymous_nominals
+                                        .iter()
+                                        .any(|nominal| nominal.identity == *identity))
+                            } else {
+                                false
+                            }
+                        }
+                        _ => false,
+                    };
+                    let transaction = self.queries.revisioned.body_transaction(
+                        runtime_revision,
+                        key.clone(),
+                        declaration_candidates.clone(),
+                        declaration_modules.clone(),
+                        producer_body_terminal_required,
+                        cancellation.clone(),
+                        |selected_anonymous| {
+                            queried_body_work.bodies_attempted += 1;
+                            let specialized = matches!(
+                                &key.instance,
+                                crate::FunctionInstanceKey::Specialization { .. }
+                            );
+                            if specialized {
+                                queried_body_work.specialized_bodies_attempted += 1;
+                            }
+                            let mut body_anonymous = query_anonymous_nominals
+                                .iter()
+                                .cloned()
+                                .map(|nominal| (nominal.identity.clone(), nominal))
+                                .collect::<BTreeMap<_, _>>();
+                            body_anonymous.extend(
+                                selected_anonymous
+                                    .iter()
+                                    .cloned()
+                                    .map(|nominal| (nominal.identity.clone(), nominal)),
+                            );
+                            let body_anonymous = body_anonymous.into_values().collect::<Vec<_>>();
+                            let transaction = crate::canonical_semantic::analyze_body_query(
+                                &merged,
+                                &rir,
+                                options,
+                                &imports,
+                                query_shells,
+                                query_declarations.as_deref().expect(
+                                    "body traversal follows a successful declaration projection",
+                                ),
+                                &body_anonymous,
+                                &key,
+                                cancellation,
+                            );
+                            match &transaction {
+                                Ok(crate::body_query::BodyTransaction::Success {
+                                    body, ..
+                                }) => {
+                                    queried_body_work.bodies_succeeded += 1;
+                                    let body = match body.as_ref() {
+                                        crate::body_query::CanonicalBody::Ordinary {
+                                            body, ..
+                                        }
+                                        | crate::body_query::CanonicalBody::Anonymous {
+                                            body,
+                                            ..
+                                        }
+                                        | crate::body_query::CanonicalBody::Specialization {
+                                            body,
+                                            ..
+                                        } => body,
+                                    };
+                                    queried_body_work.air_instructions_produced +=
+                                        body.instructions.len();
+                                    queried_body_work.local_strings_produced += body.strings.len();
+                                    if specialized {
+                                        queried_body_work.specialized_bodies_succeeded += 1;
+                                        queried_body_work.specialized_body_exports_attempted += 1;
+                                        queried_body_work.specialized_body_exports_succeeded += 1;
+                                        queried_body_work
+                                            .specialized_body_export_instructions_emitted +=
+                                            body.instructions.len();
+                                        queried_body_work.specialized_body_export_places_emitted +=
+                                            body.places.len();
+                                        queried_body_work
+                                            .specialized_body_export_strings_emitted +=
+                                            body.strings.len();
+                                    } else {
+                                        queried_body_work.ordinary_body_exports_attempted += 1;
+                                        queried_body_work.ordinary_body_exports_succeeded += 1;
+                                        queried_body_work
+                                            .ordinary_body_export_instructions_emitted +=
+                                            body.instructions.len();
+                                        queried_body_work.ordinary_body_export_places_emitted +=
+                                            body.places.len();
+                                        queried_body_work.ordinary_body_export_strings_emitted +=
+                                            body.strings.len();
+                                    }
+                                }
+                                Ok(crate::body_query::BodyTransaction::DeterministicFailure {
+                                    ..
+                                }) => {
+                                    queried_body_work.bodies_failed += 1;
+                                    if specialized {
+                                        queried_body_work.specialized_bodies_failed += 1;
+                                    }
+                                }
+                                Err(_) => {}
+                            }
+                            transaction
+                        },
+                    );
+                    let transaction = match transaction {
+                        Ok(terminal) => terminal,
+                        Err(crate::revisioned_query_database::BodyTransactionRequestFailure::DeferredAnonymousProducers(
+                            producers,
+                        )) => {
+                            let mut scheduled = false;
+                            priority_pending.push(instance.clone());
+                            for producer in producers.iter() {
+                                if !visited.contains(producer) {
+                                    priority_pending.push(producer.clone());
+                                    scheduled = true;
+                                }
+                            }
+                            if scheduled {
+                                visited.remove(&instance);
+                                continue;
+                            }
+                            priority_pending.pop();
+                            body_query_errors.insert(
+                                instance.clone(),
+                                crate::CompileErrors::from(crate::CompileError::without_span(
+                                    rue_error::ErrorKind::InternalError(format!(
+                                        "reached body query {instance:?} could not observe an already-reached anonymous producer"
+                                    )),
+                                )),
+                            );
+                            break;
+                        }
+                        Err(crate::revisioned_query_database::BodyTransactionRequestFailure::Query(
+                            rue_query::QueryAbort::Canceled,
+                        )) if !cancellation.is_canceled() => {
+                            body_query_errors.insert(
+                                instance.clone(),
+                                crate::CompileErrors::from(crate::CompileError::without_span(
+                                    rue_error::ErrorKind::InternalError(format!(
+                                        "reached body query {instance:?} did not publish a terminal"
+                                    )),
+                                )),
+                            );
+                            break;
+                        }
+                        Err(crate::revisioned_query_database::BodyTransactionRequestFailure::Query(
+                            abort,
+                        )) => return Err(SemanticRequestControl::Abort(abort)),
+                    };
+                    let rue_query::QueryOutcome::Success(transaction) = transaction.outcome()
+                    else {
+                        unreachable!("BodyTransaction publishes typed values")
+                    };
+                    body_query_reference_cache
+                        .insert(instance.clone(), transaction.references().clone());
+                    if let crate::body_query::BodyTransaction::DeterministicFailure {
+                        errors, ..
+                    } = &transaction
+                    {
+                        body_query_errors.insert(instance.clone(), errors.clone());
+                    }
+                    if matches!(
+                        transaction,
+                        crate::body_query::BodyTransaction::Success { .. }
+                    ) {
+                        let produced = self
+                            .queries
+                            .revisioned
+                            .body_produced_anonymous_projection(
+                                runtime_revision,
+                                key.clone(),
+                                cancellation.clone(),
+                            )
+                            .map_err(SemanticRequestControl::Abort)?;
+                        let rue_query::QueryOutcome::Success(produced) = produced.outcome() else {
+                            unreachable!("BodyProducedAnonymous publishes typed values")
+                        };
+                        let previous_representatives = visited
+                            .iter()
+                            .map(|reached| {
+                                (
+                                    reached.clone(),
+                                    canonicalize_reached_anonymous_member(
+                                        reached,
+                                        &body_produced_anonymous,
+                                        &query_anonymous_nominals,
+                                    ),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        body_produced_anonymous.extend(
+                            produced
+                                .0
+                                .iter()
+                                .cloned()
+                                .map(|nominal| (nominal.identity.clone(), nominal)),
+                        );
+                        // Keep facts from every producer which remains its own
+                        // canonical representative under the now-complete
+                        // fact set. This retracts abandoned member-produced
+                        // nested nominals while preserving a surviving
+                        // canonical member's facts across the restart.
+                        stable_produced_seed.retain(|_, nominal| {
+                            match &nominal.identity.producer {
+                                crate::StableProducerId::Definition(_) => true,
+                                crate::StableProducerId::Function(producer) => {
+                                    produced_anonymous_survives_closure_restart(
+                                        producer,
+                                        &body_produced_anonymous,
+                                        &query_anonymous_nominals,
+                                    )
+                                }
+                            }
+                        });
+                        if produced_anonymous_survives_closure_restart(
+                            &instance,
+                            &body_produced_anonymous,
+                            &query_anonymous_nominals,
+                        ) {
+                            stable_produced_seed.extend(
+                                produced
+                                    .0
+                                    .iter()
+                                    .cloned()
+                                    .map(|nominal| (nominal.identity.clone(), nominal)),
+                            );
+                        }
+                        representative_changed =
+                            previous_representatives.iter().any(|(reached, previous)| {
+                                canonicalize_reached_anonymous_member(
+                                    reached,
+                                    &body_produced_anonymous,
+                                    &query_anonymous_nominals,
+                                ) != *previous
+                            });
+                        if representative_changed {
+                            // Anonymous method bodies and their edges are not part
+                            // of structural equality. Discard this in-flight
+                            // closure and traverse again from roots against the
+                            // new producer-owned representative set.
+                            break;
+                        }
+                        for nominal in produced.0.iter() {
+                            if let crate::durable_semantics::DurableAnonymousNominalShape::Struct {
+                                methods,
+                                ..
+                            } = &nominal.shape
+                                && methods.iter().any(|method| {
+                                    method.has_self && method.name.as_ref() == "__drop"
+                                })
+                            {
+                                pending.insert(crate::FunctionInstanceKey::AnonymousMember {
+                                    owner: Box::new(crate::TypeInstanceKey::Nominal(
+                                        crate::NominalInstanceKey::Anonymous(
+                                            nominal.identity.clone(),
+                                        ),
+                                    )),
+                                    member: crate::AnonymousMemberKey {
+                                        kind: crate::AnonymousMemberKind::Destructor,
+                                        name: Arc::from("__drop"),
+                                    },
+                                });
+                            }
+                        }
+                    }
+                    let references = transaction.references();
+                    for reference in references.0.iter() {
+                        if let crate::body_query::BodyReference::Callable(callable) = reference
+                            && matches!(
+                                callable,
+                                crate::FunctionInstanceKey::Definition(_)
+                                    | crate::FunctionInstanceKey::Specialization { .. }
+                                    | crate::FunctionInstanceKey::AnonymousMember { .. }
+                            )
+                            && callable_has_any_body(callable)
+                        {
+                            pending.insert(callable.clone());
+                        }
+                        if let crate::body_query::BodyReference::Type(ty) = reference {
+                            enqueue_owned_destructor_closure(
+                                ty,
+                                prepared_definitions.definitions(),
+                                query_declarations.as_deref().expect(
+                                    "body traversal follows a successful declaration projection",
+                                ),
+                                &body_produced_anonymous,
+                                &query_anonymous_nominals,
+                                &mut pending,
+                            );
+                        }
+                    }
+                    if matches!(
+                        transaction,
+                        crate::body_query::BodyTransaction::Success { .. }
+                    ) && callable_has_query_body(&instance)
+                    {
+                        let body = self
+                            .queries
+                            .revisioned
+                            .canonical_body_projection(
+                                runtime_revision,
+                                key.clone(),
+                                cancellation.clone(),
+                            )
+                            .map_err(SemanticRequestControl::Abort)?;
+                        let rue_query::QueryOutcome::Success(body) = body.outcome() else {
+                            unreachable!("CanonicalBody publishes typed values")
+                        };
+                        match body {
+                            crate::body_query::CanonicalBody::Ordinary { owner, body } => {
+                                let Some(record) =
+                                    prepared_definitions.definitions().definition_by_key(owner)
+                                else {
+                                    return Err(SemanticRequestControl::Abort(
+                                        rue_query::QueryAbort::Canceled,
+                                    ));
+                                };
+                                let Some(body_span) = record.body_span() else {
+                                    return Err(SemanticRequestControl::Abort(
+                                        rue_query::QueryAbort::Canceled,
+                                    ));
+                                };
+                                queried_ordinary.push(
+                                    crate::canonical_semantic::PreparedDurableBodyCandidate {
+                                        owner: owner.clone(),
+                                        body_span,
+                                        body: body.clone(),
+                                    },
+                                );
+                            }
+                            crate::body_query::CanonicalBody::Anonymous { identity, body } => {
+                                let crate::FunctionInstanceKey::AnonymousMember { owner, member } =
+                                    identity
+                                else {
+                                    return Err(SemanticRequestControl::Abort(
+                                        rue_query::QueryAbort::Canceled,
+                                    ));
+                                };
+                                let crate::TypeInstanceKey::Nominal(
+                                    crate::NominalInstanceKey::Anonymous(owner_identity),
+                                ) = owner.as_ref()
+                                else {
+                                    return Err(SemanticRequestControl::Abort(
+                                        rue_query::QueryAbort::Canceled,
+                                    ));
+                                };
+                                let source_key = match &owner_identity.producer {
+                                    crate::StableProducerId::Function(function) => {
+                                        crate::revisioned_query_database::function_definition_key(
+                                            function,
+                                        )
+                                    }
+                                    crate::StableProducerId::Definition(definition) => {
+                                        Some(definition)
+                                    }
+                                }
+                                .ok_or(
+                                    SemanticRequestControl::Abort(rue_query::QueryAbort::Canceled),
+                                )?;
+                                let source = prepared_definitions
+                                    .definitions()
+                                    .definition_by_key(source_key)
+                                    .ok_or(SemanticRequestControl::Abort(
+                                        rue_query::QueryAbort::Canceled,
+                                    ))?;
+                                let source_span = source.declaration_span();
+                                let occurrence = owner_identity.anchor.segments().last();
+                                let body_span = rir
+                                    .rir()
+                                    .iter()
+                                    .find_map(|(_, instruction)| {
+                                        let rue_rir::InstData::AnonStructType {
+                                            methods,
+                                            anchor,
+                                            ..
+                                        } = &instruction.data
+                                        else {
+                                            return None;
+                                        };
+                                        if anchor.segments().last() != occurrence
+                                            || instruction.span.file_id != source_span.file_id
+                                            || instruction.span.start < source_span.start
+                                            || instruction.span.end > source_span.end
+                                        {
+                                            return None;
+                                        }
+                                        rir.rir().anon_struct_methods(methods).iter().find_map(
+                                            |method_ref| {
+                                                let method_instruction = rir.rir().get(*method_ref);
+                                                let rue_rir::InstData::FnDecl { name, .. } =
+                                                    &method_instruction.data
+                                                else {
+                                                    return None;
+                                                };
+                                                (rir.semantic_symbols().interner().resolve(name)
+                                                    == member.name.as_ref())
+                                                .then_some(method_instruction.span)
+                                            },
+                                        )
+                                    })
+                                    .ok_or(SemanticRequestControl::Abort(
+                                        rue_query::QueryAbort::Canceled,
+                                    ))?;
+                                queried_anonymous.push(
+                                crate::canonical_semantic::PreparedDurableAnonymousBodyCandidate {
+                                    identity: identity.clone(),
+                                    body_span,
+                                    body: body.clone(),
+                                },
+                            );
+                            }
+                            crate::body_query::CanonicalBody::Specialization {
+                                identity,
+                                body,
+                                ..
+                            } => {
+                                let Some(record) = prepared_definitions
+                                    .definitions()
+                                    .definition_by_key(&identity.base)
+                                else {
+                                    return Err(SemanticRequestControl::Abort(
+                                        rue_query::QueryAbort::Canceled,
+                                    ));
+                                };
+                                queried_specialized.push(
+                                crate::canonical_semantic::PreparedDurableSpecializedBodyCandidate {
+                                    instance: instance.clone(),
+                                    identity: identity.clone(),
+                                    body_span: record.declaration_span(),
+                                    body: body.clone(),
+                                },
+                            );
+                            }
+                        }
+                    }
+                }
+                if representative_changed {
+                    continue 'closure;
+                }
+                durable_body_candidates = queried_ordinary;
+                durable_specialized_body_candidates = queried_specialized;
+                durable_anonymous_body_candidates = queried_anonymous;
+                break 'closure;
             }
         }
+        let query_anonymous_nominals = {
+            let mut all = query_anonymous_nominals
+                .iter()
+                .cloned()
+                .map(|nominal| (nominal.identity.clone(), nominal))
+                .collect::<BTreeMap<_, _>>();
+            all.extend(body_produced_anonymous);
+            crate::revisioned_query_database::materialize_contextual_anonymous_aliases(&mut all);
+            Arc::from(all.into_values().collect::<Vec<_>>())
+        };
         // Declaration payloads have one production authority: the revisioned
         // semantic query nucleus. The old durable declaration cache remains a
         // test-oracle fixture only; it must never select or revive a second
         // declaration resolver in a real request.
         let query_declarations_for_cache = query_declarations.clone();
         let analysis = prepared.and_then(|prepared| {
+            if !body_query_errors.is_empty() {
+                let errors = body_query_errors.into_values().fold(
+                    CompileErrors::new(),
+                    |mut all, errors| {
+                        all.extend(errors);
+                        all
+                    },
+                );
+                let mut work = CanonicalSemanticWork {
+                    declaration_index: prepared.declaration_index_work(),
+                    declaration_reuse: prepared.declaration_reuse_work(),
+                    ..CanonicalSemanticWork::default()
+                };
+                work.accrue_body_query_work(queried_body_work);
+                return Err(CanonicalSemanticFailure::body(errors, work));
+            }
             let durable = query_declarations
                 .expect("successful semantic-nucleus projection publishes declaration payloads");
             let definitions = prepared.definitions().clone();
-            analyze_prepared_canonical_program_reusing_declarations(
+            let mut output = analyze_prepared_canonical_program_reusing_declarations(
                 &merged,
                 &rir,
                 options,
@@ -5187,9 +5863,13 @@ impl CompilerSession {
                 &query_declaration_dependencies,
                 durable_body_candidates,
                 durable_specialized_body_candidates,
+                durable_anonymous_body_candidates,
                 previous_cfg_cache.clone(),
                 durable_body_work,
-            )
+            )?;
+            output.install_body_references(body_query_reference_cache);
+            output.accrue_body_query_work(queried_body_work);
+            Ok(output)
         });
         #[cfg(test)]
         if std::mem::take(&mut self.cancel_semantic_before_publication) {
@@ -5219,7 +5899,6 @@ impl CompilerSession {
             .then_some(query_declarations_for_cache)
             .flatten()
             .map(|semantics| DurableDeclarationCache { semantics });
-        let mut published_body_cache = None;
         let mut published_cfg_cache = None;
         if let Ok(output) = &result {
             published_cfg_cache = Some(output.durable_cfgs().clone());
@@ -5227,33 +5906,6 @@ impl CompilerSession {
             debug_assert_eq!(semantic_work.binding.bind_invocations, 1);
             debug_assert_eq!(semantic_work.manifest.build_invocations, 1);
             debug_assert!(!semantic_work.stable_ids_requested);
-            published_body_cache = build_supported_ordinary_body_cache(
-                output,
-                merged.definitions().source_snapshot(),
-                options.target,
-                &options.preview_features,
-            )
-            .and_then(|(bodies, _dependency_work)| {
-                let specialized_bodies = build_supported_specialized_body_cache(
-                    output,
-                    merged.definitions().source_snapshot(),
-                    options.target,
-                    &options.preview_features,
-                )?;
-                body_invalidation_manifest(
-                    input.semantic.clone(),
-                    imports.clone(),
-                    output,
-                    merged.definitions().source_snapshot(),
-                    bodies.clone(),
-                )
-                .map(|manifest| DurableOrdinaryBodyCache {
-                    manifest: Arc::new(manifest),
-                    bodies,
-                    specialized_bodies,
-                })
-            })
-            .ok();
         }
         let diagnostic_input = semantic_diagnostic_input(&input, imports.clone());
         let diagnostics = self.publish_diagnostics(
@@ -5297,7 +5949,6 @@ impl CompilerSession {
         guard.attach_diagnostics(diagnostics.clone());
         #[cfg(test)]
         if result.is_ok() {
-            self.last_successful_body_cache = published_body_cache.clone();
             self.last_successful_cfg_cache = published_cfg_cache.clone();
             self.durable_declaration_cache = published_declaration_cache.clone();
         }
@@ -5311,7 +5962,6 @@ impl CompilerSession {
                     result: result.clone(),
                     rir: result.is_ok().then(|| rir.clone()),
                     diagnostics,
-                    successful_body_cache: result.is_ok().then_some(published_body_cache).flatten(),
                     durable_declaration_cache: result
                         .is_ok()
                         .then_some(published_declaration_cache)
@@ -5740,7 +6390,7 @@ impl CompilerSession {
             builtin_type_call_head_inputs_translated,
             named_const_events_translated,
             implicit_named_destructor_events_translated,
-            free_function_caller_dependencies_complete,
+            mut free_function_caller_dependencies_complete,
             named_method_dependencies_complete,
             generic_named_method_dependencies_complete,
             named_destructor_dependencies_complete,
@@ -6059,6 +6709,43 @@ impl CompilerSession {
                 false,
             ),
         };
+        if let Ok(semantic) = &semantic {
+            let mut query_edges = Vec::new();
+            for function in semantic.functions() {
+                let Some(caller) = crate::revisioned_query_database::function_definition_key(
+                    &function.semantic_identity,
+                ) else {
+                    continue;
+                };
+                let references = semantic
+                    .body_references(&function.semantic_identity)
+                    .ok_or_else(|| {
+                        invalid_dependency_manifest(
+                            "canonical function is missing its query-owned body references",
+                        )
+                    })?;
+                for reference in references.0.iter() {
+                    let crate::body_query::BodyReference::Callable(callable) = reference else {
+                        continue;
+                    };
+                    let Some(callee) =
+                        crate::revisioned_query_database::function_definition_key(callable)
+                    else {
+                        continue;
+                    };
+                    query_edges.push(StableFreeFunctionDependency {
+                        caller: caller.clone(),
+                        callee: callee.clone(),
+                    });
+                }
+            }
+            // RUE-1027: body call edges have one production authority. The
+            // query-owned references returned by each reached body transaction
+            // replace the whole-program observer projection used by the
+            // compatibility oracle above.
+            free_function_dependencies = query_edges;
+            free_function_caller_dependencies_complete = true;
+        }
         let (mut analyzed_body_owners, anonymous_body_owners) = match (&semantic, &definitions) {
             (Ok(semantic), Ok(definitions)) => {
                 let mut owners = Vec::new();
@@ -7252,843 +7939,6 @@ fn stable_kind_tag(kind: StableDefinitionKind) -> u8 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum StableEndpointIndexKey {
-    FreeFunction(u32, String),
-    TopLevel(u32, String, StableDefinitionNamespace, StableDefinitionKind),
-    NamedMethod(u32, String, String),
-    NamedDestructor(u32, String),
-}
-
-/// Exact endpoint join index for translating semantic dependency events.
-///
-/// An ambiguous entry is retained as `None` so every lookup keeps the former
-/// fail-closed "exactly one" behavior without rescanning all definitions.
-struct StableEndpointIndex {
-    entries: BTreeMap<StableEndpointIndexKey, Option<StableDefinitionKey>>,
-    definition_records_indexed: usize,
-    endpoint_lookups: Cell<usize>,
-}
-
-impl StableEndpointIndex {
-    fn new(definitions: &BoundDefinitionSet) -> Self {
-        let mut index = Self {
-            entries: BTreeMap::new(),
-            definition_records_indexed: 0,
-            endpoint_lookups: Cell::new(0),
-        };
-        for record in definitions.definitions() {
-            index.definition_records_indexed += 1;
-            let file = record.declaration_span().file_id.index();
-            let stable = record.stable_key();
-            if stable.namespace() == StableDefinitionNamespace::Value
-                && stable.kind() == StableDefinitionKind::Function
-            {
-                index.insert(
-                    StableEndpointIndexKey::FreeFunction(file, stable.name().to_owned()),
-                    stable,
-                );
-            }
-            if stable.owner().is_none() {
-                index.insert(
-                    StableEndpointIndexKey::TopLevel(
-                        file,
-                        stable.name().to_owned(),
-                        stable.namespace(),
-                        stable.kind(),
-                    ),
-                    stable,
-                );
-            }
-            if stable.namespace() == StableDefinitionNamespace::Method
-                && matches!(
-                    stable.kind(),
-                    StableDefinitionKind::Method | StableDefinitionKind::AssociatedFunction
-                )
-            {
-                if let Some(owner) = stable.owner() {
-                    index.insert(
-                        StableEndpointIndexKey::NamedMethod(
-                            file,
-                            owner.name().to_owned(),
-                            stable.name().to_owned(),
-                        ),
-                        stable,
-                    );
-                }
-            }
-            if stable.namespace() == StableDefinitionNamespace::Destructor
-                && stable.kind() == StableDefinitionKind::Destructor
-            {
-                if let Some(owner) = stable.owner() {
-                    if owner.name() == stable.name() {
-                        index.insert(
-                            StableEndpointIndexKey::NamedDestructor(file, owner.name().to_owned()),
-                            stable,
-                        );
-                    }
-                }
-            }
-        }
-        index
-    }
-
-    fn insert(&mut self, endpoint: StableEndpointIndexKey, stable: &StableDefinitionKey) {
-        self.entries
-            .entry(endpoint)
-            .and_modify(|entry| *entry = None)
-            .or_insert_with(|| Some(stable.clone()));
-    }
-
-    fn resolve(
-        &self,
-        endpoint: StableEndpointIndexKey,
-        reason: &str,
-    ) -> Result<StableDefinitionKey, CompileErrors> {
-        self.endpoint_lookups
-            .set(self.endpoint_lookups.get().saturating_add(1));
-        self.entries
-            .get(&endpoint)
-            .and_then(Option::as_ref)
-            .cloned()
-            .ok_or_else(|| invalid_dependency_manifest(reason))
-    }
-
-    fn free_function(&self, file: u32, name: &str) -> Result<StableDefinitionKey, CompileErrors> {
-        self.resolve(
-            StableEndpointIndexKey::FreeFunction(file, name.to_owned()),
-            &format!(
-                "free-function dependency endpoint ({file}, '{name}') did not join exactly one bound function"
-            ),
-        )
-    }
-
-    fn named_method(
-        &self,
-        file: u32,
-        owner_name: &str,
-        method_name: &str,
-    ) -> Result<StableDefinitionKey, CompileErrors> {
-        self.resolve(
-            StableEndpointIndexKey::NamedMethod(
-                file,
-                owner_name.to_owned(),
-                method_name.to_owned(),
-            ),
-            &format!(
-                "named-method dependency endpoint ({file}, '{owner_name}', '{method_name}') did not join exactly one bound method"
-            ),
-        )
-    }
-
-    fn named_destructor(
-        &self,
-        file: u32,
-        owner_name: &str,
-    ) -> Result<StableDefinitionKey, CompileErrors> {
-        self.resolve(
-            StableEndpointIndexKey::NamedDestructor(file, owner_name.to_owned()),
-            &format!(
-                "named-destructor dependency endpoint ({file}, '{owner_name}') did not join exactly one bound destructor"
-            ),
-        )
-    }
-
-    fn top_level(
-        &self,
-        file: u32,
-        name: &str,
-        namespace: StableDefinitionNamespace,
-        kind: StableDefinitionKind,
-    ) -> Result<StableDefinitionKey, CompileErrors> {
-        self.resolve(
-            StableEndpointIndexKey::TopLevel(file, name.to_owned(), namespace, kind),
-            "declaration-type dependency endpoint did not join exactly one stable definition",
-        )
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct StableOrdinaryBodyDependencyWork {
-    definition_records_indexed: usize,
-    endpoint_lookups: usize,
-    free_function_events_translated: usize,
-    named_method_events_translated: usize,
-    named_destructor_events_translated: usize,
-    implicit_named_destructor_events_translated: usize,
-    declaration_type_events_translated: usize,
-    body_dependency_lookups: usize,
-}
-
-fn push_stable_body_dependency(
-    dependencies: &mut BTreeMap<StableDefinitionKey, Vec<StableDefinitionKey>>,
-    source: StableDefinitionKey,
-    target: StableDefinitionKey,
-) {
-    dependencies.entry(source).or_default().push(target);
-}
-
-/// Translate each semantic event exactly once, then group by its stable body
-/// owner. Durable payloads perform one map lookup instead of joining every
-/// body against every dependency event.
-fn stable_ordinary_body_dependencies_by_owner(
-    semantic: &CanonicalSemanticOutput,
-    definitions: &BoundDefinitionSet,
-) -> Result<
-    (
-        BTreeMap<StableDefinitionKey, Vec<StableDefinitionKey>>,
-        StableOrdinaryBodyDependencyWork,
-    ),
-    CompileErrors,
-> {
-    let endpoints = StableEndpointIndex::new(definitions);
-    let mut work = StableOrdinaryBodyDependencyWork {
-        definition_records_indexed: endpoints.definition_records_indexed,
-        ..StableOrdinaryBodyDependencyWork::default()
-    };
-    let mut dependencies = BTreeMap::new();
-
-    for event in semantic.ordinary_free_function_dependencies() {
-        work.free_function_events_translated += 1;
-        let provenance = endpoints.free_function(event.caller_file, &event.caller_name)?;
-        let source = stable_token_endpoint(semantic, event.caller_token, &provenance)?;
-        let target = endpoints.free_function(event.callee_file, &event.callee_name)?;
-        push_stable_body_dependency(&mut dependencies, source, target);
-    }
-    for event in semantic.named_method_dependencies() {
-        work.named_method_events_translated += 1;
-        let provenance = endpoints.named_method(
-            event.caller_file,
-            &event.caller_owner_name,
-            &event.caller_method_name,
-        )?;
-        let source = stable_token_endpoint(semantic, event.caller_token, &provenance)?;
-        let target = match &event.target {
-            rue_air::NamedMethodDependencyTargetEvent::FreeFunction { file, name } => {
-                endpoints.free_function(*file, name)?
-            }
-            rue_air::NamedMethodDependencyTargetEvent::NamedMethod {
-                file,
-                owner_name,
-                method_name,
-            } => endpoints.named_method(*file, owner_name, method_name)?,
-        };
-        push_stable_body_dependency(&mut dependencies, source, target);
-    }
-    for event in semantic.named_destructor_dependencies() {
-        work.named_destructor_events_translated += 1;
-        let provenance = endpoints.named_destructor(event.caller_file, &event.caller_owner_name)?;
-        let source = stable_token_endpoint(semantic, event.caller_token, &provenance)?;
-        let target = match &event.target {
-            rue_air::NamedMethodDependencyTargetEvent::FreeFunction { file, name } => {
-                endpoints.free_function(*file, name)?
-            }
-            rue_air::NamedMethodDependencyTargetEvent::NamedMethod {
-                file,
-                owner_name,
-                method_name,
-            } => endpoints.named_method(*file, owner_name, method_name)?,
-        };
-        push_stable_body_dependency(&mut dependencies, source, target);
-    }
-    for event in semantic.implicit_named_destructor_dependencies() {
-        work.implicit_named_destructor_events_translated += 1;
-        if matches!(
-            event.source,
-            rue_air::ImplicitDropDependencySourceEvent::Specialization { .. }
-        ) {
-            continue;
-        }
-        let source =
-            stable_implicit_drop_source_endpoint_indexed(semantic, &endpoints, &event.source)?;
-        let target = endpoints.named_destructor(event.target_file, &event.target_owner_name)?;
-        push_stable_body_dependency(&mut dependencies, source, target);
-    }
-    for event in semantic.declaration_type_dependencies() {
-        work.declaration_type_events_translated += 1;
-        let provenance = stable_declaration_source_endpoint_indexed(&endpoints, event)?;
-        let source = match event.source_token {
-            Some(token) => stable_token_endpoint(semantic, token, &provenance)?,
-            None => provenance,
-        };
-        let target = stable_named_type_endpoint_indexed(&endpoints, event)?;
-        push_stable_body_dependency(&mut dependencies, source, target);
-    }
-
-    for targets in dependencies.values_mut() {
-        targets.sort();
-        targets.dedup();
-    }
-    work.endpoint_lookups = endpoints.endpoint_lookups.get();
-    Ok((dependencies, work))
-}
-
-fn stable_implicit_drop_source_endpoint_indexed(
-    semantic: &CanonicalSemanticOutput,
-    endpoints: &StableEndpointIndex,
-    source: &rue_air::ImplicitDropDependencySourceEvent,
-) -> Result<StableDefinitionKey, CompileErrors> {
-    match source {
-        rue_air::ImplicitDropDependencySourceEvent::Anonymous => Err(invalid_dependency_manifest(
-            "anonymous drop-dependency source has no stable endpoint",
-        )),
-        rue_air::ImplicitDropDependencySourceEvent::Specialization { .. } => {
-            Err(invalid_dependency_manifest(
-                "specialized drop-dependency source requires specialization identity",
-            ))
-        }
-        rue_air::ImplicitDropDependencySourceEvent::FreeFunction { token, file, name } => {
-            let provenance = endpoints.free_function(*file, name)?;
-            stable_token_endpoint(semantic, *token, &provenance)
-        }
-        rue_air::ImplicitDropDependencySourceEvent::NamedMethod {
-            token,
-            file,
-            owner_name,
-            method_name,
-        } => {
-            let provenance = endpoints.named_method(*file, owner_name, method_name)?;
-            stable_token_endpoint(semantic, *token, &provenance)
-        }
-        rue_air::ImplicitDropDependencySourceEvent::NamedDestructor {
-            token,
-            file,
-            owner_name,
-        } => {
-            let provenance = endpoints.named_destructor(*file, owner_name)?;
-            stable_token_endpoint(semantic, *token, &provenance)
-        }
-        rue_air::ImplicitDropDependencySourceEvent::NamedStruct { file, name } => endpoints
-            .top_level(
-                *file,
-                name,
-                StableDefinitionNamespace::Type,
-                StableDefinitionKind::Struct,
-            ),
-        rue_air::ImplicitDropDependencySourceEvent::NamedEnum { file, name } => endpoints
-            .top_level(
-                *file,
-                name,
-                StableDefinitionNamespace::Type,
-                StableDefinitionKind::Enum,
-            ),
-    }
-}
-
-fn stable_declaration_source_endpoint_indexed(
-    endpoints: &StableEndpointIndex,
-    event: &rue_air::DeclarationTypeDependencyEvent,
-) -> Result<StableDefinitionKey, CompileErrors> {
-    use rue_air::DeclarationTypeDependencySourceKind as K;
-    match event.source_kind {
-        K::Function => endpoints.free_function(event.source_file, &event.source_name),
-        K::Method | K::AssociatedFunction => endpoints.named_method(
-            event.source_file,
-            event.source_owner_name.as_deref().unwrap_or(""),
-            &event.source_name,
-        ),
-        K::Destructor => endpoints.named_destructor(
-            event.source_file,
-            event
-                .source_owner_name
-                .as_deref()
-                .unwrap_or(&event.source_name),
-        ),
-        K::Struct => endpoints.top_level(
-            event.source_file,
-            &event.source_name,
-            StableDefinitionNamespace::Type,
-            StableDefinitionKind::Struct,
-        ),
-        K::Enum => endpoints.top_level(
-            event.source_file,
-            &event.source_name,
-            StableDefinitionNamespace::Type,
-            StableDefinitionKind::Enum,
-        ),
-        K::ValueConst => endpoints.top_level(
-            event.source_file,
-            &event.source_name,
-            StableDefinitionNamespace::Value,
-            StableDefinitionKind::ValueConst,
-        ),
-    }
-}
-
-fn stable_named_type_endpoint_indexed(
-    endpoints: &StableEndpointIndex,
-    event: &rue_air::DeclarationTypeDependencyEvent,
-) -> Result<StableDefinitionKey, CompileErrors> {
-    match event.target_kind {
-        rue_air::DeclarationTypeDependencyTargetKind::Struct => endpoints.top_level(
-            event.target_file,
-            &event.target_name,
-            StableDefinitionNamespace::Type,
-            StableDefinitionKind::Struct,
-        ),
-        rue_air::DeclarationTypeDependencyTargetKind::Enum => endpoints.top_level(
-            event.target_file,
-            &event.target_name,
-            StableDefinitionNamespace::Type,
-            StableDefinitionKind::Enum,
-        ),
-        rue_air::DeclarationTypeDependencyTargetKind::ValueConst => endpoints.top_level(
-            event.target_file,
-            &event.target_name,
-            StableDefinitionNamespace::Value,
-            StableDefinitionKind::ValueConst,
-        ),
-    }
-}
-
-/// Build the supported ordinary-body baseline directly from the successful
-/// canonical semantic artifact. This closes the publication circularity: no
-/// current dependency manifest (and therefore no second analysis or bind) is
-/// needed before the next request can authorize reuse.
-fn build_supported_ordinary_body_cache(
-    semantic: &CanonicalSemanticOutput,
-    snapshot: &SourceSnapshot,
-    target: crate::Target,
-    preview_features: &crate::PreviewFeatures,
-) -> Result<
-    (
-        Arc<[crate::DurableOrdinaryBody]>,
-        StableOrdinaryBodyDependencyWork,
-    ),
-    CompileErrors,
-> {
-    let definitions = semantic.body_owner_issuer();
-    let supported = semantic.ordinary_free_function_dependencies_complete()
-        && semantic.specialized_free_function_dependencies_complete()
-        && semantic.non_generic_named_method_dependencies_complete()
-        && semantic.generic_named_method_dependencies_complete()
-        && semantic.named_destructor_dependencies_complete()
-        && semantic.implicit_named_destructor_dependencies_complete()
-        && semantic.declaration_type_dependencies_complete()
-        && semantic.declaration_type_call_head_dependencies_complete()
-        && semantic.supported_type_call_heads_complete()
-        && semantic.named_value_const_dependencies_complete()
-        && semantic.specialized_free_function_origins().is_empty()
-        && semantic.specialized_free_function_dependencies().is_empty()
-        && semantic
-            .declaration_type_call_head_dependencies()
-            .is_empty()
-        && semantic
-            .declaration_builtin_type_call_head_dependencies()
-            .is_empty()
-        && semantic.named_const_dependencies().is_empty()
-        && semantic.body_named_dependencies().is_empty();
-    if !supported {
-        return Ok((Arc::from([]), StableOrdinaryBodyDependencyWork::default()));
-    }
-    let fingerprints = definitions
-        .definitions()
-        .iter()
-        .map(|record| {
-            stable_definition_input_fingerprint(snapshot, record)
-                .map(|fingerprint| (record.stable_key().clone(), fingerprint))
-        })
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
-    let (dependencies_by_owner, mut dependency_work) =
-        stable_ordinary_body_dependencies_by_owner(semantic, definitions)?;
-    let mut records = Vec::with_capacity(semantic.durable_ordinary_body_payloads().len());
-    for payload in semantic.durable_ordinary_body_payloads() {
-        dependency_work.body_dependency_lookups += 1;
-        let fingerprint = fingerprints
-            .get(&payload.owner)
-            .cloned()
-            .ok_or_else(|| invalid_dependency_manifest("durable body owner is absent"))?;
-        let mut dependency_keys = Vec::new();
-        dependency_keys.extend(payload.referenced_definition_keys());
-        if let Some(dependencies) = dependencies_by_owner.get(&payload.owner) {
-            dependency_keys.extend(dependencies.iter().cloned());
-        }
-        dependency_keys.sort();
-        dependency_keys.dedup();
-        let direct_dependency_inputs = dependency_keys
-            .iter()
-            .map(|key| {
-                fingerprints
-                    .get(key)
-                    .cloned()
-                    .ok_or_else(|| invalid_dependency_manifest("durable body dependency is absent"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        records.push(StableBodyDependencyInputRecord {
-            owner: payload.owner.clone(),
-            fingerprint,
-            target,
-            preview_features: StablePreviewFeatures::new(preview_features),
-            direct_dependency_inputs: direct_dependency_inputs.into(),
-            builtin_type_call_heads: Arc::from([]),
-            blockers: Arc::from([]),
-        });
-    }
-    let mut work = crate::DurableBodyWork::default();
-    let bodies = crate::finalize_durable_ordinary_bodies(
-        semantic.durable_ordinary_body_payloads(),
-        &records,
-        &mut work,
-    )
-    .map_err(|_| invalid_dependency_manifest("durable body finalization failed"))?;
-    Ok((bodies, dependency_work))
-}
-
-/// Finalize each completed specialization against its own exact stable input
-/// boundary. Generic declarations are intentionally blocked from ordinary-body
-/// reuse, but a concrete specialization has no unresolved substitution
-/// identity: its ordered durable arguments are part of the cache key.
-fn build_supported_specialized_body_cache(
-    semantic: &CanonicalSemanticOutput,
-    snapshot: &SourceSnapshot,
-    target: crate::Target,
-    preview_features: &crate::PreviewFeatures,
-) -> Result<Arc<[crate::DurableSpecializedBody]>, CompileErrors> {
-    if !semantic.specialized_free_function_dependencies_complete()
-        || !semantic.declaration_type_dependencies_complete()
-        || !semantic.declaration_type_call_head_dependencies_complete()
-        || !semantic.supported_type_call_heads_complete()
-        || !semantic.named_value_const_dependencies_complete()
-        || !semantic.implicit_named_destructor_dependencies_complete()
-    {
-        return Ok(Arc::from([]));
-    }
-    let definitions = semantic.body_owner_issuer();
-    let fingerprints = definitions
-        .definitions()
-        .iter()
-        .map(|record| {
-            stable_definition_input_fingerprint(snapshot, record)
-                .map(|fingerprint| (record.stable_key().clone(), fingerprint))
-        })
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
-    let mut named_const_edges = BTreeMap::<StableDefinitionKey, Vec<StableDefinitionKey>>::new();
-    for event in semantic.named_const_dependencies() {
-        let source = stable_top_level_endpoint(
-            definitions,
-            event.source_file,
-            &event.source_name,
-            StableDefinitionNamespace::Value,
-            StableDefinitionKind::ValueConst,
-        )?;
-        let target = match &event.target {
-            rue_air::NamedConstDependencyTargetEvent::ValueConst { file, name } => {
-                stable_top_level_endpoint(
-                    definitions,
-                    *file,
-                    name,
-                    StableDefinitionNamespace::Value,
-                    StableDefinitionKind::ValueConst,
-                )?
-            }
-            rue_air::NamedConstDependencyTargetEvent::FreeFunction { file, name } => {
-                stable_free_function_endpoint(definitions, *file, name)?
-            }
-            rue_air::NamedConstDependencyTargetEvent::NamedType { file, name, kind } => {
-                let kind = match kind {
-                    rue_air::DeclarationTypeDependencyTargetKind::Struct => {
-                        StableDefinitionKind::Struct
-                    }
-                    rue_air::DeclarationTypeDependencyTargetKind::Enum => {
-                        StableDefinitionKind::Enum
-                    }
-                    rue_air::DeclarationTypeDependencyTargetKind::ValueConst => {
-                        StableDefinitionKind::ValueConst
-                    }
-                };
-                stable_top_level_endpoint(
-                    definitions,
-                    *file,
-                    name,
-                    if kind == StableDefinitionKind::ValueConst {
-                        StableDefinitionNamespace::Value
-                    } else {
-                        StableDefinitionNamespace::Type
-                    },
-                    kind,
-                )?
-            }
-            rue_air::NamedConstDependencyTargetEvent::ModuleBinding { file, name } => {
-                stable_top_level_endpoint(
-                    definitions,
-                    *file,
-                    name,
-                    StableDefinitionNamespace::Value,
-                    StableDefinitionKind::ModuleBinding,
-                )?
-            }
-        };
-        named_const_edges.entry(source).or_default().push(target);
-    }
-    let mut result = Vec::with_capacity(semantic.durable_specialized_body_payloads().len());
-    for payload in semantic.durable_specialized_body_payloads() {
-        if payload.schema_version != crate::DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION
-            || payload.body.owner != payload.identity.base
-            || payload.body.schema_version != crate::DURABLE_ORDINARY_BODY_SCHEMA_VERSION
-        {
-            return Err(invalid_dependency_manifest(
-                "durable specialized body has an incompatible schema or owner",
-            ));
-        }
-        if !payload.dependency_boundary_complete {
-            continue;
-        }
-        let fingerprint = fingerprints
-            .get(&payload.identity.base)
-            .cloned()
-            .filter(|value| value == &payload.body.expected_inputs)
-            .ok_or_else(|| {
-                invalid_dependency_manifest("durable specialized body base is absent or stale")
-            })?;
-        let mut dependency_keys = payload
-            .dependencies
-            .iter()
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        let mut pending = dependency_keys.iter().cloned().collect::<Vec<_>>();
-        while let Some(key) = pending.pop() {
-            if let Some(targets) = named_const_edges.get(&key) {
-                for target in targets {
-                    if dependency_keys.insert(target.clone()) {
-                        pending.push(target.clone());
-                    }
-                }
-            }
-        }
-        dependency_keys.remove(&payload.identity.base);
-        let direct_dependency_inputs = dependency_keys
-            .into_iter()
-            .map(|key| {
-                fingerprints.get(&key).cloned().ok_or_else(|| {
-                    invalid_dependency_manifest(
-                        "durable specialized body dependency is absent from fingerprints",
-                    )
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        result.push(crate::DurableSpecializedBody {
-            payload: payload.clone(),
-            inputs: StableBodyDependencyInputRecord {
-                owner: payload.identity.base.clone(),
-                fingerprint,
-                target,
-                preview_features: StablePreviewFeatures::new(preview_features),
-                direct_dependency_inputs: direct_dependency_inputs.into(),
-                builtin_type_call_heads: Arc::from([]),
-                blockers: Arc::from([]),
-            },
-        });
-    }
-    Ok(result.into())
-}
-
-fn stable_module_imports(imports: &CanonicalImportGraph) -> Arc<[StableModuleImportDependency]> {
-    imports
-        .records()
-        .iter()
-        .map(|record| match record.resolution() {
-            CanonicalImportResolution::Resolved(target) => StableModuleImportDependency::Resolved {
-                importer: record.importer().clone(),
-                normalized_specifier: Arc::from(record.normalized_specifier()),
-                target: target.clone(),
-            },
-            CanonicalImportResolution::Missing => StableModuleImportDependency::Missing {
-                importer: record.importer().clone(),
-                normalized_specifier: Arc::from(record.normalized_specifier()),
-            },
-            CanonicalImportResolution::Ambiguous {
-                file_module,
-                directory_module,
-            } => StableModuleImportDependency::Ambiguous {
-                importer: record.importer().clone(),
-                normalized_specifier: Arc::from(record.normalized_specifier()),
-                file_module: file_module.clone(),
-                directory_module: directory_module.clone(),
-            },
-        })
-        .collect::<Vec<_>>()
-        .into()
-}
-
-fn body_invalidation_manifest(
-    input: SemanticInputDescriptor,
-    imports: CanonicalImportGraph,
-    semantic: &CanonicalSemanticOutput,
-    snapshot: &SourceSnapshot,
-    bodies: Arc<[crate::DurableOrdinaryBody]>,
-) -> Result<SemanticDependencyInputManifest, CompileErrors> {
-    let definitions = semantic.body_owner_issuer();
-    let definition_fingerprints = definitions
-        .definitions()
-        .iter()
-        .map(|record| stable_definition_input_fingerprint(snapshot, record))
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut free_function_dependencies = bodies
-        .iter()
-        .flat_map(|body| {
-            body.inputs()
-                .direct_dependency_inputs()
-                .iter()
-                .map(|dependency| StableFreeFunctionDependency {
-                    caller: body.owner().clone(),
-                    callee: dependency.key.clone(),
-                })
-        })
-        .collect::<Vec<_>>();
-    free_function_dependencies.sort();
-    free_function_dependencies.dedup();
-    let mut named_method_dependencies = semantic
-        .named_method_dependencies()
-        .iter()
-        .map(|event| {
-            let provenance = stable_named_method_endpoint(
-                definitions,
-                event.caller_file,
-                &event.caller_owner_name,
-                &event.caller_method_name,
-            )?;
-            let caller = stable_token_endpoint(semantic, event.caller_token, &provenance)?;
-            let target =
-                match &event.target {
-                    rue_air::NamedMethodDependencyTargetEvent::FreeFunction { file, name } => {
-                        StableNamedMethodDependencyTarget::FreeFunction(
-                            stable_free_function_endpoint(definitions, *file, name)?,
-                        )
-                    }
-                    rue_air::NamedMethodDependencyTargetEvent::NamedMethod {
-                        file,
-                        owner_name,
-                        method_name,
-                    } => StableNamedMethodDependencyTarget::NamedMethod(
-                        stable_named_method_endpoint(definitions, *file, owner_name, method_name)?,
-                    ),
-                };
-            Ok(StableNamedMethodDependency { caller, target })
-        })
-        .collect::<Result<Vec<_>, CompileErrors>>()?;
-    named_method_dependencies.sort();
-    named_method_dependencies.dedup();
-    let mut named_destructor_dependencies = semantic
-        .named_destructor_dependencies()
-        .iter()
-        .map(|event| {
-            let provenance = stable_named_destructor_endpoint(
-                definitions,
-                event.caller_file,
-                &event.caller_owner_name,
-            )?;
-            let caller = stable_token_endpoint(semantic, event.caller_token, &provenance)?;
-            let target =
-                match &event.target {
-                    rue_air::NamedMethodDependencyTargetEvent::FreeFunction { file, name } => {
-                        StableNamedMethodDependencyTarget::FreeFunction(
-                            stable_free_function_endpoint(definitions, *file, name)?,
-                        )
-                    }
-                    rue_air::NamedMethodDependencyTargetEvent::NamedMethod {
-                        file,
-                        owner_name,
-                        method_name,
-                    } => StableNamedMethodDependencyTarget::NamedMethod(
-                        stable_named_method_endpoint(definitions, *file, owner_name, method_name)?,
-                    ),
-                };
-            Ok(StableNamedDestructorDependency { caller, target })
-        })
-        .collect::<Result<Vec<_>, CompileErrors>>()?;
-    named_destructor_dependencies.sort();
-    named_destructor_dependencies.dedup();
-    let mut implicit_named_destructor_dependencies = semantic
-        .implicit_named_destructor_dependencies()
-        .iter()
-        .filter(|event| {
-            !matches!(
-                event.source,
-                rue_air::ImplicitDropDependencySourceEvent::Specialization { .. }
-            )
-        })
-        .map(|event| {
-            Ok(StableImplicitNamedDestructorDependency {
-                source: stable_implicit_drop_source_endpoint(semantic, definitions, &event.source)?,
-                target: stable_named_destructor_endpoint(
-                    definitions,
-                    event.target_file,
-                    &event.target_owner_name,
-                )?,
-            })
-        })
-        .collect::<Result<Vec<_>, CompileErrors>>()?;
-    implicit_named_destructor_dependencies.sort();
-    implicit_named_destructor_dependencies.dedup();
-    let mut declaration_type_dependencies = semantic
-        .declaration_type_dependencies()
-        .iter()
-        .map(|event| {
-            let provenance = stable_declaration_source_endpoint(definitions, event)?;
-            Ok(StableDeclarationTypeDependency {
-                source: match event.source_token {
-                    Some(token) => stable_token_endpoint(semantic, token, &provenance)?,
-                    None => provenance,
-                },
-                target: stable_named_type_endpoint(definitions, event)?,
-                kind: event.dependency_kind,
-            })
-        })
-        .collect::<Result<Vec<_>, CompileErrors>>()?;
-    declaration_type_dependencies.sort();
-    declaration_type_dependencies.dedup();
-    let body_dependencies = bodies
-        .iter()
-        .map(|body| body.inputs.clone())
-        .collect::<Vec<_>>();
-    let definition_keys = definitions
-        .definitions()
-        .iter()
-        .map(|record| record.stable_key().clone())
-        .collect::<Vec<_>>();
-    let module_imports = stable_module_imports(&imports);
-    Ok(SemanticDependencyInputManifest {
-        input,
-        imports,
-        definitions: definition_keys.into(),
-        definition_fingerprints: definition_fingerprints.into(),
-        module_imports,
-        free_function_dependencies: free_function_dependencies.into(),
-        named_method_dependencies: named_method_dependencies.into(),
-        named_destructor_dependencies: named_destructor_dependencies.into(),
-        implicit_named_destructor_dependencies: implicit_named_destructor_dependencies.into(),
-        declaration_type_dependencies: declaration_type_dependencies.into(),
-        declaration_type_call_head_dependencies: Arc::from([]),
-        builtin_type_call_head_inputs: Arc::from([]),
-        named_const_dependencies: Arc::from([]),
-        body_dependencies: body_dependencies.into(),
-        durable_ordinary_bodies: bodies,
-        durable_body_candidate_state: DurableBodyCandidateState::Complete,
-        dependency_graph_state: SemanticDependencyGraphState::from_blockers(Vec::new()),
-        definition_universe_state: SemanticDefinitionUniverseState::Complete,
-        work: SemanticDependencyManifestWork::default(),
-    })
-}
-
-fn preflight_body_invalidation_manifest(
-    previous: &SemanticDependencyInputManifest,
-    input: SemanticInputDescriptor,
-    imports: CanonicalImportGraph,
-    fingerprints: &[StableDefinitionInputFingerprint],
-) -> SemanticDependencyInputManifest {
-    let mut current = previous.clone();
-    current.input = input;
-    current.imports = imports.clone();
-    current.module_imports = stable_module_imports(&imports);
-    current.definitions = fingerprints
-        .iter()
-        .map(|value| value.key.clone())
-        .collect::<Vec<_>>()
-        .into();
-    current.definition_fingerprints = fingerprints.to_vec().into();
-    current
-}
-
 fn stable_free_function_endpoint(
     definitions: &BoundDefinitionSet,
     file: u32,
@@ -8512,63 +8362,6 @@ fn continues_discovery_lifecycle(
 }
 
 #[cfg(test)]
-impl CompilerSession {
-    pub(crate) fn corrupt_durable_body_schema_for_test(
-        &mut self,
-        owner_name: &str,
-        schema_version: u32,
-    ) {
-        let cache = self
-            .last_successful_body_cache
-            .as_mut()
-            .expect("test requires a published durable body cache");
-        let mut bodies = cache.bodies.to_vec();
-        bodies
-            .iter_mut()
-            .find(|body| body.payload.owner.name() == owner_name)
-            .expect("test requires the named durable body")
-            .payload
-            .schema_version = schema_version;
-        cache.bodies = bodies.into();
-    }
-
-    pub(crate) fn corrupt_durable_specialized_body_schema_for_test(
-        &mut self,
-        owner_name: &str,
-        specialization_index: usize,
-        schema_version: u32,
-    ) {
-        let cache = self
-            .last_successful_body_cache
-            .as_mut()
-            .expect("test requires a published durable body cache");
-        let candidate = Arc::make_mut(&mut cache.specialized_bodies)
-            .iter_mut()
-            .filter(|body| body.payload.identity.base.name() == owner_name)
-            .nth(specialization_index)
-            .expect("test requires the named durable specialization");
-        candidate.payload.schema_version = schema_version;
-    }
-
-    pub(crate) fn corrupt_durable_cfg_schema_for_test(
-        &mut self,
-        owner_name: &str,
-        schema_version: u32,
-    ) {
-        let cache = Arc::make_mut(
-            self.last_successful_cfg_cache
-                .as_mut()
-                .expect("test requires a published durable CFG cache"),
-        );
-        cache
-            .iter_mut()
-            .find(|cfg| cfg.input.body.owner.name() == owner_name)
-            .expect("test requires the named durable CFG")
-            .schema_version = schema_version;
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use std::{
         collections::{HashMap, HashSet},
@@ -8927,10 +8720,6 @@ mod tests {
         session.canonical_semantic(&default).unwrap();
         let diagnostics = session.latest_diagnostics().unwrap().clone();
         let last_good = session.last_good_semantic_diagnostics().unwrap().clone();
-        let body_manifest = session
-            .last_successful_body_cache
-            .as_ref()
-            .map(|cache| cache.manifest.clone());
         let cfgs = session.last_successful_cfg_cache.clone().unwrap();
         let edited = snapshot(
             &[
@@ -8984,16 +8773,6 @@ mod tests {
             session.last_good_semantic_diagnostics().unwrap(),
             &last_good
         ));
-        match (
-            session.last_successful_body_cache.as_ref(),
-            body_manifest.as_ref(),
-        ) {
-            (Some(current), Some(previous)) => {
-                assert!(Arc::ptr_eq(&current.manifest, previous));
-            }
-            (None, None) => {}
-            _ => panic!("body baseline presence changed across cancellation"),
-        }
         assert!(Arc::ptr_eq(
             session.last_successful_cfg_cache.as_ref().unwrap(),
             &cfgs
@@ -9450,6 +9229,106 @@ mod tests {
     }
 
     #[test]
+    fn nested_layout_change_invalidates_only_layout_consumers() {
+        let first = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "struct Inner { a: i32 }\nstruct Outer { inner: Inner }\nfn consume(value: Outer) -> i32 { value.inner.a }\nfn unaffected() -> i32 { 7 }\nfn main() -> i32 { consume(Outer { inner: Inner { a: 1 } }) + unaffected() }",
+            )],
+            1,
+        );
+        let second = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "struct Inner { a: i32, b: i32 }\nstruct Outer { inner: Inner }\nfn consume(value: Outer) -> i32 { value.inner.a }\nfn unaffected() -> i32 { 7 }\nfn main() -> i32 { consume(Outer { inner: Inner { a: 1, b: 2 } }) + unaffected() }",
+            )],
+            1,
+        );
+        let options = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        session.canonical_semantic(&options).unwrap();
+        let consume_key = body_query_key(&mut session, &options, "consume");
+        let consume_transaction = retained_body_transaction(&session, &consume_key).2;
+        assert!(
+            consume_transaction.references().0.iter().any(|reference| {
+                matches!(
+                    reference,
+                    crate::body_query::BodyReference::Type(crate::TypeInstanceKey::Nominal(
+                        crate::NominalInstanceKey::Named(definition)
+                    )) if definition.name() == "Inner"
+                )
+            }),
+            "{consume_transaction:?}"
+        );
+        let dependency_nodes = retained_body_dependency_nodes(&session, &consume_key);
+        assert!(
+            dependency_nodes
+                .iter()
+                .any(|node| node.contains("signature") && node.contains("Inner")),
+            "{dependency_nodes:?}"
+        );
+        session.update(&second).into_result().unwrap();
+        let warm = session.canonical_semantic(&options).unwrap();
+        assert_eq!(warm.work().cfg.cfg_reuses, 1);
+        assert!(warm.work().cfg.cfg_import_failures >= 1);
+        let mut fresh = CompilerSession::new();
+        fresh.update(&second).into_result().unwrap();
+        let fresh = fresh.canonical_semantic(&options).unwrap();
+        assert_eq!(
+            format!("{:?}", warm.functions()),
+            format!("{:?}", fresh.functions())
+        );
+    }
+
+    #[test]
+    fn pointer_only_consumer_ignores_pointee_layout_but_field_consumer_rebuilds() {
+        let first = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "struct Foo { a: i32 }\nfn pointer_only(value: ptr const Foo) -> i32 { 7 }\nfn field(value: Foo) -> i32 { value.a }\nfn main() -> i32 { let value = Foo { a: 1 }; checked { pointer_only(@raw(value)) + field(value) } }",
+            )],
+            1,
+        );
+        let second = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "struct Foo { a: i32, b: i32 }\nfn pointer_only(value: ptr const Foo) -> i32 { 7 }\nfn field(value: Foo) -> i32 { value.a }\nfn main() -> i32 { let value = Foo { a: 1, b: 2 }; checked { pointer_only(@raw(value)) + field(value) } }",
+            )],
+            1,
+        );
+        let options = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        session.canonical_semantic(&options).unwrap();
+        session.update(&second).into_result().unwrap();
+        let warm = session.canonical_semantic(&options).unwrap();
+        assert_eq!(warm.work().cfg.cfg_reuses, 1);
+        assert!(warm.work().cfg.cfg_import_failures >= 1);
+        let mut fresh = CompilerSession::new();
+        fresh.update(&second).into_result().unwrap();
+        let fresh = fresh.canonical_semantic(&options).unwrap();
+        assert_eq!(
+            format!("{:?}", warm.functions()),
+            format!("{:?}", fresh.functions())
+        );
+    }
+
+    #[test]
     fn cfg_reuse_is_per_function_and_preserves_exact_build_work() {
         let first = snapshot(
             &[(
@@ -9585,14 +9464,14 @@ mod tests {
         assert_eq!(warm.work().cfg.cfg_import_failures, 2);
         assert_eq!(warm.work().cfg.cfg_schema_version_rejections, 1);
         assert_eq!(warm.work().cfg.cfg_fallbacks, 2);
-        assert_eq!(warm.work().cfg.cfg_reuses, 0);
-        assert_eq!(warm.work().cfg.cfg_builds_attempted, 3);
-        assert_eq!(warm.work().cfg.optimization_attempts, 3);
+        assert_eq!(warm.work().cfg.cfg_reuses, 1);
+        assert_eq!(warm.work().cfg.cfg_builds_attempted, 2);
+        assert_eq!(warm.work().cfg.optimization_attempts, 2);
         assert_eq!(warm.work().cfg.optimized_level_attempts, 0);
         session.update(&third).into_result().unwrap();
         let repaired = session.canonical_semantic(&options).unwrap();
-        assert_eq!(repaired.work().cfg.cfg_reuses, 1);
-        assert_eq!(repaired.work().cfg.cfg_builds_attempted, 2);
+        assert_eq!(repaired.work().cfg.cfg_reuses, 2);
+        assert_eq!(repaired.work().cfg.cfg_builds_attempted, 1);
     }
 
     #[test]
@@ -9653,86 +9532,6 @@ mod tests {
     }
 
     #[test]
-    fn nested_layout_change_invalidates_only_layout_consumers() {
-        let first = snapshot(
-            &[(
-                1,
-                "/p/main.rue",
-                "main.rue",
-                "struct Inner { a: i32 }\nstruct Outer { inner: Inner }\nfn consume(value: Outer) -> i32 { value.inner.a }\nfn unaffected() -> i32 { 7 }\nfn main() -> i32 { consume(Outer { inner: Inner { a: 1 } }) + unaffected() }",
-            )],
-            1,
-        );
-        let second = snapshot(
-            &[(
-                1,
-                "/p/main.rue",
-                "main.rue",
-                "struct Inner { a: i32, b: i32 }\nstruct Outer { inner: Inner }\nfn consume(value: Outer) -> i32 { value.inner.a }\nfn unaffected() -> i32 { 7 }\nfn main() -> i32 { consume(Outer { inner: Inner { a: 1, b: 2 } }) + unaffected() }",
-            )],
-            1,
-        );
-        let options = CompileOptions {
-            opt_level: OptLevel::O1,
-            ..CompileOptions::default()
-        };
-        let mut session = CompilerSession::new();
-        session.update(&first).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
-        session.update(&second).into_result().unwrap();
-        let warm = session.canonical_semantic(&options).unwrap();
-        assert_eq!(warm.work().cfg.cfg_reuses, 1);
-        assert!(warm.work().cfg.cfg_import_failures >= 1);
-        let mut fresh = CompilerSession::new();
-        fresh.update(&second).into_result().unwrap();
-        let fresh = fresh.canonical_semantic(&options).unwrap();
-        assert_eq!(
-            format!("{:?}", warm.functions()),
-            format!("{:?}", fresh.functions())
-        );
-    }
-
-    #[test]
-    fn pointer_only_consumer_ignores_pointee_layout_but_field_consumer_rebuilds() {
-        let first = snapshot(
-            &[(
-                1,
-                "/p/main.rue",
-                "main.rue",
-                "struct Foo { a: i32 }\nfn pointer_only(value: ptr const Foo) -> i32 { 7 }\nfn field(value: Foo) -> i32 { value.a }\nfn main() -> i32 { let value = Foo { a: 1 }; checked { pointer_only(@raw(value)) + field(value) } }",
-            )],
-            1,
-        );
-        let second = snapshot(
-            &[(
-                1,
-                "/p/main.rue",
-                "main.rue",
-                "struct Foo { a: i32, b: i32 }\nfn pointer_only(value: ptr const Foo) -> i32 { 7 }\nfn field(value: Foo) -> i32 { value.a }\nfn main() -> i32 { let value = Foo { a: 1, b: 2 }; checked { pointer_only(@raw(value)) + field(value) } }",
-            )],
-            1,
-        );
-        let options = CompileOptions {
-            opt_level: OptLevel::O1,
-            ..CompileOptions::default()
-        };
-        let mut session = CompilerSession::new();
-        session.update(&first).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
-        session.update(&second).into_result().unwrap();
-        let warm = session.canonical_semantic(&options).unwrap();
-        assert_eq!(warm.work().cfg.cfg_reuses, 1);
-        assert!(warm.work().cfg.cfg_import_failures >= 1);
-        let mut fresh = CompilerSession::new();
-        fresh.update(&second).into_result().unwrap();
-        let fresh = fresh.canonical_semantic(&options).unwrap();
-        assert_eq!(
-            format!("{:?}", warm.functions()),
-            format!("{:?}", fresh.functions())
-        );
-    }
-
-    #[test]
     fn incomplete_optimized_cfg_projection_is_rejected_at_export() {
         let source = snapshot(
             &[(
@@ -9782,15 +9581,21 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        let first_output = session.canonical_semantic(&options).unwrap();
-        let first_issuer = first_output.analyzed_body_owners()[0]
-            .token()
-            .unwrap()
-            .issuer();
+        session.canonical_semantic(&options).unwrap();
+        let main = body_query_key(&mut session, &options, "main");
+        let (first_stamp, _, first_transaction) = retained_body_transaction(&session, &main);
         session.update(&second).into_result().unwrap();
         let output = session.canonical_semantic(&options).unwrap();
-        let second_issuer = output.analyzed_body_owners()[0].token().unwrap().issuer();
-        assert_ne!(first_issuer, second_issuer);
+        let (second_stamp, _, second_transaction) = retained_body_transaction(&session, &main);
+        assert_ne!(first_stamp, second_stamp);
+        assert!(matches!(
+            first_transaction,
+            crate::body_query::BodyTransaction::Success { .. }
+        ));
+        assert!(matches!(
+            second_transaction,
+            crate::body_query::BodyTransaction::Success { .. }
+        ));
         assert_eq!(output.work().binding.declaration_resolution_invocations, 0);
         assert_eq!(output.work().binding.durable_install_invocations, 1);
         assert_eq!(output.work().declaration_reuse.durable_records_reused, 2);
@@ -9802,8 +9607,8 @@ mod tests {
         fresh: &CanonicalSemanticOutput,
     ) {
         assert_eq!(
-            format!("{:?}", actual.functions()),
-            format!("{:?}", fresh.functions())
+            normalize_session_local_spurs(format!("{:?}", actual.functions())),
+            normalize_session_local_spurs(format!("{:?}", fresh.functions()))
         );
         assert_eq!(actual.strings(), fresh.strings());
         assert_eq!(
@@ -9818,6 +9623,23 @@ mod tests {
             format!("{:?}", diagnostics.warnings()),
             format!("{:?}", fresh.warnings())
         );
+    }
+
+    fn normalize_session_local_spurs(value: String) -> String {
+        let mut normalized = String::with_capacity(value.len());
+        let mut rest = value.as_str();
+        while let Some(start) = rest.find("Spur(") {
+            normalized.push_str(&rest[..start]);
+            normalized.push_str("Spur(_)");
+            let after = &rest[start + "Spur(".len()..];
+            let Some(end) = after.find(')') else {
+                normalized.push_str(after);
+                return normalized;
+            };
+            rest = &after[end + 1..];
+        }
+        normalized.push_str(rest);
+        normalized
     }
 
     fn assert_body_artifact_parity(
@@ -10057,8 +9879,9 @@ mod tests {
         assert_eq!(ordinary.work().binding.durable_payloads_installed, 2);
         assert_eq!(ordinary.work().declaration_reuse.durable_records_reused, 2);
         assert_eq!(ordinary.work().declaration_reuse.fallback_epochs_started, 0);
-        assert_eq!(ordinary.work().durable_bodies.export_successes, 1);
-        assert_eq!(ordinary.work().durable_bodies.export_rejections, 0);
+        // Type producers are query inputs, not runtime function bodies. The
+        // reached executable set is `main` plus the anonymous `get` method.
+        assert_eq!(ordinary.functions().len(), 2);
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
         let expected = fresh.canonical_semantic(&options).unwrap();
@@ -11015,11 +10838,14 @@ mod tests {
         assert_eq!(session.work().semantic.reuses, 1);
         assert_eq!(session.work().semantic_entries, 2);
         assert_eq!(session.work().semantic_entries_invalidated, 1);
-        assert!(retained_failed_work.body_analysis.bodies_failed > 0);
+        assert_eq!(
+            retained_failed_work.cfg.cfg_builds_attempted, 0,
+            "a failed body terminal must stop before CFG construction"
+        );
     }
 
     #[test]
-    fn failed_body_work_is_retained_without_replacing_the_last_good_baseline() {
+    fn deterministic_body_failure_is_terminal_and_recovers_without_replacing_last_good() {
         let valid = snapshot(
             &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }")],
             1,
@@ -11037,6 +10863,7 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&valid).into_result().unwrap();
         let baseline = session.canonical_semantic(&options).unwrap();
+        let key = body_query_key(&mut session, &options, "main");
 
         session.update(&invalid).into_result().unwrap();
         let first = session.canonical_semantic(&options).unwrap_err();
@@ -11047,10 +10874,22 @@ mod tests {
             record.failure.unwrap().phase,
             CanonicalSemanticFailurePhase::BodyAnalysis
         );
-        assert_eq!(record.work.body_analysis.bodies_attempted, 1);
-        assert_eq!(record.work.body_analysis.bodies_succeeded, 0);
-        assert_eq!(record.work.body_analysis.bodies_failed, 1);
         assert_eq!(record.work.cfg.cfg_builds_attempted, 0);
+        let (first_stamp, first_kind, first_transaction) =
+            retained_body_transaction(&session, &key);
+        assert_eq!(first_kind, rue_query::QueryTerminalKind::Failure);
+        assert!(matches!(
+            first_transaction,
+            crate::body_query::BodyTransaction::DeterministicFailure { .. }
+        ));
+        let (reused_stamp, reused_kind, reused_transaction) =
+            retained_body_transaction(&session, &key);
+        assert_eq!(first_stamp, reused_stamp);
+        assert_eq!(reused_kind, rue_query::QueryTerminalKind::Failure);
+        assert!(matches!(
+            reused_transaction,
+            crate::body_query::BodyTransaction::DeterministicFailure { .. }
+        ));
 
         session.update(&valid).into_result().unwrap();
         let recovered = session.canonical_semantic(&options).unwrap();
@@ -11058,6 +10897,14 @@ mod tests {
             Arc::ptr_eq(&recovered, &baseline),
             "restoring the exact source leaf must reinstate its retained terminal"
         );
+        let (success_stamp, success_kind, success_transaction) =
+            retained_body_transaction(&session, &key);
+        assert_ne!(first_stamp, success_stamp);
+        assert_eq!(success_kind, rue_query::QueryTerminalKind::Success);
+        assert!(matches!(
+            success_transaction,
+            crate::body_query::BodyTransaction::Success { .. }
+        ));
     }
 
     #[test]
@@ -11073,19 +10920,23 @@ mod tests {
         );
         let mut session = CompilerSession::new();
         session.update(&invalid).into_result().unwrap();
-        session
+        let errors = session
             .canonical_semantic(&CompileOptions::default())
             .unwrap_err();
+        assert!(matches!(
+            errors.first().map(|error| &error.kind),
+            Some(ErrorKind::ComptimeEvaluationFailed { reason })
+                if reason.contains("maximum nesting depth")
+        ));
         let record = session.work().semantic_records.last().unwrap();
         assert_eq!(
             record.failure.unwrap().phase,
             CanonicalSemanticFailurePhase::BodyAnalysis
         );
-        assert_eq!(record.work.body_analysis.specialization_driver_failures, 1);
-        assert_eq!(record.work.body_analysis.specialized_bodies_attempted, 64);
-        assert_eq!(record.work.body_analysis.specialized_bodies_succeeded, 64);
-        assert_eq!(record.work.body_analysis.specialized_bodies_failed, 0);
-        assert_eq!(record.work.body_analysis.specialization_rounds, 65);
+        // The retired whole-program specialization driver did not run. The
+        // query coordinator owns the bounded frontier and reports overflow
+        // atomically instead of publishing a partial closure.
+        assert_eq!(record.work.body_analysis.specialization_rounds, 0);
     }
 
     #[test]
@@ -11103,57 +10954,38 @@ mod tests {
         let overflowing = source(64);
         let mut session = CompilerSession::new();
         session.update(&baseline).into_result().unwrap();
-        let cold = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        assert_eq!(cold.durable_specialized_body_payloads().len(), 64);
-        assert_eq!(cold.work().body_analysis.specialization_rounds, 64);
-
-        session.update(&overflowing).into_result().unwrap();
         session
             .canonical_semantic(&CompileOptions::default())
+            .unwrap();
+
+        session.update(&overflowing).into_result().unwrap();
+        let errors = session
+            .canonical_semantic(&CompileOptions::default())
             .unwrap_err();
+        assert!(matches!(
+            errors.first().map(|error| &error.kind),
+            Some(ErrorKind::ComptimeEvaluationFailed { reason })
+                if reason.contains("maximum nesting depth")
+        ));
         let failure = session.work().semantic_records.last().unwrap();
         assert_eq!(
             failure.failure.unwrap().phase,
             CanonicalSemanticFailurePhase::BodyAnalysis
         );
-        let work = failure.work.body_analysis;
-        assert_eq!(work.specialization_rounds, 65);
-        assert_eq!(work.specialized_bodies_attempted, 1);
-        assert_eq!(work.specialized_bodies_succeeded, 1);
-        assert_eq!(work.specialized_bodies_reused, 63);
-        assert_eq!(work.specialization_driver_failures, 1);
-
         session.update(&baseline).into_result().unwrap();
-        let recovered = session
+        session
             .canonical_semantic(&CompileOptions {
                 opt_level: OptLevel::O2,
                 ..CompileOptions::default()
             })
             .unwrap();
-        assert_eq!(recovered.work().body_analysis.specialization_rounds, 64);
-        assert_eq!(recovered.work().body_analysis.specialized_bodies_reused, 64);
-        assert_eq!(
-            recovered.work().body_analysis.specialized_bodies_attempted,
-            0
-        );
 
-        let third_warm = session
+        session
             .canonical_semantic(&CompileOptions {
                 opt_level: OptLevel::O3,
                 ..CompileOptions::default()
             })
             .unwrap();
-        assert_eq!(third_warm.work().body_analysis.specialization_rounds, 64);
-        assert_eq!(
-            third_warm.work().body_analysis.specialized_bodies_reused,
-            64
-        );
-        assert_eq!(
-            third_warm.work().body_analysis.specialized_bodies_attempted,
-            0
-        );
     }
 
     #[test]
@@ -11186,11 +11018,6 @@ mod tests {
         assert_eq!(record.work.declaration_index.build_invocations, 1);
         assert_eq!(record.work.binding.bind_invocations, 1);
         assert_eq!(record.work.manifest.build_invocations, 1);
-        assert_eq!(record.work.body_analysis.bodies_attempted, 1);
-        assert_eq!(record.work.body_analysis.bodies_succeeded, 1);
-        assert_eq!(record.work.declaration_reuse.plan_executions, 1);
-        assert_eq!(record.work.declaration_reuse.durable_records_compared, 1);
-        assert_eq!(record.work.declaration_reuse.semantic_epochs_started, 1);
     }
 
     #[test]
@@ -11283,7 +11110,6 @@ mod tests {
             failed.failure.unwrap().phase,
             CanonicalSemanticFailurePhase::CfgConstruction
         );
-        assert_eq!(failed.work.body_analysis.bodies_succeeded, 1);
         assert_eq!(failed.work.cfg.functions_considered, 1);
         assert_eq!(failed.work.cfg.cfg_builds_attempted, 1);
         assert_eq!(failed.work.cfg.cfg_builds_failed, 1);
@@ -11858,7 +11684,6 @@ fn main() -> i32 {
                 result: Err(failed_errors),
                 rir: None,
                 diagnostics: failed_diagnostics,
-                successful_body_cache: None,
                 durable_declaration_cache: None,
                 successful_cfg_cache: None,
                 oracle_injected: false,
@@ -12253,158 +12078,65 @@ fn main() -> i32 {
         }
     }
 
-    fn definition_names(keys: &[StableDefinitionKey]) -> Vec<&str> {
-        keys.iter().map(|key| key.name()).collect()
-    }
-
     #[test]
-    fn production_invalidation_is_cached_incremental_and_closes_reverse_dependencies_without_rir_work()
-     {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<SemanticInvalidationPlan>();
-        let source = snapshot(
-            &[(
-                7,
-                "/p/main.rue",
-                "main.rue",
-                "fn leaf() -> i32 { 1 } fn main() -> i32 { leaf() }",
-            )],
-            7,
-        );
-        let changed = snapshot(
-            &[(
-                7,
-                "/p/main.rue",
-                "main.rue",
-                "fn leaf() -> i32 { 2 } fn main() -> i32 { leaf() }",
-            )],
-            7,
-        );
-        let build = |source: &SourceSnapshot| {
-            let mut session = CompilerSession::new();
-            publish_with_test_imports(&mut session, source);
-            session
-                .semantic_dependency_inputs(&CompileOptions::default(), None)
-                .unwrap()
-        };
-        let previous = build(&source);
-        let current = build(&changed);
-        let mut planner = CompilerSession::new();
-        let first = planner.semantic_invalidation_plan(&previous, &current);
-        let second = planner.semantic_invalidation_plan(&previous, &current);
-        assert!(Arc::ptr_eq(&first, &second));
-        assert_eq!(first.scope(), &SemanticInvalidationScope::Incremental);
-        assert!(previous.dependency_blockers().is_empty());
-        assert!(first.reusable().is_empty());
-        assert_eq!(definition_names(first.invalidated()), vec!["leaf", "main"]);
-        assert_eq!(definition_names(first.changed()), vec!["leaf"]);
-        assert_eq!(first.work().dependency_edges_visited, 2);
-        assert_eq!(first.work().reverse_closure_nodes_visited, 2);
-        assert_eq!(first.work().extra_rir_instructions_visited, 0);
-        assert_eq!(planner.work().invalidation_plans.executions, 1);
-        assert_eq!(planner.work().invalidation_plans.reuses, 1);
-        assert_eq!(planner.work().rir.executions, 0);
-
-        let noop = planner.semantic_invalidation_plan(&previous, &previous);
-        assert_eq!(noop.scope(), &SemanticInvalidationScope::Incremental);
-        assert!(noop.changed().is_empty());
-        assert!(noop.invalidated().is_empty());
-        assert_eq!(definition_names(noop.reusable()), vec!["leaf", "main"]);
-        assert_eq!(noop.work().extra_rir_instructions_visited, 0);
-    }
-
-    #[test]
-    fn production_invalidation_closes_cross_module_edges_and_ignores_relocation_and_order() {
-        let build = |main_id, lib_id, root: &str, reversed: bool, leaf_value: i32| {
-            let main = (
-                main_id,
-                format!("{root}/main.rue"),
-                "main.rue",
-                r#"const lib = @import("lib.rue");
-                   fn main() -> i32 { lib.leaf() }"#
-                    .to_owned(),
+    fn incremental_invalidation_closes_transitively_across_module_call_edges() {
+        let build = |leaf_value: i32| {
+            let main = r#"
+                const lib = @import("lib.rue");
+                fn main() -> i32 { lib.middle() }
+            "#;
+            let lib = format!(
+                "pub fn leaf() -> i32 {{ {leaf_value} }}\n\
+                 pub fn middle() -> i32 {{ leaf() }}\n\
+                 pub fn unaffected() -> i32 {{ 7 }}"
             );
-            let lib = (
-                lib_id,
-                format!("{root}/lib.rue"),
-                "lib.rue",
-                format!("pub fn leaf() -> i32 {{ {leaf_value} }}"),
+            let source = snapshot(
+                &[
+                    (1, "/p/main.rue", "main.rue", main),
+                    (2, "/p/lib.rue", "lib.rue", lib.as_str()),
+                ],
+                1,
             );
-            let owned = if reversed {
-                vec![lib, main]
-            } else {
-                vec![main, lib]
-            };
-            let entries = owned
-                .iter()
-                .map(|(id, path, module, text)| (*id, path.as_str(), *module, text.as_str()))
-                .collect::<Vec<_>>();
-            let source = snapshot(&entries, main_id);
             let mut session = CompilerSession::new();
             publish_with_test_imports(&mut session, &source);
             session
+                .canonical_semantic(&CompileOptions::default())
+                .unwrap();
+            session
                 .semantic_dependency_inputs(&CompileOptions::default(), None)
                 .unwrap()
         };
-        let previous = build(3, 8, "/one", false, 1);
-        let relocated = build(91, 4, "/elsewhere", true, 1);
-        let changed = build(91, 4, "/elsewhere", true, 2);
-        let mut planner = CompilerSession::new();
+        let previous = build(1);
+        let current = build(2);
+        let plan = plan_semantic_invalidation(&previous, &current);
 
-        let moved = planner.semantic_invalidation_plan(&previous, &relocated);
-        assert_eq!(moved.scope(), &SemanticInvalidationScope::Incremental);
-        assert!(moved.invalidated().is_empty());
-        assert_eq!(
-            definition_names(moved.reusable()),
-            vec!["leaf", "main", "lib"]
-        );
-
-        let plan = planner.semantic_invalidation_plan(&relocated, &changed);
         assert_eq!(plan.scope(), &SemanticInvalidationScope::Incremental);
-        assert_eq!(definition_names(plan.changed()), vec!["leaf"]);
-        assert_eq!(definition_names(plan.invalidated()), vec!["leaf", "main"]);
-        assert_eq!(definition_names(plan.reusable()), vec!["lib"]);
-        assert_eq!(plan.work().extra_rir_instructions_visited, 0);
-        assert_eq!(planner.work().rir.executions, 0);
-    }
-
-    #[test]
-    fn synthetic_complete_invalidation_computes_exact_delta_and_reverse_closure() {
-        let build = |text: &str| {
-            let source = snapshot(&[(7, "/p/main.rue", "main.rue", text)], 7);
-            let mut session = CompilerSession::new();
-            session.update(&source).into_result().unwrap();
-            let manifest = session
-                .semantic_dependency_inputs(&CompileOptions::default(), None)
-                .unwrap();
-            synthetic_complete_manifest(&manifest)
-        };
-        let previous = build(
-            "fn leaf() -> i32 { 1 } fn middle() -> i32 { leaf() } fn main() -> i32 { middle() }",
-        );
-        let current = build(
-            "fn leaf() -> i32 { 2 } fn middle() -> i32 { leaf() } fn main() -> i32 { middle() }",
-        );
-        let mut session = CompilerSession::new();
-        let plan = session.semantic_invalidation_plan(&previous, &current);
-        assert_eq!(plan.scope(), &SemanticInvalidationScope::Incremental);
-        assert_eq!(definition_names(plan.changed()), vec!["leaf"]);
+        assert!(plan.added().is_empty());
+        assert!(plan.removed().is_empty());
         assert_eq!(
-            definition_names(plan.invalidated()),
-            vec!["leaf", "main", "middle"]
+            plan.changed()
+                .iter()
+                .map(|key| key.name())
+                .collect::<Vec<_>>(),
+            ["leaf"]
         );
-        assert!(plan.reusable().is_empty());
-        assert_eq!(plan.work().definition_fingerprints_compared, 3);
-        assert_eq!(plan.work().dependency_edges_visited, 4);
+        let mut expected = current
+            .definition_fingerprints
+            .iter()
+            .filter(|entry| matches!(entry.key.name(), "leaf" | "middle" | "main"))
+            .map(|entry| entry.key.clone())
+            .collect::<Vec<_>>();
+        expected.sort();
+        assert_eq!(plan.invalidated(), expected.as_slice());
+        let mut reusable = current
+            .definition_fingerprints
+            .iter()
+            .filter(|entry| !expected.contains(&entry.key))
+            .map(|entry| entry.key.clone())
+            .collect::<Vec<_>>();
+        reusable.sort();
+        assert_eq!(plan.reusable(), reusable.as_slice());
         assert_eq!(plan.work().reverse_closure_nodes_visited, 3);
-        assert_eq!(plan.work().extra_rir_instructions_visited, 0);
-
-        let removed_added = build(
-            "fn new_leaf() -> i32 { 1 } fn middle() -> i32 { new_leaf() } fn main() -> i32 { middle() }",
-        );
-        let plan = session.semantic_invalidation_plan(&current, &removed_added);
-        assert_eq!(definition_names(plan.added()), vec!["new_leaf"]);
-        assert_eq!(definition_names(plan.removed()), vec!["leaf"]);
     }
 
     #[test]
@@ -12551,180 +12283,6 @@ fn main() -> i32 {
         assert_eq!(session.work().dependency_manifests.executions, 2);
     }
 
-    fn stable_edge_names(
-        manifest: &SemanticDependencyInputManifest,
-    ) -> Vec<(String, String, String, String)> {
-        manifest
-            .free_function_dependencies()
-            .iter()
-            .map(|edge| {
-                (
-                    edge.caller.module().as_str().to_owned(),
-                    edge.caller.name().to_owned(),
-                    edge.callee.module().as_str().to_owned(),
-                    edge.callee.name().to_owned(),
-                )
-            })
-            .collect()
-    }
-
-    #[test]
-    fn specialized_free_function_edges_are_stable_and_deduplicate_instances() {
-        let first = snapshot(
-            &[
-                (
-                    9,
-                    "/one/main.rue",
-                    "main.rue",
-                    r#"const lib = @import("lib.rue");
-                       fn main() -> i32 { lib.wrap(1, 10) + lib.wrap(2, 20) }"#,
-                ),
-                (
-                    3,
-                    "/one/lib.rue",
-                    "lib.rue",
-                    r#"fn leaf(value: i32) -> i32 { value }
-                       fn inner(comptime n: i32, value: i32) -> i32 { leaf(value) + n }
-                       pub fn wrap(comptime n: i32, value: i32) -> i32 { inner(n, value) }"#,
-                ),
-            ],
-            9,
-        );
-        let moved = snapshot(
-            &[
-                (
-                    41,
-                    "/else/lib.rue",
-                    "lib.rue",
-                    r#"fn leaf(value: i32) -> i32 { value }
-                       fn inner(comptime n: i32, value: i32) -> i32 { leaf(value) + n }
-                       pub fn wrap(comptime n: i32, value: i32) -> i32 { inner(n, value) }"#,
-                ),
-                (
-                    7,
-                    "/else/main.rue",
-                    "main.rue",
-                    r#"const lib = @import("lib.rue");
-                       fn main() -> i32 { lib.wrap(1, 10) + lib.wrap(2, 20) }"#,
-                ),
-            ],
-            7,
-        );
-        let build = |source: &SourceSnapshot| {
-            let mut session = CompilerSession::new();
-            publish_with_test_imports(&mut session, source);
-            session
-                .semantic_dependency_inputs(&CompileOptions::default(), None)
-                .unwrap()
-        };
-        let first = build(&first);
-        let moved = build(&moved);
-        assert_eq!(stable_edge_names(&first), stable_edge_names(&moved));
-        assert_eq!(
-            stable_edge_names(&first),
-            vec![
-                (
-                    "lib.rue".into(),
-                    "inner".into(),
-                    "lib.rue".into(),
-                    "leaf".into()
-                ),
-                (
-                    "lib.rue".into(),
-                    "wrap".into(),
-                    "lib.rue".into(),
-                    "inner".into()
-                ),
-                (
-                    "main.rue".into(),
-                    "main".into(),
-                    "lib.rue".into(),
-                    "wrap".into()
-                ),
-            ]
-        );
-        assert!(first.free_function_caller_dependencies_complete());
-        assert!(first.semantic_dependency_graph_complete());
-        assert_eq!(first.work().specialization_origins_validated, 4);
-        assert_eq!(first.work().free_function_events_translated, 5);
-        assert_eq!(first.work().extra_rir_instructions_visited, 0);
-    }
-
-    #[test]
-    fn recursive_specialization_edges_and_renames_are_exact() {
-        let source = snapshot(
-            &[(
-                1,
-                "/p/main.rue",
-                "main.rue",
-                r#"fn leaf(value: i32) -> i32 { value }
-                   fn fib(comptime n: i32) -> i32 {
-                       if n < 2 { leaf(n) } else { fib(n - 1) + fib(n - 2) }
-                   }
-                   fn main() -> i32 { fib(5) + fib(5) }"#,
-            )],
-            1,
-        );
-        let mut session = CompilerSession::new();
-        publish_with_test_imports(&mut session, &source);
-        let manifest = session
-            .semantic_dependency_inputs(&CompileOptions::default(), None)
-            .unwrap();
-        assert_eq!(
-            stable_edge_names(&manifest),
-            vec![
-                (
-                    "main.rue".into(),
-                    "fib".into(),
-                    "main.rue".into(),
-                    "fib".into()
-                ),
-                (
-                    "main.rue".into(),
-                    "fib".into(),
-                    "main.rue".into(),
-                    "leaf".into()
-                ),
-                (
-                    "main.rue".into(),
-                    "main".into(),
-                    "main.rue".into(),
-                    "fib".into()
-                ),
-            ]
-        );
-        assert_eq!(manifest.work().specialization_origins_validated, 6);
-        assert!(manifest.work().free_function_events_translated > 3);
-
-        let renamed = snapshot(
-            &[(
-                1,
-                "/p/main.rue",
-                "main.rue",
-                r#"fn terminal(value: i32) -> i32 { value }
-                   fn fib(comptime n: i32) -> i32 {
-                       if n < 2 { terminal(n) } else { fib(n - 1) + fib(n - 2) }
-                   }
-                   fn main() -> i32 { fib(5) + fib(5) }"#,
-            )],
-            1,
-        );
-        session.update(&renamed).into_result().unwrap();
-        let renamed = session
-            .semantic_dependency_inputs(&CompileOptions::default(), None)
-            .unwrap();
-        assert!(
-            stable_edge_names(&renamed)
-                .iter()
-                .any(|edge| edge.3 == "terminal")
-        );
-        assert!(
-            !stable_edge_names(&renamed)
-                .iter()
-                .any(|edge| edge.3 == "leaf")
-        );
-    }
-
     #[test]
     fn dependency_endpoint_translation_fails_closed_for_missing_and_non_functions() {
         let source = snapshot(
@@ -12774,387 +12332,6 @@ fn main() -> i32 {
         assert_send_sync::<StableNamedConstDependency>();
         assert_send_sync::<StableNamedConstDependencyTarget>();
         assert_send_sync::<StableBodyDependencyInputRecord>();
-    }
-
-    #[test]
-    fn sibling_generic_owners_stay_distinct_and_non_function_calls_are_excluded() {
-        let source = snapshot(
-            &[
-                (
-                    1,
-                    "/p/main.rue",
-                    "main.rue",
-                    r#"const left = @import("left.rue");
-                       const right = @import("right.rue");
-                       fn main() -> i32 { left.id(1) + right.id(2) }"#,
-                ),
-                (
-                    2,
-                    "/p/left.rue",
-                    "left.rue",
-                    r#"struct Box { value: i32, fn get(borrow self) -> i32 { self.value } }
-                       fn leaf(value: i32) -> i32 { value }
-                       pub fn id(comptime n: i32) -> i32 {
-                           let value = Box { value: n };
-                           @dbg(n);
-                           leaf(value.get())
-                       }"#,
-                ),
-                (
-                    3,
-                    "/p/right.rue",
-                    "right.rue",
-                    r#"fn leaf(value: i32) -> i32 { value }
-                       pub fn id(comptime n: i32) -> i32 { leaf(n) }"#,
-                ),
-            ],
-            1,
-        );
-        let mut session = CompilerSession::new();
-        publish_with_test_imports(&mut session, &source);
-        let manifest = session
-            .semantic_dependency_inputs(&CompileOptions::default(), None)
-            .unwrap();
-        assert_eq!(
-            stable_edge_names(&manifest),
-            vec![
-                (
-                    "left.rue".into(),
-                    "id".into(),
-                    "left.rue".into(),
-                    "leaf".into()
-                ),
-                (
-                    "main.rue".into(),
-                    "main".into(),
-                    "left.rue".into(),
-                    "id".into()
-                ),
-                (
-                    "main.rue".into(),
-                    "main".into(),
-                    "right.rue".into(),
-                    "id".into()
-                ),
-                (
-                    "right.rue".into(),
-                    "id".into(),
-                    "right.rue".into(),
-                    "leaf".into()
-                ),
-            ]
-        );
-        assert!(
-            manifest
-                .free_function_dependencies()
-                .iter()
-                .all(|edge| { edge.callee.name() != "get" && edge.callee.name() != "Box" })
-        );
-    }
-
-    fn named_method_edge_names(
-        manifest: &SemanticDependencyInputManifest,
-    ) -> Vec<(String, String, String, String, String, String)> {
-        manifest
-            .named_method_dependencies()
-            .iter()
-            .map(|edge| {
-                let caller_owner = edge.caller.owner().unwrap().name().to_owned();
-                match &edge.target {
-                    StableNamedMethodDependencyTarget::FreeFunction(target) => (
-                        edge.caller.module().as_str().to_owned(),
-                        caller_owner,
-                        edge.caller.name().to_owned(),
-                        "free".to_owned(),
-                        target.module().as_str().to_owned(),
-                        target.name().to_owned(),
-                    ),
-                    StableNamedMethodDependencyTarget::NamedMethod(target) => (
-                        edge.caller.module().as_str().to_owned(),
-                        caller_owner,
-                        edge.caller.name().to_owned(),
-                        target.owner().unwrap().name().to_owned(),
-                        target.module().as_str().to_owned(),
-                        target.name().to_owned(),
-                    ),
-                }
-            })
-            .collect()
-    }
-
-    #[test]
-    fn named_method_edges_are_stable_exact_and_normalize_generic_free_callees() {
-        let program = r#"fn helper() -> i32 { 1 }
-            fn generic(comptime n: i32) -> i32 { helper() + n }
-            struct B { value: i32, fn ping(borrow self) -> i32 { helper() + self.value } }
-            struct A {
-                value: i32,
-                fn run(borrow self) -> i32 {
-                    let b = B { value: self.value };
-                    b.ping() + self.next()
-                }
-                fn next(borrow self) -> i32 { generic(2) + self.run() }
-            }
-            fn main() -> i32 { let a = A { value: 1 }; a.run() }"#;
-        let first_source = snapshot(&[(9, "/one/main.rue", "main.rue", program)], 9);
-        let moved_source = snapshot(&[(41, "/else/main.rue", "main.rue", program)], 41);
-        let build = |source: &SourceSnapshot| {
-            let mut session = CompilerSession::new();
-            publish_with_test_imports(&mut session, source);
-            session
-                .semantic_dependency_inputs(&CompileOptions::default(), None)
-                .unwrap()
-        };
-        let first = build(&first_source);
-        let moved = build(&moved_source);
-        assert_eq!(
-            named_method_edge_names(&first),
-            named_method_edge_names(&moved)
-        );
-        let edges = named_method_edge_names(&first);
-        for expected in [
-            ("main.rue", "A", "run", "B", "main.rue", "ping"),
-            ("main.rue", "A", "run", "A", "main.rue", "next"),
-            ("main.rue", "A", "next", "A", "main.rue", "run"),
-            ("main.rue", "A", "next", "free", "main.rue", "generic"),
-            ("main.rue", "B", "ping", "free", "main.rue", "helper"),
-        ] {
-            assert!(
-                edges.contains(&(
-                    expected.0.into(),
-                    expected.1.into(),
-                    expected.2.into(),
-                    expected.3.into(),
-                    expected.4.into(),
-                    expected.5.into(),
-                )),
-                "missing {expected:?} from {edges:?}"
-            );
-        }
-        assert!(first.non_generic_named_method_dependencies_complete());
-        assert!(first.generic_named_method_dependencies_complete());
-        assert!(!first.dependency_blockers().iter().any(|blocker| {
-            blocker.surface() == SemanticDependencySurface::GenericNamedMethodCall
-                && blocker.reason()
-                    == SemanticDependencyIncompleteReason::GenericSubstitutionIdentityUnavailable
-        }));
-        assert_eq!(first.work().named_method_events_translated, edges.len());
-        assert_eq!(first.work().extra_rir_instructions_visited, 0);
-    }
-
-    #[test]
-    fn generic_named_method_uses_single_body_caller_and_needs_no_substitution_blocker() {
-        let program = "fn helper() -> i32 { 1 } struct Value { fn choose(borrow self, comptime n: i32) -> i32 { helper() + n } } fn main() -> i32 { let value = Value {}; value.choose(1) + value.choose(2) }";
-        let first_source = snapshot(&[(7, "/one/main.rue", "main.rue", program)], 7);
-        let moved_source = snapshot(&[(71, "/else/main.rue", "main.rue", program)], 71);
-        let build = |source: &SourceSnapshot| {
-            let mut session = CompilerSession::new();
-            session.update(source).into_result().unwrap();
-            session
-                .semantic_dependency_inputs(&CompileOptions::default(), None)
-                .unwrap()
-        };
-        let first = build(&first_source);
-        let moved = build(&moved_source);
-        assert_eq!(
-            named_method_edge_names(&first),
-            named_method_edge_names(&moved)
-        );
-        assert_eq!(
-            named_method_edge_names(&first),
-            vec![(
-                "main.rue".into(),
-                "Value".into(),
-                "choose".into(),
-                "free".into(),
-                "main.rue".into(),
-                "helper".into(),
-            )]
-        );
-        assert!(first.generic_named_method_dependencies_complete());
-        assert!(!first.dependency_blockers().iter().any(|blocker| {
-            blocker.reason()
-                == SemanticDependencyIncompleteReason::GenericSubstitutionIdentityUnavailable
-        }));
-        assert_eq!(first.work().named_method_events_translated, 1);
-        let choose = first
-            .body_dependencies()
-            .iter()
-            .find(|record| record.owner().name() == "choose")
-            .expect("analyzed named method has one body input record");
-        assert!(!choose.reusable_boundary_supported());
-        assert!(choose.blockers().iter().any(|blocker| {
-            blocker.owner() == Some(choose.owner())
-                && blocker.reason()
-                    == SemanticDependencyIncompleteReason::GenericSubstitutionIdentityUnavailable
-        }));
-        assert!(
-            first
-                .body_dependency_blockers()
-                .contains(&choose.blockers()[0])
-        );
-        assert_eq!(first.work().extra_rir_instructions_visited, 0);
-    }
-
-    #[test]
-    fn ordinary_body_inputs_are_stable_complete_and_per_owner() {
-        let program =
-            "fn leaf() -> i32 { 1 } fn middle() -> i32 { leaf() } fn main() -> i32 { middle() }";
-        let build = |file, path: &str| {
-            let source = snapshot(&[(file, path, "main.rue", program)], file);
-            let mut session = CompilerSession::new();
-            session.update(&source).into_result().unwrap();
-            session
-                .semantic_dependency_inputs(&CompileOptions::default(), None)
-                .unwrap()
-        };
-        let first = build(1, "/one/main.rue");
-        let moved = build(99, "/else/main.rue");
-        assert_eq!(first.body_dependencies(), moved.body_dependencies());
-        assert_eq!(first.body_dependencies().len(), 3);
-        let dependency_names = |owner: &str| {
-            first
-                .body_dependencies()
-                .iter()
-                .find(|record| record.owner().name() == owner)
-                .unwrap()
-                .direct_dependency_inputs()
-                .iter()
-                .map(|dependency| dependency.key.name().to_owned())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(dependency_names("leaf"), Vec::<String>::new());
-        assert_eq!(dependency_names("middle"), vec!["leaf"]);
-        assert_eq!(dependency_names("main"), vec!["middle"]);
-        assert!(first.body_dependencies().iter().all(|record| {
-            record.reusable_boundary_supported()
-                && record.fingerprint().body_or_initializer.is_some()
-                && record.target() == crate::Target::default()
-                && record.preview_features()
-                    == &StablePreviewFeatures::new(&crate::PreviewFeatures::default())
-        }));
-        assert_eq!(first.work().body_owner_events_translated, 3);
-        assert_eq!(first.work().body_dependency_records_built, 3);
-        assert_eq!(first.work().extra_rir_instructions_visited, 0);
-    }
-
-    #[test]
-    fn body_only_named_type_and_const_inputs_are_exact_and_relocation_stable() {
-        let program = "struct Point { x: i32 } const ANSWER: i32 = 42; fn main() -> i32 { let p = Point { x: ANSWER }; p.x }";
-        let build = |file, path: &str| {
-            let source = snapshot(&[(file, path, "main.rue", program)], file);
-            let mut session = CompilerSession::new();
-            session.update(&source).into_result().unwrap();
-            session
-                .semantic_dependency_inputs(&CompileOptions::default(), None)
-                .unwrap()
-        };
-        let first = build(7, "/one/main.rue");
-        let moved = build(91, "/else/main.rue");
-        assert_eq!(first.body_dependencies(), moved.body_dependencies());
-        let main = first
-            .body_dependencies()
-            .iter()
-            .find(|record| record.owner().name() == "main")
-            .unwrap();
-        let dependencies = main
-            .direct_dependency_inputs()
-            .iter()
-            .map(|dependency| dependency.key.name())
-            .collect::<BTreeSet<_>>();
-        assert_eq!(dependencies, BTreeSet::from(["ANSWER", "Point"]));
-        assert!(main.reusable_boundary_supported());
-        assert_eq!(first.work().extra_rir_instructions_visited, 0);
-    }
-
-    #[test]
-    fn body_owner_join_disambiguates_duplicate_names_across_modules_and_order() {
-        let main = r#"const lib = @import("lib.rue");
-                       const other = @import("other.rue");
-                       fn main() -> i32 { lib.BASE + other.BASE }"#;
-        let first_source = snapshot(
-            &[
-                (3, "/p/main.rue", "main.rue", main),
-                (9, "/p/lib.rue", "lib.rue", "pub const BASE: i32 = 4;"),
-                (11, "/p/other.rue", "other.rue", "pub const BASE: i32 = 5;"),
-            ],
-            3,
-        );
-        let moved_source = snapshot(
-            &[
-                (
-                    81,
-                    "/else/other.rue",
-                    "other.rue",
-                    "pub const BASE: i32 = 5;",
-                ),
-                (77, "/else/lib.rue", "lib.rue", "pub const BASE: i32 = 4;"),
-                (99, "/else/main.rue", "main.rue", main),
-            ],
-            99,
-        );
-        let build = |source: &SourceSnapshot| {
-            let mut session = CompilerSession::new();
-            publish_with_test_imports(&mut session, source);
-            session
-                .semantic_dependency_inputs(&CompileOptions::default(), None)
-                .unwrap()
-        };
-        let first = build(&first_source);
-        let moved = build(&moved_source);
-        assert_eq!(first.body_dependencies(), moved.body_dependencies());
-        let main = first
-            .body_dependencies()
-            .iter()
-            .find(|record| record.owner().name() == "main")
-            .unwrap();
-        let dependencies = main
-            .direct_dependency_inputs()
-            .iter()
-            .map(|dependency| (dependency.key.module().as_str(), dependency.key.name()))
-            .collect::<BTreeSet<_>>();
-        assert_eq!(
-            dependencies,
-            BTreeSet::from([
-                ("lib.rue", "BASE"),
-                ("main.rue", "lib"),
-                ("main.rue", "other"),
-                ("other.rue", "BASE"),
-            ])
-        );
-        assert_eq!(first.work().extra_rir_instructions_visited, 0);
-    }
-
-    #[test]
-    fn named_destructor_edges_translate_to_stable_owner_and_target() {
-        let program = "fn cleanup() {} struct Value { n: i32 } drop fn Value(self) { cleanup(); } fn main() -> i32 { let value = Value { n: 1 }; 0 }";
-        let first_source = snapshot(&[(3, "/one/main.rue", "main.rue", program)], 3);
-        let moved_source = snapshot(&[(71, "/else/main.rue", "main.rue", program)], 71);
-        let build = |source: &SourceSnapshot| {
-            let mut session = CompilerSession::new();
-            session.update(source).into_result().unwrap();
-            session
-                .semantic_dependency_inputs(&CompileOptions::default(), None)
-                .unwrap()
-        };
-        let first = build(&first_source);
-        let moved = build(&moved_source);
-        assert_eq!(
-            first.named_destructor_dependencies(),
-            moved.named_destructor_dependencies()
-        );
-        let [edge] = first.named_destructor_dependencies() else {
-            panic!("expected one destructor dependency");
-        };
-        assert_eq!(edge.caller.owner().unwrap().name(), "Value");
-        assert_eq!(edge.caller.kind(), StableDefinitionKind::Destructor);
-        let StableNamedMethodDependencyTarget::FreeFunction(target) = &edge.target else {
-            panic!("cleanup is a free function");
-        };
-        assert_eq!(target.name(), "cleanup");
-        assert!(first.named_destructor_dependencies_complete());
-        assert_eq!(first.work().named_destructor_events_translated, 1);
-        assert_eq!(first.work().extra_rir_instructions_visited, 0);
     }
 
     #[test]
@@ -13208,7 +12385,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn anonymous_drop_owner_is_an_exact_production_completeness_blocker() {
+    fn anonymous_drop_owner_composes_through_its_query_identity() {
         let source = snapshot(
             &[(
                 4,
@@ -13225,53 +12402,15 @@ fn main() -> i32 {
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let manifest = session
-            .semantic_dependency_inputs(&CompileOptions::default(), None)
-            .unwrap();
-        let blocker = manifest
-            .dependency_blockers()
-            .iter()
-            .find(|blocker| blocker.surface() == SemanticDependencySurface::ImplicitNamedDestructor)
-            .expect("anonymous drop source must fail closed");
-        assert_eq!(blocker.owner(), None);
-        assert_eq!(
-            blocker.reason(),
-            SemanticDependencyIncompleteReason::AnonymousDropOwnerUnavailable
-        );
-        assert!(!manifest.implicit_named_destructor_dependencies_complete());
-        assert!(manifest.durable_ordinary_bodies().is_empty());
-        assert!(
-            session
-                .last_successful_body_cache
-                .as_ref()
-                .is_some_and(|cache| cache.bodies.is_empty())
-        );
-        let warm = session
+        let output = session
             .canonical_semantic(&CompileOptions {
                 opt_level: OptLevel::O1,
                 ..CompileOptions::default()
             })
             .unwrap();
-        assert_eq!(warm.work().durable_bodies.import_attempts, 0);
-        assert_eq!(warm.work().durable_bodies.reused_bodies, 0);
-        assert!(manifest.body_dependency_blockers().iter().any(|blocker| {
-            blocker.owner().is_none()
-                && blocker.surface() == SemanticDependencySurface::BodyOwner
-                && blocker.reason()
-                    == SemanticDependencyIncompleteReason::AnonymousBodyOwnerUnavailable
-        }));
-        assert_eq!(manifest.work().extra_rir_instructions_visited, 0);
-        let plan = session.semantic_invalidation_plan(&manifest, &manifest);
-        assert!(matches!(
-            plan.scope(),
-            SemanticInvalidationScope::Full { reasons }
-                if reasons.as_ref() == [SemanticFullInvalidationReason::IncompleteDependencyGraph(
-                    Arc::from([blocker.clone()]),
-                )]
-        ));
-        assert!(plan.reusable().is_empty());
-        assert!(plan.invalidated().is_empty());
-        assert_eq!(plan.work().extra_rir_instructions_visited, 0);
+        // Anonymous destructor ownership is represented by its query identity,
+        // so `main`, the type producer, and the reached destructor compose.
+        assert_eq!(output.functions().len(), 3);
     }
 
     #[test]
@@ -13335,53 +12474,6 @@ fn main() -> i32 {
         )));
         assert!(manifest.declaration_type_dependencies_complete());
         assert_eq!(manifest.work().extra_rir_instructions_visited, 0);
-    }
-
-    #[test]
-    fn deferred_nested_type_call_heads_survive_placeholder_erasure() {
-        let program = r#"
-            fn Result(comptime T: type) -> type { enum { Ok(T), Err } }
-            fn Option(comptime T: type) -> type { enum { Some(T), None } }
-            fn consume(comptime T: type, value: Option(Result(T))) -> i32 { 0 }
-            fn main() -> i32 { 0 }
-        "#;
-        let build = |file_id, path| {
-            let source = snapshot(&[(file_id, path, "main.rue", program)], file_id);
-            let mut session = CompilerSession::new();
-            session.update(&source).into_result().unwrap();
-            session
-                .semantic_dependency_inputs(&CompileOptions::default(), None)
-                .unwrap()
-        };
-        let first = build(7, "/one/main.rue");
-        let moved = build(91, "/moved/main.rue");
-        assert_eq!(
-            first.declaration_type_call_head_dependencies(),
-            moved.declaration_type_call_head_dependencies()
-        );
-        let names = first
-            .declaration_type_call_head_dependencies()
-            .iter()
-            .map(|edge| (edge.source.name(), edge.callable.name(), edge.kind))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            names,
-            vec![
-                (
-                    "consume",
-                    "Option",
-                    rue_air::DeclarationTypeDependencyKind::Signature
-                ),
-                (
-                    "consume",
-                    "Result",
-                    rue_air::DeclarationTypeDependencyKind::Signature
-                ),
-            ]
-        );
-        assert!(first.declaration_type_call_head_dependencies_complete());
-        assert_eq!(first.work().declaration_type_call_head_events_translated, 2);
-        assert_eq!(first.work().extra_rir_instructions_visited, 0);
     }
 
     #[test]
@@ -14373,13 +13465,30 @@ fn main() -> i32 { selected.value() }"#,
         session.update(&source).into_result().unwrap();
 
         session.adopt_test_import_graph(graph_a.clone());
-        session.canonical_semantic(&options).unwrap();
+        let output_a = session.canonical_semantic(&options).unwrap();
         let diagnostics_a = session.latest_diagnostics().unwrap().clone();
+        let main = body_query_key(&mut session, &options, "main");
+        let main_a = retained_body_transaction(&session, &main).0;
         session.adopt_test_import_graph(graph_b.clone());
-        session.canonical_semantic(&options).unwrap();
+        let output_b = session.canonical_semantic(&options).unwrap();
         let diagnostics_b = session.latest_diagnostics().unwrap().clone();
+        let main_b = retained_body_transaction(&session, &main).0;
+
+        let mut fresh = CompilerSession::new();
+        fresh.update(&source).into_result().unwrap();
+        fresh.adopt_test_import_graph(graph_b.clone());
+        let fresh_b = fresh.canonical_semantic(&options).unwrap();
 
         assert!(!Arc::ptr_eq(&diagnostics_a, &diagnostics_b));
+        assert_ne!(
+            main_a, main_b,
+            "accepted import retargeting invalidates the body terminal"
+        );
+        assert_ne!(
+            normalize_session_local_spurs(format!("{:?}", output_a.functions())),
+            normalize_session_local_spurs(format!("{:?}", output_b.functions()))
+        );
+        assert_semantic_artifact_parity(&session, &output_b, &fresh_b);
         let FrontendDiagnosticIdentity::Semantic(input_a) = diagnostics_a.identity() else {
             panic!("semantic diagnostics");
         };
@@ -14541,43 +13650,9 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let manifest = session
-            .semantic_dependency_inputs(&CompileOptions::default(), None)
+        session
+            .canonical_semantic(&CompileOptions::default())
             .unwrap();
-        assert_eq!(manifest.durable_ordinary_bodies().len(), 2);
-        let retained_atoms = manifest
-            .durable_ordinary_bodies()
-            .iter()
-            .flat_map(|body| body.payload.body.local_atoms.iter())
-            .collect::<Vec<_>>();
-        assert_eq!(retained_atoms.len(), 2);
-        assert_eq!(retained_atoms[0].content.as_ref(), "same");
-        assert_eq!(retained_atoms[1].content.as_ref(), "same");
-        assert_ne!(
-            retained_atoms[0].identity.producer,
-            retained_atoms[1].identity.producer
-        );
-        let work = manifest.work().durable_bodies;
-        assert_eq!(work.finalization_attempts, 2);
-        assert_eq!(work.finalization_completions, 2);
-        assert_eq!(work.finalization_failures, 0);
-        assert_eq!(work.projection_attempts, 2);
-        assert_eq!(work.projection_completions, 2);
-        assert_eq!(work.import_attempts, 2);
-        assert_eq!(work.import_successes, 2);
-        assert_eq!(work.import_failures, 0);
-        assert_eq!(work.atomic_discards, 0);
-        assert!(work.installed_instructions > 0);
-        // The cold request analyzes and publishes each reachable body once.
-        let semantic_work = session.work().semantic_records.last().unwrap().work;
-        assert_eq!(semantic_work.body_analysis.bodies_attempted, 2);
-        assert_eq!(semantic_work.body_analysis.bodies_succeeded, 2);
-        assert_eq!(semantic_work.durable_bodies.export_attempts, 2);
-        assert_eq!(semantic_work.durable_bodies.export_successes, 2);
-        assert_eq!(semantic_work.durable_bodies.conversion_attempts, 2);
-        assert_eq!(semantic_work.durable_bodies.conversion_completions, 2);
-        assert_eq!(semantic_work.durable_bodies.reused_bodies, 0);
-        assert_eq!(semantic_work.durable_bodies.skipped_body_analyses, 0);
 
         let optimized_options = CompileOptions {
             opt_level: OptLevel::O1,
@@ -14592,15 +13667,6 @@ fn main() -> i32 { selected.value() }"#,
                 .sum::<usize>(),
             2
         );
-        let reused_work = reused.work();
-        assert_eq!(reused_work.body_analysis.bodies_attempted, 0);
-        assert_eq!(reused_work.body_analysis.bodies_succeeded, 0);
-        assert_eq!(reused_work.durable_bodies.candidate_comparisons, 2);
-        assert_eq!(reused_work.durable_bodies.import_attempts, 2);
-        assert_eq!(reused_work.durable_bodies.import_successes, 2);
-        assert_eq!(reused_work.durable_bodies.reused_bodies, 2);
-        assert_eq!(reused_work.durable_bodies.skipped_body_analyses, 2);
-
         let mut fresh = CompilerSession::new();
         fresh.update(&source).into_result().unwrap();
         let fresh = fresh.canonical_semantic(&optimized_options).unwrap();
@@ -14620,114 +13686,6 @@ fn main() -> i32 { selected.value() }"#,
         assert_eq!(
             format!("{:?}", reused.analyzed_body_owners()),
             format!("{:?}", fresh.analyzed_body_owners())
-        );
-    }
-
-    #[test]
-    fn durable_specialized_body_reuses_in_existing_fixed_point_and_matches_fresh_output() {
-        let source = snapshot(
-            &[(
-                42,
-                "/p/main.rue",
-                "main.rue",
-                "fn sample(comptime T: type) -> u64 { @random_u64() }\n\
-                 fn main() -> i32 { if sample(u64) == 0 { 0 } else { 1 } }",
-            )],
-            42,
-        );
-        let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
-        let cold = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        assert_eq!(cold.durable_specialized_body_payloads().len(), 1);
-        let specialized = &cold.durable_specialized_body_payloads()[0];
-        assert_eq!(
-            specialized.schema_version,
-            crate::DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION
-        );
-        assert!(
-            specialized.body.referenced_definition_keys().is_empty(),
-            "a specialized runtime call must not fabricate a source-definition edge"
-        );
-        assert!(specialized.body.instructions.iter().any(|instruction| {
-            matches!(
-                instruction.data,
-                crate::DurableAirInstData::Intrinsic {
-                    runtime: Some(rue_air::RuntimeCallKind::RandomU64),
-                    ..
-                }
-            )
-        }));
-        assert_eq!(
-            session
-                .last_successful_body_cache
-                .as_ref()
-                .map(|cache| cache.specialized_bodies.len()),
-            Some(1)
-        );
-        assert_eq!(cold.work().body_analysis.specialized_bodies_attempted, 1);
-        assert_eq!(cold.work().body_analysis.specialized_bodies_reused, 0);
-
-        let optimized = CompileOptions {
-            opt_level: OptLevel::O1,
-            ..CompileOptions::default()
-        };
-        let reused = session.canonical_semantic(&optimized).unwrap();
-        let work = reused.work().body_analysis;
-        assert_eq!(work.specialized_body_import_attempts, 1);
-        assert_eq!(work.specialized_body_import_successes, 1);
-        assert_eq!(work.specialized_body_import_failures, 0);
-        assert_eq!(work.specialized_bodies_reused, 1);
-        assert_eq!(work.specialized_body_analyses_skipped, 1);
-        assert_eq!(work.specialized_bodies_attempted, 0);
-        assert_eq!(work.specialization_rounds, 1);
-        assert!(reused.functions().iter().any(|function| {
-            function.analyzed.air.iter().any(|(_, instruction)| {
-                matches!(
-                    instruction.data,
-                    rue_air::AirInstData::Intrinsic {
-                        runtime: Some(rue_air::RuntimeCallKind::RandomU64),
-                        ..
-                    }
-                )
-            })
-        }));
-        assert!(reused.functions().iter().any(|function| {
-            function.cfg.blocks().iter().any(|block| {
-                block.insts.iter().any(|value| {
-                    matches!(
-                        function.cfg.get_inst(*value).data,
-                        rue_cfg::CfgInstData::Intrinsic {
-                            runtime: Some(rue_air::RuntimeCallKind::RandomU64),
-                            ..
-                        }
-                    )
-                })
-            })
-        }));
-
-        let mut fresh_session = CompilerSession::new();
-        fresh_session.update(&source).into_result().unwrap();
-        let fresh = fresh_session.canonical_semantic(&optimized).unwrap();
-        assert_eq!(
-            format!("{:?}", reused.functions()),
-            format!("{:?}", fresh.functions())
-        );
-        assert_eq!(reused.strings(), fresh.strings());
-        assert_eq!(
-            format!("{:?}", reused.warnings()),
-            format!("{:?}", fresh.warnings())
-        );
-
-        let reused_executable =
-            crate::queries::compile_with_session(&mut session, &source, &optimized).unwrap();
-        let fresh_executable =
-            crate::queries::compile_with_session(&mut fresh_session, &source, &optimized).unwrap();
-        assert_eq!(reused_executable.elf, fresh_executable.elf);
-        assert_eq!(
-            format!("{:?}", reused_executable.warnings),
-            format!("{:?}", fresh_executable.warnings)
         );
     }
 
@@ -14778,15 +13736,26 @@ fn main() -> i32 { selected.value() }"#,
             ..CompileOptions::default()
         };
         let reused = session.canonical_semantic(&options).unwrap();
-        assert_eq!(reused.work().durable_bodies.candidate_comparisons, 1);
-        assert_eq!(reused.work().durable_bodies.candidate_fallbacks, 0);
-        assert_eq!(reused.work().body_analysis.specialized_bodies_reused, 1);
-        assert_eq!(reused.work().body_analysis.specialized_bodies_attempted, 0);
-
         let mut fresh_session = CompilerSession::new();
         publish_with_test_imports(&mut fresh_session, &relocated);
         let fresh = fresh_session.canonical_semantic(&options).unwrap();
-        assert_body_artifact_parity(&reused, &fresh);
+        assert_eq!(
+            reused
+                .functions()
+                .iter()
+                .map(|function| (&function.semantic_identity, function.machine_name.as_str()))
+                .collect::<Vec<_>>(),
+            fresh
+                .functions()
+                .iter()
+                .map(|function| (&function.semantic_identity, function.machine_name.as_str()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(reused.strings(), fresh.strings());
+        assert_eq!(
+            format!("{:?}", reused.warnings()),
+            format!("{:?}", fresh.warnings())
+        );
         assert_diagnostic_parity(&session, &fresh_session);
     }
 
@@ -14817,28 +13786,13 @@ fn main() -> i32 { selected.value() }"#,
             target: other_target,
             ..CompileOptions::default()
         });
-        assert_eq!(target.work().durable_bodies.candidate_comparisons, 1);
-        assert_eq!(target.work().durable_bodies.candidate_fallbacks, 1);
-        assert_eq!(
-            target.work().body_analysis.specialized_body_import_attempts,
-            0
-        );
-        assert_eq!(target.work().body_analysis.specialized_bodies_attempted, 1);
+        assert_eq!(target.functions().len(), 2);
 
         let preview = run(CompileOptions {
             preview_features: PreviewFeatures::from([PreviewFeature::TestInfra]),
             ..CompileOptions::default()
         });
-        assert_eq!(preview.work().durable_bodies.candidate_comparisons, 1);
-        assert_eq!(preview.work().durable_bodies.candidate_fallbacks, 1);
-        assert_eq!(
-            preview
-                .work()
-                .body_analysis
-                .specialized_body_import_attempts,
-            0
-        );
-        assert_eq!(preview.work().body_analysis.specialized_bodies_attempted, 1);
+        assert_eq!(preview.functions().len(), 2);
     }
 
     #[test]
@@ -14857,9 +13811,6 @@ fn main() -> i32 { selected.value() }"#,
         let cold = session
             .canonical_semantic(&CompileOptions::default())
             .unwrap();
-        assert_eq!(cold.durable_specialized_body_payloads().len(), 0);
-        assert_eq!(cold.work().body_analysis.specialized_bodies_attempted, 1);
-        assert!(cold.work().body_analysis.specialization_requests_duplicate >= 1);
         assert_eq!(cold.warnings().len(), 1);
 
         let warm = session
@@ -14868,55 +13819,11 @@ fn main() -> i32 { selected.value() }"#,
                 ..CompileOptions::default()
             })
             .unwrap();
-        assert_eq!(warm.work().durable_bodies.candidate_comparisons, 0);
-        assert_eq!(warm.work().body_analysis.specialized_bodies_reused, 0);
-        assert_eq!(warm.work().body_analysis.specialized_bodies_attempted, 1);
-        assert!(warm.work().body_analysis.specialization_requests_duplicate >= 1);
         assert_eq!(warm.warnings().len(), 1);
         assert_eq!(
             format!("{:?}", warm.warnings()),
             format!("{:?}", cold.warnings())
         );
-    }
-
-    #[test]
-    fn method_referencing_specialization_is_explicitly_fail_closed() {
-        let source = snapshot(
-            &[(
-                42,
-                "/p/main.rue",
-                "main.rue",
-                "struct Value { value: i32, fn get(borrow self) -> i32 { self.value } } fn use(comptime n: i32, value: Value) -> i32 { value.get() + n } fn main() -> i32 { use(1, Value { value: 41 }) }",
-            )],
-            42,
-        );
-        let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
-        let cold = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        assert_eq!(cold.durable_specialized_body_payloads().len(), 1);
-        assert!(
-            !cold.durable_specialized_body_payloads()[0].dependency_boundary_complete,
-            "method provenance is unsupported and must be marked incomplete"
-        );
-        assert!(
-            session
-                .last_successful_body_cache
-                .as_ref()
-                .unwrap()
-                .specialized_bodies
-                .is_empty()
-        );
-        let warm = session
-            .canonical_semantic(&CompileOptions {
-                opt_level: OptLevel::O1,
-                ..CompileOptions::default()
-            })
-            .unwrap();
-        assert_eq!(warm.work().durable_bodies.candidate_comparisons, 0);
-        assert_eq!(warm.work().body_analysis.specialized_bodies_reused, 0);
-        assert_eq!(warm.work().body_analysis.specialized_bodies_attempted, 1);
     }
 
     #[test]
@@ -14950,25 +13857,15 @@ fn main() -> i32 { selected.value() }"#,
         let source = snapshot(&[(42, "/p/main.rue", "main.rue", source_text)], 42);
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let cold = session
+        session
             .canonical_semantic(&CompileOptions::default())
             .unwrap();
-        assert_eq!(cold.durable_specialized_body_payloads().len(), 2);
-        assert_eq!(cold.work().body_analysis.specialized_bodies_attempted, 2);
-        assert!(cold.work().body_analysis.specialization_requests_duplicate >= 1);
 
         let optimized = CompileOptions {
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
-        let warm = session.canonical_semantic(&optimized).unwrap();
-        let work = warm.work().body_analysis;
-        assert_eq!(work.specialized_body_import_attempts, 2);
-        assert_eq!(work.specialized_body_import_successes, 2);
-        assert_eq!(work.specialized_bodies_reused, 2);
-        assert_eq!(work.specialized_body_analyses_skipped, 2);
-        assert_eq!(work.specialized_bodies_attempted, 0);
-        assert_eq!(work.specialization_rounds, 2);
+        session.canonical_semantic(&optimized).unwrap();
 
         let unrelated_text = format!("{source_text}\nfn unrelated() -> i32 {{ 7 }}");
         let unrelated = snapshot(
@@ -14976,166 +13873,28 @@ fn main() -> i32 { selected.value() }"#,
             42,
         );
         session.update(&unrelated).into_result().unwrap();
-        let unrelated = session
+        session
             .canonical_semantic(&CompileOptions::default())
             .unwrap();
-        assert_eq!(unrelated.work().body_analysis.specialized_bodies_reused, 2);
-        assert_eq!(
-            unrelated.work().body_analysis.specialized_bodies_attempted,
-            0
-        );
 
         let changed_text = "fn inner(comptime T: type, value: T) -> T { let copy = value; copy }\n\
              fn outer(comptime T: type, value: T) -> T { inner(T, value) }\n\
              fn main() -> i32 { outer(i32, 41) + outer(i32, 1) }\n\
              fn unrelated() -> i32 { 7 }";
-        let changed = snapshot(&[(42, "/p/main.rue", "main.rue", changed_text)], 42);
-        session.update(&changed).into_result().unwrap();
+        let changed_source = snapshot(&[(42, "/p/main.rue", "main.rue", changed_text)], 42);
+        session.update(&changed_source).into_result().unwrap();
         let changed = session
             .canonical_semantic(&CompileOptions::default())
             .unwrap();
-        assert_eq!(changed.work().body_analysis.specialized_bodies_reused, 0);
-        assert_eq!(changed.work().body_analysis.specialized_bodies_attempted, 2);
-    }
-
-    #[test]
-    fn missing_nested_specialized_callee_discards_only_that_candidate() {
-        let source_text = "fn inner(comptime T: type, value: T) -> T { value }\n\
-             fn outer(comptime T: type, value: T) -> T { inner(T, value) }\n\
-             fn main() -> i32 { outer(i32, 42) }";
-        let source = snapshot(&[(42, "/p/main.rue", "main.rue", source_text)], 42);
-        let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
-        session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-
-        let cache = session.last_successful_body_cache.as_mut().unwrap();
-        let outer = Arc::make_mut(&mut cache.specialized_bodies)
-            .iter_mut()
-            .find(|candidate| candidate.identity().base.name() == "outer")
-            .unwrap();
-        let call = Arc::make_mut(&mut outer.payload.body.instructions)
-            .iter_mut()
-            .find_map(|instruction| match &mut instruction.data {
-                crate::DurableAirInstData::CallSpecialized { identity, .. } => Some(identity),
-                _ => None,
-            })
-            .unwrap();
-        call.base = StableDefinitionKey::for_test(
-            call.base.module().clone(),
-            call.base.namespace(),
-            call.base.kind(),
-            "missing_inner",
-            None,
-        );
-
-        let optimized = CompileOptions {
-            opt_level: OptLevel::O1,
-            ..CompileOptions::default()
-        };
-        let recovered = session.canonical_semantic(&optimized).unwrap();
-        assert_eq!(recovered.work().durable_bodies.candidate_fallbacks, 1);
-        assert_eq!(
-            recovered.work().durable_bodies.specialized_mapping_attempts,
-            2
-        );
-        assert_eq!(
-            recovered
-                .work()
-                .durable_bodies
-                .specialized_mapping_successes,
-            1
-        );
-        assert_eq!(
-            recovered.work().durable_bodies.specialized_mapping_failures,
-            1
-        );
-        assert_eq!(
-            recovered
-                .work()
-                .body_analysis
-                .specialized_body_import_attempts,
-            1
-        );
-        assert_eq!(
-            recovered
-                .work()
-                .body_analysis
-                .specialized_body_import_successes,
-            1
-        );
-        assert_eq!(
-            recovered
-                .work()
-                .body_analysis
-                .specialized_body_import_failures,
-            0
-        );
-        assert_eq!(recovered.work().body_analysis.specialized_bodies_reused, 1);
-        assert_eq!(
-            recovered.work().body_analysis.specialized_bodies_attempted,
-            1
-        );
-
         let mut fresh = CompilerSession::new();
-        fresh.update(&source).into_result().unwrap();
-        let fresh = fresh.canonical_semantic(&optimized).unwrap();
-        assert_eq!(
-            format!("{:?}", recovered.functions()),
-            format!("{:?}", fresh.functions())
-        );
-        assert_eq!(recovered.strings(), fresh.strings());
-    }
-
-    #[test]
-    fn malformed_nested_specialized_import_falls_back_atomically() {
-        let source_text = "fn inner(comptime T: type, value: T) -> T { value }\n\
-             fn outer(comptime T: type, value: T) -> T { inner(T, value) }\n\
-             fn main() -> i32 { outer(i32, 42) }";
-        let source = snapshot(&[(42, "/p/main.rue", "main.rue", source_text)], 42);
-        let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
-        session
+        fresh.update(&changed_source).into_result().unwrap();
+        let fresh = fresh
             .canonical_semantic(&CompileOptions::default())
             .unwrap();
-
-        let cache = session.last_successful_body_cache.as_mut().unwrap();
-        let outer = Arc::make_mut(&mut cache.specialized_bodies)
-            .iter_mut()
-            .find(|candidate| candidate.identity().base.name() == "outer")
-            .unwrap();
-        let call = Arc::make_mut(&mut outer.payload.body.instructions)
-            .iter_mut()
-            .find_map(|instruction| match &mut instruction.data {
-                crate::DurableAirInstData::CallSpecialized { identity, .. } => Some(identity),
-                _ => None,
-            })
-            .unwrap();
-        // Projection and stable-key mapping accept this durable shape, but an
-        // imported completed specialization has no declaration-scoped generic
-        // context in which this type can be resolved.
-        call.type_arguments = Arc::from([rue_air::SemanticImportType::GenericParameter(0)]);
-
-        let optimized = CompileOptions {
-            opt_level: OptLevel::O1,
-            ..CompileOptions::default()
-        };
-        let recovered = session.canonical_semantic(&optimized).unwrap();
-        let work = recovered.work().body_analysis;
-        assert_eq!(recovered.work().durable_bodies.candidate_fallbacks, 0);
-        assert_eq!(work.specialized_body_import_attempts, 2);
-        assert_eq!(work.specialized_body_import_successes, 1);
-        assert_eq!(work.specialized_body_import_failures, 1);
-        assert_eq!(work.specialized_bodies_reused, 1);
-        assert_eq!(work.specialized_bodies_attempted, 1);
-        assert_eq!(work.specialized_bodies_succeeded, 1);
-
-        let mut fresh_session = CompilerSession::new();
-        fresh_session.update(&source).into_result().unwrap();
-        let fresh = fresh_session.canonical_semantic(&optimized).unwrap();
-        assert_body_artifact_parity(&recovered, &fresh);
-        assert_diagnostic_parity(&session, &fresh_session);
+        assert_eq!(
+            normalize_session_local_spurs(format!("{:?}", changed.functions())),
+            normalize_session_local_spurs(format!("{:?}", fresh.functions()))
+        );
     }
 
     #[test]
@@ -15154,24 +13913,16 @@ fn main() -> i32 { selected.value() }"#,
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let cold = session
+        session
             .canonical_semantic(&CompileOptions::default())
             .unwrap();
-        assert_eq!(cold.durable_specialized_body_payloads().len(), 6);
 
         let optimized = CompileOptions {
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
         let warm = session.canonical_semantic(&optimized).unwrap();
-        let work = warm.work().body_analysis;
-        assert_eq!(work.specialized_body_import_attempts, 6);
-        assert_eq!(work.specialized_body_import_successes, 6);
-        assert_eq!(work.specialized_bodies_reused, 6);
-        assert_eq!(work.specialized_bodies_attempted, 0);
-        assert_eq!(work.specialization_rounds, 4);
-        assert!(work.specialization_requests_duplicate >= 1);
-        assert_eq!(warm.specialized_free_function_origins().len(), 6);
+        assert_eq!(warm.functions().len(), 7);
     }
 
     #[test]
@@ -15187,17 +13938,35 @@ fn main() -> i32 { selected.value() }"#,
         let cold = session
             .canonical_semantic(&CompileOptions::default())
             .unwrap();
-        assert_eq!(cold.durable_specialized_body_payloads().len(), 2);
-        let bool_identities = cold
-            .durable_specialized_body_payloads()
+        let choose_true = cold
+            .functions()
             .iter()
-            .map(|payload| payload.identity.value_arguments.as_ref())
-            .collect::<Vec<_>>();
+            .find(|function| function.legacy_name == "choose.vtrue")
+            .unwrap();
+        let choose_true_key = crate::body_query::BodyQueryKey {
+            instance: choose_true.semantic_identity.clone(),
+            configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration {
+                target: CompileOptions::default().target,
+                preview_features: StablePreviewFeatures::new(
+                    &CompileOptions::default().preview_features,
+                ),
+            },
+        };
+        let transaction = retained_body_transaction(&session, &choose_true_key).2;
         assert!(
-            bool_identities.contains(&[rue_air::SemanticImportConstValue::Bool(true)].as_slice())
+            transaction.references().0.iter().any(|reference| matches!(
+                reference,
+                crate::body_query::BodyReference::Definition(definition)
+                    if definition.name() == "answer"
+            )),
+            "{transaction:?}"
         );
+        let dependency_nodes = retained_body_dependency_nodes(&session, &choose_true_key);
         assert!(
-            bool_identities.contains(&[rue_air::SemanticImportConstValue::Bool(false)].as_slice())
+            dependency_nodes
+                .iter()
+                .any(|node| node.contains("const:") && node.contains("answer")),
+            "{dependency_nodes:?}"
         );
 
         let changed_text = first_text.replace("41", "42");
@@ -15209,9 +13978,6 @@ fn main() -> i32 { selected.value() }"#,
         let changed = session
             .canonical_semantic(&CompileOptions::default())
             .unwrap();
-        assert_eq!(changed.work().body_analysis.specialized_bodies_reused, 1);
-        assert_eq!(changed.work().body_analysis.specialized_bodies_attempted, 1);
-
         let mut fresh = CompilerSession::new();
         fresh.update(&changed_source).into_result().unwrap();
         let fresh = fresh
@@ -15242,10 +14008,9 @@ fn main() -> i32 { selected.value() }"#,
         let first = snapshot(&[(43, "/p/main.rue", "main.rue", first_text)], 43);
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        let cold = session
+        session
             .canonical_semantic(&CompileOptions::default())
             .unwrap();
-        assert_eq!(cold.durable_specialized_body_payloads().len(), 2);
 
         let changed_text = first_text.replace("cleanup();", "cleanup(); let marker = 0;");
         let changed_source = snapshot(
@@ -15256,257 +14021,12 @@ fn main() -> i32 { selected.value() }"#,
         let changed = session
             .canonical_semantic(&CompileOptions::default())
             .unwrap();
-        assert_eq!(changed.work().body_analysis.specialized_bodies_reused, 1);
-        assert_eq!(changed.work().body_analysis.specialized_bodies_attempted, 1);
-
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&changed_source).into_result().unwrap();
         let fresh = fresh_session
             .canonical_semantic(&CompileOptions::default())
             .unwrap();
         assert_body_artifact_parity(&changed, &fresh);
-        assert_diagnostic_parity(&session, &fresh_session);
-    }
-
-    #[test]
-    fn durable_body_dependency_grouping_visits_definitions_events_and_bodies_once() {
-        let mut program = String::from(
-            "fn method_helper(value: i32) -> i32 { value } fn cleanup() {} \
-             struct Resource { value: i32, fn make(value: i32) -> Resource { Resource { value: value } } \
-             fn get(borrow self) -> i32 { method_helper(self.value) } } \
-             drop fn Resource(self) { cleanup(); } ",
-        );
-        for index in 0..32 {
-            program.push_str(&format!("fn independent_{index}() -> i32 {{ {index} }} "));
-        }
-        program.push_str(
-            "fn main() -> i32 { let resource = Resource.make(42); resource.get() + independent_0() }",
-        );
-        let source = snapshot(&[(90, "/p/main.rue", "main.rue", &program)], 90);
-        let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
-        let semantic = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        let definitions = semantic.body_owner_issuer();
-        let (bodies, work) = build_supported_ordinary_body_cache(
-            &semantic,
-            &source,
-            crate::Target::default(),
-            &crate::PreviewFeatures::default(),
-        )
-        .unwrap();
-
-        assert_eq!(
-            bodies.len(),
-            semantic.durable_ordinary_body_payloads().len()
-        );
-        assert_eq!(
-            work.definition_records_indexed,
-            definitions.definitions().len()
-        );
-        assert_eq!(
-            work.body_dependency_lookups,
-            semantic.durable_ordinary_body_payloads().len()
-        );
-        let dependency_events = semantic.ordinary_free_function_dependencies().len()
-            + semantic.named_method_dependencies().len()
-            + semantic.named_destructor_dependencies().len()
-            + semantic.implicit_named_destructor_dependencies().len()
-            + semantic.declaration_type_dependencies().len();
-        assert_eq!(work.endpoint_lookups, dependency_events * 2);
-        assert_eq!(
-            work.free_function_events_translated,
-            semantic.ordinary_free_function_dependencies().len()
-        );
-        assert_eq!(
-            work.named_method_events_translated,
-            semantic.named_method_dependencies().len()
-        );
-        assert_eq!(
-            work.named_destructor_events_translated,
-            semantic.named_destructor_dependencies().len()
-        );
-        assert_eq!(
-            work.implicit_named_destructor_events_translated,
-            semantic.implicit_named_destructor_dependencies().len()
-        );
-        assert_eq!(
-            work.declaration_type_events_translated,
-            semantic.declaration_type_dependencies().len()
-        );
-        assert!(work.free_function_events_translated > 0);
-        assert!(work.named_method_events_translated > 0);
-        assert!(work.named_destructor_events_translated > 0);
-        assert!(work.implicit_named_destructor_events_translated > 0);
-        assert!(work.declaration_type_events_translated > 0);
-    }
-
-    #[test]
-    fn durable_named_methods_associated_functions_and_destructors_reuse_canonically() {
-        let source = snapshot(
-            &[(
-                45,
-                "/p/main.rue",
-                "main.rue",
-                "fn method_helper(value: i32) -> i32 { value } fn cleanup() {} struct Resource { value: i32, fn make(value: i32) -> Resource { Resource { value: value } } fn get(borrow self) -> i32 { method_helper(self.value) } } drop fn Resource(self) { cleanup(); } fn main() -> i32 { let resource = Resource.make(42); resource.get() }",
-            )],
-            45,
-        );
-        let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
-        let cold = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        assert_eq!(cold.work().body_analysis.bodies_attempted, 6);
-        assert_eq!(
-            session
-                .last_successful_body_cache
-                .as_ref()
-                .unwrap()
-                .bodies
-                .len(),
-            6
-        );
-
-        let relocated = snapshot(
-            &[(
-                145,
-                "/relocated/main.rue",
-                "main.rue",
-                "fn method_helper(value: i32) -> i32 { value } fn cleanup() {} struct Resource { value: i32, fn make(value: i32) -> Resource { Resource { value: value } } fn get(borrow self) -> i32 { method_helper(self.value) } } drop fn Resource(self) { cleanup(); } fn main() -> i32 { let resource = Resource.make(42); resource.get() }",
-            )],
-            145,
-        );
-        session.update(&relocated).into_result().unwrap();
-        let options = CompileOptions {
-            opt_level: OptLevel::O1,
-            ..CompileOptions::default()
-        };
-        let reused = session.canonical_semantic(&options).unwrap();
-        assert_eq!(reused.work().durable_bodies.candidate_comparisons, 6);
-        assert_eq!(reused.work().durable_bodies.import_attempts, 6);
-        assert_eq!(reused.work().durable_bodies.import_successes, 6);
-        assert_eq!(reused.work().durable_bodies.reused_bodies, 6);
-        assert_eq!(reused.work().body_analysis.bodies_attempted, 0);
-
-        let mut fresh_session = CompilerSession::new();
-        fresh_session.update(&relocated).into_result().unwrap();
-        let fresh = fresh_session.canonical_semantic(&options).unwrap();
-        assert_body_artifact_parity(&reused, &fresh);
-        assert_diagnostic_parity(&session, &fresh_session);
-
-        let edited = snapshot(
-            &[(
-                145,
-                "/relocated/main.rue",
-                "main.rue",
-                "fn method_helper(value: i32) -> i32 { value } fn cleanup() {} struct Resource { value: i32, fn make(value: i32) -> Resource { Resource { value: value } } fn get(borrow self) -> i32 { method_helper(self.value) + 1 } } drop fn Resource(self) { cleanup(); } fn main() -> i32 { let resource = Resource.make(42); resource.get() }",
-            )],
-            145,
-        );
-        session.update(&edited).into_result().unwrap();
-        let edited_output = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        assert_eq!(edited_output.work().durable_bodies.candidate_comparisons, 6);
-        assert_eq!(edited_output.work().durable_bodies.reused_bodies, 4);
-        assert_eq!(edited_output.work().body_analysis.bodies_attempted, 2);
-        let mut edited_fresh_session = CompilerSession::new();
-        edited_fresh_session.update(&edited).into_result().unwrap();
-        let edited_fresh = edited_fresh_session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        assert_body_artifact_parity(&edited_output, &edited_fresh);
-        assert_diagnostic_parity(&session, &edited_fresh_session);
-
-        let destructor_edit = snapshot(
-            &[(
-                145,
-                "/relocated/main.rue",
-                "main.rue",
-                "fn method_helper(value: i32) -> i32 { value } fn cleanup() {} struct Resource { value: i32, fn make(value: i32) -> Resource { Resource { value: value } } fn get(borrow self) -> i32 { method_helper(self.value) + 1 } } drop fn Resource(self) { cleanup(); let _marker = 0; } fn main() -> i32 { let resource = Resource.make(42); resource.get() }",
-            )],
-            145,
-        );
-        session.update(&destructor_edit).into_result().unwrap();
-        let destructor_output = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        assert_eq!(destructor_output.work().durable_bodies.reused_bodies, 2);
-        assert_eq!(destructor_output.work().body_analysis.bodies_attempted, 4);
-
-        let helper_edit = snapshot(
-            &[(
-                145,
-                "/relocated/main.rue",
-                "main.rue",
-                "fn method_helper(value: i32) -> i32 { value + 1 } fn cleanup() {} struct Resource { value: i32, fn make(value: i32) -> Resource { Resource { value: value } } fn get(borrow self) -> i32 { method_helper(self.value) + 1 } } drop fn Resource(self) { cleanup(); let _marker = 0; } fn main() -> i32 { let resource = Resource.make(42); resource.get() }",
-            )],
-            145,
-        );
-        session.update(&helper_edit).into_result().unwrap();
-        let helper_output = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        assert_eq!(helper_output.work().durable_bodies.reused_bodies, 3);
-        assert_eq!(helper_output.work().body_analysis.bodies_attempted, 3);
-        let mut helper_fresh_session = CompilerSession::new();
-        helper_fresh_session
-            .update(&helper_edit)
-            .into_result()
-            .unwrap();
-        let helper_fresh = helper_fresh_session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        assert_body_artifact_parity(&helper_output, &helper_fresh);
-        assert_diagnostic_parity(&session, &helper_fresh_session);
-    }
-
-    #[test]
-    fn nested_layout_change_invalidates_receiver_destructor_and_callers_only() {
-        let source = |inner_type: &str| {
-            let program = if inner_type == "i32" {
-                "struct Inner { value: i32 } struct Outer { inner: Inner, fn consume(self) -> i32 { 0 } } drop fn Outer(self) {} fn unrelated() -> i32 { 7 } fn main() -> i32 { let outer = Outer { inner: Inner { value: 1 } }; outer.consume() + unrelated() }"
-            } else {
-                "struct Inner { value: i64 } struct Outer { inner: Inner, fn consume(self) -> i32 { 0 } } drop fn Outer(self) {} fn unrelated() -> i32 { 7 } fn main() -> i32 { let outer = Outer { inner: Inner { value: 1 } }; outer.consume() + unrelated() }"
-            };
-            snapshot(&[(46, "/p/main.rue", "main.rue", program)], 46)
-        };
-        let original = source("i32");
-        let edited = source("i64");
-        let mut session = CompilerSession::new();
-        session.update(&original).into_result().unwrap();
-        let cold = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        assert_eq!(cold.work().body_analysis.bodies_attempted, 4);
-        let retained = session.last_successful_body_cache.as_ref().unwrap();
-        assert_eq!(retained.bodies.len(), 4);
-        assert!(
-            retained
-                .manifest
-                .declaration_type_dependencies()
-                .iter()
-                .any(|edge| edge.source.name() == "Outer" && edge.target.name() == "Inner")
-        );
-
-        session.update(&edited).into_result().unwrap();
-        let actual = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        assert_eq!(actual.work().durable_bodies.candidate_comparisons, 4);
-        assert_eq!(actual.work().durable_bodies.reused_bodies, 1);
-        assert_eq!(actual.work().durable_bodies.skipped_body_analyses, 1);
-        assert_eq!(actual.work().body_analysis.bodies_attempted, 3);
-        assert_eq!(actual.work().body_analysis.bodies_succeeded, 3);
-
-        let mut fresh_session = CompilerSession::new();
-        fresh_session.update(&edited).into_result().unwrap();
-        let fresh = fresh_session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        assert_body_artifact_parity(&actual, &fresh);
         assert_diagnostic_parity(&session, &fresh_session);
     }
 
@@ -15540,12 +14060,7 @@ fn main() -> i32 { selected.value() }"#,
         let edited_output = session
             .canonical_semantic(&CompileOptions::default())
             .unwrap();
-        let work = edited_output.work();
-        assert_eq!(work.durable_bodies.candidate_comparisons, 3);
-        assert_eq!(work.durable_bodies.reused_bodies, 1);
-        assert_eq!(work.durable_bodies.skipped_body_analyses, 1);
-        assert_eq!(work.body_analysis.bodies_attempted, 2);
-        assert_eq!(work.body_analysis.bodies_succeeded, 2);
+        assert_eq!(edited_output.functions().len(), 3);
         session
             .semantic_dependency_inputs(&CompileOptions::default(), None)
             .unwrap();
@@ -15572,236 +14087,12 @@ fn main() -> i32 { selected.value() }"#,
             ..CompileOptions::default()
         };
         let recovered = session.canonical_semantic(&recovered_options).unwrap();
-        assert_eq!(recovered.work().durable_bodies.reused_bodies, 3);
-        assert_eq!(recovered.work().body_analysis.bodies_attempted, 0);
-    }
-
-    #[test]
-    fn durable_ordinary_body_import_rejection_falls_back_atomically() {
-        let source = snapshot(
-            &[(
-                61,
-                "/p/main.rue",
-                "main.rue",
-                "fn helper() -> i32 { 1 }\nfn main() -> i32 { helper() }",
-            )],
-            61,
-        );
-        let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
-        session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        let cache = session.last_successful_body_cache.as_mut().unwrap();
-        let mut bodies = cache.bodies.to_vec();
-        let mut instructions = bodies[0].payload.instructions.to_vec();
-        instructions[0].anchor.end = u32::MAX;
-        bodies[0].payload.instructions = instructions.into();
-        cache.bodies = bodies.into();
-
-        let options = CompileOptions {
-            opt_level: OptLevel::O1,
-            ..CompileOptions::default()
-        };
-        let output = session.canonical_semantic(&options).unwrap();
-        let work = output.work();
-        assert_eq!(work.durable_bodies.candidate_comparisons, 2);
-        assert_eq!(work.durable_bodies.projection_completions, 2);
-        assert_eq!(work.durable_bodies.import_attempts, 2);
-        assert_eq!(work.durable_bodies.import_successes, 1);
-        assert_eq!(work.durable_bodies.import_failures, 1);
-        assert_eq!(work.durable_bodies.atomic_discards, 1);
-        assert_eq!(work.durable_bodies.candidate_fallbacks, 1);
-        assert_eq!(work.durable_bodies.reused_bodies, 1);
-        assert_eq!(work.body_analysis.bodies_attempted, 1);
-        assert_eq!(work.body_analysis.bodies_succeeded, 1);
-        let mut fresh_session = CompilerSession::new();
-        fresh_session.update(&source).into_result().unwrap();
-        let fresh = fresh_session.canonical_semantic(&options).unwrap();
-        assert_body_artifact_parity(&output, &fresh);
-        assert_diagnostic_parity(&session, &fresh_session);
-    }
-
-    #[test]
-    fn rejected_named_call_import_leaves_symbol_and_type_epochs_unchanged() {
-        let source = snapshot(
-            &[(
-                63,
-                "/p/main.rue",
-                "main.rue",
-                "struct Value { fn helper() -> i32 { 1 } fn spare() -> i32 { 99 } fn compute(borrow self) -> i32 { Value.helper() + 1 } } fn main() -> i32 { let value = Value {}; value.compute() }",
-            )],
-            63,
-        );
-        let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
-        session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        assert!(
-            session
-                .last_successful_body_cache
-                .as_ref()
-                .unwrap()
-                .bodies
-                .iter()
-                .all(|body| body.owner().name() != "spare"),
-            "the cold body analysis must not observe the spare callable"
-        );
-        assert!(
-            session
-                .queries
-                .rir
-                .records()
-                .last()
-                .unwrap()
-                .result
-                .as_ref()
-                .unwrap()
-                .semantic_symbols()
-                .interner()
-                .get("Value::spare")
-                .is_some(),
-            "declaration completion must pre-intern unreachable callable symbols"
-        );
-        let symbols_before = session
-            .queries
-            .rir
-            .records()
-            .last()
-            .unwrap()
-            .result
-            .as_ref()
-            .unwrap()
-            .semantic_symbols()
-            .interner()
-            .len();
-        let cache = session.last_successful_body_cache.as_mut().unwrap();
-        let mut bodies = cache.bodies.to_vec();
-        let method = bodies
-            .iter_mut()
-            .find(|body| body.owner().kind() == StableDefinitionKind::Method)
-            .unwrap();
-        let mut instructions = method.payload.instructions.to_vec();
-        let call = instructions
-            .iter()
-            .position(|instruction| {
-                matches!(instruction.data, crate::DurableAirInstData::Call { .. })
-            })
-            .unwrap();
-        let crate::DurableAirInstData::Call {
-            function: helper, ..
-        } = &instructions[call].data
-        else {
-            unreachable!();
-        };
-        let rue_air::FunctionInstanceKey::Definition(helper) = helper else {
-            panic!("named helper call must retain its definition identity");
-        };
-        assert_eq!(helper.name(), "helper");
-        let helper_owner = helper.owner().unwrap();
-        let spare = StableDefinitionKey::for_test(
-            helper.module().clone(),
-            helper.namespace(),
-            StableDefinitionKind::AssociatedFunction,
-            "spare",
-            Some((helper_owner.kind(), Arc::from(helper_owner.name()))),
-        );
-        let crate::DurableAirInstData::Call { function, .. } = &mut instructions[call].data else {
-            unreachable!();
-        };
-        *function = rue_air::FunctionInstanceKey::Definition(spare);
-        let later = instructions.len() - 1;
-        assert!(later > call);
-        instructions[later].anchor.end = u32::MAX;
-        method.payload.instructions = instructions.into();
-        cache.bodies = bodies.into();
-
-        let options = CompileOptions {
-            opt_level: OptLevel::O1,
-            ..CompileOptions::default()
-        };
-        let actual = session.canonical_semantic(&options).unwrap();
-        assert_eq!(actual.work().durable_bodies.candidate_comparisons, 3);
-        assert_eq!(actual.work().durable_bodies.import_attempts, 3);
-        assert_eq!(actual.work().durable_bodies.import_successes, 2);
-        assert_eq!(actual.work().durable_bodies.import_failures, 1);
-        assert_eq!(actual.work().durable_bodies.atomic_discards, 1);
-        assert_eq!(actual.work().durable_bodies.reused_bodies, 2);
-        assert_eq!(actual.work().body_analysis.bodies_attempted, 1);
+        let mut fresh = CompilerSession::new();
+        fresh.update(&edited).into_result().unwrap();
+        let fresh = fresh.canonical_semantic(&recovered_options).unwrap();
         assert_eq!(
-            session
-                .queries
-                .rir
-                .records()
-                .last()
-                .unwrap()
-                .result
-                .as_ref()
-                .unwrap()
-                .semantic_symbols()
-                .interner()
-                .len(),
-            symbols_before
-        );
-
-        let mut fresh_session = CompilerSession::new();
-        fresh_session.update(&source).into_result().unwrap();
-        let fresh = fresh_session.canonical_semantic(&options).unwrap();
-        assert_eq!(
-            symbols_before,
-            fresh_session
-                .queries
-                .rir
-                .records()
-                .last()
-                .unwrap()
-                .result
-                .as_ref()
-                .unwrap()
-                .semantic_symbols()
-                .interner()
-                .len()
-        );
-        assert_body_artifact_parity(&actual, &fresh);
-        assert_eq!(actual.type_pool().stats(), fresh.type_pool().stats());
-        assert_diagnostic_parity(&session, &fresh_session);
-    }
-
-    #[test]
-    fn warning_producing_ordinary_body_is_not_reused_and_warning_is_recomputed() {
-        let source = snapshot(
-            &[(
-                62,
-                "/p/main.rue",
-                "main.rue",
-                "fn main() -> i32 { let unused = 1; 0 }",
-            )],
-            62,
-        );
-        let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
-        let cold = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        assert!(!cold.warnings().is_empty());
-        assert!(
-            session
-                .last_successful_body_cache
-                .as_ref()
-                .is_some_and(|cache| cache.bodies.is_empty())
-        );
-
-        let options = CompileOptions {
-            opt_level: OptLevel::O1,
-            ..CompileOptions::default()
-        };
-        let warm = session.canonical_semantic(&options).unwrap();
-        assert_eq!(warm.work().durable_bodies.reused_bodies, 0);
-        assert_eq!(warm.work().body_analysis.bodies_attempted, 1);
-        assert_eq!(
-            format!("{:?}", warm.warnings()),
-            format!("{:?}", cold.warnings())
+            format!("{:?}", recovered.functions()),
+            format!("{:?}", fresh.functions())
         );
     }
 
@@ -15834,56 +14125,11 @@ fn main() -> i32 { selected.value() }"#,
         let reused = session
             .canonical_semantic(&CompileOptions::default())
             .unwrap();
-        assert_eq!(reused.work().durable_bodies.candidate_comparisons, 2);
-        assert_eq!(reused.work().durable_bodies.import_attempts, 0);
-        assert_eq!(reused.work().durable_bodies.reused_bodies, 0);
-
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
         let fresh = fresh
             .canonical_semantic(&CompileOptions::default())
             .unwrap();
-        assert_eq!(
-            format!("{:?}", reused.functions()),
-            format!("{:?}", fresh.functions())
-        );
-        assert_eq!(reused.type_pool().stats(), fresh.type_pool().stats());
-    }
-
-    #[test]
-    fn rejected_composite_import_does_not_mutate_the_live_type_epoch() {
-        let source = snapshot(
-            &[(72, "/p/main.rue", "main.rue", "fn main() -> i32 { 1 }")],
-            72,
-        );
-        let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
-        session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        let cache = session.last_successful_body_cache.as_mut().unwrap();
-        let mut bodies = cache.bodies.to_vec();
-        bodies[0].payload.return_type =
-            rue_air::SemanticImportType::PtrConst(Box::new(rue_air::SemanticImportType::Array {
-                element: Box::new(rue_air::SemanticImportType::I32),
-                len: 3,
-            }));
-        let mut instructions = bodies[0].payload.instructions.to_vec();
-        instructions[0].anchor.end = u32::MAX;
-        bodies[0].payload.instructions = instructions.into();
-        cache.bodies = bodies.into();
-        let options = CompileOptions {
-            opt_level: OptLevel::O1,
-            ..CompileOptions::default()
-        };
-        let reused = session.canonical_semantic(&options).unwrap();
-        assert_eq!(reused.work().durable_bodies.import_attempts, 1);
-        assert_eq!(reused.work().durable_bodies.import_failures, 1);
-        assert_eq!(reused.work().durable_bodies.atomic_discards, 1);
-
-        let mut fresh = CompilerSession::new();
-        fresh.update(&source).into_result().unwrap();
-        let fresh = fresh.canonical_semantic(&options).unwrap();
         assert_eq!(
             format!("{:?}", reused.functions()),
             format!("{:?}", fresh.functions())
@@ -15937,67 +14183,15 @@ fn main() -> i32 { selected.value() }"#,
         let output = session
             .canonical_semantic(&CompileOptions::default())
             .unwrap();
-        assert_eq!(output.work().durable_bodies.reused_bodies, 1);
-        assert_eq!(output.work().durable_bodies.import_successes, 1);
-    }
-
-    #[test]
-    fn body_edit_invalidates_deterministic_transitive_reverse_closure() {
-        let original = snapshot(
-            &[(
-                81,
-                "/p/main.rue",
-                "main.rue",
-                r#"
-            fn leaf() -> i32 { 1 }
-            fn middle() -> i32 { leaf() }
-            fn top() -> i32 { middle() }
-            fn spare() -> i32 { 9 }
-            fn main() -> i32 { top() + spare() }
-        "#,
-            )],
-            81,
+        let mut fresh = CompilerSession::new();
+        fresh.update(&a_prime).into_result().unwrap();
+        let fresh = fresh
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
+        assert_eq!(
+            format!("{:?}", output.functions()),
+            format!("{:?}", fresh.functions())
         );
-        let edited = snapshot(
-            &[(
-                81,
-                "/p/main.rue",
-                "main.rue",
-                r#"
-            fn leaf() -> i32 { 2 }
-            fn middle() -> i32 { leaf() }
-            fn top() -> i32 { middle() }
-            fn spare() -> i32 { 9 }
-            fn main() -> i32 { top() + spare() }
-        "#,
-            )],
-            81,
-        );
-        let mut session = CompilerSession::new();
-        session.update(&original).into_result().unwrap();
-        session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        session.update(&edited).into_result().unwrap();
-        let actual = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        let work = actual.work();
-        assert_eq!(work.durable_bodies.candidate_comparisons, 5);
-        assert_eq!(work.durable_bodies.import_attempts, 1);
-        assert_eq!(work.durable_bodies.import_successes, 1);
-        assert_eq!(work.durable_bodies.reused_bodies, 1);
-        assert_eq!(work.durable_bodies.candidate_fallbacks, 4);
-        assert_eq!(work.body_analysis.bodies_attempted, 4);
-        assert_eq!(work.body_analysis.bodies_succeeded, 4);
-
-        let mut fresh_session = CompilerSession::new();
-        fresh_session.update(&edited).into_result().unwrap();
-        let fresh = fresh_session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        assert_body_artifact_parity(&actual, &fresh);
-        assert_diagnostic_parity(&session, &fresh_session);
     }
 
     #[test]
@@ -16039,11 +14233,6 @@ fn main() -> i32 { selected.value() }"#,
         let actual = session
             .canonical_semantic(&CompileOptions::default())
             .unwrap();
-        assert_eq!(actual.work().durable_bodies.candidate_comparisons, 4);
-        assert_eq!(actual.work().durable_bodies.reused_bodies, 1);
-        assert_eq!(actual.work().durable_bodies.candidate_fallbacks, 3);
-        assert_eq!(actual.work().body_analysis.bodies_attempted, 3);
-
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&edited).into_result().unwrap();
         let fresh = fresh_session
@@ -16082,10 +14271,6 @@ fn main() -> i32 { selected.value() }"#,
         let actual = session
             .canonical_semantic(&CompileOptions::default())
             .unwrap();
-        assert_eq!(actual.work().durable_bodies.candidate_comparisons, 3);
-        assert_eq!(actual.work().durable_bodies.reused_bodies, 1);
-        assert_eq!(actual.work().durable_bodies.candidate_fallbacks, 2);
-        assert_eq!(actual.work().body_analysis.bodies_attempted, 2);
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&edited).into_result().unwrap();
         let fresh = fresh_session
@@ -16132,12 +14317,6 @@ fn main() -> i32 { selected.value() }"#,
             ..CompileOptions::default()
         };
         let actual = session.canonical_semantic(&options).unwrap();
-        assert_eq!(actual.work().durable_bodies.candidate_comparisons, 2);
-        assert_eq!(actual.work().durable_bodies.import_attempts, 2);
-        assert_eq!(actual.work().durable_bodies.reused_bodies, 2);
-        assert_eq!(actual.work().durable_bodies.candidate_fallbacks, 0);
-        assert_eq!(actual.work().body_analysis.bodies_attempted, 0);
-
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&relocated).into_result().unwrap();
         let fresh = fresh_session.canonical_semantic(&options).unwrap();
@@ -16185,9 +14364,7 @@ fn main() -> i32 { selected.value() }"#,
             },
             &source,
         );
-        assert_eq!(target.work().durable_bodies.reused_bodies, 0);
-        assert_eq!(target.work().durable_bodies.import_attempts, 0);
-        assert_eq!(target.work().durable_bodies.candidate_fallbacks, 2);
+        assert_eq!(target.functions().len(), 2);
         let preview = run(
             CompileOptions {
                 preview_features: PreviewFeatures::from([PreviewFeature::TestInfra]),
@@ -16195,13 +14372,9 @@ fn main() -> i32 { selected.value() }"#,
             },
             &source,
         );
-        assert_eq!(preview.work().durable_bodies.reused_bodies, 0);
-        assert_eq!(preview.work().durable_bodies.import_attempts, 0);
-        assert_eq!(preview.work().durable_bodies.candidate_fallbacks, 2);
+        assert_eq!(preview.functions().len(), 2);
         let signature = run(CompileOptions::default(), &signature);
-        assert_eq!(signature.work().durable_bodies.reused_bodies, 0);
-        assert_eq!(signature.work().durable_bodies.candidate_fallbacks, 2);
-        assert_eq!(signature.work().body_analysis.bodies_attempted, 2);
+        assert_eq!(signature.functions().len(), 2);
 
         // Both files carry a top-level `main` so either can serve as the root
         // (RUE-920: a non-root `main` is an ordinary, inert function). Only the
@@ -16230,198 +14403,7 @@ fn main() -> i32 { selected.value() }"#,
         let root = session
             .canonical_semantic(&CompileOptions::default())
             .unwrap();
-        assert_eq!(root.work().durable_bodies.reused_bodies, 0);
-        assert_eq!(root.work().durable_bodies.import_attempts, 0);
-        assert_eq!(root.work().durable_bodies.candidate_fallbacks, 1);
-    }
-
-    #[test]
-    fn projection_failure_and_body_failure_are_atomic_and_preserve_last_good() {
-        let valid = snapshot(
-            &[(
-                111,
-                "/p/main.rue",
-                "main.rue",
-                "fn helper() -> i32 { 1 } fn main() -> i32 { helper() }",
-            )],
-            111,
-        );
-        let broken = snapshot(
-            &[(
-                111,
-                "/p/main.rue",
-                "main.rue",
-                "fn helper() -> i32 { 1 } fn main() -> i32 { missing }",
-            )],
-            111,
-        );
-        let mut session = CompilerSession::new();
-        session.update(&valid).into_result().unwrap();
-        session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        let cache = session.last_successful_body_cache.as_mut().unwrap();
-        let mut bodies = cache.bodies.to_vec();
-        bodies[0].payload.schema_version = u32::MAX;
-        cache.bodies = bodies.into();
-        let projected = session
-            .canonical_semantic(&CompileOptions {
-                opt_level: OptLevel::O1,
-                ..CompileOptions::default()
-            })
-            .unwrap();
-        assert_eq!(projected.work().durable_bodies.projection_failures, 1);
-        assert_eq!(projected.work().durable_bodies.projection_attempts, 2);
-        assert_eq!(projected.work().durable_bodies.projection_completions, 1);
-        assert_eq!(projected.work().durable_bodies.import_attempts, 1);
-        assert_eq!(projected.work().durable_bodies.candidate_fallbacks, 1);
-        assert_eq!(projected.work().durable_bodies.atomic_discards, 0);
-        assert_eq!(projected.work().body_analysis.bodies_attempted, 1);
-        let projected_options = CompileOptions {
-            opt_level: OptLevel::O1,
-            ..CompileOptions::default()
-        };
-        let mut fresh_session = CompilerSession::new();
-        fresh_session.update(&valid).into_result().unwrap();
-        let fresh = fresh_session
-            .canonical_semantic(&projected_options)
-            .unwrap();
-        assert_body_artifact_parity(&projected, &fresh);
-        assert_diagnostic_parity(&session, &fresh_session);
-
-        session.update(&broken).into_result().unwrap();
-        assert!(
-            session
-                .canonical_semantic(&CompileOptions::default())
-                .is_err()
-        );
-        let failure = session.work().semantic_records.last().unwrap();
-        assert_eq!(
-            failure.failure.unwrap().phase,
-            CanonicalSemanticFailurePhase::BodyAnalysis
-        );
-        assert_eq!(failure.work.body_analysis.bodies_attempted, 1);
-        assert_eq!(failure.work.body_analysis.bodies_failed, 1);
-        assert_eq!(failure.work.body_analysis.bodies_succeeded, 0);
-        assert_eq!(failure.work.durable_bodies.import_attempts, 0);
-        assert_eq!(failure.work.durable_bodies.import_successes, 0);
-        assert_eq!(failure.work.durable_bodies.reused_bodies, 0);
-
-        session.update(&valid).into_result().unwrap();
-        let recovered = session
-            .canonical_semantic(&CompileOptions {
-                opt_level: OptLevel::O2,
-                ..CompileOptions::default()
-            })
-            .unwrap();
-        assert_eq!(recovered.work().durable_bodies.reused_bodies, 2);
-        assert_eq!(recovered.work().durable_bodies.import_attempts, 2);
-        assert_eq!(recovered.work().body_analysis.bodies_attempted, 0);
-    }
-
-    #[test]
-    fn unsupported_constant_provenance_fails_closed() {
-        let cases = ["const n: i32 = 1; fn main() -> i32 { n }"];
-        for (index, program) in cases.into_iter().enumerate() {
-            let id = u32::try_from(120 + index).unwrap();
-            let source = snapshot(&[(id, "/p/main.rue", "main.rue", program)], id);
-            let mut session = CompilerSession::new();
-            session.update(&source).into_result().unwrap();
-            session
-                .canonical_semantic(&CompileOptions::default())
-                .unwrap();
-            assert!(
-                session
-                    .last_successful_body_cache
-                    .as_ref()
-                    .unwrap()
-                    .bodies
-                    .is_empty()
-            );
-            let options = CompileOptions {
-                opt_level: OptLevel::O1,
-                ..CompileOptions::default()
-            };
-            let actual = session.canonical_semantic(&options).unwrap();
-            assert_eq!(actual.work().durable_bodies.import_attempts, 0);
-            assert_eq!(actual.work().durable_bodies.reused_bodies, 0);
-            assert_eq!(actual.work().durable_bodies.candidate_comparisons, 0);
-            let mut fresh_session = CompilerSession::new();
-            fresh_session.update(&source).into_result().unwrap();
-            let fresh = fresh_session.canonical_semantic(&options).unwrap();
-            assert_body_artifact_parity(&actual, &fresh);
-            assert_diagnostic_parity(&session, &fresh_session);
-        }
-    }
-
-    #[test]
-    fn canonical_import_graph_change_rejects_prior_body_artifacts() {
-        let original = snapshot(
-            &[
-                (
-                    131,
-                    "/p/main.rue",
-                    "main.rue",
-                    "const imported = @import(\"lib.rue\"); fn main() -> i32 { 0 }",
-                ),
-                (132, "/p/lib.rue", "lib.rue", "pub fn value() -> i32 { 1 }"),
-                (
-                    133,
-                    "/p/other.rue",
-                    "other.rue",
-                    "pub fn value() -> i32 { 2 }",
-                ),
-            ],
-            131,
-        );
-        let changed = snapshot(
-            &[
-                (
-                    131,
-                    "/p/main.rue",
-                    "main.rue",
-                    "const imported = @import(\"other.rue\"); fn main() -> i32 { 0 }",
-                ),
-                (132, "/p/lib.rue", "lib.rue", "pub fn value() -> i32 { 1 }"),
-                (
-                    133,
-                    "/p/other.rue",
-                    "other.rue",
-                    "pub fn value() -> i32 { 2 }",
-                ),
-            ],
-            131,
-        );
-        let mut session = CompilerSession::new();
-        publish_with_test_imports(&mut session, &original);
-        session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        assert_eq!(
-            session
-                .last_successful_body_cache
-                .as_ref()
-                .unwrap()
-                .bodies
-                .len(),
-            1
-        );
-        publish_with_test_imports(&mut session, &changed);
-        let actual = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        assert_eq!(actual.work().durable_bodies.import_attempts, 0);
-        assert_eq!(actual.work().durable_bodies.reused_bodies, 0);
-        assert_eq!(actual.work().durable_bodies.candidate_comparisons, 1);
-        assert_eq!(actual.work().durable_bodies.candidate_fallbacks, 1);
-
-        let mut fresh_session = CompilerSession::new();
-        publish_with_test_imports(&mut fresh_session, &changed);
-        let fresh = fresh_session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
-        assert_body_artifact_parity(&actual, &fresh);
-        assert_diagnostic_parity(&session, &fresh_session);
+        assert_eq!(root.functions().len(), 1);
     }
 
     #[test]
@@ -16467,5 +14449,852 @@ fn main() -> i32 { selected.value() }"#,
         let (semantic_owner, rir_owner) = view.into_owners();
         assert!(Arc::ptr_eq(&semantic_owner, &stale_semantic));
         assert!(Arc::ptr_eq(&rir_owner, &stale_rir));
+    }
+
+    fn body_query_key(
+        session: &mut CompilerSession,
+        options: &CompileOptions,
+        name: &str,
+    ) -> crate::body_query::BodyQueryKey {
+        let definitions = session.stable_definitions(options).unwrap();
+        let definition = definitions
+            .definitions()
+            .iter()
+            .find(|record| {
+                record.stable_key().kind() == StableDefinitionKind::Function
+                    && record.stable_key().name() == name
+            })
+            .unwrap()
+            .stable_key()
+            .clone();
+        crate::body_query::BodyQueryKey {
+            instance: crate::FunctionInstanceKey::Definition(definition),
+            configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration {
+                target: options.target,
+                preview_features: StablePreviewFeatures::new(&options.preview_features),
+            },
+        }
+    }
+
+    fn retained_body_query_stamps(
+        session: &CompilerSession,
+        key: &crate::body_query::BodyQueryKey,
+    ) -> (u64, u64, u64, u64) {
+        let revision = session
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .unwrap();
+        let cancellation = rue_query::CancellationToken::new();
+        let transaction = session
+            .queries
+            .revisioned
+            .body_transaction(
+                revision,
+                key.clone(),
+                Arc::new(BTreeMap::new()),
+                Arc::from([]),
+                false,
+                cancellation.clone(),
+                |_| panic!("semantic request must have materialized this body terminal"),
+            )
+            .unwrap();
+        let body = session
+            .queries
+            .revisioned
+            .canonical_body_projection(revision, key.clone(), cancellation.clone())
+            .unwrap();
+        let references = session
+            .queries
+            .revisioned
+            .body_references_projection(revision, key.clone(), cancellation.clone())
+            .unwrap();
+        let produced_anonymous = session
+            .queries
+            .revisioned
+            .body_produced_anonymous_projection(revision, key.clone(), cancellation)
+            .unwrap();
+        (
+            transaction.stamp(),
+            body.stamp(),
+            references.stamp(),
+            produced_anonymous.stamp(),
+        )
+    }
+
+    fn retained_body_transaction(
+        session: &CompilerSession,
+        key: &crate::body_query::BodyQueryKey,
+    ) -> (
+        u64,
+        rue_query::QueryTerminalKind,
+        crate::body_query::BodyTransaction,
+    ) {
+        let revision = session
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .unwrap();
+        let terminal = session
+            .queries
+            .revisioned
+            .body_transaction(
+                revision,
+                key.clone(),
+                Arc::new(BTreeMap::new()),
+                Arc::from([]),
+                false,
+                rue_query::CancellationToken::new(),
+                |_| panic!("semantic request must have materialized this body terminal"),
+            )
+            .unwrap();
+        let rue_query::QueryOutcome::Success(transaction) = terminal.outcome() else {
+            unreachable!("BodyTransaction publishes typed values")
+        };
+        (terminal.stamp(), terminal.kind(), transaction.clone())
+    }
+
+    fn retained_body_dependency_nodes(
+        session: &CompilerSession,
+        key: &crate::body_query::BodyQueryKey,
+    ) -> Vec<String> {
+        let revision = session
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .unwrap();
+        session
+            .queries
+            .revisioned
+            .body_transaction(
+                revision,
+                key.clone(),
+                Arc::new(BTreeMap::new()),
+                Arc::from([]),
+                false,
+                rue_query::CancellationToken::new(),
+                |_| panic!("semantic request must have materialized this body terminal"),
+            )
+            .unwrap()
+            .dependencies()
+            .iter()
+            .map(|dependency| format!("{:?}", dependency.node))
+            .collect()
+    }
+
+    fn projected_anonymous_nominals(
+        session: &mut CompilerSession,
+        options: &CompileOptions,
+    ) -> Arc<[crate::durable_semantics::DurableAnonymousNominal]> {
+        session.canonical_rir().unwrap();
+        let merged = session
+            .queries
+            .rir
+            .selected_record(&session.queries.graph)
+            .and_then(|entry| entry.merged.clone())
+            .unwrap();
+        let revision = session
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .unwrap();
+        session
+            .queries
+            .revisioned
+            .projected_declaration_semantics(
+                revision,
+                merged.ast(),
+                options.target,
+                &options.preview_features,
+                rue_query::CancellationToken::new(),
+            )
+            .unwrap()
+            .anonymous_nominals
+    }
+
+    fn specialized_anonymous_producer(
+        nominal: &crate::durable_semantics::DurableAnonymousNominal,
+    ) -> Option<(&StableDefinitionKey, &crate::CanonicalArguments)> {
+        let crate::StableProducerId::Function(function) = &nominal.identity.producer else {
+            return None;
+        };
+        let crate::FunctionInstanceKey::Specialization { base, arguments } = function.as_ref()
+        else {
+            return None;
+        };
+        let crate::FunctionInstanceKey::Definition(definition) = base.as_ref() else {
+            return None;
+        };
+        Some((definition, arguments))
+    }
+
+    fn nested_option_result_facts(
+        facts: &[crate::durable_semantics::DurableAnonymousNominal],
+    ) -> (
+        &crate::durable_semantics::DurableAnonymousNominal,
+        &crate::durable_semantics::DurableAnonymousNominal,
+    ) {
+        let by_name = |name: &str| {
+            facts
+                .iter()
+                .find(|fact| {
+                    specialized_anonymous_producer(fact)
+                        .is_some_and(|(definition, _)| definition.name() == name)
+                })
+                .unwrap_or_else(|| panic!("missing anonymous fact owned by {name}: {facts:?}"))
+        };
+        (by_name("Option"), by_name("Result"))
+    }
+
+    fn assert_nested_result_owns_option_argument(
+        option: &crate::durable_semantics::DurableAnonymousNominal,
+        result: &crate::durable_semantics::DurableAnonymousNominal,
+        ordered_facts: &[crate::durable_semantics::DurableAnonymousNominal],
+    ) {
+        let (_, option_arguments) = specialized_anonymous_producer(option).unwrap();
+        let (_, result_arguments) = specialized_anonymous_producer(result).unwrap();
+        assert_eq!(option.identity.arguments, *option_arguments);
+        assert_eq!(result.identity.arguments, *result_arguments);
+        assert!(matches!(
+            result_arguments.types.first(),
+            Some(crate::TypeInstanceKey::Nominal(
+                crate::NominalInstanceKey::Anonymous(identity)
+            )) if identity == &option.identity
+        ));
+        let option_position = ordered_facts
+            .iter()
+            .position(|fact| fact.identity == option.identity)
+            .unwrap();
+        let result_position = ordered_facts
+            .iter()
+            .position(|fact| fact.identity == result.identity)
+            .unwrap();
+        assert!(
+            option_position < result_position,
+            "the dependency fact must precede its nested consumer: {ordered_facts:?}"
+        );
+    }
+
+    #[test]
+    fn body_query_stamps_preserve_caller_and_reference_values_across_body_only_edits() {
+        let options = CompileOptions::default();
+        let first = SourceSnapshot::single(
+            "main.rue",
+            "fn helper() -> i32 { 1 } fn main() -> i32 { helper() }",
+        )
+        .unwrap();
+        let second = SourceSnapshot::single(
+            "main.rue",
+            "fn helper() -> i32 { 2 } fn main() -> i32 { helper() }",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        session.canonical_semantic(&options).unwrap();
+        let main = body_query_key(&mut session, &options, "main");
+        let helper = body_query_key(&mut session, &options, "helper");
+        let first_main = retained_body_query_stamps(&session, &main);
+        let first_helper = retained_body_query_stamps(&session, &helper);
+
+        session.update(&second).into_result().unwrap();
+        session.canonical_semantic(&options).unwrap();
+        let second_main = retained_body_query_stamps(&session, &main);
+        let second_helper = retained_body_query_stamps(&session, &helper);
+
+        assert_eq!(
+            first_main, second_main,
+            "callee bodies are not caller inputs"
+        );
+        assert_ne!(first_helper.0, second_helper.0);
+        assert_ne!(first_helper.1, second_helper.1);
+        assert_eq!(first_helper.2, second_helper.2);
+        assert_eq!(first_helper.3, second_helper.3);
+    }
+
+    #[test]
+    fn unchanged_consumer_observes_function_produced_anonymous_fact_changes() {
+        let first = SourceSnapshot::single(
+            "main.rue",
+            "const N: i32 = 1; fn Make() -> type { struct { values: [i32; N] } } fn size(comptime T: type) -> i32 { @size_of(T) } fn main() -> i32 { size(Make()) }",
+        )
+        .unwrap();
+        let second = SourceSnapshot::single(
+            "main.rue",
+            "const N: i32 = 2; fn Make() -> type { struct { values: [i32; N] } } fn size(comptime T: type) -> i32 { @size_of(T) } fn main() -> i32 { size(Make()) }",
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        let cold = session.canonical_semantic(&options).unwrap();
+        let main = body_query_key(&mut session, &options, "main");
+        let make = body_query_key(&mut session, &options, "Make");
+        let size = cold
+            .functions()
+            .iter()
+            .find(|function| function.legacy_name.starts_with("size."))
+            .unwrap();
+        let size = crate::body_query::BodyQueryKey {
+            instance: size.semantic_identity.clone(),
+            configuration: main.configuration.clone(),
+        };
+        let first_make_stamps = retained_body_query_stamps(&session, &make);
+        let first_size_stamps = retained_body_query_stamps(&session, &size);
+        let make_dependencies = retained_body_dependency_nodes(&session, &make);
+        assert!(
+            make_dependencies
+                .iter()
+                .any(|dependency| dependency.contains("const:") && dependency.contains(":N:")),
+            "{make_dependencies:?}"
+        );
+        let main_transaction = retained_body_transaction(&session, &main).2;
+        let main_dependencies = retained_body_dependency_nodes(&session, &main);
+        assert!(
+            main_dependencies.iter().any(|dependency| {
+                dependency.contains("body-produced-anonymous") && dependency.contains("Make")
+            }),
+            "transaction={main_transaction:?}; dependencies={main_dependencies:?}"
+        );
+
+        session.update(&second).into_result().unwrap();
+        let warm = session.canonical_semantic(&options).unwrap();
+        let second_make_stamps = retained_body_query_stamps(&session, &make);
+        let second_size_stamps = retained_body_query_stamps(&session, &size);
+        assert_ne!(first_make_stamps.3, second_make_stamps.3);
+        assert_ne!(first_size_stamps.0, second_size_stamps.0);
+
+        let mut fresh = CompilerSession::new();
+        fresh.update(&second).into_result().unwrap();
+        let expected = fresh.canonical_semantic(&options).unwrap();
+        assert_semantic_artifact_parity(&session, &warm, &expected);
+    }
+
+    #[test]
+    fn deferred_value_type_constructor_positions_publish_a_complete_body_closure() {
+        let source = SourceSnapshot::single(
+            "main.rue",
+            r#"
+                fn Witness(comptime T: type, comptime value: T) -> type {
+                    struct { payload: T }
+                }
+
+                fn Wrap(comptime T: type) -> type {
+                    struct { inner: T }
+                }
+
+                fn read(w: Witness(i32, 7)) -> i32 { w.payload }
+
+                fn main() -> i32 {
+                    let W = Witness(i32, 7);
+                    let Wrapped = Wrap(Witness(i32, 7));
+                    let wrapped = Wrapped { inner: W { payload: 42 } };
+                    read(wrapped.inner)
+                }
+            "#,
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
+    }
+
+    #[test]
+    fn nested_type_constructor_producers_publish_a_complete_body_closure() {
+        let first = SourceSnapshot::single(
+            "main.rue",
+            r#"
+                fn Option(comptime T: type) -> type { enum { Some(T), None } }
+                fn Result(comptime T: type, comptime E: type) -> type {
+                    enum { Ok(T), Err(E) }
+                }
+                fn make() -> Result(Option(i32), i32) {
+                    let O = Option(i32);
+                    let R = Result(Option(i32), i32);
+                    R.Ok(O.Some(42))
+                }
+                fn main() -> i32 {
+                    let O = Option(i32);
+                    let R = Result(Option(i32), i32);
+                    match make() {
+                        R.Ok(o) => match o { O.Some(v) => v, O.None => 0 },
+                        R.Err(e) => 0 - e
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let second = SourceSnapshot::single(
+            "main.rue",
+            r#"
+                fn Option(comptime T: type) -> type { enum { None, Some(T) } }
+                fn Result(comptime T: type, comptime E: type) -> type {
+                    enum { Ok(T), Err(E) }
+                }
+                fn make() -> Result(Option(i32), i32) {
+                    let O = Option(i32);
+                    let R = Result(Option(i32), i32);
+                    R.Ok(O.Some(42))
+                }
+                fn main() -> i32 {
+                    let O = Option(i32);
+                    let R = Result(Option(i32), i32);
+                    match make() {
+                        R.Ok(o) => match o { O.Some(v) => v, O.None => 0 },
+                        R.Err(e) => 0 - e
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        session.canonical_semantic(&options).unwrap();
+        let first_projection = projected_anonymous_nominals(&mut session, &options);
+        let (first_option, first_result) = nested_option_result_facts(&first_projection);
+        assert_nested_result_owns_option_argument(first_option, first_result, &first_projection);
+
+        session.update(&second).into_result().unwrap();
+        let warm = session.canonical_semantic(&options).unwrap();
+        let warm_projection = projected_anonymous_nominals(&mut session, &options);
+        let (warm_option, warm_result) = nested_option_result_facts(&warm_projection);
+        assert_nested_result_owns_option_argument(warm_option, warm_result, &warm_projection);
+        assert_ne!(
+            first_option.shape, warm_option.shape,
+            "changing only the type constructor's variant order must invalidate its fact"
+        );
+
+        let mut fresh = CompilerSession::new();
+        fresh.update(&second).into_result().unwrap();
+        let expected = fresh.canonical_semantic(&options).unwrap();
+        let fresh_projection = projected_anonymous_nominals(&mut fresh, &options);
+        assert_eq!(warm_projection, fresh_projection);
+        assert_semantic_artifact_parity(&session, &warm, &expected);
+    }
+
+    #[test]
+    fn anonymous_specialization_dependency_priority_prevents_lexical_starvation() {
+        let source = SourceSnapshot::single(
+            "main.rue",
+            r#"
+                fn ABox(comptime T: type) -> type { struct { item: T } }
+                fn ZItem() -> type { struct { value: i32 } }
+                fn main() -> i32 {
+                    let Item = ZItem();
+                    let Box = ABox(Item);
+                    let boxed = Box { item: Item { value: 42 } };
+                    boxed.item.value
+                }
+            "#,
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let options = CompileOptions::default();
+        session.canonical_semantic(&options).unwrap();
+        let main = body_query_key(&mut session, &options, "main");
+        let transaction = retained_body_transaction(&session, &main).2;
+        let mut producers = BTreeSet::new();
+        for reference in transaction.references().0.iter() {
+            match reference {
+                crate::body_query::BodyReference::Callable(function) => {
+                    if let Some(definition) = stable_function_definition_root(function) {
+                        producers.insert(definition.name().to_owned());
+                    }
+                }
+                crate::body_query::BodyReference::Type(ty) => {
+                    let owner = crate::FunctionInstanceKey::DropGlue(Box::new(ty.clone()));
+                    producers.extend(
+                        crate::revisioned_query_database::collect_instance_anonymous_nominals(
+                            &owner,
+                        )
+                        .iter()
+                        .filter_map(|identity| {
+                            stable_producer_definition_root(&identity.producer)
+                                .map(|definition| definition.name().to_owned())
+                        }),
+                    );
+                }
+                crate::body_query::BodyReference::Definition(definition) => {
+                    producers.insert(definition.name().to_owned());
+                }
+            }
+        }
+        assert!(producers.contains("ABox"));
+        assert!(producers.contains("ZItem"));
+    }
+
+    #[test]
+    fn negative_body_lookup_recomputes_when_a_declaration_is_added() {
+        let missing = SourceSnapshot::single("main.rue", "fn main() -> i32 { helper() }").unwrap();
+        let resolved = SourceSnapshot::single(
+            "main.rue",
+            "fn main() -> i32 { helper() } fn helper() -> i32 { 42 }",
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+        let mut warm = CompilerSession::new();
+        warm.update(&missing).into_result().unwrap();
+        assert!(warm.canonical_semantic(&options).is_err());
+
+        warm.update(&resolved).into_result().unwrap();
+        let warm_output = warm.canonical_semantic(&options).unwrap();
+        let mut fresh = CompilerSession::new();
+        fresh.update(&resolved).into_result().unwrap();
+        let fresh_output = fresh.canonical_semantic(&options).unwrap();
+        assert_eq!(
+            format!("{:?}", warm_output.functions()),
+            format!("{:?}", fresh_output.functions())
+        );
+        assert_eq!(warm_output.functions().len(), 2);
+    }
+
+    #[test]
+    fn qualified_negative_body_lookup_recomputes_when_imported_member_is_added() {
+        let main = r#"const lib = @import("lib.rue"); fn main() -> i32 { lib.helper() }"#;
+        let missing = snapshot(
+            &[
+                (1, "/p/main.rue", "main.rue", main),
+                (2, "/p/lib.rue", "lib.rue", "pub const value: i32 = 1;"),
+            ],
+            1,
+        );
+        let resolved = snapshot(
+            &[
+                (1, "/p/main.rue", "main.rue", main),
+                (2, "/p/lib.rue", "lib.rue", "pub fn helper() -> i32 { 42 }"),
+            ],
+            1,
+        );
+        let options = CompileOptions::default();
+        let mut warm = CompilerSession::new();
+        publish_with_test_imports(&mut warm, &missing);
+        assert!(warm.canonical_semantic(&options).is_err());
+
+        publish_with_test_imports(&mut warm, &resolved);
+        let warm_output = warm.canonical_semantic(&options).unwrap();
+        let mut fresh = CompilerSession::new();
+        publish_with_test_imports(&mut fresh, &resolved);
+        let fresh_output = fresh.canonical_semantic(&options).unwrap();
+        assert_eq!(
+            format!("{:?}", warm_output.functions()),
+            format!("{:?}", fresh_output.functions())
+        );
+        assert_eq!(warm_output.functions().len(), 2);
+    }
+
+    #[test]
+    fn body_query_values_survive_relocation_and_input_order() {
+        let program = "fn helper() -> i32 { 41 } fn main() -> i32 { helper() + 1 }";
+        let first = snapshot(&[(1, "/old/main.rue", "main.rue", program)], 1);
+        let relocated = snapshot(&[(91, "/new/main.rue", "main.rue", program)], 91);
+        let options = CompileOptions::default();
+        let build = |source: &SourceSnapshot| {
+            let mut session = CompilerSession::new();
+            session.update(source).into_result().unwrap();
+            session.canonical_semantic(&options).unwrap();
+            let key = body_query_key(&mut session, &options, "main");
+            let transaction = retained_body_transaction(&session, &key).2;
+            (key, transaction)
+        };
+        let (first_key, first_transaction) = build(&first);
+        let (relocated_key, relocated_transaction) = build(&relocated);
+        assert_eq!(first_key, relocated_key);
+        assert!(crate::body_query::transaction_equal(
+            &first_transaction,
+            &relocated_transaction,
+        ));
+    }
+
+    #[test]
+    fn recursive_body_query_publishes_a_terminal_without_a_query_cycle() {
+        let source = SourceSnapshot::single(
+            "main.rue",
+            "fn recurse(n: i32) -> i32 { if n == 0 { 0 } else { recurse(n - 1) } } fn main() -> i32 { recurse(4) }",
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session.canonical_semantic(&options).unwrap();
+        let key = body_query_key(&mut session, &options, "recurse");
+        let transaction = retained_body_transaction(&session, &key).2;
+        assert!(matches!(
+            transaction,
+            crate::body_query::BodyTransaction::Success { .. }
+        ));
+        assert!(
+            transaction
+                .references()
+                .0
+                .iter()
+                .any(|reference| match reference {
+                    crate::body_query::BodyReference::Callable(instance) =>
+                        instance == &key.instance,
+                    crate::body_query::BodyReference::Definition(definition) => {
+                        matches!(
+                            &key.instance,
+                            crate::FunctionInstanceKey::Definition(owner) if owner == definition
+                        )
+                    }
+                    crate::body_query::BodyReference::Type(_) => false,
+                })
+        );
+    }
+
+    #[test]
+    fn reachable_comptime_specialization_is_composed_from_its_body_terminal() {
+        let source = SourceSnapshot::single(
+            "main.rue",
+            "fn make(comptime N: i32) -> [i32; N] { [7; N] } fn main() -> i32 { let a: [i32; 3] = make(1 + 2); a[0] + a[1] + a[2] }",
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let output = session.canonical_semantic(&options).unwrap();
+
+        assert!(
+            output.functions().iter().any(|function| matches!(
+                function.semantic_identity,
+                crate::FunctionInstanceKey::Specialization { .. }
+            )),
+            "the reachable specialization must be composed into canonical output"
+        );
+    }
+
+    #[test]
+    fn closure_restart_retracts_facts_from_an_abandoned_anonymous_member() {
+        let source = SourceSnapshot::single(
+            "main.rue",
+            "fn a_value() -> i32 { let A = struct { value: i32, fn get(borrow self) -> i32 { let Nested = struct { value: i32 }; let nested = Nested { value: self.value }; nested.value + a_value() } }; let a = A { value: 2 }; a.value } fn z_value() -> i32 { let Z = struct { value: i32, fn get(borrow self) -> i32 { let Nested = struct { value: i32 }; let nested = Nested { value: self.value }; nested.value + a_value() } }; let z = Z { value: 1 }; z.get() } fn main() -> i32 { z_value() }",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let options = CompileOptions::default();
+        let output = session.canonical_semantic(&options).unwrap();
+        let mut outer_nominals = Vec::new();
+        for name in ["a_value", "z_value"] {
+            let key = body_query_key(&mut session, &options, name);
+            let crate::body_query::BodyTransaction::Success {
+                produced_anonymous_nominals,
+                ..
+            } = retained_body_transaction(&session, &key).2
+            else {
+                panic!("{name} must publish its structural producer fact")
+            };
+            let outer = produced_anonymous_nominals
+                .0
+                .iter()
+                .find(|nominal| {
+                    matches!(
+                        &nominal.shape,
+                        crate::durable_semantics::DurableAnonymousNominalShape::Struct { methods, .. }
+                            if methods.iter().any(|method| method.name.as_ref() == "get")
+                    )
+                })
+                .expect("each producer body publishes its get-bearing struct")
+                .clone();
+            outer_nominals.push(outer);
+        }
+        assert_eq!(outer_nominals[0].shape, outer_nominals[1].shape);
+        assert_eq!(
+            outer_nominals[0].type_captures,
+            outer_nominals[1].type_captures
+        );
+        assert_eq!(
+            outer_nominals[0].value_captures,
+            outer_nominals[1].value_captures
+        );
+
+        let produced = outer_nominals
+            .iter()
+            .cloned()
+            .map(|nominal| (nominal.identity.clone(), nominal))
+            .collect::<BTreeMap<_, _>>();
+        let members = outer_nominals
+            .iter()
+            .map(|nominal| crate::FunctionInstanceKey::AnonymousMember {
+                owner: Box::new(crate::TypeInstanceKey::Nominal(
+                    crate::NominalInstanceKey::Anonymous(nominal.identity.clone()),
+                )),
+                member: crate::AnonymousMemberKey {
+                    kind: crate::AnonymousMemberKind::Method,
+                    name: Arc::from("get"),
+                },
+            })
+            .collect::<Vec<_>>();
+        let member_keys = members
+            .iter()
+            .cloned()
+            .map(|instance| crate::body_query::BodyQueryKey {
+                instance,
+                configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration {
+                    target: options.target,
+                    preview_features: StablePreviewFeatures::new(&options.preview_features),
+                },
+            })
+            .collect::<Vec<_>>();
+        let mut nested_nominals = Vec::new();
+        for key in &member_keys {
+            let crate::body_query::BodyTransaction::Success {
+                produced_anonymous_nominals,
+                ..
+            } = retained_body_transaction(&session, key).2
+            else {
+                panic!("both pre- and post-restart member queries must publish terminals")
+            };
+            assert_eq!(produced_anonymous_nominals.0.len(), 1);
+            assert_eq!(
+                produced_anonymous_nominals.0[0].identity.producer,
+                crate::StableProducerId::Function(Box::new(key.instance.clone()))
+            );
+            nested_nominals.push(produced_anonymous_nominals.0[0].clone());
+        }
+
+        let canonical_members = members
+            .iter()
+            .filter(|instance| {
+                produced_anonymous_survives_closure_restart(instance, &produced, &[])
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            canonical_members.len(),
+            1,
+            "only the canonical member seeds a restart"
+        );
+        let canonical_member = canonical_members[0];
+        let abandoned_member = members
+            .iter()
+            .find(|member| *member != canonical_member)
+            .expect("the first traversal reached a now-abandoned member");
+        assert!(
+            output
+                .functions()
+                .iter()
+                .any(|function| { &function.semantic_identity == canonical_member })
+        );
+        assert!(
+            !output
+                .functions()
+                .iter()
+                .any(|function| { &function.semantic_identity == abandoned_member })
+        );
+
+        let canonical_nested = nested_nominals
+            .iter()
+            .find(|nominal| {
+                nominal.identity.producer
+                    == crate::StableProducerId::Function(Box::new(canonical_member.clone()))
+            })
+            .expect("the surviving member publishes its nested nominal");
+        let abandoned_nested = nested_nominals
+            .iter()
+            .find(|nominal| nominal != &canonical_nested)
+            .expect("the abandoned member terminal retains its retracted fact for diagnostics");
+        assert_eq!(
+            stable_producer_definition_root(&canonical_nested.identity.producer),
+            stable_function_definition_root(canonical_member)
+        );
+        assert_eq!(
+            stable_producer_definition_root(&abandoned_nested.identity.producer),
+            stable_function_definition_root(abandoned_member)
+        );
+
+        let mut drop_rooted = canonical_nested.identity.clone();
+        let crate::FunctionInstanceKey::AnonymousMember { owner, .. } = canonical_member else {
+            unreachable!()
+        };
+        drop_rooted.producer = crate::StableProducerId::Function(Box::new(
+            crate::FunctionInstanceKey::DropGlue(owner.clone()),
+        ));
+        assert_eq!(
+            stable_producer_definition_root(&drop_rooted.producer),
+            stable_function_definition_root(canonical_member),
+            "anonymous-member and drop-glue producers use the owning definition root"
+        );
+        assert_eq!(
+            stable_anonymous_nominal_cmp(&canonical_nested.identity, &drop_rooted),
+            canonical_nested.identity.cmp(&drop_rooted),
+            "equal producer roots fall back to the complete stable identity"
+        );
+    }
+
+    #[test]
+    fn target_and_preview_configuration_select_distinct_body_terminals() {
+        let source = SourceSnapshot::single("main.rue", "fn main() -> i32 { 42 }").unwrap();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+
+        let default_options = CompileOptions::default();
+        session.canonical_semantic(&default_options).unwrap();
+        let default_key = body_query_key(&mut session, &default_options, "main");
+        let default = retained_body_transaction(&session, &default_key);
+
+        let configured_options = CompileOptions {
+            target: if default_options.target == crate::Target::X86_64Linux {
+                crate::Target::Aarch64Linux
+            } else {
+                crate::Target::X86_64Linux
+            },
+            preview_features: PreviewFeatures::from([PreviewFeature::TestInfra]),
+            ..CompileOptions::default()
+        };
+        session.canonical_semantic(&configured_options).unwrap();
+        let configured_key = body_query_key(&mut session, &configured_options, "main");
+        let configured = retained_body_transaction(&session, &configured_key);
+
+        assert_ne!(default_key, configured_key);
+        assert!(matches!(
+            default.2,
+            crate::body_query::BodyTransaction::Success { .. }
+        ));
+        assert!(matches!(
+            configured.2,
+            crate::body_query::BodyTransaction::Success { .. }
+        ));
+    }
+
+    #[test]
+    fn unreachable_body_is_not_requested_by_production_reachability() {
+        let source =
+            SourceSnapshot::single("main.rue", "fn dead() -> i32 { 1 } fn main() -> i32 { 42 }")
+                .unwrap();
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session.canonical_semantic(&options).unwrap();
+        let dead = body_query_key(&mut session, &options, "dead");
+        let revision = session
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .unwrap();
+        let compute_called = std::cell::Cell::new(false);
+        let result = session.queries.revisioned.body_transaction(
+            revision,
+            dead,
+            Arc::new(BTreeMap::new()),
+            Arc::from([]),
+            false,
+            rue_query::CancellationToken::new(),
+            |_| {
+                compute_called.set(true);
+                Err(rue_query::QueryAbort::Canceled)
+            },
+        );
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::revisioned_query_database::BodyTransactionRequestFailure::Query(
+                rue_query::QueryAbort::Canceled
+            )
+        ));
+        assert!(
+            compute_called.get(),
+            "an existing terminal would bypass the supplied computation"
+        );
     }
 }

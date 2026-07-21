@@ -120,7 +120,7 @@ struct SpecializedBody {
 /// `fact(n - 1)`, RUE-166) and ever-growing type instantiation such as
 /// `f(Pair(T), ...)` inside `f` — without threading provenance through every
 /// sema work queue.
-pub(crate) const MAX_SPECIALIZATION_ROUNDS: usize = 64;
+pub const MAX_SPECIALIZATION_ROUNDS: usize = 64;
 
 impl Specializer {
     fn stable_identity(
@@ -356,7 +356,7 @@ impl Specializer {
                         &candidate.body,
                         candidate.body_span,
                     ) {
-                        Ok(imported) if imported.warnings.is_empty() => {
+                        Ok(imported) => {
                             sema.body_analysis_work.specialized_body_import_successes += 1;
                             sema.body_analysis_work.specialized_body_import_instructions_installed +=
                                 imported.air.len();
@@ -386,7 +386,7 @@ impl Specializer {
                                     param_modes: imported.param_modes,
                                     allow_unreachable_code: imported.allow_unreachable_code,
                                 },
-                                warnings: Vec::new(),
+                                warnings: imported.warnings.to_vec(),
                                 local_strings: imported.strings,
                                 referenced_functions,
                                 referenced_methods,
@@ -619,7 +619,6 @@ fn rewrite_call_generic(
 /// its existing expansion policy until the compiler query cutover.  Keeping
 /// selection here ensures the transaction does not guess specialization edges
 /// by rescanning RIR syntax.
-#[cfg(test)]
 pub(crate) fn select_one_body_specializations(
     sema: &crate::sema::BodySema<'_>,
     mut function: AnalyzedFunction,
@@ -632,6 +631,7 @@ pub(crate) fn select_one_body_specializations(
             crate::SemanticModuleToken,
         >,
     )>,
+    Vec<crate::FunctionInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>>,
 )> {
     let mut specializations = HashMap::new();
     let mut pending = Vec::new();
@@ -663,15 +663,35 @@ pub(crate) fn select_one_body_specializations(
                         specializations[key].call_site_span,
                     )
                 })?,
+                sema.canonical_specialization_instance(
+                    key.base_name,
+                    &key.type_args,
+                    &key.value_args,
+                )
+                .map_err(|failure| {
+                    CompileError::new(
+                        ErrorKind::InternalError(format!(
+                            "failed to select a canonical specialization instance: {failure:?}"
+                        )),
+                        specializations[key].call_site_span,
+                    )
+                })?,
             ))
         })
         .collect::<CompileResult<Vec<_>>>()?;
     selected.sort_by(|left, right| left.1.cmp(&right.1));
     selected.dedup_by(|left, right| left.1 == right.1);
-    Ok((function, selected))
+    let instances = selected
+        .iter()
+        .map(|(_, _, instance)| instance.clone())
+        .collect();
+    let identities = selected
+        .into_iter()
+        .map(|(name, identity, _)| (name, identity))
+        .collect();
+    Ok((function, identities, instances))
 }
 
-#[cfg(test)]
 pub(crate) struct OneSpecializedBody {
     pub(crate) key: SpecializationKey,
     pub(crate) function: AnalyzedFunction,
@@ -690,7 +710,6 @@ pub(crate) struct OneSpecializedBody {
 /// Analyze exactly one concrete specialization.  No call-site scan or
 /// specialization fixed point is performed here; the caller supplies the
 /// already-selected local key and receives references for later scheduling.
-#[cfg(test)]
 pub(crate) fn analyze_one_specialization(
     sema: &mut crate::sema::BodySema<'_>,
     infer_ctx: &InferenceContext,
@@ -758,7 +777,7 @@ const SPEC_SEP: char = '.';
 /// (RUE-100's lesson: colliding mangles mean duplicate symbols at link time).
 /// The `.` separator is illegal in Rue identifiers, so these names cannot
 /// collide with a user-spellable function name (RUE-41).
-fn mangle_specialized_name(
+pub(crate) fn mangle_specialized_name(
     base_name: &str,
     type_args: &[Type],
     value_args: &[ConstValue],
@@ -944,7 +963,7 @@ fn create_specialized_function(
         crate::sema::DeclarationTypeDependencyKind::Body,
     ));
 
-    let producer = sema
+    let mut producer = sema
         .canonical_function_producer(key.base_name, &type_subst, &value_subst)
         .map_err(|failure| {
             CompileError::new(
@@ -954,6 +973,41 @@ fn create_specialized_function(
                 base_info.span,
             )
         })?;
+    // A one-body specialization request already carries its exact durable
+    // identity. Reconstructing that identity from materialized structural
+    // types can select a different-but-equal anonymous representative and
+    // therefore change nested argument anchors. Keep the request identity for
+    // this top-level body; ordinary whole-program specialization has no such
+    // request and continues to derive its canonical producer normally.
+    if let Some(crate::StableProducerId::Function(requested)) =
+        sema.one_body_requested_producer.as_ref()
+    {
+        let requested_arguments = match requested.as_ref() {
+            crate::FunctionInstanceKey::Specialization { base, arguments }
+                if matches!(
+                    base.as_ref(),
+                    crate::FunctionInstanceKey::Definition(definition)
+                        if *definition == sema.function_identity(key.base_name).map_err(|failure| {
+                            CompileError::new(
+                                ErrorKind::InternalError(format!(
+                                    "failed to match requested specialization producer: {failure:?}"
+                                )),
+                                base_info.span,
+                            )
+                        })?
+                ) =>
+            {
+                Some(arguments.clone())
+            }
+            _ => None,
+        };
+        if let Some(arguments) = requested_arguments {
+            producer = (
+                crate::StableProducerId::Function(requested.clone()),
+                arguments,
+            );
+        }
+    }
     let crate::StableProducerId::Function(function_identity) = &producer.0 else {
         unreachable!("a specialization producer is always a function")
     };

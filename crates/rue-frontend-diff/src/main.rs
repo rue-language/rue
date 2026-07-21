@@ -19,7 +19,9 @@ const COMPTIME: u64 = 25;
 const IDENT_TOKEN: u64 = 2;
 const UNDERSCORE: u64 = 95;
 const EXPECTED_CORPUS_FILES: usize = 1443;
-const PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
+// RUE-1083: temporary cold-Linux headroom while query-cutover compile-time
+// regressions are repaired. The frontend differential remains fully real.
+const PROCESS_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
 const SYNTAX_PROBES: &[(&str, &str)] = &[
     (

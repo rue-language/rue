@@ -596,13 +596,29 @@ impl<D: DeclarationPhase> SemaTypeSyntaxProvider<'_, '_, '_, D> {
         {
             *value
         } else if let SemaTypeRootAuthority::KnownFile(root_file) = self.root_authority {
-            if let Some(info) = self.sema.resolve_const_info_in_file(symbol, root_file) {
+            if let Some(info) = self
+                .sema
+                .resolve_const_info_in_file(symbol, root_file)
+                .cloned()
+            {
+                self.sema.record_named_const_dependency(
+                    super::NamedConstDependencyTargetEvent::ValueConst {
+                        file: info.span.file_id.index(),
+                        name: name.to_owned(),
+                    },
+                );
                 info.value
             } else if self.sema.declaration_binding_active
                 && let Some(value) = self
                     .sema
                     .try_resolve_indexed_const_during_binding(symbol, root_file)?
             {
+                self.sema.record_named_const_dependency(
+                    super::NamedConstDependencyTargetEvent::ValueConst {
+                        file: root_file.index(),
+                        name: name.to_owned(),
+                    },
+                );
                 value
             } else {
                 return Err(self.invalid_array_length(format!(

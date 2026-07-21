@@ -1047,23 +1047,6 @@ drop fn StrBuf(self) { }
             air_shapes.sort_by_key(|(runtime, _)| *runtime as u8);
             assert_eq!(air_shapes, expected, "AIR must use the manifest shapes");
 
-            let mut durable_shapes = semantic
-                .durable_ordinary_body_payloads()
-                .iter()
-                .flat_map(|payload| payload.instructions.iter())
-                .filter_map(|inst| match &inst.data {
-                    DurableAirInstData::RuntimeCall { runtime, args } if is_target(*runtime) => {
-                        Some((*runtime, args.len() as u32))
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            durable_shapes.sort_by_key(|(runtime, _)| *runtime as u8);
-            assert_eq!(
-                durable_shapes, expected,
-                "durable AIR must retain runtime identities and arities"
-            );
-
             let mut cfg_shapes = semantic
                 .functions()
                 .iter()

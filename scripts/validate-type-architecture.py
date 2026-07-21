@@ -94,6 +94,7 @@ PUBLIC_TYPE_DECLARATION_ALLOWLIST = {
     ("rue-air", "semantic_identity.rs", "TypeInstanceKey"): "canonical cross-boundary type identity",
     ("rue-air", "sema/binding_manifest.rs", "SemanticExportType"): "stable semantic export schema",
     ("rue-air", "sema/binding_manifest.rs", "SemanticAnonymousMethodType"): "source semantic export method-type schema",
+    ("rue-air", "sema/one_body.rs", "SemanticProducedAnonymousMethodType"): "body-produced semantic method-type schema",
     ("rue-air", "sema/info.rs", "AnonMethodType"): "anonymous method signature metadata",
     ("rue-air", "sema/output.rs", "DeclarationTypeDependencySourceKind"): "dependency metadata",
     ("rue-air", "sema/output.rs", "DeclarationTypeDependencyTargetKind"): "dependency metadata",

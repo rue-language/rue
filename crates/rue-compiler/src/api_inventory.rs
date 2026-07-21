@@ -9,6 +9,7 @@
 const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("artifact_views", include_str!("artifact_views.rs")),
     ("backend", include_str!("backend.rs")),
+    ("body_query", include_str!("body_query.rs")),
     ("bound_definitions", include_str!("bound_definitions.rs")),
     ("canonical_lower", include_str!("canonical_lower.rs")),
     ("canonical_merge", include_str!("canonical_merge.rs")),
@@ -1033,6 +1034,75 @@ fn facade_stays_small_and_session_centered() {
         [("queries", "compile_snapshot".to_owned())],
         "production modules may define exactly one public compile function"
     );
+}
+
+#[test]
+fn per_body_query_boundary_is_stable_independent_and_cache_free() {
+    fn item<'a>(source: &'a str, marker: &str) -> &'a str {
+        let start = source
+            .find(marker)
+            .expect("reviewed body query item exists");
+        let rest = &source[start..];
+        let open = rest.find('{').expect("reviewed item has a body");
+        let mut depth = 0usize;
+        for (offset, byte) in rest[open..].bytes().enumerate() {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &rest[..open + offset + 1];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("reviewed body query item is balanced")
+    }
+    let body = include_str!("body_query.rs");
+    let key = item(body, "struct BodyQueryKey");
+    assert!(key.contains("instance: crate::FunctionInstanceKey"));
+    assert!(
+        key.contains("configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration")
+    );
+    for forbidden in [
+        "Revision",
+        "fingerprint",
+        "Span",
+        "BodyOwnerToken",
+        "TypeId",
+    ] {
+        assert!(
+            !key.contains(forbidden),
+            "BodyQueryKey retained unstable identity component {forbidden}"
+        );
+    }
+
+    let transaction = item(body, "enum BodyTransaction");
+    assert!(transaction.contains("Success"));
+    assert!(transaction.contains("DeterministicFailure"));
+    assert!(!transaction.contains("Canceled"));
+    assert!(!transaction.contains("NonTerminal"));
+
+    let runtime = include_str!("revisioned_query_database.rs");
+    for family in [
+        "compiler.body-transaction",
+        "compiler.canonical-body",
+        "compiler.body-references",
+    ] {
+        assert!(
+            runtime.contains(family),
+            "missing independent family {family}"
+        );
+    }
+    let semantic_entry = item(include_str!("session.rs"), "struct SemanticCacheEntry");
+    assert!(!semantic_entry.contains("successful_body_cache"));
+    let body_adapter = item(
+        include_str!("canonical_semantic.rs"),
+        "pub(crate) fn analyze_body_query",
+    );
+    assert!(!body_adapter.contains(".resolve_declarations_for_test()"));
+    assert!(body_adapter.contains("install_declaration_semantics_with_anonymous"));
 }
 
 #[test]
@@ -2123,6 +2193,53 @@ fn canonical_semantic_body_has_no_compiler_owned_peer_algebra() {
         ),
         "specialized envelopes must retain rue-air's canonical identity directly"
     );
+}
+
+#[test]
+fn rue_1027_production_body_authority_is_query_owned_and_import_only() {
+    let canonical = include_str!("canonical_semantic.rs");
+    let session = include_str!("session.rs");
+    let database = include_str!("revisioned_query_database.rs");
+    let body_query = include_str!("body_query.rs");
+
+    let finish = canonical
+        .split("fn finish_canonical_analysis(")
+        .nth(1)
+        .and_then(|source| source.split("fn recover_declaration_failure(").next())
+        .expect("canonical finalization body");
+    assert!(finish.contains(".compose_queried_bodies("));
+    assert!(!finish.contains("analyze_all_bodies"));
+    assert!(!finish.contains("if no_queried_candidates"));
+    assert_eq!(finish.matches("compose_queried_bodies").count(), 1);
+    let recovery = canonical
+        .split("fn recover_declaration_failure(")
+        .nth(1)
+        .and_then(|source| source.split("\n#[cfg(test)]\nmod tests").next())
+        .expect("declaration recovery body");
+    assert!(!recovery.contains("analyze_all_bodies"));
+    assert!(!session.contains("requires_request_local_discovery"));
+
+    let anonymous_branch = database
+        .split("Key::AnonymousNominal(query) =>")
+        .nth(1)
+        .and_then(|source| source.split("Key::ComptimeCall(call) =>").next())
+        .expect("SemanticNucleus anonymous nominal branch");
+    assert!(anonymous_branch.contains("produced_anonymous_for_semantic_nucleus"));
+    assert!(!anonymous_branch.contains("Key::ComptimeCall("));
+    for family in [
+        "compiler.body-transaction",
+        "compiler.canonical-body",
+        "compiler.body-references",
+        "compiler.body-produced-anonymous",
+    ] {
+        assert!(
+            database.contains(family),
+            "missing RUE-1027 family: {family}"
+        );
+    }
+    assert!(body_query.contains("pub(crate) struct BodyQueryKey"));
+    assert!(body_query.contains("pub(crate) struct BodyProducedAnonymousNominals"));
+    assert!(!body_query.contains("Span"));
 }
 
 #[test]

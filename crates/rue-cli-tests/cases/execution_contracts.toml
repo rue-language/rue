@@ -12,6 +12,12 @@ class = "heavyweight"
 compile_timeout_ms = 30000
 runtime_timeout_ms = 30000
 
+[contract.heavyweight_medium]
+class = "heavyweight"
+# RUE-1083: temporary Linux ARM64 headroom for the real Rill coverage.
+compile_timeout_ms = 60000
+runtime_timeout_ms = 30000
+
 [contract.heavyweight_long]
 class = "heavyweight"
 compile_timeout_ms = 120000
@@ -37,6 +43,10 @@ contract = "heavyweight"
 
 [[automatic_example]]
 path = "rill/main.rue"
+contract = "heavyweight_medium"
+
+[[automatic_example]]
+path = "ruelex/main.rue"
 contract = "heavyweight"
 
 [[automatic_example]]

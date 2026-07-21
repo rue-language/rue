@@ -934,20 +934,57 @@ impl<'a> DeclarationShells<'a> {
                             });
                             let query_occurrence = nominal.identity.anchor.segments().last();
                             let method_materialization = source_span.and_then(|source_span| {
-                                self.sema
+                                let candidates = self
+                                    .sema
                                     .rir
                                     .iter()
-                                    .find_map(|(_, instruction)| match &instruction.data {
+                                    .filter_map(|(_, instruction)| match &instruction.data {
                                         InstData::AnonStructType {
-                                            methods, anchor, ..
+                                            methods: rir_methods,
+                                            anchor,
+                                            ..
                                         } if anchor.segments().last() == query_occurrence
                                             && instruction.span.file_id == source_span.file_id
                                             && instruction.span.start >= source_span.start
                                             && instruction.span.end <= source_span.end =>
                                         {
-                                            Some((methods.clone(), anchor.clone()))
+                                            let method_refs =
+                                                self.sema.rir.anon_struct_methods(rir_methods);
+                                            let mut source_names = method_refs
+                                                .iter()
+                                                .filter_map(|method_ref| {
+                                                    let InstData::FnDecl { name, .. } =
+                                                        &self.sema.rir.get(*method_ref).data
+                                                    else {
+                                                        return None;
+                                                    };
+                                                    Some(self.sema.interner.resolve(name))
+                                                })
+                                                .collect::<Vec<_>>();
+                                            let mut projected_names = methods
+                                                .iter()
+                                                .map(|method| method.name.as_ref())
+                                                .collect::<Vec<_>>();
+                                            source_names.sort_unstable();
+                                            projected_names.sort_unstable();
+                                            (source_names == projected_names)
+                                                .then(|| (rir_methods.clone(), anchor.clone()))
                                         }
                                         _ => None,
+                                    })
+                                    .collect::<Vec<_>>();
+                                candidates
+                                    .iter()
+                                    .find(|(_, anchor)| anchor == &nominal.identity.anchor)
+                                    .cloned()
+                                    .or_else(|| {
+                                        // Projection can remove a producer-owned
+                                        // contextual anchor prefix. In that case
+                                        // accept the relative occurrence only
+                                        // when the source span and complete
+                                        // method-name multiset identify exactly
+                                        // one RIR nominal; ambiguity fails closed.
+                                        (candidates.len() == 1).then(|| candidates[0].clone())
                                     })
                             });
                             let has_methods = !methods.is_empty();
@@ -1962,15 +1999,53 @@ fn stable_module_files<D: super::DeclarationPhase>(sema: &super::Sema<'_, D>) ->
 }
 
 impl<'a> BoundSema<'a> {
-    /// RUE-1084 extraction seam.  This remains test-only until the compiler
-    /// body-query family replaces the whole-program production authority.
+    /// Analyze exactly one callable body. Ordinary callees are reported as
+    /// stable references and are never analyzed by this transaction.
+    pub fn analyze_one_body(
+        self,
+        request: super::OneBodyRequest,
+        interruption: Option<super::OneBodyInterruption>,
+    ) -> super::OneBodyTransactionOutcome {
+        super::one_body::analyze_one_body(self.sema, request, interruption)
+    }
+
+    /// Resolve a stable compiler-owned function instance into this fresh
+    /// semantic epoch, then analyze exactly that body.
+    pub fn analyze_one_body_instance<K, M>(
+        self,
+        instance: &crate::FunctionInstanceKey<K, M>,
+        definition: impl Fn(
+            &K,
+        ) -> Result<
+            crate::SemanticDefinitionToken,
+            crate::SemanticStableResolutionFailure,
+        >,
+        module: impl Fn(
+            &M,
+        )
+            -> Result<crate::SemanticModuleToken, crate::SemanticStableResolutionFailure>,
+        interruption: Option<super::OneBodyInterruption>,
+    ) -> super::OneBodyTransactionOutcome
+    where
+        K: Clone,
+        M: Clone,
+    {
+        super::one_body::analyze_one_body_instance(
+            self.sema,
+            instance,
+            definition,
+            module,
+            interruption,
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn analyze_one_body_for_test(
         self,
         request: super::OneBodyRequest,
         interruption: Option<super::OneBodyInterruption>,
     ) -> super::OneBodyTransactionOutcome {
-        super::one_body::analyze_one_body(self.sema, request, interruption)
+        self.analyze_one_body(request, interruption)
     }
 
     #[cfg(test)]
@@ -2175,7 +2250,7 @@ impl<'a> BoundSema<'a> {
         super::NamespaceBoundarySnapshot,
         super::NamespaceBoundarySnapshot,
     ) {
-        super::analysis::analyze_all_function_bodies_with_namespace_probe(self.sema)
+        super::analysis::analyze_all_function_bodies_with_namespace_probe_for_test(self.sema)
     }
 
     /// Install the compiler-issued identity universe used by ordinary body
@@ -2300,14 +2375,54 @@ impl<'a> BoundSema<'a> {
         Ok(convert(&records, work))
     }
 
-    pub fn analyze_all_bodies(self) -> MultiErrorResult<SemaOutput> {
-        self.sema.analyze_all_bodies()
+    /// Test-only oracle for the retired whole-program body driver.
+    pub fn analyze_all_bodies_for_test(self) -> MultiErrorResult<SemaOutput> {
+        self.sema.analyze_all_bodies_for_test()
     }
-
-    /// Analyze bodies while retaining value-only work counters if diagnostics
-    /// prevent AIR publication.
-    pub fn analyze_all_bodies_with_work(self) -> Result<SemaOutput, super::BodyAnalysisFailure> {
-        self.sema.analyze_all_bodies_with_work()
+    pub fn compose_queried_bodies<K, M>(
+        self,
+        candidates: Vec<crate::SemanticQueriedBodyCandidate<K, M>>,
+        definition: impl Fn(
+            &K,
+        ) -> Result<
+            crate::SemanticDefinitionToken,
+            crate::SemanticStableResolutionFailure,
+        >,
+        module: impl Fn(
+            &M,
+        )
+            -> Result<crate::SemanticModuleToken, crate::SemanticStableResolutionFailure>,
+    ) -> Result<SemaOutput, super::BodyAnalysisFailure>
+    where
+        K: Clone,
+        M: Clone,
+    {
+        let candidates = candidates
+            .into_iter()
+            .map(|candidate| {
+                Ok(crate::SemanticQueriedBodyCandidate {
+                    identity: candidate
+                        .identity
+                        .try_map_identities(&definition, &module)?,
+                    ordinary_owner: candidate.ordinary_owner,
+                    specialization_identity: candidate
+                        .specialization_identity
+                        .map(|identity| identity.try_map_keys(&definition, &module))
+                        .transpose()?,
+                    body_span: candidate.body_span,
+                    body: candidate.body.try_map_keys(&definition, &module)?,
+                })
+            })
+            .collect::<Result<Vec<_>, crate::SemanticStableResolutionFailure>>()
+            .map_err(|failure| {
+                super::BodyAnalysisFailure::new(
+                    CompileErrors::from(CompileError::without_span(ErrorKind::InternalError(
+                        format!("queried body candidate mapping failed: {failure:?}"),
+                    ))),
+                    super::BodyAnalysisWork::default(),
+                )
+            })?;
+        super::analysis::compose_queried_bodies(self.sema, candidates)
     }
 }
 
@@ -3606,7 +3721,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(installed_exports, exports);
-        installed.analyze_all_bodies().unwrap();
+        installed.analyze_all_bodies_for_test().unwrap();
 
         // A shape mismatch consumes the candidate shells and fails closed;
         // ordinary resolution in another fresh epoch remains available.
@@ -3623,7 +3738,7 @@ mod tests {
         Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
             .bind_declarations()
             .unwrap()
-            .analyze_all_bodies()
+            .analyze_all_bodies_for_test()
             .unwrap();
     }
 
@@ -3798,7 +3913,7 @@ mod tests {
             .bind_declarations()
             .unwrap();
         assert!(!bound.manifest_is_materialized());
-        let explicit = bound.analyze_all_bodies().unwrap();
+        let explicit = bound.analyze_all_bodies_for_test().unwrap();
         let summarize = |output: &SemaOutput| {
             (
                 output

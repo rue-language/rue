@@ -99,7 +99,6 @@ impl<'a> BodySema<'a> {
             ));
         }
         ctx.referenced_methods.insert((struct_id, method));
-        #[cfg(test)]
         self.record_body_method_dependency((struct_id, method));
         let call_name =
             self.interner

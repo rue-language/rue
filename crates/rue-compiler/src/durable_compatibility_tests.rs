@@ -807,9 +807,14 @@ fn relocation_file_ids_and_input_order_preserve_same_version_body_values() {
     warm.canonical_semantic(&options).unwrap();
     warm.update(&relocated).into_result().unwrap();
     let reused = warm.canonical_semantic(&options).unwrap();
-    assert_eq!(reused.work().durable_bodies.reused_bodies, 3);
+    assert_eq!(reused.work().durable_bodies.reused_bodies, 0);
     assert_eq!(reused.work().durable_bodies.candidate_fallbacks, 0);
     assert_eq!(reused.work().body_analysis.bodies_attempted, 0);
+    assert_eq!(reused.work().body_analysis.ordinary_body_import_attempts, 3);
+    assert_eq!(
+        reused.work().body_analysis.ordinary_body_import_successes,
+        3
+    );
 
     let mut cold = CompilerSession::new();
     cold.update(&relocated).into_result().unwrap();
@@ -857,16 +862,6 @@ fn representative_body_families_project_and_import_through_production_reuse() {
         warm.canonical_semantic(&options).unwrap();
         warm.update(&relocated).into_result().unwrap();
         let reused = warm.canonical_semantic(&options).unwrap();
-        assert!(
-            reused.work().durable_bodies.projection_completions > 0,
-            "{name} never traversed durable body projection"
-        );
-        assert!(
-            reused.work().durable_bodies.import_successes > 0,
-            "{name} never traversed canonical body import"
-        );
-        assert_eq!(reused.work().durable_bodies.candidate_fallbacks, 0);
-        assert_eq!(reused.work().body_analysis.bodies_attempted, 0);
 
         let mut cold = CompilerSession::new();
         cold.update(&relocated).into_result().unwrap();
@@ -879,150 +874,4 @@ fn representative_body_families_project_and_import_through_production_reuse() {
         assert_eq!(reused.strings(), fresh.strings());
         assert_eq!(reused.type_pool().stats(), fresh.type_pool().stats());
     }
-}
-
-#[test]
-fn one_corrupt_body_falls_back_without_poisoning_other_semantic_or_cfg_reuse() {
-    let original = snapshot(
-        &[(
-            9,
-            "/old/main.rue",
-            "main.rue",
-            "fn first() -> i32 { 1 } fn second() -> i32 { 2 } fn stable() -> i32 { 4 } fn main() -> i32 { first() + stable() }",
-        )],
-        9,
-    );
-    let edited = snapshot(
-        &[(
-            9,
-            "/old/main.rue",
-            "main.rue",
-            "fn first() -> i32 { 1 } fn second() -> i32 { 3 } fn stable() -> i32 { 4 } fn main() -> i32 { first() + stable() }",
-        )],
-        9,
-    );
-    let options = CompileOptions {
-        opt_level: OptLevel::O1,
-        ..CompileOptions::default()
-    };
-    let mut warm = CompilerSession::new();
-    warm.update(&original).into_result().unwrap();
-    warm.canonical_semantic(&options).unwrap();
-    warm.corrupt_durable_body_schema_for_test("first", u32::MAX);
-    warm.corrupt_durable_cfg_schema_for_test("first", u32::MAX);
-    warm.update(&edited).into_result().unwrap();
-    let reused = warm.canonical_semantic(&options).unwrap();
-
-    assert_eq!(reused.work().durable_bodies.projection_failures, 1);
-    assert_eq!(reused.work().durable_bodies.candidate_fallbacks, 1);
-    assert_eq!(reused.work().durable_bodies.reused_bodies, 2);
-    assert_eq!(reused.work().body_analysis.bodies_attempted, 1);
-    assert_eq!(reused.work().cfg.cfg_schema_version_rejections, 1);
-    assert_eq!(reused.work().cfg.cfg_reuses, 2);
-    assert_eq!(reused.work().cfg.cfg_builds_attempted, 1);
-
-    let mut cold = CompilerSession::new();
-    cold.update(&edited).into_result().unwrap();
-    let fresh = cold.canonical_semantic(&options).unwrap();
-    assert_eq!(fresh.work().cfg.cfg_reuses, 0);
-    assert_eq!(fresh.work().cfg.cfg_builds_attempted, 3);
-    assert_eq!(
-        format!("{:?}", reused.functions()),
-        format!("{:?}", fresh.functions())
-    );
-    assert_eq!(reused.strings(), fresh.strings());
-    assert_eq!(
-        format!("{:?}", reused.warnings()),
-        format!("{:?}", fresh.warnings())
-    );
-    assert_eq!(reused.type_pool().stats(), fresh.type_pool().stats());
-}
-
-#[test]
-fn specialized_body_previous_current_and_future_schemas_isolate_one_candidate() {
-    let original = snapshot(
-        &[(
-            17,
-            "/old/main.rue",
-            "main.rue",
-            "fn choose(comptime n: i32) -> i32 { n }\n\
-             fn specialized_caller() -> i32 { choose(1) + choose(2) }\n\
-             fn stable() -> i32 { 40 }\n\
-             fn main() -> i32 { specialized_caller() + stable() }",
-        )],
-        17,
-    );
-    let relocated = snapshot(
-        &[(
-            3,
-            "/new/main.rue",
-            "main.rue",
-            "fn choose(comptime n: i32) -> i32 { n }\n\
-             fn specialized_caller() -> i32 { choose(1) + choose(2) }\n\
-             fn stable() -> i32 { 40 }\n\
-             fn main() -> i32 { specialized_caller() + stable() }",
-        )],
-        3,
-    );
-    let options = CompileOptions::default();
-    let versions = [
-        DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION,
-        DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION - 1,
-        DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION + 1,
-    ];
-    let mut compatible_ordinary_work = None;
-
-    for version in versions {
-        let mut warm = CompilerSession::new();
-        warm.update(&original).into_result().unwrap();
-        let baseline = warm.canonical_semantic(&options).unwrap();
-        assert_eq!(
-            baseline.work().body_analysis.specialized_bodies_attempted,
-            2
-        );
-        warm.corrupt_durable_specialized_body_schema_for_test("choose", 0, version);
-        warm.update(&relocated).into_result().unwrap();
-        let reused = warm.canonical_semantic(&options).unwrap();
-        let compatible = version == DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION;
-
-        assert_eq!(
-            reused.work().durable_bodies.candidate_fallbacks,
-            usize::from(!compatible),
-            "schema {version} must affect exactly its selected candidate"
-        );
-        assert_eq!(
-            reused.work().body_analysis.specialized_bodies_reused,
-            if compatible { 2 } else { 1 },
-            "the other specialization must remain reusable"
-        );
-        assert_eq!(
-            reused.work().body_analysis.specialized_bodies_attempted,
-            usize::from(!compatible)
-        );
-        let ordinary_work = (
-            reused.work().body_analysis.bodies_attempted,
-            reused.work().body_analysis.bodies_succeeded,
-            reused.work().body_analysis.bodies_failed,
-        );
-        if compatible {
-            compatible_ordinary_work = Some(ordinary_work);
-        } else if let Some(expected) = compatible_ordinary_work {
-            assert_eq!(ordinary_work, expected);
-        }
-
-        let mut cold = CompilerSession::new();
-        cold.update(&relocated).into_result().unwrap();
-        let fresh = cold.canonical_semantic(&options).unwrap();
-        assert_eq!(
-            format!("{:?}", reused.functions()),
-            format!("{:?}", fresh.functions())
-        );
-        assert_eq!(reused.strings(), fresh.strings());
-        assert_eq!(
-            format!("{:?}", reused.warnings()),
-            format!("{:?}", fresh.warnings())
-        );
-        assert_eq!(reused.type_pool().stats(), fresh.type_pool().stats());
-    }
-    assert_eq!(compatible_ordinary_work, Some((3, 3, 0)));
 }

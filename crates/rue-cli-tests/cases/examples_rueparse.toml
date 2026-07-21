@@ -10,6 +10,7 @@ description = "compile the 1.9K-line Rue frontend and exercise its arena AST, fu
 [[case]]
 name = "rueparse_covers_real_frontend_grammar"
 description = "parse constructs used by current std but missing from the older normative grammar: anonymous enums, anonymous-struct drop fns, and generic qualified patterns"
+contract = "heavyweight"
 source_path = "examples/ruelex/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "sample.rue", source = """
@@ -52,6 +53,7 @@ stdout_contains = [
 [[case]]
 name = "rueparse_reports_and_recovers_from_syntax_error"
 description = "malformed input returns nonzero while still producing diagnostics and a deterministic recovery tree"
+contract = "heavyweight"
 source_path = "examples/ruelex/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "bad.rue", source = """
@@ -67,6 +69,7 @@ stdout_contains = ["parse error at byte", "(program v="]
 [[case]]
 name = "rueparse_missing_input_is_an_io_error"
 description = "an unreadable input is not silently accepted as an empty program"
+contract = "heavyweight"
 source_path = "examples/ruelex/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 program_args = ["--ast", "missing.rue"]

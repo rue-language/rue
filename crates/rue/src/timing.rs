@@ -818,9 +818,12 @@ mod tests {
         // demanded body-free declaration terminal inside the semantic query.
         assert_eq!(session_parse_file.invocations, 2);
         assert_eq!(session_parse_file.root_invocations, 2);
-        assert_eq!(rir_declaration_index.invocations, 1);
-        assert_eq!(rir_declaration_index.root_invocations, 1);
-        assert_eq!(rir_declaration_index.leaf_invocations, 1);
+        // RUE-1027 constructs one declaration-shell epoch plus one isolated
+        // exact-body epoch for the reached `main` terminal. Both remain
+        // top-level leaves; neither is nested beneath whole-program sema.
+        assert_eq!(rir_declaration_index.invocations, 2);
+        assert_eq!(rir_declaration_index.root_invocations, 2);
+        assert_eq!(rir_declaration_index.leaf_invocations, 2);
         assert_eq!(sema.invocations, 1);
         assert_eq!(sema.root_invocations, 1);
         assert_eq!(sema.leaf_invocations, 1);
@@ -882,16 +885,22 @@ mod tests {
                 .unwrap();
             assert_eq!(timing.root_invocations, 0, "{phase}");
         }
-        for phase in ["rir_declaration_index", "sema"] {
-            let timing = compile_timing
-                .passes
-                .iter()
-                .find(|pass| pass.name == phase)
-                .unwrap();
-            assert_eq!(timing.invocations, 1, "{phase}");
-            assert_eq!(timing.root_invocations, 0, "{phase}");
-            assert_eq!(timing.leaf_invocations, 1, "{phase}");
-        }
+        let index = compile_timing
+            .passes
+            .iter()
+            .find(|pass| pass.name == "rir_declaration_index")
+            .unwrap();
+        assert_eq!(index.invocations, 2);
+        assert_eq!(index.root_invocations, 0);
+        assert_eq!(index.leaf_invocations, 2);
+        let sema = compile_timing
+            .passes
+            .iter()
+            .find(|pass| pass.name == "sema")
+            .unwrap();
+        assert_eq!(sema.invocations, 1);
+        assert_eq!(sema.root_invocations, 0);
+        assert_eq!(sema.leaf_invocations, 1);
     }
 
     #[test]
