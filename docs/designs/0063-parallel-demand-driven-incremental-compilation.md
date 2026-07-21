@@ -11,6 +11,7 @@ spec-sections: []
 superseded-by:
 supersedes: [0045, 0053]
 amends: [0051]
+amended-by: [0066]
 relates: ["ADR-0050", "ADR-0052", "ADR-0055", "ADR-0058", "ADR-0061", "RUE-328", "RUE-648", "RUE-812", "RUE-1021", "RUE-1022", "RUE-1023", "RUE-1024", "RUE-1025", "RUE-1026", "RUE-1027", "RUE-1028", "RUE-1029", "RUE-1030", "RUE-1031", "RUE-1032", "RUE-1033"]
 ---
 

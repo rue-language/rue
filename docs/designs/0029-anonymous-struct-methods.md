@@ -9,6 +9,7 @@ accepted: 2026-01-11
 implemented: 2026-01-12
 spec-sections: [4.14:10-15]
 superseded-by:
+amended-by: [0066]
 ---
 
 # ADR-0029: Anonymous Struct Methods (Zig-Style)
