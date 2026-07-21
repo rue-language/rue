@@ -9,6 +9,7 @@ accepted: 2026-01-01
 implemented: 2026-01-04
 spec-sections: ["4.14"]
 superseded-by:
+amended-by: [0066]
 ---
 
 # ADR-0025: Compile-Time Execution (comptime)

@@ -1,0 +1,383 @@
+---
+id: 0066
+title: "Producer-nominal anonymous types and incremental locality"
+status: proposal
+tags: [types, semantics, comptime, incremental, performance, parallelism]
+feature-flag: null
+created: 2026-07-21
+accepted:
+implemented:
+spec-sections: ["4.14"]
+superseded-by:
+amends: [0025, 0029, 0063]
+---
+
+# ADR-0066: Producer-nominal anonymous types and incremental locality
+
+## Status
+
+Proposal, owned by RUE-1088. This ADR amends the anonymous-type semantics
+introduced by ADR-0025 and ADR-0029 and the incremental architecture in
+ADR-0063. Those ADRs remain accepted or implemented as recorded.
+
+Steve and Dorian have approved the producer-nominal language decision, and
+RUE-1089 is authorized to implement and land that decision before this broader
+ADR is accepted. This is an explicit implementation-before-ADR-acceptance
+exception. ADR-0066 remains a proposal until both RUE-1090's measurement gate
+and RUE-1092's prototype/adversarial review complete; RUE-1093 acceptance is
+blocked by both. If RUE-1090 activates RUE-1091, that repair also blocks
+acceptance and must include a rerun of the relevant RUE-1090 measurements plus
+RUE-1092 sign-off on the repaired result; pre-repair evidence cannot satisfy the
+final gate. Otherwise RUE-1091 is cancelled. The live specification and
+executable cases still land atomically with RUE-1089, never with this draft.
+
+## Summary
+
+Anonymous `struct` and `enum` declaration expressions are producer-nominal.
+Their identity comes from the selected declaration expression under its static
+enclosing comptime specialization, rather than from structural comparison of
+their fields, variants, methods, or bodies. This makes nominal type identity
+observable and makes incremental compilation local: a type computation has one
+owner and one canonical result path.
+
+The compiler architecture uses stable logical identity, exact dependencies, and
+local projections. It removes cross-producer equivalence classes and their
+representative/restart coordination. Performance acceptance requires structural
+work counters as well as controlled latency, allocation, and memory measures.
+
+## Context
+
+The current live rules 4.14:8, 4.14:15, 4.14:21, and 4.14:25 define anonymous
+types structurally. Current executable cases also demonstrate that structural
+identity may select a stable representative for method and destructor bodies:
+`crates/rue-spec/cases/expressions/comptime.toml` and
+`crates/rue-spec/cases/types/destructors.toml` contain the cases named in the
+migration inventory below. That behavior requires global cross-producer
+comparison, representative selection, and invalidation/restart coordination.
+
+It conflicts with a demand-driven, retained, parallel-ready query graph. An
+unrelated anonymous declaration must not change which body represents an
+already-reached type, or make a body scan an expanding universe of declarations.
+The existing system also needs explicit ownership and eviction rules before
+retention can safely span rooted demand.
+
+## Decision
+
+### 1. Observable language semantics
+
+Every anonymous `struct` or `enum` declaration expression is
+producer-nominal. The *producer* is the selected anonymous declaration
+expression, not every function that returns `type`.
+
+The identity of an anonymous type is determined by that selected producer under
+its static enclosing comptime specialization. Declared comptime arguments,
+enclosing generic or comptime specializations, and comptime-loop iteration
+identity distinguish specializations. Repeated evaluation of the same producer
+under the same canonical specialization denotes the same type. A different
+producer, definition-relative anchor, or specialization denotes a different
+type even when fields, variants, method signatures, and bodies are identical.
+
+A function that forwards an existing type does not mint another type. For
+example, `fn Id(comptime T: type) -> type { T }` returns `T`'s identity. Aliases
+also preserve identity. Within one source revision, evaluations with the same
+identity must agree on type content. A source edit may change content and cause
+its users to be rechecked; this is not a second identity rule.
+
+An anonymous type declaration expression is legal as a comptime value and as a
+type-constructor result. It is not legal directly, or nested inside another
+type, in a type annotation. Users bind the resulting type or expose it through
+a constructor. Result-typed/headless aggregate literals are future work; this
+ADR adds no spelling that can construct an otherwise unnamed annotation type.
+
+This is a hard semantic cut with no preview gate. That is an explicit
+maintainer exception to the normal preview policy: a gate would require both
+incompatible identity systems and retain the global machinery this change
+removes. As a non-normative implementation acceptance criterion, a value from
+a same-shape, different-producer anonymous type produces a deterministic type
+mismatch diagnostic that identifies the expected and actual producer-derived
+types without relying on allocation order.
+
+### 2. Incremental identity and locality
+
+Stable logical identity is an implementation concern, not language equality.
+It contains the producer definition/specialization, its definition-relative
+structural anchor, and canonical specialization context. A fingerprint is
+derived, collision-aware metadata for indexing and validation; it never decides
+semantic equality or substitutes for exact identity comparison.
+
+Captured or external comptime values that affect a type's content are exact
+query dependencies. They are not dynamically branch-dependent pieces of the
+type's identity tuple. This preserves a stable owner while still invalidating
+content users precisely.
+
+There is one canonical computation path. The implementation removes
+cross-producer structural equivalence classes, stable-min representatives,
+alias-collapse restarts, and their related coordination. A query for one entity
+may not do `O(universe)` work. Input-derived aggregates are permitted only as
+memoized, narrow, independently stamped projections. Runtime criteria include
+body-local lookup memoization, hashed typed-key lookup, and lazy display
+identity; formatting or inspection must not make semantic lookup scan the type
+universe.
+
+Retention leases make retained demand bounded and explicit. The first rooted
+observation acquires the root lease; its transitive dependency closure inherits
+pins; publication promotes the observed terminals while that lease is live; and
+completion, cancellation, or supersession releases the lease and all inherited
+pins. Speculative terminals receive no root lease and are evictable. Pressure
+reclamation evicts unleased, superseded, or speculative terminals according to a
+deterministic policy before it may reject a request. The accounting invariant is
+that every retained terminal is either owned by one or more live lease closures,
+or is explicitly reclaimable; no released lease leaves an unaccounted pin.
+Forced eviction is followed by the same warm-versus-fresh parity oracle as an
+ordinary edit.
+
+The current source uses a transitional fixed `BODY_QUERY_MEMO_RETENTION` cap of
+65,536 in `crates/rue-compiler/src/revisioned_query_database.rs`; its source
+comment identifies exact rooted membership as the RUE-1028 replacement. RUE-1087
+replaces that cap-based safety argument with the lease protocol above.
+
+Specialization overflow uses a stabilized minimum-depth/quiescence rule and a
+deterministic witness. It introduces neither breadth-first barriers nor
+schedule-dependent thresholds. The current counting convention is specialization
+instantiation edges from a root at depth zero: `chain(63)` materializes 64
+specializations and succeeds; `chain(64)` would materialize 65 and fails.
+`session::tests::reused_specializations_consume_the_persistent_round_budget`
+in `crates/rue-compiler/src/session.rs` constructs `source(63)` and
+`source(64)` across a reused session. D1 and the prototype retain explicit
+boundary cases with that convention.
+
+The query APIs are parallel-ready: correctness is independent of evaluation
+order; they have no global exclusive traversal state; no lock is held while a
+query body or dependency executes; and the design remains compatible with the
+configured concurrency budget. A warm-session result and diagnostics must equal
+those from a fresh session after every benchmark edit.
+
+Code generation exposes independently keyed per-function, data, and symbol
+artifacts plus a changed-symbol set. Initial linking may remain fresh, but this
+is the seam at which an incremental linker consumes a delta without another
+frontend or semantic refactor.
+
+### 3. Measurement and decision gate
+
+Measurement is a first-class acceptance surface. Every benchmark records
+structural counters and performs separate controlled latency, allocation-count,
+and peak-memory runs. The counting allocator is never enabled for timing runs.
+The eventual north-star is approximately 45 ms pre-link warm incremental
+compilation on a defined reference host and corpus; it is a project target, not
+a language guarantee.
+
+**Recorded prediction (pre-implementation, 2026-07-21):** hashed typed-key lookup plus D1 machinery deletion will not materially reduce the O(bodies × declarations) per-body installation/projection/endpoint term (~62% of cold wall time at Caldera scale). **Decision rule:** after D1 lands, if the scaling harness shows per-body install/project/endpoint work still increasing with unrelated-declaration count, the shared-base or narrow-epoch repair proceeds; an incidental wall-time improvement without flat per-body counters is not success.
+
+The 62% figure in that recorded prediction is a pre-implementation hypothesis,
+not repository-proven evidence in this ADR. Before RUE-1090 uses it, RUE-1086
+attaches the raw Caldera artifact, command, base commit, reference host and
+configuration, and samples that establish its provenance.
+
+## Staged specification amendment
+
+This section is exact proposed replacement text. It is deliberately not applied
+to `docs/spec` in this ADR because the current compiler and its executable
+cases still implement structural semantics. The D1 compiler cut applies this
+text, updates traceability, and converts the inventory below in the same change.
+
+### Replace rule 4.14:8
+
+> Each anonymous struct declaration expression denotes a producer-nominal type.
+> Its identity is the selected declaration expression under its static enclosing
+> comptime specialization. Declared comptime arguments, enclosing
+> specializations, and comptime-loop iteration identity distinguish
+> specializations. Repeated evaluation of the same declaration expression under
+> the same canonical specialization denotes the same type. A different
+> declaration expression or specialization denotes a different type, regardless
+> of equal fields, method signatures, or method bodies.
+
+### Replace rule 4.14:15
+
+> Method definitions are content of the producer-nominal anonymous struct type
+> selected by their enclosing declaration expression. Fields, method names,
+> signatures, declaration order, and method bodies do not make two different
+> anonymous struct declaration expressions the same type. `Self` in each method
+> denotes that enclosing producer-nominal type.
+
+### Replace rule 4.14:21
+
+> Each anonymous enum declaration expression denotes a producer-nominal type.
+> Its identity is the selected declaration expression under its static enclosing
+> comptime specialization. Declared comptime arguments, enclosing
+> specializations, and comptime-loop iteration identity distinguish
+> specializations. Repeated evaluation of the same declaration expression under
+> the same canonical specialization denotes the same type. A different
+> declaration expression or specialization denotes a different type, regardless
+> of equal variant names or payload types.
+
+### Replace rule 4.14:22
+
+> A comptime function whose declared return type is `type` is a *type
+> constructor* (equivalently, a *generic type*). Its body evaluates at compile
+> time to any comptime type value. When evaluation selects an anonymous struct
+> declaration expression or anonymous enum declaration expression, that
+> expression denotes the producer-nominal type defined by rules 4.14:8 and
+> 4.14:21. When evaluation returns an existing type value, it preserves that
+> type's identity. Calling a type constructor is *type-function application*;
+> the call is evaluated at compile time and reduces to that concrete type.
+> Because application is comptime evaluation, every argument must be
+> compile-time known (rule 4.14:6), and each `type`-typed argument must be
+> supplied by a `comptime` parameter or another type value.
+
+### Replace rule 4.14:25
+
+> Type-function application monomorphizes each canonical specialization
+> independently. When evaluation selects an anonymous struct or enum declaration
+> expression, that expression under the application's static enclosing comptime
+> specialization determines the resulting type identity. Different canonical
+> arguments or enclosing specializations select distinct specializations; equal
+> canonical specializations select the same type wherever evaluated. A function
+> that returns an existing type value, rather than selecting an anonymous
+> declaration expression, preserves the returned type's identity. Aliases also
+> preserve identity.
+
+### Add rule 4.14:23a, immediately after rule 4.14:23
+
+> An anonymous struct or enum declaration expression may not appear directly or
+> nested within a type annotation. This restriction applies to `let`, parameter,
+> return, field, array-element, and pointer-pointee annotations. A type
+> constructor call remains permitted in those positions provided its argument
+> expressions do not themselves contain an anonymous declaration expression.
+> Anonymous declaration expressions remain permitted as comptime values and as
+> type-constructor results; a program that needs to use one in an annotation
+> first binds the type value or names it through a type constructor.
+
+The new rule uses the `4.14:23a` identifier to keep the existing generated
+traceability stable; the D1 change adds its normative test coverage.
+
+### Corpus migration inventory
+
+The current corpus was inspected at 2026-07-21. The following success cases
+flip to deterministic type-mismatch failures because they assign between
+different producers: `anon_struct_structural_equality`
+(`comptime.toml`, rule 4.14:8),
+`anon_struct_structural_equality_with_methods`,
+`anon_struct_method_order_is_not_structural`, and
+`anon_struct_nested_method_signature_types_are_structural` (rule 4.14:15).
+
+`anon_enum_structural_reuse` remains a success: both sides select the same
+`Option(i32)` producer and canonical specialization. It is renamed and
+reworded as same-producer reuse. D1 adds a different-producer, same-shape enum
+assignment mismatch case. `instantiation_identity_is_structural_across_functions`
+(rule 4.14:25) also remains a success only because both annotations select the
+same producer and canonical specialization; it is renamed to state that basis.
+
+`anon_struct_different_fields_different_types` and
+`anon_struct_different_field_types` are successful coexistence/distinction
+cases, not mismatch failures. They remain successes with names and descriptions
+that state producer-local coexistence. D1 adds explicit assignments between
+their bindings, and a same-shape different-producer struct assignment, as
+compile-fail mismatch cases.
+
+The representative-dependent cases are removed and replaced by producer-local
+coverage: `late_specialization_replaces_anonymous_method_with_stable_representative`,
+`late_specialization_retracts_stale_anonymous_method_error`,
+`late_specialization_does_not_root_abandoned_nested_destructor`,
+`structurally_equal_anon_destructor_uses_stable_representative`, and
+`late_specialization_replaces_anonymous_destructor_with_stable_representative`.
+They occur in `crates/rue-spec/cases/expressions/comptime.toml` and
+`crates/rue-spec/cases/types/destructors.toml`.
+
+The existing negative cases `anon_enum_monomorphized_distinct` and
+`instantiation_distinct_arguments_are_distinct_types` remain negative coverage,
+but their descriptions stop claiming structural identity. D1 also adds a
+forwarding success case for `fn Id(comptime T: type) -> type { T }`, proving
+that `Id(T)` preserves `T`'s identity rather than minting another producer. The live
+`type_constructor_in_annotation_position`,
+`type_constructor_in_return_and_param_position`, and
+`type_constructor_in_field_and_array_position` cases remain valid: they apply a
+constructor, not an anonymous declaration expression directly. No current
+executable case uses a direct or nested anonymous declaration expression in an
+annotation; D1 adds both direct and nested rejection cases.
+
+## Prototype plan and falsifiable acceptance matrix
+
+The prototype uses canonical query APIs and a two-dimensional generated corpus.
+It does not implement or test unification, structural equivalence, stable
+representatives, or restart behavior; those mechanisms are out of scope.
+
+| Scenario | Controlled change | Required observation | Falsifier |
+| --- | --- | --- | --- |
+| Producer identity | Same producer/specialization; then producer or declared argument differs | First pair has one identity; each changed dimension has a distinct identity and mismatch | Equal shape makes distinct producers assignable, or same producer splits |
+| Forwarding constructor | `Id(T) -> type { T }` forwards an anonymous type | Returned value has `T`'s identity | `Id` adds an owner identity |
+| Captured comptime content | Edit an external/captured comptime input used in a producer body | Content and exact dependents invalidate without identity churn | Captured value enters identity or stale content survives |
+| Lookup invalidation | Exercise positive, negative, and ambiguous name lookup, then edit each candidate set | Only the recorded lookup projection invalidates; outcome/diagnostic matches fresh | Unrelated declaration invalidates lookup, or a relevant edit does not |
+| Depth stabilization | Run the current `source(63)`/`source(64)` convention in fresh and reused sessions | 63 materializes 64 specializations and succeeds; 64 would require 65 and has the deterministic overflow witness | Boundary, count, or witness depends on schedule or reuse |
+| Local work | Independently vary declarations `D`, reached bodies `B`, and unreachable declarations/bodies `U` | Report one-time declaration/index work separately; total rooted work is `O(D + ΣB)`; normalized per-reached-body install/project/endpoint work stays flat as `D` grows; increasing `U` adds zero rooted semantic/codegen work | Total work follows `O(D×B)`, a normalized body counter grows with `D`, or `U` produces rooted semantic/codegen work |
+| Retention leases | Force pressure eviction before and after rooted completion, cancellation, and supersession | Live root closures remain pinned; released/speculative terminals reclaim; accounting has no unowned pin; warm result/diagnostics equal fresh after eviction | A live closure evicts, a released pin remains, accounting leaks, or eviction changes observable output |
+| Differential oracle | After every edit run reused and fresh sessions over canonical queries | Artifacts, diagnostics, and changed sets agree | Any warm/fresh disagreement |
+| Codegen seam | Edit one function, one data item, then one symbol reference | Per-function/data/symbol artifacts identify exactly the changed-symbol set | Whole-program artifact is the only observable delta |
+| Schedule audit | Permute dependency evaluation order and review API locking/traversal state | Same result; no global traversal state or lock spans execution | Output, cycle result, or witness changes with schedule |
+
+The harness records cold and warm observations separately. It holds corpus,
+host configuration, request roots, revision sequence, worker budget, and cache
+state constant for each comparison. Timing, allocation-counting, and peak-memory
+jobs are separate invocations. The reference-host/corpus record accompanies the
+first benchmark implementation before the 45 ms target is evaluated.
+
+## Workstream sequence
+
+1. RUE-1085: hashed typed-key lookup and lazy display identity.
+2. RUE-1086: minimal scaling harness, warm-versus-fresh oracle, and Caldera
+   artifact provenance.
+3. RUE-1087: retention leases.
+4. RUE-1088: this ADR draft and staged specification wording.
+5. RUE-1089: D1 producer-nominal semantics implementation, live normative spec
+   and executable-case update, and deletion of structural
+   equivalence/representative/restart machinery.
+6. RUE-1090: measurement against the recorded prediction.
+7. RUE-1091: conditional shared-base or narrow-epoch repair if RUE-1090's
+   decision rule fires, including a rerun of the relevant RUE-1090 structural
+   measurements and RUE-1092 prototype/adversarial sign-off on the repaired
+   result; otherwise cancel it.
+8. RUE-1092: vertical prototype and adversarial review.
+9. RUE-1093: accept ADR-0066 only after RUE-1090 and RUE-1092, and RUE-1091
+   when activated, complete; then resume the remaining RUE-1028 work.
+
+The specification amendment may be drafted and reviewed in parallel with
+RUE-1085 through RUE-1087, but live specification and executable-case edits
+land atomically with RUE-1089. RUE-1092 may run in parallel with RUE-1090 after
+RUE-1089; acceptance awaits both required gates.
+If RUE-1091 activates, its post-repair measurement and review evidence replaces
+the corresponding pre-repair evidence for acceptance.
+
+## Consequences
+
+### Positive
+
+- Anonymous type identity is predictable from source and static specialization.
+- Same-shape declarations cannot silently share methods, destructors, or errors.
+- Query ownership, invalidation, retention, and future parallel execution have
+  local invariants rather than global representative coordination.
+- Fine-grained artifacts provide an incremental-link extension point.
+
+### Costs
+
+- Source programs that rely on structural interchangeability must share a
+  binding or constructor deliberately.
+- The hard cut updates language behavior without a compatibility gate.
+- D1 is not accepted merely by compiling: it must satisfy the matrix and the
+  structural measurement gate.
+
+## Rejected alternatives
+
+Keeping structural equality behind a preview gate is rejected because it would
+keep two incompatible identity systems and the global machinery under removal.
+Using fingerprints as semantic identity is rejected because hashes are derived
+metadata and collision handling cannot define the language. Optimizing the old
+representative model before D1 is rejected because it delays the deletion that
+establishes producer ownership.
+
+## References
+
+- [ADR-0025: Compile-Time Execution](0025-comptime.md)
+- [ADR-0029: Anonymous Struct Methods](0029-anonymous-struct-methods.md)
+- [ADR-0063: Parallel demand-driven incremental compilation](0063-parallel-demand-driven-incremental-compilation.md)
+- `docs/spec/src/04-expressions/14-comptime.md`
+- `crates/rue-spec/cases/expressions/comptime.toml`
+- `crates/rue-spec/cases/types/destructors.toml`
