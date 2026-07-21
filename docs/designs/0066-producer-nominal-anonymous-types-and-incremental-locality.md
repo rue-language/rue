@@ -70,12 +70,19 @@ producer-nominal. The *producer* is the selected anonymous declaration
 expression, not every function that returns `type`.
 
 The identity of an anonymous type is determined by that selected producer under
-its static enclosing comptime specialization. Declared comptime arguments,
-enclosing generic or comptime specializations, and comptime-loop iteration
-identity distinguish specializations. Repeated evaluation of the same producer
-under the same canonical specialization denotes the same type. A different
-producer, definition-relative anchor, or specialization denotes a different
+its static enclosing comptime specialization. Declared comptime arguments and
+enclosing generic or comptime specializations distinguish specializations.
+Repeated evaluation of the same producer under the same canonical
+specialization denotes the same type. A different producer,
+definition-relative anchor, or specialization denotes a different
 type even when fields, variants, method signatures, and bodies are identical.
+
+Rue currently has no comptime loop evaluation that can repeatedly select an
+anonymous declaration within one specialization. This ADR therefore adds no
+iteration dimension to identity. A future comptime-loop feature must specify
+its observable identity rule and incremental-stability consequences explicitly;
+until then, the same producer under the same canonical specialization is one
+type wherever it is evaluated.
 
 A function that forwards an existing type does not mint another type. For
 example, `fn Id(comptime T: type) -> type { T }` returns `T`'s identity. Aliases
@@ -175,21 +182,41 @@ configuration, and samples that establish its provenance.
 
 ## Staged specification amendment
 
-This section is exact proposed replacement text. It is deliberately not applied
-to `docs/spec` in this ADR because the current compiler and its executable
-cases still implement structural semantics. The D1 compiler cut applies this
-text, updates traceability, and converts the inventory below in the same change.
+This section is exact proposed replacement text. Each replacement includes all
+prose and examples owned by that rule; D1 replaces that complete content while
+retaining intervening section headings and the rule marker itself. It is
+deliberately not applied to `docs/spec` in this ADR because the current compiler
+and its executable cases still implement structural semantics. The D1 compiler
+cut applies these complete blocks, updates traceability, and converts the
+inventory below in the same change.
 
 ### Replace rule 4.14:8
 
 > Each anonymous struct declaration expression denotes a producer-nominal type.
 > Its identity is the selected declaration expression under its static enclosing
-> comptime specialization. Declared comptime arguments, enclosing
-> specializations, and comptime-loop iteration identity distinguish
-> specializations. Repeated evaluation of the same declaration expression under
-> the same canonical specialization denotes the same type. A different
-> declaration expression or specialization denotes a different type, regardless
+> comptime specialization. Declared comptime arguments and enclosing
+> specializations distinguish anonymous type specializations. Repeated evaluation of the same
+> declaration expression under the same canonical specialization denotes the
+> same type. A different declaration expression or specialization denotes a
+> different type, regardless
 > of equal fields, method signatures, or method bodies.
+>
+> ```rue
+> fn make_point1() -> type { struct { x: i32, y: i32 } }
+> fn make_point2() -> type { struct { x: i32, y: i32 } }
+>
+> fn main() -> i32 {
+>     let P1 = make_point1();
+>     let P2 = make_point2();
+>     let p1: P1 = P1 { x: 10, y: 20 };
+>     let p2: P2 = p1;  // ERROR: P1 and P2 have different producers
+>     p2.x + p2.y
+> }
+> ```
+>
+> Anonymous structs produced by different declaration expressions or
+> specializations are different types and are not assignable to each other,
+> including when their fields are equal.
 
 ### Replace rule 4.14:15
 
@@ -198,17 +225,45 @@ text, updates traceability, and converts the inventory below in the same change.
 > signatures, declaration order, and method bodies do not make two different
 > anonymous struct declaration expressions the same type. `Self` in each method
 > denotes that enclosing producer-nominal type.
+>
+> ```rue
+> fn A() -> type {
+>     struct { x: i32, fn get(self) -> i32 { self.x } }
+> }
+>
+> fn B() -> type {
+>     // Different from A(): B's declaration expression is a distinct producer.
+>     struct { x: i32, fn get(self) -> i32 { self.x } }
+> }
+>
+> fn C() -> type {
+>     // Also different from A() and B(), independently of this signature change.
+>     struct { x: i32, fn get(self) -> i64 { @intCast(self.x) } }
+> }
+> ```
 
 ### Replace rule 4.14:21
 
 > Each anonymous enum declaration expression denotes a producer-nominal type.
 > Its identity is the selected declaration expression under its static enclosing
-> comptime specialization. Declared comptime arguments, enclosing
-> specializations, and comptime-loop iteration identity distinguish
-> specializations. Repeated evaluation of the same declaration expression under
-> the same canonical specialization denotes the same type. A different
-> declaration expression or specialization denotes a different type, regardless
+> comptime specialization. Declared comptime arguments and enclosing
+> specializations distinguish anonymous type specializations. Repeated evaluation of the same
+> declaration expression under the same canonical specialization denotes the
+> same type. A different declaration expression or specialization denotes a
+> different type, regardless
 > of equal variant names or payload types.
+>
+> ```rue
+> fn Option(comptime T: type) -> type { enum { Some(T), None } }
+>
+> fn main() -> i32 {
+>     let A = Option(i32);
+>     let B = Option(i32);
+>     let x: A = A.Some(10);
+>     let y: B = x;  // OK: A and B select the same producer and specialization
+>     match y { B.Some(n) => n, B.None => 0 }
+> }
+> ```
 
 ### Replace rule 4.14:22
 
@@ -223,6 +278,37 @@ text, updates traceability, and converts the inventory below in the same change.
 > Because application is comptime evaluation, every argument must be
 > compile-time known (rule 4.14:6), and each `type`-typed argument must be
 > supplied by a `comptime` parameter or another type value.
+>
+> In *value position*, the reduced type is an ordinary compile-time type value:
+> it may be bound with `let` and then used as the path of a struct-literal
+> expression (`P { … }`), a method call, or an associated-function call
+> (`P.origin()`), exactly as in rules 4.14:7 through 4.14:13.
+>
+> ```rue
+> fn Option(comptime T: type) -> type { enum { Some(T), None } }
+>
+> fn main() -> i32 {
+>     let O = Option(i32);        // type-function application in value position
+>     let x: O = O.Some(42);
+>     match x { O.Some(n) => n, O.None => 0 }
+> }
+> ```
+>
+> A type constructor may forward an existing type value without minting another
+> type:
+>
+> ```rue
+> fn Id(comptime T: type) -> type { T }
+> fn Pair(comptime T: type) -> type { struct { first: T, second: T } }
+>
+> fn main() -> i32 {
+>     let P = Pair(i32);
+>     let Q = Id(P);
+>     let p: P = P { first: 20, second: 22 };
+>     let q: Q = p;  // OK: Q preserves P's identity
+>     q.first + q.second
+> }
+> ```
 
 ### Replace rule 4.14:25
 
@@ -235,6 +321,23 @@ text, updates traceability, and converts the inventory below in the same change.
 > that returns an existing type value, rather than selecting an anonymous
 > declaration expression, preserves the returned type's identity. Aliases also
 > preserve identity.
+>
+> ```rue
+> fn Pair(comptime T: type) -> type { struct { first: T, second: T } }
+>
+> fn produce() -> Pair(i32) {
+>     let P = Pair(i32);
+>     P { first: 10, second: 5 }
+> }
+>
+> fn consume(p: Pair(i32)) -> i32 {  // same producer and specialization
+>     p.first + p.second
+> }
+>
+> fn main() -> i32 {
+>     consume(produce())  // 15
+> }
+> ```
 
 ### Add rule 4.14:23a, immediately after rule 4.14:23
 
@@ -243,9 +346,13 @@ text, updates traceability, and converts the inventory below in the same change.
 > return, field, array-element, and pointer-pointee annotations. A type
 > constructor call remains permitted in those positions provided its argument
 > expressions do not themselves contain an anonymous declaration expression.
-> Anonymous declaration expressions remain permitted as comptime values and as
-> type-constructor results; a program that needs to use one in an annotation
-> first binds the type value or names it through a type constructor.
+> This containment test is syntactic: it examines the spelling of the annotation
+> and its argument expressions, not the type values to which those expressions
+> evaluate. Anonymous declaration expressions remain permitted as comptime
+> values and as type-constructor results; a program that needs to use one in an
+> annotation first binds the type value or names it through a type constructor.
+> Value-position path heads described by rule 4.14:22 are not type annotations;
+> they remain governed by the path-head grammar.
 
 The new rule uses the `4.14:23a` identifier to keep the existing generated
 traceability stable; the D1 change adds its normative test coverage.
@@ -304,6 +411,7 @@ representatives, or restart behavior; those mechanisms are out of scope.
 | Scenario | Controlled change | Required observation | Falsifier |
 | --- | --- | --- | --- |
 | Producer identity | Same producer/specialization; then producer or declared argument differs | First pair has one identity; each changed dimension has a distinct identity and mismatch | Equal shape makes distinct producers assignable, or same producer splits |
+| Repeated evaluation | Evaluate one producer repeatedly under one canonical specialization without a comptime loop | Every evaluation has one identity; the warm/fresh result agrees | Evaluation count or order splits the identity |
 | Forwarding constructor | `Id(T) -> type { T }` forwards an anonymous type | Returned value has `T`'s identity | `Id` adds an owner identity |
 | Captured comptime content | Edit an external/captured comptime input used in a producer body | Content and exact dependents invalidate without identity churn | Captured value enters identity or stale content survives |
 | Lookup invalidation | Exercise positive, negative, and ambiguous name lookup, then edit each candidate set | Only the recorded lookup projection invalidates; outcome/diagnostic matches fresh | Unrelated declaration invalidates lookup, or a relevant edit does not |
