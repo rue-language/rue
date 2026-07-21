@@ -368,6 +368,18 @@ impl CanonicalSemanticWork {
         body.bodies_attempted += query.bodies_attempted;
         body.bodies_succeeded += query.bodies_succeeded;
         body.bodies_failed += query.bodies_failed;
+        // Coordinator traversal metrics accrue once per semantic request; the
+        // restart/deferral counters are running totals while the closure-size
+        // and specialization-depth fields are completion snapshots merged by
+        // maximum.
+        body.closure_restarts += query.closure_restarts;
+        body.deferred_producer_retries += query.deferred_producer_retries;
+        body.closure_bodies_visited = body
+            .closure_bodies_visited
+            .max(query.closure_bodies_visited);
+        body.max_specialization_depth = body
+            .max_specialization_depth
+            .max(query.max_specialization_depth);
         body.air_instructions_produced += query.air_instructions_produced;
         body.local_strings_produced += query.local_strings_produced;
         body.ordinary_body_exports_attempted += query.ordinary_body_exports_attempted;
@@ -1685,6 +1697,11 @@ pub(crate) fn analyze_body_query(
             "test body query stage failure injection".into(),
         ));
     }
+    // Per-reached-body pipeline stages are timed as sibling leaves so
+    // `--time-passes` can split the whole-program-rebuild cost RUE-1083 traced
+    // to `analyze_body_query`. Each guard is dropped before the next stage so
+    // the stages do not nest into one another.
+    let prepare_span = info_span!("body_prepare_declarations").entered();
     let prepared =
         match prepare_query_declaration_shells(merged, rir, options, imports, query_shells) {
             Ok(prepared) => prepared,
@@ -1701,6 +1718,8 @@ pub(crate) fn analyze_body_query(
         definitions: provisional,
         declaration_index: _,
     } = prepared;
+    drop(prepare_span);
+    let project_span = info_span!("body_project_declarations").entered();
     let (projected, _) = match crate::project_durable_declaration_semantics(
         merged,
         &provisional,
@@ -1728,6 +1747,8 @@ pub(crate) fn analyze_body_query(
             ));
         }
     };
+    drop(project_span);
+    let install_span = info_span!("body_install_declarations").entered();
     let bound = match shells
         .install_declaration_semantics_with_anonymous(&projected, &projected_anonymous)
     {
@@ -1791,6 +1812,8 @@ pub(crate) fn analyze_body_query(
             ));
         }
     };
+    drop(install_span);
+    let analyze_span = info_span!("body_analyze").entered();
     let outcome = bound.analyze_one_body_instance(
         &key.instance,
         |definition| definitions.semantic_token_for_key(definition),
@@ -1799,6 +1822,7 @@ pub(crate) fn analyze_body_query(
             .is_canceled()
             .then_some(rue_air::OneBodyInterruption::Canceled),
     );
+    drop(analyze_span);
     // Keep cancellation responsive across the synchronous AIR callback. The
     // query runtime also checks after its evaluator returns, but crossing the
     // stable projection boundary after cancellation would do needless work.
@@ -1836,6 +1860,7 @@ pub(crate) fn analyze_body_query(
             .collect::<Result<Vec<_>, rue_air::SemanticStableResolutionFailure>>()
             .map(|values| BodyReferences(values.into()))
     };
+    let _export_span = info_span!("body_export").entered();
     match outcome {
         rue_air::OneBodyTransactionOutcome::Success {
             artifact,

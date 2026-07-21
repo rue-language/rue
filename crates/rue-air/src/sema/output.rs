@@ -515,6 +515,24 @@ pub struct BodyAnalysisWork {
     pub bodies_attempted: usize,
     pub bodies_succeeded: usize,
     pub bodies_failed: usize,
+    /// Body-traversal coordinator restarts: `continue 'closure` iterations taken
+    /// when an anonymous representative changed and the in-flight closure was
+    /// discarded and re-traversed from roots. Stays zero for programs without
+    /// anonymous method producers. Populated only by the session coordinator;
+    /// the per-`Sema` analysis leaves it at zero.
+    pub closure_restarts: usize,
+    /// Times the coordinator deferred a consumer body behind an as-yet-unreached
+    /// anonymous producer and rescheduled it on the priority stack. Populated
+    /// only by the session coordinator.
+    pub deferred_producer_retries: usize,
+    /// Distinct bodies in the final published closure (coordinator `visited` set
+    /// size at successful completion). Snapshot at completion, not a running
+    /// total. Populated only by the session coordinator.
+    pub closure_bodies_visited: usize,
+    /// Deepest specialization instantiation chain reached during traversal (the
+    /// maximum `instance_depth` value). Snapshot at completion, not a running
+    /// total. Populated only by the session coordinator.
+    pub max_specialization_depth: usize,
     /// Demand-driven comparisons between distinct concrete semantic types.
     /// This stays proportional to comparisons requested by body constraints;
     /// it never includes a scan of unrelated types in the global pool.
