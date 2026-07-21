@@ -51,10 +51,18 @@ const MODULE_QUERY_MEMO_RETENTION: usize = 4096;
 // exceeded the module-family cap (RUE-1083). RUE-1028's database-owned
 // reachability should replace this fixed cap with exact rooted membership.
 const BODY_QUERY_MEMO_RETENTION: usize = 65536;
+// Declaration-keyed families scale with the program's declaration universe
+// exactly as body-keyed families scale with reached bodies, and the
+// body-produced-anonymous fallback resolves through declaration shells and
+// semantic-nucleus terminals mid-traversal, so evicting them fails the same
+// projection the body retention protects. Module-keyed families stay at the
+// module-scaled retention; real programs have orders of magnitude fewer
+// modules than declarations.
+const DECLARATION_QUERY_MEMO_RETENTION: usize = BODY_QUERY_MEMO_RETENTION;
 // A semantic batch commonly requests hundreds of exact declaration shells.
 // Keep one large batch reusable after its active pins drop; the runtime still
 // bounds global retention deterministically.
-const DECLARATION_SHELL_MEMO_RETENTION: usize = MODULE_QUERY_MEMO_RETENTION;
+const DECLARATION_SHELL_MEMO_RETENTION: usize = DECLARATION_QUERY_MEMO_RETENTION;
 const MODULE_INPUT_REVISION_RETENTION: usize = 4096;
 
 #[derive(Debug, Clone)]
@@ -5858,7 +5866,7 @@ impl Default for RevisionedQueryDatabase {
         let raw_const_syntax = runtime
             .family_with_equality_and_evaluator(
                 "compiler.raw-const-syntax",
-                MODULE_QUERY_MEMO_RETENTION,
+                DECLARATION_QUERY_MEMO_RETENTION,
                 |left: &RawConstSyntaxQueryValue, right: &RawConstSyntaxQueryValue| left == right,
                 move |context, _, key: &RawConstSyntaxQueryKey| {
                     use crate::declaration_candidate::{
@@ -5995,7 +6003,7 @@ impl Default for RevisionedQueryDatabase {
         let raw_declaration_signatures = runtime
             .family_with_equality_and_evaluator(
                 "compiler.raw-declaration-signature",
-                MODULE_QUERY_MEMO_RETENTION,
+                DECLARATION_QUERY_MEMO_RETENTION,
                 |left: &RawDeclarationSignatureQueryValue,
                  right: &RawDeclarationSignatureQueryValue| { left == right },
                 move |context, _, key: &RawDeclarationSignatureQueryKey| {
@@ -6144,7 +6152,7 @@ impl Default for RevisionedQueryDatabase {
         let raw_declaration_bodies = runtime
             .family_with_equality_and_evaluator(
                 "compiler.raw-declaration-body",
-                MODULE_QUERY_MEMO_RETENTION,
+                DECLARATION_QUERY_MEMO_RETENTION,
                 |left: &RawDeclarationBodyQueryValue,
                  right: &RawDeclarationBodyQueryValue| { left == right },
                 move |context, _, key: &RawDeclarationBodyQueryKey| {
@@ -6287,7 +6295,7 @@ impl Default for RevisionedQueryDatabase {
         let lookup_names = runtime
             .family_with_equality_and_evaluator(
                 "compiler.lookup-name",
-                MODULE_QUERY_MEMO_RETENTION,
+                DECLARATION_QUERY_MEMO_RETENTION,
                 |left: &LookupNameValue, right: &LookupNameValue| left == right,
                 move |context, _, key: &LookupNameKey| {
                     let indexed = context
@@ -6479,7 +6487,7 @@ impl Default for RevisionedQueryDatabase {
         let declaration_imports = runtime
             .family_with_equality_and_evaluator(
                 "compiler.declaration-import",
-                MODULE_QUERY_MEMO_RETENTION,
+                DECLARATION_QUERY_MEMO_RETENTION,
                 |left: &DeclarationImportQueryValue, right: &DeclarationImportQueryValue| {
                     left == right
                 },
@@ -6856,7 +6864,7 @@ impl Default for RevisionedQueryDatabase {
         let semantic_nucleus = runtime
             .family_with_equality_and_evaluator(
                 "compiler.semantic-nucleus",
-                MODULE_QUERY_MEMO_RETENTION,
+                DECLARATION_QUERY_MEMO_RETENTION,
                 |left: &crate::semantic_query_nucleus::SemanticNucleusValue,
                  right: &crate::semantic_query_nucleus::SemanticNucleusValue| left == right,
                 move |context, family, key: &crate::semantic_query_nucleus::SemanticNucleusKey| {
