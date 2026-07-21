@@ -5600,15 +5600,28 @@ impl CompilerSession {
                         transaction,
                         crate::body_query::BodyTransaction::Success { .. }
                     ) {
-                        let produced = self
+                        let produced = match self
                             .queries
                             .revisioned
                             .body_produced_anonymous_projection(
                                 runtime_revision,
                                 key.clone(),
                                 cancellation.clone(),
-                            )
-                            .map_err(SemanticRequestControl::Abort)?;
+                            ) {
+                            Ok(produced) => produced,
+                            Err(rue_query::QueryAbort::Canceled) if !cancellation.is_canceled() => {
+                                body_query_errors.insert(
+                                    instance.clone(),
+                                    crate::CompileErrors::from(crate::CompileError::without_span(
+                                        rue_error::ErrorKind::InternalError(format!(
+                                            "reached body {instance:?} anonymous-projection did not publish a terminal"
+                                        )),
+                                    )),
+                                );
+                                break;
+                            }
+                            Err(abort) => return Err(SemanticRequestControl::Abort(abort)),
+                        };
                         let rue_query::QueryOutcome::Success(produced) = produced.outcome() else {
                             unreachable!("BodyProducedAnonymous publishes typed values")
                         };
@@ -5747,15 +5760,25 @@ impl CompilerSession {
                         crate::body_query::BodyTransaction::Success { .. }
                     ) && callable_has_query_body(&instance)
                     {
-                        let body = self
-                            .queries
-                            .revisioned
-                            .canonical_body_projection(
-                                runtime_revision,
-                                key.clone(),
-                                cancellation.clone(),
-                            )
-                            .map_err(SemanticRequestControl::Abort)?;
+                        let body = match self.queries.revisioned.canonical_body_projection(
+                            runtime_revision,
+                            key.clone(),
+                            cancellation.clone(),
+                        ) {
+                            Ok(body) => body,
+                            Err(rue_query::QueryAbort::Canceled) if !cancellation.is_canceled() => {
+                                body_query_errors.insert(
+                                    instance.clone(),
+                                    crate::CompileErrors::from(crate::CompileError::without_span(
+                                        rue_error::ErrorKind::InternalError(format!(
+                                            "reached body {instance:?} canonical-body projection did not publish a terminal"
+                                        )),
+                                    )),
+                                );
+                                break;
+                            }
+                            Err(abort) => return Err(SemanticRequestControl::Abort(abort)),
+                        };
                         let rue_query::QueryOutcome::Success(body) = body.outcome() else {
                             unreachable!("CanonicalBody publishes typed values")
                         };
@@ -5764,14 +5787,26 @@ impl CompilerSession {
                                 let Some(record) =
                                     prepared_definitions.definitions().definition_by_key(owner)
                                 else {
-                                    return Err(SemanticRequestControl::Abort(
-                                        rue_query::QueryAbort::Canceled,
-                                    ));
+                                    body_query_errors.insert(
+                                        instance.clone(),
+                                        crate::CompileErrors::from(crate::CompileError::without_span(
+                                            rue_error::ErrorKind::InternalError(format!(
+                                                "reached body {instance:?} published an ordinary body whose owner has no issued definition record"
+                                            )),
+                                        )),
+                                    );
+                                    break;
                                 };
                                 let Some(body_span) = record.body_span() else {
-                                    return Err(SemanticRequestControl::Abort(
-                                        rue_query::QueryAbort::Canceled,
-                                    ));
+                                    body_query_errors.insert(
+                                        instance.clone(),
+                                        crate::CompileErrors::from(crate::CompileError::without_span(
+                                            rue_error::ErrorKind::InternalError(format!(
+                                                "reached body {instance:?} published an ordinary body whose owner definition record carries no body span"
+                                            )),
+                                        )),
+                                    );
+                                    break;
                                 };
                                 queried_ordinary.push(
                                     crate::canonical_semantic::PreparedDurableBodyCandidate {
@@ -5785,17 +5820,29 @@ impl CompilerSession {
                                 let crate::FunctionInstanceKey::AnonymousMember { owner, member } =
                                     identity
                                 else {
-                                    return Err(SemanticRequestControl::Abort(
-                                        rue_query::QueryAbort::Canceled,
-                                    ));
+                                    body_query_errors.insert(
+                                        instance.clone(),
+                                        crate::CompileErrors::from(crate::CompileError::without_span(
+                                            rue_error::ErrorKind::InternalError(format!(
+                                                "reached body {instance:?} published an anonymous body whose identity is not an anonymous member"
+                                            )),
+                                        )),
+                                    );
+                                    break;
                                 };
                                 let crate::TypeInstanceKey::Nominal(
                                     crate::NominalInstanceKey::Anonymous(owner_identity),
                                 ) = owner.as_ref()
                                 else {
-                                    return Err(SemanticRequestControl::Abort(
-                                        rue_query::QueryAbort::Canceled,
-                                    ));
+                                    body_query_errors.insert(
+                                        instance.clone(),
+                                        crate::CompileErrors::from(crate::CompileError::without_span(
+                                            rue_error::ErrorKind::InternalError(format!(
+                                                "reached body {instance:?} published an anonymous body whose owner is not an anonymous nominal type"
+                                            )),
+                                        )),
+                                    );
+                                    break;
                                 };
                                 let source_key = match &owner_identity.producer {
                                     crate::StableProducerId::Function(function) => {
@@ -5806,54 +5853,73 @@ impl CompilerSession {
                                     crate::StableProducerId::Definition(definition) => {
                                         Some(definition)
                                     }
-                                }
-                                .ok_or(
-                                    SemanticRequestControl::Abort(rue_query::QueryAbort::Canceled),
-                                )?;
-                                let source = prepared_definitions
+                                };
+                                let Some(source_key) = source_key else {
+                                    body_query_errors.insert(
+                                        instance.clone(),
+                                        crate::CompileErrors::from(crate::CompileError::without_span(
+                                            rue_error::ErrorKind::InternalError(format!(
+                                                "reached body {instance:?} published an anonymous body whose producing function has no definition key"
+                                            )),
+                                        )),
+                                    );
+                                    break;
+                                };
+                                let Some(source) = prepared_definitions
                                     .definitions()
                                     .definition_by_key(source_key)
-                                    .ok_or(SemanticRequestControl::Abort(
-                                        rue_query::QueryAbort::Canceled,
-                                    ))?;
+                                else {
+                                    body_query_errors.insert(
+                                        instance.clone(),
+                                        crate::CompileErrors::from(crate::CompileError::without_span(
+                                            rue_error::ErrorKind::InternalError(format!(
+                                                "reached body {instance:?} published an anonymous body whose source definition has no issued definition record"
+                                            )),
+                                        )),
+                                    );
+                                    break;
+                                };
                                 let source_span = source.declaration_span();
                                 let occurrence = owner_identity.anchor.segments().last();
-                                let body_span = rir
-                                    .rir()
-                                    .iter()
-                                    .find_map(|(_, instruction)| {
-                                        let rue_rir::InstData::AnonStructType {
-                                            methods,
-                                            anchor,
-                                            ..
-                                        } = &instruction.data
-                                        else {
-                                            return None;
-                                        };
-                                        if anchor.segments().last() != occurrence
-                                            || instruction.span.file_id != source_span.file_id
-                                            || instruction.span.start < source_span.start
-                                            || instruction.span.end > source_span.end
-                                        {
-                                            return None;
-                                        }
-                                        rir.rir().anon_struct_methods(methods).iter().find_map(
-                                            |method_ref| {
-                                                let method_instruction = rir.rir().get(*method_ref);
-                                                let rue_rir::InstData::FnDecl { name, .. } =
-                                                    &method_instruction.data
-                                                else {
-                                                    return None;
-                                                };
-                                                (rir.semantic_symbols().interner().resolve(name)
-                                                    == member.name.as_ref())
-                                                .then_some(method_instruction.span)
-                                            },
-                                        )
-                                    })
-                                    .ok_or(SemanticRequestControl::Abort(
-                                        rue_query::QueryAbort::Canceled,
-                                    ))?;
+                                let body_span = rir.rir().iter().find_map(|(_, instruction)| {
+                                    let rue_rir::InstData::AnonStructType {
+                                        methods, anchor, ..
+                                    } = &instruction.data
+                                    else {
+                                        return None;
+                                    };
+                                    if anchor.segments().last() != occurrence
+                                        || instruction.span.file_id != source_span.file_id
+                                        || instruction.span.start < source_span.start
+                                        || instruction.span.end > source_span.end
+                                    {
+                                        return None;
+                                    }
+                                    rir.rir().anon_struct_methods(methods).iter().find_map(
+                                        |method_ref| {
+                                            let method_instruction = rir.rir().get(*method_ref);
+                                            let rue_rir::InstData::FnDecl { name, .. } =
+                                                &method_instruction.data
+                                            else {
+                                                return None;
+                                            };
+                                            (rir.semantic_symbols().interner().resolve(name)
+                                                == member.name.as_ref())
+                                            .then_some(method_instruction.span)
+                                        },
+                                    )
+                                });
+                                let Some(body_span) = body_span else {
+                                    body_query_errors.insert(
+                                        instance.clone(),
+                                        crate::CompileErrors::from(crate::CompileError::without_span(
+                                            rue_error::ErrorKind::InternalError(format!(
+                                                "reached body {instance:?} published an anonymous body whose method span was not found in the owning RIR anon-struct"
+                                            )),
+                                        )),
+                                    );
+                                    break;
+                                };
                                 queried_anonymous.push(
                                 crate::canonical_semantic::PreparedDurableAnonymousBodyCandidate {
                                     identity: identity.clone(),
@@ -5871,9 +5937,15 @@ impl CompilerSession {
                                     .definitions()
                                     .definition_by_key(&identity.base)
                                 else {
-                                    return Err(SemanticRequestControl::Abort(
-                                        rue_query::QueryAbort::Canceled,
-                                    ));
+                                    body_query_errors.insert(
+                                        instance.clone(),
+                                        crate::CompileErrors::from(crate::CompileError::without_span(
+                                            rue_error::ErrorKind::InternalError(format!(
+                                                "reached body {instance:?} published a specialization body whose base has no issued definition record"
+                                            )),
+                                        )),
+                                    );
+                                    break;
                                 };
                                 queried_specialized.push(
                                 crate::canonical_semantic::PreparedDurableSpecializedBodyCandidate {
