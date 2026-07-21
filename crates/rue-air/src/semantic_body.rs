@@ -96,6 +96,12 @@ pub struct SemanticBodyExport {
     pub body: SemanticBody<SemanticDefinitionToken, SemanticModuleToken>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticAnonymousBodyExport {
+    pub identity: FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+    pub body: SemanticBody<SemanticDefinitionToken, SemanticModuleToken>,
+}
+
 /// Request-independent identity of one completed generic specialization.
 ///
 /// The base and every nested nominal/function value are declaration identities;
@@ -555,6 +561,10 @@ impl<K, M> SemanticBodyInstData<K, M> {
                     variant_index,
                 } => SemanticBodyPattern::EnumVariant {
                     enum_key: match enum_key {
+                        NominalInstanceKey::Builtin { kind, name } => NominalInstanceKey::Builtin {
+                            kind: *kind,
+                            name: name.clone(),
+                        },
                         NominalInstanceKey::Named(value) => NominalInstanceKey::Named(key(value)?),
                         NominalInstanceKey::Anonymous(value) => {
                             NominalInstanceKey::Anonymous(value.try_map_identities(key, module)?)
@@ -672,6 +682,10 @@ impl<K, M> SemanticBodyInstData<K, M> {
                 source_order,
             } => D::StructInit {
                 struct_key: match struct_key {
+                    NominalInstanceKey::Builtin { kind, name } => NominalInstanceKey::Builtin {
+                        kind: *kind,
+                        name: name.clone(),
+                    },
                     NominalInstanceKey::Named(value) => NominalInstanceKey::Named(key(value)?),
                     NominalInstanceKey::Anonymous(value) => {
                         NominalInstanceKey::Anonymous(value.try_map_identities(key, module)?)
@@ -694,6 +708,10 @@ impl<K, M> SemanticBodyInstData<K, M> {
                 payload,
             } => D::EnumVariant {
                 enum_key: match enum_key {
+                    NominalInstanceKey::Builtin { kind, name } => NominalInstanceKey::Builtin {
+                        kind: *kind,
+                        name: name.clone(),
+                    },
                     NominalInstanceKey::Named(value) => NominalInstanceKey::Named(key(value)?),
                     NominalInstanceKey::Anonymous(value) => {
                         NominalInstanceKey::Anonymous(value.try_map_identities(key, module)?)
@@ -710,6 +728,10 @@ impl<K, M> SemanticBodyInstData<K, M> {
             } => D::EnumPayloadGet {
                 base: *base,
                 enum_key: match enum_key {
+                    NominalInstanceKey::Builtin { kind, name } => NominalInstanceKey::Builtin {
+                        kind: *kind,
+                        name: name.clone(),
+                    },
                     NominalInstanceKey::Named(value) => NominalInstanceKey::Named(key(value)?),
                     NominalInstanceKey::Anonymous(value) => {
                         NominalInstanceKey::Anonymous(value.try_map_identities(key, module)?)
@@ -916,9 +938,26 @@ impl<K, M> SemanticBodyInstData<K, M> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemanticBodyWarning {
-    pub code: Arc<str>,
+    pub kind: rue_error::WarningKind,
+    pub anchor: SemanticBodyAnchor,
+    pub labels: Arc<[SemanticBodyWarningLabel]>,
+    pub notes: Arc<[Arc<str>]>,
+    pub helps: Arc<[Arc<str>]>,
+    pub suggestions: Arc<[SemanticBodyWarningSuggestion]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticBodyWarningLabel {
     pub message: Arc<str>,
     pub anchor: SemanticBodyAnchor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticBodyWarningSuggestion {
+    pub message: Arc<str>,
+    pub anchor: SemanticBodyAnchor,
+    pub replacement: Arc<str>,
+    pub applicability: rue_error::Applicability,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -963,6 +1002,12 @@ impl<K, M> SemanticBody<K, M> {
                                     field_index,
                                 } => SemanticBodyProjection::Field {
                                     struct_key: match struct_key {
+                                        NominalInstanceKey::Builtin { kind, name } => {
+                                            NominalInstanceKey::Builtin {
+                                                kind: *kind,
+                                                name: name.clone(),
+                                            }
+                                        }
                                         NominalInstanceKey::Named(value) => {
                                             NominalInstanceKey::Named(key(value)?)
                                         }
@@ -1042,12 +1087,21 @@ pub struct SemanticImportedBody<K, M> {
     pub num_param_slots: u32,
     pub param_modes: ParamSlotModes,
     pub allow_unreachable_code: bool,
-    pub warnings: Arc<[SemanticBodyWarning]>,
+    pub warnings: Arc<[rue_error::CompileWarning]>,
 }
 
 #[derive(Debug, Clone)]
 pub struct SemanticBodyCandidate<K, M> {
     pub owner: crate::BodyOwnerToken,
+    pub body_span: rue_span::Span,
+    pub body: SemanticBody<K, M>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SemanticQueriedBodyCandidate<K, M> {
+    pub identity: FunctionInstanceKey<K, M>,
+    pub ordinary_owner: Option<crate::BodyOwnerToken>,
+    pub specialization_identity: Option<SemanticSpecializationIdentity<K, M>>,
     pub body_span: rue_span::Span,
     pub body: SemanticBody<K, M>,
 }
@@ -1313,7 +1367,8 @@ mod schema_tests {
                 SemanticBodyInstDependency::Function(FunctionInstanceKey::Definition(value)) => {
                     SeenDependency::Definition(value)
                 }
-                SemanticBodyInstDependency::Nominal(NominalInstanceKey::Anonymous(_))
+                SemanticBodyInstDependency::Nominal(NominalInstanceKey::Builtin { .. })
+                | SemanticBodyInstDependency::Nominal(NominalInstanceKey::Anonymous(_))
                 | SemanticBodyInstDependency::Function(_) => {
                     panic!("the bounded named sample does not use anonymous identities")
                 }

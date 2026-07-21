@@ -169,7 +169,7 @@ mod tests {
             .resolve_declarations()?
             .install_body_owner_tokens(&owners)
             .unwrap()
-            .analyze_all_bodies()
+            .analyze_all_bodies_for_test()
     }
 
     fn lower_files(files: &[(&str, FileId)]) -> (Rir, ThreadedRodeo) {
@@ -588,12 +588,13 @@ mod tests {
     }
 
     #[test]
-    fn warning_body_is_rejected_without_losing_ordinary_warning() {
+    fn warning_body_exports_without_losing_ordinary_warning() {
         let output = compile_to_air("fn main() { let unused = 1; }").unwrap();
         assert_eq!(output.body_analysis_work.ordinary_body_exports_attempted, 1);
-        assert_eq!(output.body_analysis_work.ordinary_body_exports_succeeded, 0);
-        assert_eq!(output.body_analysis_work.ordinary_body_exports_rejected, 1);
-        assert!(output.ordinary_body_exports.is_empty());
+        assert_eq!(output.body_analysis_work.ordinary_body_exports_succeeded, 1);
+        assert_eq!(output.body_analysis_work.ordinary_body_exports_rejected, 0);
+        assert_eq!(output.ordinary_body_exports.len(), 1);
+        assert_eq!(output.ordinary_body_exports[0].body.warnings.len(), 1);
         assert!(output.warnings.iter().any(|warning| {
             matches!(warning.kind, rue_error::WarningKind::UnusedVariable(ref name) if name == "unused")
         }));
@@ -601,13 +602,13 @@ mod tests {
             output
                 .body_analysis_work
                 .ordinary_body_export_instructions_emitted,
-            0
+            output.ordinary_body_exports[0].body.instructions.len()
         );
         assert_eq!(
             output
                 .body_analysis_work
                 .ordinary_body_export_places_emitted,
-            0
+            output.ordinary_body_exports[0].body.places.len()
         );
         assert_eq!(
             output
@@ -940,7 +941,7 @@ mod tests {
         assert_eq!(binding_work.declaration_index_build_invocations, 1);
         assert_eq!(binding_work.indexed_const_candidates, 0);
 
-        let output = bound.analyze_all_bodies().unwrap();
+        let output = bound.analyze_all_bodies_for_test().unwrap();
         assert_eq!(output.body_analysis_work.bodies_succeeded, 2);
         assert_eq!(output.body_analysis_work.bodies_failed, 0);
         assert_eq!(
@@ -977,7 +978,7 @@ mod tests {
         // Body analysis exercises ordinary source-function lookup; the shared
         // boundary invariant rejects source-signature mutation on every body
         // path, including anonymous and specialized bodies.
-        let output = bound.analyze_all_bodies().unwrap();
+        let output = bound.analyze_all_bodies_for_test().unwrap();
         assert_eq!(output.body_analysis_work.bodies_failed, 0);
     }
 
@@ -1100,7 +1101,7 @@ mod tests {
         assert_eq!(binding_work.declaration_index_build_invocations, 1);
         assert_eq!(binding_work.indexed_const_candidates, IMPORT_COUNT);
 
-        let output = bound.analyze_all_bodies().unwrap();
+        let output = bound.analyze_all_bodies_for_test().unwrap();
         assert_eq!(output.body_analysis_work.bodies_failed, 0);
         assert_eq!(
             output.body_analysis_work.reachable_declaration_rir_visits,
@@ -3434,7 +3435,7 @@ fn main() -> i32 {
             .unwrap()
             .install_body_owner_tokens(&owners)
             .unwrap()
-            .analyze_all_bodies()
+            .analyze_all_bodies_for_test()
             .unwrap();
 
         let warm_owner = owners
@@ -3494,7 +3495,7 @@ fn main() -> i32 {
             },
         );
         assert_eq!(install_work.successes, 1);
-        let reused = bound.analyze_all_bodies().unwrap();
+        let reused = bound.analyze_all_bodies_for_test().unwrap();
 
         assert_eq!(reused.body_analysis_work.ordinary_body_import_successes, 2);
         assert_eq!(reused.body_analysis_work.ordinary_body_analyses_skipped, 2);
@@ -3543,7 +3544,7 @@ fn main() -> i32 {
             .unwrap()
             .install_body_owner_tokens(&owners)
             .unwrap()
-            .analyze_all_bodies()
+            .analyze_all_bodies_for_test()
             .unwrap();
         let wanted = ["consume", "main"];
         let owner_tokens = owners
@@ -3577,7 +3578,7 @@ fn main() -> i32 {
                     Ok::<_, crate::SemanticStableResolutionFailure>(*token)
                 },
             )
-            .analyze_all_bodies()
+            .analyze_all_bodies_for_test()
             .unwrap();
         assert_eq!(reused.body_analysis_work.ordinary_body_import_attempts, 2);
         assert_eq!(reused.body_analysis_work.ordinary_body_import_successes, 2);
@@ -3627,7 +3628,7 @@ fn main() -> i32 {
                     Ok::<_, crate::SemanticStableResolutionFailure>(*token)
                 },
             )
-            .analyze_all_bodies()
+            .analyze_all_bodies_for_test()
             .unwrap();
         assert_eq!(rejected.body_analysis_work.ordinary_body_import_attempts, 1);
         assert_eq!(
@@ -4476,6 +4477,79 @@ fn main() -> i32 {
     }
 
     #[test]
+    fn one_body_type_constructor_exports_exact_anonymous_owner_and_missing_owner_is_nonterminal() {
+        use crate::sema::{
+            OneBodyRequest as R, OneBodyTransactionOutcome as O,
+            SemanticProducedAnonymousNominalShape as S,
+        };
+        let source = r#"
+            fn Box(comptime T: type) -> type {
+                struct { value: T, fn get(borrow self) -> T { self.value } }
+            }
+            fn main() -> i32 {
+                let B = Box(i32);
+                let value = B { value: 1 };
+                value.get()
+            }
+        "#;
+        let (bound, definitions) = one_body_fixture(source);
+        let base = endpoint(
+            &definitions,
+            "Box",
+            crate::StableDefinitionKind::Function,
+            None,
+        );
+        let outcome = bound.analyze_one_body_for_test(
+            R::Specialization {
+                base,
+                type_arguments: vec![Type::I32],
+                value_arguments: Vec::new(),
+            },
+            None,
+        );
+        let O::Success {
+            produced_anonymous_nominals,
+            ..
+        } = outcome
+        else {
+            panic!("type-constructor transaction failed: {outcome:?}")
+        };
+        assert_eq!(produced_anonymous_nominals.len(), 1);
+        let produced = &produced_anonymous_nominals[0];
+        let S::Struct { fields, methods } = &produced.shape else {
+            panic!("Box must produce a struct")
+        };
+        assert_eq!(
+            fields.as_ref(),
+            &[(std::sync::Arc::from("value"), crate::TypeInstanceKey::I32)]
+        );
+        assert_eq!(methods.len(), 1);
+        assert_eq!(methods[0].name.as_ref(), "get");
+        assert_eq!(produced.type_captures.len(), 1);
+
+        // A stable identity alone is never enough to analyze an anonymous
+        // member. A fresh epoch which has not imported the producer payload
+        // must remain nonterminal instead of rediscovering or fabricating it.
+        let (bound, _) = one_body_fixture(source);
+        let member = crate::FunctionInstanceKey::AnonymousMember {
+            owner: Box::new(crate::TypeInstanceKey::Nominal(
+                crate::NominalInstanceKey::Anonymous(produced.identity.clone()),
+            )),
+            member: crate::AnonymousMemberKey {
+                kind: crate::AnonymousMemberKind::Method,
+                name: std::sync::Arc::from("get"),
+            },
+        };
+        let missing = bound.analyze_one_body_instance(
+            &member,
+            |token| Ok(*token),
+            |module| Ok(*module),
+            None,
+        );
+        assert!(matches!(missing, O::NonTerminal { .. }), "{missing:?}");
+    }
+
+    #[test]
     fn one_body_recursion_is_a_reference_not_nested_analysis() {
         use crate::sema::{
             OneBodyDependency as D, OneBodyRequest as R, OneBodyTransactionOutcome as O,
@@ -4899,6 +4973,36 @@ fn main() -> i32 {
     }
 
     #[test]
+    fn one_body_type_producer_keeps_evaluated_away_value_constant() {
+        use crate::sema::{
+            OneBodyDependency as D, OneBodyRequest as R, OneBodyTransactionOutcome as O,
+        };
+        let source = r#"
+            const N: i32 = 1;
+            fn Make() -> type { struct { values: [i32; N] } }
+            fn main() -> i32 { 0 }
+        "#;
+        let (bound, definitions) = one_body_fixture(source);
+        let make = endpoint(
+            &definitions,
+            "Make",
+            crate::StableDefinitionKind::Function,
+            None,
+        );
+        let n = endpoint(
+            &definitions,
+            "N",
+            crate::StableDefinitionKind::ValueConst,
+            None,
+        );
+        let outcome = bound.analyze_one_body_for_test(R::Definition(make), None);
+        let O::Success { references, .. } = outcome else {
+            panic!("type producer did not succeed: {outcome:?}")
+        };
+        assert!(references.contains(&D::Definition(n)), "{references:?}");
+    }
+
+    #[test]
     fn failed_one_body_inference_keeps_unqualified_and_qualified_callable_aliases() {
         use crate::sema::{
             OneBodyDependency as D, OneBodyRequest as R, OneBodyTransactionOutcome as O,
@@ -5194,11 +5298,8 @@ fn main() -> i32 {
             None,
         );
         let outcome = bound.analyze_one_body_for_test(R::Definition(warned), None);
-        assert_eq!(
-            outcome.references(),
-            None,
-            "typed incompleteness leaked refs"
-        );
-        assert!(outcome.non_terminal_reason().is_some());
+        assert!(matches!(&outcome, O::Success { .. }));
+        assert_eq!(outcome.references(), Some([].as_slice()));
+        assert_eq!(outcome.non_terminal_reason(), None);
     }
 }

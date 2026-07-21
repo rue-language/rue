@@ -504,7 +504,9 @@ impl<'a> BodySema<'a> {
         air.set_param_drops(
             param_vec
                 .iter()
-                .filter(|p| p.mode == RirParamMode::Normal)
+                .filter(|p| {
+                    p.mode == RirParamMode::Normal && !p.is_comptime && p.abi_slot < num_param_slots
+                })
                 .map(|p| (p.abi_slot, p.ty))
                 .collect(),
         );
@@ -686,7 +688,6 @@ impl<'a> BodySema<'a> {
             }
         }
 
-        #[cfg(test)]
         if self.one_body_error_recovery && !self.one_body_recovered_errors.is_empty() {
             return Err(self.one_body_recovered_errors[0].clone());
         }
@@ -757,7 +758,7 @@ impl<'a> BodySema<'a> {
     /// This is used for anonymous struct methods where `Self` should resolve to the
     /// struct type. The `self_type` is added to the type substitution map under the
     /// symbol "Self", allowing `Self { ... }` struct literals to work correctly.
-    pub(super) fn analyze_method_body(
+    pub(in crate::sema) fn analyze_method_body(
         &mut self,
         infer_ctx: &InferenceContext,
         method_name: Spur,
@@ -789,8 +790,8 @@ impl<'a> BodySema<'a> {
         let mut type_subst = enclosing_type_subst.clone();
         type_subst.insert(self_sym, self_type);
 
-        let producer = (
-            self.canonical_anonymous_member_producer(
+        let canonical_producer = self
+            .canonical_anonymous_member_producer(
                 self_type,
                 method_name,
                 if has_self {
@@ -806,9 +807,30 @@ impl<'a> BodySema<'a> {
                     )),
                     self.rir.get(body).span,
                 )
-            })?,
-            crate::CanonicalArguments::default(),
-        );
+            })?;
+        let expected_kind = if has_self {
+            crate::AnonymousMemberKind::Method
+        } else {
+            crate::AnonymousMemberKind::AssociatedFunction
+        };
+        let producer = self
+            .one_body_requested_producer
+            .as_ref()
+            .filter(|requested| {
+                matches!(
+                    requested,
+                    crate::StableProducerId::Function(requested)
+                        if matches!(
+                            requested.as_ref(),
+                            crate::FunctionInstanceKey::AnonymousMember { member, .. }
+                                if member.kind == expected_kind
+                                    && member.name.as_ref() == self.interner.resolve(&method_name)
+                        )
+                )
+            })
+            .cloned()
+            .unwrap_or(canonical_producer);
+        let producer = (producer, crate::CanonicalArguments::default());
         let previous_producer = self.active_anonymous_producer.replace(producer);
         let analysis = self.analyze_function_internal(
             infer_ctx,
@@ -838,7 +860,7 @@ impl<'a> BodySema<'a> {
     /// disposes of `self`'s fields, avoiding infinite recursion. The return
     /// type is always unit.
     #[allow(clippy::type_complexity)]
-    pub(super) fn analyze_anon_destructor_body(
+    pub(in crate::sema) fn analyze_anon_destructor_body(
         &mut self,
         infer_ctx: &InferenceContext,
         params: &[(Spur, Type, RirParamMode, bool)],
@@ -866,8 +888,8 @@ impl<'a> BodySema<'a> {
         let mut type_subst = enclosing_type_subst.clone();
         type_subst.insert(self_sym, self_type);
 
-        let producer = (
-            self.canonical_anonymous_member_producer(
+        let canonical_producer = self
+            .canonical_anonymous_member_producer(
                 self_type,
                 method_name,
                 crate::AnonymousMemberKind::Destructor,
@@ -879,9 +901,25 @@ impl<'a> BodySema<'a> {
                     )),
                     self.rir.get(body).span,
                 )
-            })?,
-            crate::CanonicalArguments::default(),
-        );
+            })?;
+        let producer = self
+            .one_body_requested_producer
+            .as_ref()
+            .filter(|requested| {
+                matches!(
+                    requested,
+                    crate::StableProducerId::Function(requested)
+                        if matches!(
+                            requested.as_ref(),
+                            crate::FunctionInstanceKey::AnonymousMember { member, .. }
+                                if member.kind == crate::AnonymousMemberKind::Destructor
+                                    && member.name.as_ref() == self.interner.resolve(&method_name)
+                        )
+                )
+            })
+            .cloned()
+            .unwrap_or(canonical_producer);
+        let producer = (producer, crate::CanonicalArguments::default());
         let previous_producer = self.active_anonymous_producer.replace(producer);
         let analysis = self.analyze_function_internal(
             infer_ctx,

@@ -621,7 +621,6 @@ impl<'a> BodySema<'a> {
             let return_type =
                 self.resolve_substituted_return_type(&fn_info, &type_subst, &value_subst)?;
 
-            #[cfg(test)]
             if let Some(source) = self.body_dependency_observer.clone()
                 && let Ok(identity) =
                     self.canonical_specialization_instance(name, &type_args, &value_args)
@@ -944,7 +943,6 @@ impl<'a> BodySema<'a> {
             span,
             false,
         )?;
-        #[cfg(test)]
         self.record_body_method_dependency(method_key);
 
         // Clone data needed before mutable borrow
@@ -1228,7 +1226,6 @@ impl<'a> BodySema<'a> {
         }
 
         self.validate_call_contract(args_range, &param_types, &param_modes, span, true)?;
-        #[cfg(test)]
         self.record_body_callable_dependency(function_key);
 
         // Analyze arguments (the per-pipeline recursion seam). Module-qualified
@@ -1373,7 +1370,6 @@ impl<'a> BodySema<'a> {
             span,
             true,
         )?;
-        #[cfg(test)]
         self.record_body_method_dependency(method_key);
 
         // Clone data needed before mutable borrow

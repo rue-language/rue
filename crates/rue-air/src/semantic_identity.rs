@@ -90,6 +90,10 @@ pub struct AnonymousNominalIdentitySet<D, M> {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NominalInstanceKey<D, M> {
+    Builtin {
+        kind: AnonymousNominalKind,
+        name: Arc<str>,
+    },
     Named(D),
     Anonymous(AnonymousNominalKey<D, M>),
 }
@@ -146,7 +150,9 @@ pub enum FunctionInstanceKey<D, M> {
 }
 
 impl<D, M> CanonicalArgumentValue<D, M> {
-    fn try_map_identities<D2, M2, E>(
+    /// Relocate every definition and module identity carried by this stable
+    /// argument value without changing its language-level value.
+    pub fn try_map_identities<D2, M2, E>(
         &self,
         definition: &impl Fn(&D) -> Result<D2, E>,
         module: &impl Fn(&M) -> Result<M2, E>,
@@ -238,6 +244,10 @@ impl<D, M> TypeInstanceKey<D, M> {
                 name: name.clone(),
             },
             Self::Nominal(value) => TypeInstanceKey::Nominal(match value {
+                NominalInstanceKey::Builtin { kind, name } => NominalInstanceKey::Builtin {
+                    kind: *kind,
+                    name: name.clone(),
+                },
                 NominalInstanceKey::Named(value) => NominalInstanceKey::Named(definition(value)?),
                 NominalInstanceKey::Anonymous(value) => {
                     NominalInstanceKey::Anonymous(value.try_map_identities(definition, module)?)

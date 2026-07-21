@@ -35,6 +35,7 @@
 
 mod artifact_views;
 mod backend;
+mod body_query;
 mod bound_definitions;
 mod canonical_lower;
 mod canonical_merge;
@@ -190,12 +191,13 @@ pub(crate) use definition_snapshot::{
     DefinitionRecord, DefinitionSnapshot,
 };
 #[cfg(test)]
-pub(crate) use durable_body::DurableBodyProjectionFailure;
 pub(crate) use durable_body::{
     DURABLE_ORDINARY_BODY_SCHEMA_VERSION, DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION,
+    DurableBodyProjectionFailure,
+};
+pub(crate) use durable_body::{
     DurableAirInstData, DurableBodyAnchor, DurableOrdinaryBody, DurableOrdinaryBodyPayload,
-    DurableProjection, DurableSpecializedBody, DurableSpecializedBodyPayload,
-    convert_semantic_specialized_body_exports,
+    DurableProjection, DurableSpecializedBodyPayload, convert_semantic_specialized_body_exports,
 };
 pub(crate) use durable_semantics::{
     DURABLE_SEMANTIC_SCHEMA_VERSION, DurableDeclarationSemantic, DurableSemanticSchemaVersion,

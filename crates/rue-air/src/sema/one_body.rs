@@ -1,8 +1,4 @@
-//! Test-only extraction of an exact-one-body semantic transaction.
-//!
-//! Production continues to use the established whole-program driver.  This
-//! module exists to prove the transaction contract needed by the compiler's
-//! future body query without installing a second production authority.
+//! Exact-one-body semantic transaction used by the compiler body query.
 //!
 //! Module selections remain exact stable module-binding definition tokens:
 //! that is the canonical compiler join key and retains both the local binding
@@ -28,7 +24,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-pub(crate) enum OneBodyRequest {
+pub enum OneBodyRequest {
     Definition(SemanticDefinitionToken),
     Specialization {
         base: SemanticDefinitionToken,
@@ -38,29 +34,94 @@ pub(crate) enum OneBodyRequest {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OneBodyInterruption {
+pub enum OneBodyInterruption {
     Canceled,
     EngineAbort,
 }
 
 #[derive(Debug)]
-pub(crate) enum OneBodyCanonicalArtifact {
+pub enum OneBodyCanonicalArtifact {
     Ordinary(Box<SemanticBodyExport>),
+    Anonymous(Box<crate::SemanticAnonymousBodyExport>),
     Specialization(Box<SemanticSpecializedBodyExport>),
 }
 
+/// Stable, request-independent description of an anonymous nominal created by
+/// one successful body transaction. The value deliberately contains no live
+/// type-pool IDs, interner symbols, RIR handles, or source spans.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticProducedAnonymousNominal {
+    pub identity: crate::AnonymousNominalKey<SemanticDefinitionToken, SemanticModuleToken>,
+    pub shape: SemanticProducedAnonymousNominalShape,
+    pub type_captures: Arc<
+        [(
+            Arc<str>,
+            TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+        )],
+    >,
+    pub value_captures: Arc<
+        [(
+            Arc<str>,
+            crate::CanonicalArgumentValue<SemanticDefinitionToken, SemanticModuleToken>,
+        )],
+    >,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SemanticProducedAnonymousNominalShape {
+    Struct {
+        fields: Arc<
+            [(
+                Arc<str>,
+                TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+            )],
+        >,
+        methods: Arc<[SemanticProducedAnonymousMethodSignature]>,
+    },
+    Enum {
+        variants: Arc<
+            [(
+                Arc<str>,
+                Arc<[TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>]>,
+            )],
+        >,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticProducedAnonymousMethodSignature {
+    pub name: Arc<str>,
+    pub has_self: bool,
+    pub self_mode: crate::SemanticParameterMode,
+    pub parameters: Arc<
+        [(
+            SemanticProducedAnonymousMethodType,
+            crate::SemanticParameterMode,
+            bool,
+        )],
+    >,
+    pub result: SemanticProducedAnonymousMethodType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SemanticProducedAnonymousMethodType {
+    SelfType,
+    Concrete(TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum OneBodyDependency {
+pub enum OneBodyDependency {
     Callable(FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>),
     Definition(SemanticDefinitionToken),
     Type(TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>),
 }
 
 #[derive(Debug)]
-pub(crate) enum OneBodyTransactionOutcome {
+pub enum OneBodyTransactionOutcome {
     Success {
         artifact: OneBodyCanonicalArtifact,
         references: Arc<[OneBodyDependency]>,
+        produced_anonymous_nominals: Arc<[SemanticProducedAnonymousNominal]>,
     },
     DeterministicFailure {
         errors: CompileErrors,
@@ -72,14 +133,14 @@ pub(crate) enum OneBodyTransactionOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum OneBodyNonTerminalReason {
+pub enum OneBodyNonTerminalReason {
     Canceled,
     EngineAbort,
     TypedIncomplete(crate::SemanticBodyExportFailure),
 }
 
 impl OneBodyTransactionOutcome {
-    pub(crate) fn references(&self) -> Option<&[OneBodyDependency]> {
+    pub fn references(&self) -> Option<&[OneBodyDependency]> {
         match self {
             Self::Success { references, .. } | Self::DeterministicFailure { references, .. } => {
                 Some(references)
@@ -88,10 +149,14 @@ impl OneBodyTransactionOutcome {
         }
     }
 
-    pub(crate) fn artifact_instruction_count(&self) -> Option<usize> {
+    pub fn artifact_instruction_count(&self) -> Option<usize> {
         match self {
             Self::Success {
                 artifact: OneBodyCanonicalArtifact::Ordinary(artifact),
+                ..
+            } => Some(artifact.body.instructions.len()),
+            Self::Success {
+                artifact: OneBodyCanonicalArtifact::Anonymous(artifact),
                 ..
             } => Some(artifact.body.instructions.len()),
             Self::Success {
@@ -102,11 +167,44 @@ impl OneBodyTransactionOutcome {
         }
     }
 
-    pub(crate) fn non_terminal_reason(&self) -> Option<&OneBodyNonTerminalReason> {
+    pub fn non_terminal_reason(&self) -> Option<&OneBodyNonTerminalReason> {
         match self {
             Self::NonTerminal { reason } => Some(reason),
             Self::Success { .. } | Self::DeterministicFailure { .. } => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod exact_demand_tests {
+    use super::*;
+
+    #[test]
+    fn str_materialization_demand_is_exact_to_requested_identity() {
+        let base = FunctionInstanceKey::<&str, &str>::Definition("choose");
+        let ordinary = FunctionInstanceKey::Specialization {
+            base: Box::new(base.clone()),
+            arguments: crate::CanonicalArguments {
+                types: Arc::from([TypeInstanceKey::I32]),
+                values: Arc::from([]),
+            },
+        };
+        assert!(!function_instance_contains_str(&base));
+        assert!(!function_instance_contains_str(&ordinary));
+
+        let with_str = FunctionInstanceKey::Specialization {
+            base: Box::new(base),
+            arguments: crate::CanonicalArguments {
+                types: Arc::from([TypeInstanceKey::PtrConst(Box::new(
+                    TypeInstanceKey::BuiltinNominal {
+                        kind: crate::AnonymousNominalKind::Struct,
+                        name: Arc::from("str"),
+                    },
+                ))]),
+                values: Arc::from([]),
+            },
+        };
+        assert!(function_instance_contains_str(&with_str));
     }
 }
 
@@ -144,6 +242,23 @@ fn target_dependency(
                 .map(|token| OneBodyDependency::Callable(FunctionInstanceKey::Definition(token)))
         }
         T::NamedType { file, name, kind } => {
+            if let Some(symbol) = sema.interner.get(name.as_str()) {
+                let builtin_kind = if sema.builtin_enums.contains_key(&symbol) {
+                    Some(crate::AnonymousNominalKind::Enum)
+                } else if sema.builtin_structs.contains_key(&symbol)
+                    || sema.generated_structs.contains_key(&symbol)
+                {
+                    Some(crate::AnonymousNominalKind::Struct)
+                } else {
+                    None
+                };
+                if let Some(kind) = builtin_kind {
+                    return Ok(OneBodyDependency::Type(TypeInstanceKey::BuiltinNominal {
+                        kind,
+                        name: Arc::from(name.as_str()),
+                    }));
+                }
+            }
             let kind = match kind {
                 TK::Struct => StableDefinitionKind::Struct,
                 TK::Enum => StableDefinitionKind::Enum,
@@ -191,6 +306,196 @@ fn projection_failure_outcome(failure: ReferenceProjectionFailure) -> OneBodyTra
     }
 }
 
+fn semantic_parameter_mode(mode: rue_rir::RirParamMode) -> crate::SemanticParameterMode {
+    match mode {
+        rue_rir::RirParamMode::Normal => crate::SemanticParameterMode::Value,
+        rue_rir::RirParamMode::Borrow => crate::SemanticParameterMode::Borrow,
+        rue_rir::RirParamMode::Inout => crate::SemanticParameterMode::Inout,
+    }
+}
+
+fn produced_method_type(
+    sema: &BodySema<'_>,
+    ty: &super::AnonMethodType,
+    owner: &crate::AnonymousNominalKey<SemanticDefinitionToken, SemanticModuleToken>,
+) -> Result<SemanticProducedAnonymousMethodType, crate::SemanticBodyExportFailure> {
+    fn concrete(
+        sema: &BodySema<'_>,
+        ty: &super::AnonMethodType,
+        owner: &crate::AnonymousNominalKey<SemanticDefinitionToken, SemanticModuleToken>,
+    ) -> Result<
+        TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    > {
+        Ok(match ty {
+            super::AnonMethodType::SelfType => {
+                TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(owner.clone()))
+            }
+            super::AnonMethodType::Concrete(ty) => sema.canonical_type_instance(*ty)?,
+            super::AnonMethodType::Array { element, len } => TypeInstanceKey::Array {
+                element: Box::new(concrete(sema, element, owner)?),
+                len: *len,
+            },
+            super::AnonMethodType::PtrConst(pointee) => {
+                TypeInstanceKey::PtrConst(Box::new(concrete(sema, pointee, owner)?))
+            }
+            super::AnonMethodType::PtrMut(pointee) => {
+                TypeInstanceKey::PtrMut(Box::new(concrete(sema, pointee, owner)?))
+            }
+            super::AnonMethodType::Syntax(_) => {
+                return Err(crate::SemanticBodyExportFailure::UnsupportedType);
+            }
+        })
+    }
+
+    Ok(match ty {
+        super::AnonMethodType::SelfType => SemanticProducedAnonymousMethodType::SelfType,
+        _ => SemanticProducedAnonymousMethodType::Concrete(concrete(sema, ty, owner)?),
+    })
+}
+
+fn produced_anonymous_nominals(
+    sema: &BodySema<'_>,
+) -> Result<Arc<[SemanticProducedAnonymousNominal]>, crate::SemanticBodyExportFailure> {
+    let mut identities = sema
+        .canonical_anonymous_aliases
+        .iter()
+        .flat_map(|(ty, aliases)| {
+            aliases
+                .iter()
+                .filter(|identity| {
+                    !sema
+                        .one_body_initial_anonymous_identities
+                        .contains(*identity)
+                })
+                .cloned()
+                .map(|identity| (*ty, identity))
+        })
+        .collect::<Vec<_>>();
+    identities.sort_by(|(_, left), (_, right)| BodySema::anonymous_key_cmp(left, right));
+
+    identities
+        .into_iter()
+        .map(|(ty, identity)| {
+            let (shape, type_captures, value_captures) = match (ty.kind(), identity.kind) {
+                (crate::TypeKind::Struct(struct_id), crate::AnonymousNominalKind::Struct) => {
+                    let definition = sema.type_pool.struct_def(struct_id);
+                    let fields = definition
+                        .fields
+                        .iter()
+                        .map(|field| {
+                            Ok((
+                                Arc::from(field.name.as_str()),
+                                sema.canonical_type_instance(field.ty)?,
+                            ))
+                        })
+                        .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
+                    let methods = sema
+                        .anon_struct_method_sigs
+                        .get(&struct_id)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|method| {
+                            let parameters = method
+                                .param_types
+                                .iter()
+                                .zip(&method.param_modes)
+                                .zip(&method.param_comptime)
+                                .map(|((ty, mode), is_comptime)| {
+                                    Ok((
+                                        produced_method_type(sema, ty, &identity)?,
+                                        semantic_parameter_mode(*mode),
+                                        *is_comptime,
+                                    ))
+                                })
+                                .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
+                            Ok(SemanticProducedAnonymousMethodSignature {
+                                name: Arc::from(sema.interner.resolve(&method.name)),
+                                has_self: method.has_self,
+                                self_mode: semantic_parameter_mode(method.self_mode),
+                                parameters: parameters.into(),
+                                result: produced_method_type(sema, &method.return_type, &identity)?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
+                    let mut type_captures: Vec<(
+                        Arc<str>,
+                        TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+                    )> = sema
+                        .anon_struct_type_subst
+                        .get(&struct_id)
+                        .into_iter()
+                        .flat_map(|captures| captures.iter())
+                        .map(|(name, ty)| {
+                            Ok((
+                                Arc::<str>::from(sema.interner.resolve(name)),
+                                sema.canonical_type_instance(*ty)?,
+                            ))
+                        })
+                        .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
+                    type_captures.sort_by(|left, right| left.0.cmp(&right.0));
+                    let mut value_captures: Vec<(
+                        Arc<str>,
+                        crate::CanonicalArgumentValue<SemanticDefinitionToken, SemanticModuleToken>,
+                    )> = sema
+                        .anon_struct_captured_values
+                        .get(&struct_id)
+                        .into_iter()
+                        .flat_map(|captures| captures.iter())
+                        .map(|(name, value)| {
+                            Ok((
+                                Arc::<str>::from(sema.interner.resolve(name)),
+                                sema.canonical_argument_value(*value)?,
+                            ))
+                        })
+                        .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
+                    value_captures.sort_by(|left, right| left.0.cmp(&right.0));
+                    (
+                        SemanticProducedAnonymousNominalShape::Struct {
+                            fields: fields.into(),
+                            methods: methods.into(),
+                        },
+                        type_captures,
+                        value_captures,
+                    )
+                }
+                (crate::TypeKind::Enum(enum_id), crate::AnonymousNominalKind::Enum) => {
+                    let definition = sema.type_pool.enum_def(enum_id);
+                    let variants = definition
+                        .variants
+                        .iter()
+                        .enumerate()
+                        .map(|(index, name)| {
+                            let payload = definition
+                                .variant_payload(index)
+                                .iter()
+                                .map(|ty| sema.canonical_type_instance(*ty))
+                                .collect::<Result<Vec<_>, _>>()?;
+                            Ok((Arc::from(name.as_str()), Arc::from(payload)))
+                        })
+                        .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
+                    (
+                        SemanticProducedAnonymousNominalShape::Enum {
+                            variants: variants.into(),
+                        },
+                        Vec::new(),
+                        Vec::new(),
+                    )
+                }
+                _ => return Err(crate::SemanticBodyExportFailure::UnsupportedType),
+            };
+            Ok(SemanticProducedAnonymousNominal {
+                identity,
+                shape,
+                type_captures: type_captures.into(),
+                value_captures: value_captures.into(),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Arc::from)
+}
+
 fn arguments_have_issuer(
     arguments: &crate::CanonicalArguments<SemanticDefinitionToken, SemanticModuleToken>,
     issuer: u64,
@@ -224,6 +529,7 @@ fn type_has_issuer(
     issuer: u64,
 ) -> bool {
     match ty {
+        TypeInstanceKey::Nominal(NominalInstanceKey::Builtin { .. }) => true,
         TypeInstanceKey::Nominal(NominalInstanceKey::Named(definition)) => {
             definition.issuer() == issuer
         }
@@ -283,6 +589,10 @@ fn body_references(
         Spur,
         SemanticSpecializationIdentity<SemanticDefinitionToken, SemanticModuleToken>,
     )],
+    specialization_instances: &[FunctionInstanceKey<
+        SemanticDefinitionToken,
+        SemanticModuleToken,
+    >],
 ) -> Result<Arc<[OneBodyDependency]>, ReferenceProjectionFailure> {
     let mut references = BTreeSet::new();
     for function in referenced_functions {
@@ -325,6 +635,23 @@ fn body_references(
         {
             continue;
         }
+        // Anonymous types have producer-relative structural identities. The
+        // declaration dependency recorder still carries their diagnostic
+        // display name, but that name is not (and must never be treated as) a
+        // stable named declaration endpoint. Their exact dependency is
+        // exported through the body type and produced-anonymous projections.
+        if event.target_name.starts_with("__anon_struct_")
+            || event.target_name.starts_with("__anon_enum_")
+        {
+            continue;
+        }
+        if sema.interner.get(&event.target_name).is_some_and(|symbol| {
+            sema.builtin_structs.contains_key(&symbol)
+                || sema.generated_structs.contains_key(&symbol)
+                || sema.builtin_enums.contains_key(&symbol)
+        }) {
+            continue;
+        }
         let kind = match event.target_kind {
             super::DeclarationTypeDependencyTargetKind::Struct => StableDefinitionKind::Struct,
             super::DeclarationTypeDependencyTargetKind::Enum => StableDefinitionKind::Enum,
@@ -357,15 +684,33 @@ fn body_references(
             None,
             StableDefinitionKind::Function,
         )?;
-        references.insert(OneBodyDependency::Callable(
-            FunctionInstanceKey::Definition(token),
-        ));
+        references.insert(OneBodyDependency::Definition(token));
     }
     for (_, identity) in specializations {
         references.remove(&OneBodyDependency::Callable(
             FunctionInstanceKey::Definition(identity.base),
         ));
     }
+    // Anonymous bodies do not have an ordinary owner token, so their
+    // value-specialized generic calls can be absent from the observer stream.
+    // Add only those missing exact instances here; type-only calls already use
+    // the established observer path and retain its producer ordering.
+    references.extend(
+        specialization_instances
+            .iter()
+            .filter(|instance| {
+                matches!(
+                    instance,
+                    FunctionInstanceKey::Specialization { arguments, .. }
+                        if !arguments.values.is_empty()
+                ) && !sema
+                    .body_specialization_dependencies
+                    .iter()
+                    .any(|(_, recorded)| recorded == *instance)
+            })
+            .cloned()
+            .map(OneBodyDependency::Callable),
+    );
     for (source, identity) in &sema.body_specialization_dependencies {
         if owner.is_some_and(|owner| source.token() != Some(owner)) {
             continue;
@@ -422,7 +767,7 @@ fn fail(
         }
         errors
     };
-    match body_references(sema, owner, &HashSet::new(), &HashSet::new(), &[]) {
+    match body_references(sema, owner, &HashSet::new(), &HashSet::new(), &[], &[]) {
         Ok(references) => OneBodyTransactionOutcome::DeterministicFailure { errors, references },
         Err(failure) => projection_failure_outcome(failure),
     }
@@ -439,7 +784,7 @@ fn finalize_ordinary(
     referenced_methods: HashSet<(crate::StructId, Spur)>,
     interruption: Option<OneBodyInterruption>,
 ) -> OneBodyTransactionOutcome {
-    let (function, specializations) =
+    let (function, specializations, specialization_instances) =
         match crate::specialize::select_one_body_specializations(sema, function) {
             Ok(selected) => selected,
             Err(error) => return fail(sema, Some(owner), error),
@@ -450,6 +795,7 @@ fn finalize_ordinary(
         &referenced_functions,
         &referenced_methods,
         &specializations,
+        &specialization_instances,
     ) {
         Ok(references) => references,
         Err(failure) => return projection_failure_outcome(failure),
@@ -458,6 +804,14 @@ fn finalize_ordinary(
         return interruption_outcome(interruption);
     }
     let specialized_calls = specializations.iter().cloned().collect::<HashMap<_, _>>();
+    let produced_anonymous_nominals = match produced_anonymous_nominals(sema) {
+        Ok(produced) => produced,
+        Err(reason) => {
+            return OneBodyTransactionOutcome::NonTerminal {
+                reason: OneBodyNonTerminalReason::TypedIncomplete(reason),
+            };
+        }
+    };
     match sema.export_one_body_with_specializations(
         owner,
         body_span,
@@ -469,6 +823,7 @@ fn finalize_ordinary(
         Ok(artifact) => OneBodyTransactionOutcome::Success {
             artifact: OneBodyCanonicalArtifact::Ordinary(Box::new(artifact)),
             references,
+            produced_anonymous_nominals,
         },
         Err(reason) => OneBodyTransactionOutcome::NonTerminal {
             reason: OneBodyNonTerminalReason::TypedIncomplete(reason),
@@ -486,6 +841,16 @@ pub(super) fn analyze_one_body(
     if let Some(interruption) = interruption {
         return interruption_outcome(interruption);
     }
+    sema.one_body_initial_anonymous_identities = sema
+        .canonical_anonymous_aliases
+        .values()
+        .flat_map(|aliases| aliases.iter().cloned())
+        .filter(|identity| {
+            sema.one_body_requested_producer
+                .as_ref()
+                .is_none_or(|producer| &identity.producer != producer)
+        })
+        .collect();
     sema.one_body_error_recovery = true;
     sema.one_body_recovered_errors.clear();
     sema.one_body_inference_failure_incomplete = false;
@@ -549,19 +914,21 @@ pub(super) fn analyze_one_body(
                     Ok(body) => body,
                     Err(error) => return fail(&sema, owner, error),
                 };
-            let (function, nested) = match crate::specialize::select_one_body_specializations(
-                &sema,
-                specialized.function,
-            ) {
-                Ok(value) => value,
-                Err(error) => return fail(&sema, owner, error),
-            };
+            let (function, nested, nested_instances) =
+                match crate::specialize::select_one_body_specializations(
+                    &sema,
+                    specialized.function,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return fail(&sema, owner, error),
+                };
             let references = match body_references(
                 &sema,
                 owner,
                 &specialized.referenced_functions,
                 &specialized.referenced_methods,
                 &nested,
+                &nested_instances,
             ) {
                 Ok(references) => references,
                 Err(failure) => return projection_failure_outcome(failure),
@@ -576,6 +943,14 @@ pub(super) fn analyze_one_body(
                 );
             };
             let specialized_calls = nested.iter().cloned().collect::<HashMap<_, _>>();
+            let produced_anonymous_nominals = match produced_anonymous_nominals(&sema) {
+                Ok(produced) => produced,
+                Err(reason) => {
+                    return OneBodyTransactionOutcome::NonTerminal {
+                        reason: OneBodyNonTerminalReason::TypedIncomplete(reason),
+                    };
+                }
+            };
             match sema.export_specialized_body(
                 base_name,
                 &base_info,
@@ -592,6 +967,7 @@ pub(super) fn analyze_one_body(
                     OneBodyTransactionOutcome::Success {
                         artifact: OneBodyCanonicalArtifact::Specialization(Box::new(artifact)),
                         references,
+                        produced_anonymous_nominals,
                     }
                 }
                 Ok(_) => OneBodyTransactionOutcome::NonTerminal {
@@ -608,6 +984,532 @@ pub(super) fn analyze_one_body(
             analyze_definition(&mut sema, &infer_ctx, token, interruption)
         }
     }
+}
+
+pub(super) fn analyze_one_body_instance<K, M>(
+    mut sema: BodySema<'_>,
+    instance: &FunctionInstanceKey<K, M>,
+    definition: impl Fn(&K) -> Result<SemanticDefinitionToken, crate::SemanticStableResolutionFailure>,
+    module: impl Fn(&M) -> Result<SemanticModuleToken, crate::SemanticStableResolutionFailure>,
+    interruption: Option<OneBodyInterruption>,
+) -> OneBodyTransactionOutcome
+where
+    K: Clone,
+    M: Clone,
+{
+    let mapped = match instance.try_map_identities(&definition, &module) {
+        Ok(mapped) => mapped,
+        Err(_) => {
+            return OneBodyTransactionOutcome::NonTerminal {
+                reason: OneBodyNonTerminalReason::TypedIncomplete(
+                    crate::SemanticBodyExportFailure::MissingStableIdentity,
+                ),
+            };
+        }
+    };
+    // Materializing specialization arguments happens before `analyze_one_body`
+    // performs its ordinary body setup. Register the lazy `str` builtin only
+    // when this exact request carries it, so first-use `str` arguments have a
+    // current-epoch endpoint without widening body-query demand.
+    if function_instance_contains_str(&mapped)
+        && let Err(error) = sema.get_or_create_str_struct(Span::default())
+    {
+        return fail(&sema, None, error);
+    }
+    if !matches!(mapped, FunctionInstanceKey::DropGlue(_)) {
+        sema.one_body_requested_producer =
+            Some(crate::StableProducerId::Function(Box::new(mapped.clone())));
+    }
+    let request = match mapped {
+        FunctionInstanceKey::Definition(token) => OneBodyRequest::Definition(token),
+        FunctionInstanceKey::Specialization { base, arguments } => {
+            let FunctionInstanceKey::Definition(base) = *base else {
+                return OneBodyTransactionOutcome::NonTerminal {
+                    reason: OneBodyNonTerminalReason::TypedIncomplete(
+                        crate::SemanticBodyExportFailure::MissingStableIdentity,
+                    ),
+                };
+            };
+            let type_arguments = match arguments
+                .types
+                .iter()
+                .map(|ty| materialize_instance_type(&sema, ty))
+                .collect::<Result<Vec<_>, _>>()
+            {
+                Ok(arguments) => arguments,
+                Err(reason) => {
+                    return OneBodyTransactionOutcome::NonTerminal {
+                        reason: OneBodyNonTerminalReason::TypedIncomplete(reason),
+                    };
+                }
+            };
+            let value_arguments = match arguments
+                .values
+                .iter()
+                .map(|value| materialize_argument_value(&sema, value))
+                .collect::<Result<Vec<_>, _>>()
+            {
+                Ok(arguments) => arguments,
+                Err(reason) => {
+                    return OneBodyTransactionOutcome::NonTerminal {
+                        reason: OneBodyNonTerminalReason::TypedIncomplete(reason),
+                    };
+                }
+            };
+            OneBodyRequest::Specialization {
+                base,
+                type_arguments,
+                value_arguments,
+            }
+        }
+        FunctionInstanceKey::AnonymousMember { owner, member } => {
+            return analyze_anonymous_member(sema, *owner, member, interruption);
+        }
+        FunctionInstanceKey::DropGlue(_) => {
+            return OneBodyTransactionOutcome::NonTerminal {
+                reason: OneBodyNonTerminalReason::TypedIncomplete(
+                    crate::SemanticBodyExportFailure::MissingStableIdentity,
+                ),
+            };
+        }
+    };
+    analyze_one_body(sema, request, interruption)
+}
+
+fn function_instance_contains_str<D, M>(instance: &FunctionInstanceKey<D, M>) -> bool {
+    fn arguments_contain_str<D, M>(arguments: &crate::CanonicalArguments<D, M>) -> bool {
+        arguments.types.iter().any(type_instance_contains_str)
+            || arguments.values.iter().any(|value| match value {
+                crate::CanonicalArgumentValue::Type(ty) => type_instance_contains_str(ty),
+                crate::CanonicalArgumentValue::Function(function) => {
+                    function_instance_contains_str(function)
+                }
+                crate::CanonicalArgumentValue::Integer(_)
+                | crate::CanonicalArgumentValue::Bool(_)
+                | crate::CanonicalArgumentValue::Unit
+                | crate::CanonicalArgumentValue::String(_) => false,
+            })
+    }
+
+    fn type_instance_contains_str<D, M>(ty: &TypeInstanceKey<D, M>) -> bool {
+        match ty {
+            TypeInstanceKey::BuiltinNominal { name, .. }
+            | TypeInstanceKey::Nominal(crate::NominalInstanceKey::Builtin { name, .. }) => {
+                name.as_ref() == "str"
+            }
+            TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(identity)) => {
+                arguments_contain_str(&identity.arguments)
+                    || matches!(
+                        &identity.producer,
+                        crate::StableProducerId::Function(function)
+                            if function_instance_contains_str(function)
+                    )
+            }
+            TypeInstanceKey::Array { element, .. }
+            | TypeInstanceKey::Slice { element, .. }
+            | TypeInstanceKey::PtrConst(element)
+            | TypeInstanceKey::PtrMut(element) => type_instance_contains_str(element),
+            TypeInstanceKey::I8
+            | TypeInstanceKey::I16
+            | TypeInstanceKey::I32
+            | TypeInstanceKey::I64
+            | TypeInstanceKey::U8
+            | TypeInstanceKey::U16
+            | TypeInstanceKey::U32
+            | TypeInstanceKey::U64
+            | TypeInstanceKey::Bool
+            | TypeInstanceKey::Unit
+            | TypeInstanceKey::Never
+            | TypeInstanceKey::ComptimeType
+            | TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(_))
+            | TypeInstanceKey::Module(_)
+            | TypeInstanceKey::GenericParameter(_) => false,
+        }
+    }
+
+    match instance {
+        FunctionInstanceKey::Definition(_) => false,
+        FunctionInstanceKey::Specialization { base, arguments } => {
+            function_instance_contains_str(base) || arguments_contain_str(arguments)
+        }
+        FunctionInstanceKey::AnonymousMember { owner, .. }
+        | FunctionInstanceKey::DropGlue(owner) => type_instance_contains_str(owner),
+    }
+}
+
+fn analyze_anonymous_member(
+    mut sema: BodySema<'_>,
+    owner: TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+    member: crate::AnonymousMemberKey,
+    interruption: Option<OneBodyInterruption>,
+) -> OneBodyTransactionOutcome {
+    if let Some(interruption) = interruption {
+        return interruption_outcome(interruption);
+    }
+    sema.one_body_initial_anonymous_identities = sema
+        .canonical_anonymous_aliases
+        .values()
+        .flat_map(|aliases| aliases.iter().cloned())
+        .collect();
+    sema.one_body_error_recovery = true;
+    sema.one_body_recovered_errors.clear();
+    sema.one_body_inference_failure_incomplete = false;
+    if let Err(error) = sema.get_or_create_str_struct(Span::default()) {
+        return fail(&sema, None, error);
+    }
+    let infer_ctx = sema.build_inference_context();
+    let owner_type = match materialize_instance_type(&sema, &owner) {
+        Ok(owner) => owner,
+        Err(reason) => {
+            return OneBodyTransactionOutcome::NonTerminal {
+                reason: OneBodyNonTerminalReason::TypedIncomplete(reason),
+            };
+        }
+    };
+    let Some(struct_id) = owner_type.as_struct() else {
+        return OneBodyTransactionOutcome::NonTerminal {
+            reason: OneBodyNonTerminalReason::TypedIncomplete(
+                crate::SemanticBodyExportFailure::MissingStableIdentity,
+            ),
+        };
+    };
+    let Some(method_name) = sema.interner.get(member.name.as_ref()) else {
+        return fail(
+            &sema,
+            None,
+            CompileError::without_span(ErrorKind::UndefinedFunction(member.name.to_string())),
+        );
+    };
+    let Some(method_info) = sema.method_info((struct_id, method_name)).cloned() else {
+        return fail(
+            &sema,
+            None,
+            CompileError::without_span(ErrorKind::UndefinedFunction(member.name.to_string())),
+        );
+    };
+    let expected_kind = if member.name.as_ref() == "__drop" {
+        crate::AnonymousMemberKind::Destructor
+    } else if method_info.has_self {
+        crate::AnonymousMemberKind::Method
+    } else {
+        crate::AnonymousMemberKind::AssociatedFunction
+    };
+    if member.kind != expected_kind || method_info.struct_type != owner_type {
+        return OneBodyTransactionOutcome::NonTerminal {
+            reason: OneBodyNonTerminalReason::TypedIncomplete(
+                crate::SemanticBodyExportFailure::MissingStableIdentity,
+            ),
+        };
+    }
+    let identity = FunctionInstanceKey::AnonymousMember {
+        owner: Box::new(owner),
+        member,
+    };
+    let full_name = sema.method_symbol(
+        struct_id,
+        sema.interner.resolve(&method_name),
+        method_info.has_self,
+    );
+    let param_names = sema.param_arena.names(method_info.params);
+    let param_types = sema.param_arena.types(method_info.params);
+    let param_modes = sema.param_arena.modes(method_info.params);
+    let param_comptime = sema.param_arena.comptime(method_info.params);
+    let mut params = Vec::with_capacity(param_names.len() + usize::from(method_info.has_self));
+    if method_info.has_self {
+        params.push((
+            sema.interner.get_or_intern("self"),
+            method_info.struct_type,
+            method_info.self_mode,
+            false,
+        ));
+    }
+    for index in 0..param_names.len() {
+        params.push((
+            param_names[index],
+            param_types[index],
+            param_modes[index],
+            param_comptime[index],
+        ));
+    }
+    let captured_values = sema
+        .anon_struct_captured_values
+        .get(&struct_id)
+        .cloned()
+        .unwrap_or_default();
+    let type_subst = sema
+        .anon_struct_type_subst
+        .get(&struct_id)
+        .cloned()
+        .unwrap_or_default();
+    let analyzed = if expected_kind == crate::AnonymousMemberKind::Destructor {
+        sema.analyze_anon_destructor_body(
+            &infer_ctx,
+            &params,
+            method_info.body,
+            method_info.struct_type,
+            &captured_values,
+            method_name,
+            &full_name,
+            &type_subst,
+        )
+    } else {
+        sema.analyze_method_body(
+            &infer_ctx,
+            method_name,
+            method_info.has_self,
+            method_info.return_type,
+            &params,
+            method_info.body,
+            method_info.struct_type,
+            &captured_values,
+            &type_subst,
+            method_info.self_is_mut,
+        )
+    };
+    let (
+        air,
+        num_locals,
+        num_param_slots,
+        param_modes,
+        warnings,
+        strings,
+        local_atoms,
+        referenced_functions,
+        referenced_methods,
+    ) = match analyzed {
+        Ok(value) => value,
+        Err(error) => return fail(&sema, None, error),
+    };
+    let air = match crate::ValidatedAir::from_semantic_air_with_symbols(
+        air,
+        &sema.type_pool,
+        sema.interner,
+    ) {
+        Ok(air) => air,
+        Err(error) => return fail(&sema, None, error.into()),
+    };
+    let function = AnalyzedFunction {
+        identity: identity.clone(),
+        callable_kind: if expected_kind == crate::AnonymousMemberKind::Destructor {
+            crate::AnalyzedCallableKind::Destructor
+        } else {
+            crate::AnalyzedCallableKind::Ordinary
+        },
+        ordinary_owner: None,
+        name: full_name,
+        implicit_drop_source: Some(super::ImplicitDropDependencySourceEvent::Anonymous),
+        air,
+        local_atoms,
+        num_locals,
+        num_param_slots,
+        param_modes,
+        allow_unreachable_code: false,
+    };
+    let (function, specializations, specialization_instances) =
+        match crate::specialize::select_one_body_specializations(&sema, function) {
+            Ok(value) => value,
+            Err(error) => return fail(&sema, None, error),
+        };
+    let references = match body_references(
+        &sema,
+        None,
+        &referenced_functions,
+        &referenced_methods,
+        &specializations,
+        &specialization_instances,
+    ) {
+        Ok(references) => references,
+        Err(failure) => return projection_failure_outcome(failure),
+    };
+    let specialized_calls = specializations.iter().cloned().collect::<HashMap<_, _>>();
+    let produced_anonymous_nominals = match produced_anonymous_nominals(&sema) {
+        Ok(produced) => produced,
+        Err(reason) => {
+            return OneBodyTransactionOutcome::NonTerminal {
+                reason: OneBodyNonTerminalReason::TypedIncomplete(reason),
+            };
+        }
+    };
+    match sema.export_anonymous_body_with_specializations(
+        identity,
+        method_info.span,
+        &function,
+        &strings,
+        &warnings,
+        &specialized_calls,
+    ) {
+        Ok(artifact) => OneBodyTransactionOutcome::Success {
+            artifact: OneBodyCanonicalArtifact::Anonymous(Box::new(artifact)),
+            references,
+            produced_anonymous_nominals,
+        },
+        Err(reason) => OneBodyTransactionOutcome::NonTerminal {
+            reason: OneBodyNonTerminalReason::TypedIncomplete(reason),
+        },
+    }
+}
+
+pub(in crate::sema) fn materialize_argument_value(
+    sema: &BodySema<'_>,
+    value: &crate::CanonicalArgumentValue<SemanticDefinitionToken, SemanticModuleToken>,
+) -> Result<super::ConstValue, crate::SemanticBodyExportFailure> {
+    use crate::CanonicalArgumentValue as V;
+    Ok(match value {
+        V::Integer(value) => super::ConstValue::Integer(*value),
+        V::Bool(value) => super::ConstValue::Bool(*value),
+        V::Type(value) => super::ConstValue::Type(materialize_instance_type(sema, value)?),
+        V::Function(value) => {
+            let FunctionInstanceKey::Definition(token) = value.as_ref() else {
+                return Err(crate::SemanticBodyExportFailure::MissingStableIdentity);
+            };
+            let endpoint = sema
+                .stable_definition_endpoints
+                .get(token)
+                .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+            let symbol = sema
+                .interner
+                .get(endpoint.name.as_ref())
+                .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+            let symbol = sema
+                .functions_by_file_name
+                .get(&(FileId::new(endpoint.file), symbol))
+                .copied()
+                .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+            super::ConstValue::Function(symbol)
+        }
+        V::Unit => super::ConstValue::Unit,
+        V::String(value) => super::ConstValue::String(sema.interner.get_or_intern(value.as_ref())),
+    })
+}
+
+pub(in crate::sema) fn materialize_instance_type(
+    sema: &BodySema<'_>,
+    value: &TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+) -> Result<Type, crate::SemanticBodyExportFailure> {
+    use crate::{AnonymousNominalKind as AK, NominalInstanceKey as N, TypeInstanceKey as T};
+    let missing = || crate::SemanticBodyExportFailure::MissingStableIdentity;
+    Ok(match value {
+        T::I8 => Type::I8,
+        T::I16 => Type::I16,
+        T::I32 => Type::I32,
+        T::I64 => Type::I64,
+        T::U8 => Type::U8,
+        T::U16 => Type::U16,
+        T::U32 => Type::U32,
+        T::U64 => Type::U64,
+        T::Bool => Type::BOOL,
+        T::Unit => Type::UNIT,
+        T::Never => Type::NEVER,
+        T::ComptimeType => Type::COMPTIME_TYPE,
+        T::BuiltinNominal { kind, name } => {
+            let symbol = sema.interner.get(name.as_ref()).ok_or_else(missing)?;
+            match kind {
+                AK::Struct => Type::new_struct(
+                    sema.builtin_structs
+                        .get(&symbol)
+                        .or_else(|| sema.generated_structs.get(&symbol))
+                        .copied()
+                        .ok_or_else(missing)?,
+                ),
+                AK::Enum => Type::new_enum(
+                    sema.builtin_enums
+                        .get(&symbol)
+                        .copied()
+                        .ok_or_else(missing)?,
+                ),
+            }
+        }
+        T::Nominal(N::Builtin { kind, name }) => {
+            let symbol = sema.interner.get(name.as_ref()).ok_or_else(missing)?;
+            match kind {
+                AK::Struct => Type::new_struct(
+                    sema.builtin_structs
+                        .get(&symbol)
+                        .or_else(|| sema.generated_structs.get(&symbol))
+                        .copied()
+                        .ok_or_else(missing)?,
+                ),
+                AK::Enum => Type::new_enum(
+                    sema.builtin_enums
+                        .get(&symbol)
+                        .copied()
+                        .ok_or_else(missing)?,
+                ),
+            }
+        }
+        T::Nominal(N::Named(token)) => {
+            let endpoint = sema
+                .stable_definition_endpoints
+                .get(token)
+                .ok_or_else(missing)?;
+            let symbol = sema
+                .interner
+                .get(endpoint.name.as_ref())
+                .ok_or_else(missing)?;
+            match endpoint.kind {
+                StableDefinitionKind::Struct => Type::new_struct(
+                    sema.structs_by_file_name
+                        .get(&(FileId::new(endpoint.file), symbol))
+                        .copied()
+                        .ok_or_else(missing)?,
+                ),
+                StableDefinitionKind::Enum => Type::new_enum(
+                    sema.enums_by_file_name
+                        .get(&(FileId::new(endpoint.file), symbol))
+                        .copied()
+                        .ok_or_else(missing)?,
+                ),
+                _ => return Err(missing()),
+            }
+        }
+        T::Nominal(N::Anonymous(identity)) => match identity.kind {
+            AK::Struct => Type::new_struct(
+                sema.anon_struct_identities
+                    .get(identity)
+                    .copied()
+                    .ok_or_else(missing)?,
+            ),
+            AK::Enum => Type::new_enum(
+                sema.anon_enum_identities
+                    .get(identity)
+                    .copied()
+                    .ok_or_else(missing)?,
+            ),
+        },
+        T::Array { element, len } => sema
+            .type_pool
+            .try_intern_array(materialize_instance_type(sema, element)?, *len)
+            .map_err(|_| missing())?,
+        T::Slice { name, .. } => {
+            let symbol = sema.interner.get(name.as_ref()).ok_or_else(missing)?;
+            Type::new_struct(
+                sema.generated_structs
+                    .get(&symbol)
+                    .copied()
+                    .ok_or_else(missing)?,
+            )
+        }
+        T::PtrConst(value) => sema
+            .type_pool
+            .try_intern_ptr_const(materialize_instance_type(sema, value)?)
+            .map_err(|_| missing())?,
+        T::PtrMut(value) => sema
+            .type_pool
+            .try_intern_ptr_mut(materialize_instance_type(sema, value)?)
+            .map_err(|_| missing())?,
+        T::Module(token) => {
+            let endpoint = sema
+                .stable_module_endpoints
+                .get(token)
+                .ok_or_else(missing)?;
+            let id = (0..sema.module_registry.len())
+                .map(|index| crate::types::ModuleId::new(index as u32))
+                .find(|id| sema.module_registry.get_def(*id).file_id.index() == endpoint.file)
+                .ok_or_else(missing)?;
+            Type::new_module(id)
+        }
+        T::GenericParameter(_) => return Err(missing()),
+    })
 }
 
 fn analyze_definition(

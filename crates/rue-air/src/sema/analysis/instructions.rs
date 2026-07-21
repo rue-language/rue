@@ -348,7 +348,19 @@ impl<'a> BodySema<'a> {
                 let mut struct_fields = Vec::with_capacity(field_decls.len());
                 for (name_sym, type_sym) in field_decls {
                     let name_str = self.interner.resolve(&name_sym).to_string();
-                    let field_ty = self.resolve_type(type_sym, inst.span)?;
+                    let field_ty = self
+                        .resolve_type_for_comptime_with_subst_and_values_at_span(
+                            type_sym,
+                            &ctx.comptime_type_vars,
+                            &ctx.comptime_value_vars,
+                            inst.span,
+                        )
+                        .ok_or_else(|| {
+                            CompileError::new(
+                                ErrorKind::UnknownType(self.interner.resolve(&type_sym).to_owned()),
+                                inst.span,
+                            )
+                        })?;
                     struct_fields.push(StructField {
                         name: name_str,
                         ty: field_ty,
@@ -357,12 +369,15 @@ impl<'a> BodySema<'a> {
 
                 // Extract method signatures for structural equality comparison
                 // (uses type symbols, not resolved Types, so Self matches Self)
-                let method_sigs =
-                    self.extract_anon_method_sigs(methods, &HashMap::new(), &HashMap::new());
+                let method_sigs = self.extract_anon_method_sigs(
+                    methods,
+                    &ctx.comptime_type_vars,
+                    &ctx.comptime_value_vars,
+                );
 
                 // Check if an equivalent anonymous struct already exists (structural equality)
                 // This now compares fields, method signatures, AND captured comptime values
-                let (struct_ty, _is_new) = self.find_or_create_anon_struct(
+                let (struct_ty, is_new) = self.find_or_create_anon_struct(
                     crate::AnonymousNominalKey {
                         kind: crate::AnonymousNominalKind::Struct,
                         producer: ctx.canonical_producer.clone(),
@@ -371,25 +386,33 @@ impl<'a> BodySema<'a> {
                     },
                     &struct_fields,
                     &method_sigs,
-                    &HashMap::new(),
+                    &ctx.comptime_value_vars,
                 );
-
-                // DON'T register methods here - they should be registered during const evaluation
-                // (the comptime evaluator's AnonStructType arm in sema::comptime_eval).
-                // If we register here, we create a struct without captured comptime values, which is incorrect.
-                //
-                // if is_new && !self.rir.anon_struct_methods(methods).is_empty() {
-                //     let struct_id = struct_ty
-                //         .as_struct()
-                //         .expect("anon struct should have StructId");
-                //     self.register_anon_struct_methods(
-                //         struct_id,
-                //         struct_ty,
-                //         *methods_start,
-                //         *methods_len,
-                //         inst.span,
-                //     )?;
-                // }
+                if is_new && !self.rir.anon_struct_methods(methods).is_empty() {
+                    let struct_id = struct_ty
+                        .as_struct()
+                        .expect("anonymous struct must have a StructId");
+                    self.register_anon_struct_methods_for_comptime_with_subst(
+                        struct_id,
+                        struct_ty,
+                        methods,
+                        inst.span,
+                        &ctx.comptime_type_vars,
+                        &ctx.comptime_value_vars,
+                    )
+                    .ok_or_else(|| {
+                        CompileError::new(
+                            ErrorKind::ComptimeEvaluationFailed {
+                                reason: "anonymous method registration failed".to_owned(),
+                            },
+                            inst.span,
+                        )
+                    })?;
+                    if !ctx.comptime_type_vars.is_empty() {
+                        self.anon_struct_type_subst
+                            .insert(struct_id, ctx.comptime_type_vars.clone());
+                    }
+                }
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::TypeConst(struct_ty),
@@ -423,7 +446,21 @@ impl<'a> BodySema<'a> {
                     variant_names.push(self.interner.resolve(vsym).to_string());
                     let mut tys: Vec<Type> = Vec::with_capacity(symbols.len());
                     for ty_sym in symbols {
-                        let field_ty = self.resolve_type(ty_sym, inst.span)?;
+                        let field_ty = self
+                            .resolve_type_for_comptime_with_subst_and_values_at_span(
+                                ty_sym,
+                                &ctx.comptime_type_vars,
+                                &ctx.comptime_value_vars,
+                                inst.span,
+                            )
+                            .ok_or_else(|| {
+                                CompileError::new(
+                                    ErrorKind::UnknownType(
+                                        self.interner.resolve(&ty_sym).to_owned(),
+                                    ),
+                                    inst.span,
+                                )
+                            })?;
                         // A payload of type `type` cannot exist at runtime
                         // (spec 4.14:6); reject it like struct fields / enum
                         // declarations do.

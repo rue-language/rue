@@ -24,7 +24,6 @@ use std::collections::HashMap;
 /// Exact callable selections made while the test-only one-body transaction is
 /// generating constraints.  These observations are consumed only when HM
 /// unification fails before AIR analysis can publish its normal dependencies.
-#[cfg(test)]
 #[derive(Debug, Clone)]
 pub(crate) enum InferenceCallRoute {
     Unqualified {
@@ -37,7 +36,6 @@ pub(crate) enum InferenceCallRoute {
     },
 }
 
-#[cfg(test)]
 #[derive(Debug, Clone)]
 pub(crate) enum InferenceBodyDependency {
     Function {
@@ -70,16 +68,16 @@ pub(crate) enum InferenceBodyDependency {
     IncompleteCallable,
 }
 
-#[cfg(test)]
 fn generic_body_dependency(
     function: Spur,
     signature: &FunctionSig,
     type_subst: &HashMap<Spur, Type>,
     value_subst: &HashMap<Spur, i128>,
+    argument_infos: &[ExprInfo],
     span: Span,
     route: InferenceCallRoute,
     checked: bool,
-) -> InferenceBodyDependency {
+) -> Option<InferenceBodyDependency> {
     let mut type_arguments = Vec::new();
     let mut value_arguments = Vec::new();
     for (index, name) in signature.param_names.iter().enumerate() {
@@ -98,27 +96,36 @@ fn generic_body_dependency(
             .unwrap_or(false)
         {
             let Some(argument) = type_subst.get(name).copied() else {
-                return InferenceBodyDependency::IncompleteCallable;
+                return unresolved_comptime_argument(argument_infos.get(index))
+                    .then_some(InferenceBodyDependency::IncompleteCallable);
             };
             type_arguments.push(argument);
         } else {
             let Some(argument) = value_subst.get(name).copied() else {
-                return InferenceBodyDependency::IncompleteCallable;
+                return unresolved_comptime_argument(argument_infos.get(index))
+                    .then_some(InferenceBodyDependency::IncompleteCallable);
             };
             value_arguments.push(ConstValue::Integer(argument));
         }
     }
-    InferenceBodyDependency::Specialization {
+    Some(InferenceBodyDependency::Specialization {
         function,
         type_arguments,
         value_arguments,
         span,
         route,
         checked,
-    }
+    })
 }
 
-#[cfg(test)]
+fn unresolved_comptime_argument(argument: Option<&ExprInfo>) -> bool {
+    !matches!(
+        argument,
+        Some(ExprInfo { ty: InferType::Concrete(ty), .. })
+            if *ty != Type::ERROR && *ty != Type::COMPTIME_TYPE
+    )
+}
+
 fn call_contract_matches<A>(args: A, param_modes: &[rue_rir::RirParamMode]) -> bool
 where
     A: IntoIterator,
@@ -233,7 +240,6 @@ pub struct ConstraintContext<'a> {
     /// `break` targeting that loop is seen. An infinite loop containing a
     /// break has type `()`; without one it has type `!` (see spec 4.8).
     pub loop_break_stack: Vec<bool>,
-    #[cfg(test)]
     checked_depth: u32,
     /// Scope stack for efficient scope management.
     scope_stack: Vec<Vec<(Spur, Option<LocalVarInfo>)>>,
@@ -248,7 +254,6 @@ impl<'a> ConstraintContext<'a> {
             return_type,
             loop_depth: 0,
             loop_break_stack: Vec::new(),
-            #[cfg(test)]
             checked_depth: 0,
             scope_stack: Vec::new(),
         }
@@ -412,8 +417,7 @@ pub struct ConstraintGenerator<'a> {
     comptime_values: Option<&'a HashMap<Spur, ConstValue>>,
     /// Type intern pool for creating pointer and array types during constraint generation.
     type_pool: &'a TypeInternPool,
-    /// Test-only exact dependency selections made before unification.
-    #[cfg(test)]
+    /// Exact dependency selections made before unification.
     body_dependencies: Vec<InferenceBodyDependency>,
 }
 
@@ -489,7 +493,6 @@ impl<'a> ConstraintGenerator<'a> {
             const_function_aliases: None,
             comptime_values: None,
             type_pool,
-            #[cfg(test)]
             body_dependencies: Vec::new(),
         }
     }
@@ -836,7 +839,6 @@ impl<'a> ConstraintGenerator<'a> {
         &self.expr_types
     }
 
-    #[cfg(test)]
     pub(crate) fn body_dependencies(&self) -> &[InferenceBodyDependency] {
         &self.body_dependencies
     }
@@ -1067,7 +1069,6 @@ impl<'a> ConstraintGenerator<'a> {
                     .module_binding_types
                     .and_then(|bindings| bindings.get(&(span.file_id, *name)))
                 {
-                    #[cfg(test)]
                     self.body_dependencies
                         .push(InferenceBodyDependency::ModuleBinding(span.file_id, *name));
                     // Module binding declared in this file (`const m =
@@ -1078,7 +1079,6 @@ impl<'a> ConstraintGenerator<'a> {
                     .const_types
                     .and_then(|consts| consts.get(&(span.file_id, *name)))
                 {
-                    #[cfg(test)]
                     self.body_dependencies
                         .push(InferenceBodyDependency::ValueConst {
                             file: span.file_id,
@@ -1265,7 +1265,6 @@ impl<'a> ConstraintGenerator<'a> {
                         .copied()
                 });
                 let args = self.rir.call_args(args);
-                #[cfg(test)]
                 if alias_target.is_some() {
                     self.body_dependencies
                         .push(InferenceBodyDependency::ValueConst {
@@ -1290,7 +1289,6 @@ impl<'a> ConstraintGenerator<'a> {
                     }
                     InferType::Concrete(Type::UNIT)
                 } else if let Some(func) = function_key.and_then(|key| self.functions.get(&key)) {
-                    #[cfg(test)]
                     if !func.is_generic && call_contract_matches(&args, &func.param_modes) {
                         self.body_dependencies
                             .push(InferenceBodyDependency::Function {
@@ -1343,13 +1341,13 @@ impl<'a> ConstraintGenerator<'a> {
                             }
                         }
 
-                        #[cfg(test)]
                         if call_contract_matches(&args, &func.param_modes) {
-                            self.body_dependencies.push(generic_body_dependency(
+                            self.body_dependencies.extend(generic_body_dependency(
                                 function_key.expect("resolved signature has a function key"),
                                 func,
                                 &type_subst,
                                 &value_subst,
+                                &arg_infos,
                                 span,
                                 InferenceCallRoute::Unqualified {
                                     alias: alias_target.map(|_| *name),
@@ -2410,7 +2408,6 @@ impl<'a> ConstraintGenerator<'a> {
                                 }),
                             _ => None,
                         };
-                        #[cfg(test)]
                         if let Some((file, _)) = member_const {
                             self.body_dependencies
                                 .push(InferenceBodyDependency::ValueConst {
@@ -2670,7 +2667,6 @@ impl<'a> ConstraintGenerator<'a> {
                     && let Some(string_id) = string_ty.as_struct()
                     && let Some(method_sig) = self.method_sig(&(string_id, *method))
                 {
-                    #[cfg(test)]
                     if call_contract_matches(&call_args, &method_sig.param_modes) {
                         self.body_dependencies
                             .push(InferenceBodyDependency::Method {
@@ -2735,7 +2731,6 @@ impl<'a> ConstraintGenerator<'a> {
                                     .copied()
                             })
                         });
-                        #[cfg(test)]
                         if let (Some(file), Some(_)) = (module_file, alias_target) {
                             self.body_dependencies
                                 .push(InferenceBodyDependency::ValueConst {
@@ -2819,14 +2814,14 @@ impl<'a> ConstraintGenerator<'a> {
                                         value_subst.insert(func.param_names[i], v);
                                     }
                                 }
-                                #[cfg(test)]
                                 if call_contract_matches(&call_args, &func.param_modes) {
-                                    self.body_dependencies.push(generic_body_dependency(
+                                    self.body_dependencies.extend(generic_body_dependency(
                                         function_key
                                             .expect("resolved module signature has a function key"),
                                         func,
                                         &type_subst,
                                         &value_subst,
+                                        &arg_infos,
                                         span,
                                         InferenceCallRoute::Module {
                                             module: module_id,
@@ -2932,7 +2927,6 @@ impl<'a> ConstraintGenerator<'a> {
                         {
                             result
                         } else {
-                            #[cfg(test)]
                             self.body_dependencies
                                 .push(InferenceBodyDependency::IncompleteCallable);
                             for arg in call_args.iter() {
@@ -2948,7 +2942,6 @@ impl<'a> ConstraintGenerator<'a> {
                             // signatures, RUE-164)
                             let method_key = (struct_id, *method);
                             if let Some(method_sig) = self.method_sig(&method_key) {
-                                #[cfg(test)]
                                 if call_contract_matches(&call_args, &method_sig.param_modes) {
                                     self.body_dependencies
                                         .push(InferenceBodyDependency::Method {
@@ -3024,7 +3017,6 @@ impl<'a> ConstraintGenerator<'a> {
                         {
                             result
                         } else {
-                            #[cfg(test)]
                             self.body_dependencies
                                 .push(InferenceBodyDependency::IncompleteCallable);
                             for arg in call_args.iter() {
@@ -3061,12 +3053,10 @@ impl<'a> ConstraintGenerator<'a> {
             // The actual checking of unchecked operations happens in sema
             InstData::Checked { expr } => {
                 // Generate constraints for the inner expression
-                #[cfg(test)]
                 {
                     ctx.checked_depth += 1;
                 }
                 let inner_info = self.generate(*expr, ctx);
-                #[cfg(test)]
                 {
                     ctx.checked_depth -= 1;
                 }
@@ -3324,7 +3314,6 @@ impl<'a> ConstraintGenerator<'a> {
         let struct_id = ty.as_struct()?;
         let method_sig = self.method_sig(&(struct_id, function))?;
         let args = self.rir.call_args(args);
-        #[cfg(test)]
         if call_contract_matches(&args, &method_sig.param_modes) {
             self.body_dependencies
                 .push(InferenceBodyDependency::Method {

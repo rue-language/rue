@@ -398,6 +398,7 @@ pub(crate) struct RevisionedQueryDatabase {
     test_import_store: Arc<Mutex<TestImportInputStore>>,
     parse_modules: QueryFamily<ModuleQueryKey, ParseModuleValue>,
     module_indexes: QueryFamily<ModuleQueryKey, ModuleIndexValue>,
+    module_declaration_sets: QueryFamily<ModuleQueryKey, ModuleDeclarationSetValue>,
     declaration_occurrence_indexes: QueryFamily<ModuleQueryKey, DeclarationOccurrenceIndexValue>,
     declaration_shells: QueryFamily<DeclarationShellQueryKey, DeclarationShellQueryValue>,
     #[cfg(test)]
@@ -405,8 +406,18 @@ pub(crate) struct RevisionedQueryDatabase {
     #[cfg(test)]
     raw_declaration_signatures:
         QueryFamily<RawDeclarationSignatureQueryKey, RawDeclarationSignatureQueryValue>,
-    #[cfg(test)]
     raw_declaration_bodies: QueryFamily<RawDeclarationBodyQueryKey, RawDeclarationBodyQueryValue>,
+    body_transactions:
+        QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyTransaction>,
+    canonical_bodies:
+        QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::CanonicalBody>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    body_references:
+        QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyReferences>,
+    body_produced_anonymous: QueryFamily<
+        crate::body_query::BodyQueryKey,
+        crate::body_query::BodyProducedAnonymousNominals,
+    >,
     module_rirs: QueryFamily<ModuleQueryKey, ModuleRirValue>,
     resolve_imports: QueryFamily<ResolveImportKey, ResolveImportValue>,
     #[cfg(test)]
@@ -466,6 +477,23 @@ pub(crate) struct ProjectedModuleIndex {
 
 #[derive(Debug, Clone)]
 struct ModuleIndexValue(Result<Arc<ModuleIndex>, crate::CompileErrors>);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModuleDeclarationSetFact {
+    namespace: DefinitionNamespace,
+    kind: DefinitionKind,
+    visibility: Option<rue_parser::ast::Visibility>,
+    name: Arc<str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ModuleDeclarationSetValue {
+    Available {
+        declarations: Arc<[ModuleDeclarationSetFact]>,
+        import_specifiers: Arc<[Arc<str>]>,
+    },
+    Unavailable,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DeclarationOccurrenceIndex {
@@ -561,6 +589,7 @@ pub(crate) struct SemanticNucleusProjection {
     pub(crate) declarations: Arc<[crate::DurableDeclarationSemantic]>,
     pub(crate) anonymous_nominals: Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
     pub(crate) dependencies: Arc<[crate::semantic_query_nucleus::SemanticDeclarationDependency]>,
+    pub(crate) c_export_roots: Arc<[crate::StableDefinitionKey]>,
 }
 
 #[derive(Debug, Clone)]
@@ -721,6 +750,26 @@ struct ImportInputView {
     ledger: ImportObservationLedger,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct AcceptedImportTopologyFact {
+    importer: ModuleId,
+    exact_specifier: Arc<str>,
+    normalized_specifier: Arc<str>,
+    outcome: AcceptedImportTopologyOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum AcceptedImportTopologyOutcome {
+    Resolved(ModuleId),
+    Absent,
+    PresentUnreadable,
+    DeniedLexical,
+    DeniedCanonical,
+    InvalidPhysicalType,
+    UnstableRead,
+    Cancelled,
+}
+
 #[derive(Debug)]
 struct ImportInputStore {
     revisions: VecDeque<Arc<ImportInputView>>,
@@ -728,6 +777,7 @@ struct ImportInputStore {
     context_stamps: Vec<(ImportDiscoveryContext, u64)>,
     provenance_stamps: Vec<(AcceptedReadManifestEntry, u64)>,
     observation_stamps: Vec<(ImportObservation, u64)>,
+    topology_stamps: Vec<(Arc<[AcceptedImportTopologyFact]>, u64)>,
 }
 
 impl Default for ImportInputStore {
@@ -738,6 +788,7 @@ impl Default for ImportInputStore {
             context_stamps: Vec::new(),
             provenance_stamps: Vec::new(),
             observation_stamps: Vec::new(),
+            topology_stamps: Vec::new(),
         }
     }
 }
@@ -748,6 +799,10 @@ fn module_source_input(module: &ModuleId) -> InputIdentity {
 
 fn import_context_input() -> InputIdentity {
     InputIdentity::new("import-discovery-context", "current")
+}
+
+fn accepted_import_topology_input() -> InputIdentity {
+    InputIdentity::new("accepted-import-topology", "current")
 }
 
 fn accepted_read_input(module: &ModuleId) -> InputIdentity {
@@ -770,7 +825,7 @@ fn import_observation_input(request: &ImportDiscoveryRequest) -> InputIdentity {
 
 #[cfg(test)]
 fn test_import_graph_input() -> InputIdentity {
-    InputIdentity::new("test-import-graph", "current")
+    accepted_import_topology_input()
 }
 
 fn import_input_error(message: impl Into<String>) -> CompileError {
@@ -1266,13 +1321,32 @@ fn semantic_nucleus_cycle_names(nodes: &[rue_query::NodeIdentity]) -> Arc<[Arc<s
     names.into()
 }
 
-fn function_definition_key(function: &crate::FunctionInstanceKey) -> Option<&StableDefinitionKey> {
+pub(crate) fn function_definition_key(
+    function: &crate::FunctionInstanceKey,
+) -> Option<&StableDefinitionKey> {
     match function {
         crate::FunctionInstanceKey::Definition(key) => Some(key),
         crate::FunctionInstanceKey::Specialization { base, .. } => function_definition_key(base),
         crate::FunctionInstanceKey::AnonymousMember { .. }
         | crate::FunctionInstanceKey::DropGlue(_) => None,
     }
+}
+
+fn body_source_definition_key(
+    function: &crate::FunctionInstanceKey,
+) -> Option<&StableDefinitionKey> {
+    if let crate::FunctionInstanceKey::AnonymousMember { owner, .. } = function {
+        let crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(owner)) =
+            owner.as_ref()
+        else {
+            return None;
+        };
+        return match &owner.producer {
+            crate::StableProducerId::Definition(key) => Some(key),
+            crate::StableProducerId::Function(function) => function_definition_key(function),
+        };
+    }
+    function_definition_key(function)
 }
 
 fn declaration_candidate_for_stable_key(
@@ -1285,10 +1359,12 @@ fn declaration_candidate_for_stable_key(
 
     let category = match key.kind() {
         K::Function => C::Function,
+        K::Struct => C::Struct,
+        K::Enum => C::Enum,
         K::ValueConst | K::ModuleBinding => C::ConstCandidate,
         K::Method => C::Method,
         K::AssociatedFunction => C::AssociatedFunction,
-        _ => return None,
+        K::Destructor => C::Destructor,
     };
     let owner = match key.owner() {
         Some(owner) => Some(DeclarationCandidateOwner {
@@ -1330,7 +1406,86 @@ fn anonymous_nominal_query_key(
     })
 }
 
-fn durable_type_from_instance_key(
+#[derive(Debug)]
+pub(crate) enum BodyTransactionRequestFailure {
+    Query(QueryAbort),
+    DeferredAnonymousProducers(Arc<[crate::FunctionInstanceKey]>),
+}
+
+pub(crate) fn collect_instance_anonymous_nominals(
+    function: &crate::FunctionInstanceKey,
+) -> BTreeSet<crate::AnonymousNominalKey> {
+    fn arguments(
+        arguments: &crate::CanonicalArguments,
+        output: &mut BTreeSet<crate::AnonymousNominalKey>,
+    ) {
+        for ty in arguments.types.iter() {
+            instance_type(ty, output);
+        }
+        for value in arguments.values.iter() {
+            match value {
+                crate::CanonicalArgumentValue::Type(ty) => instance_type(ty, output),
+                crate::CanonicalArgumentValue::Function(function) => {
+                    instance_function(function, output);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn anonymous(
+        identity: &crate::AnonymousNominalKey,
+        output: &mut BTreeSet<crate::AnonymousNominalKey>,
+    ) {
+        if !output.insert(identity.clone()) {
+            return;
+        }
+        if let crate::StableProducerId::Function(function) = &identity.producer {
+            instance_function(function, output);
+        }
+        arguments(&identity.arguments, output);
+    }
+
+    fn instance_type(
+        ty: &crate::TypeInstanceKey,
+        output: &mut BTreeSet<crate::AnonymousNominalKey>,
+    ) {
+        match ty {
+            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(identity)) => {
+                anonymous(identity, output);
+            }
+            crate::TypeInstanceKey::Array { element, .. }
+            | crate::TypeInstanceKey::Slice { element, .. }
+            | crate::TypeInstanceKey::PtrConst(element)
+            | crate::TypeInstanceKey::PtrMut(element) => instance_type(element, output),
+            _ => {}
+        }
+    }
+
+    fn instance_function(
+        function: &crate::FunctionInstanceKey,
+        output: &mut BTreeSet<crate::AnonymousNominalKey>,
+    ) {
+        match function {
+            crate::FunctionInstanceKey::Definition(_) => {}
+            crate::FunctionInstanceKey::Specialization {
+                base,
+                arguments: values,
+            } => {
+                instance_function(base, output);
+                arguments(values, output);
+            }
+            crate::FunctionInstanceKey::AnonymousMember { owner, .. }
+            | crate::FunctionInstanceKey::DropGlue(owner) => instance_type(owner, output),
+        }
+    }
+
+    let mut output = BTreeSet::new();
+    instance_function(function, &mut output);
+    output
+}
+
+pub(crate) fn durable_type_from_instance_key(
     value: &crate::TypeInstanceKey,
 ) -> Option<crate::durable_semantics::DurableType> {
     use crate::TypeInstanceKey as T;
@@ -1355,6 +1510,13 @@ fn durable_type_from_instance_key(
                 crate::AnonymousNominalKind::Enum => rue_air::SemanticImportNominalKind::Enum,
             },
         },
+        T::Nominal(crate::NominalInstanceKey::Builtin { kind, name }) => D::BuiltinNominal {
+            name: name.clone(),
+            kind: match kind {
+                crate::AnonymousNominalKind::Struct => rue_air::SemanticImportNominalKind::Struct,
+                crate::AnonymousNominalKind::Enum => rue_air::SemanticImportNominalKind::Enum,
+            },
+        },
         T::Nominal(crate::NominalInstanceKey::Named(key)) => D::Nominal(key.clone()),
         T::Nominal(crate::NominalInstanceKey::Anonymous(key)) => D::AnonymousNominal(key.clone()),
         T::Array { element, len } => D::Array {
@@ -1372,7 +1534,7 @@ fn durable_type_from_instance_key(
     })
 }
 
-fn durable_value_from_argument(
+pub(crate) fn durable_value_from_argument(
     value: &crate::CanonicalArgumentValue,
 ) -> Option<crate::durable_semantics::DurableConstValue> {
     use crate::CanonicalArgumentValue as V;
@@ -1389,6 +1551,70 @@ fn durable_value_from_argument(
         }
         V::Unit => D::Unit,
         V::String(value) => D::String(value.clone()),
+    })
+}
+
+fn comptime_call_for_anonymous_function(
+    producer: &crate::semantic_query_nucleus::DeclarationSemanticQueryKey,
+    function: &crate::FunctionInstanceKey,
+    shell: &crate::declaration_candidate::DeclarationShellFact,
+    signature: &crate::semantic_query_nucleus::ResolvedDeclarationSignature,
+) -> Option<crate::semantic_query_nucleus::ComptimeCallQueryKey> {
+    let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
+        parameters,
+        result: crate::durable_semantics::DurableType::ComptimeType,
+        is_extern: false,
+        ..
+    } = &signature.signature
+    else {
+        return None;
+    };
+    let expected = crate::semantic_query_nucleus::direct_identity(shell)?.key;
+    let arguments = match function {
+        crate::FunctionInstanceKey::Definition(definition) if *definition == expected => {
+            crate::CanonicalArguments::default()
+        }
+        crate::FunctionInstanceKey::Specialization { base, arguments }
+            if matches!(
+                base.as_ref(),
+                crate::FunctionInstanceKey::Definition(definition) if *definition == expected
+            ) =>
+        {
+            arguments.clone()
+        }
+        _ => return None,
+    };
+    if shell.parameters.len() != parameters.len()
+        || shell
+            .parameters
+            .iter()
+            .any(|parameter| !parameter.is_comptime)
+    {
+        return None;
+    }
+    let mut type_arguments = arguments.types.iter();
+    let mut value_arguments = arguments.values.iter();
+    let mut types = Vec::new();
+    let mut values = Vec::new();
+    for (header, parameter) in shell.parameters.iter().zip(parameters.iter()) {
+        if parameter.ty == crate::durable_semantics::DurableType::ComptimeType
+            && let Some(value) = type_arguments.next()
+        {
+            types.push((header.name.clone(), durable_type_from_instance_key(value)?));
+        } else {
+            values.push((
+                header.name.clone(),
+                durable_value_from_argument(value_arguments.next()?)?,
+            ));
+        }
+    }
+    if type_arguments.next().is_some() || value_arguments.next().is_some() {
+        return None;
+    }
+    Some(crate::semantic_query_nucleus::ComptimeCallQueryKey {
+        declaration: producer.clone(),
+        type_arguments: types.into(),
+        value_arguments: values.into(),
     })
 }
 
@@ -1415,6 +1641,105 @@ fn collect_anonymous_nominal_value_dependencies(
 ) {
     if let crate::durable_semantics::DurableConstValue::Type(ty) = value {
         collect_anonymous_nominal_type_dependencies(ty, output);
+    }
+}
+
+fn collect_durable_anonymous_nominal_dependencies(
+    nominal: &crate::durable_semantics::DurableAnonymousNominal,
+    output: &mut BTreeSet<crate::AnonymousNominalKey>,
+) {
+    use crate::durable_semantics::{
+        DurableAnonymousMethodType as M, DurableAnonymousNominalShape as S,
+    };
+    for (_, ty) in nominal.type_captures.iter() {
+        collect_anonymous_nominal_type_dependencies(ty, output);
+    }
+    for (_, value) in nominal.value_captures.iter() {
+        collect_anonymous_nominal_value_dependencies(value, output);
+    }
+    match &nominal.shape {
+        S::Struct { fields, methods } => {
+            for (_, ty) in fields.iter() {
+                collect_anonymous_nominal_type_dependencies(ty, output);
+            }
+            for method in methods.iter() {
+                for (ty, _, _) in method.parameters.iter() {
+                    if let M::Concrete(ty) = ty {
+                        collect_anonymous_nominal_type_dependencies(ty, output);
+                    }
+                }
+                if let M::Concrete(ty) = &method.result {
+                    collect_anonymous_nominal_type_dependencies(ty, output);
+                }
+            }
+        }
+        S::Enum { variants } => {
+            for (_, fields) in variants.iter() {
+                for ty in fields.iter() {
+                    collect_anonymous_nominal_type_dependencies(ty, output);
+                }
+            }
+        }
+    }
+}
+
+fn projected_anonymous_nominal_for_identity<'a>(
+    projected: &'a [crate::durable_semantics::DurableAnonymousNominal],
+    identity: &crate::AnonymousNominalKey,
+) -> Option<&'a crate::durable_semantics::DurableAnonymousNominal> {
+    if let Some(exact) = projected
+        .iter()
+        .find(|nominal| nominal.identity == *identity)
+    {
+        return Some(exact);
+    }
+
+    // Projection can remove a contextual anchor prefix while preserving the
+    // exact producer, arguments, kind, and relative anonymous occurrence.
+    // Follow the same fail-closed rule as binding-manifest materialization:
+    // only a unique relative occurrence can stand for the requested alias.
+    let occurrence = identity.anchor.segments().last();
+    let mut candidates = projected.iter().filter(|nominal| {
+        nominal.identity.producer == identity.producer
+            && nominal.identity.arguments == identity.arguments
+            && nominal.identity.kind == identity.kind
+            && nominal.identity.anchor.segments().last() == occurrence
+    });
+    let candidate = candidates.next()?;
+    candidates.next().is_none().then_some(candidate)
+}
+
+pub(crate) fn materialize_contextual_anonymous_aliases(
+    facts: &mut BTreeMap<
+        crate::AnonymousNominalKey,
+        crate::durable_semantics::DurableAnonymousNominal,
+    >,
+) {
+    loop {
+        let mut required = BTreeSet::new();
+        for nominal in facts.values() {
+            collect_durable_anonymous_nominal_dependencies(nominal, &mut required);
+        }
+        required.retain(|identity| !facts.contains_key(identity));
+        if required.is_empty() {
+            return;
+        }
+        let projected = facts.values().cloned().collect::<Vec<_>>();
+        let mut progressed = false;
+        for identity in required {
+            let Some(candidate) =
+                projected_anonymous_nominal_for_identity(&projected, &identity).cloned()
+            else {
+                continue;
+            };
+            let mut alias = candidate;
+            alias.identity = identity.clone();
+            facts.insert(identity, alias);
+            progressed = true;
+        }
+        if !progressed {
+            return;
+        }
     }
 }
 
@@ -5342,6 +5667,66 @@ impl Default for RevisionedQueryDatabase {
                 },
             )
             .expect("the ModuleIndex family has one canonical name");
+        let indexes_for_declaration_sets = module_indexes.clone();
+        let module_declaration_sets = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.module-declaration-set",
+                MODULE_QUERY_MEMO_RETENTION,
+                |left: &ModuleDeclarationSetValue, right: &ModuleDeclarationSetValue| left == right,
+                move |context, _, key: &ModuleQueryKey| {
+                    let indexed =
+                        context.query_registered(&indexes_for_declaration_sets, key.clone())?;
+                    let rue_query::QueryOutcome::Success(indexed) = indexed.outcome() else {
+                        unreachable!("ModuleIndex publishes typed values")
+                    };
+                    let value = match &indexed.0 {
+                        Ok(index) => {
+                            let mut declarations = index
+                                .definitions
+                                .iter()
+                                .map(|entry| ModuleDeclarationSetFact {
+                                    namespace: entry.namespace,
+                                    kind: entry.kind,
+                                    visibility: entry.visibility,
+                                    name: entry.name.clone(),
+                                })
+                                .collect::<Vec<_>>();
+                            declarations.sort_by(|left, right| {
+                                let visibility_rank = |visibility| match visibility {
+                                    None => 0,
+                                    Some(rue_parser::ast::Visibility::Private) => 1,
+                                    Some(rue_parser::ast::Visibility::Public) => 2,
+                                };
+                                (
+                                    left.namespace,
+                                    left.kind,
+                                    visibility_rank(left.visibility),
+                                    left.name.as_ref(),
+                                )
+                                    .cmp(&(
+                                        right.namespace,
+                                        right.kind,
+                                        visibility_rank(right.visibility),
+                                        right.name.as_ref(),
+                                    ))
+                            });
+                            let mut import_specifiers = index
+                                .imports
+                                .iter()
+                                .map(|import| Arc::from(import.specifier()))
+                                .collect::<Vec<_>>();
+                            import_specifiers.sort();
+                            ModuleDeclarationSetValue::Available {
+                                declarations: declarations.into(),
+                                import_specifiers: import_specifiers.into(),
+                            }
+                        }
+                        Err(_) => ModuleDeclarationSetValue::Unavailable,
+                    };
+                    Ok(QueryOutput::success(value))
+                },
+            )
+            .expect("the ModuleDeclarationSet family has one canonical name");
         let parse_for_declaration_occurrences = parse_modules.clone();
         let parse_for_declaration_shells = parse_modules.clone();
         let declaration_occurrence_indexes = runtime
@@ -6329,11 +6714,135 @@ impl Default for RevisionedQueryDatabase {
             )
             .expect("the DeclarationImport family has one canonical name");
         let shells_for_semantic_nucleus = declaration_shells.clone();
+        let shells_for_produced_anonymous = declaration_shells.clone();
         let signatures_for_semantic_nucleus = raw_declaration_signatures.clone();
         let consts_for_semantic_nucleus = raw_const_syntax.clone();
         let bodies_for_semantic_nucleus = raw_declaration_bodies.clone();
         let names_for_semantic_nucleus = lookup_names.clone();
         let imports_for_semantic_nucleus = declaration_imports.clone();
+        // Body transactions are supplied per request, but their successful
+        // producer-owned anonymous projection has one registered evaluator so
+        // SemanticNucleus can observe it without re-running body semantics.
+        let body_transactions = runtime
+            .family_with_equality(
+                "compiler.body-transaction",
+                MODULE_QUERY_MEMO_RETENTION,
+                crate::body_query::transaction_equal,
+            )
+            .expect("the BodyTransaction family has one canonical name");
+        let transactions_for_produced_anonymous = body_transactions.clone();
+        let semantic_nucleus_for_produced_anonymous =
+            Arc::new(std::sync::OnceLock::<SemanticNucleusFamily>::new());
+        let semantic_nucleus_for_produced_anonymous_evaluator =
+            semantic_nucleus_for_produced_anonymous.clone();
+        let body_produced_anonymous = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.body-produced-anonymous",
+                MODULE_QUERY_MEMO_RETENTION,
+                |left: &crate::body_query::BodyProducedAnonymousNominals,
+                 right: &crate::body_query::BodyProducedAnonymousNominals| {
+                    left == right
+                },
+                move |context, _, key: &crate::body_query::BodyQueryKey| {
+                    match context.query(&transactions_for_produced_anonymous, key.clone(), |_| {
+                        Err(QueryAbort::Canceled)
+                    }) {
+                        Ok(transaction) => {
+                            let rue_query::QueryOutcome::Success(
+                                crate::body_query::BodyTransaction::Success {
+                                    produced_anonymous_nominals,
+                                    ..
+                                },
+                            ) = transaction.outcome()
+                            else {
+                                return Err(QueryAbort::Canceled);
+                            };
+                            return Ok(QueryOutput::success(produced_anonymous_nominals.clone()));
+                        }
+                        Err(QueryAbort::Canceled) => {}
+                        Err(abort) => return Err(abort),
+                    }
+
+                    // A declaration signature can name the result of a
+                    // compile-time type constructor before body reachability
+                    // has supplied that constructor's body transaction. Keep
+                    // the fact producer-owned by publishing the constructor's
+                    // exact semantic projection through this family; the
+                    // AnonymousNominal consumer still has one canonical body-
+                    // produced dependency path.
+                    let Some(definition) = function_definition_key(&key.instance).cloned() else {
+                        return Err(QueryAbort::Canceled);
+                    };
+                    let Some(declaration) = declaration_candidate_for_stable_key(&definition)
+                    else {
+                        return Err(QueryAbort::Canceled);
+                    };
+                    let producer = crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                        declaration: declaration.clone(),
+                        configuration: key.configuration.clone(),
+                    };
+                    let shell = context.query_registered(
+                        &shells_for_produced_anonymous,
+                        DeclarationShellQueryKey(declaration),
+                    )?;
+                    let rue_query::QueryOutcome::Success(DeclarationShellQueryValue::Available(
+                        shell,
+                    )) = shell.outcome()
+                    else {
+                        return Err(QueryAbort::Canceled);
+                    };
+                    let semantic_nucleus = semantic_nucleus_for_produced_anonymous_evaluator
+                        .get()
+                        .expect("SemanticNucleus is installed before requests begin");
+                    let signature = context.query_registered(
+                        semantic_nucleus,
+                        crate::semantic_query_nucleus::SemanticNucleusKey::Signature(
+                            producer.clone(),
+                        ),
+                    )?;
+                    let rue_query::QueryOutcome::Success(
+                        crate::semantic_query_nucleus::SemanticNucleusValue::Signature(signature),
+                    ) = signature.outcome()
+                    else {
+                        return Err(QueryAbort::Canceled);
+                    };
+                    let Some(call) = comptime_call_for_anonymous_function(
+                        &producer,
+                        &key.instance,
+                        shell,
+                        signature,
+                    ) else {
+                        return Err(QueryAbort::Canceled);
+                    };
+                    let projected = context.query_registered(
+                        semantic_nucleus,
+                        crate::semantic_query_nucleus::SemanticNucleusKey::ComptimeCall(call),
+                    )?;
+                    let rue_query::QueryOutcome::Success(
+                        crate::semantic_query_nucleus::SemanticNucleusValue::ComptimeCall(
+                            projected,
+                        ),
+                    ) = projected.outcome()
+                    else {
+                        return Err(QueryAbort::Canceled);
+                    };
+                    let owner = crate::StableProducerId::Function(Box::new(key.instance.clone()));
+                    let owned = projected
+                        .anonymous_nominals
+                        .iter()
+                        .filter(|nominal| nominal.identity.producer == owner)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if owned.is_empty() {
+                        return Err(QueryAbort::Canceled);
+                    }
+                    Ok(QueryOutput::success(
+                        crate::body_query::BodyProducedAnonymousNominals(owned.into()),
+                    ))
+                },
+            )
+            .expect("the BodyProducedAnonymous family has one canonical name");
+        let produced_anonymous_for_semantic_nucleus = body_produced_anonymous.clone();
         let semantic_nucleus = runtime
             .family_with_equality_and_evaluator(
                 "compiler.semantic-nucleus",
@@ -7133,137 +7642,47 @@ impl Default for RevisionedQueryDatabase {
                                             "anonymous nominal producer identity mismatch",
                                         )))
                                     } else {
-                                        let signature = context.query_registered(
-                                            family,
-                                            Key::Signature(query.producer.clone()),
+                                        let producer = context.query_registered(
+                                            &produced_anonymous_for_semantic_nucleus,
+                                            crate::body_query::BodyQueryKey {
+                                                instance: (**function).clone(),
+                                                configuration: query
+                                                    .producer
+                                                    .configuration
+                                                    .clone(),
+                                            },
                                         )?;
-                                        let rue_query::QueryOutcome::Success(signature) =
-                                            signature.outcome()
+                                        let rue_query::QueryOutcome::Success(producer) =
+                                            producer.outcome()
                                         else {
-                                            unreachable!("SemanticNucleus publishes typed values")
+                                            unreachable!(
+                                                "BodyProducedAnonymous publishes typed values"
+                                            )
                                         };
-                                        match signature {
-                                            Value::Failure(failure) => Err(failure.clone()),
-                                            Value::Signature(signature) => {
-                                                let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
-                                                    parameters,
-                                                    ..
-                                                } = &signature.signature
-                                                else {
-                                                    return Ok(QueryOutput::success(Value::Failure(
-                                                        Failure::Resolution(Arc::from(
-                                                            "anonymous nominal function producer is not callable",
-                                                        )),
-                                                    ))
-                                                    .with_terminal_kind(QueryTerminalKind::Failure));
-                                                };
-                                                let arguments = match function.as_ref() {
-                                                    crate::FunctionInstanceKey::Definition(_) => {
-                                                        crate::CanonicalArguments::default()
-                                                    }
-                                                    crate::FunctionInstanceKey::Specialization {
-                                                        arguments,
-                                                        ..
-                                                    } => arguments.clone(),
-                                                    crate::FunctionInstanceKey::AnonymousMember { .. }
-                                                    | crate::FunctionInstanceKey::DropGlue(_) => {
-                                                        unreachable!()
-                                                    }
-                                                };
-                                                let mut types = arguments.types.iter();
-                                                let mut values = arguments.values.iter();
-                                                let mut type_arguments = Vec::new();
-                                                let mut value_arguments = Vec::new();
-                                                let mut reconstruction_failure = None;
-                                                for (header, parameter) in
-                                                    shell.parameters.iter().zip(parameters.iter())
-                                                {
-                                                    if !parameter.is_comptime {
-                                                        continue;
-                                                    }
-                                                    if parameter.ty
-                                                        == crate::durable_semantics::DurableType::ComptimeType
-                                                    {
-                                                        let Some(value) = types.next().and_then(
-                                                            durable_type_from_instance_key,
-                                                        ) else {
-                                                            reconstruction_failure = Some(
-                                                                "anonymous nominal producer type arguments do not match its signature",
-                                                            );
-                                                            break;
-                                                        };
-                                                        type_arguments
-                                                            .push((header.name.clone(), value));
-                                                    } else {
-                                                        let Some(value) = values.next().and_then(
-                                                            durable_value_from_argument,
-                                                        ) else {
-                                                            reconstruction_failure = Some(
-                                                                "anonymous nominal producer value arguments do not match its signature",
-                                                            );
-                                                            break;
-                                                        };
-                                                        value_arguments
-                                                            .push((header.name.clone(), value));
-                                                    }
-                                                }
-                                                if reconstruction_failure.is_none()
-                                                    && (types.next().is_some()
-                                                        || values.next().is_some())
-                                                {
-                                                    reconstruction_failure = Some(
-                                                        "anonymous nominal producer has excess canonical arguments",
-                                                    );
-                                                }
-                                                if let Some(failure) = reconstruction_failure {
-                                                    Err(Failure::Resolution(Arc::from(failure)))
-                                                } else {
-                                                    let producer = context.query_registered(
-                                                        family,
-                                                        Key::ComptimeCall(
-                                                            crate::semantic_query_nucleus::ComptimeCallQueryKey {
-                                                                declaration: query.producer.clone(),
-                                                                type_arguments: type_arguments.into(),
-                                                                value_arguments: value_arguments.into(),
-                                                            },
-                                                        ),
-                                                    )?;
-                                                    let rue_query::QueryOutcome::Success(producer) =
-                                                        producer.outcome()
-                                                    else {
-                                                        unreachable!("SemanticNucleus publishes typed values")
-                                                    };
-                                                    match producer {
-                                                        Value::ComptimeCall(producer) => Ok(
-                                                            producer.anonymous_nominals.clone(),
-                                                        ),
-                                                        Value::Failure(failure) => {
-                                                            Err(failure.clone())
-                                                        }
-                                                        _ => Err(Failure::Resolution(Arc::from(
-                                                            "anonymous nominal function producer returned the wrong projection",
-                                                        ))),
-                                                    }
-                                                }
-                                            }
-                                            _ => Err(Failure::Resolution(Arc::from(
-                                                "anonymous nominal signature dependency returned the wrong projection",
-                                            ))),
-                                        }
+                                        Ok(producer.0.clone())
                                     }
                                 }
                             };
                             match projected {
-                                Ok(projected) => projected
-                                    .iter()
-                                    .find(|value| value.identity == query.identity)
+                                Ok(projected) => {
+                                    projected_anonymous_nominal_for_identity(
+                                        &projected,
+                                        &query.identity,
+                                    )
                                     .cloned()
-                                    .map(Value::AnonymousNominal)
+                                    .map(|mut nominal| {
+                                        // The producer publishes the canonical
+                                        // relative anchor; this exact query
+                                        // owns the contextual alias identity.
+                                        nominal.identity = query.identity.clone();
+                                        Value::AnonymousNominal(nominal)
+                                    })
                                     .unwrap_or_else(|| {
                                         Value::Failure(Failure::Resolution(Arc::from(
                                             "anonymous nominal producer did not publish the requested identity",
                                         )))
-                                    }),
+                                    })
+                                }
                                 Err(failure) => Value::Failure(failure),
                             }
                         }
@@ -7599,9 +8018,15 @@ impl Default for RevisionedQueryDatabase {
                 },
             )
             .expect("the SemanticNucleus family has one canonical name");
+        assert!(
+            semantic_nucleus_for_produced_anonymous
+                .set(semantic_nucleus.clone())
+                .is_ok(),
+            "SemanticNucleus producer projection is installed once"
+        );
         Self {
             parse: RevisionedFamily::new(&runtime, "compiler.parse"),
-            runtime,
+            runtime: runtime.clone(),
             next_revision: 1,
             next_source_stamp: 1,
             source_stamps: VecDeque::new(),
@@ -7611,14 +8036,32 @@ impl Default for RevisionedQueryDatabase {
             test_import_store,
             parse_modules,
             module_indexes,
+            module_declaration_sets,
             declaration_occurrence_indexes,
             declaration_shells,
             #[cfg(test)]
             raw_const_syntax,
             #[cfg(test)]
             raw_declaration_signatures,
-            #[cfg(test)]
             raw_declaration_bodies,
+            body_transactions,
+            canonical_bodies: runtime
+                .family_with_equality(
+                    "compiler.canonical-body",
+                    MODULE_QUERY_MEMO_RETENTION,
+                    |left: &crate::body_query::CanonicalBody,
+                     right: &crate::body_query::CanonicalBody| left == right,
+                )
+                .expect("the CanonicalBody family has one canonical name"),
+            body_references: runtime
+                .family_with_equality(
+                    "compiler.body-references",
+                    MODULE_QUERY_MEMO_RETENTION,
+                    |left: &crate::body_query::BodyReferences,
+                     right: &crate::body_query::BodyReferences| left == right,
+                )
+                .expect("the BodyReferences family has one canonical name"),
+            body_produced_anonymous,
             module_rirs,
             resolve_imports,
             #[cfg(test)]
@@ -7834,6 +8277,374 @@ impl RevisionedQueryDatabase {
     /// drive declaration reachability: each declaration remains an
     /// independently stamped query terminal and no whole-program semantic
     /// state is retained here.
+    pub(crate) fn body_transaction(
+        &self,
+        revision: Revision,
+        key: crate::body_query::BodyQueryKey,
+        declaration_candidates: Arc<
+            BTreeMap<
+                crate::StableDefinitionKey,
+                crate::declaration_candidate::DeclarationCandidateKey,
+            >,
+        >,
+        declaration_modules: Arc<[ModuleId]>,
+        producer_body_terminal_required: bool,
+        cancellation: CancellationToken,
+        compute: impl FnOnce(
+            Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
+        ) -> Result<crate::body_query::BodyTransaction, QueryAbort>,
+    ) -> Result<
+        Arc<rue_query::QueryTerminal<crate::body_query::BodyTransaction>>,
+        BodyTransactionRequestFailure,
+    > {
+        let definition = body_source_definition_key(&key.instance)
+            .cloned()
+            .ok_or(BodyTransactionRequestFailure::Query(QueryAbort::Canceled))?;
+        let candidate = declaration_candidate_for_stable_key(&definition)
+            .ok_or(BodyTransactionRequestFailure::Query(QueryAbort::Canceled))?;
+        let deferred_anonymous_producers = std::cell::RefCell::new(BTreeSet::new());
+        let result = self.runtime.query(
+            &self.body_transactions,
+            revision,
+            key.clone(),
+            cancellation,
+            |context| {
+                let raw = context.query_registered(
+                    &self.raw_declaration_bodies,
+                    RawDeclarationBodyQueryKey(candidate),
+                )?;
+                let rue_query::QueryOutcome::Success(RawDeclarationBodyQueryValue::Available(_)) =
+                    raw.outcome()
+                else {
+                    return Err(QueryAbort::Canceled);
+                };
+                // The one-body resolver consumes declaration-set selection,
+                // including negative and qualified lookups that do not become
+                // positive BodyReferences. Until it publishes those exact
+                // lookup keys as a projection, conservatively observe the
+                // already-canonical, position-free declaration-set
+                // projections admitted by this body epoch. This is a query
+                // dependency only: no source/RIR rescanning or peer name
+                // resolver is introduced.
+                let _ = context.optional_input(accepted_import_topology_input());
+                for module in declaration_modules.iter().cloned() {
+                    let _ = context.query_registered(
+                        &self.module_declaration_sets,
+                        ModuleQueryKey(module),
+                    )?;
+                }
+                let mut selected_anonymous = BTreeMap::new();
+                let mut pending_anonymous = collect_instance_anonymous_nominals(&key.instance);
+                while let Some(identity) = pending_anonymous.pop_first() {
+                    if let crate::StableProducerId::Function(function) = &identity.producer
+                        && function.as_ref() != &key.instance
+                        && (producer_body_terminal_required
+                            || !matches!(
+                                key.instance,
+                                crate::FunctionInstanceKey::AnonymousMember { .. }
+                            ))
+                    {
+                        let produced = match context.query_registered(
+                            &self.body_produced_anonymous,
+                            crate::body_query::BodyQueryKey {
+                                instance: (**function).clone(),
+                                configuration: key.configuration.clone(),
+                            },
+                        ) {
+                            Ok(produced) => produced,
+                            Err(QueryAbort::Canceled) => {
+                                deferred_anonymous_producers
+                                    .borrow_mut()
+                                    .insert((**function).clone());
+                                return Err(QueryAbort::Canceled);
+                            }
+                            Err(abort) => return Err(abort),
+                        };
+                        let rue_query::QueryOutcome::Success(produced) = produced.outcome() else {
+                            unreachable!("BodyProducedAnonymous publishes typed values")
+                        };
+                        selected_anonymous.extend(
+                            produced
+                                .0
+                                .iter()
+                                .cloned()
+                                .map(|nominal| (nominal.identity.clone(), nominal)),
+                        );
+                    }
+                    if !selected_anonymous.contains_key(&identity) {
+                        let query = anonymous_nominal_query_key(&identity, &key.configuration)
+                            .ok_or(QueryAbort::Canceled)?;
+                        let nominal = context.query_registered(
+                            &self.semantic_nucleus,
+                            crate::semantic_query_nucleus::SemanticNucleusKey::AnonymousNominal(
+                                query,
+                            ),
+                        )?;
+                        let rue_query::QueryOutcome::Success(nominal) = nominal.outcome() else {
+                            unreachable!("SemanticNucleus publishes typed values")
+                        };
+                        let crate::semantic_query_nucleus::SemanticNucleusValue::AnonymousNominal(
+                            nominal,
+                        ) = nominal
+                        else {
+                            return Err(QueryAbort::Canceled);
+                        };
+                        selected_anonymous.insert(nominal.identity.clone(), nominal.clone());
+                    }
+                    if let Some(nominal) = selected_anonymous.get(&identity) {
+                        let mut dependencies = BTreeSet::new();
+                        collect_durable_anonymous_nominal_dependencies(
+                            nominal,
+                            &mut dependencies,
+                        );
+                        pending_anonymous.extend(
+                            dependencies
+                                .into_iter()
+                                .filter(|dependency| !selected_anonymous.contains_key(dependency)),
+                        );
+                    }
+                }
+                let transaction = compute(
+                    selected_anonymous
+                        .into_values()
+                        .collect::<Vec<_>>()
+                        .into(),
+                )?;
+                let mut semantic_dependencies = BTreeSet::from([definition]);
+                let mut anonymous_dependencies = BTreeSet::new();
+                for reference in transaction.references().0.iter() {
+                    match reference {
+                        crate::body_query::BodyReference::Callable(function) => {
+                            if let Some(definition) = function_definition_key(function) {
+                                semantic_dependencies.insert(definition.clone());
+                            }
+                            anonymous_dependencies
+                                .extend(collect_instance_anonymous_nominals(function));
+                        }
+                        crate::body_query::BodyReference::Definition(definition) => {
+                            semantic_dependencies.insert(definition.clone());
+                        }
+                        crate::body_query::BodyReference::Type(ty) => {
+                            if let crate::TypeInstanceKey::Nominal(
+                                crate::NominalInstanceKey::Named(definition),
+                            ) = ty
+                            {
+                                semantic_dependencies.insert(definition.clone());
+                            }
+                            anonymous_dependencies.extend(collect_instance_anonymous_nominals(
+                                &crate::FunctionInstanceKey::DropGlue(Box::new(ty.clone())),
+                            ));
+                        }
+                    }
+                }
+                if let crate::body_query::BodyTransaction::Success {
+                    produced_anonymous_nominals,
+                    ..
+                } = &transaction
+                {
+                    // A body transaction owns the anonymous facts it creates.
+                    // Asking the semantic nucleus for one of those facts would
+                    // depend back on this transaction's produced-facts
+                    // projection and form a query cycle. References to facts
+                    // produced by another body still observe that producer
+                    // through the semantic nucleus below.
+                    for nominal in produced_anonymous_nominals.0.iter() {
+                        if matches!(
+                            &nominal.identity.producer,
+                            crate::StableProducerId::Function(producer)
+                                if producer.as_ref() == &key.instance
+                        ) {
+                            anonymous_dependencies.remove(&nominal.identity);
+                        }
+                    }
+                }
+                for identity in anonymous_dependencies {
+                    let query = anonymous_nominal_query_key(&identity, &key.configuration)
+                        .ok_or(QueryAbort::Canceled)?;
+                    match &identity.producer {
+                        crate::StableProducerId::Definition(_) => {
+                            let _ = context.query_registered(
+                                &self.semantic_nucleus,
+                                crate::semantic_query_nucleus::SemanticNucleusKey::AnonymousNominal(
+                                    query,
+                                ),
+                            )?;
+                        }
+                        crate::StableProducerId::Function(producer) => {
+                            let produced = match context.query_registered(
+                                &self.body_produced_anonymous,
+                                crate::body_query::BodyQueryKey {
+                                    instance: (**producer).clone(),
+                                    configuration: key.configuration.clone(),
+                                },
+                            ) {
+                                Ok(produced) => produced,
+                                Err(QueryAbort::Canceled) => {
+                                    deferred_anonymous_producers
+                                        .borrow_mut()
+                                        .insert((**producer).clone());
+                                    return Err(QueryAbort::Canceled);
+                                }
+                                Err(abort) => return Err(abort),
+                            };
+                            let rue_query::QueryOutcome::Success(produced) = produced.outcome()
+                            else {
+                                unreachable!("BodyProducedAnonymous publishes typed values")
+                            };
+                            if projected_anonymous_nominal_for_identity(&produced.0, &identity)
+                                .is_none()
+                            {
+                                return Err(QueryAbort::Canceled);
+                            }
+                        }
+                    }
+                }
+                // Positive semantic references observe their exact nucleus
+                // terminals; declaration-set lookup above separately covers
+                // negative and qualified lookup inputs.
+                for definition in semantic_dependencies {
+                    // Synthetic builtins have stable semantic identities but
+                    // no source declaration candidate. Their semantics are
+                    // fixed by the compiler build and the target/preview
+                    // configuration already carried by the body key.
+                    let candidate = declaration_candidates.get(&definition).or_else(|| {
+                        matches!(
+                            definition.kind(),
+                            crate::StableDefinitionKind::ValueConst
+                                | crate::StableDefinitionKind::ModuleBinding
+                        )
+                        .then(|| {
+                            declaration_candidates.iter().find_map(|(candidate, value)| {
+                                (candidate.module() == definition.module()
+                                    && candidate.name() == definition.name()
+                                    && candidate.owner() == definition.owner()
+                                    && matches!(
+                                        candidate.kind(),
+                                        crate::StableDefinitionKind::ValueConst
+                                            | crate::StableDefinitionKind::ModuleBinding
+                                    ))
+                                .then_some(value)
+                            })
+                        })
+                        .flatten()
+                    });
+                    let Some(candidate) = candidate.cloned() else {
+                        continue;
+                    };
+                    let query = crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                        declaration: candidate.clone(),
+                        configuration: key.configuration.clone(),
+                    };
+                    if candidate.category
+                        == crate::declaration_candidate::DeclarationCandidateCategory::ConstCandidate
+                    {
+                        let _ = context.query_registered(
+                            &self.semantic_nucleus,
+                            crate::semantic_query_nucleus::SemanticNucleusKey::ConstResolution(
+                                query,
+                            ),
+                        )?;
+                    } else {
+                        let _ = context.query_registered(
+                            &self.semantic_nucleus,
+                            crate::semantic_query_nucleus::SemanticNucleusKey::Identity(
+                                query.clone(),
+                            ),
+                        )?;
+                        let _ = context.query_registered(
+                            &self.semantic_nucleus,
+                            crate::semantic_query_nucleus::SemanticNucleusKey::Signature(query),
+                        )?;
+                    }
+                }
+                let kind = if matches!(transaction, crate::body_query::BodyTransaction::Success { .. }) {
+                    QueryTerminalKind::Success
+                } else {
+                    QueryTerminalKind::Failure
+                };
+                Ok(QueryOutput::success(transaction).with_terminal_kind(kind))
+            },
+        );
+        match result {
+            Ok(terminal) => Ok(terminal),
+            Err(QueryAbort::Canceled) if !deferred_anonymous_producers.borrow().is_empty() => {
+                Err(BodyTransactionRequestFailure::DeferredAnonymousProducers(
+                    deferred_anonymous_producers
+                        .into_inner()
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                        .into(),
+                ))
+            }
+            Err(abort) => Err(BodyTransactionRequestFailure::Query(abort)),
+        }
+    }
+
+    pub(crate) fn canonical_body_projection(
+        &self,
+        revision: Revision,
+        key: crate::body_query::BodyQueryKey,
+        cancellation: CancellationToken,
+    ) -> Result<Arc<rue_query::QueryTerminal<crate::body_query::CanonicalBody>>, QueryAbort> {
+        let transactions = self.body_transactions.clone();
+        self.runtime.query(
+            &self.canonical_bodies,
+            revision,
+            key.clone(),
+            cancellation,
+            move |context| {
+                let transaction =
+                    context.query(&transactions, key, |_| Err(QueryAbort::Canceled))?;
+                let rue_query::QueryOutcome::Success(crate::body_query::BodyTransaction::Success {
+                    body,
+                    ..
+                }) = transaction.outcome()
+                else {
+                    return Err(QueryAbort::Canceled);
+                };
+                Ok(QueryOutput::success(body.as_ref().clone()))
+            },
+        )
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn body_references_projection(
+        &self,
+        revision: Revision,
+        key: crate::body_query::BodyQueryKey,
+        cancellation: CancellationToken,
+    ) -> Result<Arc<rue_query::QueryTerminal<crate::body_query::BodyReferences>>, QueryAbort> {
+        let transactions = self.body_transactions.clone();
+        self.runtime.query(
+            &self.body_references,
+            revision,
+            key.clone(),
+            cancellation,
+            move |context| {
+                let transaction =
+                    context.query(&transactions, key, |_| Err(QueryAbort::Canceled))?;
+                let rue_query::QueryOutcome::Success(transaction) = transaction.outcome() else {
+                    unreachable!("BodyTransaction publishes typed values")
+                };
+                Ok(QueryOutput::success(transaction.references().clone()))
+            },
+        )
+    }
+
+    pub(crate) fn body_produced_anonymous_projection(
+        &self,
+        revision: Revision,
+        key: crate::body_query::BodyQueryKey,
+        cancellation: CancellationToken,
+    ) -> Result<
+        Arc<rue_query::QueryTerminal<crate::body_query::BodyProducedAnonymousNominals>>,
+        QueryAbort,
+    > {
+        self.runtime
+            .request_registered(&self.body_produced_anonymous, revision, key, cancellation)
+            .into_result()
+    }
+
     pub(crate) fn projected_declaration_semantics(
         &self,
         revision: Revision,
@@ -7857,6 +8668,7 @@ impl RevisionedQueryDatabase {
         let mut values = Vec::new();
         let mut anonymous_nominals = BTreeMap::new();
         let mut dependencies = BTreeSet::new();
+        let mut c_export_roots = BTreeSet::new();
         for module in program.modules() {
             if cancellation.is_canceled() {
                 return Err(SemanticNucleusBatchFailure::Query(QueryAbort::Canceled));
@@ -7905,11 +8717,11 @@ impl RevisionedQueryDatabase {
                     declaration: declaration.clone(),
                     configuration: configuration.clone(),
                 };
-                let request = |key| {
+                let request = |key: Key| {
                     let attempt = self.runtime.request_registered(
                         &self.semantic_nucleus,
                         revision,
-                        key,
+                        key.clone(),
                         cancellation.clone(),
                     );
                     let terminal = attempt
@@ -8017,7 +8829,19 @@ impl RevisionedQueryDatabase {
                             .map(|value| (value.identity.clone(), value)),
                     );
                     dependencies.extend(signature.dependencies.iter().cloned());
-                    DeclarationSemanticValue::from_signature(identity, signature.signature)
+                    let is_c_export = matches!(
+                        &signature.signature,
+                        crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
+                            is_c_export: true,
+                            ..
+                        }
+                    );
+                    let semantic =
+                        DeclarationSemanticValue::from_signature(identity, signature.signature);
+                    if is_c_export {
+                        c_export_roots.insert(semantic.identity.key.clone());
+                    }
+                    semantic
                 };
                 values.push(crate::DurableDeclarationSemantic {
                     key: semantic.identity.key,
@@ -8031,6 +8855,7 @@ impl RevisionedQueryDatabase {
             declarations: values.into(),
             anonymous_nominals: anonymous_nominals.into_values().collect::<Vec<_>>().into(),
             dependencies: dependencies.into_iter().collect::<Vec<_>>().into(),
+            c_export_roots: c_export_roots.into_iter().collect::<Vec<_>>().into(),
         })
     }
 
@@ -8306,6 +9131,42 @@ impl RevisionedQueryDatabase {
         let revision = Revision::new(self.next_revision, generation);
         self.next_revision += 1;
         let mut leaves = Vec::new();
+        let mut accepted_topology = ledger
+            .iter()
+            .map(|observation| {
+                let request = observation.request();
+                let outcome = if let Some(source) = observation.accepted_source() {
+                    AcceptedImportTopologyOutcome::Resolved(
+                        crate::import_discovery::accepted_import_module(source, &accepted_reads)
+                            .expect("accepted import topology was validated above"),
+                    )
+                } else {
+                    use crate::ImportObservationStatus as S;
+                    match observation.status() {
+                        S::Absent => AcceptedImportTopologyOutcome::Absent,
+                        S::PresentReadable { .. } => unreachable!(
+                            "a readable import observation retains its accepted source"
+                        ),
+                        S::PresentUnreadable(_) => AcceptedImportTopologyOutcome::PresentUnreadable,
+                        S::DeniedLexical => AcceptedImportTopologyOutcome::DeniedLexical,
+                        S::DeniedCanonical { .. } => AcceptedImportTopologyOutcome::DeniedCanonical,
+                        S::InvalidPhysicalType { .. } => {
+                            AcceptedImportTopologyOutcome::InvalidPhysicalType
+                        }
+                        S::UnstableRead(_) => AcceptedImportTopologyOutcome::UnstableRead,
+                        S::Cancelled => AcceptedImportTopologyOutcome::Cancelled,
+                    }
+                };
+                AcceptedImportTopologyFact {
+                    importer: request.occurrence().importer().clone(),
+                    exact_specifier: Arc::from(request.exact_specifier()),
+                    normalized_specifier: Arc::from(request.normalized_specifier()),
+                    outcome,
+                }
+            })
+            .collect::<Vec<_>>();
+        accepted_topology.sort();
+        let accepted_topology: Arc<[AcceptedImportTopologyFact]> = accepted_topology.into();
         {
             let mut store = lock_import_store(&self.import_store);
             let ImportInputStore {
@@ -8313,8 +9174,13 @@ impl RevisionedQueryDatabase {
                 context_stamps,
                 provenance_stamps,
                 observation_stamps,
+                topology_stamps,
                 ..
             } = &mut *store;
+            leaves.push((
+                accepted_import_topology_input(),
+                exact_value_stamp(next_stamp, topology_stamps, &accepted_topology),
+            ));
             leaves.push((
                 import_context_input(),
                 exact_value_stamp(next_stamp, context_stamps, &context),

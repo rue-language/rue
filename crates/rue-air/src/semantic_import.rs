@@ -464,11 +464,15 @@ where
             body,
             body_span,
             type_pool,
+            false,
             |ty| {
                 self.import_type_local_with(ty, type_pool, None)
                     .map_err(Into::into)
             },
             |key| match key {
+                NominalInstanceKey::Builtin { .. } => Err(SemanticBodyImportFailure::Semantic(
+                    SemanticImportFailure::MissingNominal,
+                )),
                 NominalInstanceKey::Named(key) => match self.nominals.get(key) {
                     Some(LocalNominal::Struct(id)) => Ok(*id),
                     Some(LocalNominal::Enum(_)) => Err(SemanticBodyImportFailure::WrongNominalKind),
@@ -481,6 +485,9 @@ where
                 )),
             },
             |key| match key {
+                NominalInstanceKey::Builtin { .. } => Err(SemanticBodyImportFailure::Semantic(
+                    SemanticImportFailure::MissingNominal,
+                )),
                 NominalInstanceKey::Named(key) => match self.nominals.get(key) {
                     Some(LocalNominal::Enum(id)) => Ok(*id),
                     Some(LocalNominal::Struct(_)) => {
@@ -516,6 +523,7 @@ where
         body: &SemanticBody<K, M>,
         body_span: Span,
         type_pool: &TypeInternPool,
+        specialized_calls_are_direct: bool,
         import_type: impl Fn(&SemanticImportType<K, M>) -> Result<Type, SemanticBodyImportFailure>,
         struct_id: impl Fn(&NominalInstanceKey<K, M>) -> Result<StructId, SemanticBodyImportFailure>,
         enum_id: impl Fn(&NominalInstanceKey<K, M>) -> Result<EnumId, SemanticBodyImportFailure>,
@@ -549,14 +557,6 @@ where
         };
         if body.param_by_ref.len() != body.num_param_slots as usize
             || body.param_writable.len() != body.num_param_slots as usize
-        {
-            return Err(F::InvalidParameterModes);
-        }
-        if body
-            .param_writable
-            .iter()
-            .zip(body.param_by_ref.iter())
-            .any(|(w, r)| *w && !*r)
         {
             return Err(F::InvalidParameterModes);
         }
@@ -724,7 +724,11 @@ where
                 SemanticBodyInstData::CallSpecialized { identity, args } => {
                     let (name, type_args, value_args) = resolve_specialization(identity)?;
                     let args = call_args(args, current)?;
-                    air.add_call_generic(name, &type_args, &value_args, &args, ty, span)?;
+                    if specialized_calls_are_direct {
+                        air.add_call(None, name, &args, ty, span)?;
+                    } else {
+                        air.add_call_generic(name, &type_args, &value_args, &args, ty, span)?;
+                    }
                     continue;
                 }
                 SemanticBodyInstData::CallGeneric => return Err(F::UnsupportedGenericCall),
@@ -879,14 +883,28 @@ where
             .iter()
             .map(|warning| {
                 let span = current_anchor(warning.anchor)?;
-                Ok(crate::SemanticBodyWarning {
-                    code: warning.code.clone(),
-                    message: warning.message.clone(),
-                    anchor: crate::SemanticBodyAnchor {
-                        start: span.start,
-                        end: span.end,
-                    },
-                })
+                let mut projected = rue_error::CompileWarning::new(warning.kind.clone(), span);
+                for label in warning.labels.iter() {
+                    projected =
+                        projected.with_label(label.message.as_ref(), current_anchor(label.anchor)?);
+                }
+                for note in warning.notes.iter() {
+                    projected = projected.with_note(note.as_ref());
+                }
+                for help in warning.helps.iter() {
+                    projected = projected.with_help(help.as_ref());
+                }
+                for suggestion in warning.suggestions.iter() {
+                    projected = projected.with_suggestion(
+                        rue_error::Suggestion::new(
+                            suggestion.message.as_ref(),
+                            current_anchor(suggestion.anchor)?,
+                            suggestion.replacement.as_ref(),
+                        )
+                        .with_applicability(suggestion.applicability),
+                    );
+                }
+                Ok(projected)
             })
             .collect::<Result<Vec<_>, F>>()?;
         let local_atoms = body
@@ -2195,16 +2213,24 @@ mod tests {
             ),
             Err(F::UnsupportedGenericCall)
         ));
-        let mut invalid = body(vec![D::Const(0)]);
-        invalid.num_param_slots = 1;
-        invalid.param_by_ref = vec![false].into();
-        invalid.param_writable = vec![true].into();
+        let mut mutable_by_value = body(vec![D::Const(0)]);
+        mutable_by_value.num_param_slots = 1;
+        mutable_by_value.param_by_ref = vec![false].into();
+        mutable_by_value.param_writable = vec![true].into();
+        assert!(
+            epoch
+                .import_body(&mutable_by_value, Span::with_file(FileId::DEFAULT, 0, 100),)
+                .is_ok(),
+            "mut self is writable by value"
+        );
+        let mut invalid = mutable_by_value;
+        invalid.param_writable = Arc::new([]);
         assert!(matches!(
             epoch.import_body(&invalid, Span::with_file(FileId::DEFAULT, 0, 100)),
             Err(F::InvalidParameterModes)
         ));
         let mut invalid_drop = body(vec![D::Const(0)]);
-        invalid_drop.param_drops = vec![(0, crate::SemanticImportType::I32)].into();
+        invalid_drop.param_drops = vec![(1, crate::SemanticImportType::I32)].into();
         assert!(matches!(
             epoch.import_body(&invalid_drop, Span::with_file(FileId::DEFAULT, 0, 100)),
             Err(F::InvalidParameterDrop)
@@ -2258,12 +2284,15 @@ mod tests {
         instructions[0].ty = array;
         warning.instructions = instructions.into();
         warning.warnings = vec![crate::SemanticBodyWarning {
-            code: Arc::from("W"),
-            message: Arc::from("late invalid anchor"),
+            kind: rue_error::WarningKind::UnreachableCode,
             anchor: SemanticBodyAnchor {
                 start: 101,
                 end: 102,
             },
+            labels: Arc::new([]),
+            notes: Arc::new([]),
+            helps: Arc::new([]),
+            suggestions: Arc::new([]),
         }]
         .into();
         assert!(matches!(

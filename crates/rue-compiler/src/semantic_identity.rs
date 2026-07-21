@@ -352,6 +352,11 @@ fn encode_type(value: &TypeInstanceKey, output: &mut String) {
             encode_nominal_kind(*kind, output);
             bytes(output, name);
         }
+        TypeInstanceKey::Nominal(NominalInstanceKey::Builtin { kind, name }) => {
+            tag(output, 21);
+            encode_nominal_kind(*kind, output);
+            bytes(output, name);
+        }
         TypeInstanceKey::Nominal(NominalInstanceKey::Named(value)) => {
             tag(output, 13);
             encode_definition(value, output);

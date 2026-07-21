@@ -36,19 +36,352 @@ use crate::types::{ModuleId, StructField, StructId, Type, TypeKind};
 ///
 /// Called from Sema::analyze_all after declarations are collected.
 /// Uses the demand-driven driver for every program shape.
-pub(crate) fn analyze_all_function_bodies(sema: BodySema<'_>) -> MultiErrorResult<SemaOutput> {
-    analyze_all_function_bodies_with_work(sema).map_err(super::BodyAnalysisFailure::into_errors)
+pub(crate) fn analyze_all_function_bodies_for_test(
+    sema: BodySema<'_>,
+) -> MultiErrorResult<SemaOutput> {
+    analyze_all_function_bodies_with_work_for_test(sema)
+        .map_err(super::BodyAnalysisFailure::into_errors)
 }
 
-pub(crate) fn analyze_all_function_bodies_with_work(
+pub(crate) fn analyze_all_function_bodies_with_work_for_test(
     mut sema: BodySema<'_>,
 ) -> Result<SemaOutput, super::BodyAnalysisFailure> {
-    let result = analyze_all_function_bodies_mut(&mut sema);
+    let result = analyze_all_function_bodies_mut_for_test(&mut sema);
     let work = result
         .as_ref()
         .map(|output| output.body_analysis_work)
         .unwrap_or(sema.body_analysis_work);
     result.map_err(|errors| super::BodyAnalysisFailure::new(errors, work))
+}
+
+pub(crate) fn compose_queried_bodies(
+    mut sema: BodySema<'_>,
+    candidates: Vec<
+        crate::SemanticQueriedBodyCandidate<
+            crate::SemanticDefinitionToken,
+            crate::SemanticModuleToken,
+        >,
+    >,
+) -> Result<SemaOutput, super::BodyAnalysisFailure> {
+    let result = compose_queried_bodies_inner(&mut sema, candidates);
+    let work = result
+        .as_ref()
+        .map(|output| output.body_analysis_work)
+        .unwrap_or(sema.body_analysis_work);
+    result.map_err(|errors| super::BodyAnalysisFailure::new(errors, work))
+}
+
+fn compose_queried_bodies_inner(
+    sema: &mut BodySema<'_>,
+    candidates: Vec<
+        crate::SemanticQueriedBodyCandidate<
+            crate::SemanticDefinitionToken,
+            crate::SemanticModuleToken,
+        >,
+    >,
+) -> MultiErrorResult<SemaOutput> {
+    intern_named_callable_symbols(sema);
+    sema.get_or_create_str_struct(Span::default())
+        .map_err(CompileErrors::from)?;
+    let mut functions = Vec::with_capacity(candidates.len());
+    let mut warnings = Vec::new();
+    let mut seen_warnings = HashSet::new();
+    // Declaration-time aggregates remain part of the eager semantic universe.
+    // Snapshot them before importing bodies; body-produced aggregates become
+    // active only when committed AIR owns them.
+    let declaration_aggregate_roots = sema
+        .type_pool
+        .all_struct_ids()
+        .into_iter()
+        .filter(|id| !sema.anonymous_struct_ids.contains(id))
+        .map(Type::new_struct)
+        .chain(
+            sema.type_pool
+                .all_enum_ids()
+                .into_iter()
+                .filter(|id| !sema.anonymous_enum_ids.contains(id))
+                .map(Type::new_enum),
+        )
+        .collect::<Vec<_>>();
+    let mut active_types = HashSet::new();
+    extend_owned_aggregate_types(sema, declaration_aggregate_roots, &mut active_types);
+    let mut composed_identities = std::collections::BTreeSet::new();
+    let mut errors = CompileErrors::new();
+    for candidate in candidates {
+        let identity = match canonical_composed_identity(sema, &candidate.identity) {
+            Ok(identity) => identity,
+            Err(error) => {
+                errors.push(error);
+                continue;
+            }
+        };
+        if !composed_identities.insert(identity.clone()) {
+            continue;
+        }
+        sema.body_analysis_work.ordinary_body_import_attempts += 1;
+        let mut imported = match import_staged_body(sema, &candidate.body, candidate.body_span) {
+            Ok(imported) => imported,
+            Err(error) => {
+                sema.body_analysis_work.ordinary_body_import_failures += 1;
+                errors.push(CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "queried body {:?} failed import-only composition: {error:?}",
+                        candidate.identity
+                    )),
+                    candidate.body_span,
+                ));
+                continue;
+            }
+        };
+        // Local atoms are owned by the candidate envelope, not by the durable
+        // body's original projection. Anonymous-member candidates can be
+        // rebound to a contextual owner during composition, so install their
+        // atoms under that same final callable identity.
+        for atom in &mut imported.local_atoms {
+            atom.identity.producer = identity.clone();
+        }
+        sema.body_analysis_work.ordinary_body_import_successes += 1;
+        sema.body_analysis_work
+            .ordinary_body_import_instructions_installed += imported.air.len();
+        sema.body_analysis_work
+            .ordinary_body_import_places_installed += imported.air.places().len();
+        sema.body_analysis_work
+            .ordinary_body_import_strings_installed += imported.strings.len();
+        let (name, kind, drop_source) = match composed_callable_metadata(
+            sema,
+            &identity,
+            candidate.ordinary_owner,
+            candidate.specialization_identity,
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                errors.push(error);
+                continue;
+            }
+        };
+        for warning in imported.warnings.iter().cloned() {
+            let unseen = warning.span().is_none_or(|span| {
+                seen_warnings.insert((std::mem::discriminant(&warning.kind), span))
+            });
+            if unseen {
+                warnings.push(warning);
+            }
+        }
+        extend_owned_aggregate_types(
+            sema,
+            std::iter::once(imported.air.return_type())
+                .chain(imported.air.instructions().iter().map(|inst| inst.ty))
+                .chain(imported.air.places().iter().map(|place| place.base_type))
+                .chain(imported.air.param_drops().iter().map(|&(_, ty)| ty)),
+            &mut active_types,
+        );
+        functions.push((
+            AnalyzedFunction {
+                identity,
+                name,
+                callable_kind: kind,
+                ordinary_owner: candidate.ordinary_owner,
+                implicit_drop_source: drop_source,
+                air: imported.air,
+                local_atoms: imported.local_atoms,
+                num_locals: imported.num_locals,
+                num_param_slots: imported.num_param_slots,
+                param_modes: imported.param_modes,
+                allow_unreachable_code: imported.allow_unreachable_code,
+            },
+            imported.strings,
+        ));
+    }
+    finalize_function_body_analysis(
+        sema,
+        functions,
+        &active_types,
+        warnings,
+        &HashSet::new(),
+        errors,
+    )
+}
+
+fn canonical_composed_identity(
+    sema: &BodySema<'_>,
+    identity: &crate::FunctionInstanceKey<
+        crate::SemanticDefinitionToken,
+        crate::SemanticModuleToken,
+    >,
+) -> CompileResult<
+    crate::FunctionInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
+> {
+    let crate::FunctionInstanceKey::AnonymousMember { owner, member } = identity else {
+        return Ok(identity.clone());
+    };
+    let owner = super::one_body::materialize_instance_type(sema, owner).map_err(|_| {
+        CompileError::without_span(ErrorKind::InvalidCompilerInput(
+            "queried anonymous callable owner has no current composition endpoint".into(),
+        ))
+    })?;
+    Ok(crate::FunctionInstanceKey::AnonymousMember {
+        owner: Box::new(sema.canonical_type_instance(owner).map_err(|_| {
+            CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                "queried anonymous callable owner has no canonical representative".into(),
+            ))
+        })?),
+        member: member.clone(),
+    })
+}
+
+fn composed_callable_metadata(
+    sema: &BodySema<'_>,
+    identity: &crate::FunctionInstanceKey<
+        crate::SemanticDefinitionToken,
+        crate::SemanticModuleToken,
+    >,
+    owner: Option<super::BodyOwnerToken>,
+    specialization_identity: Option<
+        crate::SemanticSpecializationIdentity<
+            crate::SemanticDefinitionToken,
+            crate::SemanticModuleToken,
+        >,
+    >,
+) -> CompileResult<(
+    String,
+    crate::AnalyzedCallableKind,
+    Option<super::ImplicitDropDependencySourceEvent>,
+)> {
+    use crate::FunctionInstanceKey as F;
+    let missing = || {
+        CompileError::without_span(ErrorKind::InvalidCompilerInput(
+            "queried callable identity has no current composition endpoint".into(),
+        ))
+    };
+    match identity {
+        F::Definition(token) => {
+            let endpoint = sema
+                .stable_definition_endpoints
+                .get(token)
+                .ok_or_else(missing)?;
+            let (name, kind, source) = match endpoint.kind {
+                crate::StableDefinitionKind::Function => (
+                    sema.interner
+                        .resolve(&sema.internal_function_name(
+                            sema.interner.get_or_intern(endpoint.name.as_ref()),
+                            FileId::new(endpoint.file),
+                        ))
+                        .to_string(),
+                    crate::AnalyzedCallableKind::Ordinary,
+                    owner.map(
+                        |token| super::ImplicitDropDependencySourceEvent::FreeFunction {
+                            token,
+                            file: endpoint.file,
+                            name: endpoint.name.to_string(),
+                        },
+                    ),
+                ),
+                crate::StableDefinitionKind::Method
+                | crate::StableDefinitionKind::AssociatedFunction => {
+                    let owner_name = endpoint.owner.as_deref().ok_or_else(missing)?;
+                    let owner_symbol = sema.interner.get(owner_name).ok_or_else(missing)?;
+                    let struct_id = sema
+                        .structs_by_file_name
+                        .get(&(FileId::new(endpoint.file), owner_symbol))
+                        .copied()
+                        .ok_or_else(missing)?;
+                    let name = sema.method_symbol(
+                        struct_id,
+                        endpoint.name.as_ref(),
+                        endpoint.kind == crate::StableDefinitionKind::Method,
+                    );
+                    (
+                        name,
+                        crate::AnalyzedCallableKind::Ordinary,
+                        owner.map(
+                            |token| super::ImplicitDropDependencySourceEvent::NamedMethod {
+                                token,
+                                file: endpoint.file,
+                                owner_name: owner_name.to_string(),
+                                method_name: endpoint.name.to_string(),
+                            },
+                        ),
+                    )
+                }
+                crate::StableDefinitionKind::Destructor => {
+                    let owner_name = endpoint.owner.as_deref().ok_or_else(missing)?;
+                    let owner_symbol = sema.interner.get(owner_name).ok_or_else(missing)?;
+                    let struct_id = sema
+                        .structs_by_file_name
+                        .get(&(FileId::new(endpoint.file), owner_symbol))
+                        .copied()
+                        .ok_or_else(missing)?;
+                    (
+                        sema.destructor_symbol(struct_id),
+                        crate::AnalyzedCallableKind::Destructor,
+                        owner.map(|token| {
+                            super::ImplicitDropDependencySourceEvent::NamedDestructor {
+                                token,
+                                file: endpoint.file,
+                                owner_name: owner_name.to_string(),
+                            }
+                        }),
+                    )
+                }
+                _ => return Err(missing()),
+            };
+            Ok((name, kind, source))
+        }
+        F::AnonymousMember { owner: ty, member } => {
+            let ty = super::one_body::materialize_instance_type(sema, ty).map_err(|_| missing())?;
+            let struct_id = ty.as_struct().ok_or_else(missing)?;
+            let method = sema
+                .interner
+                .get(member.name.as_ref())
+                .ok_or_else(missing)?;
+            let info = sema.method_info((struct_id, method)).ok_or_else(missing)?;
+            Ok((
+                sema.method_symbol(struct_id, member.name.as_ref(), info.has_self),
+                if member.kind == crate::AnonymousMemberKind::Destructor {
+                    crate::AnalyzedCallableKind::Destructor
+                } else {
+                    crate::AnalyzedCallableKind::Ordinary
+                },
+                Some(super::ImplicitDropDependencySourceEvent::Anonymous),
+            ))
+        }
+        F::Specialization { base, arguments } => {
+            let F::Definition(base) = base.as_ref() else {
+                return Err(missing());
+            };
+            let endpoint = sema
+                .stable_definition_endpoints
+                .get(base)
+                .ok_or_else(missing)?;
+            let types = arguments
+                .types
+                .iter()
+                .map(|ty| super::one_body::materialize_instance_type(sema, ty))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| missing())?;
+            let values = arguments
+                .values
+                .iter()
+                .map(|value| super::one_body::materialize_argument_value(sema, value))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| missing())?;
+            let identity = specialization_identity.ok_or_else(missing)?;
+            let base_name = sema.internal_function_name(
+                sema.interner.get_or_intern(endpoint.name.as_ref()),
+                FileId::new(endpoint.file),
+            );
+            Ok((
+                crate::specialize::mangle_specialized_name(
+                    sema.interner.resolve(&base_name),
+                    &types,
+                    &values,
+                ),
+                crate::AnalyzedCallableKind::Ordinary,
+                Some(super::ImplicitDropDependencySourceEvent::Specialization { identity }),
+            ))
+        }
+        F::DropGlue(_) => Err(missing()),
+    }
 }
 
 pub(crate) fn import_staged_body(
@@ -63,6 +396,54 @@ pub(crate) fn import_staged_body(
     use crate::{
         SemanticImportFailure as F, SemanticImportNominalKind as NK, SemanticImportType as T,
     };
+
+    fn collect_fixed_strings<K, M>(ty: &T<K, M>, capacities: &mut std::collections::BTreeSet<u64>) {
+        match ty {
+            T::BuiltinNominal {
+                name,
+                kind: NK::Struct,
+            } => {
+                if let Some(capacity) = name
+                    .strip_prefix("Str(")
+                    .and_then(|name| name.strip_suffix(')'))
+                    .and_then(|capacity| capacity.parse().ok())
+                {
+                    capacities.insert(capacity);
+                }
+            }
+            T::Array { element, .. }
+            | T::Slice { element, .. }
+            | T::PtrConst(element)
+            | T::PtrMut(element) => collect_fixed_strings(element, capacities),
+            _ => {}
+        }
+    }
+
+    let mut fixed_string_capacities = std::collections::BTreeSet::new();
+    collect_fixed_strings(&body.return_type, &mut fixed_string_capacities);
+    for instruction in body.instructions.iter() {
+        collect_fixed_strings(&instruction.ty, &mut fixed_string_capacities);
+        instruction.data.visit_dependencies(&mut |dependency| {
+            if let crate::SemanticBodyInstDependency::Type(ty) = dependency {
+                collect_fixed_strings(ty, &mut fixed_string_capacities);
+            }
+        });
+    }
+    for place in body.places.iter() {
+        collect_fixed_strings(&place.base_type, &mut fixed_string_capacities);
+        for projection in place.projections.iter() {
+            if let crate::SemanticBodyProjection::Index { array_type, .. } = projection {
+                collect_fixed_strings(array_type, &mut fixed_string_capacities);
+            }
+        }
+    }
+    for (_, ty) in body.param_drops.iter() {
+        collect_fixed_strings(ty, &mut fixed_string_capacities);
+    }
+    for capacity in fixed_string_capacities {
+        sema.get_or_create_str_fixed_struct(capacity, body_span)
+            .map_err(|_| BF::Semantic(F::InvalidStructuralType))?;
+    }
 
     fn definition_endpoint<'a>(
         sema: &'a BodySema<'_>,
@@ -130,11 +511,7 @@ pub(crate) fn import_staged_body(
                         *sema
                             .builtin_structs
                             .get(&symbol)
-                            .or_else(|| {
-                                (name.as_ref() == "str")
-                                    .then(|| sema.generated_structs.get(&symbol))
-                                    .flatten()
-                            })
+                            .or_else(|| sema.generated_structs.get(&symbol))
                             .ok_or(F::UnknownBuiltinNominal)?,
                     ),
                     NK::Enum => Type::new_enum(
@@ -261,6 +638,23 @@ pub(crate) fn import_staged_body(
         >,
     ) -> Result<crate::StructId, BF> {
         match identity {
+            crate::NominalInstanceKey::Builtin {
+                kind: crate::AnonymousNominalKind::Struct,
+                name,
+            } => {
+                let name = sema
+                    .interner
+                    .get(name.as_ref())
+                    .ok_or(BF::Semantic(F::MissingNominal))?;
+                sema.builtin_structs
+                    .get(&name)
+                    .or_else(|| sema.generated_structs.get(&name))
+                    .copied()
+                    .ok_or(BF::Semantic(F::MissingNominal))
+            }
+            crate::NominalInstanceKey::Builtin { .. } => Err(BF::StableResolution(
+                crate::SemanticStableResolutionFailure::WrongKind,
+            )),
             crate::NominalInstanceKey::Named(token) => {
                 let identity = definition_endpoint(sema, token)?;
                 if identity.kind != DK::Struct {
@@ -311,6 +705,22 @@ pub(crate) fn import_staged_body(
         >,
     ) -> Result<crate::EnumId, BF> {
         match identity {
+            crate::NominalInstanceKey::Builtin {
+                kind: crate::AnonymousNominalKind::Enum,
+                name,
+            } => {
+                let name = sema
+                    .interner
+                    .get(name.as_ref())
+                    .ok_or(BF::Semantic(F::MissingNominal))?;
+                sema.builtin_enums
+                    .get(&name)
+                    .copied()
+                    .ok_or(BF::Semantic(F::MissingNominal))
+            }
+            crate::NominalInstanceKey::Builtin { .. } => Err(BF::StableResolution(
+                crate::SemanticStableResolutionFailure::WrongKind,
+            )),
             crate::NominalInstanceKey::Named(token) => {
                 let identity = definition_endpoint(sema, token)?;
                 if identity.kind != DK::Enum {
@@ -463,6 +873,7 @@ pub(crate) fn import_staged_body(
         body,
         body_span,
         &scratch,
+        true,
         |value| import_type(sema, &scratch, value),
         |identity| resolve_struct_nominal(sema, identity),
         |identity| resolve_enum_nominal(sema, identity),
@@ -502,7 +913,16 @@ pub(crate) fn import_staged_body(
                     })
                 })
                 .collect::<Result<Vec<_>, BF>>()?;
-            Ok((base, type_arguments, value_arguments))
+            let name = crate::specialize::mangle_specialized_name(
+                sema.interner.resolve(&base),
+                &type_arguments,
+                &value_arguments,
+            );
+            Ok((
+                sema.interner.get_or_intern(&name),
+                type_arguments,
+                value_arguments,
+            ))
         },
         |name| {
             sema.interner
@@ -536,7 +956,7 @@ pub(crate) fn imported_body_references(
 }
 
 #[cfg(test)]
-pub(crate) fn analyze_all_function_bodies_with_namespace_probe(
+pub(crate) fn analyze_all_function_bodies_with_namespace_probe_for_test(
     mut sema: BodySema<'_>,
 ) -> (
     MultiErrorResult<SemaOutput>,
@@ -544,12 +964,14 @@ pub(crate) fn analyze_all_function_bodies_with_namespace_probe(
     super::NamespaceBoundarySnapshot,
 ) {
     let before = sema.namespace_boundary_snapshot();
-    let result = analyze_all_function_bodies_mut(&mut sema);
+    let result = analyze_all_function_bodies_mut_for_test(&mut sema);
     let after = sema.namespace_boundary_snapshot();
     (result, before, after)
 }
 
-fn analyze_all_function_bodies_mut(sema: &mut BodySema<'_>) -> MultiErrorResult<SemaOutput> {
+fn analyze_all_function_bodies_mut_for_test(
+    sema: &mut BodySema<'_>,
+) -> MultiErrorResult<SemaOutput> {
     debug_assert!(!sema.declaration_binding_active);
     debug_assert!(sema.const_resolution_in_progress.is_empty());
     debug_assert!(sema.fn_signatures_in_flight.is_empty());
@@ -606,7 +1028,7 @@ fn intern_named_callable_symbols(sema: &BodySema<'_>) {
 }
 
 /// Scan analyzed AIR for an `<error>`-typed value that survived analysis with
-/// no diagnostic emitted (see the invariant in `analyze_all_function_bodies`).
+/// no diagnostic emitted (see the invariant in the test-only whole-program oracle).
 ///
 /// Returns the first offending instruction as an internal-error `CompileError`
 /// (E9000), or `None` when every value is well-typed. Only called on the
@@ -1544,6 +1966,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                         import_staged_body(sema, &candidate.body, sema.rir.get(body).span);
                     let import_failure = imported.as_ref().err().map(|reason| reason.kind());
                     if let Ok(imported) = imported {
+                        all_warnings.extend(imported.warnings.iter().cloned());
                         sema.body_analysis_work.ordinary_body_import_successes += 1;
                         sema.body_analysis_work
                             .ordinary_body_import_instructions_installed += imported.air.len();
@@ -2060,6 +2483,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                     sema.body_analysis_work.ordinary_body_import_attempts += 1;
                     match import_staged_body(sema, &candidate.body, sema.rir.get(*body).span) {
                         Ok(imported) => {
+                            all_warnings.extend(imported.warnings.iter().cloned());
                             sema.body_analysis_work.ordinary_body_import_successes += 1;
                             sema.body_analysis_work
                                 .ordinary_body_import_instructions_installed += imported.air.len();
@@ -2406,6 +2830,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                             sema.rir.get(destructor.body).span,
                         ) {
                             Ok(imported) => {
+                                all_warnings.extend(imported.warnings.iter().cloned());
                                 sema.body_analysis_work.ordinary_body_import_successes += 1;
                                 sema.body_analysis_work
                                     .ordinary_body_import_instructions_installed +=

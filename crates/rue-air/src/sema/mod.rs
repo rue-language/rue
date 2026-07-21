@@ -24,8 +24,8 @@
 //!
 //! The main entry points are:
 //! - [`Sema::new`] - Create a new semantic analyzer
-//! - [`Sema::analyze_all`] - Perform full semantic analysis
-//! - [`Sema::analyze_all_bodies`] - Analyze function bodies after declarations
+//! - [`BoundSema::analyze_one_body_instance`] - Analyze one exact query-owned body
+//! - [`BoundSema::compose_queried_bodies`] - Import queried bodies into final output
 
 mod aggregates;
 pub(crate) mod analysis;
@@ -43,7 +43,6 @@ mod inference_ctx;
 mod info;
 mod known_symbols;
 mod metadata;
-#[cfg(test)]
 mod one_body;
 mod output;
 mod semantic_body_export;
@@ -68,10 +67,11 @@ use info::ConstResolution;
 pub use info::{AnonMethodSig, AnonMethodType, ConstInfo, FunctionInfo, MethodInfo};
 pub use known_symbols::KnownSymbols;
 pub use metadata::SemaMetadata;
-#[cfg(test)]
-pub(crate) use one_body::{
+pub use one_body::{
     OneBodyCanonicalArtifact, OneBodyDependency, OneBodyInterruption, OneBodyNonTerminalReason,
-    OneBodyRequest, OneBodyTransactionOutcome,
+    OneBodyRequest, OneBodyTransactionOutcome, SemanticProducedAnonymousMethodSignature,
+    SemanticProducedAnonymousMethodType, SemanticProducedAnonymousNominal,
+    SemanticProducedAnonymousNominalShape,
 };
 pub use output::{
     AnalyzedBodyOwnerEvent, AnalyzedCallableKind, AnalyzedFunction, BodyAnalysisFailure,
@@ -342,15 +342,18 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     pub(crate) body_owner_tokens:
         HashMap<(u32, String, Option<String>, BodyOwnerKind), BodyOwnerToken>,
     pub(crate) body_named_dependencies: Vec<BodyNamedDependencyEvent>,
-    #[cfg(test)]
     pub(crate) one_body_error_recovery: bool,
-    #[cfg(test)]
     pub(crate) one_body_recovered_errors: Vec<rue_error::CompileError>,
-    #[cfg(test)]
     pub(crate) one_body_inference_failure_incomplete: bool,
-    #[cfg(test)]
+    /// Anonymous identities already installed when an exact-one-body attempt
+    /// starts. Successful export subtracts this baseline so the transaction
+    /// publishes every nominal materialized by the body, including nested
+    /// comptime producers, but never republishes imported owners.
+    pub(crate) one_body_initial_anonymous_identities:
+        std::collections::BTreeSet<anon_structs::IssuedAnonymousNominalKey>,
+    pub(crate) one_body_requested_producer:
+        Option<crate::StableProducerId<crate::SemanticDefinitionToken, crate::SemanticModuleToken>>,
     pub(crate) body_callable_dependencies: Vec<(AnalyzedBodyOwnerEvent, Spur)>,
-    #[cfg(test)]
     pub(crate) body_specialization_dependencies: Vec<(
         AnalyzedBodyOwnerEvent,
         crate::FunctionInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
@@ -516,15 +519,12 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             body_dependency_observer,
             body_owner_tokens,
             body_named_dependencies,
-            #[cfg(test)]
             one_body_error_recovery,
-            #[cfg(test)]
             one_body_recovered_errors,
-            #[cfg(test)]
             one_body_inference_failure_incomplete,
-            #[cfg(test)]
+            one_body_initial_anonymous_identities,
+            one_body_requested_producer,
             body_callable_dependencies,
-            #[cfg(test)]
             body_specialization_dependencies,
             ordinary_free_function_dependencies,
             specialized_free_function_origins,
@@ -598,15 +598,12 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             body_dependency_observer,
             body_owner_tokens,
             body_named_dependencies,
-            #[cfg(test)]
             one_body_error_recovery,
-            #[cfg(test)]
             one_body_recovered_errors,
-            #[cfg(test)]
             one_body_inference_failure_incomplete,
-            #[cfg(test)]
+            one_body_initial_anonymous_identities,
+            one_body_requested_producer,
             body_callable_dependencies,
-            #[cfg(test)]
             body_specialization_dependencies,
             ordinary_free_function_dependencies,
             specialized_free_function_origins,
@@ -725,6 +722,11 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         has_self: bool,
     ) {
         let symbol = self.method_symbol(struct_id, self.interner.resolve(&method_name), has_self);
+        // Queried-body import resolves calls by their final AIR/codegen symbol.
+        // Projected anonymous definitions therefore intern that symbol at
+        // owner installation time, before the import-only composer validates
+        // any body that references the member.
+        self.interner.get_or_intern(&symbol);
         Self::insert_callable_method_candidate(
             &mut self.anonymous_callable_methods_by_symbol,
             symbol,
@@ -833,6 +835,13 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         &mut self,
         target: NamedConstDependencyTargetEvent,
     ) {
+        // Constant evaluation is shared by declaration binding and body
+        // analysis. A body can evaluate a named constant completely away
+        // while still exporting semantics derived from its value (for
+        // example, the length in an anonymous array field). Preserve that
+        // exact provenance on the active body as well as on an active
+        // declaration so one-body query validation observes the producer.
+        self.record_body_named_dependency(target.clone());
         let Some((file, name)) = self.named_const_dependency_source.clone() else {
             return;
         };
@@ -854,7 +863,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         self.body_analysis_work.named_const_dependency_events += 1;
     }
 
-    #[cfg(test)]
     pub(crate) fn record_body_callable_dependency(&mut self, symbol: Spur) {
         let Some(source) = self.body_dependency_observer.clone() else {
             return;
@@ -862,7 +870,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         self.body_callable_dependencies.push((source, symbol));
     }
 
-    #[cfg(test)]
     pub(crate) fn record_body_method_dependency(&mut self, key: (StructId, Spur)) {
         let Some(info) = self.method_info(key) else {
             return;
@@ -1110,15 +1117,12 @@ impl<'a> Sema<'a> {
             body_dependency_observer: None,
             body_owner_tokens: HashMap::new(),
             body_named_dependencies: Vec::new(),
-            #[cfg(test)]
             one_body_error_recovery: false,
-            #[cfg(test)]
             one_body_recovered_errors: Vec::new(),
-            #[cfg(test)]
             one_body_inference_failure_incomplete: false,
-            #[cfg(test)]
+            one_body_initial_anonymous_identities: std::collections::BTreeSet::new(),
+            one_body_requested_producer: None,
             body_callable_dependencies: Vec::new(),
-            #[cfg(test)]
             body_specialization_dependencies: Vec::new(),
             ordinary_free_function_dependencies: Vec::new(),
             specialized_free_function_origins: Vec::new(),
@@ -1175,7 +1179,8 @@ impl<'a> Sema<'a> {
     /// declaration producer independently of the compiler query graph.
     #[doc(hidden)]
     pub fn analyze_all_for_test(self) -> MultiErrorResult<SemaOutput> {
-        self.bind_declarations_for_test()?.analyze_all_bodies()
+        self.bind_declarations_for_test()?
+            .analyze_all_bodies_for_test()
     }
 
     #[cfg(test)]
@@ -1263,13 +1268,9 @@ impl<'a> Sema<'a> {
 }
 
 impl BodySema<'_> {
-    /// Analyze all function bodies using a structurally frozen source namespace.
-    fn analyze_all_bodies(self) -> MultiErrorResult<SemaOutput> {
-        analysis::analyze_all_function_bodies(self)
-    }
-
-    fn analyze_all_bodies_with_work(self) -> Result<SemaOutput, BodyAnalysisFailure> {
-        analysis::analyze_all_function_bodies_with_work(self)
+    /// Test-only oracle for the retired whole-program body driver.
+    fn analyze_all_bodies_for_test(self) -> MultiErrorResult<SemaOutput> {
+        analysis::analyze_all_function_bodies_for_test(self)
     }
 }
 

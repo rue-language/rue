@@ -80,6 +80,7 @@ pub(crate) fn body_type_dependencies(
     ) {
         let keys = std::cell::RefCell::new(keys);
         match value {
+            rue_air::NominalInstanceKey::Builtin { .. } => {}
             rue_air::NominalInstanceKey::Named(key) => {
                 keys.borrow_mut().insert(key.clone());
             }

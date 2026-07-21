@@ -1515,7 +1515,11 @@ where
                         core: core.clone(),
                         inner,
                     }
-                    .query_task_registered(task, key.clone(), origin_request)
+                    .query_task_registered_for_validation(
+                        task,
+                        key.clone(),
+                        origin_request,
+                    )
                 })
                     as Arc<dyn Fn(Arc<Task>, u64) -> TaskQueryResult<V> + Send + Sync>
             });
@@ -1564,7 +1568,7 @@ where
             self.inner.evaluator.is_none(),
             "registered families must use the closure-free request API"
         );
-        self.query_task_impl(task, key, origin_request, Some(compute))
+        self.query_task_impl(task, key, origin_request, Some(compute), true)
     }
 
     fn query_task_registered(
@@ -1578,6 +1582,22 @@ where
             key,
             origin_request,
             None,
+            true,
+        )
+    }
+
+    fn query_task_registered_for_validation(
+        &self,
+        task: Arc<Task>,
+        key: K,
+        origin_request: u64,
+    ) -> TaskQueryResult<V> {
+        self.query_task_impl::<fn(&QueryContext) -> Result<QueryOutput<V>, QueryAbort>>(
+            task,
+            key,
+            origin_request,
+            None,
+            false,
         )
     }
 
@@ -1587,6 +1607,7 @@ where
         key: K,
         origin_request: u64,
         mut compute: Option<F>,
+        observe_result: bool,
     ) -> TaskQueryResult<V>
     where
         F: FnOnce(&QueryContext) -> Result<QueryOutput<V>, QueryAbort>,
@@ -1648,7 +1669,9 @@ where
                 match self.core.valid_for_revision(&terminal, &task) {
                     Ok(true) => {
                         self.core.metrics.reuses.fetch_add(1, Ordering::Relaxed);
-                        task.observe(&terminal);
+                        if observe_result {
+                            task.observe(&terminal);
+                        }
                         return TaskQueryResult::Terminal {
                             terminal,
                             execution: RequestExecution::Reused,
@@ -1719,7 +1742,9 @@ where
                             };
                         }
                         Ok(Some(terminal)) => {
-                            task.observe(&terminal);
+                            if observe_result {
+                                task.observe(&terminal);
+                            }
                             return TaskQueryResult::Terminal {
                                 terminal,
                                 execution: RequestExecution::Joined,
@@ -1780,7 +1805,9 @@ where
                             let mut work = work_prefix;
                             work.extend(terminal.work().iter().cloned());
                             let work = canonical_reduced_work(work);
-                            task.observe(&terminal);
+                            if observe_result {
+                                task.observe(&terminal);
+                            }
                             task.observe_work(&work);
                             return TaskQueryResult::Terminal {
                                 terminal,
@@ -2580,7 +2607,19 @@ impl RuntimeCore {
                 .get(&observed.incarnation)
                 .and_then(Weak::upgrade);
             let stamp = match node {
-                Some(node) => node.validated_stamp(self, task, active)?,
+                Some(node) => match node.validated_stamp(self, task, active) {
+                    Ok(stamp) => stamp,
+                    // A registered descendant can depend on an externally
+                    // supplied query body. If that body is unavailable while
+                    // recursively validating an ancestor, the ancestor is
+                    // dirty rather than canceled: its caller-supplied body may
+                    // schedule or provide the missing descendant. An explicit
+                    // cancellation token still aborts the whole request.
+                    Err(QueryAbort::Canceled) if !task.cancellation.is_canceled() => {
+                        return Ok(false);
+                    }
+                    Err(abort) => return Err(abort),
+                },
                 None => None,
             };
             if stamp != Some(observed.stamp) {
@@ -3798,6 +3837,129 @@ mod tests {
         assert_eq!(
             green.terminal().unwrap().stamp(),
             first.terminal().unwrap().stamp()
+        );
+    }
+
+    #[test]
+    fn nested_validation_does_not_promote_transitive_dependencies_to_the_caller() {
+        let runtime = QueryRuntime::new(1);
+        let leaf_input = InputIdentity::new("source", "validation-leaf");
+        let root_input = InputIdentity::new("source", "validation-root");
+        let leaf_source = leaf_input.clone();
+        let leaf = runtime
+            .family_with_evaluator::<Key, u64, _>("validation-leaf", 8, move |context, _, _| {
+                context.input(leaf_source.clone())?;
+                Ok(QueryOutput::success(10)
+                    .with_work(vec![WorkItem::new("validation-leaf-work", 1)]))
+            })
+            .unwrap();
+        let middle_leaf = leaf.clone();
+        let middle = runtime
+            .family_with_evaluator::<Key, u64, _>("validation-middle", 8, move |context, _, _| {
+                context.query_registered(&middle_leaf, Key("leaf"))?;
+                Ok(QueryOutput::success(20))
+            })
+            .unwrap();
+        let root_middle = middle.clone();
+        let root_source = root_input.clone();
+        let root = runtime
+            .family_with_evaluator::<Key, u64, _>("validation-root", 8, move |context, _, _| {
+                context.input(root_source.clone())?;
+                context.query_registered(&root_middle, Key("middle"))?;
+                Ok(QueryOutput::success(30))
+            })
+            .unwrap();
+        let first_revision = Revision::new(40, 1);
+        let second_revision = Revision::new(41, 1);
+        runtime
+            .publish_revision(
+                first_revision,
+                [(leaf_input.clone(), 1), (root_input.clone(), 1)],
+            )
+            .unwrap();
+        runtime
+            .publish_revision(second_revision, [(leaf_input, 2), (root_input, 2)])
+            .unwrap();
+
+        runtime.request_registered(&root, first_revision, Key("root"), CancellationToken::new());
+        let recomputed = runtime.request_registered(
+            &root,
+            second_revision,
+            Key("root"),
+            CancellationToken::new(),
+        );
+
+        assert_eq!(recomputed.execution(), RequestExecution::Computed);
+        let dependencies = recomputed.terminal().unwrap().dependencies();
+        assert_eq!(dependencies.len(), 1);
+        assert_eq!(dependencies[0].node.family(), "validation-middle");
+        assert!(
+            recomputed
+                .work()
+                .iter()
+                .any(
+                    |(identity, amount)| identity.as_ref() == "validation-leaf-work"
+                        && *amount == 1
+                )
+        );
+    }
+
+    #[test]
+    fn unavailable_registered_validation_invalidates_a_supplied_parent() {
+        let runtime = QueryRuntime::new(1);
+        let input = InputIdentity::new("source", "validation-canceled-child");
+        let child_input = input.clone();
+        let child = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "validation-canceled-child",
+                8,
+                move |context, _, _| {
+                    let stamp = context.input(child_input.clone())?;
+                    if stamp == 1 {
+                        Ok(QueryOutput::success(10))
+                    } else {
+                        Err(QueryAbort::Canceled)
+                    }
+                },
+            )
+            .unwrap();
+        let root = runtime
+            .family::<Key, u64>("validation-supplied-root", 8)
+            .unwrap();
+        let first_revision = Revision::new(50, 1);
+        let second_revision = Revision::new(51, 1);
+        runtime
+            .publish_revision(first_revision, [(input.clone(), 1)])
+            .unwrap();
+        runtime
+            .publish_revision(second_revision, [(input, 2)])
+            .unwrap();
+
+        let initial_child = child.clone();
+        runtime
+            .query(
+                &root,
+                first_revision,
+                Key("root"),
+                CancellationToken::new(),
+                move |context| {
+                    context.query_registered(&initial_child, Key("child"))?;
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+
+        let recomputed = runtime.request(
+            &root,
+            second_revision,
+            Key("root"),
+            CancellationToken::new(),
+            |_| Ok(QueryOutput::success(2)),
+        );
+        assert_eq!(recomputed.execution(), RequestExecution::Computed);
+        assert_eq!(
+            recomputed.terminal().unwrap().outcome(),
+            &QueryOutcome::Success(2)
         );
     }
 

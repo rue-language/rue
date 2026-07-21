@@ -6,7 +6,6 @@
 use super::*;
 
 impl<'a> BodySema<'a> {
-    #[cfg(test)]
     fn inference_function_is_selected(
         &self,
         function: Spur,
@@ -82,7 +81,6 @@ impl<'a> BodySema<'a> {
         }
     }
 
-    #[cfg(test)]
     fn record_inference_body_dependencies(
         &mut self,
         dependencies: &[crate::inference::InferenceBodyDependency],
@@ -425,7 +423,6 @@ impl<'a> BodySema<'a> {
         // Phase 1: Generate constraints
         let body_info = cgen.generate(body, &mut cgen_ctx);
 
-        #[cfg(test)]
         let inference_body_dependencies = cgen.body_dependencies().to_vec();
 
         // The function body's type must match the return type.
@@ -485,7 +482,6 @@ impl<'a> BodySema<'a> {
         // For now, we collect the first error. In the future, we could
         // report multiple errors for better diagnostics.
         if let Some(err) = errors.first() {
-            #[cfg(test)]
             {
                 let inference_dependency_incomplete = self
                     .record_inference_body_dependencies(&inference_body_dependencies, &expr_types);
@@ -542,7 +538,6 @@ impl<'a> BodySema<'a> {
             return Err(compile_error);
         }
 
-        #[cfg(test)]
         {
             self.one_body_inference_failure_incomplete = false;
         }

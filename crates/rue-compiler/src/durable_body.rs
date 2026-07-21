@@ -74,76 +74,6 @@ pub struct DurableSpecializedBodyPayload {
     pub dependency_boundary_complete: bool,
 }
 
-/// A completed specialized body together with the exact stable inputs that
-/// authorize reusing this particular specialization in a later revision.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DurableSpecializedBody {
-    pub payload: DurableSpecializedBodyPayload,
-    pub inputs: StableBodyDependencyInputRecord,
-}
-
-impl DurableSpecializedBody {
-    pub fn identity(
-        &self,
-    ) -> &rue_air::SemanticSpecializationIdentity<StableDefinitionKey, crate::ModuleId> {
-        &self.payload.identity
-    }
-
-    pub fn inputs(&self) -> &StableBodyDependencyInputRecord {
-        &self.inputs
-    }
-
-    pub fn project_semantic_candidate(
-        &self,
-        body_span: rue_span::Span,
-        work: &mut DurableBodyWork,
-    ) -> Result<
-        rue_air::SemanticSpecializedBodyCandidate<StableDefinitionKey, Arc<str>>,
-        DurableBodyProjectionFailure,
-    > {
-        if self.inputs.owner() != &self.payload.identity.base
-            || self.inputs.fingerprint() != &self.payload.body.expected_inputs
-        {
-            work.projection_attempts += 1;
-            return work.reject_projection(DurableBodyProjectionFailure::InputFingerprintMismatch);
-        }
-        self.payload.project_semantic_candidate(body_span, work)
-    }
-}
-
-impl DurableSpecializedBodyPayload {
-    pub fn project_semantic_candidate(
-        &self,
-        body_span: rue_span::Span,
-        work: &mut DurableBodyWork,
-    ) -> Result<
-        rue_air::SemanticSpecializedBodyCandidate<StableDefinitionKey, Arc<str>>,
-        DurableBodyProjectionFailure,
-    > {
-        if self.schema_version != DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION
-            || !crate::DURABLE_SEMANTIC_SCHEMA_VERSION.accepts(self.semantic_schema_version)
-            || self.body.owner != self.identity.base
-        {
-            work.projection_attempts += 1;
-            return work.reject_projection(DurableBodyProjectionFailure::SchemaVersionMismatch);
-        }
-        let identity = self
-            .identity
-            .try_map_keys(
-                &|key| Ok::<_, std::convert::Infallible>(key.clone()),
-                &|module| Ok::<_, std::convert::Infallible>(Arc::from(module.as_str())),
-            )
-            .expect("canonical specialization identity projection is infallible");
-        Ok(rue_air::SemanticSpecializedBodyCandidate {
-            identity,
-            body_span,
-            body: self.body.project_semantic_body(work)?,
-            dependencies: self.dependencies.clone(),
-            dependency_boundary_complete: self.dependency_boundary_complete,
-        })
-    }
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DurableBodyWork {
     pub candidate_comparisons: usize,
@@ -518,26 +448,6 @@ fn durable_specialization_identity(
     })
 }
 
-pub(crate) fn convert_specialization_identity(
-    identity: &rue_air::SemanticSpecializationIdentity<
-        SemanticDefinitionToken,
-        SemanticModuleToken,
-    >,
-    merged: &CanonicalMergedProgram,
-    definitions: &BoundDefinitionSet,
-    work: &mut DurableBodyWork,
-) -> Result<
-    rue_air::SemanticSpecializationIdentity<StableDefinitionKey, crate::ModuleId>,
-    DurableBodyConversionFailure,
-> {
-    durable_specialization_identity(
-        identity,
-        merged,
-        &DefinitionJoinIndex::new(merged, definitions),
-        work,
-    )
-}
-
 fn canonical_identity_dependency_keys(
     identity: &rue_air::SemanticSpecializationIdentity<StableDefinitionKey, crate::ModuleId>,
 ) -> BTreeSet<StableDefinitionKey> {
@@ -595,6 +505,7 @@ fn collect_nominal_definition_keys(
     keys: &mut BTreeSet<StableDefinitionKey>,
 ) {
     match identity {
+        rue_air::NominalInstanceKey::Builtin { .. } => {}
         rue_air::NominalInstanceKey::Named(key) => {
             keys.insert(key.clone());
         }
@@ -907,10 +818,6 @@ pub fn finalize_durable_ordinary_bodies(
 impl DurableOrdinaryBody {
     pub fn owner(&self) -> &StableDefinitionKey {
         &self.payload.owner
-    }
-
-    pub fn inputs(&self) -> &StableBodyDependencyInputRecord {
-        &self.inputs
     }
 
     pub fn project_semantic_body(
@@ -1328,9 +1235,12 @@ mod tests {
     fn projection_reports_retained_warning_metadata_accurately() {
         let mut candidate = payload(vec![]);
         candidate.body.warnings = Arc::from([rue_air::SemanticBodyWarning {
-            code: Arc::from("W-test"),
-            message: Arc::from("retained warning"),
+            kind: rue_error::WarningKind::UnreachableCode,
             anchor: DurableBodyAnchor { start: 0, end: 0 },
+            labels: Arc::new([]),
+            notes: Arc::new([]),
+            helps: Arc::new([]),
+            suggestions: Arc::new([]),
         }]);
         let mut work = DurableBodyWork::default();
         assert_eq!(

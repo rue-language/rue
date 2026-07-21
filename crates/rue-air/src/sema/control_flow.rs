@@ -349,6 +349,7 @@ impl<'a> BodySema<'a> {
         if !ctx.in_loop_move_recheck && ctx.moved_vars != moves_before_loop {
             let checkpoint = air.checkpoint();
             let mut scratch_ctx = ctx.fork_for_loop_recheck();
+            let recovered_before = self.one_body_recovered_errors.len();
             let result = (|| -> CompileResult<()> {
                 self.analyze_inst(air, cond, &mut scratch_ctx)?;
                 scratch_ctx.push_scope();
@@ -361,6 +362,11 @@ impl<'a> BodySema<'a> {
                 Ok(())
             })();
             air.rollback(checkpoint);
+            for error in &mut self.one_body_recovered_errors[recovered_before..] {
+                *error = error
+                    .clone()
+                    .with_note("value was moved in a previous iteration of the loop");
+            }
             result
                 .map_err(|e| e.with_note("value was moved in a previous iteration of the loop"))?;
         }
@@ -420,6 +426,7 @@ impl<'a> BodySema<'a> {
         if !ctx.in_loop_move_recheck && ctx.moved_vars != moves_before_loop {
             let checkpoint = air.checkpoint();
             let mut scratch_ctx = ctx.fork_for_loop_recheck();
+            let recovered_before = self.one_body_recovered_errors.len();
             scratch_ctx.push_scope();
             scratch_ctx.loop_depth += 1;
             scratch_ctx.loop_break_stack.push(false);
@@ -428,6 +435,11 @@ impl<'a> BodySema<'a> {
             }
             let result = self.analyze_inst(air, body, &mut scratch_ctx);
             air.rollback(checkpoint);
+            for error in &mut self.one_body_recovered_errors[recovered_before..] {
+                *error = error
+                    .clone()
+                    .with_note("value was moved in a previous iteration of the loop");
+            }
             result
                 .map_err(|e| e.with_note("value was moved in a previous iteration of the loop"))?;
             if iter_borrow.is_some() {
@@ -1790,11 +1802,10 @@ impl<'a> BodySema<'a> {
         let num_insts = inst_refs.len();
         for (i, inst_ref) in inst_refs.values().enumerate() {
             let is_last = i == num_insts - 1;
-            // Test-only statement recovery starts after body-wide inference has
+            // Statement recovery starts after body-wide inference has
             // succeeded. Inference failures use the exact selections observed
             // during constraint generation instead; substitution-dependent
             // selections make that transaction non-terminal.
-            #[cfg(test)]
             let recovery_checkpoint = self
                 .one_body_error_recovery
                 .then(|| (air.checkpoint(), ctx.clone()));
@@ -1803,7 +1814,6 @@ impl<'a> BodySema<'a> {
             } else {
                 ctx.with_expected_type(None, |ctx| self.analyze_inst(air, inst_ref, ctx))
             };
-            #[cfg(test)]
             let result = match outcome {
                 Ok(result) => result,
                 Err(error) if self.one_body_error_recovery => {
@@ -1821,8 +1831,6 @@ impl<'a> BodySema<'a> {
                 }
                 Err(error) => return Err(error),
             };
-            #[cfg(not(test))]
-            let result = outcome?;
 
             if is_last {
                 last_result = Some(result);

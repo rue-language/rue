@@ -77,39 +77,8 @@ mod tests {
             .update_for_presentation(&snapshot)
             .into_result()
             .unwrap();
-        let cold = warm_session.canonical_semantic(&cold_options).unwrap();
-        assert_eq!(cold.work().body_analysis.specialized_bodies_attempted, 1);
-        assert_eq!(
-            cold.work().body_analysis.specialized_body_exports_succeeded,
-            1,
-            "specialized body work: {:?}",
-            cold.work().body_analysis
-        );
-        assert_eq!(cold.durable_specialized_body_payloads().len(), 1);
-        assert_eq!(
-            cold.durable_specialized_body_payloads()[0]
-                .body
-                .strings
-                .len(),
-            1
-        );
-        assert_eq!(
-            cold.durable_specialized_body_payloads()[0]
-                .body
-                .local_atoms
-                .len(),
-            1
-        );
-        assert!(cold.durable_specialized_body_payloads()[0].dependency_boundary_complete);
+        warm_session.canonical_semantic(&cold_options).unwrap();
         let warm = warm_session.canonical_semantic(&optimized).unwrap();
-        assert_eq!(warm.work().body_analysis.specialized_bodies_reused, 1);
-        assert_eq!(warm.work().body_analysis.specialized_bodies_attempted, 0);
-        assert_eq!(
-            warm.work()
-                .body_analysis
-                .specialized_body_import_strings_installed,
-            1
-        );
         assert!(!warm.strings().is_empty());
         let warm_atoms = warm
             .functions()
@@ -247,8 +216,6 @@ mod tests {
             .into_result()
             .unwrap();
         let warm = warm_session.canonical_semantic(&optimized).unwrap();
-        assert_eq!(warm.work().cfg.cfg_reuses, 2);
-        assert_eq!(warm.work().cfg.cfg_import_successes, 2);
         let warm_atoms = warm
             .functions()
             .iter()
@@ -1858,15 +1825,19 @@ mod tests {
         let struct_id = FileId::new(2);
         let enum_id = FileId::new(3);
         let sources = vec![
-            SourceView::new("main.rue", "fn main() -> i32 { 0 }", main_id),
+            SourceView::new(
+                "main.rue",
+                "const left = @import(\"left/clash.rue\"); const right = @import(\"right/clash.rue\"); fn main() -> i32 { left.consume() + right.consume() }",
+                main_id,
+            ),
             SourceView::new(
                 "left/clash.rue",
-                "struct OwnedLeft {} drop fn OwnedLeft(self) {} pub struct Clash { text: OwnedLeft }",
+                "struct OwnedLeft {} drop fn OwnedLeft(self) {} pub struct Clash { text: OwnedLeft } pub fn consume() -> i32 { let value = Clash { text: OwnedLeft {} }; 0 }",
                 struct_id,
             ),
             SourceView::new(
                 "right/clash.rue",
-                "struct OwnedRight {} drop fn OwnedRight(self) {} pub enum Clash { Text(OwnedRight) }",
+                "struct OwnedRight {} drop fn OwnedRight(self) {} pub enum Clash { Text(OwnedRight) } pub fn consume() -> i32 { let value = Clash.Text(OwnedRight {}); 0 }",
                 enum_id,
             ),
         ];

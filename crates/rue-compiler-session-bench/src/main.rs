@@ -1149,7 +1149,7 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
         modules as u64
     );
     assert_query_executions(cold, 1, 1, 1, 0);
-    assert_semantic_work(cold, 1, 1, 1);
+    assert_semantic_work(cold, 1, 0, 1);
     assert_declaration_epoch_work(cold, 1, 1, 1, 0, 0);
     assert_eq!(
         cold["semantic_work"]["declaration_reuse"]["plan_executions"],
@@ -1207,7 +1207,7 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
         count(root_edit, &["queries", "declaration_reuse_fallbacks"]),
         0
     );
-    assert_semantic_work(root_edit, 1, 1, 1);
+    assert_semantic_work(root_edit, 1, 0, 1);
     assert_declaration_epoch_work(root_edit, 1, 1, 1, 0, 0);
     let root_reuse = &root_edit["semantic_work"]["declaration_reuse"];
     assert_eq!(root_reuse["plan_executions"], 1);
@@ -1312,7 +1312,7 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
 
     let stable_cold = get("stable_definitions_cold");
     assert_query_executions(stable_cold, 1, 1, 1, 1);
-    assert_semantic_work(stable_cold, 1, 1, 1);
+    assert_semantic_work(stable_cold, 1, 0, 1);
     assert_eq!(
         count(stable_cold, &["definition_work", "bind_invocations"]),
         1
@@ -1353,14 +1353,14 @@ fn assert_structure(scenarios: &[Value], modules: usize) {
             plan_cold,
             &["manifest_work", "body_owner_events_translated"]
         ),
-        1
+        0
     );
     assert_eq!(
         count(
             plan_cold,
             &["manifest_work", "body_dependency_records_built"]
         ),
-        1
+        0
     );
     assert_eq!(
         count(
@@ -1428,7 +1428,9 @@ fn assert_completion_structure(scenarios: &[Value], functions: usize) {
     assert_eq!(body(cold, "candidate_comparisons"), 0);
     assert_eq!(body(cold, "candidate_fallbacks"), 0);
     assert_eq!(body(cold, "projection_attempts"), 0);
-    assert_eq!(body(cold, "import_attempts"), 0);
+    assert_eq!(body(cold, "import_attempts"), functions as u64);
+    assert_eq!(body(cold, "import_successes"), functions as u64);
+    assert_eq!(body(cold, "import_failures"), 0);
     assert_eq!(body(cold, "atomic_discards"), 0);
     assert_eq!(body(cold, "reused_bodies"), 0);
     assert_eq!(body(cold, "skipped_body_analyses"), 0);
@@ -1486,42 +1488,46 @@ fn assert_completion_structure(scenarios: &[Value], functions: usize) {
     assert_eq!(count(noop, &["queries", "semantic_reuses"]), 1);
 
     let unrelated = get("completion_unrelated_edit");
-    assert_eq!(body(unrelated, "candidate_comparisons"), functions as u64);
-    assert_eq!(body(unrelated, "reused_bodies"), functions as u64);
-    assert_eq!(body(unrelated, "skipped_body_analyses"), functions as u64);
+    assert_eq!(body(unrelated, "candidate_comparisons"), 0);
+    assert_eq!(body(unrelated, "reused_bodies"), 0);
+    assert_eq!(body(unrelated, "skipped_body_analyses"), 0);
     assert_eq!(body(unrelated, "candidate_fallbacks"), 0);
+    assert_eq!(body(unrelated, "import_attempts"), functions as u64);
+    assert_eq!(body(unrelated, "import_successes"), functions as u64);
+    assert_eq!(body(unrelated, "import_failures"), 0);
     assert_eq!(count(unrelated, &["semantic_work", "bodies_attempted"]), 0);
     assert_eq!(cfg(unrelated, "reuses"), functions as u64);
     assert_eq!(cfg(unrelated, "builds_attempted"), 0);
     assert_eq!(cfg(unrelated, "optimization_attempts"), 0);
 
     let changed = get("completion_changed_reachable_body");
-    assert_eq!(body(changed, "candidate_comparisons"), functions as u64);
-    assert_eq!(body(changed, "reused_bodies"), (functions - 2) as u64);
-    assert_eq!(body(changed, "candidate_fallbacks"), 2);
-    assert_eq!(count(changed, &["semantic_work", "bodies_attempted"]), 2);
+    assert_eq!(body(changed, "candidate_comparisons"), 0);
+    assert_eq!(body(changed, "reused_bodies"), 0);
+    assert_eq!(body(changed, "candidate_fallbacks"), 0);
+    assert_eq!(body(changed, "import_attempts"), functions as u64);
+    assert_eq!(body(changed, "import_successes"), functions as u64);
+    assert_eq!(body(changed, "import_failures"), 0);
+    assert_eq!(count(changed, &["semantic_work", "bodies_attempted"]), 1);
     assert_eq!(cfg(changed, "reuses"), (functions - 1) as u64);
     assert_eq!(cfg(changed, "builds_attempted"), 1);
     assert_eq!(cfg(changed, "optimization_attempts"), 1);
 
-    let chain_len = (functions - 1) / 2 + (functions - 1) % 2;
-    let invalidated = chain_len + 1;
     let closure = get("completion_reverse_closure");
-    assert_eq!(body(closure, "candidate_comparisons"), functions as u64);
-    assert_eq!(
-        body(closure, "reused_bodies"),
-        (functions - invalidated) as u64
-    );
-    assert_eq!(body(closure, "candidate_fallbacks"), invalidated as u64);
-    assert_eq!(
-        count(closure, &["semantic_work", "bodies_attempted"]),
-        invalidated as u64
-    );
+    assert_eq!(body(closure, "candidate_comparisons"), 0);
+    assert_eq!(body(closure, "reused_bodies"), 0);
+    assert_eq!(body(closure, "candidate_fallbacks"), 0);
+    assert_eq!(body(closure, "import_attempts"), functions as u64);
+    assert_eq!(body(closure, "import_successes"), functions as u64);
+    assert_eq!(body(closure, "import_failures"), 0);
+    assert_eq!(count(closure, &["semantic_work", "bodies_attempted"]), 1);
     assert_eq!(cfg(closure, "reuses"), (functions - 1) as u64);
     assert_eq!(cfg(closure, "builds_attempted"), 1);
 
     for name in ["completion_cfg_o0", "completion_cfg_o1"] {
         let scenario = get(name);
+        assert_eq!(body(scenario, "import_attempts"), functions as u64);
+        assert_eq!(body(scenario, "import_successes"), functions as u64);
+        assert_eq!(body(scenario, "import_failures"), 0);
         assert_eq!(cfg(scenario, "reuse_candidates"), functions as u64);
         assert_eq!(cfg(scenario, "import_attempts"), functions as u64);
         assert_eq!(cfg(scenario, "import_successes"), functions as u64);
@@ -1532,27 +1538,27 @@ fn assert_completion_structure(scenarios: &[Value], functions: usize) {
     }
 
     let specialized = get("completion_specialization_reuse");
-    assert_eq!(body(specialized, "candidate_comparisons"), 1);
+    assert_eq!(body(specialized, "candidate_comparisons"), 0);
     assert_eq!(body(specialized, "candidate_fallbacks"), 0);
-    assert_eq!(body(specialized, "specialized_mapping_attempts"), 1);
-    assert_eq!(body(specialized, "specialized_mapping_successes"), 1);
+    assert_eq!(body(specialized, "specialized_mapping_attempts"), 0);
+    assert_eq!(body(specialized, "specialized_mapping_successes"), 0);
     assert_eq!(body(specialized, "specialized_mapping_failures"), 0);
-    assert_eq!(body(specialized, "projection_attempts"), 1);
-    assert_eq!(body(specialized, "projection_completions"), 1);
+    assert_eq!(body(specialized, "projection_attempts"), 0);
+    assert_eq!(body(specialized, "projection_completions"), 0);
     assert_eq!(body(specialized, "projection_failures"), 0);
-    assert_eq!(body(specialized, "import_attempts"), 0);
-    assert_eq!(body(specialized, "import_successes"), 0);
+    assert_eq!(body(specialized, "import_attempts"), 3);
+    assert_eq!(body(specialized, "import_successes"), 3);
     assert_eq!(body(specialized, "import_failures"), 0);
     assert_eq!(body(specialized, "atomic_discards"), 0);
     assert_eq!(body(specialized, "reused_bodies"), 0);
     assert_eq!(body(specialized, "skipped_body_analyses"), 0);
     assert_eq!(
         count(specialized, &["semantic_work", "bodies_attempted"]),
-        2
+        0
     );
     assert_eq!(
         count(specialized, &["semantic_work", "bodies_succeeded"]),
-        2
+        0
     );
     assert_eq!(count(specialized, &["semantic_work", "bodies_failed"]), 0);
     assert_eq!(
@@ -1562,18 +1568,18 @@ fn assert_completion_structure(scenarios: &[Value], functions: usize) {
         ),
         0
     );
-    assert_eq!(cfg(specialized, "reuse_candidates"), 2);
-    assert_eq!(cfg(specialized, "import_attempts"), 2);
-    assert_eq!(cfg(specialized, "import_successes"), 2);
+    assert_eq!(cfg(specialized, "reuse_candidates"), 3);
+    assert_eq!(cfg(specialized, "import_attempts"), 3);
+    assert_eq!(cfg(specialized, "import_successes"), 3);
     assert_eq!(cfg(specialized, "import_failures"), 0);
-    assert_eq!(cfg(specialized, "reuses"), 2);
+    assert_eq!(cfg(specialized, "reuses"), 3);
     assert_eq!(cfg(specialized, "fallbacks"), 0);
-    assert_eq!(cfg(specialized, "builds_attempted"), 1);
-    assert_eq!(cfg(specialized, "builds_succeeded"), 1);
+    assert_eq!(cfg(specialized, "builds_attempted"), 0);
+    assert_eq!(cfg(specialized, "builds_succeeded"), 0);
     assert_eq!(cfg(specialized, "builds_failed"), 0);
-    assert_eq!(cfg(specialized, "optimization_attempts"), 1);
-    assert_eq!(cfg(specialized, "optimization_completions"), 1);
-    assert_eq!(cfg(specialized, "optimized_level_attempts"), 1);
+    assert_eq!(cfg(specialized, "optimization_attempts"), 0);
+    assert_eq!(cfg(specialized, "optimization_completions"), 0);
+    assert_eq!(cfg(specialized, "optimized_level_attempts"), 0);
 
     let failed = get("completion_failed_semantic");
     assert_eq!(count(failed, &["semantic_work", "failed_requests"]), 1);
@@ -1595,13 +1601,10 @@ fn assert_completion_structure(scenarios: &[Value], functions: usize) {
         ),
         0
     );
-    assert_eq!(body(failed, "candidate_comparisons"), functions as u64);
-    assert_eq!(body(failed, "candidate_fallbacks"), 1);
-    assert_eq!(body(failed, "projection_attempts"), (functions - 1) as u64);
-    assert_eq!(
-        body(failed, "projection_completions"),
-        (functions - 1) as u64
-    );
+    assert_eq!(body(failed, "candidate_comparisons"), 0);
+    assert_eq!(body(failed, "candidate_fallbacks"), 0);
+    assert_eq!(body(failed, "projection_attempts"), 0);
+    assert_eq!(body(failed, "projection_completions"), 0);
     assert_eq!(body(failed, "projection_failures"), 0);
     assert_eq!(body(failed, "import_attempts"), 0);
     assert_eq!(body(failed, "reused_bodies"), 0);
@@ -1626,9 +1629,12 @@ fn assert_completion_structure(scenarios: &[Value], functions: usize) {
     );
     assert_declaration_epoch_work(failed, 1, 1, 1, 0, 0);
     let recovery = get("completion_failure_recovery");
-    assert_eq!(body(recovery, "reused_bodies"), functions as u64);
+    assert_eq!(body(recovery, "reused_bodies"), 0);
     assert_eq!(body(recovery, "candidate_fallbacks"), 0);
-    assert_eq!(count(recovery, &["semantic_work", "bodies_attempted"]), 0);
+    assert_eq!(body(recovery, "import_attempts"), functions as u64);
+    assert_eq!(body(recovery, "import_successes"), functions as u64);
+    assert_eq!(body(recovery, "import_failures"), 0);
+    assert_eq!(count(recovery, &["semantic_work", "bodies_attempted"]), 1);
     assert_eq!(cfg(recovery, "reuses"), functions as u64);
     assert_eq!(cfg(recovery, "builds_attempted"), 0);
 }

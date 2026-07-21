@@ -1,6 +1,6 @@
 //! One-pass canonical declaration binding, body analysis, and CFG lowering.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use rue_air::{
     AnalyzedBodyOwnerEvent, BodyAnalysisWork, BodyNamedDependencyEvent, DeclarationBindingWork,
@@ -15,15 +15,21 @@ use tracing::info_span;
 pub(crate) struct PreparedDurableBodyCandidate {
     pub owner: crate::StableDefinitionKey,
     pub body_span: rue_span::Span,
-    pub body: rue_air::SemanticBody<crate::StableDefinitionKey, Arc<str>>,
+    pub body: rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>,
 }
 
 pub(crate) struct PreparedDurableSpecializedBodyCandidate {
-    pub identity: rue_air::SemanticSpecializationIdentity<crate::StableDefinitionKey, Arc<str>>,
+    pub instance: crate::FunctionInstanceKey,
+    pub identity:
+        rue_air::SemanticSpecializationIdentity<crate::StableDefinitionKey, crate::ModuleId>,
     pub body_span: rue_span::Span,
-    pub body: rue_air::SemanticBody<crate::StableDefinitionKey, Arc<str>>,
-    pub dependencies: Arc<[crate::StableDefinitionKey]>,
-    pub dependency_boundary_complete: bool,
+    pub body: rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>,
+}
+
+pub(crate) struct PreparedDurableAnonymousBodyCandidate {
+    pub identity: crate::FunctionInstanceKey,
+    pub body_span: rue_span::Span,
+    pub body: rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>,
 }
 
 #[derive(Debug, Clone)]
@@ -269,6 +275,15 @@ impl CanonicalPreparedDeclarations<'_> {
     pub(crate) fn declaration_index_work(&self) -> RirDeclarationIndexWork {
         self.declaration_index
     }
+
+    pub(crate) fn declaration_reuse_work(&self) -> CanonicalDeclarationReuseWork {
+        CanonicalDeclarationReuseWork {
+            semantic_epochs_started: 1,
+            declaration_indexes_built: self.declaration_index.build_invocations,
+            shell_predeclaration_epochs: 1,
+            ..CanonicalDeclarationReuseWork::default()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -325,6 +340,51 @@ pub struct CanonicalSemanticWork {
     /// Whether this request asked for stable source definition IDs.
     pub stable_ids_requested: bool,
     pub declaration_reuse: CanonicalDeclarationReuseWork,
+}
+
+impl CanonicalSemanticWork {
+    pub(crate) fn accrue_body_query_work(&mut self, query: BodyAnalysisWork) {
+        let body = &mut self.body_analysis;
+        body.bodies_attempted += query.bodies_attempted;
+        body.bodies_succeeded += query.bodies_succeeded;
+        body.bodies_failed += query.bodies_failed;
+        body.air_instructions_produced += query.air_instructions_produced;
+        body.local_strings_produced += query.local_strings_produced;
+        body.ordinary_body_exports_attempted += query.ordinary_body_exports_attempted;
+        body.ordinary_body_exports_succeeded += query.ordinary_body_exports_succeeded;
+        body.ordinary_body_exports_rejected += query.ordinary_body_exports_rejected;
+        body.ordinary_body_export_instructions_emitted +=
+            query.ordinary_body_export_instructions_emitted;
+        body.ordinary_body_export_places_emitted += query.ordinary_body_export_places_emitted;
+        body.ordinary_body_export_strings_emitted += query.ordinary_body_export_strings_emitted;
+        body.specialized_bodies_attempted += query.specialized_bodies_attempted;
+        body.specialized_bodies_succeeded += query.specialized_bodies_succeeded;
+        body.specialized_bodies_failed += query.specialized_bodies_failed;
+        body.specialized_body_exports_attempted += query.specialized_body_exports_attempted;
+        body.specialized_body_exports_succeeded += query.specialized_body_exports_succeeded;
+        body.specialized_body_exports_rejected += query.specialized_body_exports_rejected;
+        body.specialized_body_export_instructions_emitted +=
+            query.specialized_body_export_instructions_emitted;
+        body.specialized_body_export_places_emitted += query.specialized_body_export_places_emitted;
+        body.specialized_body_export_strings_emitted +=
+            query.specialized_body_export_strings_emitted;
+
+        let durable = &mut self.durable_bodies;
+        durable.export_attempts +=
+            query.ordinary_body_exports_attempted + query.specialized_body_exports_attempted;
+        durable.export_successes +=
+            query.ordinary_body_exports_succeeded + query.specialized_body_exports_succeeded;
+        durable.export_rejections +=
+            query.ordinary_body_exports_rejected + query.specialized_body_exports_rejected;
+        durable.conversion_attempts += query.bodies_succeeded;
+        durable.conversion_completions += query.bodies_succeeded;
+        durable.instructions_exported += query.ordinary_body_export_instructions_emitted
+            + query.specialized_body_export_instructions_emitted;
+        durable.places_exported += query.ordinary_body_export_places_emitted
+            + query.specialized_body_export_places_emitted;
+        durable.strings_exported += query.ordinary_body_export_strings_emitted
+            + query.specialized_body_export_strings_emitted;
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -399,6 +459,10 @@ impl CanonicalSemanticFailure {
     pub(crate) fn declaration(errors: crate::CompileErrors, work: CanonicalSemanticWork) -> Self {
         Self::new(CanonicalSemanticFailurePhase::Declaration, errors, work)
     }
+
+    pub(crate) fn body(errors: crate::CompileErrors, work: CanonicalSemanticWork) -> Self {
+        Self::new(CanonicalSemanticFailurePhase::BodyAnalysis, errors, work)
+    }
 }
 
 fn declaration_stage_work(
@@ -463,6 +527,7 @@ pub struct CanonicalSemanticOutput {
     named_value_const_dependencies_complete: bool,
     implicit_named_destructor_dependencies: Vec<rue_air::ImplicitNamedDestructorDependencyEvent>,
     implicit_named_destructor_dependencies_complete: bool,
+    body_references: BTreeMap<crate::FunctionInstanceKey, crate::body_query::BodyReferences>,
     durable_cfgs: Arc<[crate::queries::DurableCfgArtifact]>,
 }
 
@@ -633,6 +698,22 @@ impl CanonicalSemanticOutput {
     pub fn warnings(&self) -> &[CompileWarning] {
         &self.warnings
     }
+
+    pub(crate) fn accrue_body_query_work(&mut self, query: BodyAnalysisWork) {
+        self.work.accrue_body_query_work(query);
+    }
+    pub(crate) fn install_body_references(
+        &mut self,
+        references: BTreeMap<crate::FunctionInstanceKey, crate::body_query::BodyReferences>,
+    ) {
+        self.body_references = references;
+    }
+    pub(crate) fn body_references(
+        &self,
+        function: &crate::FunctionInstanceKey,
+    ) -> Option<&crate::body_query::BodyReferences> {
+        self.body_references.get(function)
+    }
     pub fn ordinary_free_function_dependencies(&self) -> &[OrdinaryFreeFunctionDependencyEvent] {
         &self.ordinary_free_function_dependencies
     }
@@ -722,11 +803,6 @@ impl CanonicalSemanticOutput {
         &self.durable_ordinary_body_payloads
     }
 
-    pub(crate) fn durable_specialized_body_payloads(
-        &self,
-    ) -> &[crate::DurableSpecializedBodyPayload] {
-        &self.durable_specialized_body_payloads
-    }
     /// Explicitly unstable equality status for durable-cache instrumentation.
     pub(crate) fn unstable_durable_artifact_status(
         &self,
@@ -772,7 +848,7 @@ pub(crate) fn analyze_canonical_program_for_test_support(
         declaration_index,
     } = prepared;
     let bound = shells.resolve_declarations_for_test()?;
-    finish_canonical_analysis(
+    finish_canonical_analysis_with(
         input,
         merged,
         rir,
@@ -784,9 +860,18 @@ pub(crate) fn analyze_canonical_program_for_test_support(
         CanonicalDeclarationReuseWork::default(),
         Vec::new(),
         Vec::new(),
+        Vec::new(),
         Arc::from([]),
         crate::DurableBodyWork::default(),
         info_span!("sema").entered(),
+        |bound, _candidates, _definitions, _merged| {
+            bound
+                .analyze_all_bodies_for_test()
+                .map_err(|errors| CanonicalBodyCompositionFailure {
+                    errors,
+                    work: BodyAnalysisWork::default(),
+                })
+        },
     )
     .map_err(|failure| failure.errors)
 }
@@ -807,6 +892,7 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
     declaration_dependencies: &[crate::semantic_query_nucleus::SemanticDeclarationDependency],
     body_candidates: Vec<PreparedDurableBodyCandidate>,
     specialized_body_candidates: Vec<PreparedDurableSpecializedBodyCandidate>,
+    anonymous_body_candidates: Vec<PreparedDurableAnonymousBodyCandidate>,
     durable_cfg_candidates: Arc<[crate::queries::DurableCfgArtifact]>,
     body_work: crate::DurableBodyWork,
 ) -> Result<CanonicalSemanticOutput, CanonicalSemanticFailure> {
@@ -1112,6 +1198,7 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
         reuse,
         body_candidates,
         specialized_body_candidates,
+        anonymous_body_candidates,
         durable_cfg_candidates,
         body_work,
         sema_span,
@@ -1272,6 +1359,12 @@ fn project_anonymous_nominal_key(
                 kind: *kind,
                 name: name.clone(),
             },
+            T::Nominal(N::Builtin { kind, name }) => {
+                crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Builtin {
+                    kind: *kind,
+                    name: name.clone(),
+                })
+            }
             T::Nominal(N::Named(value)) => crate::TypeInstanceKey::Nominal(
                 crate::NominalInstanceKey::Named(nominal_definition(*value, definitions)?),
             ),
@@ -1385,6 +1478,407 @@ pub(crate) fn project_function_instance_key(
     Ok(projected)
 }
 
+fn project_produced_anonymous_nominals(
+    values: &[rue_air::SemanticProducedAnonymousNominal],
+    merged: &CanonicalMergedProgram,
+    definitions: &BoundDefinitionSet,
+) -> Result<
+    crate::body_query::BodyProducedAnonymousNominals,
+    rue_air::SemanticStableResolutionFailure,
+> {
+    use crate::durable_semantics::{
+        DurableAnonymousMethodSignature as Method, DurableAnonymousMethodType as MethodType,
+        DurableAnonymousNominal as Nominal, DurableAnonymousNominalShape as Shape,
+        DurableParameterMode as Mode,
+    };
+
+    let map_type = |ty: &rue_air::TypeInstanceKey<
+        rue_air::SemanticDefinitionToken,
+        rue_air::SemanticModuleToken,
+    >| {
+        let ty = ty.try_map_identities(
+            &|token| definitions.key_for_semantic_token(*token).cloned(),
+            &|token| {
+                definitions
+                    .module_for_semantic_token(merged, *token)
+                    .cloned()
+            },
+        )?;
+        crate::revisioned_query_database::durable_type_from_instance_key(&ty)
+            .ok_or(rue_air::SemanticStableResolutionFailure::WrongKind)
+    };
+    let map_value = |value: &rue_air::CanonicalArgumentValue<
+        rue_air::SemanticDefinitionToken,
+        rue_air::SemanticModuleToken,
+    >| {
+        let value = value.try_map_identities(
+            &|token| definitions.key_for_semantic_token(*token).cloned(),
+            &|token| {
+                definitions
+                    .module_for_semantic_token(merged, *token)
+                    .cloned()
+            },
+        )?;
+        crate::revisioned_query_database::durable_value_from_argument(&value)
+            .ok_or(rue_air::SemanticStableResolutionFailure::WrongKind)
+    };
+    let mode = |mode| match mode {
+        rue_air::SemanticParameterMode::Value => Mode::Value,
+        rue_air::SemanticParameterMode::Borrow => Mode::Borrow,
+        rue_air::SemanticParameterMode::Inout => Mode::Inout,
+    };
+
+    values
+        .iter()
+        .map(|value| {
+            let identity = value.identity.try_map_identities(
+                &|token| definitions.key_for_semantic_token(*token).cloned(),
+                &|token| {
+                    definitions
+                        .module_for_semantic_token(merged, *token)
+                        .cloned()
+                },
+            )?;
+            let method_type = |ty: &rue_air::SemanticProducedAnonymousMethodType| {
+                Ok(match ty {
+                    rue_air::SemanticProducedAnonymousMethodType::SelfType => MethodType::SelfType,
+                    rue_air::SemanticProducedAnonymousMethodType::Concrete(ty) => {
+                        MethodType::Concrete(map_type(ty)?)
+                    }
+                })
+            };
+            let shape = match &value.shape {
+                rue_air::SemanticProducedAnonymousNominalShape::Struct { fields, methods } => {
+                    Shape::Struct {
+                        fields: fields
+                            .iter()
+                            .map(|(name, ty)| Ok((name.clone(), map_type(ty)?)))
+                            .collect::<Result<Vec<_>, rue_air::SemanticStableResolutionFailure>>()?
+                            .into(),
+                        methods: methods
+                            .iter()
+                            .map(|method| {
+                                Ok(Method {
+                                    name: method.name.clone(),
+                                    has_self: method.has_self,
+                                    self_mode: mode(method.self_mode),
+                                    parameters:
+                                        method
+                                            .parameters
+                                            .iter()
+                                            .map(|(ty, parameter_mode, is_comptime)| {
+                                                Ok((
+                                                    method_type(ty)?,
+                                                    mode(*parameter_mode),
+                                                    *is_comptime,
+                                                ))
+                                            })
+                                            .collect::<Result<
+                                                Vec<_>,
+                                                rue_air::SemanticStableResolutionFailure,
+                                            >>()?
+                                            .into(),
+                                    result: method_type(&method.result)?,
+                                })
+                            })
+                            .collect::<Result<Vec<_>, rue_air::SemanticStableResolutionFailure>>()?
+                            .into(),
+                    }
+                }
+                rue_air::SemanticProducedAnonymousNominalShape::Enum { variants } => Shape::Enum {
+                    variants: variants
+                        .iter()
+                        .map(|(name, payload)| {
+                            Ok((
+                                name.clone(),
+                                payload
+                                    .iter()
+                                    .map(map_type)
+                                    .collect::<Result<Vec<_>, _>>()?
+                                    .into(),
+                            ))
+                        })
+                        .collect::<Result<Vec<_>, rue_air::SemanticStableResolutionFailure>>()?
+                        .into(),
+                },
+            };
+            Ok(Nominal {
+                identity,
+                shape,
+                type_captures: value
+                    .type_captures
+                    .iter()
+                    .map(|(name, ty)| Ok((name.clone(), map_type(ty)?)))
+                    .collect::<Result<Vec<_>, rue_air::SemanticStableResolutionFailure>>()?
+                    .into(),
+                value_captures: value
+                    .value_captures
+                    .iter()
+                    .map(|(name, value)| Ok((name.clone(), map_value(value)?)))
+                    .collect::<Result<Vec<_>, rue_air::SemanticStableResolutionFailure>>()?
+                    .into(),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|values| crate::body_query::BodyProducedAnonymousNominals(values.into()))
+}
+
+/// Materialize one fresh declaration epoch and analyze exactly one stable
+/// function instance. The epoch is discarded after its canonical projections
+/// cross the stable bridge.
+pub(crate) fn analyze_body_query(
+    merged: &CanonicalMergedProgram,
+    rir: &CanonicalRirOutput,
+    options: &CompileOptions,
+    imports: &CanonicalImportGraph,
+    query_shells: &[rue_air::SemanticDeclarationShell],
+    query_declarations: &[DurableDeclarationSemantic],
+    query_anonymous_nominals: &[crate::durable_semantics::DurableAnonymousNominal],
+    key: &crate::body_query::BodyQueryKey,
+    cancellation: &rue_query::CancellationToken,
+) -> Result<crate::body_query::BodyTransaction, rue_query::QueryAbort> {
+    use crate::body_query::{BodyReference, BodyReferences, BodyTransaction, CanonicalBody};
+    use rue_air::{OneBodyCanonicalArtifact as Artifact, OneBodyDependency as Dependency};
+
+    if cancellation.is_canceled() {
+        return Err(rue_query::QueryAbort::Canceled);
+    }
+    let prepared = prepare_query_declaration_shells(merged, rir, options, imports, query_shells)
+        .map_err(|_| rue_query::QueryAbort::Canceled)?;
+    let CanonicalPreparedDeclarations {
+        shells,
+        shell_records,
+        definitions: provisional,
+        declaration_index: _,
+    } = prepared;
+    let (projected, _) = crate::project_durable_declaration_semantics(
+        merged,
+        &provisional,
+        &shell_records,
+        query_declarations,
+    )
+    .map_err(|_| rue_query::QueryAbort::Canceled)?;
+    let projected_anonymous = crate::durable_semantics::project_durable_anonymous_nominals(
+        merged,
+        &provisional,
+        query_anonymous_nominals,
+    )
+    .map_err(|_| rue_query::QueryAbort::Canceled)?;
+    let bound = shells
+        .install_declaration_semantics_with_anonymous(&projected, &projected_anonymous)
+        .map_err(|_| rue_query::QueryAbort::Canceled)?;
+    let manifest = bound.binding_manifest();
+    let definitions = issue_bound_definitions(
+        merged,
+        rir.source_revision(),
+        manifest.bindings(),
+        manifest.work(),
+    )
+    .map_err(|_| rue_query::QueryAbort::Canceled)?;
+    if provisional
+        .definitions()
+        .iter()
+        .filter(|record| record.stable_key().kind().owns_body())
+        .map(|record| record.stable_key())
+        .ne(definitions
+            .definitions()
+            .iter()
+            .filter(|record| record.stable_key().kind().owns_body())
+            .map(|record| record.stable_key()))
+    {
+        return Err(rue_query::QueryAbort::Canceled);
+    }
+    let bound = bound
+        .install_body_owner_tokens(&definitions.body_owner_endpoints())
+        .map_err(|_| rue_query::QueryAbort::Canceled)?
+        .install_stable_identity_endpoints(
+            &definitions.semantic_definition_endpoints(),
+            &definitions.semantic_module_endpoints(merged),
+        )
+        .map_err(|_| rue_query::QueryAbort::Canceled)?;
+    let outcome = bound.analyze_one_body_instance(
+        &key.instance,
+        |definition| definitions.semantic_token_for_key(definition),
+        |module| definitions.module_token_for(merged, module),
+        cancellation
+            .is_canceled()
+            .then_some(rue_air::OneBodyInterruption::Canceled),
+    );
+    // Keep cancellation responsive across the synchronous AIR callback. The
+    // query runtime also checks after its evaluator returns, but crossing the
+    // stable projection boundary after cancellation would do needless work.
+    if cancellation.is_canceled() {
+        return Err(rue_query::QueryAbort::Canceled);
+    }
+    let map_references = |references: Arc<[Dependency]>| {
+        references
+            .iter()
+            .map(|reference| {
+                Ok(match reference {
+                    Dependency::Callable(value) => {
+                        BodyReference::Callable(value.try_map_identities(
+                            &|token| definitions.key_for_semantic_token(*token).cloned(),
+                            &|token| {
+                                definitions
+                                    .module_for_semantic_token(merged, *token)
+                                    .cloned()
+                            },
+                        )?)
+                    }
+                    Dependency::Definition(token) => BodyReference::Definition(
+                        definitions.key_for_semantic_token(*token)?.clone(),
+                    ),
+                    Dependency::Type(value) => BodyReference::Type(value.try_map_identities(
+                        &|token| definitions.key_for_semantic_token(*token).cloned(),
+                        &|token| {
+                            definitions
+                                .module_for_semantic_token(merged, *token)
+                                .cloned()
+                        },
+                    )?),
+                })
+            })
+            .collect::<Result<Vec<_>, rue_air::SemanticStableResolutionFailure>>()
+            .map(|values| BodyReferences(values.into()))
+    };
+    match outcome {
+        rue_air::OneBodyTransactionOutcome::Success {
+            artifact,
+            references,
+            produced_anonymous_nominals,
+        } => {
+            let references =
+                map_references(references).map_err(|_| rue_query::QueryAbort::Canceled)?;
+            let produced_anonymous_nominals = project_produced_anonymous_nominals(
+                &produced_anonymous_nominals,
+                merged,
+                &definitions,
+            )
+            .map_err(|_| rue_query::QueryAbort::Canceled)?;
+            let body = match artifact {
+                Artifact::Ordinary(export) => {
+                    let owner = definitions
+                        .definition_for_body_token(export.owner)
+                        .map(|record| record.stable_key().clone())
+                        .map_err(|_| rue_query::QueryAbort::Canceled)?;
+                    let body = export
+                        .body
+                        .try_map_keys(
+                            &|token| definitions.key_for_semantic_token(*token).cloned(),
+                            &|token| {
+                                definitions
+                                    .module_for_semantic_token(merged, *token)
+                                    .cloned()
+                            },
+                        )
+                        .map_err(|_| rue_query::QueryAbort::Canceled)?;
+                    CanonicalBody::Ordinary { owner, body }
+                }
+                Artifact::Anonymous(export) => {
+                    let identity = export
+                        .identity
+                        .try_map_identities(
+                            &|token| definitions.key_for_semantic_token(*token).cloned(),
+                            &|token| {
+                                definitions
+                                    .module_for_semantic_token(merged, *token)
+                                    .cloned()
+                            },
+                        )
+                        .map_err(|_| rue_query::QueryAbort::Canceled)?;
+                    let body = export
+                        .body
+                        .try_map_keys(
+                            &|token| definitions.key_for_semantic_token(*token).cloned(),
+                            &|token| {
+                                definitions
+                                    .module_for_semantic_token(merged, *token)
+                                    .cloned()
+                            },
+                        )
+                        .map_err(|_| rue_query::QueryAbort::Canceled)?;
+                    CanonicalBody::Anonymous { identity, body }
+                }
+                Artifact::Specialization(export) => {
+                    let identity = export
+                        .identity
+                        .try_map_keys(
+                            &|token| definitions.key_for_semantic_token(*token).cloned(),
+                            &|token| {
+                                definitions
+                                    .module_for_semantic_token(merged, *token)
+                                    .cloned()
+                            },
+                        )
+                        .map_err(|_| rue_query::QueryAbort::Canceled)?;
+                    let body = export
+                        .body
+                        .try_map_keys(
+                            &|token| definitions.key_for_semantic_token(*token).cloned(),
+                            &|token| {
+                                definitions
+                                    .module_for_semantic_token(merged, *token)
+                                    .cloned()
+                            },
+                        )
+                        .map_err(|_| rue_query::QueryAbort::Canceled)?;
+                    let dependencies = export
+                        .dependencies
+                        .iter()
+                        .map(|token| definitions.key_for_semantic_token(*token).cloned())
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|_| rue_query::QueryAbort::Canceled)?
+                        .into();
+                    CanonicalBody::Specialization {
+                        identity,
+                        body,
+                        dependencies,
+                        dependency_boundary_complete: export.dependency_boundary_complete,
+                    }
+                }
+            };
+            let semantic_body = match &body {
+                CanonicalBody::Ordinary { body, .. }
+                | CanonicalBody::Anonymous { body, .. }
+                | CanonicalBody::Specialization { body, .. } => body,
+            };
+            let mut references = references
+                .0
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>();
+            for place in semantic_body.places.iter() {
+                for projection in place.projections.iter() {
+                    if let rue_air::SemanticBodyProjection::Field { struct_key, .. } = projection {
+                        references.insert(BodyReference::Type(crate::TypeInstanceKey::Nominal(
+                            struct_key.clone(),
+                        )));
+                    }
+                }
+            }
+            let references = BodyReferences(references.into_iter().collect::<Vec<_>>().into());
+            Ok(BodyTransaction::Success {
+                body: Box::new(body),
+                references,
+                produced_anonymous_nominals,
+            })
+        }
+        rue_air::OneBodyTransactionOutcome::DeterministicFailure { errors, references } => {
+            let references =
+                map_references(references).map_err(|_| rue_query::QueryAbort::Canceled)?;
+            Ok(BodyTransaction::DeterministicFailure { errors, references })
+        }
+        rue_air::OneBodyTransactionOutcome::NonTerminal { .. } => {
+            Err(rue_query::QueryAbort::Canceled)
+        }
+    }
+}
+
+struct CanonicalBodyCompositionFailure {
+    errors: crate::CompileErrors,
+    work: BodyAnalysisWork,
+}
+
 fn finish_canonical_analysis(
     input: CodegenInputDescriptor,
     merged: &CanonicalMergedProgram,
@@ -1397,9 +1891,64 @@ fn finish_canonical_analysis(
     declaration_reuse: CanonicalDeclarationReuseWork,
     durable_body_candidates: Vec<PreparedDurableBodyCandidate>,
     durable_specialized_body_candidates: Vec<PreparedDurableSpecializedBodyCandidate>,
+    durable_anonymous_body_candidates: Vec<PreparedDurableAnonymousBodyCandidate>,
+    durable_cfg_candidates: Arc<[crate::queries::DurableCfgArtifact]>,
+    durable_body_reuse_work: crate::DurableBodyWork,
+    sema_span: tracing::span::EnteredSpan,
+) -> Result<CanonicalSemanticOutput, CanonicalSemanticFailure> {
+    finish_canonical_analysis_with(
+        input,
+        merged,
+        rir,
+        options,
+        request_stable_ids,
+        declaration_index,
+        bound,
+        provisional_definitions,
+        declaration_reuse,
+        durable_body_candidates,
+        durable_specialized_body_candidates,
+        durable_anonymous_body_candidates,
+        durable_cfg_candidates,
+        durable_body_reuse_work,
+        sema_span,
+        |bound, candidates, definitions, merged| {
+            bound
+                .compose_queried_bodies(
+                    candidates,
+                    |key: &crate::StableDefinitionKey| definitions.semantic_token_for_key(key),
+                    |module: &crate::ModuleId| definitions.module_token_for(merged, module),
+                )
+                .map_err(|failure| CanonicalBodyCompositionFailure {
+                    work: failure.work(),
+                    errors: failure.into_errors(),
+                })
+        },
+    )
+}
+
+fn finish_canonical_analysis_with(
+    input: CodegenInputDescriptor,
+    merged: &CanonicalMergedProgram,
+    rir: &CanonicalRirOutput,
+    options: &CompileOptions,
+    request_stable_ids: bool,
+    declaration_index: RirDeclarationIndexWork,
+    bound: rue_air::BoundSema<'_>,
+    provisional_definitions: BoundDefinitionSet,
+    declaration_reuse: CanonicalDeclarationReuseWork,
+    durable_body_candidates: Vec<PreparedDurableBodyCandidate>,
+    durable_specialized_body_candidates: Vec<PreparedDurableSpecializedBodyCandidate>,
+    durable_anonymous_body_candidates: Vec<PreparedDurableAnonymousBodyCandidate>,
     durable_cfg_candidates: Arc<[crate::queries::DurableCfgArtifact]>,
     mut durable_body_reuse_work: crate::DurableBodyWork,
     sema_span: tracing::span::EnteredSpan,
+    analyze_bodies: impl FnOnce(
+        rue_air::BoundSema<'_>,
+        Vec<rue_air::SemanticQueriedBodyCandidate<crate::StableDefinitionKey, crate::ModuleId>>,
+        &BoundDefinitionSet,
+        &CanonicalMergedProgram,
+    ) -> Result<rue_air::SemaOutput, CanonicalBodyCompositionFailure>,
 ) -> Result<CanonicalSemanticOutput, CanonicalSemanticFailure> {
     let binding = bound.binding_work();
     #[cfg(test)]
@@ -1559,73 +2108,89 @@ fn finish_canonical_analysis(
         .zip(authoritative_keys.iter())
         .map(|(endpoint, key)| ((*key).clone(), endpoint.token))
         .collect::<std::collections::BTreeMap<_, _>>();
-    let air_candidates = durable_body_candidates
+    let mut queried_candidates = durable_body_candidates
         .into_iter()
         .filter_map(|candidate| {
             let owner = token_by_key.get(&candidate.owner).copied()?;
-            Some(rue_air::SemanticBodyCandidate {
-                owner,
+            Some(rue_air::SemanticQueriedBodyCandidate {
+                identity: crate::FunctionInstanceKey::Definition(candidate.owner),
+                ordinary_owner: Some(owner),
+                specialization_identity: None,
                 body_span: candidate.body_span,
                 body: candidate.body,
             })
         })
-        .collect();
-    let bound = bound.install_ordinary_body_candidates(
-        air_candidates,
-        |key: &crate::StableDefinitionKey| authoritative_definitions.semantic_token_for_key(key),
-        |path: &Arc<str>| {
-            let module = merged
-                .ast()
-                .modules()
-                .iter()
-                .find(|module| module.module_id().as_str() == path.as_ref())
-                .ok_or(rue_air::SemanticStableResolutionFailure::Missing)?;
-            authoritative_definitions.module_token_for(merged, module.module_id())
-        },
+        .collect::<Vec<_>>();
+    queried_candidates.extend(
+        durable_specialized_body_candidates
+            .into_iter()
+            .map(|candidate| rue_air::SemanticQueriedBodyCandidate {
+                identity: candidate.instance,
+                ordinary_owner: None,
+                specialization_identity: Some(candidate.identity),
+                body_span: candidate.body_span,
+                body: candidate.body,
+            }),
     );
-    let specialized_air_candidates = durable_specialized_body_candidates
-        .into_iter()
-        .map(|candidate| rue_air::SemanticSpecializedBodyCandidate {
-            identity: candidate.identity,
-            body_span: candidate.body_span,
-            body: candidate.body,
-            dependencies: candidate.dependencies,
-            dependency_boundary_complete: candidate.dependency_boundary_complete,
+    queried_candidates.extend(
+        durable_anonymous_body_candidates
+            .into_iter()
+            .map(|candidate| rue_air::SemanticQueriedBodyCandidate {
+                identity: candidate.identity,
+                ordinary_owner: None,
+                specialization_identity: None,
+                body_span: candidate.body_span,
+                body: candidate.body,
+            }),
+    );
+    let queried_cfg_bodies = queried_candidates
+        .iter()
+        .filter_map(|candidate| {
+            let owner =
+                crate::revisioned_query_database::function_definition_key(&candidate.identity)?
+                    .clone();
+            let record = authoritative_definitions.definition_by_key(&owner)?;
+            let expected_inputs = crate::session::stable_definition_input_fingerprint(
+                merged.definitions().source_snapshot(),
+                record,
+            )
+            .ok()?;
+            Some((
+                candidate.identity.clone(),
+                (
+                    candidate.body_span,
+                    crate::DurableOrdinaryBodyPayload {
+                        schema_version: crate::durable_body::DURABLE_ORDINARY_BODY_SCHEMA_VERSION,
+                        semantic_schema_version: crate::DURABLE_SEMANTIC_SCHEMA_VERSION,
+                        owner,
+                        expected_inputs,
+                        body: candidate.body.clone(),
+                    },
+                ),
+            ))
         })
-        .collect();
-    let (bound, specialized_install_work) = bound.install_specialized_body_candidates(
-        specialized_air_candidates,
-        |key: &crate::StableDefinitionKey| authoritative_definitions.semantic_token_for_key(key),
-        |path: &Arc<str>| {
-            let module = merged
-                .ast()
-                .modules()
-                .iter()
-                .find(|module| module.module_id().as_str() == path.as_ref())
-                .ok_or(rue_air::SemanticStableResolutionFailure::Missing)?;
-            authoritative_definitions.module_token_for(merged, module.module_id())
-        },
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let composition = analyze_bodies(
+        bound,
+        queried_candidates,
+        &authoritative_definitions,
+        merged,
     );
-    durable_body_reuse_work.specialized_mapping_attempts += specialized_install_work.attempts;
-    durable_body_reuse_work.specialized_mapping_successes += specialized_install_work.successes;
-    durable_body_reuse_work.specialized_mapping_failures +=
-        specialized_install_work.mapping_failures;
-    durable_body_reuse_work.candidate_fallbacks += specialized_install_work.mapping_failures;
-    let sema_output = match bound.analyze_all_bodies_with_work() {
+    let sema_output = match composition {
         Ok(output) => output,
         Err(failure) => {
             let mut failed_durable_body_work = durable_body_reuse_work;
-            failed_durable_body_work.reused_bodies += failure.work().ordinary_bodies_reused;
+            failed_durable_body_work.reused_bodies += failure.work.ordinary_bodies_reused;
             failed_durable_body_work.skipped_body_analyses +=
-                failure.work().ordinary_body_analyses_skipped;
-            fold_body_import_work(&mut failed_durable_body_work, failure.work());
+                failure.work.ordinary_body_analyses_skipped;
+            fold_body_import_work(&mut failed_durable_body_work, failure.work);
             let work = CanonicalSemanticWork {
                 declaration_index,
                 binding,
                 manifest: manifest_work,
                 bound_definitions: bound_definitions.as_ref().map(BoundDefinitionSet::work),
                 body_owner_tokens,
-                body_analysis: failure.work(),
+                body_analysis: failure.work,
                 durable_bodies: failed_durable_body_work,
                 cfg: CfgConstructionWork::default(),
                 stable_ids_requested: request_stable_ids,
@@ -1633,7 +2198,7 @@ fn finish_canonical_analysis(
             };
             return Err(CanonicalSemanticFailure::new(
                 CanonicalSemanticFailurePhase::BodyAnalysis,
-                failure.into_errors(),
+                failure.errors,
                 work,
             ));
         }
@@ -1806,58 +2371,13 @@ fn finish_canonical_analysis(
         })?;
     let mut stable_cfg_inputs = Vec::new();
     for function in &sema_output.functions {
-        let selected = if let Some(token) = function.ordinary_owner {
-            authoritative_definitions
-                .key_for_body_token(token)
-                .ok()
-                .and_then(|key| {
-                    durable_ordinary_body_payloads
-                        .iter()
-                        .find(|payload| &payload.owner == key)
-                        .and_then(|payload| {
-                            authoritative_definitions
-                                .definition_by_key(key)
-                                .and_then(|record| record.body_span())
-                                .map(|span| {
-                                    (
-                                        span,
-                                        payload.clone(),
-                                        crate::FunctionInstanceKey::Definition(key.clone()),
-                                    )
-                                })
-                        })
-                })
-        } else if let Some(rue_air::ImplicitDropDependencySourceEvent::Specialization {
-            identity,
-        }) = &function.implicit_drop_source
-        {
-            crate::durable_body::convert_specialization_identity(
-                identity,
-                merged,
-                &authoritative_definitions,
-                &mut durable_body_work,
-            )
-            .ok()
-            .and_then(|identity| {
-                durable_specialized_body_payloads
-                    .iter()
-                    .find(|payload| payload.identity == identity)
-                    .and_then(|payload| {
-                        authoritative_definitions
-                            .definition_by_key(&identity.base)
-                            .and_then(|record| {
-                                crate::semantic_identity::function_instance_from_specialization(
-                                    &identity,
-                                )
-                                .map(|function| {
-                                    (record.declaration_span(), payload.body.clone(), function)
-                                })
-                            })
-                    })
-            })
-        } else {
-            None
-        };
+        let selected = projected_callable_identities
+            .get(&function.identity)
+            .and_then(|function_key| {
+                queried_cfg_bodies
+                    .get(function_key)
+                    .map(|(body_span, body)| (*body_span, body.clone(), function_key.clone()))
+            });
         if let Some((body_span, body, function_key)) = selected {
             let Ok(type_dependencies) = crate::durable_cfg::transitive_body_type_dependencies(
                 &body,
@@ -2005,13 +2525,15 @@ fn finish_canonical_analysis(
         implicit_named_destructor_dependencies: cfg.implicit_named_destructor_dependencies,
         implicit_named_destructor_dependencies_complete: cfg
             .implicit_named_destructor_dependencies_complete,
+        body_references: BTreeMap::new(),
         durable_cfgs: cfg.durable_cfgs,
     })
 }
 
-/// Preserve ordinary source diagnostics when strict token preparation rejects
-/// an already-bound epoch. The semantic result is consumed and discarded: it
-/// can recover diagnostics, but can never publish a partially prepared output.
+/// Publish the strict preparation failure without invoking a second body
+/// authority. Body diagnostics are already owned by BodyTransaction; a
+/// declaration-bound epoch that cannot accept exact stable identities is not
+/// permitted to run the retired reachable-body driver for recovery.
 fn recover_declaration_failure(
     bound: rue_air::BoundSema<'_>,
     preparation_error: crate::CompileErrors,
@@ -2022,21 +2544,14 @@ fn recover_declaration_failure(
 ) -> CanonicalSemanticFailure {
     let binding = bound.binding_work();
     let manifest = bound.binding_manifest().work();
-    let (errors, body_analysis) = match bound.analyze_all_bodies_with_work() {
-        Err(failure) => {
-            let work = failure.work();
-            (failure.into_errors(), work)
-        }
-        Ok(output) => (preparation_error, output.body_analysis_work),
-    };
     CanonicalSemanticFailure::declaration(
-        errors,
+        preparation_error,
         declaration_stage_work(
             declaration_index,
             binding,
             manifest,
             body_owner_tokens,
-            body_analysis,
+            BodyAnalysisWork::default(),
             stable_ids_requested,
             declaration_reuse,
         ),
