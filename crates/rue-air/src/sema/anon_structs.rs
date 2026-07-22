@@ -511,11 +511,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         let ty = Type::new_struct(struct_id);
         self.anon_struct_identities
             .insert(identity.clone(), struct_id);
-        self.canonical_anonymous_types.insert(ty, identity.clone());
-        self.canonical_anonymous_aliases
-            .entry(ty)
-            .or_default()
-            .insert(identity);
+        self.canonical_anonymous_types.insert(ty, identity);
 
         // Return with is_new=true
         (Type::new_struct(struct_id), true)
@@ -593,11 +589,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         self.anonymous_enum_ids.insert(enum_id);
         let ty = Type::new_enum(enum_id);
         self.anon_enum_identities.insert(identity.clone(), enum_id);
-        self.canonical_anonymous_types.insert(ty, identity.clone());
-        self.canonical_anonymous_aliases
-            .entry(ty)
-            .or_default()
-            .insert(identity);
+        self.canonical_anonymous_types.insert(ty, identity);
 
         Type::new_enum(enum_id)
     }

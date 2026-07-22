@@ -842,15 +842,8 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             TypeKind::Struct(id) => {
                 let def = self.type_pool.struct_def(id);
                 if let Some(identity) = self.canonical_anonymous_types.get(&ty) {
-                    // Canonicalization keeps the stable-key minimum as the
-                    // representative while retaining every producer alias.
-                    // Bodies always export that representative so cache bytes
-                    // do not depend on materialization order.
-                    debug_assert!(
-                        self.canonical_anonymous_aliases
-                            .get(&ty)
-                            .is_some_and(|aliases| aliases.contains(identity))
-                    );
+                    // Producer-nominal: the single key mapped to this live type is
+                    // its identity (ADR-0066).
                     SemanticImportType::AnonymousNominal(identity.clone())
                 } else if let Some(element) = self.slice_element_type(ty)
                     && def.name.starts_with('[')
@@ -871,11 +864,6 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             TypeKind::Enum(id) => {
                 let def = self.type_pool.enum_def(id);
                 if let Some(identity) = self.canonical_anonymous_types.get(&ty) {
-                    debug_assert!(
-                        self.canonical_anonymous_aliases
-                            .get(&ty)
-                            .is_some_and(|aliases| aliases.contains(identity))
-                    );
                     SemanticImportType::AnonymousNominal(identity.clone())
                 } else if rue_builtins::BUILTIN_ENUMS
                     .iter()

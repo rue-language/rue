@@ -453,10 +453,7 @@ pub struct SemaOutput {
     /// module tokens at the compiler retention boundary before persisting keys.
     pub anonymous_nominal_identities_by_type: HashMap<
         Type,
-        crate::AnonymousNominalIdentitySet<
-            crate::SemanticDefinitionToken,
-            crate::SemanticModuleToken,
-        >,
+        crate::AnonymousNominalKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
     >,
     /// Issuer-scoped canonical identities for every aggregate type that may
     /// own synthesized drop glue. This lets the compiler name glue without

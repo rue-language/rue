@@ -78,16 +78,6 @@ pub struct AnonymousNominalKey<D, M> {
     pub arguments: CanonicalArguments<D, M>,
 }
 
-/// All producer-specific identities which materialized as one language-level
-/// structural type in a semantic request. `representative` is the stable
-/// minimum of `aliases`; consumers use it for method/destructor dispatch while
-/// retaining every alias for incremental dependency and symbol projection.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AnonymousNominalIdentitySet<D, M> {
-    pub representative: AnonymousNominalKey<D, M>,
-    pub aliases: Arc<[AnonymousNominalKey<D, M>]>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NominalInstanceKey<D, M> {
     Builtin {
