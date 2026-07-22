@@ -74,6 +74,8 @@ pub(crate) use test_support::*;
 
 #[cfg(test)]
 mod pipeline_tests;
+#[cfg(test)]
+mod producer_nominal_acceptance_tests;
 
 #[cfg(test)]
 mod api_inventory;

@@ -1,0 +1,390 @@
+# RUE-1089 producer-nominal anonymous-type identity — acceptance corpus
+#
+# This file is codex's acceptance list for the producer-nominal anonymous-type
+# identity cut (ADR-0066 / RUE-1089), encoded as executable spec cases. It is
+# valuable in two states:
+#
+#   * TODAY — it documents the fail-closed frontier precisely. Every case here
+#     passes against the current tree: the passing cases assert real behavior,
+#     and the one case that currently hits the deliberately fail-closed E9000
+#     blocker is encoded as a `compile_fail` asserting that exact error.
+#   * POST-ANCHOR-FIX — the E9000 case is marked `# FLIPS-POST-ANCHOR-FIX:` with
+#     the exact `exit_code` it must return once astgen and the durable fragment
+#     evaluator mint anonymous-type anchors consistently. Flipping it is
+#     mechanical: delete `compile_fail`/`error_contains`, add the noted
+#     `exit_code`.
+#
+# Background: docs/notes/rue-1089-current-anonymous-type-behavior.md,
+# docs/notes/rue-1089-acceptance-ledger.md, SITE_INVENTORY_SCRATCH.md.
+#
+# Every case below was compiled and (where it compiles) run with the debug
+# `//crates/rue:rue` binary built from this worktree before being encoded; the
+# expected outcomes are captured, not hypothesized.
+
+[section]
+id = "expressions.producer_nominal_acceptance"
+spec_chapter = "4.14"
+name = "Producer-nominal anonymous-type identity — acceptance corpus"
+description = "Producer-nominal identity acceptance criteria for anonymous struct/enum types (RUE-1089, ADR-0066)."
+
+# =============================================================================
+# Criterion 1 — Two anonymous declarations of the same kind inside ONE producer
+# remain DISTINCT types. (Expected: passes today.)
+# =============================================================================
+
+# Two same-shape anonymous structs selected in one function are distinct
+# producer-nominal types: cross-assigning one to the other is a type mismatch.
+[[case]]
+name = "c1_producer_local_twin_structs_are_distinct"
+spec = ["4.14:8"]
+description = "Two same-shape anonymous structs in one producer are distinct types; cross-assign is rejected."
+source = """
+fn main() -> i32 {
+    let A = struct { x: i32 };
+    let B = struct { x: i32 };
+    let a: A = A { x: 20 };
+    let b: B = a;  // ERROR: A and B are distinct anonymous types
+    b.x
+}
+"""
+compile_fail = true
+error_contains = "type mismatch"
+
+# The two distinct anonymous types nevertheless coexist and are each usable.
+[[case]]
+name = "c1_producer_local_twin_structs_coexist"
+spec = ["4.14:8"]
+description = "Two same-shape anonymous structs in one producer coexist as distinct usable types."
+source = """
+fn producer() -> i32 {
+    let A = struct { x: i32 };
+    let B = struct { x: i32 };
+    let a: A = A { x: 20 };
+    let b: B = B { x: 22 };
+    a.x + b.x
+}
+fn main() -> i32 { producer() }
+"""
+exit_code = 42
+
+# =============================================================================
+# Criterion 2 — Nested anonymous declarations in different positions. Each
+# distinct anonymous declaration is its own identity regardless of the syntactic
+# position it is reached from. (Empirically: all of these pass today EXCEPT the
+# generic-struct-method-over-anonymous-enum-field shape, isolated in criterion 5.)
+# =============================================================================
+
+# Different statements.
+[[case]]
+name = "c2_nested_anon_different_statements"
+spec = ["4.14:8"]
+description = "Anonymous structs declared in different statements are independent identities."
+source = """
+fn main() -> i32 {
+    let A = struct { x: i32 };
+    let B = struct { y: i32 };
+    let a: A = A { x: 20 };
+    let b: B = B { y: 22 };
+    a.x + b.y
+}
+"""
+exit_code = 42
+
+# Different if branches.
+[[case]]
+name = "c2_nested_anon_different_if_branches"
+spec = ["4.14:8"]
+description = "Anonymous structs declared in different if branches are independent identities."
+source = """
+fn pick(comptime c: bool) -> i32 {
+    if c {
+        let A = struct { x: i32 };
+        let a: A = A { x: 42 };
+        a.x
+    } else {
+        let B = struct { y: i32 };
+        let b: B = B { y: 7 };
+        b.y
+    }
+}
+fn main() -> i32 { pick(true) }
+"""
+exit_code = 42
+
+# Different match branches.
+[[case]]
+name = "c2_nested_anon_different_match_branches"
+spec = ["4.14:8"]
+description = "Anonymous structs declared in different match arms are independent identities."
+source = """
+fn Opt(comptime T: type) -> type { enum { Some(T), None } }
+fn pick(comptime c: i32) -> i32 {
+    let O = Opt(i32);
+    let v: O = O.Some(c);
+    match v {
+        O.Some(n) => {
+            let A = struct { x: i32 };
+            let a: A = A { x: n };
+            a.x
+        },
+        O.None => {
+            let B = struct { y: i32 };
+            let b: B = B { y: 0 };
+            b.y
+        },
+    }
+}
+fn main() -> i32 { pick(42) }
+"""
+exit_code = 42
+
+# Different operands of one expression.
+[[case]]
+name = "c2_nested_anon_different_operands"
+spec = ["4.14:8"]
+description = "Anonymous structs used in different operands of one expression are independent identities."
+source = """
+fn main() -> i32 {
+    let A = struct { x: i32 };
+    let B = struct { y: i32 };
+    (A { x: 20 }).x + (B { y: 22 }).y
+}
+"""
+exit_code = 42
+
+# Different methods of one type.
+[[case]]
+name = "c2_nested_anon_different_methods"
+spec = ["4.14:8"]
+description = "Anonymous structs declared in different methods of one type are independent identities."
+source = """
+fn Holder() -> type {
+    struct {
+        v: i32,
+        fn first(self) -> i32 {
+            let A = struct { x: i32 };
+            let a: A = A { x: self.v };
+            a.x
+        }
+        fn second(self) -> i32 {
+            let B = struct { y: i32 };
+            let b: B = B { y: self.v };
+            b.y
+        }
+    }
+}
+fn main() -> i32 {
+    let H = Holder();
+    let h: H = H { v: 21 };
+    h.first() + h.second()
+}
+"""
+exit_code = 42
+
+# Non-generic Wrap: an anonymous-enum field matched inside a (non-generic)
+# struct method. This is the shape of criterion 5 WITHOUT the generic anchor;
+# it passes today, isolating the generic contextual anchor as the sole blocker.
+[[case]]
+name = "c2_nongeneric_wrap_matches_anon_enum_field"
+spec = ["4.14:21"]
+description = "A non-generic struct method matching its anonymous-enum field compiles and runs today."
+source = """
+fn Option() -> type { enum { Some(i32), None } }
+fn Wrap() -> type {
+    struct {
+        inner: Option(),
+        fn get_or(self, d: i32) -> i32 {
+            let O = Option();
+            match self.inner { O.Some(v) => v, O.None => d }
+        }
+    }
+}
+fn main() -> i32 {
+    let W = Wrap();
+    let O = Option();
+    let w: W = W { inner: O.Some(42) };
+    w.get_or(0)
+}
+"""
+exit_code = 42
+
+# Generic free function matching an anonymous enum: the anonymous member is
+# reached under a contextual (generic) anchor, but NOT from inside an anonymous
+# struct method — this passes today, further isolating the blocker.
+[[case]]
+name = "c2_generic_free_fn_matches_anon_enum"
+spec = ["4.14:21"]
+description = "A generic free function matching an anonymous enum under a contextual anchor compiles and runs today."
+source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn get_or(comptime T: type, v: Option(T), d: T) -> T {
+    let O = Option(T);
+    match v { O.Some(x) => x, O.None => d }
+}
+fn main() -> i32 {
+    let O = Option(i32);
+    get_or(i32, O.Some(42), 0)
+}
+"""
+exit_code = 42
+
+# Generic struct method with a NESTED anonymous struct (not the field type):
+# the nested anonymous struct is reached under the generic anchor and passes
+# today — only an anonymous ENUM member reached from the method (criterion 5)
+# hits the blocker.
+[[case]]
+name = "c2_generic_method_nested_anon_struct"
+spec = ["4.14:8"]
+description = "A generic struct method declaring a nested anonymous struct compiles and runs today."
+source = """
+fn Wrap(comptime T: type) -> type {
+    struct {
+        seed: T,
+        fn boxed(self) -> T {
+            let Box = struct { held: T };
+            let b: Box = Box { held: self.seed };
+            b.held
+        }
+    }
+}
+fn main() -> i32 {
+    let W = Wrap(i32);
+    let w: W = W { seed: 42 };
+    w.boxed()
+}
+"""
+exit_code = 42
+
+# Generic Wrap whose method does NOT reach the anonymous-enum field: passes
+# today (the field type is present but its members are never reached from the
+# method body), pinning that the blocker is specifically about REACHING the
+# anonymous member under the anchor, not merely declaring the field.
+[[case]]
+name = "c2_generic_wrap_field_untouched"
+spec = ["4.14:8"]
+description = "A generic struct with an anonymous-enum field whose method never reaches it compiles and runs today."
+source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn Wrap(comptime T: type) -> type {
+    struct {
+        inner: Option(T),
+        fn tag(self) -> i32 { 7 }
+    }
+}
+fn main() -> i32 {
+    let W = Wrap(i32);
+    let O = Option(i32);
+    let w: W = W { inner: O.Some(42) };
+    w.tag()
+}
+"""
+exit_code = 7
+
+# =============================================================================
+# Criterion 3 — Identity stability under unrelated edits: reordering sibling
+# methods and adding unrelated declarations does not change the program's
+# behavior. (Expected: passes today. See the pipeline unit test
+# `producer_nominal_identity_is_stable_under_unrelated_edits` for the
+# symbol/semantic-parity companion assertion.)
+# =============================================================================
+
+# Baseline ordering: method `first` then `second`.
+[[case]]
+name = "c3_identity_stable_baseline_order"
+spec = ["4.14:8"]
+description = "Baseline method ordering for the identity-stability pair (first then second)."
+source = """
+fn Holder() -> type {
+    struct {
+        v: i32,
+        fn first(self) -> i32 {
+            let A = struct { x: i32 };
+            let a: A = A { x: self.v };
+            a.x
+        }
+        fn second(self) -> i32 {
+            let B = struct { y: i32 };
+            let b: B = B { y: self.v };
+            b.y * 2
+        }
+    }
+}
+fn main() -> i32 {
+    let H = Holder();
+    let h: H = H { v: 14 };
+    h.first() + h.second()
+}
+"""
+exit_code = 42
+
+# Same program with sibling methods REORDERED (second then first) and an
+# unrelated top-level function added: behavior is unchanged (exit 42).
+[[case]]
+name = "c3_identity_stable_reordered_with_unrelated_decl"
+spec = ["4.14:8"]
+description = "Reordering sibling methods and adding an unrelated declaration does not change behavior."
+source = """
+fn unrelated() -> i32 { 99 }
+fn Holder() -> type {
+    struct {
+        v: i32,
+        fn second(self) -> i32 {
+            let B = struct { y: i32 };
+            let b: B = B { y: self.v };
+            b.y * 2
+        }
+        fn first(self) -> i32 {
+            let A = struct { x: i32 };
+            let a: A = A { x: self.v };
+            a.x
+        }
+    }
+}
+fn main() -> i32 {
+    let H = Holder();
+    let h: H = H { v: 14 };
+    h.first() + h.second()
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Criterion 5 — The Wrap repro's single-nominal-identity check — and
+# Criterion 6 (both backends) for the same program — are NOT encoded here.
+#
+# They currently hit the deliberately fail-closed E9000 blocker, and the spec /
+# CLI runners intentionally treat an "internal compiler error" (E9000) as an ICE
+# failure that can NEVER satisfy a `compile_fail` case (rue-test-runner
+# `ice_message`, applied before the `compile_fail` branch). Encoding the current
+# fail-closed state as a green case is therefore impossible through this runner.
+#
+# Criteria 5 and 6 are instead asserted programmatically against the compiler
+# API in `crates/rue-compiler/src/producer_nominal_acceptance_tests.rs`
+# (`wrap_single_nominal_identity_currently_fails_closed`,
+# `wrap_payload_fails_closed_on_both_backend_targets`), which assert the exact
+# E9000 diagnostic today and carry FLIPS-POST-ANCHOR-FIX notes to become the
+# exit-42 execution regression once the anchor fix lands. When that fix lands,
+# add the green spec case here:
+#
+#   [[case]]
+#   name = "c5_wrap_single_nominal_identity"
+#   spec = ["4.14:21"]
+#   source = """
+#   fn Option(comptime T: type) -> type { enum { Some(T), None } }
+#   fn Wrap(comptime T: type) -> type {
+#       struct {
+#           inner: Option(T),
+#           fn get_or(self, d: T) -> T {
+#               let O = Option(T);
+#               match self.inner { O.Some(v) => v, O.None => d }
+#           }
+#       }
+#   }
+#   fn main() -> i32 {
+#       let W = Wrap(i32);
+#       let O = Option(i32);
+#       let w: W = W { inner: O.Some(42) };
+#       w.get_or(0)
+#   }
+#   """
+#   exit_code = 42
