@@ -583,6 +583,43 @@ fn rue_1090_audit_line(
     )
 }
 
+/// Keep a hard ceiling at the historical known-bad witness while RUE-1090
+/// determines the *direction* of the follow-up. This is intentionally
+/// independent of the exact-flat verdict: a result below the old witness may
+/// still be non-flat and activate RUE-1091, while a second whole-universe pass
+/// per body must fail rather than being recorded as ordinary activation.
+///
+/// The `+2` slack is the existing historical witness band used by the former
+/// fixed-bodies envelope. It is a tripwire only, not a new target threshold.
+const RUE_1090_HISTORICAL_WITNESS_TOLERANCE: usize = 2;
+
+fn rue_1090_historical_witness_ceiling_line(
+    counter: &str,
+    measured_total: usize,
+    measured_bodies: usize,
+    historical_per_body_witness: usize,
+) -> String {
+    assert!(measured_bodies > 0, "per-body denominator is zero");
+    let ceiling_per_body = historical_per_body_witness
+        .checked_add(RUE_1090_HISTORICAL_WITNESS_TOLERANCE)
+        .expect("historical witness ceiling overflow");
+    let ceiling_total = ceiling_per_body
+        .checked_mul(measured_bodies)
+        .expect("historical witness total overflow");
+    assert!(
+        measured_total <= ceiling_total,
+        "RUE-1090 historical witness ceiling tripped for {counter}: \
+         measured={measured_total}/{measured_bodies}, \
+         ceiling={ceiling_per_body} per body ({ceiling_total} total; \
+         historical witness {historical_per_body_witness}+{RUE_1090_HISTORICAL_WITNESS_TOLERANCE})"
+    );
+    format!(
+        "RUE-1090 historical tripwire: per-body {counter}={measured_total}/{measured_bodies} \
+         <= {ceiling_per_body} (historical witness {historical_per_body_witness} \
+         + {RUE_1090_HISTORICAL_WITNESS_TOLERANCE})",
+    )
+}
+
 /// Axis: unrelated declarations grow while reached bodies stay fixed.
 ///
 /// This is the RUE-1090 activation measurement. It compares the observed
@@ -618,6 +655,41 @@ fn run_fixed_bodies_growing_declarations(bodies: usize, ladder: &[usize]) {
     for &decls in ladder.iter().skip(1) {
         let grown = Measure::cold(&Corpus::new(bodies, decls));
         let historical_grown = CorpusWitness::predict(bodies, decls);
+        // A worsening beyond the historical unrepaired witness is a regression,
+        // not an ordinary RUE-1090 activation. Keep prepare/shell work here as
+        // well: it is outside the three-counter verdict but still catches a
+        // duplicated whole-universe declaration traversal.
+        for (counter, measured_total, historical_per_body_witness) in [
+            (
+                "prepare (shells)",
+                grown.shells_total,
+                historical_grown.per_body_shells,
+            ),
+            (
+                "projection",
+                grown.projections_total,
+                historical_grown.per_body_projections,
+            ),
+            (
+                "install",
+                grown.semantics_total,
+                historical_grown.per_body_semantics,
+            ),
+            (
+                "endpoints",
+                grown.endpoints_total,
+                historical_grown.per_body_endpoints,
+            ),
+        ] {
+            report.push(Row::Met {
+                label: rue_1090_historical_witness_ceiling_line(
+                    counter,
+                    measured_total,
+                    grown.cold_bodies,
+                    historical_per_body_witness,
+                ),
+            });
+        }
         for (
             counter,
             baseline_value,
@@ -924,6 +996,21 @@ fn rue_1090_gate_accepts_a_flat_changed_constant() {
     assert!(line.contains("exact_ratio_slope_numerator=+0"));
     assert!(line.contains("RUE-1090 FLAT"));
     assert!(line.contains("historical_prediction=201->1101 (informational)"));
+}
+
+#[test]
+fn rue_1090_historical_witness_ceiling_allows_known_bad_work() {
+    let line = rue_1090_historical_witness_ceiling_line("prepare (shells)", 1_101, 1, 1_101);
+
+    assert!(line.contains("prepare (shells)=1101/1"));
+    assert!(line.contains("<= 1103 (historical witness 1101 + 2)"));
+}
+
+#[test]
+#[should_panic(expected = "RUE-1090 historical witness ceiling tripped")]
+fn rue_1090_historical_witness_ceiling_rejects_a_second_full_traversal() {
+    // Two whole-universe traversals exceed the inherited `witness + 2` band.
+    let _ = rue_1090_historical_witness_ceiling_line("install", 2_202, 1, 1_101);
 }
 
 #[test]
