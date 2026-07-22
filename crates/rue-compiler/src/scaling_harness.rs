@@ -498,9 +498,10 @@ fn matrix_size_ladder() -> Vec<usize> {
 ///
 /// The frozen decision rule is about slope, not an absolute post-identity-cut
 /// count: a new implementation may legitimately have a different constant
-/// amount of per-body work. A positive slope as unrelated declarations grow
-/// activates RUE-1091; a flat or lower count cancels it. These are deterministic
-/// integer counters, so the comparison has zero tolerance.
+/// amount of per-body work. Any non-flat per-body count as unrelated declarations
+/// grow activates RUE-1091 for investigation; only an exact flat ratio cancels
+/// it. These are deterministic integer counters, so the comparison has zero
+/// tolerance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Rue1090GateVerdict {
     Flat,
@@ -519,14 +520,14 @@ impl Rue1090GateVerdict {
     fn summary(self) -> &'static str {
         match self {
             Self::Flat => "CANCEL RUE-1091 (all gated counters flat)",
-            Self::ActivateRue1091 => "ACTIVATE RUE-1091 (positive per-body slope observed)",
+            Self::ActivateRue1091 => "ACTIVATE RUE-1091 (non-flat per-body count observed)",
         }
     }
 }
 
 /// Compare exact per-body ratios without normalizing them through integer
 /// division. This matters even though the current corpus keeps the number of
-/// cold bodies fixed: a future pipeline change must not hide a positive slope
+/// cold bodies fixed: a future pipeline change must not hide a non-flat ratio
 /// merely because two truncated integer quotients happen to agree.
 fn rue_1090_gate_verdict(
     baseline_total: usize,
@@ -537,7 +538,7 @@ fn rue_1090_gate_verdict(
     assert!(baseline_bodies > 0 && grown_bodies > 0, "per-body denominator is zero");
     let baseline_scaled = baseline_total as u128 * grown_bodies as u128;
     let grown_scaled = grown_total as u128 * baseline_bodies as u128;
-    if grown_scaled <= baseline_scaled {
+    if grown_scaled == baseline_scaled {
         Rue1090GateVerdict::Flat
     } else {
         Rue1090GateVerdict::ActivateRue1091
@@ -940,6 +941,16 @@ fn rue_1090_gate_activates_on_a_positive_per_body_slope() {
         rue_1090_gate_verdict(500, 2, 751, 3),
         Rue1090GateVerdict::ActivateRue1091
     );
+}
+
+#[test]
+fn rue_1090_gate_does_not_cancel_on_a_negative_per_body_slope() {
+    let (verdict, line) =
+        rue_1090_audit_line("projection", 100, 100, 1_000, 251, 1, 250, 1, 201, 1_101);
+
+    assert_eq!(verdict, Rue1090GateVerdict::ActivateRue1091);
+    assert!(line.contains("exact_ratio_slope_numerator=-1"));
+    assert!(line.contains("RUE-1090 ACTIVATE RUE-1091"));
 }
 
 #[test]
