@@ -421,10 +421,13 @@ retains the independently useful body references needed for reachability;
 cancellation or incomplete work publishes neither a body terminal nor a
 reference terminal.
 
-Language-owned optionality and fallibility use the exact trusted producers
-`\0rue-std/option.rue::Option` and `\0rue-std/result.rue::Result`. Every
-fallible intrinsic returns an exact specialization of the trusted `Option` in
-every context. An expected type only checks compatibility; it never selects the
+RUE-1112's independent amendment to ADR-0038 establishes that language-owned
+optionality and fallibility use the exact trusted producers
+`\0rue-std/option.rue::Option` and `\0rue-std/result.rue::Result`. This ADR
+records the incremental dependency boundary implied by that language decision;
+it does not replace ADR-0038's normative error-handling record. Every fallible
+intrinsic returns an exact specialization of the trusted `Option` in every
+context. An expected type only checks compatibility; it never selects the
 producer, so annotating the result with a user-defined lookalike is a type
 error. `?` recognizes only exact specializations of those two trusted producer
 families, never enum shape. An enclosing trusted `Option` may have a different
@@ -683,6 +686,8 @@ establishes producer ownership.
 
 - [ADR-0025: Compile-Time Execution](0025-comptime.md)
 - [ADR-0029: Anonymous Struct Methods](0029-anonymous-struct-methods.md)
+- [ADR-0038: Error handling: sum types, Result/Option, and must-check via
+  linearity](0038-error-handling-sum-types-result-must-check.md)
 - [ADR-0063: Parallel demand-driven incremental compilation](0063-parallel-demand-driven-incremental-compilation.md)
 - `docs/spec/src/04-expressions/14-comptime.md`
 - `crates/rue-spec/cases/expressions/comptime.toml`
