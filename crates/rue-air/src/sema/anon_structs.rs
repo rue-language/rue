@@ -1,9 +1,15 @@
 //! Anonymous struct handling.
 //!
-//! This module implements structural type equality for anonymous structs.
-//! Two anonymous structs with the same field names/types (in order) and the
-//! same method signatures are the same language type. Method bodies and their
-//! captured values belong to the stable representative, not to equality.
+//! Anonymous `struct` and `enum` declaration expressions are *producer-nominal*
+//! (ADR-0066). Their identity is the selected declaration expression under its
+//! static enclosing comptime specialization — the `AnonymousNominalKey` — not a
+//! structural comparison of fields, variants, method signatures, or bodies. Two
+//! distinct producers that declare the same shape are distinct, non-assignable
+//! types. There is no cross-producer structural search or stable-minimum
+//! representative: each producer key owns exactly one entity. Anchor variants of
+//! the *same* producer (a body reached under different definition-relative
+//! anchor prefixes) alias to that one entity, which is all the alias map now
+//! retains.
 //!
 //! It also implements the enum analog (`find_or_create_anon_enum`): anonymous
 //! enum types produced by comptime type functions like
@@ -317,13 +323,15 @@ impl<D: DeclarationPhase> Sema<'_, D> {
 }
 
 impl<D: DeclarationPhase> Sema<'_, D> {
-    /// Find an existing anonymous struct with the same fields and method
-    /// signatures, or create a new one.
+    /// Return the producer-nominal anonymous struct for `identity`, creating it
+    /// if this producer key has not been materialized yet.
     ///
-    /// This implements structural type equality for anonymous structs: two anonymous
-    /// structs with the same field names/types (in the same order) AND the same method
-    /// signatures are the same type. Method bodies and captured values do not
-    /// participate in structural equality (§4.14:15).
+    /// Identity is producer-nominal (ADR-0066): the `AnonymousNominalKey` alone
+    /// owns the entity. There is no structural search across producers and no
+    /// stable-minimum representative — two distinct producers with identical
+    /// fields and method signatures are distinct types. Method signatures,
+    /// captured values, and bodies are *content* of the type, not part of its
+    /// identity.
     ///
     /// Returns a tuple of (Type, is_new) where is_new indicates whether the struct was
     /// newly created (true) or an existing match was found (false). Callers should only
@@ -339,50 +347,9 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             return (Type::new_struct(*struct_id), false);
         }
 
-        let existing = self
-            .anonymous_struct_ids
-            .iter()
-            .copied()
-            .filter(|id| self.anonymous_struct_matches(*id, fields, method_sigs))
-            .min_by(|left, right| {
-                Self::anonymous_key_cmp(
-                    &self.canonical_anonymous_types[&Type::new_struct(*left)],
-                    &self.canonical_anonymous_types[&Type::new_struct(*right)],
-                )
-            });
-        if let Some(struct_id) = existing {
-            let ty = Type::new_struct(struct_id);
-            self.anon_struct_identities
-                .insert(identity.clone(), struct_id);
-            self.canonical_anonymous_aliases
-                .entry(ty)
-                .or_default()
-                .insert(identity.clone());
-            let representative = self
-                .canonical_anonymous_types
-                .get_mut(&ty)
-                .expect("anonymous type must have a representative");
-            if Self::anonymous_key_cmp(&identity, representative).is_lt() {
-                *representative = identity;
-                self.anon_struct_method_sigs
-                    .insert(struct_id, method_sigs.to_vec());
-                if captured_values.is_empty() {
-                    self.anon_struct_captured_values.remove(&struct_id);
-                } else {
-                    self.anon_struct_captured_values
-                        .insert(struct_id, captured_values.clone());
-                }
-                self.anon_struct_type_subst.remove(&struct_id);
-                self.remove_callable_methods_for_owner(struct_id);
-                self.anonymous_methods
-                    .retain(|(owner, _), _| *owner != struct_id);
-                return (ty, true);
-            }
-            return (ty, false);
-        }
-
-        // No matching struct found - create a new one using ID reservation
-        // This avoids the fragile two-phase naming where a temp name is replaced
+        // Producer-nominal: a key that has not been seen mints its own entity.
+        // Create a new one using ID reservation. This avoids the fragile
+        // two-phase naming where a temp name is replaced.
         let struct_id = self.type_pool.reserve_struct_id();
 
         // Now we know the ID, so we can create the final name directly
@@ -452,20 +419,17 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         (Type::new_struct(struct_id), true)
     }
 
-    /// Find an existing anonymous enum with the same variants and payload
-    /// types, or create a new one. The enum analog of
+    /// Return the producer-nominal anonymous enum for `identity`, creating it
+    /// if this producer key has not been materialized yet. The enum analog of
     /// [`Self::find_or_create_anon_struct`].
     ///
-    /// Structural equality is achieved via a *canonical name* that fully
-    /// encodes the variant names and their resolved payload types: two
-    /// instantiations with identical structure (`Option(i32)` reused) intern
-    /// the same name and dedup to one `EnumId`, while distinct structure
-    /// (`Option(i32)` vs `Option(bool)`) interns different names and yields
-    /// distinct enums with correctly-sized tagged-union layouts. Because
-    /// payload types are already fully monomorphized here, captured comptime
-    /// values (e.g. an `[i32; N]` payload) are reflected in the name too, so
-    /// no separate captured-value tracking is needed (unlike anon structs,
-    /// which can capture a value without it appearing in a field type).
+    /// Identity is producer-nominal (ADR-0066): the `AnonymousNominalKey` owns
+    /// the entity. There is no structural search across producers — two
+    /// distinct producers declaring the same variants are distinct types.
+    /// Because payload types are already fully monomorphized here, the synthetic
+    /// name encodes them (e.g. an `[i32; N]` payload) for presentation, but the
+    /// name never decides identity: each producer key receives a fresh live name
+    /// so the pool's name interning cannot collapse producer-distinct types.
     pub(crate) fn find_or_create_anon_enum(
         &mut self,
         identity: IssuedAnonymousNominalKey,
@@ -474,49 +438,6 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     ) -> Type {
         if let Some(enum_id) = self.anon_enum_identities.get(&identity) {
             return Type::new_enum(*enum_id);
-        }
-
-        let existing = self
-            .anonymous_enum_ids
-            .iter()
-            .copied()
-            .filter(|id| {
-                let def = self.type_pool.enum_def(*id);
-                def.variants == variant_names
-                    && def.variant_payloads.len() == variant_payloads.len()
-                    && def
-                        .variant_payloads
-                        .iter()
-                        .zip(variant_payloads)
-                        .all(|(left, right)| {
-                            left.len() == right.len()
-                                && left
-                                    .iter()
-                                    .zip(right)
-                                    .all(|(left, right)| self.types_equivalent(*left, *right))
-                        })
-            })
-            .min_by(|left, right| {
-                Self::anonymous_key_cmp(
-                    &self.canonical_anonymous_types[&Type::new_enum(*left)],
-                    &self.canonical_anonymous_types[&Type::new_enum(*right)],
-                )
-            });
-        if let Some(enum_id) = existing {
-            let ty = Type::new_enum(enum_id);
-            self.anon_enum_identities.insert(identity.clone(), enum_id);
-            self.canonical_anonymous_aliases
-                .entry(ty)
-                .or_default()
-                .insert(identity.clone());
-            let representative = self
-                .canonical_anonymous_types
-                .get_mut(&ty)
-                .expect("anonymous type must have a representative");
-            if Self::anonymous_key_cmp(&identity, representative).is_lt() {
-                *representative = identity;
-            }
-            return ty;
         }
 
         // Names are presentation/lookup handles only. Source anonymous enums
@@ -604,10 +525,13 @@ impl<D: DeclarationPhase> Sema<'_, D> {
 
     /// Canonical semantic type equivalence.
     ///
-    /// Nominal identity remains exact for named types. Anonymous nominals use
-    /// the language's structural relation, recursively through every composite
-    /// type constructor. This is deliberately separate from allocation
-    /// identity and from recovery coercions such as `never` and `<error>`.
+    /// Nominal identity is exact for named types and, since ADR-0066, for
+    /// anonymous types as well: two anonymous nominals are the same type iff
+    /// they carry the same producer-nominal `AnonymousNominalKey`, never because
+    /// their fields, variants, method signatures, or bodies coincide. Named,
+    /// array, and pointer composition still recurses. This is deliberately
+    /// separate from allocation identity and from recovery coercions such as
+    /// `never` and `<error>`.
     pub(crate) fn types_equivalent(&self, left: Type, right: Type) -> bool {
         self.types_equivalent_inner(left, right, &mut std::collections::HashSet::new())
     }
@@ -643,140 +567,34 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                     self.type_pool.ptr_mut_def(right),
                     visited,
                 ),
-            (crate::TypeKind::Struct(left), crate::TypeKind::Struct(right))
-                if self.anonymous_struct_ids.contains(&left)
-                    && self.anonymous_struct_ids.contains(&right) =>
+            (crate::TypeKind::Struct(left_id), crate::TypeKind::Struct(right_id))
+                if self.anonymous_struct_ids.contains(&left_id)
+                    && self.anonymous_struct_ids.contains(&right_id) =>
             {
-                self.anonymous_structs_structurally_equal(left, right, visited)
+                self.anonymous_nominals_have_same_producer(left, right)
             }
-            (crate::TypeKind::Enum(left), crate::TypeKind::Enum(right))
-                if self.anonymous_enum_ids.contains(&left)
-                    && self.anonymous_enum_ids.contains(&right) =>
+            (crate::TypeKind::Enum(left_id), crate::TypeKind::Enum(right_id))
+                if self.anonymous_enum_ids.contains(&left_id)
+                    && self.anonymous_enum_ids.contains(&right_id) =>
             {
-                let left = self.type_pool.enum_def(left);
-                let right = self.type_pool.enum_def(right);
-                left.variants == right.variants
-                    && left.variant_payloads.len() == right.variant_payloads.len()
-                    && left
-                        .variant_payloads
-                        .iter()
-                        .zip(&right.variant_payloads)
-                        .all(|(left, right)| {
-                            left.len() == right.len()
-                                && left.iter().zip(right).all(|(left, right)| {
-                                    self.types_equivalent_inner(*left, *right, visited)
-                                })
-                        })
+                self.anonymous_nominals_have_same_producer(left, right)
             }
             _ => false,
         }
     }
 
-    fn anonymous_structs_structurally_equal(
-        &self,
-        left: crate::StructId,
-        right: crate::StructId,
-        visited: &mut std::collections::HashSet<(Type, Type)>,
-    ) -> bool {
-        let left_def = self.type_pool.struct_def(left);
-        let right_def = self.type_pool.struct_def(right);
-        left_def.fields.len() == right_def.fields.len()
-            && left_def
-                .fields
-                .iter()
-                .zip(&right_def.fields)
-                .all(|(left, right)| {
-                    left.name == right.name
-                        && self.types_equivalent_inner(left.ty, right.ty, visited)
-                })
-            && self.method_signatures_equivalent(
-                self.anon_struct_method_sigs
-                    .get(&left)
-                    .map_or(&[], Vec::as_slice),
-                self.anon_struct_method_sigs
-                    .get(&right)
-                    .map_or(&[], Vec::as_slice),
-                visited,
-            )
-    }
-
-    fn anonymous_struct_matches(
-        &self,
-        existing: crate::StructId,
-        fields: &[StructField],
-        methods: &[AnonMethodSig],
-    ) -> bool {
-        let existing_def = self.type_pool.struct_def(existing);
-        let mut visited = std::collections::HashSet::new();
-        existing_def.fields.len() == fields.len()
-            && existing_def.fields.iter().zip(fields).all(|(left, right)| {
-                left.name == right.name
-                    && self.types_equivalent_inner(left.ty, right.ty, &mut visited)
-            })
-            && self.method_signatures_equivalent(
-                self.anon_struct_method_sigs
-                    .get(&existing)
-                    .map_or(&[], Vec::as_slice),
-                methods,
-                &mut visited,
-            )
-    }
-
-    fn method_signatures_equivalent(
-        &self,
-        left: &[AnonMethodSig],
-        right: &[AnonMethodSig],
-        visited: &mut std::collections::HashSet<(Type, Type)>,
-    ) -> bool {
-        left.len() == right.len()
-            && left.iter().all(|left| {
-                right.iter().any(|right| {
-                    left.name == right.name
-                        && left.has_self == right.has_self
-                        && left.self_mode == right.self_mode
-                        && left.param_modes == right.param_modes
-                        && left.param_comptime == right.param_comptime
-                        && left.param_types.len() == right.param_types.len()
-                        && left
-                            .param_types
-                            .iter()
-                            .zip(&right.param_types)
-                            .all(|(left, right)| self.method_types_equivalent(left, right, visited))
-                        && self.method_types_equivalent(
-                            &left.return_type,
-                            &right.return_type,
-                            visited,
-                        )
-                })
-            })
-    }
-
-    fn method_types_equivalent(
-        &self,
-        left: &super::AnonMethodType,
-        right: &super::AnonMethodType,
-        visited: &mut std::collections::HashSet<(Type, Type)>,
-    ) -> bool {
-        use super::AnonMethodType as T;
-        match (left, right) {
-            (T::SelfType, T::SelfType) => true,
-            (T::Concrete(left), T::Concrete(right)) => {
-                self.types_equivalent_inner(*left, *right, visited)
-            }
-            (
-                T::Array {
-                    element: left,
-                    len: left_len,
-                },
-                T::Array {
-                    element: right,
-                    len: right_len,
-                },
-            ) => left_len == right_len && self.method_types_equivalent(left, right, visited),
-            (T::PtrConst(left), T::PtrConst(right)) | (T::PtrMut(left), T::PtrMut(right)) => {
-                self.method_types_equivalent(left, right, visited)
-            }
-            (T::Syntax(left), T::Syntax(right)) => left == right,
+    /// Producer-nominal identity comparison (ADR-0066): two anonymous nominals
+    /// are the same type iff they carry the same `AnonymousNominalKey`. Because
+    /// each producer key owns exactly one live entity, equal keys imply the same
+    /// `Type` handle (already caught by the `left == right` fast path); this
+    /// method makes the producer-nominal rule explicit and fails closed when a
+    /// live anonymous type has no recorded identity.
+    fn anonymous_nominals_have_same_producer(&self, left: Type, right: Type) -> bool {
+        match (
+            self.canonical_anonymous_types.get(&left),
+            self.canonical_anonymous_types.get(&right),
+        ) {
+            (Some(left), Some(right)) => left == right,
             _ => false,
         }
     }

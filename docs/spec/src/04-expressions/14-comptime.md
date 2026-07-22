@@ -223,10 +223,14 @@ fn main() -> i32 {
 
 {{ rule(id="4.14:8", cat="normative") }}
 
-Two anonymous struct types that contain no method definitions are structurally
-equal if and only if they have the same field names in the same order with the
-same types. Structural equality for anonymous structs with methods is specified
-by rule 4.14:15.
+Each anonymous struct declaration expression denotes a producer-nominal type.
+Its identity is the selected declaration expression under its static enclosing
+comptime specialization. Declared comptime arguments and enclosing
+specializations distinguish anonymous type specializations. Repeated evaluation of the same
+declaration expression under the same canonical specialization denotes the
+same type. A different declaration expression or specialization denotes a
+different type, regardless
+of equal fields, method signatures, or method bodies.
 
 ```rue
 fn make_point1() -> type { struct { x: i32, y: i32 } }
@@ -236,12 +240,14 @@ fn main() -> i32 {
     let P1 = make_point1();
     let P2 = make_point2();
     let p1: P1 = P1 { x: 10, y: 20 };
-    let p2: P2 = p1;  // OK: P1 and P2 are structurally equal
+    let p2: P2 = p1;  // ERROR: P1 and P2 have different producers
     p2.x + p2.y
 }
 ```
 
-Anonymous structs with different field names or different field types are different types and are not assignable to each other.
+Anonymous structs produced by different declaration expressions or
+specializations are different types and are not assignable to each other,
+including when their fields are equal.
 
 {{ rule(id="4.14:9", cat="legality-rule") }}
 
@@ -351,13 +357,11 @@ It is a compile-time error to define two methods with the same name in an anonym
 
 {{ rule(id="4.14:15", cat="normative") }}
 
-Two anonymous struct types are structurally equal if and only if they have:
-
-1. The same field names in the same order with the same types, AND
-2. The same method names, receiver presence and passing mode, explicit
-   parameter types, passing modes and `comptime` modifiers, and return types
-
-Method bodies do not affect structural equality—only signatures matter.
+Method definitions are content of the producer-nominal anonymous struct type
+selected by their enclosing declaration expression. Fields, method names,
+signatures, declaration order, and method bodies do not make two different
+anonymous struct declaration expressions the same type. `Self` in each method
+denotes that enclosing producer-nominal type.
 
 ```rue
 fn A() -> type {
@@ -365,13 +369,13 @@ fn A() -> type {
 }
 
 fn B() -> type {
-    struct { x: i32, fn get(self) -> i32 { self.x + 1 } }  // Same type as A()
+    // Different from A(): B's declaration expression is a distinct producer.
+    struct { x: i32, fn get(self) -> i32 { self.x } }
 }
 
 fn C() -> type {
-    // Rue has no `as` cast operator; integer conversions use the @intCast
-    // intrinsic (§4.13), whose target type is inferred from the return type.
-    struct { x: i32, fn get(self) -> i64 { @intCast(self.x) } }  // Different type (i64 vs i32)
+    // Also different from A() and B(), independently of this signature change.
+    struct { x: i32, fn get(self) -> i64 { @intCast(self.x) } }
 }
 ```
 
@@ -402,7 +406,14 @@ Each instantiation is monomorphized: `Option(i32)` and `Option(bool)` are distin
 
 {{ rule(id="4.14:21", cat="normative") }}
 
-Two anonymous enum types are structurally equal if and only if they have the same variant names in the same order carrying the same payload types. Consequently, two instantiations of the same comptime type function with the same type arguments (for example `Option(i32)` evaluated twice) denote the same type, while instantiations with different type arguments denote different, non-assignable types.
+Each anonymous enum declaration expression denotes a producer-nominal type.
+Its identity is the selected declaration expression under its static enclosing
+comptime specialization. Declared comptime arguments and enclosing
+specializations distinguish anonymous type specializations. Repeated evaluation of the same
+declaration expression under the same canonical specialization denotes the
+same type. A different declaration expression or specialization denotes a
+different type, regardless
+of equal variant names or payload types.
 
 ```rue
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
@@ -411,7 +422,7 @@ fn main() -> i32 {
     let A = Option(i32);
     let B = Option(i32);
     let x: A = A.Some(10);
-    let y: B = x;  // OK: A and B are structurally equal
+    let y: B = x;  // OK: A and B select the same producer and specialization
     match y { B.Some(n) => n, B.None => 0 }
 }
 ```
@@ -428,9 +439,12 @@ than compiler builtins.
 
 A comptime function whose declared return type is `type` is a *type
 constructor* (equivalently, a *generic type*). Its body evaluates at compile
-time (rule 4.14:1) to an anonymous struct type (rule 4.14:7) or anonymous enum
-type (rule 4.14:20). Calling a type constructor is *type-function application*;
-the call is evaluated at compile time and reduces to a single concrete type.
+time to any comptime type value. When evaluation selects an anonymous struct
+declaration expression or anonymous enum declaration expression, that
+expression denotes the producer-nominal type defined by rules 4.14:8 and
+4.14:21. When evaluation returns an existing type value, it preserves that
+type's identity. Calling a type constructor is *type-function application*;
+the call is evaluated at compile time and reduces to that concrete type.
 Because application is comptime evaluation, every argument must be
 compile-time known (rule 4.14:6), and each `type`-typed argument must be
 supplied by a `comptime` parameter or another type value.
@@ -447,6 +461,22 @@ fn main() -> i32 {
     let O = Option(i32);        // type-function application in value position
     let x: O = O.Some(42);
     match x { O.Some(n) => n, O.None => 0 }
+}
+```
+
+A type constructor may forward an existing type value without minting another
+type:
+
+```rue
+fn Id(comptime T: type) -> type { T }
+fn Pair(comptime T: type) -> type { struct { first: T, second: T } }
+
+fn main() -> i32 {
+    let P = Pair(i32);
+    let Q = Id(P);
+    let p: P = P { first: 20, second: 22 };
+    let q: Q = p;  // OK: Q preserves P's identity
+    q.first + q.second
 }
 ```
 
@@ -490,6 +520,31 @@ spelling — so the inline form is pure surface sugar and adds no new typing rul
 Eliding the arguments (`Option(_).Some(5)`) is not accepted: the arguments must
 be written explicitly.
 
+{{ rule(id="4.14:23a", cat="legality-rule") }}
+
+An anonymous struct or enum declaration expression may not appear directly or
+nested within a type annotation. This restriction applies to `let`, parameter,
+return, field, array-element, and pointer-pointee annotations. A type
+constructor call remains permitted in those positions provided its argument
+expressions do not themselves contain an anonymous declaration expression.
+This containment test is syntactic: it examines the spelling of the annotation
+and its argument expressions, not the type values to which those expressions
+evaluate. Anonymous declaration expressions remain permitted as comptime
+values and as type-constructor results; a program that needs to use one in an
+annotation first binds the type value or names it through a type constructor.
+Value-position and path-head uses described by rules 4.14:22 and 4.14:23 are
+not type annotations; they remain governed by the path-head grammar.
+
+```rue
+fn Pair(comptime T: type) -> type { struct { first: T, second: T } }
+
+fn main() -> i32 {
+    // ERROR: an anonymous struct type cannot appear in a type annotation.
+    let p: struct { x: i32, y: i32 } = Pair(i32) { first: 1, second: 2 };
+    p.first
+}
+```
+
 {{ rule(id="4.14:24", cat="normative") }}
 
 The comptime parameters of a type constructor — both `type` parameters and
@@ -525,16 +580,18 @@ fn main() -> i32 {
 
 {{ rule(id="4.14:25", cat="normative") }}
 
-Each type produced by type-function application is monomorphized
-independently: instantiations with different arguments have independent layouts
-and are distinct, non-assignable types. The identity of an instantiation is
-*structural* — determined by the structural-equality rules for anonymous struct
-(rules 4.14:8, 4.14:15) and enum (rule 4.14:21) types — and does not depend on
-the identity of the constructor or of its arguments. Consequently `F(i32)` and
-`F(i32)` denote the same type wherever they appear, including across separate
-functions; `F(i32)` and `F(i64)` denote different types; and a structurally
-identical result produced by a *different* constructor denotes the same type as
-well (rule 4.14:8).
+Type-function application monomorphizes each canonical specialization
+independently. When evaluation selects an anonymous struct or enum declaration
+expression, that expression under the application's static enclosing comptime
+specialization determines the resulting type identity. Different canonical
+arguments or enclosing specializations select distinct specializations; equal
+canonical specializations select the same type wherever evaluated. A function
+that returns an existing type value, rather than selecting an anonymous
+declaration expression, preserves the returned type's identity. Aliases also
+preserve identity. Distinct producer-nominal specializations do not converge
+merely because their contents are equal. Recursive instantiation that selects a
+new specialization at each step remains subject to the specialization-depth
+limit in 4.14:18.
 
 ```rue
 fn Pair(comptime T: type) -> type { struct { first: T, second: T } }
@@ -544,7 +601,7 @@ fn produce() -> Pair(i32) {
     P { first: 10, second: 5 }
 }
 
-fn consume(p: Pair(i32)) -> i32 {  // same type as produce()'s return
+fn consume(p: Pair(i32)) -> i32 {  // same producer and specialization
     p.first + p.second
 }
 
