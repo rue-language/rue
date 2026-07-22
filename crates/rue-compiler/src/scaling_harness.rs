@@ -75,14 +75,27 @@
 //! The recorded structural baselines below were captured on the CI/dev host; the
 //! `//crates/rue-scaling-bench` runner prints `nproc`, total memory, and the
 //! commit hash at run time so any wall-time/allocation/memory baseline is
-//! attributable to a concrete host and revision. The frozen Caldera prediction
-//! (RUE-1083): base commit 586f50c cutover measured at commit aca4acb (release
-//! build, linux x64, 4-core dev container), ~85% of cold wall in per-body
-//! prepare/project/install via a 200-sample stack profile plus per-stage
-//! `--time-passes` spans; commands
-//! `scripts/rue-bin --target-platforms //platforms:release` and
-//! `RUE_STD_PATH=$PWD/std <rue> --time-passes examples/caldera/main.rue`. The
-//! ~45 ms pre-link target is an eventual reference-host goal, not a current gate.
+//! attributable to a concrete host and revision.
+//!
+//! Two distinct Caldera figures must not be conflated (ADR-0066 §3, RUE-1086
+//! provenance in `docs/benchmarks/rue-1086-caldera-baseline.json`):
+//!
+//! * **~62% of cold wall time at Caldera scale** — the frozen ADR-0066 recorded
+//!   prediction, restored verbatim: the per-body *install/project/endpoint*
+//!   term. This is the `O(bodies × declarations)` share this harness gates on.
+//! * **~85% total per-body setup share** — a *separate* number: the total
+//!   per-body setup share (install/project/endpoint **plus** prepare and
+//!   config), measured via the 200-sample stack profile. It is not the 62%
+//!   prediction and is stated only as the total-setup context around it.
+//!
+//! Caldera measurement provenance (RUE-1083): base cutover commit 586f50c,
+//! measured at commit aca4acb, release build (`--target-platforms
+//! //platforms:release`), linux x64, `RUE_STD_PATH` set, 200 gdb stack samples
+//! at 0.25s intervals plus per-stage `--time-passes` spans over
+//! `examples/caldera/main.rue`. The full machine-readable record — including
+//! this host's configuration and the per-sample raw evidence — is checked in at
+//! `docs/benchmarks/rue-1086-caldera-baseline.json`. The ~45 ms *pre-link*
+//! target is an eventual reference-host goal, not a current gate.
 //!
 //! ## Recorded structural baseline (stage-sourced counters)
 //!
@@ -90,15 +103,23 @@
 //! `reached_bodies + unrelated_decls + 1` (`main`) and `cold_bodies` is exactly
 //! `reached_bodies + 1`:
 //!
+//! With `U = reached_bodies + unrelated_decls + 1`, per-body prepare, project,
+//! and install each equal `U`, per-body endpoints equal `2·U + 1` (one stable
+//! definition endpoint and one body-owner endpoint per declaration plus one
+//! module endpoint), and total prepare work is `cold_bodies · U`:
+//!
 //! ```text
-//!   bodies × decls | cold_bodies per_body_shells per_body_semantics shells_total
-//!     100 ×   100  |        101            201                201          20301
-//!    1000 ×   100  |       1001           1101               1101        1102101
+//!   bodies × decls | cold_bodies per_body_shells per_body_project per_body_semantics per_body_endpoints shells_total
+//!     100 ×   100  |        101            201              201                201                403          20301
+//!    1000 ×   100  |       1001           1101             1101               1101               2203        1102101
 //! ```
 //!
-//! per-body prepare/install grow 1:1 with the universe (witness), and total
-//! declaration-context work is `(bodies+1)·(bodies+decls+1)` — quadratic, the
-//! RUE-1090 witness the gate reads.
+//! per-body prepare/project/install grow 1:1 with the universe and endpoints
+//! grow 2:1 (witness), and total declaration-context work is
+//! `(bodies+1)·(bodies+decls+1)` — quadratic, the RUE-1090 witness the gate
+//! reads. Every target and witness the harness asserts is a closed form in the
+//! corpus knobs (see `CorpusWitness`), never a same-process measured run, so a
+//! uniform regression that inflates a counter at every size fails loudly.
 
 use crate::*;
 use std::sync::Arc;
@@ -164,9 +185,16 @@ struct Measure {
     /// Σ_body declaration-shell predeclarations (the per-body "prepare" term),
     /// sourced from the prepare stage's own output.
     shells_total: usize,
+    /// Σ_body durable declaration records the project stage actually joined (the
+    /// per-body "project" term), sourced from the projector's returned work.
+    projections_total: usize,
     /// Σ_body declaration semantics installed (the "install" term), sourced from
-    /// the install stage, charged only when the install actually ran.
+    /// the install stage's recorded `durable_payloads_installed`, charged only
+    /// when the install actually ran.
     semantics_total: usize,
+    /// Σ_body stable-identity/body-owner/module endpoints the endpoint stage
+    /// actually installed (the per-body "endpoint" term).
+    endpoints_total: usize,
     /// AIR instructions produced — genuine per-body body work, independent of the
     /// unrelated-declaration universe.
     air_instructions: usize,
@@ -185,10 +213,13 @@ impl Measure {
 
     fn from_work(work: &CanonicalSemanticWork) -> Self {
         let body = &work.body_analysis;
+        let ctx = &body.per_body_declaration_context;
         Self {
-            cold_bodies: body.per_body_declaration_context.cold_body_preparations,
-            shells_total: body.per_body_declaration_context.shells_prepared,
-            semantics_total: body.per_body_declaration_context.semantics_installed,
+            cold_bodies: ctx.cold_body_preparations,
+            shells_total: ctx.shells_prepared,
+            projections_total: ctx.projections_performed,
+            semantics_total: ctx.semantics_installed,
+            endpoints_total: ctx.endpoints_installed,
             air_instructions: body.air_instructions_produced,
         }
     }
@@ -199,9 +230,67 @@ impl Measure {
         self.shells_total / self.cold_bodies.max(1)
     }
 
+    /// Per-body declaration "project" work. Flat under the same repair.
+    fn per_body_projections(&self) -> usize {
+        self.projections_total / self.cold_bodies.max(1)
+    }
+
     /// Per-body declaration "install" work. Flat under the same repair.
     fn per_body_semantics(&self) -> usize {
         self.semantics_total / self.cold_bodies.max(1)
+    }
+
+    /// Per-body stable-identity/body-owner/module "endpoint" work. Flat under
+    /// the same repair.
+    fn per_body_endpoints(&self) -> usize {
+        self.endpoints_total / self.cold_bodies.max(1)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Corpus-derived structural prediction (never a measured run)
+// ---------------------------------------------------------------------------
+
+/// Closed-form per-body declaration-context work predicted *only* from the
+/// corpus knobs, for the current (unrepaired) whole-universe-per-body pipeline.
+///
+/// Every field is an exact formula in `(bodies, decls)` — never read back from a
+/// measured compile — so a uniform regression that inflates a counter equally at
+/// the baseline size and the grown size (e.g. an extra full-universe traversal
+/// added to every body at every size) lands *outside* both the flat target and
+/// this witness band and fails the row loudly, instead of scaling the measured
+/// baseline in lockstep and staying green. The formulas are:
+///
+/// * declaration universe `U = bodies + decls + 1` (reached bodies + unrelated
+///   declarations + `main`);
+/// * `cold_bodies = bodies + 1` (each reached body plus `main` analyzed once);
+/// * per-body prepare/project/install each traverse the whole universe: `U`;
+/// * per-body endpoints install one stable-definition endpoint and one
+///   body-owner endpoint per declaration plus one module endpoint: `2·U + 1`
+///   (single-module corpus);
+/// * total prepare work `shells_total = cold_bodies · U = (bodies+1)·(bodies+decls+1)`.
+#[derive(Debug, Clone, Copy)]
+struct CorpusWitness {
+    cold_bodies: usize,
+    per_body_shells: usize,
+    per_body_projections: usize,
+    per_body_semantics: usize,
+    per_body_endpoints: usize,
+    shells_total: usize,
+}
+
+impl CorpusWitness {
+    fn predict(bodies: usize, decls: usize) -> Self {
+        let universe = bodies + decls + 1;
+        let cold_bodies = bodies + 1;
+        Self {
+            cold_bodies,
+            per_body_shells: universe,
+            per_body_projections: universe,
+            per_body_semantics: universe,
+            per_body_endpoints: 2 * universe + 1,
+            shells_total: cold_bodies * universe,
+        }
     }
 }
 
@@ -395,46 +484,95 @@ fn matrix_size_ladder() -> Vec<usize> {
 // Scaling-row logic (shared by the small unit smoke and the heavy matrix)
 // ---------------------------------------------------------------------------
 
-/// Axis: unrelated declarations grow while reached bodies stay fixed. The
-/// repaired target is that per-body install/project/prepare work is UNCHANGED —
-/// a body does not care how many declarations it never touches. The documented
-/// witness (RUE-1091) is per-body work growing 1:1 with the declaration
-/// universe: at `decls`, per-body work is `baseline_per_body + (decls -
-/// baseline_decls)`.
+/// Axis: unrelated declarations grow while reached bodies stay fixed.
+///
+/// The repaired target is that per-body prepare/project/install/endpoint work is
+/// UNCHANGED as `decls` grows — a body does not care how many declarations it
+/// never touches — so the flat target is the corpus-predicted per-body work at
+/// the *baseline* declaration count (`CorpusWitness::predict(bodies,
+/// baseline_decls)`). The documented witness (RUE-1091) is per-body work growing
+/// 1:1 with the declaration universe, which is also corpus-predicted:
+/// `CorpusWitness::predict(bodies, decls)`.
+///
+/// Both envelopes are closed forms in the corpus knobs. Neither is read back
+/// from a measured run, so a uniform per-body regression (an extra
+/// whole-universe traversal at *every* size, including the baseline) inflates
+/// the measured value past `2·U+1` at the endpoint term and past `U` at the
+/// others, landing outside both bands and failing loudly rather than tracking a
+/// scaled measured baseline.
 fn run_fixed_bodies_growing_declarations(bodies: usize, ladder: &[usize]) {
     let baseline_decls = ladder[0];
-    let baseline = Measure::cold(&Corpus::new(bodies, baseline_decls));
+    // Flat target = corpus-predicted per-body work at the smallest declaration
+    // count. This is what the counters would read if per-body work were
+    // invariant to unrelated declarations.
+    let target = CorpusWitness::predict(bodies, baseline_decls);
     let mut report = Report::new(format!(
         "scaling: fixed {bodies} bodies, growing declarations"
     ));
 
+    // A body's real AIR work is fixed by the reached bodies alone; capture it
+    // once from the baseline corpus to assert it stays invariant to unrelated
+    // declarations (a hard invariant that holds today).
+    let baseline_air = Measure::cold(&Corpus::new(bodies, baseline_decls)).air_instructions;
+
     for &decls in ladder.iter().skip(1) {
         let grown = Measure::cold(&Corpus::new(bodies, decls));
-        let witness_delta = decls - baseline_decls;
+        // Unrepaired witness = corpus-predicted per-body work at THIS decl count.
+        let witness = CorpusWitness::predict(bodies, decls);
 
         report.push(Row::envelope(
             format!(
-                "per-body prepare (shells) @ {bodies} bodies: {decls} decls={} vs {baseline_decls} decls={}",
+                "per-body prepare (shells) @ {bodies} bodies: {decls} decls={} (target {} @ {baseline_decls} decls, witness {})",
                 grown.per_body_shells(),
-                baseline.per_body_shells()
+                target.per_body_shells,
+                witness.per_body_shells
             ),
             grown.per_body_shells(),
-            baseline.per_body_shells(),
+            target.per_body_shells,
             2,
-            baseline.per_body_shells() + witness_delta,
+            witness.per_body_shells,
             2,
             "RUE-1091",
         ));
         report.push(Row::envelope(
             format!(
-                "per-body install (semantics) @ {bodies} bodies: {decls} decls={} vs {baseline_decls} decls={}",
+                "per-body project @ {bodies} bodies: {decls} decls={} (target {} @ {baseline_decls} decls, witness {})",
+                grown.per_body_projections(),
+                target.per_body_projections,
+                witness.per_body_projections
+            ),
+            grown.per_body_projections(),
+            target.per_body_projections,
+            2,
+            witness.per_body_projections,
+            2,
+            "RUE-1091",
+        ));
+        report.push(Row::envelope(
+            format!(
+                "per-body install (semantics) @ {bodies} bodies: {decls} decls={} (target {} @ {baseline_decls} decls, witness {})",
                 grown.per_body_semantics(),
-                baseline.per_body_semantics()
+                target.per_body_semantics,
+                witness.per_body_semantics
             ),
             grown.per_body_semantics(),
-            baseline.per_body_semantics(),
+            target.per_body_semantics,
             2,
-            baseline.per_body_semantics() + witness_delta,
+            witness.per_body_semantics,
+            2,
+            "RUE-1091",
+        ));
+        report.push(Row::envelope(
+            format!(
+                "per-body endpoints @ {bodies} bodies: {decls} decls={} (target {} @ {baseline_decls} decls, witness {})",
+                grown.per_body_endpoints(),
+                target.per_body_endpoints,
+                witness.per_body_endpoints
+            ),
+            grown.per_body_endpoints(),
+            target.per_body_endpoints,
+            2,
+            witness.per_body_endpoints,
             2,
             "RUE-1091",
         ));
@@ -442,7 +580,7 @@ fn run_fixed_bodies_growing_declarations(bodies: usize, ladder: &[usize]) {
         // Hard invariant that holds today: AIR (real per-body body work) is
         // invariant to unrelated declarations. Same reached bodies => same AIR.
         assert_eq!(
-            grown.air_instructions, baseline.air_instructions,
+            grown.air_instructions, baseline_air,
             "unrelated declarations must not change real per-body AIR work"
         );
     }
@@ -450,18 +588,47 @@ fn run_fixed_bodies_growing_declarations(bodies: usize, ladder: &[usize]) {
     report.emit();
 }
 
+/// Frozen per-reached-body AIR instruction constants for the synthetic corpus.
+///
+/// Real per-body body work is not analytically derivable from the corpus knobs
+/// — it is the codegen of `fn b{i}() -> i32 { i }` and `main`'s accumulation
+/// loop — so the exact closed form is captured once as an explicitly frozen
+/// external constant. Measured 2026-07-22 on this corpus, total AIR is exactly
+/// `AIR_PER_REACHED_BODY · cold_bodies + AIR_BODY_WORK_CONSTANT` at every size
+/// (verified at 21, 41 cold bodies and the 2-body floor, and invariant to
+/// unrelated declarations). Freezing this, rather than scaling a same-process
+/// measured baseline by `factor`, means a uniform per-body body-work regression
+/// (an extra traversal inflating AIR at *every* size) lands outside the tight
+/// band and fails instead of scaling the target in lockstep.
+const AIR_PER_REACHED_BODY: usize = 6;
+/// `main`'s accumulation-loop tail contributes a single size-independent
+/// instruction on top of the per-body term.
+const AIR_BODY_WORK_CONSTANT: usize = 1;
+/// Tight fixed slack around the exact frozen AIR closed form.
+const AIR_BODY_WORK_TOLERANCE: usize = 2;
+
 /// Axis: reached bodies grow while unrelated declarations stay fixed.
 ///
 /// Hard invariant (holds today): the NUMBER of body analyses is linear in
-/// reached bodies — each reached body is analyzed exactly once (`cold_bodies`).
+/// reached bodies — each reached body is analyzed exactly once (`cold_bodies =
+/// bodies + 1`, corpus-derived).
 ///
-/// Tracked (RUE-1090): TOTAL declaration-context work should also be linear in
+/// Every per-body declaration-context counter (prepare/project/install/endpoint)
+/// is asserted hard against its corpus-derived value (`U = bodies + decls + 1`
+/// for prepare/project/install, `2·U + 1` for endpoints): on this axis those
+/// values grow with `bodies`, and asserting the exact closed form catches a
+/// uniform regression that a scaled measured baseline would hide.
+///
+/// Tracked (RUE-1090): TOTAL declaration-context work should be linear in
 /// reached bodies, but today it is quadratic (each body re-installs the whole
-/// universe), so `shells_total` grows as `(bodies+1)·(bodies+decls+1)`. Strong
-/// invariant (Finding 5): total AIR body work stays linear in reached bodies.
+/// universe), so `shells_total` grows as `(bodies+1)·(bodies+decls+1)`. Both the
+/// linear target and the quadratic witness are corpus-derived, never a measured
+/// run. Strong invariant (Finding 5): total AIR body work stays linear in
+/// reached bodies, checked against the frozen per-body AIR constant.
 fn run_fixed_declarations_growing_bodies(decls: usize, ladder: &[usize]) {
     let base_bodies = ladder[0];
     let baseline = Measure::cold(&Corpus::new(base_bodies, decls));
+    let base_predicted = CorpusWitness::predict(base_bodies, decls);
     let mut report = Report::new(format!(
         "scaling: fixed {decls} declarations, growing bodies"
     ));
@@ -469,40 +636,49 @@ fn run_fixed_declarations_growing_bodies(decls: usize, ladder: &[usize]) {
     eprintln!(
         "\n== RUE-1086 BASELINE (RUE-1090 gate): per-body declaration-context counters ==\n  \
          {:>6} bodies × {:>4} decls | cold_bodies={:>5} per_body_shells={:>5} \
-         per_body_semantics={:>5} shells_total={:>9}",
+         per_body_project={:>5} per_body_semantics={:>5} per_body_endpoints={:>5} \
+         shells_total={:>9}",
         base_bodies,
         decls,
         baseline.cold_bodies,
         baseline.per_body_shells(),
+        baseline.per_body_projections(),
         baseline.per_body_semantics(),
+        baseline.per_body_endpoints(),
         baseline.shells_total,
     );
 
     for &bodies in ladder.iter().skip(1) {
         let grown = Measure::cold(&Corpus::new(bodies, decls));
         let factor = bodies / base_bodies;
+        // Corpus-derived predictions at this size — nothing read from `grown`.
+        let predicted = CorpusWitness::predict(bodies, decls);
 
         eprintln!(
             "  {:>6} bodies × {:>4} decls | cold_bodies={:>5} per_body_shells={:>5} \
-             per_body_semantics={:>5} shells_total={:>9} air={:>7}",
+             per_body_project={:>5} per_body_semantics={:>5} per_body_endpoints={:>5} \
+             shells_total={:>9} air={:>7}",
             bodies,
             decls,
             grown.cold_bodies,
             grown.per_body_shells(),
+            grown.per_body_projections(),
             grown.per_body_semantics(),
+            grown.per_body_endpoints(),
             grown.shells_total,
             grown.air_instructions,
         );
 
-        // Hard: analysis COUNT is linear in reached bodies (+1 for `main`).
+        // Hard: analysis COUNT is linear in reached bodies, corpus-derived as
+        // `bodies + 1` (each reached body plus `main`), NOT `baseline * factor`.
         report.push(Row::linear_hard(
             format!(
-                "body-analysis count @ {decls} decls: {bodies} bodies cold={} (~{factor}x of {})",
-                grown.cold_bodies, baseline.cold_bodies
+                "body-analysis count @ {decls} decls: {bodies} bodies cold={} (corpus target {})",
+                grown.cold_bodies, predicted.cold_bodies
             ),
             grown.cold_bodies,
-            baseline.cold_bodies * factor,
-            factor + 2,
+            predicted.cold_bodies,
+            2,
         ));
         assert!(
             grown.cold_bodies >= bodies,
@@ -510,27 +686,72 @@ fn run_fixed_declarations_growing_bodies(decls: usize, ladder: &[usize]) {
             grown.cold_bodies
         );
 
-        // Hard (Finding 5): real per-body body work (AIR) is linear in reached
-        // bodies within a small tolerance. This is the genuine body work the
-        // per-body pipeline must do; only the declaration-context term is
-        // quadratic, so AIR must not be.
+        // Hard: each per-body declaration-context counter equals its exact
+        // corpus-derived closed form. These grow with `bodies` on this axis, so
+        // asserting the closed form (not a scaled measured baseline) catches a
+        // uniform per-body regression.
         report.push(Row::linear_hard(
             format!(
-                "total AIR body work @ {decls} decls: {bodies} bodies air={} (linear ~{})",
-                grown.air_instructions,
-                baseline.air_instructions * factor
+                "per-body prepare (shells) @ {decls} decls: {bodies} bodies={} (corpus U={})",
+                grown.per_body_shells(),
+                predicted.per_body_shells
             ),
-            grown.air_instructions,
-            baseline.air_instructions * factor,
-            baseline.air_instructions * factor / 20 + factor + 2,
+            grown.per_body_shells(),
+            predicted.per_body_shells,
+            1,
+        ));
+        report.push(Row::linear_hard(
+            format!(
+                "per-body project @ {decls} decls: {bodies} bodies={} (corpus U={})",
+                grown.per_body_projections(),
+                predicted.per_body_projections
+            ),
+            grown.per_body_projections(),
+            predicted.per_body_projections,
+            1,
+        ));
+        report.push(Row::linear_hard(
+            format!(
+                "per-body install (semantics) @ {decls} decls: {bodies} bodies={} (corpus U={})",
+                grown.per_body_semantics(),
+                predicted.per_body_semantics
+            ),
+            grown.per_body_semantics(),
+            predicted.per_body_semantics,
+            1,
+        ));
+        report.push(Row::linear_hard(
+            format!(
+                "per-body endpoints @ {decls} decls: {bodies} bodies={} (corpus 2U+1={})",
+                grown.per_body_endpoints(),
+                predicted.per_body_endpoints
+            ),
+            grown.per_body_endpoints(),
+            predicted.per_body_endpoints,
+            1,
         ));
 
-        // Tracked (RUE-1090): total declaration-context work should be linear
-        // (factor x baseline) but is quadratic today. The witness is predicted
-        // structurally from the knobs: (bodies+1) reached analyses each
-        // traversing a (bodies+decls+1) universe.
-        let expected_linear_total = baseline.shells_total * factor;
-        let witness_total = (bodies + 1) * (bodies + decls + 1);
+        // Hard (Finding 5): real per-body body work (AIR) is linear in reached
+        // bodies. Checked against the frozen per-body AIR constant, so total AIR
+        // must be `cold_bodies · AIR_PER_REACHED_BODY` within a tight band — a
+        // corpus/frozen bound, not a scaled measured baseline.
+        let air_target = grown.cold_bodies * AIR_PER_REACHED_BODY + AIR_BODY_WORK_CONSTANT;
+        report.push(Row::linear_hard(
+            format!(
+                "total AIR body work @ {decls} decls: {bodies} bodies air={} (frozen {air_target})",
+                grown.air_instructions,
+            ),
+            grown.air_instructions,
+            air_target,
+            AIR_BODY_WORK_TOLERANCE,
+        ));
+
+        // Tracked (RUE-1090): total declaration-context work should be linear in
+        // reached bodies but is quadratic today. The linear target scales the
+        // *corpus-predicted* base total (not a measured run) by `factor`; the
+        // witness is the exact quadratic closed form `(bodies+1)·(bodies+decls+1)`.
+        let expected_linear_total = base_predicted.shells_total * factor;
+        let witness_total = predicted.shells_total;
         report.push(Row::envelope(
             format!(
                 "total declaration-context work @ {decls} decls: {bodies} bodies shells={} (linear target ~{expected_linear_total}, witness ~{witness_total})",
@@ -557,19 +778,25 @@ fn run_identity_invariant(bodies: usize, decl_ladder: &[usize]) {
         "identity: per-body lookup invariant to unrelated declarations ({bodies} bodies)"
     ));
 
-    let baseline = Measure::cold(&Corpus::new(bodies, 0));
+    // Flat target = corpus-predicted per-body install work with zero unrelated
+    // declarations. The witness at each size is the corpus-predicted per-body
+    // install with the declarations present. Both are closed forms in the corpus
+    // knobs, never a measured run, so a uniform per-body regression fails.
+    let target = CorpusWitness::predict(bodies, 0);
     for &decls in decl_ladder {
         let grown = Measure::cold(&Corpus::new(bodies, decls));
+        let witness = CorpusWitness::predict(bodies, decls);
         report.push(Row::envelope(
             format!(
-                "per-body identity install @ {bodies} bodies: +{decls} unrelated decls => {} vs {}",
+                "per-body identity install @ {bodies} bodies: +{decls} unrelated decls => {} (target {}, witness {})",
                 grown.per_body_semantics(),
-                baseline.per_body_semantics()
+                target.per_body_semantics,
+                witness.per_body_semantics
             ),
             grown.per_body_semantics(),
-            baseline.per_body_semantics(),
+            target.per_body_semantics,
             2,
-            baseline.per_body_semantics() + decls,
+            witness.per_body_semantics,
             2,
             "RUE-1089",
         ));

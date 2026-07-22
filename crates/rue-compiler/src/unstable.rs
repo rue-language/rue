@@ -181,6 +181,17 @@ pub fn executable_in_compile_scope(
     session.executable_in_compile_scope(options)
 }
 
+/// Drive this session through the pre-link boundary (RIR → semantic → CFG →
+/// codegen → object generation) without linking, returning the total generated
+/// object-byte count. Used by the RUE-1086 scaling-bench runner to time a
+/// genuinely pre-link interval; the ~45 ms Caldera target is a pre-link number.
+pub fn pre_link_object_bytes(
+    session: &mut crate::CompilerSession,
+    options: &crate::CompileOptions,
+) -> crate::MultiErrorResult<usize> {
+    crate::queries::pre_link_object_bytes_with_session(session, options)
+}
+
 impl PresentationOutput {
     pub fn as_str(&self) -> &str {
         &self.text
