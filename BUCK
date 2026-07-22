@@ -399,14 +399,15 @@ sh_test(
 # RUE-1119: pin the deterministic, coverage-deciding logic of the affected-
 # corpus selection — the out-of-graph force-full matcher in
 # scripts/affected-targets and the fail-open gate in scripts/ci-corpus-selected.
-# The btd/buck2 runtime path is not exercised here (it fails open to a full run
-# by construction), so this gate needs neither Buck sub-invocations nor network.
+# The test uses local stubs for the BTD/Buck contract, so it proves a selective
+# decision without requiring a network download or a real Buck graph.
 sh_test(
     name = "affected-targets-tool-tests",
     test = "scripts/test-affected-targets.sh",
     resources = [
         "scripts/affected-targets",
         "scripts/ci-corpus-selected",
+        "scripts/parse-btd-impacted.py",
     ],
 )
 

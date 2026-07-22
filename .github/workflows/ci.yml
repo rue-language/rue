@@ -317,7 +317,7 @@ jobs:
           path: |
             ~/.cache/dotslash
             ~/Library/Caches/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          key: dotslash-linux-x64-${{ hashFiles('buck2', 'btd') }}
           restore-keys: |
             dotslash-linux-x64-
 
@@ -359,6 +359,7 @@ jobs:
   # steps (recording an intentional deselection) instead of running the suite.
   # merge_group always reports full=true, so every corpus runs there.
   platform-corpus:
+    if: ${{ always() }}
     needs: affected-targets
     strategy:
       matrix:
@@ -472,7 +473,13 @@ jobs:
           if scripts/ci-corpus-selected "${{ matrix.target }}"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
-            echo "run=false" >> "$GITHUB_OUTPUT"
+            status=$?
+            if [ "$status" -eq 1 ]; then
+              echo "run=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "Corpus selection failed unexpectedly (exit $status); running full corpus." >&2
+              echo "run=true" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       - name: Select Xcode 16.2

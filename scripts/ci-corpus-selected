@@ -14,6 +14,7 @@
 #
 # Exit 0  -> run the corpus.
 # Exit 1  -> corpus intentionally deselected (records the RUE-924 accounting).
+# Exit 2+ -> malformed selection state; callers must run the corpus.
 set -uo pipefail
 
 if [[ $# -ne 1 ]]; then
@@ -22,6 +23,13 @@ if [[ $# -ne 1 ]]; then
 fi
 target="$1"
 
+if [[ -n "${RUE_AFFECTED_SCRIPTS_ROOT:-}" ]]; then
+    repo_root="$RUE_AFFECTED_SCRIPTS_ROOT"
+else
+    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fi
+affected=(bash "$repo_root/scripts/affected-targets")
+
 full="${RUE_AFFECTED_FULL:-}"
 selected="${RUE_AFFECTED_TARGETS:-}"
 
@@ -29,6 +37,21 @@ selected="${RUE_AFFECTED_TARGETS:-}"
 if [[ "$full" != "false" ]]; then
     exit 0
 fi
+
+# The target list belongs to affected-targets, not this gate. A matrix entry
+# that was added without becoming selectable must run, never be silently
+# deselected. Corrupt selection output is similarly an unexpected failure.
+if ! "${affected[@]}" is-selectable "$target"; then
+    echo "ci-corpus-selected: unknown corpus target '${target}'; running it" >&2
+    exit 0
+fi
+
+for selected_target in $selected; do
+    if ! "${affected[@]}" is-selectable "$selected_target"; then
+        echo "ci-corpus-selected: invalid selected target '${selected_target}'" >&2
+        exit 2
+    fi
+done
 
 # Selective run: run only if this exact target is in the selected set.
 if [[ " ${selected} " == *" ${target} "* ]]; then
