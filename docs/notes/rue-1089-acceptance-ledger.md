@@ -99,10 +99,10 @@ appears only when the transported table is genuinely corrupt (criterion 7).
 ## Review-response revision (adversarial re-review themes)
 
 This section records the acceptance-relevant test changes made while addressing
-the four architectural review themes. Only the themes verified in this revision
-are listed; see the PR review report for per-theme status and the themes still
-open (single anchor authority, bare-intrinsic `?` via ComptimeCall, transport
-validate-once, and the digest-collision registry).
+the first four architectural review themes (2, 4a, 6). The deep themes (single
+anchor authority, transport validate-once, the digest-collision registry, and
+the escape-hatched bare-intrinsic `?`) are recorded in *Deep-review themes*
+below.
 
 - **Theme 6 — macOS execution guards.**
   `wrap_single_nominal_identity_executes_to_the_payload`,
@@ -135,3 +135,93 @@ Verification for this revision (Linux x86-64 host): `scripts/rue unit air`
 (565), `scripts/rue unit compiler` (686, incl. `producer_nominal` 13 with the
 Wrap→42 execution), `scripts/rue spec` (2173), clippy clean for `rue-air` and
 `rue-compiler`.
+
+## Deep-review themes (second revision)
+
+This revision lands the three deep review themes in the safest-to-riskiest
+order 5 → 1, stops the riskiest (3) at the escape hatch, and folds in the
+reviewer's later Theme 4b. Sequenced so the safest work never depends on the
+riskiest.
+
+- **Theme 5 — transport validate-once, keyed lookup, fail-before-terminal.**
+  `resolve_anonymous_anchor` no longer re-runs O(S²) whole-producer
+  well-formedness on every one of S lookups (formerly O(S³) per producer). The
+  transported table is validated exactly once when the reparsed fragment is
+  built (`TransportedAnonymousSites` in `semantic_query_nucleus.rs`), producing
+  an immutable `BTreeMap` keyed by fragment-local locator plus an authorized-
+  anchor set; each eval lookup is now O(log S) with no revalidation. A divergent
+  (wrong-but-present) anchor now fails the PRODUCER terminal itself:
+  `validate_transported_anchor_authority` cross-checks every nominal a producer
+  minted against the authorized-anchor set before the direct `ComptimeCall`/const
+  terminal publishes, so no nominal/member/alias/cache entry is published from a
+  corrupt table. NEW direct-terminal test
+  `divergent_anchor_fails_the_producer_comptime_terminal_directly` (compiler)
+  queries the `Wrap(i32)` `ComptimeCall` terminal and asserts it IS the typed
+  E9000 (never a `ComptimeCall` projection carrying a divergent nominal),
+  verified to fail against the pre-fix ordering. The three table-corruption fault
+  modes inject at construction; the divergent mode injects at resolve.
+
+- **Theme 1 — single anchor authority; AstGen consumes the walk.** `AstGen` no
+  longer mints anonymous-type anchors from its own `structural_path` (the second,
+  drift-prone algorithm). It populates a span-keyed table from the shared
+  `rue_rir::anonymous_type_sites` walk when it enters each producer root and
+  resolves every value-position anonymous struct/enum literal by exact source
+  span; a missing locator or kind mismatch fails closed
+  (`RirPayloadBuildError::InvalidBuilderInput` → E9000), with no recompute and no
+  fallback. `anonymous_type_anchor`'s old `structural_path` computation is
+  deleted; `structural_path` stays only for string-literal and read-only-data
+  anchors. Lookup is by exact source span with no coordinate translation —
+  verified: both the walk (`build_definition_index`) and `AstGen`
+  (`lower_module_rir`) run on the original per-module AST, whose spans carry the
+  same `(file_id, start, end)`. **Drift finding: none.** Behavior is neutral —
+  every suite stayed green after the swap (no case disagreed), so the retained
+  table and `AstGen` mint were in fact identical, as the lockstep verification
+  claimed. The bijection tests are retained and re-documented as the walk-
+  coverage guard (a fail-closed miss panics `AstGen::finish`).
+
+- **Theme 3 — bare-intrinsic `?` demands std Option: STOPPED at the escape
+  hatch.** `find_compatible_anon_enum` is unchanged and still selected. Precise
+  blocker: the `?`-on-bare-intrinsic Option is resolved inside rue-air's
+  synchronous one-body `Sema` (`analyze_fallible_intrinsic`
+  → `find_compatible_anon_enum`), where (1) the `SemanticNucleusKey::ComptimeCall`
+  machinery is not reachable — it is a rue-compiler query; rue-air has zero
+  `SemanticNucleusKey` references and resolves comptime calls only through its
+  in-process `reduce_type_ctor_body`, and the coordinator's deferred-producer
+  demand path only schedules producers a body *syntactically references* (via
+  `collect_instance_anonymous_nominals`), which a synthesized bare-intrinsic
+  Option is not; (2) there is no std-Option-producer locator at that site — the
+  current code shape-scans precisely because it has no
+  `\0rue-std/option.rue::Option` key, and naming it needs new std-module
+  resolution plumbing; (3) soundness/availability fails this cut — every existing
+  `?` spec/CLI case supplies a USER-defined `Option` (and `@parse_i64(s)?` over
+  builtin `i64` can be freestanding with no std Option loaded), so forcing a std
+  demand would fail to resolve where std Option is absent and silently change
+  which nominal the intrinsic's `?` binds. Implementing the required mechanism
+  would mean inventing a new cross-crate AIR→nucleus demand path, which the theme
+  forbids. Escalate as RUE-1112 blocker. **Consequence:** the `anonymous_key_cmp`
+  retention rename is also blocked — `find_compatible_anon_enum` (anon_structs.rs)
+  still uses `min_by(anonymous_key_cmp)` as a min/first-wins SELECTION consumer,
+  so the comparator cannot yet be re-documented as presentation-order-only. The
+  only other consumer (`one_body.rs` `sort_by`) is already pure export ordering.
+
+- **Theme 4b — fail-closed anonymous digest-collision registry.** A deterministic
+  exact-key registry (`Sema::anonymous_digest_owners`, `digest →
+  AnonymousNominalKey`) now fronts BOTH anonymous struct and enum registration
+  (shared guard `guard_anonymous_digest_collision` in
+  `find_or_create_anon_struct`/`find_or_create_anon_enum`). Same digest + same key
+  = reuse; same digest + a DISTINCT key = typed E9000 with zero publication (no
+  panic, no silent `EnumId`/`StructId` name-dedup reuse). The diagnostic spells
+  both stable keys and the digest with no pool indices. NEW tests
+  (`theme4b_digest_collision_tests`, air) drive a forced-digest hook: distinct
+  keys fail closed in both insertion orders with zero publication; the same key
+  reuses before and after other registrations; verified to fail with the registry
+  disabled.
+
+Verification (Linux x86-64 host): `scripts/rue unit air` (568),
+`scripts/rue unit compiler` (687, incl. `producer_nominal` 13 and the new direct
+divergent-terminal test), `rir` (59), `cfg` (209), `codegen` (606), `parser`
+(43), `query` (44); `scripts/rue spec` (2173); `scripts/rue ui` (204);
+`scripts/rue cli lazy_specialization` (4) and `cli try` (21). Clippy clean for
+`rue-air`, `rue-rir`, `rue-compiler`. Direct executions: Wrap→42, distinct
+producers→E0206, recursion→E1200; Box-destructor ordering via
+`scripts/rue spec destructors` (56).
