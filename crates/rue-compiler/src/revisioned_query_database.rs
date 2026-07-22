@@ -1714,66 +1714,6 @@ fn collect_durable_anonymous_nominal_dependencies(
     }
 }
 
-fn projected_anonymous_nominal_for_identity<'a>(
-    projected: &'a [crate::durable_semantics::DurableAnonymousNominal],
-    identity: &crate::AnonymousNominalKey,
-) -> Option<&'a crate::durable_semantics::DurableAnonymousNominal> {
-    if let Some(exact) = projected
-        .iter()
-        .find(|nominal| nominal.identity == *identity)
-    {
-        return Some(exact);
-    }
-
-    // Projection can remove a contextual anchor prefix while preserving the
-    // exact producer, arguments, kind, and relative anonymous occurrence.
-    // Follow the same fail-closed rule as binding-manifest materialization:
-    // only a unique relative occurrence can stand for the requested alias.
-    let occurrence = identity.anchor.segments().last();
-    let mut candidates = projected.iter().filter(|nominal| {
-        nominal.identity.producer == identity.producer
-            && nominal.identity.arguments == identity.arguments
-            && nominal.identity.kind == identity.kind
-            && nominal.identity.anchor.segments().last() == occurrence
-    });
-    let candidate = candidates.next()?;
-    candidates.next().is_none().then_some(candidate)
-}
-
-pub(crate) fn materialize_contextual_anonymous_aliases(
-    facts: &mut BTreeMap<
-        crate::AnonymousNominalKey,
-        crate::durable_semantics::DurableAnonymousNominal,
-    >,
-) {
-    loop {
-        let mut required = BTreeSet::new();
-        for nominal in facts.values() {
-            collect_durable_anonymous_nominal_dependencies(nominal, &mut required);
-        }
-        required.retain(|identity| !facts.contains_key(identity));
-        if required.is_empty() {
-            return;
-        }
-        let projected = facts.values().cloned().collect::<Vec<_>>();
-        let mut progressed = false;
-        for identity in required {
-            let Some(candidate) =
-                projected_anonymous_nominal_for_identity(&projected, &identity).cloned()
-            else {
-                continue;
-            };
-            let mut alias = candidate;
-            alias.identity = identity.clone();
-            facts.insert(identity, alias);
-            progressed = true;
-        }
-        if !progressed {
-            return;
-        }
-    }
-}
-
 struct SemanticConstEvaluator<'a, 'provider> {
     provider: &'provider mut SemanticNucleusTypeProvider<'a>,
     imports: &'a QueryFamily<DeclarationImportQueryKey, DeclarationImportQueryValue>,
@@ -7782,23 +7722,20 @@ impl RevisionedQueryDatabase {
                             };
                             match projected {
                                 Ok(projected) => {
-                                    projected_anonymous_nominal_for_identity(
-                                        &projected,
-                                        &query.identity,
-                                    )
-                                    .cloned()
-                                    .map(|mut nominal| {
-                                        // The producer publishes the canonical
-                                        // relative anchor; this exact query
-                                        // owns the contextual alias identity.
-                                        nominal.identity = query.identity.clone();
-                                        Value::AnonymousNominal(nominal)
-                                    })
-                                    .unwrap_or_else(|| {
-                                        Value::Failure(Failure::Resolution(Arc::from(
-                                            "anonymous nominal producer did not publish the requested identity",
-                                        )))
-                                    })
+                                    // Producer-nominal identity is exact: the
+                                    // producer publishes this precise anchor
+                                    // (transported from the frontend), so an exact
+                                    // identity match is the only resolution.
+                                    projected
+                                        .iter()
+                                        .find(|nominal| nominal.identity == query.identity)
+                                        .cloned()
+                                        .map(Value::AnonymousNominal)
+                                        .unwrap_or_else(|| {
+                                            Value::Failure(Failure::Resolution(Arc::from(
+                                                "anonymous nominal producer did not publish the requested identity",
+                                            )))
+                                        })
                                 }
                                 Err(failure) => Value::Failure(failure),
                             }
@@ -8608,9 +8545,7 @@ impl RevisionedQueryDatabase {
                             else {
                                 unreachable!("BodyProducedAnonymous publishes typed values")
                             };
-                            if projected_anonymous_nominal_for_identity(&produced.0, &identity)
-                                .is_none()
-                            {
+                            if !produced.0.iter().any(|nominal| nominal.identity == identity) {
                                 return Err(QueryAbort::Canceled);
                             }
                         }
