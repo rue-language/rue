@@ -295,6 +295,20 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     /// Producer-relative identities issued before anonymous pool allocation.
     pub(crate) anon_struct_identities: HashMap<anon_structs::IssuedAnonymousNominalKey, StructId>,
     pub(crate) anon_enum_identities: HashMap<anon_structs::IssuedAnonymousNominalKey, EnumId>,
+    /// Digest-collision registry (RUE-1089, Theme 4b). Maps each anonymous-symbol
+    /// digest to the exact `AnonymousNominalKey` that first minted it. The 128-bit
+    /// digest spells presentation names only and must never decide type identity:
+    /// a second, DISTINCT key hashing to a digest already owned here is a
+    /// fail-closed internal error, never a silent pool/symbol (`StructId`/`EnumId`)
+    /// reuse. Shared by both the struct and enum minting paths.
+    pub(crate) anonymous_digest_owners: HashMap<u128, anon_structs::IssuedAnonymousNominalKey>,
+    /// Test-only forced-digest hook (RUE-1089, Theme 4b). Maps specific
+    /// `AnonymousNominalKey`s to a chosen digest so two DISTINCT producer keys can
+    /// be pointed at one digest, exercising the fail-closed collision registry
+    /// without depending on a real 128-bit hash collision. Keys absent here hash
+    /// normally.
+    #[cfg(test)]
+    pub(crate) forced_anonymous_digests: HashMap<anon_structs::IssuedAnonymousNominalKey, u128>,
     /// O(1) reverse membership for source anonymous nominal compatibility.
     pub(crate) anonymous_struct_ids: HashSet<StructId>,
     pub(crate) anonymous_enum_ids: HashSet<EnumId>,
@@ -495,6 +509,9 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             generated_enums,
             anon_struct_identities,
             anon_enum_identities,
+            anonymous_digest_owners,
+            #[cfg(test)]
+            forced_anonymous_digests,
             anonymous_struct_ids,
             anonymous_enum_ids,
             canonical_anonymous_types,
@@ -573,6 +590,9 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             generated_enums,
             anon_struct_identities,
             anon_enum_identities,
+            anonymous_digest_owners,
+            #[cfg(test)]
+            forced_anonymous_digests,
             anonymous_struct_ids,
             anonymous_enum_ids,
             canonical_anonymous_types,
@@ -1083,6 +1103,9 @@ impl<'a> Sema<'a> {
             generated_enums: HashMap::new(),
             anon_struct_identities: HashMap::new(),
             anon_enum_identities: HashMap::new(),
+            anonymous_digest_owners: HashMap::new(),
+            #[cfg(test)]
+            forced_anonymous_digests: HashMap::new(),
             anonymous_struct_ids: HashSet::new(),
             anonymous_enum_ids: HashSet::new(),
             canonical_anonymous_types: HashMap::new(),
