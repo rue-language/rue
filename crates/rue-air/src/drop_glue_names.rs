@@ -154,13 +154,16 @@ mod tests {
         let enum_id = register_enum(&type_pool, &interner, "Choice", rue_span::FileId::DEFAULT);
         let type_pool = type_pool.freeze();
 
+        // Named nominals are unconditionally file-qualified (ADR-0066,
+        // RUE-1089); the standalone test pool has no logical path, so the file
+        // component falls back to the numeric file index.
         assert_eq!(
             struct_drop_glue_name(struct_id, &type_pool),
-            "__rue_drop_Container"
+            "__rue_drop_Container$0"
         );
         assert_eq!(
             enum_drop_glue_name(enum_id, &type_pool),
-            "__rue_drop_Choice"
+            "__rue_drop_Choice$0"
         );
     }
 
@@ -181,13 +184,15 @@ mod tests {
         let outer = type_pool.intern_array_from_type(Type::new_array(inner), 2);
         let type_pool = type_pool.freeze();
 
+        // `String` here is a plain user struct (not the builtin), so it is
+        // file-qualified in the element-name fragment (ADR-0066, RUE-1089).
         assert_eq!(
             array_drop_glue_name(inner, &type_pool),
-            "__rue_drop_array_String_3"
+            "__rue_drop_array_String$0_3"
         );
         assert_eq!(
             array_drop_glue_name(outer, &type_pool),
-            "__rue_drop_array_array_String_3_2"
+            "__rue_drop_array_array_String$0_3_2"
         );
     }
 

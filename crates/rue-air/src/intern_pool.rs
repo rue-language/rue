@@ -4056,7 +4056,7 @@ mod tests {
     /// RUE-571: a struct name registered by two files yields file-qualified
     /// symbol names; a unique name stays bare; builtins are never qualified.
     #[test]
-    fn test_struct_symbol_name_qualifies_only_colliding_names() {
+    fn test_struct_symbol_name_qualifies_all_named_types() {
         let pool = TypeInternPool::new();
         let interner = ThreadedRodeo::default();
         let mk = |name: &str, file: u32, is_builtin: bool| StructDef {
@@ -4079,13 +4079,14 @@ mod tests {
         let (b1, _) = pool.register_struct(b_sym, mk("StrBufTest", 0, true));
         let (b2, _) = pool.register_struct(b_sym, mk("StrBufTest", 3, false));
 
-        // Colliding user structs are qualified with their defining file.
+        // Every named user struct is unconditionally file-qualified (ADR-0066,
+        // RUE-1089), whether or not a collision is observed.
         assert_eq!(pool.struct_symbol_name(p1), "P$1");
         assert_eq!(pool.struct_symbol_name(p2), "P$2");
-        // A unique name stays bare.
-        assert_eq!(pool.struct_symbol_name(q), "Q");
-        // A builtin is never qualified, even when its name collides; the
-        // colliding user struct still is, so the pair stays distinct.
+        // A unique name is qualified too.
+        assert_eq!(pool.struct_symbol_name(q), "Q$1");
+        // A builtin is never qualified; the user struct of the same name still
+        // is, so the pair stays distinct.
         assert_eq!(pool.struct_symbol_name(b1), "StrBufTest");
         assert_eq!(pool.struct_symbol_name(b2), "StrBufTest$3");
     }
