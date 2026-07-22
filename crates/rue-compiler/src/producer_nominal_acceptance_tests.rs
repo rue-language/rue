@@ -441,8 +441,9 @@ fn wrap_single_nominal_identity_executes_to_the_payload() {
 /// FLIPPED-POST-ANCHOR-FIX (RUE-1089). The Wrap payload regression now compiles
 /// on BOTH backend targets: the unified anchor is a frontend fact reached before
 /// backend selection, so both `x86-64-linux` and `aarch64-linux` link. The
-/// native x86-64 ELF executes to exit 42; aarch64 stays a structural
-/// cross-compile check off its native host (mirroring `cli.abi_conformance`).
+/// target matching the host triple executes to exit 42; off-host targets stay
+/// structural cross-compile checks (mirroring `cli.abi_conformance`), so the
+/// suite is green on non-Linux hosts too.
 #[cfg(unix)]
 #[test]
 fn wrap_payload_executes_on_both_backend_targets() {
@@ -461,8 +462,19 @@ fn wrap_payload_executes_on_both_backend_targets() {
         let output = crate::queries::compile_with_session(&mut session, &snapshot, &options)
             .unwrap_or_else(|errors| panic!("target {target:?}: Wrap repro must link: {errors}"));
 
-        if target == Target::X86_64Linux {
-            let execution = execute_wrap(&output, "x86");
+        let (host_can_execute, suffix) = match target {
+            Target::X86_64Linux => (
+                cfg!(all(target_os = "linux", target_arch = "x86_64")),
+                "x86",
+            ),
+            Target::Aarch64Linux => (
+                cfg!(all(target_os = "linux", target_arch = "aarch64")),
+                "aarch64",
+            ),
+            _ => (false, "other"),
+        };
+        if host_can_execute {
+            let execution = execute_wrap(&output, suffix);
             assert_eq!(
                 execution.status.code(),
                 Some(42),
