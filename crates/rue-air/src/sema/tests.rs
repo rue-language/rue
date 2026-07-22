@@ -1540,7 +1540,9 @@ mod tests {
         let method = output
             .functions
             .iter()
-            .find(|function| function.name.starts_with("Probe$") && function.name.ends_with(".method"))
+            .find(|function| {
+                function.name.starts_with("Probe$") && function.name.ends_with(".method")
+            })
             .unwrap();
         assert_eq!(
             method.param_modes.by_ref(),
@@ -1554,7 +1556,9 @@ mod tests {
         let assoc = output
             .functions
             .iter()
-            .find(|function| function.name.starts_with("Probe$") && function.name.ends_with("::assoc"))
+            .find(|function| {
+                function.name.starts_with("Probe$") && function.name.ends_with("::assoc")
+            })
             .unwrap();
         assert_eq!(assoc.param_modes.by_ref(), &[false, false, true, true]);
         assert_eq!(assoc.param_modes.writable(), &[false, false, true, false]);
