@@ -2465,9 +2465,7 @@ fn finish_canonical_analysis_with(
     let anonymous_nominal_associations = sema_output
         .anonymous_nominal_identities_by_type
         .values()
-        .map(|identity| {
-            project_anonymous_nominal_key(identity, merged, &authoritative_definitions)
-        })
+        .map(|identity| project_anonymous_nominal_key(identity, merged, &authoritative_definitions))
         .collect::<Result<Vec<_>, rue_air::SemanticStableResolutionFailure>>();
     let mut anonymous_nominal_associations = match anonymous_nominal_associations {
         Ok(associations) => associations,
