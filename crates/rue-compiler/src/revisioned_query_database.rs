@@ -164,6 +164,13 @@ where
             self.selection
                 .publish(terminal)
                 .expect("selected terminal belongs to its compiler family");
+            // The selection root now protects the terminal. End the attempt's
+            // bridge lease at once: this attempt is about to be ledgered
+            // (`attempt_view`) and kept for up to 256 completed requests, and a
+            // lingering bridge pin would retain the terminal for that whole life.
+            // Releasing only after `publish` established the successor keeps
+            // protection continuous — the terminal is never left unpinned.
+            attempt.release_result_lease();
         }
     }
 
@@ -14926,5 +14933,74 @@ mod tests {
             family.origin_attempt_ids().collect::<Vec<_>>(),
             vec![AttemptId(41)]
         );
+    }
+
+    // Selecting a result ends the attempt-carried bridge lease immediately, so a
+    // completed attempt retained in the session ledger no longer pins its
+    // terminal. Without the release the ledgered attempt would keep the terminal
+    // retained for the record's whole life, defeating the retention cap.
+    #[test]
+    fn selecting_a_result_releases_the_attempt_bridge_lease_before_ledgering() {
+        let runtime = QueryRuntime::new(1);
+        let revision = Revision::new(20, 1);
+        runtime.publish_revision(revision, []).unwrap();
+        let mut family = RevisionedFamily::<Family>::new(&runtime, "compiler.bridge-release");
+
+        // Produce and select a result, then hold the attempt alive for the rest
+        // of the test — mimicking the bounded attempt ledger retaining it.
+        let bridged = family
+            .prepare(Key("bridged"))
+            .execute(revision, AttemptId(1), |_| {
+                Ok(Record {
+                    key: Key("bridged"),
+                    value: 1,
+                    diagnostic_payload: 1,
+                    failed: false,
+                })
+            });
+        family.select(&bridged);
+
+        // Move the selection to a succession of other results. The bridged
+        // terminal is no longer selection-protected; if `select` released its
+        // bridge lease, it is now wholly unprotected even though `bridged` lives.
+        for (offset, name) in ["f0", "f1", "f2", "f3", "f4", "f5"].into_iter().enumerate() {
+            let value = 100 + offset as u64;
+            let filler = family.prepare(Key(name)).execute(
+                revision,
+                AttemptId(10 + offset as u64),
+                move |_| {
+                    Ok(Record {
+                        key: Key(name),
+                        value,
+                        diagnostic_payload: 1,
+                        failed: false,
+                    })
+                },
+            );
+            family.select(&filler);
+        }
+
+        // The bridged terminal was evicted under the cap: a fresh request
+        // recomputes it. Under the pre-fix bridge leak the still-alive ledgered
+        // attempt would keep pinning it and this request would reuse instead.
+        let recomputed = family
+            .prepare(Key("bridged"))
+            .execute(revision, AttemptId(99), |_| {
+                Ok(Record {
+                    key: Key("bridged"),
+                    value: 1,
+                    diagnostic_payload: 1,
+                    failed: false,
+                })
+            });
+        assert_eq!(
+            recomputed.execution(),
+            RequestExecution::Computed,
+            "a selected result's bridge lease must end at selection, not at attempt drop"
+        );
+
+        // The bridged attempt was alive throughout: the release was driven by
+        // selection, not by the attempt dropping.
+        assert!(bridged.terminal().is_some());
     }
 }

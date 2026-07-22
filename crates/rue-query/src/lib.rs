@@ -467,13 +467,22 @@ pub struct QueryRequestAttempt<V> {
     /// its request-scoped leases) were still alive, so the published result stays
     /// retained across the gap between this request completing and the caller
     /// registering a successor protection (a session/revision selection root via
-    /// [`QuerySelection::publish`]). The lease releases when the attempt drops —
-    /// which callers keep alive until after selection — giving continuous
-    /// protection with no window in which the result can be evicted and a later
-    /// selection pin a detached recompute. `None` for aborted or setup-failed
-    /// requests, which carry no terminal. Type-erased over the family key so the
-    /// attempt need not name `K`.
-    result_lease: Option<Box<dyn ObservedLease>>,
+    /// [`QuerySelection::publish`]). Its sole job is to bridge that gap.
+    ///
+    /// Once a successor protection exists, the bridge is redundant and must end
+    /// promptly: an attempt record may be held for a long time (the compiler
+    /// ledgers up to 256 completed attempts), and a lingering bridge pin would
+    /// keep an otherwise-evictable terminal retained for the record's whole life.
+    /// [`release_result_lease`](QueryRequestAttempt::release_result_lease) ends it
+    /// explicitly the instant selection has pinned the same terminal — a pure
+    /// narrowing of protection with no window in which the result is unprotected.
+    /// Callers that never register a successor simply drop the attempt, releasing
+    /// the bridge at teardown. Held behind a `Mutex` so the release is a `&self`
+    /// operation on the possibly-shared attempt record.
+    ///
+    /// `None` for aborted or setup-failed requests, which carry no terminal.
+    /// Type-erased over the family key so the attempt need not name `K`.
+    result_lease: Mutex<Option<Box<dyn ObservedLease>>>,
 }
 
 impl<V: fmt::Debug> fmt::Debug for QueryRequestAttempt<V> {
@@ -489,7 +498,7 @@ impl<V: fmt::Debug> fmt::Debug for QueryRequestAttempt<V> {
             .field("inputs", &self.inputs)
             .field("work", &self.work)
             .field("nested_attempts", &self.nested_attempts)
-            .field("result_lease", &self.result_lease.is_some())
+            .field("result_lease", &lock(&self.result_lease).is_some())
             .finish()
     }
 }
@@ -548,6 +557,25 @@ impl<V> QueryRequestAttempt<V> {
     /// Origin terminal revision for reuse/join provenance.
     pub fn origin_revision(&self) -> Option<Revision> {
         self.terminal.as_ref().map(|terminal| terminal.revision())
+    }
+
+    /// Ends the attempt-carried bridge lease now that a successor protection
+    /// holds the result.
+    ///
+    /// Call this immediately after registering a successor protection for the
+    /// terminal — a [`QuerySelection::publish`] root, typically — and never
+    /// before. The bridge lease exists only to keep the result retained between
+    /// request completion and that registration; once the successor pins the same
+    /// terminal, continuing to hold the bridge just pins an otherwise-evictable
+    /// terminal for as long as the (possibly long-lived, ledgered) attempt record
+    /// survives. Releasing here is a pure narrowing of protection: the successor
+    /// still holds the terminal, so there is no instant in which it is
+    /// unprotected. Idempotent, and a no-op for aborted or setup-failed attempts
+    /// that never held a bridge lease. The released pin's own decrement and single
+    /// retention pass run here, outside the attempt lock.
+    pub fn release_result_lease(&self) {
+        let released = lock(&self.result_lease).take();
+        drop(released);
     }
 
     /// Converts this attempt to the legacy terminal-or-abort call shape.
@@ -636,6 +664,13 @@ pub struct RuntimeMetrics {
     /// configured budget the policy is to grow and record the event here, never
     /// to evict a terminal the current computation still needs.
     pub retention_growth: u64,
+    /// Retention enforcement passes run. Each `enforce_retention` call — one full
+    /// eviction scan of a single family — increments this once. Batched
+    /// task-lease teardown deliberately runs one pass per distinct family
+    /// involved rather than one per released pin, so releasing N pins in one
+    /// family raises this by one, not by N; this counter is what makes that
+    /// linearity observable to tests.
+    pub retention_enforcements: u64,
     /// Peak simultaneously executing query bodies.
     pub peak_active_bodies: u64,
     /// Times a parked joiner released its permit.
@@ -672,6 +707,7 @@ struct Metrics {
     evictions: AtomicU64,
     retained_terminals: AtomicU64,
     retention_growth: AtomicU64,
+    retention_enforcements: AtomicU64,
     active_bodies: AtomicU64,
     peak_active_bodies: AtomicU64,
     donated_permits: AtomicU64,
@@ -691,6 +727,7 @@ impl Metrics {
             evictions: self.evictions.load(Ordering::Relaxed),
             retained_terminals: self.retained_terminals.load(Ordering::Relaxed),
             retention_growth: self.retention_growth.load(Ordering::Relaxed),
+            retention_enforcements: self.retention_enforcements.load(Ordering::Relaxed),
             peak_active_bodies: self.peak_active_bodies.load(Ordering::Relaxed),
             donated_permits: self.donated_permits.load(Ordering::Relaxed),
             retained_revisions: 0,
@@ -1134,7 +1171,7 @@ impl QueryRuntime {
                 inputs: Arc::from([]),
                 work: Arc::from([]),
                 nested_attempts: Arc::from([]),
-                result_lease: None,
+                result_lease: Mutex::new(None),
             };
         }
         let id = self.core.next_task.fetch_add(1, Ordering::Relaxed);
@@ -1150,7 +1187,7 @@ impl QueryRuntime {
                 inputs: Arc::from([]),
                 work: Arc::from([]),
                 nested_attempts: Arc::from([]),
-                result_lease: None,
+                result_lease: Mutex::new(None),
             };
         };
         let task = Arc::new(Task {
@@ -1197,7 +1234,7 @@ impl QueryRuntime {
                     terminal: Some(terminal),
                     abort: None,
                     nested_attempts,
-                    result_lease,
+                    result_lease: Mutex::new(result_lease),
                 }
             }
             TaskQueryResult::Aborted {
@@ -1215,7 +1252,7 @@ impl QueryRuntime {
                 inputs: inputs.into(),
                 work: work.into(),
                 nested_attempts,
-                result_lease: None,
+                result_lease: Mutex::new(None),
             },
         }
     }
@@ -2223,6 +2260,10 @@ where
     }
 
     fn enforce_retention(&self) {
+        self.core
+            .metrics
+            .retention_enforcements
+            .fetch_add(1, Ordering::Relaxed);
         let mut retention = lock(&self.inner.retention);
         let mut remaining = retention.len();
         while self.inner.retained_count.load(Ordering::Relaxed) > self.inner.retention_limit
@@ -2305,6 +2346,7 @@ where
         Ok(TerminalPin {
             family: self.clone(),
             terminal: terminal.clone(),
+            deferred: AtomicBool::new(false),
         })
     }
 
@@ -2361,6 +2403,13 @@ where
 pub struct TerminalPin<K: QueryKey, V: Clone + Send + Sync + 'static> {
     family: QueryFamily<K, V>,
     terminal: Arc<QueryTerminal<V>>,
+    /// When set, `Drop` performs neither the pin decrement nor the per-pin
+    /// `enforce_retention`: the batched teardown path (`release_deferred`) has
+    /// already decremented this pin and folded the owning family's single
+    /// enforcement pass into a deduplicated [`FamilyEnforcer`]. False for every
+    /// ordinary per-pin user (session pins, attempt/result leases, test pins),
+    /// whose `Drop` semantics are unchanged.
+    deferred: AtomicBool,
 }
 
 impl<K, V> TerminalPin<K, V>
@@ -2387,6 +2436,12 @@ where
     V: Clone + Send + Sync + 'static,
 {
     fn drop(&mut self) {
+        // Batched teardown (`release_deferred`) already decremented this pin and
+        // deferred the family's single enforcement pass; do nothing further here,
+        // else the pin would be double-decremented and the linearity lost.
+        if self.deferred.load(Ordering::Relaxed) {
+            return;
+        }
         self.terminal.pins.fetch_sub(1, Ordering::AcqRel);
         self.family.enforce_retention();
     }
@@ -2639,17 +2694,94 @@ impl fmt::Debug for TaskLeases {
     }
 }
 
+impl Drop for TaskLeases {
+    /// Batched request-scoped lease release. A completed, canceled, or abandoned
+    /// rooted request may hold thousands of observation pins in one family (the
+    /// Caldera shape: a rooted request whose body publishes 10k+ terminals in a
+    /// single family). Dropping the pins one at a time would run a full
+    /// `enforce_retention` scan per pin — O(N²) precisely at request completion,
+    /// while the family sits over its bound.
+    ///
+    /// Instead, release in two phases. First decrement every held pin
+    /// (`release_deferred`), which never enforces: a decrement is a pure
+    /// narrowing of protection, so ordering among released pins is free and no
+    /// still-leased terminal is left unprotected. Each release yields a
+    /// [`FamilyEnforcer`] keyed by its owning family's stable identity, kept
+    /// deduplicated so heterogeneous families collapse to one enforcer apiece.
+    /// Second, run each distinct family's enforcement exactly once — after all of
+    /// that family's decrements are visible. The result is O(pins) decrements
+    /// plus O(distinct families) enforcement passes.
+    fn drop(&mut self) {
+        if self.held.is_empty() {
+            return;
+        }
+        let mut enforcers: BTreeMap<usize, FamilyEnforcer> = BTreeMap::new();
+        for lease in self.held.drain(..) {
+            let enforcer = lease.release_deferred();
+            enforcers.entry(enforcer.family_id).or_insert(enforcer);
+        }
+        for (_family_id, enforcer) in enforcers {
+            enforcer.enforce();
+        }
+    }
+}
+
 /// A request-scoped retention lease. The concrete implementor is a
 /// [`TerminalPin`], which releases the pinned root on drop. Erasing the family
 /// type parameters lets one task hold observation leases across every family it
 /// touches without a second retention structure.
-trait ObservedLease: Send + Sync {}
+trait ObservedLease: Send + Sync {
+    /// Decrement-only release for batched teardown. Consumes the lease and
+    /// decrements its terminal's pin count immediately, but defers the owning
+    /// family's `enforce_retention` into the returned [`FamilyEnforcer`] rather
+    /// than running it inline. Callers dropping many pins at once decrement all
+    /// of them first, then run one enforcement pass per distinct family — keeping
+    /// release linear instead of quadratic.
+    fn release_deferred(self: Box<Self>) -> FamilyEnforcer;
+}
 
 impl<K, V> ObservedLease for TerminalPin<K, V>
 where
     K: QueryKey,
     V: Clone + Send + Sync + 'static,
 {
+    fn release_deferred(self: Box<Self>) -> FamilyEnforcer {
+        // Narrow protection now: this pin no longer holds the terminal. This is
+        // the same decrement `Drop` would perform, minus the enforcement pass.
+        self.terminal.pins.fetch_sub(1, Ordering::AcqRel);
+        // Suppress the `Drop` decrement/enforce so the boxed pin can free its
+        // Arcs normally without double-releasing or scanning.
+        self.deferred.store(true, Ordering::Relaxed);
+        // Stable per-family identity: the address of the shared `FamilyInner`,
+        // identical across every pin and clone of one family, distinct across
+        // families even when their types coincide. This is the dedup key that
+        // collapses N pins in a family to one enforcement.
+        let family_id = Arc::as_ptr(&self.family.inner) as *const () as usize;
+        FamilyEnforcer {
+            family_id,
+            enforce: Box::new({
+                let family = self.family.clone();
+                move || family.enforce_retention()
+            }),
+        }
+    }
+}
+
+/// A type-erased, per-family retention enforcement deferred out of a batched
+/// lease release. Heterogeneous families produce heterogeneous enforcers; they
+/// deduplicate by [`family_id`](Self::family_id) (the stable `FamilyInner`
+/// address) so one enforcement runs per distinct family after every pin in that
+/// family has been decrement-released.
+struct FamilyEnforcer {
+    family_id: usize,
+    enforce: Box<dyn FnOnce() + Send>,
+}
+
+impl FamilyEnforcer {
+    /// Runs the deferred single-family enforcement pass exactly once.
+    fn enforce(self) {
+        (self.enforce)();
+    }
 }
 
 #[derive(Debug)]
@@ -5748,5 +5880,206 @@ mod tests {
         assert!(Arc::ptr_eq(&reused, &produced));
         assert_eq!(computes.load(Ordering::SeqCst), 1);
         drop(selection);
+    }
+
+    // Releasing a large task lease set is linear, not quadratic: a request whose
+    // body leases many terminals in one family runs exactly one retention
+    // enforcement pass at completion — not one per released pin — while still
+    // converging to the same final retained state as the per-pin path.
+    #[test]
+    fn batched_task_lease_release_enforces_once_per_family_and_converges() {
+        let runtime = QueryRuntime::new(8);
+        publish_empty(&runtime, [revision(1)]);
+        // One family, tiny cap: the Caldera shape (many body terminals, one
+        // family, released together at rooted-request completion).
+        let family = runtime.family::<Slot, u64>("batch-release", 2).unwrap();
+
+        // A sentinel held retained by an explicit external pin across the batched
+        // release, proving the single pass still keeps protected entries while
+        // evicting the rest down to the cap.
+        let sentinel = runtime
+            .query(
+                &family,
+                revision(1),
+                Slot(9999),
+                CancellationToken::new(),
+                |_| Ok(QueryOutput::success(9999)),
+            )
+            .unwrap();
+        let sentinel_pin = family.pin_terminal(&sentinel).unwrap();
+
+        const LEASED: u64 = 64;
+        let before_release = Arc::new(AtomicU64::new(0));
+        let evictions_before_release = Arc::new(AtomicU64::new(0));
+
+        let metrics_runtime = runtime.clone();
+        let before_slot = before_release.clone();
+        let evict_slot = evictions_before_release.clone();
+        let leaf = family.clone();
+
+        // One rooted request leases LEASED distinct terminals in the single
+        // family, all held by its task, then aborts. Aborting avoids a root
+        // publication, so the only post-body enforcement is the batched release
+        // of the task's lease set — the exact work under test.
+        let attempt = runtime.request(
+            &family,
+            revision(1),
+            Slot(0),
+            CancellationToken::new(),
+            move |context| {
+                for i in 1..=LEASED {
+                    context.query(&leaf, Slot(i), move |_| Ok(QueryOutput::success(i)))?;
+                }
+                // Snapshot at the request's last live instant, before its task
+                // (holding all LEASED pins) drops and the batched release runs.
+                let snapshot = metrics_runtime.metrics();
+                before_slot.store(snapshot.retention_enforcements, Ordering::SeqCst);
+                evict_slot.store(snapshot.evictions, Ordering::SeqCst);
+                Err(QueryAbort::Canceled)
+            },
+        );
+        assert_eq!(attempt.abort(), Some(&QueryAbort::Canceled));
+
+        let after = runtime.metrics();
+        let before = before_release.load(Ordering::SeqCst);
+        let evict_before = evictions_before_release.load(Ordering::SeqCst);
+
+        // Linearity: releasing LEASED pins in one family ran exactly ONE
+        // enforcement pass. The per-pin `Drop` path would have run LEASED (64).
+        assert_eq!(
+            after.retention_enforcements - before,
+            1,
+            "batched release of a single family must enforce exactly once, not once per pin"
+        );
+
+        // Convergence: that single pass still evicted the now-unprotected leased
+        // terminals down to the configured cap, exactly as the per-pin path would.
+        assert!(
+            after.evictions > evict_before,
+            "the batched pass still evicts the released terminals down to the cap"
+        );
+        assert_eq!(
+            family.retention().terminals,
+            family.retention().terminal_limit,
+            "post-release retention converges to the configured cap"
+        );
+
+        // The externally pinned sentinel is a protected entry: the pass retained it.
+        let reused = runtime
+            .query(
+                &family,
+                revision(1),
+                Slot(9999),
+                CancellationToken::new(),
+                |_| panic!("the protected sentinel must be retained across batched release"),
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&reused, &sentinel));
+        drop(sentinel_pin);
+    }
+
+    // A selected result's attempt-carried bridge lease ends the instant selection
+    // registers a successor protection — not when the (possibly long-ledgered)
+    // attempt finally drops. Protection is continuous across the handoff.
+    #[test]
+    fn selected_result_releases_bridge_lease_before_attempt_drop() {
+        let runtime = QueryRuntime::new(8);
+        publish_empty(&runtime, [revision(1)]);
+        let family = runtime.family::<Slot, u64>("bridge-release", 1).unwrap();
+
+        // Complete a request; its attempt carries a bridge lease on the result.
+        // Keep the attempt alive for the whole test — standing in for the
+        // compiler's bounded attempt ledger retaining completed attempts.
+        let computes = Arc::new(AtomicUsize::new(0));
+        let counter = computes.clone();
+        let attempt = runtime.request(
+            &family,
+            revision(1),
+            Slot(0),
+            CancellationToken::new(),
+            move |_| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok(QueryOutput::success(0))
+            },
+        );
+        let produced = attempt
+            .terminal()
+            .expect("request produced a terminal")
+            .clone();
+        assert_eq!(computes.load(Ordering::SeqCst), 1);
+
+        // Register a successor protection, then end the bridge. Order matters: the
+        // selection pins first, so releasing the bridge is a pure narrowing with
+        // no instant in which `produced` is unprotected.
+        let mut selection = family.selection();
+        selection.publish(&produced).unwrap();
+        attempt.release_result_lease();
+
+        // While the selection holds it, the result survives eviction pressure —
+        // the handoff left no unprotected instant.
+        for i in 1..=8 {
+            runtime
+                .query(
+                    &family,
+                    revision(1),
+                    Slot(i),
+                    CancellationToken::new(),
+                    |_| Ok(QueryOutput::success(i)),
+                )
+                .unwrap();
+        }
+        let still = runtime
+            .query(
+                &family,
+                revision(1),
+                Slot(0),
+                CancellationToken::new(),
+                |_| panic!("the selection must retain the result"),
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&still, &produced));
+
+        // Drop the successor. Nothing protects the result now — the bridge is
+        // already gone though the attempt is still alive. Under the pre-fix leak
+        // the ledgered attempt would keep pinning it and it would never evict.
+        drop(selection);
+        for i in 9..=16 {
+            runtime
+                .query(
+                    &family,
+                    revision(1),
+                    Slot(i),
+                    CancellationToken::new(),
+                    |_| Ok(QueryOutput::success(i)),
+                )
+                .unwrap();
+        }
+        let recompute_counter = computes.clone();
+        let recomputed = runtime
+            .query(
+                &family,
+                revision(1),
+                Slot(0),
+                CancellationToken::new(),
+                move |_| {
+                    recompute_counter.fetch_add(1, Ordering::SeqCst);
+                    Ok(QueryOutput::success(0))
+                },
+            )
+            .unwrap();
+        assert!(
+            !Arc::ptr_eq(&recomputed, &produced),
+            "the released bridge let the unprotected result evict"
+        );
+        assert_eq!(
+            computes.load(Ordering::SeqCst),
+            2,
+            "the evicted result had to be recomputed after the bridge released"
+        );
+
+        // The bridge ended at selection, not at attempt drop: the attempt is only
+        // dropped now, at the end of the test.
+        assert!(attempt.terminal().is_some());
+        drop(attempt);
     }
 }
