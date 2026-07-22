@@ -367,6 +367,157 @@ inventory below in the same change.
 The new rule uses the `4.14:23a` identifier to keep the existing generated
 traceability stable; the D1 change adds its normative test coverage.
 
+## Proposed post-D1 compiler contract
+
+This section records the RUE-1093 acceptance amendments. It remains
+non-authoritative while this ADR has proposal status. Its purpose is to make
+the remaining ADR-0063 work falsifiable before implementation resumes, rather
+than allowing another aggregate adapter to become a second compiler pipeline.
+
+### Artifact identity and change detection
+
+The implementation keeps four concepts distinct:
+
+1. A source identity names exact source bytes and their logical module mapping.
+   It is input and provenance identity and may change for a semantically neutral
+   edit.
+2. A source-partition input fingerprint is versioned, collision-aware metadata
+   for validating a particular raw semantic input. It is neither semantic
+   equality nor an artifact key. The existing stable definition and import
+   content fingerprints belong to this category.
+3. An artifact has an exact stable key and a versioned, domain-separated
+   fingerprint of canonical artifact content. Exact structural comparison is
+   authoritative after a fingerprint match. Artifact fingerprints exclude raw
+   spans, file-local IDs, diagnostics, rendered text, work metrics, and linker
+   mode. Target or feature configuration appears only where it can change the
+   artifact.
+4. A diagnostic has a stable diagnostic identity and a separately stamped
+   source position. Neither is an artifact key or artifact content.
+
+The independently stamped artifact projections include definition identity,
+nominal content, callable signature, reduced comptime value, body
+implementation, body references, multiplicity, drop facts and plans, layout,
+call ABI, optimized CFG, code-generation-unit content, and reachable
+membership. A consumer observes the narrow projection that can change its
+answer. It does not observe a whole declaration, semantic epoch, or source
+partition merely because that aggregate was convenient to construct.
+
+A type-level comptime expression depends downstream on its canonical reduced
+value, while the producer body remains a transitive validation dependency of
+the comptime-value query. Editing the producer to compute the same value may
+recompute that query but leaves type, layout, and ABI artifacts green. Editing
+it to compute a different value invalidates those dependents. Named constants
+and nested comptime calls follow the same rule. Deterministic failure is a
+separate terminal; cancellation publishes no terminal.
+
+### Body locality, diagnostics, and reachability
+
+The post-D1 semantic provider consists of an immutable, data-only declaration
+base plus body-local mutable overlays. It does not retain or expose a cloneable
+whole `Sema`, `BoundSema`, type pool, raw RIR handle, source span, or other
+epoch-local ID as a query artifact. The registered body evaluator owns exact
+body requests and publishes one atomic body transaction. Deterministic failure
+retains the independently useful body references needed for reachability;
+cancellation or incomplete work publishes neither a body terminal nor a
+reference terminal.
+
+Language-owned optionality and fallibility use the exact trusted producers
+`\0rue-std/option.rue::Option` and `\0rue-std/result.rue::Result`. Every
+fallible intrinsic returns an exact specialization of the trusted `Option` in
+every context. An expected type only checks compatibility; it never selects the
+producer, so annotating the result with a user-defined lookalike is a type
+error. `?` recognizes only exact specializations of those two trusted producer
+families, never enum shape. An enclosing trusted `Option` may have a different
+success payload from the operand. An enclosing trusted `Result` may likewise
+have a different success payload, but its error type must exactly equal the
+operand's error type. Lookalikes remain ordinary legal enums and receive no
+fallibility sugar.
+
+When a semantic operation must materialize one of those types, it emits a
+closed, typed request for the exact toolchain module, not an import of the std
+root and not a shape search. An identity check may compare the trusted producer
+key without loading or specializing a producer merely to reject a lookalike.
+The query evaluator performs no filesystem I/O: the host validates and appends
+demanded source through a narrowly verified successor snapshot, preserving
+source-manifest authority and then resuming ordinary import discovery only for
+imports introduced by that module. The demand is handled before a body
+transaction begins and publishes no semantic failure terminal. A missing,
+unreadable, or malformed demanded trusted module is a deterministic toolchain
+installation/integrity failure, not a user-language alternative, fabricated
+import failure, or structural fallback. Manifest denial remains a hermetic
+build-configuration failure. These well-known semantic dependencies are not
+runtime reachability edges.
+
+An artifact query publishes either a successful artifact, a deterministic
+failure with a canonical diagnostic batch, or no terminal for cancellation.
+Successful semantic, CFG, code-generation, and image artifacts contain no
+warnings or diagnostics. Diagnostic identity, current source position,
+allow/filter policy, and rendering are separate projections. The outer
+one-shot adapter may collect diagnostic batches after observing requested
+artifacts, but no diagnostic participates in an artifact key or fingerprint.
+
+`Reachability(RootSetKey)` is one database-owned traversal over typed,
+independently stamped body-reference terminals. Its root provider is an
+explicit narrow input. The current policy that roots every destructor or scans
+all nominal definitions is transitional and must be deleted when keyed drop
+facts and drop plans become authoritative. Body-reference edge classes are
+versioned and typed; new semantic edge kinds are added explicitly rather than
+hidden in a generic catch-all.
+
+Reachability publishes a proof, a deterministically ordered member set, and
+individually stamped membership projections. Recursive call components are
+ordinary graph cycles: body queries do not request callee bodies. Additions may
+use monotone expansion; after an edge or root deletion, recomputation from the
+roots is the correctness baseline. Unchanged membership remains green.
+Removing a member from one root set releases only the departing `RootSetKey`
+closure's membership pin and withdraws the diagnostics owned by that
+root-set/member relation. The physical terminal remains retained while any
+other live root lease or explicit retention owner still reaches it, and becomes
+reclaimable only after its last owner releases it. The removed membership may
+ultimately contribute to a symbol removal after code-generation-unit and
+complete-image-plan comparison; membership itself is not a symbol delta.
+Schedule order may affect work order but not results, membership, diagnostics,
+or specialization-depth witnesses.
+
+The query runtime, not a session-local worklist or a phase-local Rayon loop,
+owns structured child and batch scheduling under the configured concurrency
+budget. No query holds a database lock while executing a child. The serial
+coordinator remains only until the database-owned traversal proves parity, and
+is then deleted rather than retained as a fallback path.
+
+### Type, drop, code generation, and image boundaries
+
+Multiplicity is target-independent and keyed by type identity. Ordinary
+non-linear structs are affine even when all fields are copyable; only an
+explicitly copyable type is `Copy`. Linear containment is infectious. An array
+is `Copy` exactly when its element is `Copy`; it is `Linear` exactly when its
+length is nonzero and its element is linear. A zero-length array of a linear
+element is non-copyable but has a vacuous runtime drop obligation. Pointer
+multiplicity does not depend on the pointee.
+
+Declared-destructor identity and signature are separate from the destructor
+body. Drop facts and ordered drop plans are separate artifacts. Merely forming
+a type does not root its destructor or drop glue; reached operations that need
+drop semantics observe the plan. Drop glue is a synthetic body and then an
+ordinary code-generation unit. Target-independent multiplicity and drop facts
+remain separate from target-specific layout and call ABI.
+
+CFGs and code-generation units are keyed per function or synthetic body.
+Backend parallelism consumes those independent units; it is not a second
+whole-program scheduling authority. A deterministic `ProgramImagePlan`
+contains the complete current reached symbols, data, and relocations; it has no
+predecessor-dependent delta or retained linker state. The first linker may
+still build a fresh image, but it must consume this plan. A consumer or
+separately keyed comparison projection can compare two complete plans and
+derive canonical additions, changes, and removals. That seam permits a later
+incremental linker to apply the derived delta without another semantic, CFG,
+or code-generation refactor.
+
+The compiler does not satisfy any phase by adding a query beside an aggregate
+adapter that still owns the computation. Each phase includes a source-inventory
+deletion guard naming the whole-program scan, aggregate builder, coordinator,
+or peer scheduler that becomes illegal when the new keyed path is accepted.
+
 ### Corpus migration inventory
 
 The current corpus was inspected at 2026-07-21. The following success cases
@@ -464,7 +615,27 @@ first benchmark implementation before the 45 ms target is evaluated.
    result; otherwise cancel it.
 8. RUE-1092: vertical prototype and adversarial review.
 9. RUE-1093: accept ADR-0066 only after RUE-1090 and RUE-1092, and RUE-1091
-   when activated, complete; then resume the remaining RUE-1028 work.
+   when activated, complete; record the accepted contracts and replan the
+   remaining ADR-0063 work.
+10. RUE-1028: make typed body references, database-owned reachability, and
+    structured runtime scheduling authoritative; delete the session-local
+    reachability coordinator. RUE-1095, RUE-1099, and RUE-1111 are design
+    prerequisites.
+11. RUE-1029: publish per-type nominal content, reduced comptime values,
+    multiplicity, drop facts and plans, layout, and call ABI; delete the
+    whole-pool layout and destructor/glue scans. RUE-1095, RUE-1097, and
+    RUE-1101 are design prerequisites.
+12. RUE-1030: publish per-function and synthetic-body CFG artifacts; delete the
+    aggregate CFG builder and its whole-semantic-output input.
+13. RUE-1031: publish independent code-generation units for both targets and
+    delete whole-program backend parallel loops as an ownership boundary.
+14. RUE-1032: assemble a complete deterministic `ProgramImagePlan` and provide
+    a separately keyed comparison that derives additions, changes, and
+    removals; keep fresh linking as the complete plan's first consumer while
+    preserving the incremental-link delta seam.
+15. RUE-1033: delete the remaining aggregate adapters, peer schedulers, and
+    compatibility routes, then restore every RUE-1083 performance check that
+    was temporarily stubbed during the regression.
 
 The specification amendment may be drafted and reviewed in parallel with
 RUE-1085 through RUE-1087, but live specification and executable-case edits
@@ -472,6 +643,14 @@ land atomically with RUE-1089. RUE-1092 may run in parallel with RUE-1090 after
 RUE-1089; acceptance awaits both required gates.
 If RUE-1091 activates, its post-repair measurement and review evidence replaces
 the corresponding pre-repair evidence for acceptance.
+
+The RUE-1095, RUE-1097, RUE-1099, RUE-1101, and RUE-1111 decisions are accepted
+as explicit prerequisites before their owning implementation phase begins.
+They are not deferred cleanup: raw-input versus artifact fingerprints,
+comptime-value dependencies, reachability deletion semantics, multiplicity and
+drop ownership, and diagnostic terminals determine the query keys and
+invalidation edges. Beginning implementation without those rulings would make
+another cross-compiler rewrite likely.
 
 ## Consequences
 
