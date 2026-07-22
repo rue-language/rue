@@ -18,6 +18,7 @@ fi
 # Buck resource materialization.
 AFFECTED=(bash "$SCRIPTS_DIR/affected-targets")
 GATE=(bash "$SCRIPTS_DIR/ci-corpus-selected")
+DECISION=(bash "$SCRIPTS_DIR/ci-corpus-decision")
 PARSER=(python3 "$SCRIPTS_DIR/parse-btd-impacted.py")
 
 FAILURES=0
@@ -131,6 +132,28 @@ check_gate "unselected valid target deselects" 1 "false" "//:cli-tests-shard-1" 
 check_gate "unknown matrix target runs" 0 "false" "" "//:future-corpus"
 # malformed selected output must not look like an intentional deselection
 check_gate "unknown selected output is an error" 2 "false" "//:future-corpus" "//:spec-tests"
+
+# The workflow-facing adapter must reserve `run=false` for the gate's explicit
+# deselection status. A gate crash or missing executable runs the corpus.
+decision_root="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nexit 1\n' >"$decision_root/deselect"
+printf '#!/usr/bin/env bash\nexit 2\n' >"$decision_root/crash"
+chmod +x "$decision_root/deselect" "$decision_root/crash"
+check_decision() { # check_decision <description> <gate> <expected-output>
+  local desc="$1" gate="$2" expected="$3" output="$decision_root/output"
+  TESTS=$((TESTS + 1))
+  : >"$output"
+  if RUE_AFFECTED_GATE="$gate" GITHUB_OUTPUT="$output" "${DECISION[@]}" "//:spec-tests" >/dev/null 2>&1 && \
+      grep -Fxq "run=$expected" "$output"; then
+    pass "decision: $desc"
+  else
+    fail "decision: $desc"
+  fi
+}
+check_decision "exit 1 intentionally deselects" "$decision_root/deselect" false
+check_decision "crashing gate runs" "$decision_root/crash" true
+check_decision "missing gate runs" "$decision_root/missing" true
+rm -rf "$decision_root"
 
 # --- strict BTD JSON decoding -----------------------------------------------
 
