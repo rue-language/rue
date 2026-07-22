@@ -453,7 +453,6 @@ impl NestedQueryAttempt {
 }
 
 /// Runtime-owned immutable record of one top-level query request.
-#[derive(Debug)]
 pub struct QueryRequestAttempt<V> {
     id: u64,
     origin_request: u64,
@@ -464,6 +463,35 @@ pub struct QueryRequestAttempt<V> {
     inputs: Arc<[InputObservation]>,
     work: Arc<[(Arc<str>, u64)]>,
     nested_attempts: Arc<[NestedQueryAttempt]>,
+    /// A retention lease on `terminal`, acquired while the producing task (and
+    /// its request-scoped leases) were still alive, so the published result stays
+    /// retained across the gap between this request completing and the caller
+    /// registering a successor protection (a session/revision selection root via
+    /// [`QuerySelection::publish`]). The lease releases when the attempt drops —
+    /// which callers keep alive until after selection — giving continuous
+    /// protection with no window in which the result can be evicted and a later
+    /// selection pin a detached recompute. `None` for aborted or setup-failed
+    /// requests, which carry no terminal. Type-erased over the family key so the
+    /// attempt need not name `K`.
+    result_lease: Option<Box<dyn ObservedLease>>,
+}
+
+impl<V: fmt::Debug> fmt::Debug for QueryRequestAttempt<V> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("QueryRequestAttempt")
+            .field("id", &self.id)
+            .field("origin_request", &self.origin_request)
+            .field("execution", &self.execution)
+            .field("terminal", &self.terminal)
+            .field("abort", &self.abort)
+            .field("dependencies", &self.dependencies)
+            .field("inputs", &self.inputs)
+            .field("work", &self.work)
+            .field("nested_attempts", &self.nested_attempts)
+            .field("result_lease", &self.result_lease.is_some())
+            .finish()
+    }
 }
 
 impl<V> QueryRequestAttempt<V> {
@@ -601,6 +629,13 @@ pub struct RuntimeMetrics {
     pub evictions: u64,
     /// Current retained terminal attempts.
     pub retained_terminals: u64,
+    /// Retention passes forced to grow past the configured terminal bound
+    /// because every eviction candidate was a protected root (waiter, pin,
+    /// request-scoped observation lease, or retained revision). This is the
+    /// bounded-retention pressure marker: under a live closure exceeding the
+    /// configured budget the policy is to grow and record the event here, never
+    /// to evict a terminal the current computation still needs.
+    pub retention_growth: u64,
     /// Peak simultaneously executing query bodies.
     pub peak_active_bodies: u64,
     /// Times a parked joiner released its permit.
@@ -618,7 +653,9 @@ pub struct FamilyRetention {
     pub memo_nodes: usize,
     /// Terminal attempts currently retained across those nodes.
     pub terminals: usize,
-    /// Configured terminal bound. Protected roots may exceed it temporarily.
+    /// Configured terminal bound. Protected roots — waiters, explicit pins,
+    /// request-scoped observation leases, and retained revisions — may exceed it
+    /// temporarily; the excess is reclaimed as those roots release.
     pub terminal_limit: usize,
 }
 
@@ -634,6 +671,7 @@ struct Metrics {
     cycles: AtomicU64,
     evictions: AtomicU64,
     retained_terminals: AtomicU64,
+    retention_growth: AtomicU64,
     active_bodies: AtomicU64,
     peak_active_bodies: AtomicU64,
     donated_permits: AtomicU64,
@@ -652,6 +690,7 @@ impl Metrics {
             cycles: self.cycles.load(Ordering::Relaxed),
             evictions: self.evictions.load(Ordering::Relaxed),
             retained_terminals: self.retained_terminals.load(Ordering::Relaxed),
+            retention_growth: self.retention_growth.load(Ordering::Relaxed),
             peak_active_bodies: self.peak_active_bodies.load(Ordering::Relaxed),
             donated_permits: self.donated_permits.load(Ordering::Relaxed),
             retained_revisions: 0,
@@ -689,6 +728,43 @@ struct RuntimeCore {
     metrics: Metrics,
     #[cfg(test)]
     test_events: TestEvents,
+    /// Deterministic interposition hook for concurrency tests. When installed it
+    /// is invoked at the retention-handoff sites (publication exposure, join
+    /// waiter→pin handoff, reuse candidate discovery) so a test can drive a
+    /// concurrent enforcer into the exact window the atomic handoff is meant to
+    /// close. Never present in non-test builds and free of cost otherwise.
+    #[cfg(test)]
+    interpose: InterposeSlot,
+}
+
+/// Test-only holder for the interposition hook, with a `Debug` impl so the
+/// enclosing `RuntimeCore` can still derive `Debug`.
+#[cfg(test)]
+#[derive(Default)]
+struct InterposeSlot(Mutex<Option<Arc<dyn Fn(InterposeSite) + Send + Sync>>>);
+
+#[cfg(test)]
+impl fmt::Debug for InterposeSlot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("InterposeSlot")
+            .finish_non_exhaustive()
+    }
+}
+
+/// The retention-handoff sites a concurrency test may interpose on.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InterposeSite {
+    /// A freshly published terminal has just been exposed and enqueued; with the
+    /// fix its request lease pin is already held.
+    PublishExposed,
+    /// A joiner has transferred waiter protection into a pin and decremented the
+    /// waiter count.
+    JoinHandoff,
+    /// Reuse candidates have been discovered and pinned under the node lock,
+    /// before recursive validation releases the lock.
+    ReuseDiscovered,
 }
 
 const REVISION_RETENTION_LIMIT: usize = 64;
@@ -753,6 +829,8 @@ impl QueryRuntime {
                 metrics: Metrics::default(),
                 #[cfg(test)]
                 test_events: TestEvents::default(),
+                #[cfg(test)]
+                interpose: InterposeSlot::default(),
             }),
         }
     }
@@ -1056,6 +1134,7 @@ impl QueryRuntime {
                 inputs: Arc::from([]),
                 work: Arc::from([]),
                 nested_attempts: Arc::from([]),
+                result_lease: None,
             };
         }
         let id = self.core.next_task.fetch_add(1, Ordering::Relaxed);
@@ -1071,6 +1150,7 @@ impl QueryRuntime {
                 inputs: Arc::from([]),
                 work: Arc::from([]),
                 nested_attempts: Arc::from([]),
+                result_lease: None,
             };
         };
         let task = Arc::new(Task {
@@ -1081,6 +1161,7 @@ impl QueryRuntime {
             owns_permit: AtomicBool::new(false),
             stack: Mutex::new(Vec::new()),
             nested_attempts: Mutex::new(Vec::new()),
+            leases: Mutex::new(TaskLeases::default()),
         });
         let result = match compute {
             Some(compute) => family.query_task(task.clone(), key, origin_request, compute),
@@ -1094,6 +1175,18 @@ impl QueryRuntime {
                 work,
             } => {
                 let origin_request = terminal.origin_request_id();
+                // Carry a live result lease out of the request. The producing task
+                // is still alive here (it drops at the end of this function), and
+                // it still holds its own request-scoped lease on `terminal`, so
+                // `terminal` is currently retained. Pinning it now hands protection
+                // from the task's about-to-drop lease to the returned attempt with
+                // no gap. The caller keeps the attempt alive until after it
+                // registers a successor protection (selection root), closing the
+                // promotion window entirely.
+                let result_lease = family
+                    .pin_terminal(&terminal)
+                    .ok()
+                    .map(|pin| Box::new(pin) as Box<dyn ObservedLease>);
                 QueryRequestAttempt {
                     id,
                     origin_request,
@@ -1104,6 +1197,7 @@ impl QueryRuntime {
                     terminal: Some(terminal),
                     abort: None,
                     nested_attempts,
+                    result_lease,
                 }
             }
             TaskQueryResult::Aborted {
@@ -1121,6 +1215,7 @@ impl QueryRuntime {
                 inputs: inputs.into(),
                 work: work.into(),
                 nested_attempts,
+                result_lease: None,
             },
         }
     }
@@ -1139,6 +1234,19 @@ impl QueryRuntime {
         while !predicate(self.metrics()) {
             generation = wait(&self.core.test_events.changed, generation);
         }
+    }
+
+    /// Installs a deterministic interposition hook for concurrency tests.
+    #[cfg(test)]
+    fn set_interpose(&self, hook: Arc<dyn Fn(InterposeSite) + Send + Sync>) {
+        *lock(&self.core.interpose.0) = Some(hook);
+    }
+
+    /// Removes any installed interposition hook.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    fn clear_interpose(&self) {
+        *lock(&self.core.interpose.0) = None;
     }
 }
 
@@ -1670,22 +1778,45 @@ where
                 Compute { attempt: u64 },
             }
 
-            let candidates = lock(&node.state)
-                .attempts
-                .iter()
-                .rev()
-                .filter_map(|attempt| match &attempt.state {
-                    AttemptState::Terminal { terminal, .. } => Some(terminal.clone()),
-                    AttemptState::Computing { .. } => None,
-                })
-                .collect::<Vec<_>>();
-            for terminal in candidates {
+            // Acquire a protective pin on every reuse candidate while it is still
+            // retained under the node lock, before releasing the lock to validate.
+            // A candidate discovered here therefore cannot be evicted in the
+            // window between discovery and either lease transfer (on a validated
+            // reuse) or release (on a stale candidate): its pin holds it retained
+            // through the recursive validation that follows.
+            let candidates = {
+                let state = lock(&node.state);
+                state
+                    .attempts
+                    .iter()
+                    .rev()
+                    .filter_map(|attempt| match &attempt.state {
+                        AttemptState::Terminal { terminal, .. } => Some(
+                            self.pin_terminal(terminal)
+                                .expect("a family pins its own retained terminal"),
+                        ),
+                        AttemptState::Computing { .. } => None,
+                    })
+                    .collect::<Vec<TerminalPin<K, V>>>()
+            };
+            #[cfg(test)]
+            if !candidates.is_empty() {
+                self.core.interpose(InterposeSite::ReuseDiscovered);
+            }
+            for pin in candidates {
+                let terminal = pin.terminal().clone();
                 match self.core.valid_for_revision(&terminal, &task) {
                     Ok(true) => {
                         self.core.metrics.reuses.fetch_add(1, Ordering::Relaxed);
                         if observe_result {
+                            // Transfer the temporary discovery pin into the task's
+                            // request-scoped lease set, so protection is continuous
+                            // from discovery through the lifetime of the request.
                             task.observe(&terminal);
+                            self.lease_observed_pin(&task, pin);
                         }
+                        // A stale candidate's pin (or an unobserved validation
+                        // reuse) drops with `pin`/`candidates`, releasing it.
                         return TaskQueryResult::Terminal {
                             terminal,
                             execution: RequestExecution::Reused,
@@ -1755,9 +1886,16 @@ where
                                 work: Vec::new(),
                             };
                         }
-                        Ok(Some(terminal)) => {
+                        Ok(Some(pin)) => {
+                            // `join` transferred the waiter's protection into this
+                            // pin before decrementing the waiter count, so the
+                            // joined terminal has been continuously protected. Move
+                            // that protection into the request lease (or drop it,
+                            // leaving an unobserved validation join speculative).
+                            let terminal = pin.terminal().clone();
                             if observe_result {
                                 task.observe(&terminal);
+                                self.lease_observed_pin(&task, pin);
                             }
                             return TaskQueryResult::Terminal {
                                 terminal,
@@ -1812,6 +1950,8 @@ where
                                 output,
                                 dependencies,
                                 inputs,
+                                &task,
+                                observe_result,
                             );
                             if acquired_here {
                                 task.release_permit(&self.core);
@@ -1860,7 +2000,7 @@ where
         node: &Arc<Node<K, V>>,
         attempt_id: u64,
         owner: TaskId,
-    ) -> Result<Option<Arc<QueryTerminal<V>>>, QueryAbort> {
+    ) -> Result<Option<TerminalPin<K, V>>, QueryAbort> {
         let mut state = lock(&node.state);
         if task.cancellation.is_canceled() {
             decrement_waiter(&mut state, attempt_id);
@@ -1875,11 +2015,20 @@ where
         };
         match &mut attempt.state {
             AttemptState::Terminal { terminal, waiters } => {
-                let terminal = terminal.clone();
+                // Transfer this waiter's protection into a pin *before* dropping
+                // the waiter count. Even when this is the last waiter — the count
+                // falls to zero here — the pin is already established, so the
+                // handoff leaves no instant in which the terminal is unprotected
+                // and a concurrent enforcer racing it can never detach it.
+                let pin = self
+                    .pin_terminal(terminal)
+                    .expect("a family pins its own retained terminal");
                 *waiters -= 1;
                 drop(state);
+                #[cfg(test)]
+                self.core.interpose(InterposeSite::JoinHandoff);
                 self.enforce_retention();
-                return Ok(Some(terminal));
+                return Ok(Some(pin));
             }
             AttemptState::Computing {
                 owner: actual_owner,
@@ -1919,9 +2068,13 @@ where
                     state = wait(&node.wait.cv, state);
                 }
                 AttemptState::Terminal { terminal, waiters } => {
-                    let terminal = terminal.clone();
+                    // Transfer waiter protection into a pin before decrementing,
+                    // as above: no unprotected instant even for the last waiter.
+                    let pin = self
+                        .pin_terminal(terminal)
+                        .expect("a family pins its own retained terminal");
                     *waiters -= 1;
-                    break Ok(Some(terminal));
+                    break Ok(Some(pin));
                 }
             }
         };
@@ -1935,6 +2088,10 @@ where
                 .metrics
                 .cancellations
                 .fetch_add(1, Ordering::Relaxed);
+        }
+        #[cfg(test)]
+        if matches!(result, Ok(Some(_))) {
+            self.core.interpose(InterposeSite::JoinHandoff);
         }
         self.enforce_retention();
         result
@@ -1958,6 +2115,8 @@ where
         output: QueryOutput<V>,
         dependencies: Vec<Observation>,
         inputs: Vec<InputObservation>,
+        task: &Arc<Task>,
+        lease: bool,
     ) -> Arc<QueryTerminal<V>> {
         let diagnostics = canonical_diagnostics(output.diagnostics);
         let work = canonical_work(output.work);
@@ -2010,6 +2169,20 @@ where
             terminal: terminal.clone(),
             waiters,
         };
+        // Acquire the request lease *under the node lock*, before the terminal is
+        // enqueued for retention or made reachable to a concurrent enforcer. The
+        // pin's `pins > 0` is thus established atomically with publication: there
+        // is no instant in which the just-published terminal is both evictable and
+        // unleased. Speculative validation publications (`lease == false`) are
+        // intentionally left evictable and take no pin here.
+        let lease_pin = if lease {
+            Some(
+                self.pin_terminal(&terminal)
+                    .expect("a family pins its own retained terminal"),
+            )
+        } else {
+            None
+        };
         drop(state);
 
         if red {
@@ -2032,6 +2205,18 @@ where
             node: Arc::downgrade(node),
             attempt: attempt_id,
         });
+        // The terminal is now exposed and enqueued — reachable to any concurrent
+        // enforcer. With `lease_pin` already held (acquired under the node lock
+        // above) it is protected before it becomes evictable, so an enforcer that
+        // runs at this exact instant cannot detach it.
+        #[cfg(test)]
+        self.core.interpose(InterposeSite::PublishExposed);
+        // Transfer the pin into the task's request-scoped lease set (deduplicated),
+        // so a tiny bound cannot evict the terminal at birth while the rooted
+        // request that produced it is still running.
+        if let Some(pin) = lease_pin {
+            self.lease_observed_pin(task, pin);
+        }
         node.wait.cv.notify_all();
         self.enforce_retention();
         terminal
@@ -2043,6 +2228,9 @@ where
         while self.inner.retained_count.load(Ordering::Relaxed) > self.inner.retention_limit
             && remaining > 0
         {
+            // Loop invariant: the pass ends only when the family is at or below
+            // its bound, or when every remaining candidate was protected and had
+            // to be kept — the latter is recorded as growth pressure below.
             remaining -= 1;
             let entry = retention.pop_front().expect("retention scan is nonempty");
             let Some(node) = entry.node.upgrade() else {
@@ -2094,6 +2282,15 @@ where
                 }
             }
         }
+        // The pass could not reach the configured bound: every remaining
+        // candidate was a protected root the live closure still needs. Grow and
+        // record the pressure event rather than evict a required terminal.
+        if self.inner.retained_count.load(Ordering::Relaxed) > self.inner.retention_limit {
+            self.core
+                .metrics
+                .retention_growth
+                .fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Pins a retained terminal against eviction.
@@ -2109,6 +2306,33 @@ where
             family: self.clone(),
             terminal: terminal.clone(),
         })
+    }
+
+    /// Transfers an already-acquired [`TerminalPin`] into a task's request-scoped
+    /// lease set, retaining it for the lifetime of the rooted request.
+    ///
+    /// The pin is acquired by the caller *while the terminal is still protected*
+    /// (under the node lock at publication, before decrementing waiter protection
+    /// at a join, or on a candidate still retained under the node lock at reuse),
+    /// then handed here. This makes acquisition atomic with retention: the
+    /// terminal is continuously protected from the instant it is observed until
+    /// the request's task drops, so a terminal the live computation still needs
+    /// can never be evicted out from under it. Because nested queries execute in
+    /// the same `task`, a nested observation inherits the root request's lease
+    /// automatically. The lease releases — leaving no permanent retention — when
+    /// the task drops.
+    ///
+    /// If the task has already leased this exact terminal (same node incarnation
+    /// and stamp), the redundant `pin` is dropped here rather than double-held.
+    /// Only terminals observed on behalf of the rooted request are leased;
+    /// terminals computed purely to validate a dependency (`observe_result ==
+    /// false`) are speculative and their pins are dropped by the caller.
+    fn lease_observed_pin(&self, task: &Arc<Task>, pin: TerminalPin<K, V>) {
+        let mut leases = lock(&task.leases);
+        let identity = (pin.terminal.node_incarnation, pin.terminal.stamp);
+        if leases.observed.insert(identity) {
+            leases.held.push(Box::new(pin));
+        }
     }
 
     /// Pins terminals computed under this exact retained revision.
@@ -2383,6 +2607,49 @@ struct Task {
     owns_permit: AtomicBool,
     stack: Mutex<Vec<TaskFrame>>,
     nested_attempts: Mutex<Vec<NestedQueryAttempt>>,
+    /// Request-scoped retention leases. This task, which owns one rooted request
+    /// and all of its nested observations (nested queries share the task), holds
+    /// one pin per distinct terminal it has observed. The pins release together
+    /// when the task drops — i.e. when the whole rooted request completes, is
+    /// canceled, or is abandoned — so an actively computing terminal is protected
+    /// automatically while the request lives, and gains no permanent retention
+    /// after it ends.
+    leases: Mutex<TaskLeases>,
+}
+
+/// Terminals leased for the lifetime of one rooted request (its task).
+#[derive(Default)]
+struct TaskLeases {
+    /// `(node incarnation, red/green stamp)` of every terminal this task has
+    /// already leased, so re-observing a terminal never double-pins it.
+    observed: BTreeSet<(u64, u64)>,
+    /// Live pins, type-erased across families. Dropping the task drops these,
+    /// each of which decrements its terminal's pin count and re-enforces the
+    /// owning family's retention bound.
+    held: Vec<Box<dyn ObservedLease>>,
+}
+
+impl fmt::Debug for TaskLeases {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TaskLeases")
+            .field("observed", &self.observed.len())
+            .field("held", &self.held.len())
+            .finish()
+    }
+}
+
+/// A request-scoped retention lease. The concrete implementor is a
+/// [`TerminalPin`], which releases the pinned root on drop. Erasing the family
+/// type parameters lets one task hold observation leases across every family it
+/// touches without a second retention structure.
+trait ObservedLease: Send + Sync {}
+
+impl<K, V> ObservedLease for TerminalPin<K, V>
+where
+    K: QueryKey,
+    V: Clone + Send + Sync + 'static,
+{
 }
 
 #[derive(Debug)]
@@ -2696,6 +2963,17 @@ impl RuntimeCore {
         self.test_events.changed.notify_all();
     }
 
+    /// Invokes the installed interposition hook, if any, for `site`. The hook is
+    /// cloned out and the lock released before calling, so the hook may reenter
+    /// the runtime (issue queries, install/clear itself) without deadlocking.
+    #[cfg(test)]
+    fn interpose(&self, site: InterposeSite) {
+        let hook = lock(&self.interpose.0).clone();
+        if let Some(hook) = hook {
+            hook(site);
+        }
+    }
+
     fn begin_wait(
         &self,
         waiter: TaskId,
@@ -2854,6 +3132,17 @@ mod tests {
     impl QueryKey for Key {
         fn stable_identity(&self) -> String {
             self.0.to_owned()
+        }
+    }
+
+    // A numeric key for tests that need an unbounded supply of distinct keys
+    // (e.g. flooding a family past a tiny retention bound).
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    struct Slot(u64);
+
+    impl QueryKey for Slot {
+        fn stable_identity(&self) -> String {
+            self.0.to_string()
         }
     }
 
@@ -4627,5 +4916,837 @@ mod tests {
         selection.publish(&failure).unwrap();
         assert!(Arc::ptr_eq(selection.current().unwrap(), &failure));
         assert!(Arc::ptr_eq(selection.last_good().unwrap(), &red));
+    }
+
+    // -----------------------------------------------------------------------
+    // RUE-1087: bounded retention is correctness-safe. A terminal the current
+    // computation still needs can never be evicted. These adversarial tests use
+    // tiny retention caps.
+    // -----------------------------------------------------------------------
+
+    // 1. A long in-progress rooted traversal: an early terminal observed by the
+    //    root request survives eviction pressure from later unobserved
+    //    publications, and a later nested projection of it reuses it.
+    #[test]
+    fn in_progress_request_protects_early_observed_terminal_under_pressure() {
+        let runtime = QueryRuntime::new(8);
+        publish_empty(&runtime, [revision(1)]);
+        let leaf = runtime.family::<Slot, u64>("t1-leaf", 2).unwrap();
+        let driver = runtime.family::<Key, u64>("t1-driver", 8).unwrap();
+        let early_computes = Arc::new(AtomicUsize::new(0));
+
+        let (observed_tx, observed_rx) = mpsc::channel();
+        let (continue_tx, continue_rx) = mpsc::channel();
+
+        let root = {
+            let runtime = runtime.clone();
+            let leaf = leaf.clone();
+            let early_computes = early_computes.clone();
+            thread::spawn(move || {
+                runtime
+                    .query(
+                        &driver,
+                        revision(1),
+                        Key("root"),
+                        CancellationToken::new(),
+                        move |context| {
+                            let counter = early_computes.clone();
+                            let first = context.query(&leaf, Slot(0), move |_| {
+                                counter.fetch_add(1, Ordering::SeqCst);
+                                Ok(QueryOutput::success(1))
+                            })?;
+                            observed_tx.send(()).unwrap();
+                            continue_rx.recv().unwrap();
+                            let projected = context.query(&leaf, Slot(0), |_| {
+                                panic!("the leased early terminal must still be live")
+                            })?;
+                            assert!(
+                                Arc::ptr_eq(&first, &projected),
+                                "early observed terminal must survive eviction pressure"
+                            );
+                            Ok(QueryOutput::success(projected.stamp()))
+                        },
+                    )
+                    .unwrap()
+            })
+        };
+
+        observed_rx.recv().unwrap();
+        // Flood the leaf family with terminals no live request observes.
+        for i in 1..=12 {
+            runtime
+                .query(
+                    &leaf,
+                    revision(1),
+                    Slot(i),
+                    CancellationToken::new(),
+                    |_| Ok(QueryOutput::success(i)),
+                )
+                .unwrap();
+        }
+        assert!(
+            runtime.metrics().evictions > 0,
+            "the tiny cap must have evicted the unobserved fillers"
+        );
+        continue_tx.send(()).unwrap();
+        root.join().unwrap();
+        assert_eq!(
+            early_computes.load(Ordering::SeqCst),
+            1,
+            "the leased early terminal was reused, never recomputed"
+        );
+    }
+
+    // 2. The Caldera shape: a single still-running request publishes many later
+    //    terminals, then projects the earliest producer. The live closure grows
+    //    past the tiny cap rather than evicting anything it still needs.
+    #[test]
+    fn caldera_shape_projects_early_producer_after_many_later_publications() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let producers = runtime.family::<Slot, u64>("t2-producers", 4).unwrap();
+        let driver = runtime.family::<Key, u64>("t2-driver", 4).unwrap();
+        let early_computes = Arc::new(AtomicUsize::new(0));
+        let counter = early_computes.clone();
+        let metrics_runtime = runtime.clone();
+
+        runtime
+            .query(
+                &driver,
+                revision(1),
+                Key("root"),
+                CancellationToken::new(),
+                move |context| {
+                    let c = counter.clone();
+                    let early = context.query(&producers, Slot(0), move |_| {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        Ok(QueryOutput::success(0))
+                    })?;
+                    // Publish many later producers in the same running request.
+                    for i in 1..=32 {
+                        context.query(&producers, Slot(i), move |_| Ok(QueryOutput::success(i)))?;
+                    }
+                    // Project the earliest producer after every later publication.
+                    let projected = context.query(&producers, Slot(0), |_| {
+                        panic!("early producer must still be live")
+                    })?;
+                    assert!(Arc::ptr_eq(&early, &projected));
+                    // Assertions taken while the request is still live: the live
+                    // closure grew past the tiny cap and evicted nothing it still
+                    // needs. (Once the request completes its leases release and the
+                    // now-speculative producers evict down to the cap — expected.)
+                    assert_eq!(
+                        metrics_runtime.metrics().evictions,
+                        0,
+                        "a live closure must never evict a terminal it still needs"
+                    );
+                    assert!(
+                        metrics_runtime.metrics().retention_growth > 0,
+                        "the live closure had to grow past the tiny cap under pressure"
+                    );
+                    Ok(QueryOutput::success(projected.stamp()))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(early_computes.load(Ordering::SeqCst), 1);
+    }
+
+    // 3. Cancellation releases request-only pins: after the request aborts, its
+    //    leased terminals become evictable again.
+    #[test]
+    fn cancellation_releases_request_scoped_lease() {
+        let runtime = QueryRuntime::new(8);
+        publish_empty(&runtime, [revision(1)]);
+        let leaf = runtime.family::<Slot, u64>("t3-leaf", 2).unwrap();
+        let driver = runtime.family::<Key, u64>("t3-driver", 8).unwrap();
+        let early_computes = Arc::new(AtomicUsize::new(0));
+        let token = CancellationToken::new();
+        let (observed_tx, observed_rx) = mpsc::channel();
+        let (continue_tx, continue_rx) = mpsc::channel();
+
+        let root = {
+            let runtime = runtime.clone();
+            let leaf = leaf.clone();
+            let counter = early_computes.clone();
+            let token = token.clone();
+            thread::spawn(move || {
+                runtime.request(&driver, revision(1), Key("root"), token, move |context| {
+                    let c = counter.clone();
+                    context.query(&leaf, Slot(0), move |_| {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        Ok(QueryOutput::success(1))
+                    })?;
+                    observed_tx.send(()).unwrap();
+                    continue_rx.recv().unwrap();
+                    context.check_canceled()?;
+                    Ok(QueryOutput::success(0))
+                })
+            })
+        };
+
+        observed_rx.recv().unwrap(); // early leased by the in-progress request
+        token.cancel();
+        continue_tx.send(()).unwrap();
+        let attempt = root.join().unwrap();
+        assert_eq!(attempt.abort(), Some(&QueryAbort::Canceled));
+
+        // The request's lease is gone, so the early terminal is evictable again.
+        for i in 1..=8 {
+            runtime
+                .query(
+                    &leaf,
+                    revision(1),
+                    Slot(i),
+                    CancellationToken::new(),
+                    |_| Ok(QueryOutput::success(i)),
+                )
+                .unwrap();
+        }
+        let counter = early_computes.clone();
+        runtime
+            .query(
+                &leaf,
+                revision(1),
+                Slot(0),
+                CancellationToken::new(),
+                move |_| {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            early_computes.load(Ordering::SeqCst),
+            2,
+            "after cancellation the early terminal was evictable and recomputed"
+        );
+    }
+
+    // 4. A successful current revision remains usable after its request
+    //    completes: promotion into a pinned revision root survives completion
+    //    and later eviction pressure.
+    #[test]
+    fn promoted_revision_root_survives_request_completion() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1), revision(2)]);
+        let leaf = runtime.family::<Slot, u64>("t4-leaf", 2).unwrap();
+        let keep_computes = Arc::new(AtomicUsize::new(0));
+
+        let counter = keep_computes.clone();
+        let promoted = runtime
+            .query(
+                &leaf,
+                revision(1),
+                Slot(1000),
+                CancellationToken::new(),
+                move |_| {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        // Promote the successful revision-1 closure into a pinned revision root.
+        let revision_root = leaf.retain_revision(revision(1));
+
+        // Later, unrelated work under revision 2 floods the tiny cap.
+        for i in 0..8 {
+            runtime
+                .query(
+                    &leaf,
+                    revision(2),
+                    Slot(i),
+                    CancellationToken::new(),
+                    |_| Ok(QueryOutput::success(i)),
+                )
+                .unwrap();
+        }
+        assert!(runtime.metrics().evictions > 0);
+
+        // The promoted terminal is still usable after its request completed.
+        let reused = runtime
+            .query(
+                &leaf,
+                revision(1),
+                Slot(1000),
+                CancellationToken::new(),
+                |_| panic!("the promoted revision root must be reused"),
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&promoted, &reused));
+        assert_eq!(keep_computes.load(Ordering::SeqCst), 1);
+        drop(revision_root);
+    }
+
+    // 5. Publishing a successor revision lets the old revision's retained closure
+    //    be reclaimed once its root is released, while the successor stays pinned.
+    #[test]
+    fn successor_revision_reclaims_old_closure_once_released() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1), revision(2)]);
+        let leaf = runtime.family::<Slot, u64>("t5-leaf", 2).unwrap();
+        let old_computes = Arc::new(AtomicUsize::new(0));
+
+        let counter = old_computes.clone();
+        let old = runtime
+            .query(
+                &leaf,
+                revision(1),
+                Slot(1000),
+                CancellationToken::new(),
+                move |_| {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        let old_root = leaf.retain_revision(revision(1));
+
+        // Publish a successor revision and promote its closure too.
+        let new = runtime
+            .query(
+                &leaf,
+                revision(2),
+                Slot(1000),
+                CancellationToken::new(),
+                |_| Ok(QueryOutput::success(2)),
+            )
+            .unwrap();
+        let new_root = leaf.retain_revision(revision(2));
+        assert!(!Arc::ptr_eq(&old, &new));
+
+        // Release the old revision root; its retained closure is now reclaimable.
+        drop(old_root);
+        for i in 0..8 {
+            runtime
+                .query(
+                    &leaf,
+                    revision(2),
+                    Slot(i),
+                    CancellationToken::new(),
+                    |_| Ok(QueryOutput::success(i)),
+                )
+                .unwrap();
+        }
+
+        // The pinned successor closure is still reused...
+        let new_again = runtime
+            .query(
+                &leaf,
+                revision(2),
+                Slot(1000),
+                CancellationToken::new(),
+                |_| panic!("the pinned successor revision must be reused"),
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&new, &new_again));
+        // ...while the released old closure was reclaimed and recomputes.
+        let counter = old_computes.clone();
+        let old_again = runtime
+            .query(
+                &leaf,
+                revision(1),
+                Slot(1000),
+                CancellationToken::new(),
+                move |_| {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        assert!(!Arc::ptr_eq(&old, &old_again));
+        assert_eq!(old_computes.load(Ordering::SeqCst), 2);
+        drop(new_root);
+    }
+
+    // 6. Speculative terminals — computed by requests that complete without
+    //    promotion — remain evictable. Publication alone does not pin.
+    #[test]
+    fn speculative_terminals_remain_evictable_publication_alone_does_not_pin() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let leaf = runtime.family::<Slot, u64>("t6-leaf", 2).unwrap();
+        let first_computes = Arc::new(AtomicUsize::new(0));
+
+        let counter = first_computes.clone();
+        runtime
+            .query(
+                &leaf,
+                revision(1),
+                Slot(0),
+                CancellationToken::new(),
+                move |_| {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    Ok(QueryOutput::success(0))
+                },
+            )
+            .unwrap();
+        for i in 1..=8 {
+            runtime
+                .query(
+                    &leaf,
+                    revision(1),
+                    Slot(i),
+                    CancellationToken::new(),
+                    |_| Ok(QueryOutput::success(i)),
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            leaf.retention().terminals,
+            2,
+            "only the tiny cap governs unpromoted publications"
+        );
+        assert!(runtime.metrics().evictions >= 6);
+        assert_eq!(
+            runtime.metrics().retention_growth,
+            0,
+            "no live closure forced growth past the cap"
+        );
+
+        // The earliest speculative terminal was evicted and recomputes on demand.
+        let counter = first_computes.clone();
+        runtime
+            .query(
+                &leaf,
+                revision(1),
+                Slot(0),
+                CancellationToken::new(),
+                move |_| {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    Ok(QueryOutput::success(0))
+                },
+            )
+            .unwrap();
+        assert_eq!(first_computes.load(Ordering::SeqCst), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // RUE-1087 (adversarial-review follow-up): lease acquisition is *atomic*
+    // with retention at every handoff site. Each test parks the target thread at
+    // the exact handoff instant (via the deterministic interposition hook) and
+    // drives a concurrent enforcer into that window from a second thread with
+    // barriers — no sleeps. With the atomic handoff the target terminal is
+    // already protected when the window opens, so the enforcer can never detach
+    // it; the pre-fix code detaches it and a later query recomputes.
+    // -----------------------------------------------------------------------
+
+    // 1. Publish window: pressure applied at the instant a freshly published
+    //    terminal is exposed and enqueued cannot evict it — with the fix its pin
+    //    exists before it is evictable.
+    #[test]
+    fn publish_window_pin_precedes_evictability() {
+        let runtime = QueryRuntime::new(8);
+        publish_empty(&runtime, [revision(1)]);
+        let leaf = runtime.family::<Slot, u64>("pw-leaf", 1).unwrap();
+        let target_computes = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(2));
+        let fired = Arc::new(AtomicBool::new(false));
+
+        // Concurrent enforcer: once the target publication has exposed the
+        // terminal, flood the family to force a full enforcement pass, then
+        // release the parked publisher.
+        let presser = {
+            let runtime = runtime.clone();
+            let leaf = leaf.clone();
+            let barrier = barrier.clone();
+            thread::spawn(move || {
+                barrier.wait(); // publisher is parked at publish-exposed
+                for i in 100..108 {
+                    runtime
+                        .query(
+                            &leaf,
+                            revision(1),
+                            Slot(i),
+                            CancellationToken::new(),
+                            move |_| Ok(QueryOutput::success(i)),
+                        )
+                        .unwrap();
+                }
+                barrier.wait(); // enforcement pass complete; resume publisher
+            })
+        };
+
+        let root = {
+            let runtime = runtime.clone();
+            let leaf = leaf.clone();
+            let target_computes = target_computes.clone();
+            let barrier = barrier.clone();
+            let fired = fired.clone();
+            thread::spawn(move || {
+                let inner_runtime = runtime.clone();
+                let inner_leaf = leaf.clone();
+                runtime
+                    .query(
+                        &leaf,
+                        revision(1),
+                        Slot(9999),
+                        CancellationToken::new(),
+                        move |context| {
+                            let leaf = &inner_leaf;
+                            // An earlier leased terminal occupies the one retained
+                            // slot, so the just-published target is the only
+                            // unprotected eviction candidate in the window.
+                            context.query(leaf, Slot(0), |_| Ok(QueryOutput::success(0)))?;
+                            // Arm the window hook *now*, so it fires on the target's
+                            // publication (Slot 1), not the earlier one (Slot 0).
+                            let hook_barrier = barrier.clone();
+                            let hook_fired = fired.clone();
+                            inner_runtime.set_interpose(Arc::new(move |site| {
+                                if site == InterposeSite::PublishExposed
+                                    && !hook_fired.swap(true, Ordering::SeqCst)
+                                {
+                                    hook_barrier.wait(); // enforcer begins
+                                    hook_barrier.wait(); // enforcer done
+                                }
+                            }));
+                            let counter = target_computes.clone();
+                            let target = context.query(leaf, Slot(1), move |_| {
+                                counter.fetch_add(1, Ordering::SeqCst);
+                                Ok(QueryOutput::success(1))
+                            })?;
+                            // The target survived the publish-window pressure and is
+                            // still the live retained terminal.
+                            let again = context.query(leaf, Slot(1), |_| {
+                                panic!("target must survive publish-window pressure")
+                            })?;
+                            assert!(Arc::ptr_eq(&target, &again));
+                            Ok(QueryOutput::success(target.stamp()))
+                        },
+                    )
+                    .unwrap();
+            })
+        };
+
+        root.join().unwrap();
+        presser.join().unwrap();
+        assert!(
+            runtime.metrics().evictions > 0,
+            "the enforcer must have evicted the unprotected fillers"
+        );
+        assert_eq!(
+            target_computes.load(Ordering::SeqCst),
+            1,
+            "the just-published target was never detached and recomputed"
+        );
+    }
+
+    // 2. Join window, LAST-waiter: the waiter transfers its protection into a pin
+    //    before decrementing the waiter count, so even when the count falls to
+    //    zero there is no instant in which the joined terminal is unprotected. A
+    //    concurrent enforcer racing the handoff never detaches it.
+    #[test]
+    fn join_window_last_waiter_handoff_leaves_no_unprotected_instant() {
+        let runtime = QueryRuntime::new(8);
+        publish_empty(&runtime, [revision(1)]);
+        let leaf = runtime.family::<Slot, u64>("jw-leaf", 1).unwrap();
+        let owner_computes = Arc::new(AtomicUsize::new(0));
+        let joiner_recomputes = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(2));
+        let fired = Arc::new(AtomicBool::new(false));
+
+        // The window hook fires exactly once, at the joiner's waiter→pin handoff.
+        {
+            let hook_barrier = barrier.clone();
+            let hook_fired = fired.clone();
+            runtime.set_interpose(Arc::new(move |site| {
+                if site == InterposeSite::JoinHandoff && !hook_fired.swap(true, Ordering::SeqCst) {
+                    hook_barrier.wait(); // enforcer begins
+                    hook_barrier.wait(); // enforcer done
+                }
+            }));
+        }
+
+        let (owner_started_tx, owner_started_rx) = mpsc::channel();
+        let (owner_go_tx, owner_go_rx) = mpsc::channel();
+
+        // Owner computes the shared terminal, then blocks so a joiner can enqueue
+        // as a waiter before publication.
+        let owner = {
+            let runtime = runtime.clone();
+            let leaf = leaf.clone();
+            let owner_computes = owner_computes.clone();
+            thread::spawn(move || {
+                let attempt = runtime.request(
+                    &leaf,
+                    revision(1),
+                    Slot(0),
+                    CancellationToken::new(),
+                    move |_| {
+                        owner_computes.fetch_add(1, Ordering::SeqCst);
+                        owner_started_tx.send(()).unwrap();
+                        owner_go_rx.recv().unwrap();
+                        Ok(QueryOutput::success(1))
+                    },
+                );
+                // Hand the attempt (its result lease) to the coordinator so it can
+                // be dropped *inside* the join window, leaving the joined terminal
+                // protected only by the waiter→pin handoff under test.
+                attempt.terminal().unwrap().stamp();
+                attempt
+            })
+        };
+
+        owner_started_rx.recv().unwrap();
+
+        // Joiner requests the same key+revision while it is still computing, so it
+        // joins as a waiter and parks on the condvar until publication.
+        let joiner = {
+            let runtime = runtime.clone();
+            let leaf = leaf.clone();
+            let joiner_recomputes = joiner_recomputes.clone();
+            thread::spawn(move || {
+                let joined = runtime
+                    .query(
+                        &leaf,
+                        revision(1),
+                        Slot(0),
+                        CancellationToken::new(),
+                        |_| panic!("the joiner must join the owner, not compute"),
+                    )
+                    .unwrap();
+                // After the handoff window, the joined terminal is still the live
+                // retained terminal: re-querying reuses it, never recomputes.
+                let again = runtime
+                    .query(
+                        &leaf,
+                        revision(1),
+                        Slot(0),
+                        CancellationToken::new(),
+                        |_| {
+                            joiner_recomputes.fetch_add(1, Ordering::SeqCst);
+                            Ok(QueryOutput::success(2))
+                        },
+                    )
+                    .unwrap();
+                assert!(
+                    Arc::ptr_eq(&joined, &again),
+                    "the joined terminal must survive the last-waiter handoff"
+                );
+            })
+        };
+
+        // Wait until the joiner is parked as a waiter, then let the owner publish.
+        runtime.wait_for_metrics(|metrics| metrics.joins >= 1);
+        owner_go_tx.send(()).unwrap();
+
+        // The owner's request completes; take its attempt so we control its lease.
+        let owner_attempt = owner.join().unwrap();
+
+        // Rendezvous with the parked joiner (post-decrement, pre-return). Drop the
+        // owner's attempt lease *now*, so the joined terminal is protected only by
+        // the waiter→pin handoff, then flood to force an enforcement pass.
+        barrier.wait(); // joiner parked at JoinHandoff
+        drop(owner_attempt);
+        for i in 100..108 {
+            runtime
+                .query(
+                    &leaf,
+                    revision(1),
+                    Slot(i),
+                    CancellationToken::new(),
+                    move |_| Ok(QueryOutput::success(i)),
+                )
+                .unwrap();
+        }
+        barrier.wait(); // release the joiner
+
+        joiner.join().unwrap();
+        assert_eq!(owner_computes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            joiner_recomputes.load(Ordering::SeqCst),
+            0,
+            "the joined terminal was never detached, so nothing recomputed"
+        );
+        assert!(runtime.metrics().evictions > 0);
+    }
+
+    // 3. Reuse window: a candidate found in the memo cannot be evicted between
+    //    discovery and lease transfer — the discovery pin holds it retained
+    //    through recursive validation and the pressure applied in that window.
+    #[test]
+    fn reuse_window_candidate_survives_between_discovery_and_lease() {
+        let runtime = QueryRuntime::new(8);
+        publish_empty(&runtime, [revision(1)]);
+        let leaf = runtime.family::<Slot, u64>("rw-leaf", 1).unwrap();
+        let computes = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(2));
+        let fired = Arc::new(AtomicBool::new(false));
+
+        // Pre-compute the reuse candidate in a throwaway request; its attempt (and
+        // result lease) drops here, leaving the terminal speculative in the memo.
+        {
+            let counter = computes.clone();
+            runtime
+                .query(
+                    &leaf,
+                    revision(1),
+                    Slot(0),
+                    CancellationToken::new(),
+                    move |_| {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        Ok(QueryOutput::success(5))
+                    },
+                )
+                .unwrap();
+        }
+        assert_eq!(computes.load(Ordering::SeqCst), 1);
+
+        // The window hook fires once, when the reuse candidate has been discovered
+        // and pinned under the node lock, before recursive validation.
+        {
+            let hook_barrier = barrier.clone();
+            let hook_fired = fired.clone();
+            runtime.set_interpose(Arc::new(move |site| {
+                if site == InterposeSite::ReuseDiscovered
+                    && !hook_fired.swap(true, Ordering::SeqCst)
+                {
+                    hook_barrier.wait(); // enforcer begins
+                    hook_barrier.wait(); // enforcer done
+                }
+            }));
+        }
+
+        // A long-lived root reuses the candidate, then re-projects it. The root's
+        // lease keeps the (correct) terminal retained so the projection is
+        // observable after the window closes.
+        let root = {
+            let runtime = runtime.clone();
+            let leaf = leaf.clone();
+            thread::spawn(move || {
+                let inner_leaf = leaf.clone();
+                runtime
+                    .query(
+                        &leaf,
+                        revision(1),
+                        Slot(7777),
+                        CancellationToken::new(),
+                        move |context| {
+                            let leaf = &inner_leaf;
+                            let first = context.query(leaf, Slot(0), |_| {
+                                panic!("candidate must be reused, not recomputed")
+                            })?;
+                            let again = context.query(leaf, Slot(0), |_| {
+                                panic!("reused candidate must still be the retained terminal")
+                            })?;
+                            assert!(
+                                Arc::ptr_eq(&first, &again),
+                                "the reused candidate must not have been detached in the window"
+                            );
+                            Ok(QueryOutput::success(first.stamp()))
+                        },
+                    )
+                    .unwrap();
+            })
+        };
+
+        // Concurrent enforcer drives pressure into the reuse window.
+        barrier.wait(); // root parked at ReuseDiscovered
+        for i in 100..108 {
+            runtime
+                .query(
+                    &leaf,
+                    revision(1),
+                    Slot(i),
+                    CancellationToken::new(),
+                    move |_| Ok(QueryOutput::success(i)),
+                )
+                .unwrap();
+        }
+        barrier.wait(); // release the root
+
+        root.join().unwrap();
+        assert!(runtime.metrics().evictions > 0);
+        assert_eq!(
+            computes.load(Ordering::SeqCst),
+            1,
+            "the candidate was reused throughout, never detached and recomputed"
+        );
+    }
+
+    // 4. Promotion gap: pressure applied precisely between request completion
+    //    (attempt returned, task and its request-scoped leases dropped) and
+    //    session/revision promotion must not evict the result. The attempt
+    //    carries a live result lease that bridges the gap until selection
+    //    registers a successor protection — the same invariant the compiler's
+    //    RevisionedFamily::select relies on across the crate boundary.
+    #[test]
+    fn promotion_gap_result_lease_bridges_until_selection() {
+        let runtime = QueryRuntime::new(8);
+        publish_empty(&runtime, [revision(1)]);
+        let leaf = runtime.family::<Slot, u64>("pg-leaf", 1).unwrap();
+        let computes = Arc::new(AtomicUsize::new(0));
+
+        let counter = computes.clone();
+        let attempt = runtime.request(
+            &leaf,
+            revision(1),
+            Slot(0),
+            CancellationToken::new(),
+            move |_| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok(QueryOutput::success(7))
+            },
+        );
+        let produced = attempt
+            .terminal()
+            .expect("request produced a terminal")
+            .clone();
+
+        // The producing task (and its leases) has already dropped. Apply pressure
+        // in the gap before promotion: only the attempt-carried result lease keeps
+        // `produced` retained here.
+        for i in 1..=8 {
+            runtime
+                .query(
+                    &leaf,
+                    revision(1),
+                    Slot(i),
+                    CancellationToken::new(),
+                    |_| Ok(QueryOutput::success(i)),
+                )
+                .unwrap();
+        }
+        assert!(
+            runtime.metrics().evictions > 0,
+            "the tiny cap evicted the unprotected fillers"
+        );
+
+        // Promote into a session/revision selection root, then release the attempt
+        // lease: protection passes to the selection with no gap.
+        let mut selection = leaf.selection();
+        selection
+            .publish(&produced)
+            .expect("promotion pins the retained terminal");
+        assert!(Arc::ptr_eq(selection.current().unwrap(), &produced));
+        drop(attempt);
+
+        for i in 9..=16 {
+            runtime
+                .query(
+                    &leaf,
+                    revision(1),
+                    Slot(i),
+                    CancellationToken::new(),
+                    |_| Ok(QueryOutput::success(i)),
+                )
+                .unwrap();
+        }
+
+        // The promoted terminal is still the retained one: a later request reuses
+        // it and never recomputes a detached replacement.
+        let reused = runtime
+            .query(
+                &leaf,
+                revision(1),
+                Slot(0),
+                CancellationToken::new(),
+                |_| panic!("promoted terminal must be reused, not recomputed"),
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&reused, &produced));
+        assert_eq!(computes.load(Ordering::SeqCst), 1);
+        drop(selection);
     }
 }

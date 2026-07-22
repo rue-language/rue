@@ -301,7 +301,10 @@ fn cold_intervals(bodies: usize, decls: usize) -> Intervals {
     let source = snapshot(corpus_source(bodies, decls));
     let mut session = CompilerSession::new();
     let start = Instant::now();
-    session.update(&source).into_result().expect("corpus parses");
+    session
+        .update(&source)
+        .into_result()
+        .expect("corpus parses");
     let semantic_start = Instant::now();
     session.semantic(&options).expect("corpus compiles");
     let semantic = semantic_start.elapsed();
