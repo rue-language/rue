@@ -387,7 +387,7 @@ impl<'a> BodySema<'a> {
                     &struct_fields,
                     &method_sigs,
                     &ctx.comptime_value_vars,
-                );
+                )?;
                 if is_new && !self.rir.anon_struct_methods(methods).is_empty() {
                     let struct_id = struct_ty
                         .as_struct()
@@ -486,7 +486,7 @@ impl<'a> BodySema<'a> {
                     },
                     &variant_names,
                     &variant_payloads,
-                );
+                )?;
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::TypeConst(enum_ty),

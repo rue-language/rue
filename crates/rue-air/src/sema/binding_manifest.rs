@@ -309,7 +309,7 @@ pub(super) struct PendingNominalPayload {
     pub declaration: InstRef,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeclarationInstallFailure {
     DuplicatePayload,
     MissingPayload,
@@ -322,6 +322,12 @@ pub enum DeclarationInstallFailure {
     MissingNominal,
     UnsupportedType,
     UnsupportedDeclaration,
+    /// Two distinct anonymous producer-nominal keys hashed to one 128-bit symbol
+    /// digest while installing a durable nominal (RUE-1089, Theme 4b). The digest
+    /// is a presentation name only and must never collapse producer-distinct
+    /// types; the carried message names both stable keys and the digest. Surfaces
+    /// as a fail-closed E9000 internal error.
+    AnonymousDigestCollision(Box<str>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1051,12 +1057,19 @@ impl<'a> DeclarationShells<'a> {
                                 })
                                 .collect::<Result<Vec<_>, DeclarationInstallFailure>>()?;
                             let query_identity = identity;
-                            let (struct_ty, _) = self.sema.find_or_create_anon_struct(
-                                query_identity.clone(),
-                                &fields,
-                                &method_sigs,
-                                &value_captures,
-                            );
+                            let (struct_ty, _) = self
+                                .sema
+                                .find_or_create_anon_struct(
+                                    query_identity.clone(),
+                                    &fields,
+                                    &method_sigs,
+                                    &value_captures,
+                                )
+                                .map_err(|error| {
+                                    DeclarationInstallFailure::AnonymousDigestCollision(
+                                        error.to_string().into_boxed_str(),
+                                    )
+                                })?;
                             let struct_id = struct_ty
                                 .as_struct()
                                 .ok_or(DeclarationInstallFailure::NominalShapeMismatch)?;
@@ -1111,7 +1124,12 @@ impl<'a> DeclarationShells<'a> {
                                 })
                                 .collect::<Result<Vec<_>, _>>()?;
                             self.sema
-                                .find_or_create_anon_enum(identity, &names, &payloads);
+                                .find_or_create_anon_enum(identity, &names, &payloads)
+                                .map_err(|error| {
+                                    DeclarationInstallFailure::AnonymousDigestCollision(
+                                        error.to_string().into_boxed_str(),
+                                    )
+                                })?;
                         }
                     }
                     Ok(())

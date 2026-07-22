@@ -20,6 +20,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use lasso::Spur;
+use rue_error::{CompileError, CompileResult, ErrorKind};
 
 use crate::sema::context::ConstValue;
 use crate::types::{EnumDef, StructDef, StructField, Type};
@@ -375,16 +376,77 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     fn stable_anonymous_identity_digest(&self, identity: &IssuedAnonymousNominalKey) -> u128 {
         use std::hash::Hash;
 
-        let stable: crate::AnonymousNominalKey<String, String> = identity
-            .try_map_identities::<String, String, std::convert::Infallible>(
-                &|token| Ok(self.stable_definition_symbol_component(token)),
-                &|token| Ok(self.stable_module_symbol_component(token)),
-            )
-            .expect("anonymous identity relocation to stable content is infallible");
+        // Test-only forced-collision seam (RUE-1089, Theme 4b): point specific
+        // keys at a chosen digest so two DISTINCT producer keys collide,
+        // exercising the fail-closed registry without a real 128-bit hash
+        // collision. Inert for keys no test registered here.
+        #[cfg(test)]
+        if let Some(&forced) = self.forced_anonymous_digests.get(identity) {
+            return forced;
+        }
+
+        let stable: crate::AnonymousNominalKey<String, String> =
+            self.stable_anonymous_identity_content(identity);
 
         let mut hasher = StableFnv1a128::new();
         stable.hash(&mut hasher);
         hasher.digest()
+    }
+
+    /// Relocate an anonymous identity to its request-independent `(String, String)`
+    /// content — the form the digest hashes and the collision diagnostic spells
+    /// (producer/anchor identities, never pool indices).
+    fn stable_anonymous_identity_content(
+        &self,
+        identity: &IssuedAnonymousNominalKey,
+    ) -> crate::AnonymousNominalKey<String, String> {
+        identity
+            .try_map_identities::<String, String, std::convert::Infallible>(
+                &|token| Ok(self.stable_definition_symbol_component(token)),
+                &|token| Ok(self.stable_module_symbol_component(token)),
+            )
+            .expect("anonymous identity relocation to stable content is infallible")
+    }
+
+    /// Fail-closed digest-collision gate shared by the anonymous struct and enum
+    /// minting paths (RUE-1089, Theme 4b).
+    ///
+    /// The 128-bit digest spells presentation names only; it must never decide
+    /// type identity nor permit pool/symbol reuse. This records the exact
+    /// `AnonymousNominalKey` that owns each digest and rejects any SECOND,
+    /// distinct key that hashes to a digest already owned — a `register_enum`/
+    /// `register_struct` name dedup would otherwise silently collapse the two
+    /// producer-distinct types onto one `EnumId`/`StructId`. Re-presenting the
+    /// SAME key is legitimate reuse and proceeds. On collision it returns a typed
+    /// internal error naming both stable keys and the digest, and the caller
+    /// publishes neither the nominal nor its symbol.
+    fn guard_anonymous_digest_collision(
+        &mut self,
+        digest: u128,
+        identity: &IssuedAnonymousNominalKey,
+    ) -> CompileResult<()> {
+        match self.anonymous_digest_owners.get(&digest) {
+            Some(existing) if existing == identity => Ok(()),
+            Some(existing) => {
+                let existing_spelling =
+                    format!("{:?}", self.stable_anonymous_identity_content(existing));
+                let incoming_spelling =
+                    format!("{:?}", self.stable_anonymous_identity_content(identity));
+                Err(CompileError::without_span(ErrorKind::InternalError(
+                    format!(
+                        "anonymous-symbol digest collision: two distinct producer-nominal keys hash \
+                         to digest {digest:032x}; existing owner {existing_spelling}, colliding key \
+                         {incoming_spelling}. The digest is a presentation name only and must never \
+                         decide type identity (RUE-1089)."
+                    ),
+                )))
+            }
+            None => {
+                self.anonymous_digest_owners
+                    .insert(digest, identity.clone());
+                Ok(())
+            }
+        }
     }
 
     /// The request-independent content of one definition token. When the token
@@ -454,27 +516,30 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         fields: &[StructField],
         method_sigs: &[AnonMethodSig],
         captured_values: &HashMap<Spur, ConstValue>,
-    ) -> (Type, bool) {
+    ) -> CompileResult<(Type, bool)> {
         if let Some(struct_id) = self.anon_struct_identities.get(&identity) {
-            return (Type::new_struct(*struct_id), false);
+            return Ok((Type::new_struct(*struct_id), false));
         }
+
+        // The synthetic name distinguishes every producer and is spelled from a
+        // STABLE digest of the producer identity, not the allocation-order pool
+        // index: two independent or differently-scheduled compiles of the same
+        // program must emit identical anonymous symbols (ADR-0066, RUE-1089).
+        // The digest is a presentation name only; guard against a distinct key
+        // colliding on it BEFORE reserving/registering, so no colliding entity or
+        // symbol is ever published (Theme 4b).
+        let digest = self.stable_anonymous_identity_digest(&identity);
+        self.guard_anonymous_digest_collision(digest, &identity)?;
 
         // Producer-nominal: a key that has not been seen mints its own entity.
         // Create a new one using ID reservation. This avoids the fragile
         // two-phase naming where a temp name is replaced.
         let struct_id = self.type_pool.reserve_struct_id();
 
-        // The synthetic name distinguishes every producer and is spelled from a
-        // STABLE digest of the producer identity, not the allocation-order pool
-        // index: two independent or differently-scheduled compiles of the same
-        // program must emit identical anonymous symbols (ADR-0066, RUE-1089).
         // The `__anon_struct_` prefix stays load-bearing — the pool's
         // symbol/destructor spellings and every `starts_with` classifier key on
         // it — so only the disambiguating suffix changes.
-        let name = format!(
-            "__anon_struct_{:032x}",
-            self.stable_anonymous_identity_digest(&identity)
-        );
+        let name = format!("__anon_struct_{digest:032x}");
         let name_spur = self.interner.get_or_intern(&name);
 
         // A `drop fn(self)` inside the struct body is carried as a method under
@@ -533,7 +598,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         self.canonical_anonymous_types.insert(ty, identity);
 
         // Return with is_new=true
-        (Type::new_struct(struct_id), true)
+        Ok((Type::new_struct(struct_id), true))
     }
 
     /// Return the producer-nominal anonymous enum for `identity`, creating it
@@ -552,9 +617,9 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         identity: IssuedAnonymousNominalKey,
         variant_names: &[String],
         variant_payloads: &[Vec<Type>],
-    ) -> Type {
+    ) -> CompileResult<Type> {
         if let Some(enum_id) = self.anon_enum_identities.get(&identity) {
-            return Type::new_enum(*enum_id);
+            return Ok(Type::new_enum(*enum_id));
         }
 
         // Names are presentation/lookup handles only. Source anonymous enums
@@ -564,11 +629,13 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         // the producer identity, not an allocation-order counter, so two
         // independent or differently-scheduled compiles emit identical anonymous
         // symbols and distinct producers never share a name (ADR-0066,
-        // RUE-1089).
-        let mut name = format!(
-            "__anon_enum_{:032x} {{ ",
-            self.stable_anonymous_identity_digest(&identity)
-        );
+        // RUE-1089). The digest is a presentation name only; guard against a
+        // distinct key colliding on it BEFORE registering, so a `register_enum`
+        // name dedup can never silently collapse two producer-distinct enums onto
+        // one `EnumId` (Theme 4b).
+        let digest = self.stable_anonymous_identity_digest(&identity);
+        self.guard_anonymous_digest_collision(digest, &identity)?;
+        let mut name = format!("__anon_enum_{digest:032x} {{ ");
         for (i, vname) in variant_names.iter().enumerate() {
             if i > 0 {
                 name.push_str(", ");
@@ -610,7 +677,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         self.anon_enum_identities.insert(identity.clone(), enum_id);
         self.canonical_anonymous_types.insert(ty, identity);
 
-        Type::new_enum(enum_id)
+        Ok(Type::new_enum(enum_id))
     }
 
     /// Find the canonical-key-minimum anonymous enum compatible with a
@@ -722,5 +789,151 @@ impl<D: DeclarationPhase> Sema<'_, D> {
 
     pub(crate) fn types_compatible(&self, found: Type, expected: Type) -> bool {
         found.is_never() || found.is_error() || self.types_equivalent(found, expected)
+    }
+}
+
+#[cfg(test)]
+mod theme4b_digest_collision_tests {
+    //! RUE-1089 Theme 4b — the anonymous-symbol digest must never decide type
+    //! identity. A deterministic exact-key collision registry, shared by the
+    //! struct and enum minting paths, rejects any second DISTINCT
+    //! `AnonymousNominalKey` that hashes to a digest already owned, so a
+    //! `register_enum`/`register_struct` name dedup can never silently collapse
+    //! two producer-distinct types. These tests point two distinct keys at one
+    //! digest through the test-only forced-digest hook and assert fail-closed
+    //! behavior in both insertion orders, plus same-key reuse.
+
+    use lasso::ThreadedRodeo;
+    use rue_error::{ErrorCode, PreviewFeatures};
+    use rue_lexer::Lexer;
+    use rue_parser::Parser;
+    use rue_rir::{AstGen, Rir, RirStructuralAnchor, RirStructuralPathSegment};
+
+    use super::IssuedAnonymousNominalKey;
+    use crate::sema::Sema;
+    use crate::types::Type;
+
+    const FORCED_DIGEST: u128 = 0x0BAD_C0DE_0BAD_C0DE_0BAD_C0DE_0BAD_C0DE;
+
+    fn lowered_main() -> (Rir, ThreadedRodeo) {
+        let (tokens, interner) = Lexer::new("fn main() {}").tokenize().unwrap();
+        let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        (astgen.finish(), interner)
+    }
+
+    /// Two distinct anonymous-enum producer keys differing only by anchor
+    /// segment. Same producer, distinct anchors -> distinct keys.
+    fn enum_key(anchor_seg: u32) -> IssuedAnonymousNominalKey {
+        crate::AnonymousNominalKey {
+            kind: crate::AnonymousNominalKind::Enum,
+            producer: crate::StableProducerId::Definition(crate::SemanticDefinitionToken::new(
+                7, 0,
+            )),
+            anchor: RirStructuralAnchor::new(vec![RirStructuralPathSegment::AnonymousType(
+                anchor_seg,
+            )]),
+            arguments: crate::CanonicalArguments::default(),
+        }
+    }
+
+    fn register(
+        sema: &mut Sema<'_>,
+        key: IssuedAnonymousNominalKey,
+    ) -> rue_error::CompileResult<Type> {
+        sema.find_or_create_anon_enum(
+            key,
+            &["A".to_string(), "B".to_string()],
+            &[Vec::new(), Vec::new()],
+        )
+    }
+
+    /// (a) Distinct keys forced onto one digest: the second fails closed with a
+    /// typed E9000, and neither the colliding nominal nor its symbol is published.
+    #[test]
+    fn distinct_keys_on_one_digest_fail_closed_order_a() {
+        let (rir, interner) = lowered_main();
+        let mut sema = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new());
+        let first = enum_key(0);
+        let second = enum_key(1);
+        assert_ne!(first, second, "the two producer keys must be distinct");
+        sema.forced_anonymous_digests
+            .insert(first.clone(), FORCED_DIGEST);
+        sema.forced_anonymous_digests
+            .insert(second.clone(), FORCED_DIGEST);
+
+        register(&mut sema, first).expect("the first key mints its own entity");
+        let published_before = sema.anon_enum_identities.len();
+
+        let error =
+            register(&mut sema, second.clone()).expect_err("the colliding key must fail closed");
+        assert_eq!(
+            error.kind.code(),
+            ErrorCode::INTERNAL_ERROR,
+            "digest collision must be a typed E9000 internal error",
+        );
+        // Zero publication: no new enum identity, and the colliding key is absent
+        // from the identity cache (so no symbol was minted for it either).
+        assert_eq!(
+            sema.anon_enum_identities.len(),
+            published_before,
+            "a colliding key must not publish a nominal",
+        );
+        assert!(
+            !sema.anon_enum_identities.contains_key(&second),
+            "the colliding key must not be cached",
+        );
+    }
+
+    /// (b) The same collision in the reversed insertion order fails closed too —
+    /// the registry is order-independent.
+    #[test]
+    fn distinct_keys_on_one_digest_fail_closed_order_b() {
+        let (rir, interner) = lowered_main();
+        let mut sema = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new());
+        let first = enum_key(0);
+        let second = enum_key(1);
+        sema.forced_anonymous_digests
+            .insert(first.clone(), FORCED_DIGEST);
+        sema.forced_anonymous_digests
+            .insert(second.clone(), FORCED_DIGEST);
+
+        // Reversed: mint `second` first, then `first` collides.
+        register(&mut sema, second).expect("the first-registered key mints its own entity");
+        let published_before = sema.anon_enum_identities.len();
+
+        let error =
+            register(&mut sema, first.clone()).expect_err("the colliding key must fail closed");
+        assert_eq!(error.kind.code(), ErrorCode::INTERNAL_ERROR);
+        assert_eq!(sema.anon_enum_identities.len(), published_before);
+        assert!(!sema.anon_enum_identities.contains_key(&first));
+    }
+
+    /// (c) Re-presenting the SAME key is legitimate reuse, before and after other
+    /// registrations — never a collision.
+    #[test]
+    fn same_key_reuses_before_and_after_other_registrations() {
+        let (rir, interner) = lowered_main();
+        let mut sema = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new());
+        let key = enum_key(0);
+        let other = enum_key(5);
+
+        // Reuse BEFORE any other registration.
+        let minted = register(&mut sema, key.clone()).expect("first mint");
+        let reused_before = register(&mut sema, key.clone()).expect("same key reuses");
+        assert_eq!(minted, reused_before, "same key must reuse its entity");
+
+        // An unrelated distinct key (its own natural digest) registers fine.
+        register(&mut sema, other).expect("an unrelated key mints its own entity");
+
+        // Reuse AFTER the unrelated registration.
+        let reused_after = register(&mut sema, key).expect("same key still reuses");
+        assert_eq!(minted, reused_after);
+        assert_eq!(
+            sema.anon_enum_identities.len(),
+            2,
+            "exactly the two distinct keys own entities",
+        );
     }
 }

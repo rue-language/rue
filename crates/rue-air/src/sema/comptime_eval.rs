@@ -937,7 +937,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                     &struct_fields,
                     &method_sigs,
                     &local_value_subst,
-                );
+                )?;
 
                 // Register methods if present and not yet registered for this
                 // struct (it may have been created earlier without methods).
@@ -1068,7 +1068,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                     },
                     &variant_names,
                     &variant_payloads,
-                );
+                )?;
                 Ok(Some(ConstValue::Type(enum_ty)))
             }
 
