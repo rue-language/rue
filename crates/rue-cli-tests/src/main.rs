@@ -426,9 +426,9 @@ fn write_ar_field(header: &mut [u8; 60], offset: usize, width: usize, value: &[u
     header[offset..offset + len].copy_from_slice(&value[..len]);
 }
 use rue_test_runner::{
-    DEFAULT_TIMEOUT_MS, ExpectedFailureOutcome, KNOWN_TARGETS, TestFailure, TestResult,
-    classify_expected_failure, compiler_command, find_dir, find_rue_binary, ice_message,
-    run_with_timeout, validate_nonempty_case_corpus,
+    DEFAULT_TIMEOUT_MS, ExpectedFailureOutcome, KNOWN_TARGETS, ShardSelector, TestFailure,
+    TestResult, classify_expected_failure, compiler_command, find_dir, find_rue_binary,
+    ice_message, run_with_timeout, validate_nonempty_case_corpus,
 };
 use serde::Deserialize;
 
@@ -2299,6 +2299,7 @@ fn example_trials(
     automatic_contracts: &HashMap<String, ExecutionContract>,
     rue_binary: &Path,
     real_std: &Path,
+    shard: Option<&ShardSelector>,
 ) -> Vec<Trial> {
     let mut trials = Vec::with_capacity(examples.len());
     for example in examples {
@@ -2312,6 +2313,12 @@ fn example_trials(
         let rue_binary = rue_binary.to_path_buf();
         let real_std = real_std.to_path_buf();
         let test_name = example_test_name(&relative_path);
+        // RUE-1116: keep only the examples this shard owns (unset shard = all).
+        if let Some(shard) = shard {
+            if !shard.includes(&test_name) {
+                continue;
+            }
+        }
         let trial = Trial::test(test_name, move |_ctx| {
             let expectation = EXAMPLE_EXPECTATIONS
                 .iter()
@@ -2335,6 +2342,14 @@ fn main() {
     if std::env::var_os("RUE_CALDERA_SUCCESS_STUB").is_some() {
         return;
     }
+
+    // RUE-1116: an optional `INDEX/COUNT` spec runs a stable hash-partitioned
+    // 1/N slice of the corpus so CI can fan the slices across parallel runners.
+    // Unset (the default, and every local/filtered run) means the whole corpus.
+    let shard = ShardSelector::from_env("RUE_CLI_TEST_SHARD").unwrap_or_else(|error| {
+        eprintln!("error: invalid RUE_CLI_TEST_SHARD: {error}");
+        std::process::exit(2);
+    });
 
     // The compiler is invoked with the test's temp dir as cwd, so the binary
     // path must be absolute (find_rue_binary may return a relative path).
@@ -2373,6 +2388,9 @@ fn main() {
         std::process::exit(1);
     }
     let mut tests: Vec<Trial> = Vec::with_capacity(total);
+    // Full count of discovered cases (corpus + examples), before shard
+    // selection, for the visibility line printed below.
+    let discovered = total + examples.len();
 
     for (_, file) in corpus.files {
         let section_id = file.section.id.clone();
@@ -2381,6 +2399,12 @@ fn main() {
             let contract = resolve_contract(&corpus.contracts, contract_name);
             let heavyweight = contract.is_heavyweight();
             let test_name = format!("{}::{}", section_id, case.name);
+            // RUE-1116: keep only the cases this shard owns (unset shard = all).
+            if let Some(shard) = &shard {
+                if !shard.includes(&test_name) {
+                    continue;
+                }
+            }
             let rue_binary = rue_binary.clone();
             let real_std = real_std.clone();
             let repo_root = repo_root.clone();
@@ -2403,7 +2427,18 @@ fn main() {
         &automatic_contracts,
         &rue_binary,
         &real_std,
+        shard.as_ref(),
     ));
+
+    if let Some(shard) = &shard {
+        eprintln!(
+            "cli-tests: shard {}/{} — running {} of {} discovered cases",
+            shard.index(),
+            shard.count(),
+            tests.len(),
+            discovered,
+        );
+    }
 
     Harness::with_env().discover(tests).main();
 }

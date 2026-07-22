@@ -31,6 +31,20 @@ action). `test.sh` accepts that deferral only under `CI=true`, validates each
 target against Buck's live `rue_heavy_suite` query, and continues to audit
 every corpus target it owns. Local full suites never defer coverage.
 
+The ordinary CLI corpus is additionally split into `CLI_TEST_SHARD_COUNT` (root
+`BUCK`) hash-partitioned shards, `//:cli-tests-shard-0 .. -N`, so its ~12-minute
+wall clock collapses to N parallel slices per platform (RUE-1116). Each shard
+sets `RUE_CLI_TEST_SHARD=k/N`; the harness selects a stable 1/N slice of the
+corpus by a fixed hash of the test name, and the shards' union is the full
+corpus. The shards carry both `rue_heavy_suite` (so `ci-heavy-suite` runs them
+and the broad pass skips them) and `rue_cli_shard` (so a local `./test.sh` full
+run executes the monolithic `//:cli-tests` once instead of every slice —
+`test.sh` subtracts the `rue_cli_shard` set from its heavy-suite discovery).
+Nothing else re-runs the slices on CI, so `//:cli-shard-coverage-validation`
+fails the build if the shard targets in `BUCK` and the `platform-corpus` matrix
+in `ci.yml` ever drift apart. Changing `CLI_TEST_SHARD_COUNT` therefore means
+updating the matrix (and branch protection) to match.
+
 Major Buck commands run through `scripts/ci-timed`, which preserves output and
 the exact command exit status while appending wall time and aggregate
 `Commands: (cached / remote / local)` counters to the GitHub job summary. Read
