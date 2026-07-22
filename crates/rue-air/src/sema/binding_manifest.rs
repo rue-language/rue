@@ -973,19 +973,16 @@ impl<'a> DeclarationShells<'a> {
                                         _ => None,
                                     })
                                     .collect::<Vec<_>>();
+                                // Producer-nominal identity is exact (RUE-1089):
+                                // the durable anchor transported from the frontend
+                                // equals the anchor AstGen minted on this RIR
+                                // nominal, so only a full-anchor match resolves the
+                                // method materialization. No relative-occurrence
+                                // fallback: divergence fails closed downstream.
                                 candidates
                                     .iter()
                                     .find(|(_, anchor)| anchor == &nominal.identity.anchor)
                                     .cloned()
-                                    .or_else(|| {
-                                        // Projection can remove a producer-owned
-                                        // contextual anchor prefix. In that case
-                                        // accept the relative occurrence only
-                                        // when the source span and complete
-                                        // method-name multiset identify exactly
-                                        // one RIR nominal; ambiguity fails closed.
-                                        (candidates.len() == 1).then(|| candidates[0].clone())
-                                    })
                             });
                             let has_methods = !methods.is_empty();
                             if has_methods && method_materialization.is_none() {
@@ -1063,20 +1060,10 @@ impl<'a> DeclarationShells<'a> {
                             let struct_id = struct_ty
                                 .as_struct()
                                 .ok_or(DeclarationInstallFailure::NominalShapeMismatch)?;
-                            if let Some((_, rir_anchor)) = &method_materialization
-                                && rir_anchor != &query_identity.anchor
-                            {
-                                let mut rir_identity = query_identity.clone();
-                                rir_identity.anchor = rir_anchor.clone();
-                                self.sema
-                                    .anon_struct_identities
-                                    .insert(rir_identity.clone(), struct_id);
-                                self.sema
-                                    .canonical_anonymous_aliases
-                                    .entry(struct_ty)
-                                    .or_default()
-                                    .insert(rir_identity);
-                            }
+                            // No same-producer/different-anchor alias install
+                            // (RUE-1089): the durable query anchor now equals the
+                            // RIR anchor AstGen minted, so the member is referenced
+                            // under exactly the identity its producer publishes.
                             if !type_captures.is_empty() {
                                 self.sema
                                     .anon_struct_type_subst

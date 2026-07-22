@@ -1695,26 +1695,6 @@ fn enqueue_anonymous_destructors(
     pending_methods.extend(destructors);
 }
 
-/// Whether structural discovery selected a lower stable representative after
-/// one of that type's members was analyzed in the current attempt.
-///
-/// A positive result invalidates the complete body-analysis transaction, not
-/// just the anonymous function. Restarting from `main` retracts stale
-/// diagnostics and outbound reachability while rediscovering callees that have
-/// an independent live path.
-fn anonymous_representative_changed(
-    sema: &BodySema<'_>,
-    analyzed_representatives: &HashMap<StructId, super::anon_structs::IssuedAnonymousNominalKey>,
-) -> bool {
-    analyzed_representatives
-        .iter()
-        .any(|(struct_id, analyzed)| {
-            sema.canonical_anonymous_types
-                .get(&Type::new_struct(*struct_id))
-                .is_some_and(|current| current != analyzed)
-        })
-}
-
 /// Demand-driven body-analysis path (ADR-0045).
 ///
 /// Ordinary function and method bodies are analyzed only when reachable from
@@ -1814,10 +1794,11 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
     let baseline_reusable_ordinary_bodies = sema.reusable_ordinary_bodies.clone();
     let baseline_reusable_specialized_bodies = sema.reusable_specialized_bodies.clone();
 
-    // Work is provenance, not committed semantic output. Keep increments from
-    // abandoned attempts so a restart cannot make real imports, analyses, or
-    // failures disappear from query accounting.
-    'body_attempt: loop {
+    // Producer-nominal identity is exact and stable (RUE-1089): no reached
+    // member can change an anonymous representative, so body analysis is a
+    // single attempt rather than a restart loop. The baseline snapshots are
+    // restored once as the analysis entry state.
+    {
         sema.analyzed_body_owners = baseline_analyzed_body_owners.clone();
         sema.ordinary_body_exports = baseline_ordinary_body_exports.clone();
         sema.specialized_body_exports = baseline_specialized_body_exports.clone();
@@ -1858,7 +1839,6 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
         let mut analyzed_functions: HashSet<Spur> = HashSet::new();
         let mut pending_methods: Vec<(StructId, Spur)> = Vec::new();
         let mut analyzed_methods: HashSet<(StructId, Spur)> = HashSet::new();
-        let mut analyzed_anonymous_representatives = HashMap::new();
         let drop_marker_sym = sema.interner.get_or_intern("__drop");
         let mut named_destructors_analyzed = false;
         let mut specializer = crate::specialize::Specializer::default();
@@ -2230,10 +2210,6 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
 
                 // For anonymous structs, use the MethodInfo directly since there's no named StructDecl
                 if type_name_str.starts_with("__anon_struct_") {
-                    analyzed_anonymous_representatives.insert(
-                        struct_id,
-                        sema.canonical_anonymous_types[&Type::new_struct(struct_id)].clone(),
-                    );
                     sema.body_analysis_work.anonymous_method_record_lookups += 1;
                     let full_name =
                         sema.method_symbol(struct_id, &method_name_str, method_info.has_self);
@@ -3134,17 +3110,14 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
         // observe every lower representative discovered by a large program.
         // Its diagnostics and reachability remain transaction-local, while a
         // restart per individual discovery would make stabilization quadratic.
-        if anonymous_representative_changed(sema, &analyzed_anonymous_representatives) {
-            continue 'body_attempt;
-        }
-        return finalize_function_body_analysis(
+        finalize_function_body_analysis(
             sema,
             functions_with_strings,
             &active_aggregate_types,
             all_warnings,
             &analyzed_functions,
             errors,
-        );
+        )
     }
 }
 

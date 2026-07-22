@@ -1313,34 +1313,6 @@ pub struct CompilerSession {
     last_successful_cfg_cache: Option<Arc<[crate::queries::DurableCfgArtifact]>>,
 }
 
-/// Producer-nominal identity (ADR-0066): a reached anonymous member's owner is
-/// its own exact producer identity. There is no cross-producer structural
-/// equivalence class and no stable-minimum representative, so a reached member
-/// is already canonical and is returned untouched. Retained as the single seam
-/// the closure calls so the removal of representative collapse — and any future
-/// anchor-projection reconciliation — is auditable in one place.
-///
-/// NOTE (RUE-1089, unresolved): a member reached under a *contextual*
-/// method-materialization anchor (installed in `binding_manifest.rs`) whose
-/// prefix differs from the anchor its producer publishes cannot resolve its body
-/// terminal and surfaces a loud E9000. Two attempts to reconcile such anchors
-/// here (min-representative, and unique last-segment projection) each
-/// reintroduced a silent miscompile in the `Wrap { inner: Option(T), get_or }`
-/// shape (the `Some` payload read returned the discriminant), so per the "loud
-/// errors over silent wrong answers" rule this is deliberately left as exact
-/// identity. The correct fix belongs at the AIR anchor-prefix projection seam so
-/// the member is *referenced* under the published anchor in the first place.
-fn canonicalize_reached_anonymous_member(
-    instance: &crate::FunctionInstanceKey,
-    _produced: &BTreeMap<
-        crate::AnonymousNominalKey,
-        crate::durable_semantics::DurableAnonymousNominal,
-    >,
-    _declarations: &[crate::durable_semantics::DurableAnonymousNominal],
-) -> crate::FunctionInstanceKey {
-    instance.clone()
-}
-
 fn stable_type_definition_root(
     value: &crate::TypeInstanceKey,
 ) -> Option<&crate::StableDefinitionKey> {
@@ -1373,17 +1345,6 @@ fn stable_producer_definition_root(
         crate::StableProducerId::Definition(definition) => Some(definition),
         crate::StableProducerId::Function(function) => stable_function_definition_root(function),
     }
-}
-
-fn produced_anonymous_survives_closure_restart(
-    instance: &crate::FunctionInstanceKey,
-    produced: &BTreeMap<
-        crate::AnonymousNominalKey,
-        crate::durable_semantics::DurableAnonymousNominal,
-    >,
-    declarations: &[crate::durable_semantics::DurableAnonymousNominal],
-) -> bool {
-    canonicalize_reached_anonymous_member(instance, produced, declarations) == *instance
 }
 
 fn enqueue_owned_destructor_closure(
@@ -5158,7 +5119,6 @@ impl CompilerSession {
                 }
             }
             let roots = pending;
-            let mut stable_produced_seed = BTreeMap::new();
             let callable_has_source_body = |callable: &crate::FunctionInstanceKey| {
                 let mut current = callable;
                 loop {
@@ -5254,7 +5214,11 @@ impl CompilerSession {
             // traced to the previously unspanned semantic-query path. The
             // per-body pipeline stages nest beneath it as timed leaves.
             let _body_queries_span = tracing::info_span!("body_queries").entered();
-            'closure: loop {
+            // Producer-nominal identity is exact and stable (RUE-1089): a reached
+            // anonymous member owns its precise producer identity, so no reached
+            // body can change an anonymous representative and force a re-traversal.
+            // The body closure is therefore a single pass, not a restart loop.
+            {
                 body_query_reference_cache.clear();
                 let mut pending = roots.clone();
                 let mut priority_pending = Vec::new();
@@ -5304,21 +5268,13 @@ impl CompilerSession {
                         parent_depth
                     }
                 };
-                body_produced_anonymous = stable_produced_seed.clone();
+                body_produced_anonymous.clear();
                 body_query_errors.clear();
-                let mut representative_changed = false;
-                while let Some(mut instance) =
-                    priority_pending.pop().or_else(|| pending.pop_first())
-                {
+                while let Some(instance) = priority_pending.pop().or_else(|| pending.pop_first()) {
                     let popped_depth = instance_depth.get(&instance).copied().unwrap_or(0);
-                    instance = canonicalize_reached_anonymous_member(
-                        &instance,
-                        &body_produced_anonymous,
-                        &query_anonymous_nominals,
-                    );
-                    // Canonicalization may rewrite the popped key to its
-                    // canonical anonymous representative; carry the depth onto
-                    // the canonical key so it survives the rewrite.
+                    // Producer-nominal identity is exact: a reached anonymous
+                    // member is already its own canonical producer identity, so
+                    // the popped key is carried through unchanged.
                     record_depth(&mut instance_depth, &instance, popped_depth);
                     let current_depth = instance_depth
                         .get(&instance)
@@ -5646,19 +5602,10 @@ impl CompilerSession {
                         let rue_query::QueryOutcome::Success(produced) = produced.outcome() else {
                             unreachable!("BodyProducedAnonymous publishes typed values")
                         };
-                        let previous_representatives = visited
-                            .iter()
-                            .map(|reached| {
-                                (
-                                    reached.clone(),
-                                    canonicalize_reached_anonymous_member(
-                                        reached,
-                                        &body_produced_anonymous,
-                                        &query_anonymous_nominals,
-                                    ),
-                                )
-                            })
-                            .collect::<Vec<_>>();
+                        // Accumulate this body's produced anonymous nominals into
+                        // the request-wide set consumed after the closure. Each
+                        // carries its exact producer identity; there is no
+                        // representative to recompute and no restart to seed.
                         body_produced_anonymous.extend(
                             produced
                                 .0
@@ -5666,51 +5613,6 @@ impl CompilerSession {
                                 .cloned()
                                 .map(|nominal| (nominal.identity.clone(), nominal)),
                         );
-                        // Keep facts from every producer which remains its own
-                        // canonical representative under the now-complete
-                        // fact set. This retracts abandoned member-produced
-                        // nested nominals while preserving a surviving
-                        // canonical member's facts across the restart.
-                        stable_produced_seed.retain(|_, nominal| {
-                            match &nominal.identity.producer {
-                                crate::StableProducerId::Definition(_) => true,
-                                crate::StableProducerId::Function(producer) => {
-                                    produced_anonymous_survives_closure_restart(
-                                        producer,
-                                        &body_produced_anonymous,
-                                        &query_anonymous_nominals,
-                                    )
-                                }
-                            }
-                        });
-                        if produced_anonymous_survives_closure_restart(
-                            &instance,
-                            &body_produced_anonymous,
-                            &query_anonymous_nominals,
-                        ) {
-                            stable_produced_seed.extend(
-                                produced
-                                    .0
-                                    .iter()
-                                    .cloned()
-                                    .map(|nominal| (nominal.identity.clone(), nominal)),
-                            );
-                        }
-                        representative_changed =
-                            previous_representatives.iter().any(|(reached, previous)| {
-                                canonicalize_reached_anonymous_member(
-                                    reached,
-                                    &body_produced_anonymous,
-                                    &query_anonymous_nominals,
-                                ) != *previous
-                            });
-                        if representative_changed {
-                            // Anonymous method bodies and their edges are not part
-                            // of structural equality. Discard this in-flight
-                            // closure and traverse again from roots against the
-                            // new producer-owned representative set.
-                            break;
-                        }
                         for nominal in produced.0.iter() {
                             if let crate::durable_semantics::DurableAnonymousNominalShape::Struct {
                                 methods,
@@ -5980,10 +5882,6 @@ impl CompilerSession {
                         }
                     }
                 }
-                if representative_changed {
-                    queried_body_work.closure_restarts += 1;
-                    continue 'closure;
-                }
                 durable_body_candidates = queried_ordinary;
                 durable_specialized_body_candidates = queried_specialized;
                 durable_anonymous_body_candidates = queried_anonymous;
@@ -6003,7 +5901,6 @@ impl CompilerSession {
                     max_specialization_depth = queried_body_work.max_specialization_depth,
                     "body closure complete"
                 );
-                break 'closure;
             }
         }
         let query_anonymous_nominals = {
@@ -6013,7 +5910,6 @@ impl CompilerSession {
                 .map(|nominal| (nominal.identity.clone(), nominal))
                 .collect::<BTreeMap<_, _>>();
             all.extend(body_produced_anonymous);
-            crate::revisioned_query_database::materialize_contextual_anonymous_aliases(&mut all);
             Arc::from(all.into_values().collect::<Vec<_>>())
         };
         // Declaration payloads have one production authority: the revisioned
