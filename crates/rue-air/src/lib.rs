@@ -111,12 +111,11 @@ pub use semantic_body::{
     SemanticStableResolutionFailure,
 };
 pub use semantic_identity::{
-    AnonymousMemberKey, AnonymousMemberKind, AnonymousNominalKey,
-    AnonymousNominalKind, CanonicalArgumentValue, CanonicalArguments, CompilerCallableId,
-    FunctionInstanceKey, LocalAtomId, LocalAtomKind, LocalAtomRecord, NominalInstanceKey,
-    STABLE_DEFINITION_KINDS, STABLE_DEFINITION_NAMESPACES, SemanticBodyLocalAtom, StableCallableId,
-    StableDefinitionKind, StableDefinitionNamespace, StableProducerId, StableSymbolId,
-    TypeInstanceKey,
+    AnonymousMemberKey, AnonymousMemberKind, AnonymousNominalKey, AnonymousNominalKind,
+    CanonicalArgumentValue, CanonicalArguments, CompilerCallableId, FunctionInstanceKey,
+    LocalAtomId, LocalAtomKind, LocalAtomRecord, NominalInstanceKey, STABLE_DEFINITION_KINDS,
+    STABLE_DEFINITION_NAMESPACES, SemanticBodyLocalAtom, StableCallableId, StableDefinitionKind,
+    StableDefinitionNamespace, StableProducerId, StableSymbolId, TypeInstanceKey,
 };
 pub use semantic_import::{
     SEMANTIC_IMPORT_CONST_KINDS, SEMANTIC_IMPORT_TYPE_KINDS, SemanticImportConstKind,
