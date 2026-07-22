@@ -327,6 +327,11 @@ inventory below in the same change.
 > declaration expression, preserves the returned type's identity. Aliases also
 > preserve identity.
 >
+> Distinct producer-nominal specializations do not converge merely because
+> their contents are equal. Recursive instantiation that selects a new
+> specialization at each step remains subject to the specialization-depth limit
+> in rule 4.14:18.
+>
 > ```rue
 > fn Pair(comptime T: type) -> type { struct { first: T, second: T } }
 >
@@ -394,6 +399,15 @@ coverage: `late_specialization_replaces_anonymous_method_with_stable_representat
 `late_specialization_replaces_anonymous_destructor_with_stable_representative`.
 They occur in `crates/rue-spec/cases/expressions/comptime.toml` and
 `crates/rue-spec/cases/types/destructors.toml`.
+
+`alternating_specialization_method_recursion_is_bounded` in
+`crates/rue-cli-tests/cases/lazy_specialization_references.toml` changes from a
+success to an E1200 specialization-depth failure. Structural representative
+convergence currently masks the unbounded
+`runaway(n) -> Wrapper(n).go() -> runaway(n + 1)` chain. Under
+producer-nominal identity, each `Wrapper(n)` specialization is distinct, so the
+chain reaches the existing deterministic depth limit rather than converging by
+shape.
 
 The existing negative cases `anon_enum_monomorphized_distinct` and
 `instantiation_distinct_arguments_are_distinct_types` remain negative coverage,
