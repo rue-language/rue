@@ -282,6 +282,68 @@ jobs:
         # by `--cfg=scaling_matrix`, not the whole compiler unit suite.
         run: scripts/ci-timed "scaling-matrix run" -- ./buck2 run //crates/rue-compiler:scaling-matrix-test -- scaling_matrix --nocapture
 
+  # RUE-1119: on pull_request, select only the heavy corpus suites the diff
+  # actually affects, using Meta's off-the-shelf Buck Target Determinator (BTD,
+  # facebookincubator/buck2-change-detector) instead of a hand-rolled query.
+  # merge_group and workflow_dispatch always force the authoritative full run;
+  # the decision is fail-open, so any tool/VCS/graph error, or any change to an
+  # out-of-graph input (the ./buck2 pin, test.sh, scripts/ci-*, this workflow,
+  # .buckconfig/BUCK/.bzl/toolchains), runs the whole corpus. Only the
+  # platform-corpus heavy suites below consult this; every other job in the
+  # workflow runs unconditionally, so selection can only ever drop the corpus
+  # jobs that BTD proved unaffected. The scripts stay fail-open by construction,
+  # and scripts/test-affected-targets.sh pins the force-full and gate logic.
+  affected-targets:
+    runs-on: ubuntu-latest
+    name: affected targets (linux-x64)
+    outputs:
+      full: ${{ steps.decide.outputs.full }}
+      selected: ${{ steps.decide.outputs.selected }}
+    steps:
+      - uses: actions/checkout@v6
+        # BTD compares the graph at the merge-base and at the head, so the base
+        # commit history must be present.
+        with:
+          fetch-depth: 0
+
+      - name: Install dotslash
+        if: github.event_name == 'pull_request'
+        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
+
+      - name: Cache dotslash artifacts
+        if: github.event_name == 'pull_request'
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/dotslash
+            ~/Library/Caches/dotslash
+          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          restore-keys: |
+            dotslash-linux-x64-
+
+      - name: Provision remote build cache
+        if: github.event_name == 'pull_request'
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          if [ -z "${BUILDBUDDY_API_KEY:-}" ]; then
+            echo "BUILDBUDDY_API_KEY unavailable (fork PR or unset); building without the remote cache."
+            exit 0
+          fi
+          scripts/provision-build-cache install
+          scripts/provision-build-cache apply
+
+      - name: Decide affected corpus targets
+        # Fail-open: the script always exits 0 with a decision (full on any
+        # error), so this job never blocks the merge-group full run and a
+        # provisioning failure just means "run everything".
+        id: decide
+        env:
+          RUE_AFFECTED_EVENT: ${{ github.event_name }}
+          RUE_AFFECTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          RUE_AFFECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: scripts/affected-targets decide
+
   # The CLI and spec corpora dominate each platform's wall clock, and Caldera
   # intentionally stresses compiler resources on every architecture. Run them on
   # separate machines (RUE-1115) while each main platform lane retains broad
@@ -291,7 +353,13 @@ jobs:
   # (BUCK) hash-partitioned shards per platform so its ~12 min collapses to
   # ~N-way parallel slices; //:cli-shard-coverage-validation keeps this matrix
   # and the BUCK shard set in lockstep.
+  #
+  # RUE-1119: each job first consults the affected-targets determinator and,
+  # on a pull_request where its corpus is provably unaffected, skips the heavy
+  # steps (recording an intentional deselection) instead of running the suite.
+  # merge_group always reports full=true, so every corpus runs there.
   platform-corpus:
+    needs: affected-targets
     strategy:
       matrix:
         include:
@@ -390,14 +458,33 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # RUE-1119: decide selection before any heavy setup. On a selective PR run
+      # where this corpus is unaffected the job records an intentional
+      # deselection and skips every step below, so a deselected corpus costs
+      # only the runner spin-up. Fail-open: unless the determinator explicitly
+      # says full=false and omits this target, the corpus runs.
+      - name: Corpus selection
+        id: sel
+        env:
+          RUE_AFFECTED_FULL: ${{ needs.affected-targets.outputs.full }}
+          RUE_AFFECTED_TARGETS: ${{ needs.affected-targets.outputs.selected }}
+        run: |
+          if scripts/ci-corpus-selected "${{ matrix.target }}"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Select Xcode 16.2
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && steps.sel.outputs.run == 'true'
         run: sudo xcode-select -s /Applications/Xcode_16.2.app
 
       - name: Install dotslash
+        if: steps.sel.outputs.run == 'true'
         uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
 
       - name: Cache dotslash artifacts
+        if: steps.sel.outputs.run == 'true'
         uses: actions/cache@v5
         with:
           path: |
@@ -408,6 +495,7 @@ jobs:
             dotslash-${{ matrix.cache_name }}-
 
       - name: Provision remote build cache
+        if: steps.sel.outputs.run == 'true'
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
@@ -419,6 +507,7 @@ jobs:
           scripts/provision-build-cache apply
 
       - name: Run ${{ matrix.name }} corpus
+        if: steps.sel.outputs.run == 'true'
         run: scripts/ci-timed "${{ matrix.check_name }} corpus" -- scripts/ci-heavy-suite "${{ matrix.target }}"
 
   # Release-mode build + test (RUE-45). Every other job builds the compiler in

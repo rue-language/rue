@@ -45,6 +45,46 @@ fails the build if the shard targets in `BUCK` and the `platform-corpus` matrix
 in `ci.yml` ever drift apart. Changing `CLI_TEST_SHARD_COUNT` therefore means
 updating the matrix (and branch protection) to match.
 
+## Affected-corpus selection on pull requests (RUE-1119)
+
+On a `pull_request` run, the heavy `platform-corpus` suites are selected down to
+the ones the change actually affects; `merge_group` and `workflow_dispatch`
+always run the full corpus and remain the authoritative `//...` gate. Selection
+uses Meta's off-the-shelf Buck Target Determinator (BTD,
+`facebookincubator/buck2-change-detector`) rather than a bespoke
+`owner()`/`rdeps()` query: the `affected-targets` job dumps the Buck graph with
+`buck2 targets` at the merge-base and at the head and feeds both dumps plus the
+changed-file list to `btd`, whose impacted-target closure is intersected with
+the selectable corpus set. `btd` is pinned and provisioned by
+`scripts/install-btd` (immutable dated release, verified against the release's
+shipped `.sha256`).
+
+The selection is **conservative and fail-open** — under-selection silently
+drops coverage (the RUE-924 failure mode), so every uncertain path runs the
+whole corpus. `scripts/affected-targets` forces a full run whenever the diff
+touches an out-of-graph or graph-global input — the `./buck2` pin, `test.sh`,
+any `scripts/ci-*` runner, the selection engine itself, the workflow files, or
+`.buckconfig`/`BUCK`/`*.bzl`/`toolchains`/`platforms`/`prelude`/`rust-toolchain.toml`
+— and it falls back to full on any VCS, provisioning, `buck2`, or `btd` error.
+Because the determinator job always exits with a decision (full on error), it
+never blocks the merge queue, and a core-compiler change fans out through BTD's
+reverse-dependency closure to the whole corpus exactly as before. The
+deterministic force-full and gate logic is pinned by
+`scripts/test-affected-targets.sh`.
+
+Selection is applied **within** each `platform-corpus` job, not by skipping the
+job: `scripts/ci-corpus-selected` decides at job start, and a deselected corpus
+skips the heavy steps (paying only the runner spin-up) while the check still
+reports success, so no branch-protection change is required. The
+`affected-targets` job writes a selection manifest to the job summary accounting
+for every corpus as `RUN` or `DESELECTED (intentional)`, and each deselected job
+logs its own intentional-deselection line — so a legitimate selective skip is
+never confused with a silently dropped suite (RUE-924). The selectable set in
+`scripts/affected-targets` must stay in sync with the `platform-corpus` matrix;
+an unknown target fails safe toward running. Coarser job-level gating (skipping
+the runner entirely) and caching the base graph dump keyed by trunk commit are
+possible follow-ups once a single `ci-success` aggregate check exists.
+
 Major Buck commands run through `scripts/ci-timed`, which preserves output and
 the exact command exit status while appending wall time and aggregate
 `Commands: (cached / remote / local)` counters to the GitHub job summary. Read
