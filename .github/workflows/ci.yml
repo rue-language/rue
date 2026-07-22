@@ -469,18 +469,7 @@ jobs:
         env:
           RUE_AFFECTED_FULL: ${{ needs.affected-targets.outputs.full }}
           RUE_AFFECTED_TARGETS: ${{ needs.affected-targets.outputs.selected }}
-        run: |
-          if scripts/ci-corpus-selected "${{ matrix.target }}"; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            status=$?
-            if [ "$status" -eq 1 ]; then
-              echo "run=false" >> "$GITHUB_OUTPUT"
-            else
-              echo "Corpus selection failed unexpectedly (exit $status); running full corpus." >&2
-              echo "run=true" >> "$GITHUB_OUTPUT"
-            fi
-          fi
+        run: scripts/ci-corpus-decision "${{ matrix.target }}"
 
       - name: Select Xcode 16.2
         if: runner.os == 'macOS' && steps.sel.outputs.run == 'true'

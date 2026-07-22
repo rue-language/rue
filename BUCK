@@ -406,6 +406,7 @@ sh_test(
     test = "scripts/test-affected-targets.sh",
     resources = [
         "scripts/affected-targets",
+        "scripts/ci-corpus-decision",
         "scripts/ci-corpus-selected",
         "scripts/parse-btd-impacted.py",
     ],
