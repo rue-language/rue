@@ -15,8 +15,6 @@
 //! anchor is transported exactly into the durable evaluator, so the Wrap payload
 //! shape compiles and executes, and an injected anchor divergence fails closed.
 
-#![cfg(test)]
-
 use crate::*;
 use std::collections::BTreeSet;
 use std::sync::Arc;

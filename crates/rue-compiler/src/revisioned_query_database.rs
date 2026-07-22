@@ -1443,7 +1443,7 @@ pub(crate) enum BodyTransactionRequestFailure {
     /// (E9000-class) failure — the anchor-transport invariant violation
     /// (RUE-1089). The dependent body cannot be built and must fail closed; the
     /// failure is never retried and never rescued by RIR recomputation.
-    ProducerFailed(crate::semantic_query_nucleus::SemanticNucleusFailure),
+    ProducerFailed(Box<crate::semantic_query_nucleus::SemanticNucleusFailure>),
 }
 
 /// Whether a committed semantic-nucleus failure is an internal-error
@@ -6978,9 +6978,9 @@ impl RevisionedQueryDatabase {
                             crate::semantic_query_nucleus::SemanticNucleusValue::Failure(failure),
                         ) if semantic_nucleus_failure_is_internal_error(failure) => {
                             return Ok(QueryOutput::success(
-                                crate::body_query::ProducedAnonymous::ProducerFailed(
+                                crate::body_query::ProducedAnonymous::ProducerFailed(Box::new(
                                     failure.clone(),
-                                ),
+                                )),
                             ));
                         }
                         // Any other non-`ComptimeCall` outcome (an ordinary
@@ -7833,7 +7833,7 @@ impl RevisionedQueryDatabase {
                                             // identity (RUE-1089).
                                             crate::body_query::ProducedAnonymous::ProducerFailed(
                                                 failure,
-                                            ) => Err(failure.clone()),
+                                            ) => Err((**failure).clone()),
                                         }
                                     }
                                 }
@@ -8481,7 +8481,7 @@ impl RevisionedQueryDatabase {
         // `ProducerFailed` at the request boundary, so the corrupt producer sinks
         // this body instead of being retried or rescued by RIR recomputation.
         let producer_transport_failure: std::cell::RefCell<
-            Option<crate::semantic_query_nucleus::SemanticNucleusFailure>,
+            Option<Box<crate::semantic_query_nucleus::SemanticNucleusFailure>>,
         > = std::cell::RefCell::new(None);
         let result = self.runtime.query(
             &self.body_transactions,

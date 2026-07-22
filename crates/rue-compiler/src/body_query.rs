@@ -64,7 +64,7 @@ pub(crate) struct BodyProducedAnonymousNominals(
 #[derive(Debug, Clone)]
 pub(crate) enum ProducedAnonymous {
     Produced(BodyProducedAnonymousNominals),
-    ProducerFailed(crate::semantic_query_nucleus::SemanticNucleusFailure),
+    ProducerFailed(Box<crate::semantic_query_nucleus::SemanticNucleusFailure>),
 }
 
 pub(crate) fn produced_anonymous_equal(
