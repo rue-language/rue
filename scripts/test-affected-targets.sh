@@ -4,10 +4,9 @@
 # in scripts/affected-targets and the fail-open gate in scripts/ci-corpus-selected.
 #
 # These cover the parts that decide COVERAGE and must never regress: a path that
-# must force a full run, a path that legitimately may be selected out, and the
-# gate's fail-open behavior. The btd/buck2 runtime path is intentionally not
-# exercised here — it fails open to a full run by construction — so this suite
-# needs neither Buck nor network.
+# must force a full run, a path that legitimately may be selected out, strict
+# BTD decoding, the gate's fail-open behavior, and one selective end-to-end
+# decision with local BTD/Buck stubs. The suite needs neither network nor Buck.
 set -uo pipefail
 
 if [ -n "${RUE_AFFECTED_SCRIPTS_ROOT:-}" ]; then
@@ -19,6 +18,7 @@ fi
 # Buck resource materialization.
 AFFECTED=(bash "$SCRIPTS_DIR/affected-targets")
 GATE=(bash "$SCRIPTS_DIR/ci-corpus-selected")
+PARSER=(python3 "$SCRIPTS_DIR/parse-btd-impacted.py")
 
 FAILURES=0
 TESTS=0
@@ -71,7 +71,7 @@ expect_full "scripts/ci-heavy-suite"
 expect_full "scripts/ci-timed"
 expect_full "scripts/ci-corpus-selected"
 expect_full "scripts/affected-targets"
-expect_full "scripts/install-btd"
+expect_full "btd"
 expect_full "scripts/provision-build-cache"
 expect_full "scripts/rue"
 expect_full "scripts/rue-bin"
@@ -126,7 +126,120 @@ check_gate "empty selection deselects" 1 "false" "" "//:spec-tests"
 # fail-open: unset full runs
 check_gate "unset full runs (fail-open)" 0 "" "" "//:spec-tests"
 # fail-open: substring safety (shard-0 selected must not match shard-00)
-check_gate "no substring false-positive" 1 "false" "//:cli-tests-shard-00" "//:cli-tests-shard-0"
+check_gate "unselected valid target deselects" 1 "false" "//:cli-tests-shard-1" "//:cli-tests-shard-0"
+# unknown matrix entry fails open rather than being dropped
+check_gate "unknown matrix target runs" 0 "false" "" "//:future-corpus"
+# malformed selected output must not look like an intentional deselection
+check_gate "unknown selected output is an error" 2 "false" "//:future-corpus" "//:spec-tests"
+
+# --- strict BTD JSON decoding -----------------------------------------------
+
+check_parser_ok() { # check_parser_ok <description> <input> <expected>
+  local desc="$1" input="$2" expected="$3" got
+  TESTS=$((TESTS + 1))
+  if got="$(printf '%b' "$input" | "${PARSER[@]}")" && [ "$got" = "$expected" ]; then
+    pass "parser: $desc"
+  else
+    fail "parser: $desc"
+  fi
+}
+
+check_parser_bad() { # check_parser_bad <description> <input>
+  local desc="$1" input="$2"
+  TESTS=$((TESTS + 1))
+  if printf '%b' "$input" | "${PARSER[@]}" >/dev/null 2>&1; then
+    fail "parser: $desc (unexpected success)"
+  else
+    pass "parser: $desc"
+  fi
+}
+
+check_parser_ok "empty stream is valid" "" ""
+check_parser_ok "normalizes root cell" '{"target":"root//:spec-tests"}\n' "//:spec-tests"
+check_parser_bad "partially malformed stream fails" '{"target":"root//:spec-tests"}\nnot-json\n'
+check_parser_bad "wholly malformed stream fails" 'not-json\n'
+check_parser_bad "missing target fails" '{}\n'
+check_parser_bad "non-string target fails" '{"target":7}\n'
+
+# Git's BTD input is status records, while force-full matches paths alone.
+# These prove the projection preserves all A/M/D records and rejects an unknown
+# status instead of accidentally running selectively.
+TESTS=$((TESTS + 1))
+if got="$(printf 'A\tadded.rue\nM\tchanged.rue\nD\tdeleted.rue\n' | "${AFFECTED[@]}" status-paths)" && \
+    [ "$got" = $'added.rue\nchanged.rue\ndeleted.rue' ]; then
+  pass "status paths: A/M/D projection"
+else
+  fail "status paths: A/M/D projection"
+fi
+TESTS=$((TESTS + 1))
+if printf 'R100\told.rue\tnew.rue\n' | "${AFFECTED[@]}" status-paths >/dev/null 2>&1; then
+  fail "status paths: unknown status unexpectedly accepted"
+else
+  pass "status paths: unknown status fails open"
+fi
+
+# --- selective integration: Git status + BTD + Buck invocation -------------
+
+TESTS=$((TESTS + 1))
+integration_root="$(mktemp -d)"
+integration_cleanup() { rm -rf "$integration_root"; }
+trap integration_cleanup EXIT
+mkdir -p "$integration_root/scripts" "$integration_root/bin" "$integration_root/docs"
+cp "$SCRIPTS_DIR/affected-targets" "$SCRIPTS_DIR/parse-btd-impacted.py" "$integration_root/scripts/"
+chmod +x "$integration_root/scripts/affected-targets"
+
+cat >"$integration_root/bin/fake-buck" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+output=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output" ]; then output="$2"; shift 2; continue; fi
+  shift
+done
+[ -n "$output" ]
+printf '{"target":"root//:spec-tests"}\n' >"$output"
+EOF
+cat >"$integration_root/bin/fake-btd" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" >"${RUE_AFFECTED_BTD_ARGS:?}"
+changes=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--changes" ]; then changes="$2"; shift 2; continue; fi
+  shift
+done
+cmp -s "$changes" "${RUE_AFFECTED_EXPECTED_CHANGES:?}"
+printf '{"target":"root//:spec-tests"}\n'
+EOF
+chmod +x "$integration_root/bin/fake-buck" "$integration_root/bin/fake-btd"
+git -C "$integration_root" init -q
+git -C "$integration_root" config user.email tests@example.invalid
+git -C "$integration_root" config user.name affected-targets-test
+printf 'before\n' >"$integration_root/docs/input.txt"
+git -C "$integration_root" add . && git -C "$integration_root" commit -qm base
+printf 'after\n' >"$integration_root/docs/input.txt"
+git -C "$integration_root" add docs/input.txt && git -C "$integration_root" commit -qm head
+printf 'M\tdocs/input.txt\n' >"$integration_root/expected-changes"
+if (
+  cd "$integration_root" &&
+  RUE_AFFECTED_BASE_SHA=HEAD~1 \
+  RUE_AFFECTED_HEAD_SHA=HEAD \
+  RUE_AFFECTED_BTD="$integration_root/bin/fake-btd" \
+  RUE_AFFECTED_BUCK2="$integration_root/bin/fake-buck" \
+  RUE_AFFECTED_BTD_ARGS="$integration_root/btd-args" \
+  RUE_AFFECTED_EXPECTED_CHANGES="$integration_root/expected-changes" \
+  GITHUB_OUTPUT="$integration_root/output" \
+  scripts/affected-targets decide >/dev/null
+) && grep -Fxq 'full=false' "$integration_root/output" && \
+    grep -Fxq 'selected=//:spec-tests' "$integration_root/output" && \
+    grep -Fxq -- '--vcs' "$integration_root/btd-args" && \
+    grep -Fxq -- 'git' "$integration_root/btd-args" && \
+    grep -Fxq -- '--buck' "$integration_root/btd-args" && \
+    grep -Fxq -- "$integration_root/bin/fake-buck" "$integration_root/btd-args"; then
+  pass "integration: BTD selects a corpus from Git status and receives pinned Buck wrapper"
+else
+  fail "integration: selective BTD decision contract"
+fi
 
 # ---------------------------------------------------------------------------
 

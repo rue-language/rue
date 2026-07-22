@@ -7,9 +7,9 @@ that stream on stdin and prints the normalized labels (leading "root" cell
 stripped, so "root//:spec-tests" and "//:spec-tests" compare equal) that
 scripts/affected-targets intersects with its selectable-corpus set.
 
-Malformed lines are skipped rather than fatal: the caller treats a parse failure
-(non-zero exit) as a reason to fall back to a full run, and skipping the odd
-unparseable line must not defeat matching the lines we can read.
+Any non-empty malformed line, JSON value that is not an object, or object with
+a missing/non-string target is fatal. The caller treats a non-zero exit as a
+reason to run the full corpus; accepting partial output could under-select.
 """
 
 import json
@@ -33,11 +33,16 @@ def main() -> int:
             continue
         try:
             obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+        except json.JSONDecodeError as error:
+            print(f"parse-btd-impacted: malformed JSON: {error}", file=sys.stderr)
+            return 1
+        if not isinstance(obj, dict):
+            print("parse-btd-impacted: JSON line is not an object", file=sys.stderr)
+            return 1
         target = obj.get("target")
         if not isinstance(target, str):
-            continue
+            print("parse-btd-impacted: missing or non-string target", file=sys.stderr)
+            return 1
         norm = normalize(target)
         if norm not in seen_set:
             seen_set.add(norm)

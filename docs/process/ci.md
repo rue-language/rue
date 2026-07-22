@@ -55,9 +55,9 @@ uses Meta's off-the-shelf Buck Target Determinator (BTD,
 `owner()`/`rdeps()` query: the `affected-targets` job dumps the Buck graph with
 `buck2 targets` at the merge-base and at the head and feeds both dumps plus the
 changed-file list to `btd`, whose impacted-target closure is intersected with
-the selectable corpus set. `btd` is pinned and provisioned by
-`scripts/install-btd` (immutable dated release, verified against the release's
-shipped `.sha256`).
+the selectable corpus set. `btd` is a checked-in DotSlash manifest for the
+immutable 2026-07-20 release; its archive size, BLAKE3 digest, platform mapping,
+and extraction path are reviewed in-tree before CI downloads it.
 
 The selection is **conservative and fail-open** — under-selection silently
 drops coverage (the RUE-924 failure mode), so every uncertain path runs the
@@ -65,7 +65,8 @@ whole corpus. `scripts/affected-targets` forces a full run whenever the diff
 touches an out-of-graph or graph-global input — the `./buck2` pin, `test.sh`,
 any `scripts/ci-*` runner, the selection engine itself, the workflow files, or
 `.buckconfig`/`BUCK`/`*.bzl`/`toolchains`/`platforms`/`prelude`/`rust-toolchain.toml`
-— and it falls back to full on any VCS, provisioning, `buck2`, or `btd` error.
+— and it falls back to full on any VCS, provisioning, `buck2`, `btd`, or output
+parsing error.
 Because the determinator job always exits with a decision (full on error), it
 never blocks the merge queue, and a core-compiler change fans out through BTD's
 reverse-dependency closure to the whole corpus exactly as before. The
@@ -80,8 +81,8 @@ reports success, so no branch-protection change is required. The
 for every corpus as `RUN` or `DESELECTED (intentional)`, and each deselected job
 logs its own intentional-deselection line — so a legitimate selective skip is
 never confused with a silently dropped suite (RUE-924). The selectable set in
-`scripts/affected-targets` must stay in sync with the `platform-corpus` matrix;
-an unknown target fails safe toward running. Coarser job-level gating (skipping
+`scripts/affected-targets` is the matrix gate's source of truth; an unknown
+target fails safe toward running. Coarser job-level gating (skipping
 the runner entirely) and caching the base graph dump keyed by trunk commit are
 possible follow-ups once a single `ci-success` aggregate check exists.
 

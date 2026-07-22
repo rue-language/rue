@@ -32,6 +32,10 @@
 #   force-full-match   Read candidate paths on stdin; exit 0 (and print the
 #                      first matching reason) if any forces a full run, else
 #                      exit 1. Used by the unit tests and reusable locally.
+#   is-selectable      Exit 0 only for a target represented by the CI corpus
+#                      matrix. The matrix gate uses this as its one source of
+#                      truth, so an added matrix target fails open until it is
+#                      deliberately added here.
 #
 # Deliberately NOT `set -e`: a full run is the safe fallback, so failures are
 # handled explicitly and converted into "full", never into a hard error that
@@ -73,7 +77,7 @@ SELECTABLE_CORPUS=(
 
 # Out-of-graph (and belt-and-suspenders in-graph) paths that force a full run.
 # Anchored, repo-root-relative, extended-regex alternation.
-FORCE_FULL_REGEX='(^|/)BUCK$|\.bzl$|^\.buckconfig|^\.buckroot$|^\.github/workflows/|^toolchains/|^platforms/|^constraints/|^third-party/|^prelude/|^rust-toolchain\.toml$|^buck2$|^buck2-bin$|^reindeer$|^btd$|^test\.sh$|^scripts/ci-|^scripts/affected-targets$|^scripts/install-btd$|^scripts/provision-build-cache$|^scripts/with-full-suite-lock$|^scripts/rue$|^scripts/rue-bin$'
+FORCE_FULL_REGEX='(^|/)BUCK$|\.bzl$|^\.buckconfig|^\.buckroot$|^\.github/workflows/|^toolchains/|^platforms/|^constraints/|^third-party/|^prelude/|^rust-toolchain\.toml$|^buck2$|^buck2-bin$|^reindeer$|^btd$|^test\.sh$|^scripts/ci-|^scripts/affected-targets$|^scripts/provision-build-cache$|^scripts/with-full-suite-lock$|^scripts/rue$|^scripts/rue-bin$'
 
 # buck2 targets invocation BTD's own `targets` wrapper uses (td_util buck::run
 # targets_arguments). Both dumps use the identical command so their unconfigured
@@ -100,6 +104,25 @@ force_full_match() {
         printf '%s\n' "$(head -n1 <<<"$match")"
         return 0
     fi
+    return 1
+}
+
+# Convert the Git `--name-status --no-renames` contract BTD consumes into a
+# path-only stream for the independent force-full policy. With renames disabled
+# Git emits them as a delete plus an add, so A/M/D cover every normal change.
+# An unfamiliar status line is a tooling mismatch and must fail open.
+status_paths() {
+    awk -F '\t' '
+        /^[AMD]\t[^\t]+$/ { print $2; next }
+        { exit 1 }
+    '
+}
+
+is_selectable() {
+    local wanted="$1" target
+    for target in "${SELECTABLE_CORPUS[@]}"; do
+        [[ "$target" == "$wanted" ]] && return 0
+    done
     return 1
 }
 
@@ -176,18 +199,25 @@ cmd_decide() {
 
     # Merge-base diff (three-dot) so unrelated changes on the base branch do not
     # inflate the changed-file set.
-    local changes_file
+    local changes_file paths_file
     changes_file="$(mktemp)"
-    _af_cleanup+=("$changes_file")
-    if ! git diff --name-only "${base_ref}...${head_ref}" >"$changes_file" 2>/dev/null; then
+    paths_file="$(mktemp)"
+    _af_cleanup+=("$changes_file" "$paths_file")
+    # BTD's Git parser requires status records, not a path-only diff. Disable
+    # rename detection so a move is conservatively represented as D+A.
+    if ! git diff --name-status --no-renames "${base_ref}...${head_ref}" >"$changes_file" 2>/dev/null; then
         decide_full "git diff against base '${base_ref}' failed"
     fi
     if [[ ! -s "$changes_file" ]]; then
         decide_full "empty changed-file set (unexpected on a PR)"
     fi
 
+    if ! status_paths <"$changes_file" >"$paths_file" || [[ ! -s "$paths_file" ]]; then
+        decide_full "could not derive changed paths from git status records"
+    fi
+
     local reason
-    if reason="$(force_full_match <"$changes_file")"; then
+    if reason="$(force_full_match <"$paths_file")"; then
         decide_full "changed path forces a full run: ${reason}"
     fi
 
@@ -196,15 +226,16 @@ cmd_decide() {
     work="$(mktemp -d)"
     _af_cleanup+=("$work")
 
-    # Provision btd. No linux-arm64 asset exists; the determinator job runs on
-    # linux-x64, but guard anyway.
-    if ! "$repo_root/scripts/install-btd" "$work/bin" >&2; then
-        decide_full "btd could not be provisioned"
+    # `btd` is a checked-in DotSlash manifest. Test harnesses may substitute a
+    # stub via RUE_AFFECTED_BTD, but CI always exercises the pinned manifest.
+    local btd="${RUE_AFFECTED_BTD:-$repo_root/btd}"
+    if [[ ! -x "$btd" ]]; then
+        decide_full "pinned btd executable is unavailable"
     fi
-    local btd="$work/bin/btd"
+    local buck2="${RUE_AFFECTED_BUCK2:-$repo_root/buck2}"
 
     # Head dump from the current checkout (the tree CI will test).
-    if ! buck_targets_dump "$repo_root/buck2" "$work/head.jsonl" >&2; then
+    if ! buck_targets_dump "$buck2" "$work/head.jsonl" >&2; then
         decide_full "buck2 targets dump at head failed"
     fi
 
@@ -216,7 +247,8 @@ cmd_decide() {
     fi
     _af_worktrees+=("$base_tree")
     local base_ok=1
-    if ! ( cd "$base_tree" && buck_targets_dump "$base_tree/buck2" "$work/base.jsonl" ) >&2; then
+    local base_buck2="${RUE_AFFECTED_BUCK2:-$base_tree/buck2}"
+    if ! ( cd "$base_tree" && buck_targets_dump "$base_buck2" "$work/base.jsonl" ) >&2; then
         base_ok=0
     fi
     if [[ "$base_ok" -ne 1 ]]; then
@@ -231,6 +263,7 @@ cmd_decide() {
         --diff "$work/head.jsonl" \
         --universe root//... \
         --vcs git \
+        --buck "$buck2" \
         --json-lines >"$btd_out" 2>"$work/btd.err"; then
         echo "affected-targets: btd failed:" >&2
         cat "$work/btd.err" >&2 || true
@@ -265,8 +298,13 @@ main() {
                 exit 0
             fi
             exit 1 ;;
+        status-paths)
+            status_paths ;;
+        is-selectable)
+            [[ $# -eq 2 ]] || { echo "usage: scripts/affected-targets is-selectable //:TARGET" >&2; exit 2; }
+            is_selectable "$2" ;;
         *)
-            echo "usage: scripts/affected-targets [decide|force-full-match]" >&2
+            echo "usage: scripts/affected-targets [decide|force-full-match|status-paths|is-selectable]" >&2
             exit 2 ;;
     esac
 }

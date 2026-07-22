@@ -1,0 +1,37 @@
+#!/usr/bin/env dotslash
+
+{
+  "name": "btd",
+  "platforms": {
+    "linux-x86_64": {
+      "size": 2192871,
+      "hash": "blake3",
+      "digest": "702d8ffcc8435b0c2fd76d0b461ea6cd4b097ae18691b08b9fd3d38303ac5acd",
+      "format": "tar.gz",
+      "path": "btd",
+      "providers": [{
+        "url": "https://github.com/facebookincubator/buck2-change-detector/releases/download/2026-07-20/btd-x86_64-unknown-linux-musl.tar.gz"
+      }]
+    },
+    "macos-aarch64": {
+      "size": 1675467,
+      "hash": "blake3",
+      "digest": "b8b1a81c3c53f548f7189acffb288d761eff04a87a016b14daad3cf50435c21a",
+      "format": "tar.gz",
+      "path": "btd",
+      "providers": [{
+        "url": "https://github.com/facebookincubator/buck2-change-detector/releases/download/2026-07-20/btd-aarch64-apple-darwin.tar.gz"
+      }]
+    },
+    "macos-x86_64": {
+      "size": 1851727,
+      "hash": "blake3",
+      "digest": "e99d2df2a7bbdb3ead7a141f98baa21f15c99c9fc2e18bbd765f26dfb0d83c99",
+      "format": "tar.gz",
+      "path": "btd",
+      "providers": [{
+        "url": "https://github.com/facebookincubator/buck2-change-detector/releases/download/2026-07-20/btd-x86_64-apple-darwin.tar.gz"
+      }]
+    }
+  }
+}
