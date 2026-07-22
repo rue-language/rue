@@ -12,7 +12,7 @@
     "total_per_body_setup_share_pct": 85,
     "total_per_body_setup_share_note": "A SEPARATE figure, not the 62% prediction: the total per-body setup share (install/project/endpoint PLUS prepare and config), measured via the 200-sample stack profile. The two must not be conflated — 62% is the install/project/endpoint share the gate reads, 85% is the total setup share for context.",
     "decision_rule": "After D1 lands, if the scaling harness shows per-body install/project/endpoint work still increasing with unrelated-declaration count, the shared-base or narrow-epoch repair proceeds; an incidental wall-time improvement without flat per-body counters is not success.",
-    "hypothesis_status": "The 62% figure is a pre-implementation hypothesis (ADR-0066 §3), not repository-proven evidence; this artifact records its measurement provenance so RUE-1090 can consume it.",
+    "hypothesis_status": "The 62% figure was frozen pre-implementation (ADR-0066 §3) and is now EVIDENCED: the attached raw Caldera stack samples classify to 62.5% install/project/endpoints and 85.5% total per-body setup (see caldera_provenance.raw_stack_samples).",
     "pre_link_north_star_ms": 45,
     "pre_link_north_star_note": "Eventual reference-host/corpus project target for warm incremental pre-link compilation; not a language guarantee and not a gate this runner enforces."
   },
@@ -35,7 +35,87 @@
       "./buck2 build --target-platforms //platforms:release //crates/rue:rue",
       "RUE_STD_PATH=$PWD/std <rue> --time-passes examples/caldera/main.rue",
       "gdb stack sampling: 200 samples at 0.25s intervals over the same release <rue> --time-passes invocation"
-    ]
+    ],
+    "raw_stack_samples": {
+      "attachment": "docs/benchmarks/rue-1083-caldera-stack-samples.txt.gz",
+      "format": "gdb 'bt 40' text stacks separated by '=== SAMPLE ===' lines; 200 samples at 0.25s intervals over the release compile of examples/caldera/main.rue at commit aca4acb",
+      "companion": "docs/benchmarks/rue-1083-rill-stack-samples.txt.gz (132 debug-build samples of examples/rill, the corroborating profile)",
+      "classification_method": "each sample assigned to its first matching pattern, in order; recompute with grep or the pattern list below",
+      "classification_patterns_in_order": [
+        [
+          "install_declaration_semantics_with_anonymous",
+          "install"
+        ],
+        [
+          "project_durable_declaration_semantics",
+          "project"
+        ],
+        [
+          "install_stable_identity_endpoints",
+          "endpoints"
+        ],
+        [
+          "install_body_owner_tokens",
+          "owner_tokens"
+        ],
+        [
+          "issue_bound_definitions",
+          "issue_bound_definitions"
+        ],
+        [
+          "configure_canonical_sema|configure_timed_canonical_sema",
+          "configure"
+        ],
+        [
+          "predeclare_imported_declaration_shells",
+          "predeclare"
+        ],
+        [
+          "prepare_query_declaration_shells",
+          "prepare_other"
+        ],
+        [
+          "analyze_one_body_instance",
+          "body_analysis"
+        ],
+        [
+          "analyze_body_query",
+          "analyze_body_query_other"
+        ],
+        [
+          "body_transaction",
+          "query_bookkeeping"
+        ],
+        [
+          "rue_query",
+          "query_runtime_other"
+        ],
+        [
+          "canonical_semantic",
+          "canonical_other"
+        ]
+      ],
+      "classified_counts_of_200": {
+        "install": 81,
+        "project": 24,
+        "endpoints": 20,
+        "analyze_body_query_other": 13,
+        "query_bookkeeping": 12,
+        "query_runtime_other": 10,
+        "configure": 9,
+        "predeclare": 8,
+        "issue_bound_definitions": 8,
+        "body_analysis": 6,
+        "owner_tokens": 4,
+        "prepare_other": 4,
+        "canonical_other": 1
+      },
+      "derived": {
+        "install_project_endpoints_pct": 62.5,
+        "total_per_body_setup_pct": 85.5,
+        "real_body_analysis_pct": 3.0
+      }
+    }
   },
   "reference_host": {
     "nproc": 4,
@@ -50,7 +130,7 @@
       "reference": "synthetic single-file main.rue produced by the scaling_harness.rs Corpus generator (reached bodies b{i} each called once from main, unrelated declarations d{j} nothing calls, plus main)",
       "caldera": "examples/caldera/main.rue"
     },
-    "commit": "6c9be32f"
+    "commit": "recorded by the follow-up evidence commit"
   },
   "runner": {
     "binary": "//crates/rue-scaling-bench:rue-scaling-bench",
@@ -68,51 +148,7 @@
     "note": "Declaration universe = bodies + decls + 1 (main); cold_bodies = bodies + 1 = 101."
   },
   "raw_samples": {
-    "cold": {
-      "kind": "timing",
-      "mode": "cold",
-      "bodies": 100,
-      "decls": 100,
-      "iterations": 8,
-      "commit": "6c9be32f",
-      "nproc": 4,
-      "semantic": {
-        "samples_ns": [180104345, 188334081, 174937204, 177231077, 190848802, 185520076, 178646040, 176047653],
-        "min_ns": 174937204,
-        "median_ns": 180104345,
-        "mean_ns": 181458659,
-        "max_ns": 190848802
-      },
-      "pre_link": {
-        "samples_ns": [181615076, 190368861, 176568908, 179533837, 192401059, 186998026, 180015587, 177775384],
-        "min_ns": 176568908,
-        "median_ns": 181615076,
-        "mean_ns": 183159592,
-        "max_ns": 192401059
-      }
-    },
-    "warm": {
-      "kind": "timing",
-      "mode": "warm",
-      "bodies": 100,
-      "decls": 100,
-      "iterations": 8,
-      "commit": "6c9be32f",
-      "nproc": 4,
-      "semantic": {
-        "samples_ns": [23795790, 24755651, 24085691, 24025284, 23216022, 25366404, 26317914, 23401928],
-        "min_ns": 23216022,
-        "median_ns": 24085691,
-        "mean_ns": 24370585,
-        "max_ns": 26317914
-      },
-      "pre_link": {
-        "samples_ns": [25388854, 26557787, 25555661, 25410043, 24554276, 26712021, 27804575, 25153439],
-        "min_ns": 24554276,
-        "median_ns": 25555661,
-        "mean_ns": 25892082,
-        "max_ns": 27804575
-      }
-    }
+    "status": "regenerated in the follow-up evidence commit",
+    "note": "The runner's per-sample timings are recorded only against a committed implementation revision of the corrected intervals (pre_link starts immediately before the revision source update); the evidence commit that fills this section names that revision in reference_host.commit."
   }
 }
