@@ -833,7 +833,13 @@ test_testsh_unfiltered_audits_corpus_presence() {
   cat >"$sb/buck2" <<'EOF'
 #!/usr/bin/env bash
 if [ "$1" = "uquery" ]; then
-  for t in $FAKE_HEAVY_SUITES; do printf 'root%s\n' "$t"; done
+  # RUE-1116: test.sh issues a second uquery for the rue_cli_shard set and
+  # subtracts it from heavy-suite discovery. Serve FAKE_CLI_SHARDS (empty by
+  # default) for that query and FAKE_HEAVY_SUITES for the rue_heavy_suite one.
+  case "$*" in
+    *rue_cli_shard*) for t in ${FAKE_CLI_SHARDS:-}; do printf 'root%s\n' "$t"; done ;;
+    *) for t in $FAKE_HEAVY_SUITES; do printf 'root%s\n' "$t"; done ;;
+  esac
   exit 0
 fi
 if [ "$1" = "test" ]; then
@@ -909,6 +915,18 @@ EOF
       FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$all" ./test.sh 2>&1)" || rc=$?
   check "test.sh: local callers cannot defer corpus coverage" \
     "$([ "$rc" -ne 0 ] && grep -Fq 'reserved for required CI' <<<"$out" && echo 0 || echo 1)"
+
+  # (6) RUE-1116: the CI-only CLI shards are labeled rue_heavy_suite but must be
+  #     excluded from a local full run, which covers their union once via the
+  #     monolithic //:cli-tests. The run still succeeds (full corpus present).
+  local with_shards="$all //:cli-tests-shard-0 //:cli-tests-shard-1"
+  : >"$sb/calls.log"; rc=0
+  out="$(cd "$sb" && RUE_CI_DEFER_HEAVY_SUITES= RUE_FULL_SUITE_LOCK_HELD=1 \
+      FAKE_HEAVY_SUITES="$with_shards" \
+      FAKE_CLI_SHARDS='//:cli-tests-shard-0 //:cli-tests-shard-1' \
+      FAKE_PASS_TARGETS="$all" FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
+  check "test.sh: local full run runs the monolithic CLI corpus, not the shards" \
+    "$([ "$rc" -eq 0 ] && ! grep -Eq '(^| )//:cli-tests-shard-' "$sb/calls.log" && echo 0 || echo 1)"
 
   rm -rf "$sb"
 }

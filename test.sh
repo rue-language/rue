@@ -99,9 +99,17 @@ if [[ $# -eq 0 ]]; then
     # query that label from the live graph, exclude it from the broad pass, then
     # run every returned target alone. A newly labeled target is automatically
     # included without ever putting the whole heavy set in one test invocation.
+    # RUE-1116: the CI-only CLI shards are labeled rue_heavy_suite (so
+    # ci-heavy-suite accepts them and the broad pass excludes them) AND
+    # rue_cli_shard. A local full run must execute the monolithic //:cli-tests
+    # exactly once instead of re-running every 1/N slice, so subtract the
+    # rue_cli_shard set from heavy-suite discovery here.
+    cli_shard_targets="$(./buck2 uquery 'attrfilter(labels, rue_cli_shard, //...)')"
     HEAVY_SUITES=()
     while IFS= read -r suite; do
-        [[ -n "$suite" ]] && HEAVY_SUITES+=("$suite")
+        [[ -n "$suite" ]] || continue
+        grep -Fxq "$suite" <<<"$cli_shard_targets" && continue
+        HEAVY_SUITES+=("$suite")
     done < <(./buck2 uquery 'attrfilter(labels, rue_heavy_suite, //...)')
     if [[ ${#HEAVY_SUITES[@]} -eq 0 ]]; then
         echo "error: Buck query found no rue_heavy_suite targets" >&2

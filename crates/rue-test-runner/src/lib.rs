@@ -23,6 +23,180 @@ use std::process::{Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+/// A hash-partitioned slice of a test corpus (RUE-1116).
+///
+/// Selecting a stable `1/N` slice of a corpus by test name lets CI run the
+/// slices on separate runners in parallel. Membership is decided by a fixed
+/// FNV-1a hash of the test name modulo the shard count, so a case's shard is
+/// independent of discovery order and stable as the corpus grows — no central
+/// manifest, and the shards are collectively exhaustive and pairwise disjoint
+/// by construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShardSelector {
+    index: u64,
+    count: u64,
+}
+
+/// Error parsing a `RUE_*_TEST_SHARD` specification.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ShardSpecError {
+    /// The value was not of the form `INDEX/COUNT`.
+    Malformed(String),
+    /// `COUNT` was zero (nothing to partition into).
+    ZeroCount,
+    /// `INDEX` was not strictly less than `COUNT`.
+    IndexOutOfRange { index: u64, count: u64 },
+}
+
+impl std::fmt::Display for ShardSpecError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ShardSpecError::Malformed(value) => write!(
+                f,
+                "expected shard spec of the form INDEX/COUNT (0-based), got {value:?}"
+            ),
+            ShardSpecError::ZeroCount => write!(f, "shard COUNT must be non-zero"),
+            ShardSpecError::IndexOutOfRange { index, count } => write!(
+                f,
+                "shard INDEX {index} out of range for COUNT {count} (expected 0..{count})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ShardSpecError {}
+
+/// Fixed 64-bit FNV-1a hash. Deterministic across runs, processes, and
+/// platforms — unlike `std`'s randomized `HashMap` hasher — so a given test
+/// name always maps to the same shard.
+fn shard_hash(name: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in name.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+impl ShardSelector {
+    /// Parse an optional `INDEX/COUNT` spec (0-based index). A `None` or blank
+    /// spec yields `Ok(None)` — the default "run the whole corpus" behavior —
+    /// so an unset environment variable is never an error.
+    pub fn parse(spec: Option<&str>) -> Result<Option<ShardSelector>, ShardSpecError> {
+        let spec = match spec.map(str::trim) {
+            None | Some("") => return Ok(None),
+            Some(spec) => spec,
+        };
+        let malformed = || ShardSpecError::Malformed(spec.to_string());
+        let (index, count) = spec.split_once('/').ok_or_else(malformed)?;
+        let index: u64 = index.trim().parse().map_err(|_| malformed())?;
+        let count: u64 = count.trim().parse().map_err(|_| malformed())?;
+        if count == 0 {
+            return Err(ShardSpecError::ZeroCount);
+        }
+        if index >= count {
+            return Err(ShardSpecError::IndexOutOfRange { index, count });
+        }
+        Ok(Some(ShardSelector { index, count }))
+    }
+
+    /// Parse the spec from environment variable `var`. Unset or blank yields
+    /// `Ok(None)`.
+    pub fn from_env(var: &str) -> Result<Option<ShardSelector>, ShardSpecError> {
+        match std::env::var(var) {
+            Ok(value) => ShardSelector::parse(Some(&value)),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err(ShardSpecError::Malformed("<non-unicode>".to_string()))
+            }
+        }
+    }
+
+    /// Whether the case named `name` belongs to this shard.
+    pub fn includes(&self, name: &str) -> bool {
+        shard_hash(name) % self.count == self.index
+    }
+
+    /// The 0-based shard index.
+    pub fn index(&self) -> u64 {
+        self.index
+    }
+
+    /// The total number of shards.
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+}
+
+#[cfg(test)]
+mod shard_selector_tests {
+    use super::*;
+
+    #[test]
+    fn unset_or_blank_yields_no_selector() {
+        assert_eq!(ShardSelector::parse(None), Ok(None));
+        assert_eq!(ShardSelector::parse(Some("")), Ok(None));
+        assert_eq!(ShardSelector::parse(Some("   ")), Ok(None));
+    }
+
+    #[test]
+    fn accepts_well_formed_spec() {
+        let selector = ShardSelector::parse(Some("2/4")).unwrap().unwrap();
+        assert_eq!(selector.index(), 2);
+        assert_eq!(selector.count(), 4);
+        // Surrounding whitespace is tolerated.
+        assert_eq!(ShardSelector::parse(Some(" 0 / 3 ")).unwrap().unwrap().count(), 3);
+    }
+
+    #[test]
+    fn rejects_malformed_and_out_of_range() {
+        assert!(matches!(
+            ShardSelector::parse(Some("1")),
+            Err(ShardSpecError::Malformed(_))
+        ));
+        assert!(matches!(
+            ShardSelector::parse(Some("a/4")),
+            Err(ShardSpecError::Malformed(_))
+        ));
+        assert_eq!(ShardSelector::parse(Some("0/0")), Err(ShardSpecError::ZeroCount));
+        assert_eq!(
+            ShardSelector::parse(Some("4/4")),
+            Err(ShardSpecError::IndexOutOfRange { index: 4, count: 4 })
+        );
+    }
+
+    #[test]
+    fn partition_is_exhaustive_and_disjoint() {
+        let count = 4u64;
+        let shards: Vec<ShardSelector> = (0..count)
+            .map(|index| ShardSelector { index, count })
+            .collect();
+        for i in 0..5000 {
+            let name = format!("cli.section{}::case_{}", i % 37, i);
+            let hits = shards.iter().filter(|shard| shard.includes(&name)).count();
+            assert_eq!(hits, 1, "name {name:?} matched {hits} shards, expected exactly 1");
+        }
+    }
+
+    #[test]
+    fn partition_is_reasonably_balanced() {
+        let count = 4usize;
+        let mut buckets = vec![0usize; count];
+        let total = 8000usize;
+        for i in 0..total {
+            let name = format!("cli.arith::case_{i}");
+            buckets[(shard_hash(&name) % count as u64) as usize] += 1;
+        }
+        let expected = total / count;
+        for (bucket, hits) in buckets.iter().enumerate() {
+            assert!(
+                (*hits as i64 - expected as i64).abs() < expected as i64 / 4,
+                "shard {bucket} had {hits} cases, expected ~{expected}"
+            );
+        }
+    }
+}
+
 /// A section header in a test file.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

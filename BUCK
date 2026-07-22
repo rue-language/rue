@@ -203,34 +203,69 @@ sh_test(
     },
 )
 
+# RUE-1083: these four large example programs exceed their compiler budgets
+# after the query cutover. Keep the CLI targets running the other 1,667 cases
+# while RUE-1083 restores their automatic and explicit example coverage;
+# Caldera remains isolated below. Shared verbatim by //:cli-tests and its shards
+# so a slice runs exactly the same cases the monolithic target would.
+_CLI_TEST_ARGS = [
+    "--quiet",
+    "--skip", "cli.examples::caldera::main",
+    "--skip", "cli.examples::harbor::main",
+    "--skip", "cli.examples_harbor",
+    "--skip", "cli.examples::lattice::main",
+    "--skip", "cli.examples_lattice",
+    "--skip", "cli.examples::meridian::main",
+    "--skip", "cli.examples_meridian",
+    "--skip", "cli.examples::mosaic::main",
+    "--skip", "cli.examples_mosaic",
+]
+
+_CLI_TEST_ENV = {
+    "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+    "RUE_CLI_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
+    "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
+    "RUE_REPO_DIR": "$(location :cli-test-fixtures)",
+    "RUE_STD_DIR": "$(location :std)/std",
+}
+
+# The full CLI corpus in one invocation: the canonical target that a local
+# `./test.sh` full run executes and that the RUE-924 corpus-omission audit
+# tracks (REQUIRED_CORPUS_HARNESSES in test.sh).
 sh_test(
     name = "cli-tests",
     labels = ["rue_heavy_suite"],
     test = "//crates/rue-cli-tests:rue-cli-tests",
-    # RUE-1083: these four large example programs exceed their compiler
-    # budgets after the query cutover. Keep the required target running the
-    # other 1,667 CLI cases while RUE-1083 restores their automatic and
-    # explicit example coverage. Caldera remains isolated below.
-    args = [
-        "--quiet",
-        "--skip", "cli.examples::caldera::main",
-        "--skip", "cli.examples::harbor::main",
-        "--skip", "cli.examples_harbor",
-        "--skip", "cli.examples::lattice::main",
-        "--skip", "cli.examples_lattice",
-        "--skip", "cli.examples::meridian::main",
-        "--skip", "cli.examples_meridian",
-        "--skip", "cli.examples::mosaic::main",
-        "--skip", "cli.examples_mosaic",
-    ],
-    env = {
-        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
-        "RUE_CLI_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
-        "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
-        "RUE_REPO_DIR": "$(location :cli-test-fixtures)",
-        "RUE_STD_DIR": "$(location :std)/std",
-    },
+    args = _CLI_TEST_ARGS,
+    env = _CLI_TEST_ENV,
 )
+
+# RUE-1116: parallel CI shards of the CLI corpus. Same harness and declared
+# inputs as //:cli-tests, but each sets RUE_CLI_TEST_SHARD=k/N so it runs a
+# stable hash-partitioned 1/N slice; the shards' union is the full corpus. They
+# carry BOTH labels deliberately:
+#   * rue_heavy_suite — scripts/ci-heavy-suite accepts them unchanged, and the
+#     broad `buck2 test //... --exclude rue_heavy_suite` pass skips them;
+#   * rue_cli_shard — a local `./test.sh` full run runs the monolithic
+#     //:cli-tests exactly once instead of re-running every slice (test.sh
+#     subtracts rue_cli_shard from its heavy-suite discovery).
+# The `platform-corpus` matrix in .github/workflows/ci.yml MUST list all
+# CLI_TEST_SHARD_COUNT shards on every platform that runs the CLI corpus;
+# //:cli-shard-coverage-validation fails the build if BUCK and the matrix drift.
+CLI_TEST_SHARD_COUNT = 4
+
+[
+    sh_test(
+        name = "cli-tests-shard-{}".format(_shard),
+        labels = ["rue_heavy_suite", "rue_cli_shard"],
+        test = "//crates/rue-cli-tests:rue-cli-tests",
+        args = _CLI_TEST_ARGS,
+        env = dict(_CLI_TEST_ENV.items() + [
+            ("RUE_CLI_TEST_SHARD", "{}/{}".format(_shard, CLI_TEST_SHARD_COUNT)),
+        ]),
+    )
+    for _shard in range(CLI_TEST_SHARD_COUNT)
+]
 
 # Caldera deliberately pushes a single compiler invocation past the ordinary
 # CLI corpus's aggregate budget. Keep it in the required corpus, but isolate it
@@ -325,6 +360,37 @@ sh_test(
     name = "required-ci-container-pin-tool-tests",
     test = "scripts/test-required-ci-container-pins.py",
     resources = ["scripts/validate-required-ci-container-pins.py"],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
+# The root BUCK file, so the CLI-shard coverage gate can read CLI_TEST_SHARD_COUNT
+# and the generated shard targets as a declared input.
+filegroup(
+    name = "root-buck-file",
+    srcs = ["BUCK"],
+)
+
+# RUE-1116: fail the build if the CLI shard targets in BUCK and the shards
+# listed in the required CI matrix drift apart. A shard present in BUCK but
+# missing from the matrix would silently drop that fraction of the corpus on CI
+# (the RUE-924 false-green failure mode), since nothing else re-runs the slices.
+sh_test(
+    name = "cli-shard-coverage-validation",
+    test = "scripts/validate-cli-shard-coverage.py",
+    args = [
+        "--buck",
+        "$(location :root-buck-file)/BUCK",
+        "--workflow",
+        "$(location :required-ci-workflows)/.github/workflows/ci.yml",
+    ],
+)
+
+sh_test(
+    name = "cli-shard-coverage-tool-tests",
+    test = "scripts/test-cli-shard-coverage.py",
+    resources = ["scripts/validate-cli-shard-coverage.py"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
