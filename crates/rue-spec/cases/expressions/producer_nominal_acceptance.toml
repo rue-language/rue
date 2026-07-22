@@ -349,42 +349,37 @@ fn main() -> i32 {
 exit_code = 42
 
 # =============================================================================
-# Criterion 5 — The Wrap repro's single-nominal-identity check — and
-# Criterion 6 (both backends) for the same program — are NOT encoded here.
+# Criterion 5 — the Wrap repro's single-nominal-identity check. FLIPPED post
+# anchor fix (RUE-1089): the frontend anchor is transported exactly into the
+# durable evaluator, so the generic `Wrap` whose `get_or` method matches its
+# anonymous-enum field `Option(T)` compiles and executes to the payload value.
+# The receiver field type, the `Option(T)` inside the match, the match enum key,
+# the payload operation, and the enum layout all resolve to ONE Option identity.
 #
-# They currently hit the deliberately fail-closed E9000 blocker, and the spec /
-# CLI runners intentionally treat an "internal compiler error" (E9000) as an ICE
-# failure that can NEVER satisfy a `compile_fail` case (rue-test-runner
-# `ice_message`, applied before the `compile_fail` branch). Encoding the current
-# fail-closed state as a green case is therefore impossible through this runner.
-#
-# Criteria 5 and 6 are instead asserted programmatically against the compiler
-# API in `crates/rue-compiler/src/producer_nominal_acceptance_tests.rs`
-# (`wrap_single_nominal_identity_currently_fails_closed`,
-# `wrap_payload_fails_closed_on_both_backend_targets`), which assert the exact
-# E9000 diagnostic today and carry FLIPS-POST-ANCHOR-FIX notes to become the
-# exit-42 execution regression once the anchor fix lands. When that fix lands,
-# add the green spec case here:
-#
-#   [[case]]
-#   name = "c5_wrap_single_nominal_identity"
-#   spec = ["4.14:21"]
-#   source = """
-#   fn Option(comptime T: type) -> type { enum { Some(T), None } }
-#   fn Wrap(comptime T: type) -> type {
-#       struct {
-#           inner: Option(T),
-#           fn get_or(self, d: T) -> T {
-#               let O = Option(T);
-#               match self.inner { O.Some(v) => v, O.None => d }
-#           }
-#       }
-#   }
-#   fn main() -> i32 {
-#       let W = Wrap(i32);
-#       let O = Option(i32);
-#       let w: W = W { inner: O.Some(42) };
-#       w.get_or(0)
-#   }
-#   """
-#   exit_code = 42
+# Criterion 6 (both backends execute) is asserted programmatically against the
+# compiler API in `crates/rue-compiler/src/producer_nominal_acceptance_tests.rs`
+# (`wrap_payload_executes_on_both_backend_targets`), which needs per-target
+# compile + native execution the spec runner does not express.
+[[case]]
+name = "c5_wrap_single_nominal_identity"
+spec = ["4.14:24"]
+description = "Generic Wrap whose method matches its anonymous-enum field resolves to one Option identity and executes"
+source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn Wrap(comptime T: type) -> type {
+    struct {
+        inner: Option(T),
+        fn get_or(self, d: T) -> T {
+            let O = Option(T);
+            match self.inner { O.Some(v) => v, O.None => d }
+        }
+    }
+}
+fn main() -> i32 {
+    let W = Wrap(i32);
+    let O = Option(i32);
+    let w: W = W { inner: O.Some(42) };
+    w.get_or(0)
+}
+"""
+exit_code = 42

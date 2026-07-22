@@ -1,0 +1,60 @@
+# RUE-1089: the Wrap payload regression — a generic struct producer whose method
+# matches its anonymous-enum field Option(T) — compiles and links on every
+# supported target now that the frontend anonymous-type anchor is transported
+# exactly into the durable evaluator. The native host also executes it and checks
+# the payload value. Mirrors cli.abi_conformance's cross-target matrix.
+
+[section]
+id = "cli.producer_nominal_targets"
+name = "Producer-nominal Wrap payload across targets"
+description = "The Wrap(Option(T)) payload regression links on every target and executes to the payload value on the native host."
+
+[[case]]
+name = "wrap_payload_x86_64_linux"
+files = [{ path = "main.rue", source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn Wrap(comptime T: type) -> type {
+    struct {
+        inner: Option(T),
+        fn get_or(self, d: T) -> T {
+            let O = Option(T);
+            match self.inner { O.Some(v) => v, O.None => d }
+        }
+    }
+}
+fn main() -> i32 {
+    let W = Wrap(i32);
+    let O = Option(i32);
+    let w: W = W { inner: O.Some(42) };
+    w.get_or(0)
+}
+""" }]
+args = ["main.rue", "--target", "x86-64-linux", "-o", "prog"]
+executable_target = "x86-64-linux"
+execute_if_native = true
+exit_code = 42
+
+[[case]]
+name = "wrap_payload_aarch64_linux"
+files = [{ path = "main.rue", source = """
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn Wrap(comptime T: type) -> type {
+    struct {
+        inner: Option(T),
+        fn get_or(self, d: T) -> T {
+            let O = Option(T);
+            match self.inner { O.Some(v) => v, O.None => d }
+        }
+    }
+}
+fn main() -> i32 {
+    let W = Wrap(i32);
+    let O = Option(i32);
+    let w: W = W { inner: O.Some(42) };
+    w.get_or(0)
+}
+""" }]
+args = ["main.rue", "--target", "aarch64-linux", "-o", "prog"]
+executable_target = "aarch64-linux"
+execute_if_native = true
+exit_code = 42
