@@ -1001,6 +1001,7 @@ fn facade_stays_small_and_session_centered() {
             "durable_compatibility_tests",
             "integration_tests",
             "pipeline_tests",
+            "producer_nominal_acceptance_tests",
             "scaling_harness",
             "supported_api_inventory",
             "test_support",
