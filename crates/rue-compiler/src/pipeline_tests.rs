@@ -1909,11 +1909,13 @@ mod tests {
             .expect("[E; 2] should be interned");
         let expected_widths = [
             (
-                "__rue_drop_Inner".to_string(),
+                // Named nominals are file-qualified (ADR-0066); derive the glue
+                // name through the canonical helper rather than hardcoding.
+                rue_air::drop_glue_names::struct_drop_glue_name(inner_id, &state.type_pool),
                 state.type_pool.abi_slot_count(Type::new_struct(inner_id)),
             ),
             (
-                "__rue_drop_E".to_string(),
+                crate::drop_glue::enum_drop_glue_name(enum_id, &state.type_pool),
                 state.type_pool.abi_slot_count(Type::new_enum(enum_id)),
             ),
             (
