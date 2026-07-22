@@ -1770,10 +1770,11 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
         )
         .collect::<HashSet<_>>();
 
-    // Declaration-owned dependency records predate body analysis and must
-    // survive a transaction restart. Everything appended after this snapshot
-    // is body-attempt state and is restored atomically if a late anonymous
-    // producer changes an already-analyzed representative.
+    // Declaration-owned dependency records predate body analysis. Everything
+    // appended after this snapshot is body-attempt state. Producer-nominal
+    // identity is exact (RUE-1089), so there is no representative-change restart;
+    // the snapshot is restored exactly once, immediately below, as the analysis
+    // entry state.
     let baseline_analyzed_body_owners = sema.analyzed_body_owners.clone();
     let baseline_ordinary_body_exports = sema.ordinary_body_exports.clone();
     let baseline_specialized_body_exports = sema.specialized_body_exports.clone();
