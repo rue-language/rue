@@ -25,7 +25,6 @@ use crate::*;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use rue_error::ErrorCode;
 use rue_target::Target;
 
 /// The canonical RUE-1089 Wrap repro: a GENERIC struct producer whose method
@@ -182,17 +181,6 @@ fn anonymous_type_count(semantic: &CanonicalSemanticOutput) -> usize {
     structs + enums
 }
 
-/// Render every error's code and message into one string for substring
-/// assertions. `ErrorCode`'s Display is the `E####` form (E9000 for an ICE),
-/// and `ErrorKind`'s Display carries the internal message.
-fn render_error_codes(errors: &CompileErrors) -> String {
-    errors
-        .iter()
-        .map(|error| format!("[{}] {}", error.kind.code(), error.kind))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 // ---------------------------------------------------------------------------
 // Criterion 3 — identity stability under unrelated edits
 // ---------------------------------------------------------------------------
@@ -284,49 +272,68 @@ fn producer_nominal_warm_and_fresh_semantic_output_agree() {
 // (currently fail-closed E9000)
 // ---------------------------------------------------------------------------
 
-/// The Wrap repro currently fails LOUD with E9000 ("did not publish a
-/// terminal") on the `get_or` method body, because astgen and the durable
-/// fragment evaluator mint the anonymous-type anchor independently and diverge.
-/// This is the deliberately fail-closed frontier — never a silent miscompile.
-///
-/// FLIPS-POST-ANCHOR-FIX: once anchor minting is unified, replace the body of
-/// this test with:
-///
-/// ```ignore
-/// let output = crate::test_compile_source(WRAP_REPRO).expect("Wrap repro compiles");
-/// let run = execute_elf(&output.elf);      // see pipeline_tests::execute_compiled_output
-/// assert_eq!(run.status.code(), Some(42));
-/// ```
-///
-/// and add the green spec case documented in the acceptance TOML. The
-/// single-nominal-identity guarantee (receiver field type == match enum key ==
-/// payload operation == enum layout, all one identity) is then observable as a
-/// clean compile with exactly one `Option$…` enum symbol in the pool.
-#[test]
-fn wrap_single_nominal_identity_currently_fails_closed() {
-    let options = CompileOptions::default();
-    let errors = match fresh_semantic(WRAP_REPRO, &options) {
-        Err(errors) => errors,
-        Ok(_) => panic!(
-            "the Wrap repro is expected to FAIL CLOSED today; if it now compiles, the anchor fix \
-             has landed — flip this test and the companion spec case to the exit-42 regression"
-        ),
-    };
+/// Execute a linked Rue program and return its process output. Mirrors
+/// `pipeline_tests::execute_compiled_output`.
+#[cfg(unix)]
+fn execute_wrap(output: &CompileOutput, label: &str) -> std::process::Output {
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    let rendered = render_error_codes(&errors);
-    assert!(
-        errors
-            .iter()
-            .any(|error| error.kind.code() == ErrorCode::INTERNAL_ERROR),
-        "expected a fail-closed E9000 internal error, got:\n{rendered}",
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let unique = NEXT.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "rue-producer-nominal-{label}-{}-{unique}",
+        std::process::id()
+    ));
+    std::fs::write(&path, &output.elf).expect("write linked Rue executable");
+    let mut permissions = std::fs::metadata(&path)
+        .expect("read executable metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&path, permissions).expect("make executable runnable");
+    let result = std::process::Command::new(&path).output();
+    std::fs::remove_file(&path).expect("remove executable after execution");
+    result.expect("execute linked Rue program")
+}
+
+/// Count the anonymous ENUM identities minted into the pool.
+fn anonymous_enum_count(semantic: &CanonicalSemanticOutput) -> usize {
+    let pool = semantic.type_pool();
+    pool.all_enum_ids()
+        .filter(|&id| pool.enum_def(id).name.starts_with("__anon_enum"))
+        .count()
+}
+
+/// FLIPPED-POST-ANCHOR-FIX (RUE-1089). The generic `Wrap` whose `get_or` method
+/// matches its anonymous-enum field `Option(T)` now compiles and executes to the
+/// payload value 42. astgen and the durable fragment evaluator agree on the
+/// anonymous-type anchor: the receiver field type, the `Option(T)` inside the
+/// match, the match enum key, the payload operation, and the enum layout all
+/// resolve to ONE `Option$…` nominal identity — observable as exactly one
+/// anonymous enum in the type pool.
+#[cfg(unix)]
+#[test]
+fn wrap_single_nominal_identity_executes_to_the_payload() {
+    let options = CompileOptions::default();
+    let semantic = fresh_semantic(WRAP_REPRO, &options).expect("Wrap repro compiles");
+
+    // A single anonymous Option identity backs every reach of `self.inner`.
+    assert_eq!(
+        anonymous_enum_count(&semantic),
+        1,
+        "the Wrap repro must resolve to exactly one anonymous Option enum identity",
     );
-    assert!(
-        rendered.contains("did not publish a terminal"),
-        "expected the anchor-divergence 'did not publish a terminal' message, got:\n{rendered}",
-    );
-    assert!(
-        rendered.contains("get_or"),
-        "expected the failure to name the reached anonymous method 'get_or', got:\n{rendered}",
+
+    let snapshot = SourceSnapshot::single("<wrap>", WRAP_REPRO).expect("snapshot");
+    let mut session = CompilerSession::new();
+    session.update(&snapshot).into_result().expect("publish");
+    let output = crate::queries::compile_with_session(&mut session, &snapshot, &options)
+        .expect("Wrap repro links");
+    let execution = execute_wrap(&output, "single");
+    assert_eq!(
+        execution.status.code(),
+        Some(42),
+        "Wrap repro must execute to the payload value 42: {execution:?}",
     );
 }
 
@@ -335,41 +342,36 @@ fn wrap_single_nominal_identity_currently_fails_closed() {
 // (currently fail-closed on both backend targets)
 // ---------------------------------------------------------------------------
 
-/// The Wrap repro fails closed identically on BOTH backend targets, because the
-/// E9000 anchor divergence is a FRONTEND failure reached before backend
-/// selection. This pins that neither backend silently miscompiles the payload
-/// today, and makes the post-fix flip mechanical for both.
-///
-/// FLIPS-POST-ANCHOR-FIX: replace each arm with a compile-and-(if native)-run
-/// assertion — compile `WRAP_REPRO` with each `CompileOptions { target, .. }`,
-/// assert `Ok`, and for the native x86-64 target execute the linked ELF and
-/// assert exit code 42 (aarch64 stays a structural cross-compile check off its
-/// native host, mirroring `cli.abi_conformance`). Also add the two green
-/// `--target` CLI cases to `crates/rue-cli-tests/cases/`.
+/// FLIPPED-POST-ANCHOR-FIX (RUE-1089). The Wrap payload regression now compiles
+/// on BOTH backend targets: the unified anchor is a frontend fact reached before
+/// backend selection, so both `x86-64-linux` and `aarch64-linux` link. The
+/// native x86-64 ELF executes to exit 42; aarch64 stays a structural
+/// cross-compile check off its native host (mirroring `cli.abi_conformance`).
+#[cfg(unix)]
 #[test]
-fn wrap_payload_fails_closed_on_both_backend_targets() {
+fn wrap_payload_executes_on_both_backend_targets() {
     for target in [Target::X86_64Linux, Target::Aarch64Linux] {
         let options = CompileOptions {
             target,
             ..CompileOptions::default()
         };
-        let errors = match fresh_semantic(WRAP_REPRO, &options) {
-            Err(errors) => errors,
-            Ok(_) => panic!(
-                "target {target:?}: the Wrap repro is expected to FAIL CLOSED today; if it now \
-                 compiles, flip this test and the companion cases to the exit-42 regression"
-            ),
-        };
-        let rendered = render_error_codes(&errors);
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.kind.code() == ErrorCode::INTERNAL_ERROR),
-            "target {target:?}: expected a fail-closed E9000 internal error, got:\n{rendered}",
-        );
-        assert!(
-            rendered.contains("did not publish a terminal"),
-            "target {target:?}: expected the anchor-divergence message, got:\n{rendered}",
-        );
+        fresh_semantic(WRAP_REPRO, &options).unwrap_or_else(|errors| {
+            panic!("target {target:?}: Wrap repro must compile: {errors}")
+        });
+
+        let snapshot = SourceSnapshot::single("<wrap>", WRAP_REPRO).expect("snapshot");
+        let mut session = CompilerSession::new();
+        session.update(&snapshot).into_result().expect("publish");
+        let output = crate::queries::compile_with_session(&mut session, &snapshot, &options)
+            .unwrap_or_else(|errors| panic!("target {target:?}: Wrap repro must link: {errors}"));
+
+        if target == Target::X86_64Linux {
+            let execution = execute_wrap(&output, "x86");
+            assert_eq!(
+                execution.status.code(),
+                Some(42),
+                "target {target:?}: Wrap payload must execute to 42: {execution:?}",
+            );
+        }
     }
 }

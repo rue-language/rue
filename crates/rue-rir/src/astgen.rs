@@ -2126,8 +2126,10 @@ mod tests {
             ("ptr mut ptr const u8", "ptr mut ptr const u8"),
             ("Pair(i32, [i32; 2])", "Pair(i32, [i32; 2])"),
             ("lib.pair.Pair(i32)", "lib.pair.Pair(i32)"),
-            ("struct { x: i32 }", "struct { x: i32 }"),
-            ("enum { A, B(i32) }", "enum { A, B(i32) }"),
+            // Anonymous `struct`/`enum` literals are no longer valid in a type
+            // annotation (RUE-1089 rejects them with E0102 at parse time), so a
+            // type-position intrinsic argument can never be one; their rejection
+            // is covered by the annotation-position diagnostic tests.
         ] {
             let source = format!("fn f() -> i32 {{ @size_of({spelling}) }}");
             let (rir, interner) = gen_rir(&source);

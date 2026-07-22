@@ -262,11 +262,23 @@ pub(crate) fn parse_semantic_signature(
     }
 }
 
+/// One anonymous type literal transported into a reparsed declaration fragment,
+/// located in the fragment's own `FileId(0)` synthetic-source coordinate space
+/// and carrying the frontend anchor `AstGen` minted for it. The span is a
+/// transport locator only; it never enters a durable semantic fingerprint.
+#[derive(Debug, Clone)]
+pub(crate) struct TransportedAnonymousSite {
+    pub(crate) span: rue_span::Span,
+    pub(crate) kind: rue_rir::AnonymousTypeSiteKind,
+    pub(crate) anchor: rue_rir::RirStructuralAnchor,
+}
+
 pub(crate) struct ParsedSemanticConst {
     pub(crate) source: String,
     pub(crate) declaration: rue_parser::ast::ConstDecl,
     pub(crate) interner: crate::ThreadedRodeo,
     pub(crate) import_sites: Vec<crate::ImportDirective>,
+    pub(crate) anonymous_sites: Vec<TransportedAnonymousSite>,
 }
 
 pub(crate) struct ParsedSemanticBody {
@@ -274,6 +286,25 @@ pub(crate) struct ParsedSemanticBody {
     pub(crate) expression: rue_parser::ast::Expr,
     pub(crate) interner: crate::ThreadedRodeo,
     pub(crate) import_sites: Vec<crate::ImportDirective>,
+    pub(crate) anonymous_sites: Vec<TransportedAnonymousSite>,
+}
+
+/// Shift each fragment-relative anonymous locator into the reparsed fragment's
+/// synthetic-source coordinate space by the byte length of the synthetic prefix
+/// preceding the reparsed initializer/body text.
+fn transport_anonymous_sites(
+    sites: &[crate::declaration_candidate::RawAnonymousSite],
+    prefix_len: usize,
+) -> Vec<TransportedAnonymousSite> {
+    let prefix = prefix_len as u32;
+    sites
+        .iter()
+        .map(|site| TransportedAnonymousSite {
+            span: rue_span::Span::new(prefix + site.fragment_start, prefix + site.fragment_end),
+            kind: site.kind,
+            anchor: site.anchor.clone(),
+        })
+        .collect()
 }
 
 /// Reparse one exact declaration body without consulting its module AST. The
@@ -285,6 +316,10 @@ pub(crate) fn parse_semantic_body(
     syntax: &crate::declaration_candidate::RawDeclarationBodySyntax,
 ) -> Result<ParsedSemanticBody, Arc<str>> {
     let source = format!("fn __semantic_body() {}", syntax.body);
+    // The reparsed body text sits at this byte offset in the synthetic source;
+    // shifting each fragment-relative anonymous locator by it lands the locator
+    // in the reparsed AST's own `FileId(0)` coordinate space.
+    let prefix_len = source.len() - syntax.body.len();
     let parsed = crate::syntax::parse_file(
         crate::SourceView::new("<semantic-body>", &source, rue_span::FileId::new(0)),
         crate::ThreadedRodeo::new(),
@@ -303,6 +338,7 @@ pub(crate) fn parse_semantic_body(
         expression: function.body.clone(),
         interner: parsed.interner,
         import_sites,
+        anonymous_sites: transport_anonymous_sites(&syntax.anonymous_sites, prefix_len),
     })
 }
 
@@ -317,6 +353,11 @@ pub(crate) fn parse_semantic_const(
         Some(ty) => format!("const {}: {} = {};", key.name, ty, syntax.initializer),
         None => format!("const {} = {};", key.name, syntax.initializer),
     };
+    // The initializer is placed verbatim, followed only by the trailing `;`, so
+    // its start offset in the synthetic source is this prefix length. Shifting
+    // each fragment-relative anonymous locator by it lands the locator in the
+    // reparsed AST's own `FileId(0)` coordinate space.
+    let prefix_len = source.len() - syntax.initializer.len() - 1;
     let parsed = crate::syntax::parse_file(
         crate::SourceView::new("<semantic-const>", &source, rue_span::FileId::new(0)),
         crate::ThreadedRodeo::new(),
@@ -337,6 +378,7 @@ pub(crate) fn parse_semantic_const(
         declaration: declaration.clone(),
         interner: parsed.interner,
         import_sites,
+        anonymous_sites: transport_anonymous_sites(&syntax.anonymous_sites, prefix_len),
     })
 }
 
