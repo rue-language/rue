@@ -2633,6 +2633,48 @@ impl SemanticConstEvaluator<'_, '_> {
             rue_air::AnonymousNominalKind::Struct => rue_rir::AnonymousTypeSiteKind::Struct,
             rue_air::AnonymousNominalKind::Enum => rue_rir::AnonymousTypeSiteKind::Enum,
         };
+        // Test-only fault injection (RUE-1089 acceptance criterion 7). The mode
+        // is selected entirely by a marker embedded in the fragment source, so it
+        // affects only the one declaration under test and is race-free under
+        // parallel test execution — no global state, no reset. It corrupts the
+        // transported table exactly as a real anchor-transport bug would, so the
+        // fail-closed path below is exercised without a real divergence.
+        #[cfg(test)]
+        let injected_sites: Vec<crate::semantic_query_nucleus::TransportedAnonymousSite>;
+        #[cfg(test)]
+        let sites: &[crate::semantic_query_nucleus::TransportedAnonymousSite] =
+            if self.source.contains("__RUE1089_FAULT_MISSING__") {
+                &[]
+            } else if self.source.contains("__RUE1089_FAULT_DUPLICATE__") {
+                injected_sites = self
+                    .anonymous_sites
+                    .iter()
+                    .chain(self.anonymous_sites.iter())
+                    .cloned()
+                    .collect();
+                &injected_sites
+            } else if self.source.contains("__RUE1089_FAULT_WRONG_KIND__") {
+                injected_sites = self
+                    .anonymous_sites
+                    .iter()
+                    .map(|site| {
+                        let mut site = site.clone();
+                        site.kind = match site.kind {
+                            rue_rir::AnonymousTypeSiteKind::Struct => {
+                                rue_rir::AnonymousTypeSiteKind::Enum
+                            }
+                            rue_rir::AnonymousTypeSiteKind::Enum => {
+                                rue_rir::AnonymousTypeSiteKind::Struct
+                            }
+                        };
+                        site
+                    })
+                    .collect();
+                &injected_sites
+            } else {
+                self.anonymous_sites
+            };
+        #[cfg(not(test))]
         let sites = self.anonymous_sites;
         // Whole-producer well-formedness: no two frontend sites may share a
         // locator or an anchor. Either is anchor-transport corruption.
@@ -2677,6 +2719,17 @@ impl SemanticConstEvaluator<'_, '_> {
                  {}..{} (expected {expected_kind:?}, transported {:?}) at anchor {:?}",
                 self.producer, span.start, span.end, site.kind, site.anchor,
             ));
+        }
+        // Test-only divergent-anchor injection (RUE-1089 acceptance criterion 7):
+        // publish a WRONG-but-present anchor, reproducing the exact pre-fix
+        // hazard where a reached member cannot match its owner terminal. The fix
+        // is load-bearing — this must fail closed (loud E9000) downstream, never
+        // miscompile.
+        #[cfg(test)]
+        if self.source.contains("__RUE1089_FAULT_DIVERGE__") {
+            let mut segments = site.anchor.segments().to_vec();
+            segments.push(rue_rir::RirStructuralPathSegment::AnonymousType(9999));
+            return Ok(rue_rir::RirStructuralAnchor::new(segments));
         }
         Ok(site.anchor.clone())
     }

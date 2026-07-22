@@ -2,22 +2,18 @@
 //! tests.
 //!
 //! This module is the home for the acceptance criteria that cannot be expressed
-//! as spec/CLI TOML cases, either because they need programmatic assertions
-//! (warm/fresh/cold parity, symbol-set comparison) or because they currently
-//! hit the deliberately fail-closed E9000 blocker — which the spec/CLI runners
-//! reject as an ICE that can never satisfy a `compile_fail` case
-//! (`rue-test-runner::ice_message`).
+//! as spec/CLI TOML cases, because they need programmatic assertions
+//! (warm/fresh/cold parity, symbol-set comparison, execution of the linked ELF)
+//! or a test-only anchor-transport fault-injection hook.
 //!
 //! Companion behavioral cases live in
-//! `crates/rue-spec/cases/expressions/producer_nominal_acceptance.toml`. The
-//! full criterion → test map is in
-//! `docs/notes/rue-1089-acceptance-ledger.md`.
+//! `crates/rue-spec/cases/expressions/producer_nominal_acceptance.toml` and
+//! `crates/rue-cli-tests/cases/producer_nominal_targets.toml`. The full
+//! criterion → test map is in `docs/notes/rue-1089-acceptance-ledger.md`.
 //!
-//! Two-state design: every test passes against the CURRENT tree (asserting the
-//! present behavior, E9000 fail-closed included). The E9000 tests carry
-//! `FLIPS-POST-ANCHOR-FIX` notes describing the exact edit that turns them into
-//! the exit-42 execution regression once astgen and the durable fragment
-//! evaluator mint anonymous-type anchors consistently.
+//! The anchor-transport fix (RUE-1089) has landed: the frontend anonymous-type
+//! anchor is transported exactly into the durable evaluator, so the Wrap payload
+//! shape compiles and executes, and an injected anchor divergence fails closed.
 
 #![cfg(test)]
 
@@ -29,10 +25,10 @@ use rue_target::Target;
 
 /// The canonical RUE-1089 Wrap repro: a GENERIC struct producer whose method
 /// reaches an anonymous-enum MEMBER (`self.inner`, of type `Option(T)`) under
-/// the contextual (generic) anchor. This is the sole shape that currently hits
-/// the fail-closed E9000 frontier. Post-anchor-fix it must compile and exit 42,
-/// with the receiver field type, the match enum key, the payload operation, and
-/// the enum layout all referring to ONE nominal identity.
+/// the contextual (generic) anchor. This was the sole shape that hit the
+/// fail-closed E9000 frontier before the anchor-transport fix. It now compiles
+/// and exits 42, with the receiver field type, the match enum key, the payload
+/// operation, and the enum layout all referring to ONE nominal identity.
 const WRAP_REPRO: &str = r#"
 fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn Wrap(comptime T: type) -> type {
@@ -374,4 +370,265 @@ fn wrap_payload_executes_on_both_backend_targets() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Criterion 7 — an artificial anchor-transport disagreement fails closed
+// ---------------------------------------------------------------------------
+
+/// Render every error's code and message into one string for substring checks.
+fn rendered_errors(errors: &CompileErrors) -> String {
+    errors
+        .iter()
+        .map(|error| format!("[{}] {}", error.kind.code(), error.kind))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The Wrap shape (a generic struct producer whose method reaches its
+/// anonymous-enum field), carrying a test-only marker inside the producer whose
+/// durable identity a reached member consumes. The marker rides into the
+/// reparsed fragment source and drives the evaluator's fault-injection hook,
+/// corrupting the transported anchor table for that declaration exactly as a
+/// real transport bug would. This is the shape where the durable identity is
+/// load-bearing, so a fail-closed transport error must sink the whole request.
+fn fault_probe_program(marker: &str) -> String {
+    format!(
+        r#"
+fn Option(comptime T: type) -> type {{ enum {{ Some(T), None }} }}
+fn Wrap(comptime T: type) -> type {{
+    // {marker}
+    struct {{
+        inner: Option(T),
+        fn get_or(self, d: T) -> T {{
+            let O = Option(T);
+            match self.inner {{ O.Some(v) => v, O.None => d }}
+        }}
+    }}
+}}
+fn main() -> i32 {{
+    let W = Wrap(i32);
+    let O = Option(i32);
+    let w: W = W {{ inner: O.Some(42) }};
+    w.get_or(0)
+}}
+"#
+    )
+}
+
+/// A DIVERGENT transported anchor — a wrong-but-present anchor published for the
+/// producer whose durable identity a reached member consumes — reproduces the
+/// exact pre-fix hazard. It must fail closed LOUD: the reached `get_or` member
+/// cannot match its owner terminal, so a typed E9000-class internal diagnostic
+/// surfaces and the request returns `Err`. Never a silent miscompile.
+#[test]
+fn divergent_anchor_transport_fails_closed_loud() {
+    let options = CompileOptions::default();
+    let program = fault_probe_program("__RUE1089_FAULT_DIVERGE__");
+    let errors = match fresh_semantic(&program, &options) {
+        Err(errors) => errors,
+        Ok(_) => {
+            panic!("a divergent transported anchor must fail closed, but the program compiled")
+        }
+    };
+    let rendered = rendered_errors(&errors);
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.kind.code() == rue_error::ErrorCode::INTERNAL_ERROR),
+        "expected a fail-closed E9000 internal diagnostic, got:\n{rendered}",
+    );
+}
+
+/// The resolve-level corruptions — a missing locator, a duplicate locator, or a
+/// kind mismatch — each raise the fail-closed diagnostic BEFORE any nominal
+/// terminal publishes. Because no wrong terminal is published, the request never
+/// yields a silent WRONG answer: it either fails closed or the frontend recovers
+/// the correct nominal. This asserts the "loud errors over silent wrong answers"
+/// invariant for every corruption mode.
+#[cfg(unix)]
+#[test]
+fn resolve_level_transport_corruptions_never_miscompile() {
+    let options = CompileOptions::default();
+    for marker in [
+        "__RUE1089_FAULT_MISSING__",
+        "__RUE1089_FAULT_DUPLICATE__",
+        "__RUE1089_FAULT_WRONG_KIND__",
+    ] {
+        let program = fault_probe_program(marker);
+        match fresh_semantic(&program, &options) {
+            // Fail-closed: acceptable (loud, no wrong answer).
+            Err(_) => {}
+            // Recovered: the result must be the CORRECT payload value, never a
+            // wrong one. Compile and execute to confirm exit 42.
+            Ok(_) => {
+                let snapshot = SourceSnapshot::single("<fault>", &program).expect("snapshot");
+                let mut session = CompilerSession::new();
+                session.update(&snapshot).into_result().expect("publish");
+                match crate::queries::compile_with_session(&mut session, &snapshot, &options) {
+                    Err(_) => {}
+                    Ok(output) => {
+                        let execution = execute_wrap(&output, "corruption");
+                        assert_eq!(
+                            execution.status.code(),
+                            Some(42),
+                            "fault {marker} recovered but produced a WRONG answer: {execution:?}",
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Without a fault marker the same probe compiles and runs — proving the hook is
+/// inert by default and the fault behavior above is caused by the injection.
+#[cfg(unix)]
+#[test]
+fn fault_probe_compiles_and_runs_cleanly_without_a_marker() {
+    let options = CompileOptions::default();
+    let program = fault_probe_program("no fault here");
+    fresh_semantic(&program, &options).expect("the unmarked probe must compile");
+    let snapshot = SourceSnapshot::single("<fault>", &program).expect("snapshot");
+    let mut session = CompilerSession::new();
+    session.update(&snapshot).into_result().expect("publish");
+    let output = crate::queries::compile_with_session(&mut session, &snapshot, &options)
+        .expect("unmarked probe links");
+    let execution = execute_wrap(&output, "clean");
+    assert_eq!(
+        execution.status.code(),
+        Some(42),
+        "unmarked probe: {execution:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Evaluator correspondence — two same-kind sites in one producer, reversed
+// order, must not swap identities.
+// ---------------------------------------------------------------------------
+
+/// A single comptime producer binds two same-kind anonymous structs with
+/// DIFFERENT fields, then selects one by a comptime flag. Each site must map to
+/// its own frontend anchor: a span→anchor mix-up would give the selected local
+/// the other site's anchor, which the runtime reference (under AstGen's real
+/// anchor) could not resolve. Both selections, in both source orders, must
+/// compile and run correctly — a set-equality check alone would miss a swap.
+#[test]
+fn evaluator_correspondence_two_same_kind_sites_do_not_swap() {
+    let options = CompileOptions::default();
+    // `A` bound first, `B` second; the field names differ so a swap changes the
+    // constructed field and fails to compile or returns the wrong value.
+    let forward = r#"
+fn Choose(comptime pick_a: bool) -> type {
+    let A = struct { a: i32 };
+    let B = struct { b: i32 };
+    if pick_a { A } else { B }
+}
+fn main() -> i32 {
+    let TA = Choose(true);
+    let TB = Choose(false);
+    let a: TA = TA { a: 40 };
+    let b: TB = TB { b: 2 };
+    a.a + b.b
+}
+"#;
+    // The two bindings in the opposite source order (byte offsets shift, anchors
+    // must not).
+    let reversed = r#"
+fn Choose(comptime pick_a: bool) -> type {
+    let B = struct { b: i32 };
+    let A = struct { a: i32 };
+    if pick_a { A } else { B }
+}
+fn main() -> i32 {
+    let TA = Choose(true);
+    let TB = Choose(false);
+    let a: TA = TA { a: 40 };
+    let b: TB = TB { b: 2 };
+    a.a + b.b
+}
+"#;
+    for (label, source) in [("forward", forward), ("reversed", reversed)] {
+        let snapshot = SourceSnapshot::single("<choose>", source).expect("snapshot");
+        let mut session = CompilerSession::new();
+        session.update(&snapshot).into_result().expect("publish");
+        let output = crate::queries::compile_with_session(&mut session, &snapshot, &options)
+            .unwrap_or_else(|errors| panic!("{label}: Choose must compile: {errors}"));
+        #[cfg(unix)]
+        {
+            let execution = execute_wrap(&output, label);
+            assert_eq!(
+                execution.status.code(),
+                Some(42),
+                "{label}: two same-kind sites must keep their own identities: {execution:?}",
+            );
+        }
+        #[cfg(not(unix))]
+        let _ = output;
+    }
+}
+
+/// Only one of two syntactic anonymous sites is ever evaluated (a comptime `if`
+/// picks a branch), so runtime consumption is a strict SUBSET of the transported
+/// table. This must compile — the fail-closed rule requires every CONSUMED
+/// locator to resolve, never every transported entry to be observed.
+#[test]
+fn selected_branch_consumes_a_subset_of_the_transported_table() {
+    let options = CompileOptions::default();
+    let source = r#"
+fn Pick(comptime take_first: bool) -> type {
+    if take_first { struct { first: i32 } } else { struct { second: i32 } }
+}
+fn main() -> i32 {
+    let T = Pick(true);
+    let t: T = T { first: 42 };
+    t.first
+}
+"#;
+    fresh_semantic(source, &options).expect("only the selected branch's site is consumed");
+}
+
+/// Trivia and unrelated declarations before the producer shift every module and
+/// fragment byte offset, but the transported anchor is definition-relative, so
+/// behavior is unchanged.
+#[test]
+fn anchor_transport_survives_trivia_and_unrelated_shifts() {
+    let options = CompileOptions::default();
+    let baseline = r#"
+fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn get(self) -> T { self.v }
+    }
+}
+fn main() -> i32 {
+    let B = Box(i32);
+    let b: B = B { v: 42 };
+    b.get()
+}
+"#;
+    let shifted = r#"
+// an unrelated leading comment that shifts every byte offset below
+fn unrelated_helper() -> i32 { 7 }
+
+fn Box(comptime T: type) -> type {
+    // trivia inside the producer body
+    struct {
+        v: T,
+        fn get(self) -> T { self.v }
+    }
+}
+fn main() -> i32 {
+    let B = Box(i32);
+    let b: B = B { v: 42 };
+    b.get()
+}
+"#;
+    let base = fresh_semantic(baseline, &options).expect("baseline compiles");
+    let shift = fresh_semantic(shifted, &options).expect("shifted compiles");
+    assert_eq!(
+        anonymous_type_count(&base),
+        anonymous_type_count(&shift),
+        "trivia/unrelated shifts changed the anonymous identity count",
+    );
 }

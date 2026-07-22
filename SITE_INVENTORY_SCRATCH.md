@@ -49,14 +49,29 @@ Sema state fields to remove/simplify — crates/rue-air/src/sema/mod.rs: `canoni
 ## RUE-1089 progress dispositions (implementation session)
 
 - **Stage 1 (AIR identity core)**: DONE, verified. Cross-producer structural collapse removed (anon_structs.rs). RETAINED anon_struct_method_sigs/captured_values/type_subst (durable-export load-bearing). anonymous_key_cmp kept (same-producer anchor ordering).
-- **Stage 2 (representative machinery)**: PARTIAL. session.rs canonicalize_reached_anonymous_member reduced to exact-identity (safe: loud E9000 on the method-materialization anchor case, never a silent miscompile). Restart code inert-but-present. NOT deleted: materialize_contextual_anonymous_aliases / projected_anonymous_nominal_for_identity / binding_manifest same-producer anchor install (blocked on the anchor fix below).
+- **Stage 2 (representative machinery)**: DONE. After the anchor-transport fix (below), every candidate reconciliation path was instrumented and recorded ZERO reaches across the full unit+spec+cli corpus; `canonicalize_reached_anonymous_member` was already pure identity (representative-changed provably always false). DELETED: `materialize_contextual_anonymous_aliases`, `projected_anonymous_nominal_for_identity` (callers reduced to exact-identity lookup), the session.rs `'closure` restart + `representative_changed` + `stable_produced_seed` + `canonicalize_reached_anonymous_member` + `produced_anonymous_survives_closure_restart`, the sema/analysis.rs `'body_attempt` restart + `anonymous_representative_changed`, and the binding_manifest.rs same-producer/different-anchor alias install + relative-occurrence method-materialization fallback.
 - **Stage 3 (Option mint)**: NOT done. find_compatible_anon_enum kept (documented deviation). Interim design (canonical_builtin_nominal) deferred until anchor identity is correct.
 - **Stage 4 (always-qualify)**: DONE for named types + lang-item/builtin/anon exemptions, verified. NOTE (codex): the __anon_struct_<id>/__anon_enum_<id> exemption is allocation-order-based and UNSOUND for warm/fresh/schedule parity — must be redone to derive anon symbol names from the stable producer identity, sequenced WITH the anchor fix.
 - **Stage 5 (annotation rejection)**: DONE, verified (E0102, span-accurate).
 - **Stage 6 (spec + corpus)**: DONE. spec 14-comptime.md amended (4.14:8/15/21/22/25 + new 23a). comptime.toml/destructors.toml/lazy_specialization migrated. Scenario 6 added to notes. air unit GREEN (565/565); compiler unit 671/672; spec comptime 202/204.
 - **Stage 7 (downstream audit + std examples)**: NOT done (blocked by anchor fix; std examples with Option-wrappers hit the E9000 blocker).
 
-### CRITICAL ANCHOR-FIX FINDING (redirects codex's span-based recipe)
+### ANCHOR-FIX RESOLVED (anchor-transport, RUE-1089)
+The independent traversal-order mint (`[Body, AnonymousType(next++)]`) is DELETED.
+The frontend/module lowering is now the single mint: a shared astgen-mirroring
+walk (`rue_rir::anonymous_type_sites`) yields the exact `AstGen` anchor for every
+value-position anonymous type literal, validated lock-step against real astgen
+RIR by a bijection test. At declaration-index construction — where module and
+fragment coordinate systems are both known — each site's module span + anchor is
+recorded; the raw const/body terminals slice them into fragment-relative
+locators; the reparse shifts them into the fragment's synthetic-source space; and
+`SemanticConstEvaluator::eval_type_literal` performs an EXACT locator lookup,
+copying the anchor into the nominal identity. No span→RIR lookup from fragment
+space; no path re-derivation in fragment space; no heuristic fallback. A missing/
+duplicate/kind/collision disagreement fails closed with a typed E9000-class
+diagnostic before any terminal or alias publishes. Blocker test green; Wrap → 42.
+
+### (historical) CRITICAL ANCHOR-FIX FINDING (redirects codex's span-based recipe)
 The durable declaration/const evaluator (`semantic_query_nucleus::parse_semantic_const` / `parse_semantic_body`) REPARSES each declaration fragment as an ISOLATED synthetic source (`const NAME = <init>;` / `fn __semantic_body() { <body> }`) with a fresh `FileId(0)`. Its span space is therefore DISJOINT from the module RIR's file-relative spans (verified: const-eval span `FileId(0) start:23` vs RIR span `FileId(1) start:38` for the same `enum {…}`).
 => Consuming the frontend/RIR anchor BY SPAN is impossible. A span-lookup implementation fixed the Wrap repro (→42) but regressed spec comptime 202→190 (fail-closed ICE on nested-generic cases whose fragment spans miss the RIR map) and was reverted.
 The independent-minting site is `revisioned_query_database.rs SemanticConstEvaluator::eval_type_literal` (mints `[Body, AnonymousType(next_anonymous_type++)]`, a traversal-order approximation). astgen always uses occurrence `AnonymousType(0)`; uniqueness comes from the full structural PATH.

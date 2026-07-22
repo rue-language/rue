@@ -351,6 +351,42 @@ mod tests {
         );
     }
 
+    /// Frontend bijection at the mint, PER PRODUCER: within one declaration body
+    /// every anonymous site maps to exactly one anchor and no two distinct sites
+    /// share an anchor. (Distinct producers may reuse the same relative anchor;
+    /// their identities differ by producer, so uniqueness is producer-local.)
+    #[test]
+    fn walk_anchors_are_unique_within_one_producer() {
+        // A single producer with several same- and different-kind sites in
+        // distinct positions.
+        let source = r#"
+const K = {
+    let _a = struct { a: i32 };
+    let _b = struct { b: i32 };
+    let _c = enum { X, Y };
+    enum { Z }
+};
+"#;
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        let parser = Parser::new(tokens, interner);
+        let (ast, _interner) = parser.parse().unwrap();
+        let Item::Const(constant) = &ast.items[0] else {
+            panic!("expected a const");
+        };
+        let sites = anonymous_type_sites(&constant.init);
+        assert_eq!(sites.len(), 4, "expected four sites in the producer");
+        let anchors: std::collections::BTreeSet<_> = sites
+            .iter()
+            .map(|site| site.anchor.segments().to_vec())
+            .collect();
+        assert_eq!(
+            anchors.len(),
+            sites.len(),
+            "two distinct sites in one producer share an anchor",
+        );
+    }
+
     #[test]
     fn walk_reproduces_astgen_anchors_for_type_producers() {
         // Generic struct producer whose method reaches its anonymous-enum field
