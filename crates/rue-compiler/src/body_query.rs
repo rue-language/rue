@@ -50,6 +50,36 @@ pub(crate) struct BodyProducedAnonymousNominals(
     pub(crate) Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
 );
 
+/// The `body-produced-anonymous` family's terminal value.
+///
+/// A producer either publishes the anonymous nominals it owns (`Produced`) or
+/// its comptime evaluation committed an internal-error (E9000-class) failure —
+/// notably an anonymous-anchor TRANSPORT invariant violation (RUE-1089). Such a
+/// committed internal error is a corrupt-input fact about an existing raw
+/// fragment terminal, NOT a "not yet available" condition, so it must never be
+/// downgraded to a retryable `Canceled` abort: doing so let a consuming body
+/// silently fall back to recomputing the identity from RIR, masking the defect.
+/// It is carried here so every consumer fails closed on it. Genuine
+/// unavailability still surfaces as a `Canceled` abort, never as this value.
+#[derive(Debug, Clone)]
+pub(crate) enum ProducedAnonymous {
+    Produced(BodyProducedAnonymousNominals),
+    ProducerFailed(crate::semantic_query_nucleus::SemanticNucleusFailure),
+}
+
+pub(crate) fn produced_anonymous_equal(
+    left: &ProducedAnonymous,
+    right: &ProducedAnonymous,
+) -> bool {
+    match (left, right) {
+        (ProducedAnonymous::Produced(left), ProducedAnonymous::Produced(right)) => left == right,
+        (ProducedAnonymous::ProducerFailed(left), ProducedAnonymous::ProducerFailed(right)) => {
+            left == right
+        }
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum BodyTransaction {
     Success {
