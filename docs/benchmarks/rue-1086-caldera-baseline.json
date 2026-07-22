@@ -130,7 +130,7 @@
       "reference": "synthetic single-file main.rue produced by the scaling_harness.rs Corpus generator (reached bodies b{i} each called once from main, unrelated declarations d{j} nothing calls, plus main)",
       "caldera": "examples/caldera/main.rue"
     },
-    "commit": "recorded by the follow-up evidence commit"
+    "commit": "51f29750"
   },
   "runner": {
     "binary": "//crates/rue-scaling-bench:rue-scaling-bench",
@@ -148,7 +148,88 @@
     "note": "Declaration universe = bodies + decls + 1 (main); cold_bodies = bodies + 1 = 101."
   },
   "raw_samples": {
-    "status": "regenerated in the follow-up evidence commit",
-    "note": "The runner's per-sample timings are recorded only against a committed implementation revision of the corrected intervals (pre_link starts immediately before the revision source update); the evidence commit that fills this section names that revision in reference_host.commit."
+    "note": "Runner per-sample timings measured at the committed implementation revision named in each record and in reference_host.commit; pre_link runs from immediately before the revision source update through object generation.",
+    "cold": {
+      "kind": "timing",
+      "mode": "cold",
+      "bodies": 100,
+      "decls": 100,
+      "iterations": 8,
+      "commit": "51f29750",
+      "nproc": 4,
+      "semantic": {
+        "samples_ns": [
+          165190519,
+          171604867,
+          163451981,
+          170683950,
+          188457614,
+          167107764,
+          174834368,
+          173316282
+        ],
+        "min_ns": 163451981,
+        "median_ns": 171604867,
+        "mean_ns": 171830918,
+        "max_ns": 188457614
+      },
+      "pre_link": {
+        "samples_ns": [
+          168849769,
+          174578064,
+          166438593,
+          173857773,
+          191549025,
+          170126312,
+          177731690,
+          176658876
+        ],
+        "min_ns": 166438593,
+        "median_ns": 174578064,
+        "mean_ns": 174973762,
+        "max_ns": 191549025
+      }
+    },
+    "warm": {
+      "kind": "timing",
+      "mode": "warm",
+      "bodies": 100,
+      "decls": 100,
+      "iterations": 8,
+      "commit": "51f29750",
+      "nproc": 4,
+      "semantic": {
+        "samples_ns": [
+          24218618,
+          23704589,
+          25416127,
+          22350043,
+          23291152,
+          22609925,
+          22746685,
+          23930203
+        ],
+        "min_ns": 22350043,
+        "median_ns": 23704589,
+        "mean_ns": 23533417,
+        "max_ns": 25416127
+      },
+      "pre_link": {
+        "samples_ns": [
+          27397847,
+          26809850,
+          28295500,
+          24977925,
+          26082802,
+          25656232,
+          25614875,
+          26813286
+        ],
+        "min_ns": 24977925,
+        "median_ns": 26809850,
+        "mean_ns": 26456039,
+        "max_ns": 28295500
+      }
+    }
   }
 }
