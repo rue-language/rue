@@ -5479,17 +5479,18 @@ impl CompilerSession {
                             // Every cold reached-body analysis re-prepares,
                             // re-projects, and re-installs the entire declaration
                             // universe inside `analyze_body_query` before it
-                            // touches this single body. Record that repeated
-                            // declaration-context work so the RUE-1086 harness can
-                            // see the O(reached-bodies × declarations) shape and the
-                            // RUE-1090 gate can decide whether it went flat. Warm
-                            // reuse never enters this closure, so reused bodies add
-                            // nothing here.
-                            let context = &mut queried_body_work.per_body_declaration_context;
-                            context.cold_body_preparations += 1;
-                            context.shells_prepared += query_shells.len();
-                            context.semantics_installed +=
-                                query_declarations.as_deref().map_or(0, <[_]>::len);
+                            // touches this single body. The per-body
+                            // declaration-context counters are accrued INSIDE that
+                            // call, at each stage's own source, as the stage
+                            // actually performs the work — never from these input
+                            // slice lengths, which would charge a body for
+                            // installation it may never reach. A local stage-work
+                            // struct captures exactly what ran (partial on a
+                            // stage failure) and is folded into the running total
+                            // afterwards. Warm reuse never enters this closure, so
+                            // reused bodies add nothing here.
+                            let mut stage_context =
+                                rue_air::PerBodyDeclarationContextWork::default();
                             let specialized = matches!(
                                 &key.instance,
                                 crate::FunctionInstanceKey::Specialization { .. }
@@ -5521,7 +5522,16 @@ impl CompilerSession {
                                 &body_anonymous,
                                 &key,
                                 cancellation,
+                                &mut stage_context,
                             );
+                            // Fold the stage-sourced per-body declaration-context
+                            // work (whatever actually ran) into the running total.
+                            let context = &mut queried_body_work.per_body_declaration_context;
+                            context.cold_body_preparations += stage_context.cold_body_preparations;
+                            context.shells_prepared += stage_context.shells_prepared;
+                            context.semantics_installed += stage_context.semantics_installed;
+                            context.projections_performed += stage_context.projections_performed;
+                            context.endpoints_installed += stage_context.endpoints_installed;
                             match &transaction {
                                 Ok(crate::body_query::BodyTransaction::Success {
                                     body, ..

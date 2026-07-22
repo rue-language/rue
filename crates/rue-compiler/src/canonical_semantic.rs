@@ -6,8 +6,8 @@ use rue_air::{
     AnalyzedBodyOwnerEvent, BodyAnalysisWork, BodyNamedDependencyEvent, DeclarationBindingWork,
     DeclarationBuiltinTypeCallHeadDependencyEvent, DeclarationTypeCallHeadDependencyEvent,
     DeclarationTypeDependencyEvent, NamedConstDependencyEvent, NamedDestructorDependencyEvent,
-    NamedMethodDependencyEvent, OrdinaryFreeFunctionDependencyEvent, RirDeclarationIndexWork,
-    SemanticBindingManifestWork, SpecializedFreeFunctionDependencyEvent,
+    NamedMethodDependencyEvent, OrdinaryFreeFunctionDependencyEvent, PerBodyDeclarationContextWork,
+    RirDeclarationIndexWork, SemanticBindingManifestWork, SpecializedFreeFunctionDependencyEvent,
     SpecializedFreeFunctionOrigin,
 };
 use tracing::info_span;
@@ -380,6 +380,10 @@ impl CanonicalSemanticWork {
             query.per_body_declaration_context.shells_prepared;
         body.per_body_declaration_context.semantics_installed +=
             query.per_body_declaration_context.semantics_installed;
+        body.per_body_declaration_context.projections_performed +=
+            query.per_body_declaration_context.projections_performed;
+        body.per_body_declaration_context.endpoints_installed +=
+            query.per_body_declaration_context.endpoints_installed;
         body.closure_bodies_visited = body
             .closure_bodies_visited
             .max(query.closure_bodies_visited);
@@ -1674,6 +1678,13 @@ pub(crate) fn analyze_body_query(
     query_anonymous_nominals: &[crate::durable_semantics::DurableAnonymousNominal],
     key: &crate::body_query::BodyQueryKey,
     cancellation: &rue_query::CancellationToken,
+    // Per-body declaration-context work is accrued here, at the stage sources,
+    // as each stage actually performs it — never from the coordinator's input
+    // slice lengths. The out-parameter carries partial work when a stage fails
+    // (e.g. a prepare/project failure records the prepare shells but no install
+    // or endpoint work), so the structural gate observes a shortcut added inside
+    // any stage and never charges installation for a body that never installed.
+    work: &mut PerBodyDeclarationContextWork,
 ) -> Result<crate::body_query::BodyTransaction, rue_query::QueryAbort> {
     use crate::body_query::{BodyReference, BodyReferences, BodyTransaction, CanonicalBody};
     use rue_air::{OneBodyCanonicalArtifact as Artifact, OneBodyDependency as Dependency};
@@ -1708,6 +1719,9 @@ pub(crate) fn analyze_body_query(
     // to `analyze_body_query`. Each guard is dropped before the next stage so
     // the stages do not nest into one another.
     let prepare_span = info_span!("body_prepare_declarations").entered();
+    // The prepare stage is now committed to real work: count this cold body and
+    // (below) charge shells from the prepare stage's own output.
+    work.cold_body_preparations += 1;
     let prepared =
         match prepare_query_declaration_shells(merged, rir, options, imports, query_shells) {
             Ok(prepared) => prepared,
@@ -1724,6 +1738,9 @@ pub(crate) fn analyze_body_query(
         definitions: provisional,
         declaration_index: _,
     } = prepared;
+    // Prepare-stage source: the shells this stage actually materialized. A
+    // shared-base shortcut that predeclares fewer shells drops this counter.
+    work.shells_prepared += shell_records.len();
     drop(prepare_span);
     let project_span = info_span!("body_project_declarations").entered();
     let (projected, _) = match crate::project_durable_declaration_semantics(
@@ -1753,6 +1770,10 @@ pub(crate) fn analyze_body_query(
             ));
         }
     };
+    // Project-stage source: declaration and anonymous-nominal semantics this
+    // stage actually projected. Charged before install, so a body that fails to
+    // install still records the projection work it performed.
+    work.projections_performed += projected.len() + projected_anonymous.len();
     drop(project_span);
     let install_span = info_span!("body_install_declarations").entered();
     let bound = match shells
@@ -1766,6 +1787,10 @@ pub(crate) fn analyze_body_query(
             ));
         }
     };
+    // Install-stage source: declaration semantics this stage actually installed.
+    // Charged only after the install completes, never on a prepare/project
+    // failure path, so the counter records performed installation work only.
+    work.semantics_installed += projected.len();
     let manifest = bound.binding_manifest();
     let definitions = match issue_bound_definitions(
         merged,
@@ -1797,7 +1822,9 @@ pub(crate) fn analyze_body_query(
             "provisional body-owner keys do not match the issued definition universe".into(),
         ));
     }
-    let bound = match bound.install_body_owner_tokens(&definitions.body_owner_endpoints()) {
+    let body_owner_endpoints = definitions.body_owner_endpoints();
+    let body_owner_endpoints_installed = body_owner_endpoints.len();
+    let bound = match bound.install_body_owner_tokens(&body_owner_endpoints) {
         Ok(bound) => bound,
         Err(failure) => {
             return Ok(deterministic_failure(
@@ -1806,8 +1833,9 @@ pub(crate) fn analyze_body_query(
             ));
         }
     };
+    let semantic_definition_endpoints = definitions.semantic_definition_endpoints();
     let bound = match bound.install_stable_identity_endpoints(
-        &definitions.semantic_definition_endpoints(),
+        &semantic_definition_endpoints,
         &definitions.semantic_module_endpoints(merged),
     ) {
         Ok(bound) => bound,
@@ -1818,6 +1846,11 @@ pub(crate) fn analyze_body_query(
             ));
         }
     };
+    // Endpoint-stage source: body-owner and stable-identity endpoints this stage
+    // actually installed. Only reached after a successful install, isolating
+    // endpoint traversal work from the projection/install terms.
+    work.endpoints_installed +=
+        body_owner_endpoints_installed + semantic_definition_endpoints.len();
     drop(install_span);
     let analyze_span = info_span!("body_analyze").entered();
     let outcome = bound.analyze_one_body_instance(

@@ -631,16 +631,35 @@ pub struct BodyAnalysisWork {
 pub struct PerBodyDeclarationContextWork {
     /// Cold reached-body analyses that paid the declaration-context cost, i.e.
     /// the number of `analyze_body_query` invocations that actually computed.
+    ///
+    /// Charged by the per-body prepare stage the moment it commits to real work,
+    /// so a warm-reused body (which never enters the stage) contributes nothing.
     pub cold_body_preparations: usize,
-    /// Declaration shells predeclared by the per-body prepare stage, summed
-    /// across every cold reached-body analysis. Equals
-    /// Σ_body declaration_universe_size, so it grows as (declarations × bodies)
-    /// under the current per-body installation shape.
+    /// Declaration shells the per-body prepare stage actually materialized,
+    /// summed across every cold reached-body analysis. This is sourced from the
+    /// prepare stage's *output* (`shell_records.len()`), not from the input
+    /// slice the coordinator holds, so a prepare-stage shortcut that reuses a
+    /// shared base and predeclares fewer shells makes this counter drop. Equals
+    /// Σ_body declaration_universe_size today, so it grows as
+    /// (declarations × bodies) under the current per-body installation shape.
     pub shells_prepared: usize,
-    /// Declaration semantics projected and installed by the per-body
-    /// project/install stages, summed across every cold reached-body analysis.
-    /// Same product shape as `shells_prepared`.
+    /// Declaration semantics the per-body install stage actually installed,
+    /// summed across every cold reached-body analysis. Charged only after the
+    /// install stage runs to completion, so a body that fails during prepare or
+    /// projection contributes nothing here — the counter records performed
+    /// installation work, never attempted-and-abandoned work.
     pub semantics_installed: usize,
+    /// Declaration semantics the per-body project stage actually projected
+    /// (ordinary declaration exports plus produced anonymous-nominal exports),
+    /// summed across every cold reached-body analysis. Charged by the project
+    /// stage from its own output, before install; a body that fails during
+    /// prepare contributes nothing here.
+    pub projections_performed: usize,
+    /// Stable-identity and body-owner endpoints the per-body endpoint stage
+    /// actually installed, summed across every cold reached-body analysis.
+    /// Charged only when the endpoint stage runs (after a successful install),
+    /// so it isolates endpoint traversal work from the projection/install terms.
+    pub endpoints_installed: usize,
 }
 
 /// Diagnostics and value-only structural work from a failed body-analysis
