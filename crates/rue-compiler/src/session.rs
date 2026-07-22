@@ -5476,6 +5476,20 @@ impl CompilerSession {
                         cancellation.clone(),
                         |selected_anonymous| {
                             queried_body_work.bodies_attempted += 1;
+                            // Every cold reached-body analysis re-prepares,
+                            // re-projects, and re-installs the entire declaration
+                            // universe inside `analyze_body_query` before it
+                            // touches this single body. Record that repeated
+                            // declaration-context work so the RUE-1086 harness can
+                            // see the O(reached-bodies × declarations) shape and the
+                            // RUE-1090 gate can decide whether it went flat. Warm
+                            // reuse never enters this closure, so reused bodies add
+                            // nothing here.
+                            let context = &mut queried_body_work.per_body_declaration_context;
+                            context.cold_body_preparations += 1;
+                            context.shells_prepared += query_shells.len();
+                            context.semantics_installed +=
+                                query_declarations.as_deref().map_or(0, <[_]>::len);
                             let specialized = matches!(
                                 &key.instance,
                                 crate::FunctionInstanceKey::Specialization { .. }

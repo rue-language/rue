@@ -883,6 +883,11 @@ fn semantic_work_json(work: &crate::session::CompilerSessionWork, from: usize) -
         "body_readiness_finalization_invocations": records.iter().map(|record| record.work.binding.body_readiness_finalization_invocations).sum::<usize>(),
         "body_free_function_lookups": records.iter().map(|record| record.work.body_analysis.free_function_record_lookups).sum::<usize>(),
         "bodies_attempted": records.iter().map(|record| record.work.body_analysis.bodies_attempted).sum::<usize>(),
+        "per_body_declaration_context": {
+            "cold_body_preparations": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.cold_body_preparations).sum::<usize>(),
+            "shells_prepared": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.shells_prepared).sum::<usize>(),
+            "semantics_installed": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.semantics_installed).sum::<usize>(),
+        },
         "bodies_succeeded": records.iter().map(|record| record.work.body_analysis.bodies_succeeded).sum::<usize>(),
         "bodies_failed": records.iter().map(|record| record.work.body_analysis.bodies_failed).sum::<usize>(),
         "air_instructions_produced": records.iter().map(|record| record.work.body_analysis.air_instructions_produced).sum::<usize>(),

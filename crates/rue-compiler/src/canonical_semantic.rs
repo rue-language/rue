@@ -374,6 +374,12 @@ impl CanonicalSemanticWork {
         // maximum.
         body.closure_restarts += query.closure_restarts;
         body.deferred_producer_retries += query.deferred_producer_retries;
+        body.per_body_declaration_context.cold_body_preparations +=
+            query.per_body_declaration_context.cold_body_preparations;
+        body.per_body_declaration_context.shells_prepared +=
+            query.per_body_declaration_context.shells_prepared;
+        body.per_body_declaration_context.semantics_installed +=
+            query.per_body_declaration_context.semantics_installed;
         body.closure_bodies_visited = body
             .closure_bodies_visited
             .max(query.closure_bodies_visited);
