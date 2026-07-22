@@ -20,11 +20,13 @@
 //!
 //! Inspired by Zig's ZIR (Zig Intermediate Representation).
 
+mod anonymous_sites;
 #[cfg(test)]
 mod api_inventory;
 mod astgen;
 mod inst;
 
+pub use anonymous_sites::{AnonymousTypeSite, AnonymousTypeSiteKind, anonymous_type_sites};
 pub use astgen::AstGen;
 pub use inst::{
     Inst, InstData, InstRef, InternalIntrinsic, RIR_PAYLOAD_FAMILY_NAMES, RepeatCount, Rir,

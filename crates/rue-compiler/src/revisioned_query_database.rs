@@ -1784,7 +1784,12 @@ struct SemanticConstEvaluator<'a, 'provider> {
     locals: BTreeMap<Arc<str>, EvaluatedSemanticConst>,
     producer: crate::StableProducerId,
     canonical_arguments: crate::CanonicalArguments,
-    next_anonymous_type: u32,
+    /// Anonymous type literals transported from the frontend, in this fragment's
+    /// synthetic-source coordinate space, each carrying the exact `AstGen`
+    /// anchor. The single anchor authority: `eval_type_literal` looks each
+    /// reparsed literal up here and fails closed on any locator/kind/anchor
+    /// disagreement (RUE-1089).
+    anonymous_sites: &'a [crate::semantic_query_nucleus::TransportedAnonymousSite],
     next_call: u32,
     expected_type: Option<crate::durable_semantics::DurableType>,
 }
@@ -2660,6 +2665,82 @@ impl SemanticConstEvaluator<'_, '_> {
         }
     }
 
+    /// Fail-closed E9000-class internal diagnostic for an anonymous-anchor
+    /// transport disagreement. Never a panic and never a public error code; it
+    /// is raised before any nominal/member terminal or alias can publish.
+    fn anchor_transport_failure<T>(
+        &self,
+        message: String,
+    ) -> Result<T, EvaluateSemanticConstError> {
+        Err(EvaluateSemanticConstError::failure(
+            crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                rue_error::ErrorKind::InternalError(message),
+            ),
+        ))
+    }
+
+    /// The exact frontend anchor for the anonymous literal at `span`, copied from
+    /// the transported table. There is no fallback: a missing locator, a
+    /// duplicate locator, two frontend sites sharing one anchor under this
+    /// producer, or a kind mismatch each fail closed with the producer and the
+    /// expected/observed anchors named (RUE-1089).
+    fn resolve_anonymous_anchor(
+        &self,
+        span: rue_span::Span,
+        kind: rue_air::AnonymousNominalKind,
+    ) -> Result<rue_rir::RirStructuralAnchor, EvaluateSemanticConstError> {
+        let expected_kind = match kind {
+            rue_air::AnonymousNominalKind::Struct => rue_rir::AnonymousTypeSiteKind::Struct,
+            rue_air::AnonymousNominalKind::Enum => rue_rir::AnonymousTypeSiteKind::Enum,
+        };
+        let sites = self.anonymous_sites;
+        // Whole-producer well-formedness: no two frontend sites may share a
+        // locator or an anchor. Either is anchor-transport corruption.
+        for (index, left) in sites.iter().enumerate() {
+            for right in &sites[index + 1..] {
+                if (left.span.start, left.span.end) == (right.span.start, right.span.end) {
+                    return self.anchor_transport_failure(format!(
+                        "anchor transport for producer {:?} carries a duplicate anonymous-type \
+                         locator {}..{} (anchors {:?} and {:?})",
+                        self.producer, left.span.start, left.span.end, left.anchor, right.anchor,
+                    ));
+                }
+                if left.anchor == right.anchor {
+                    return self.anchor_transport_failure(format!(
+                        "anchor transport for producer {:?} carries two distinct anonymous sites \
+                         with the same anchor {:?}",
+                        self.producer, left.anchor,
+                    ));
+                }
+            }
+        }
+        let mut matching = sites
+            .iter()
+            .filter(|site| (site.span.start, site.span.end) == (span.start, span.end));
+        let Some(site) = matching.next() else {
+            return self.anchor_transport_failure(format!(
+                "anchor transport for producer {:?} has no anchor for the anonymous type at \
+                 {}..{}",
+                self.producer, span.start, span.end,
+            ));
+        };
+        if matching.next().is_some() {
+            return self.anchor_transport_failure(format!(
+                "anchor transport for producer {:?} carries a duplicate locator for the anonymous \
+                 type at {}..{}",
+                self.producer, span.start, span.end,
+            ));
+        }
+        if site.kind != expected_kind {
+            return self.anchor_transport_failure(format!(
+                "anchor transport for producer {:?} disagrees on the kind of the anonymous type at \
+                 {}..{} (expected {expected_kind:?}, transported {:?}) at anchor {:?}",
+                self.producer, span.start, span.end, site.kind, site.anchor,
+            ));
+        }
+        Ok(site.anchor.clone())
+    }
+
     fn eval_type_literal(
         &mut self,
         type_expr: &rue_parser::ast::TypeExpr,
@@ -2795,15 +2876,11 @@ impl SemanticConstEvaluator<'_, '_> {
                 )));
             }
         };
-        let occurrence = self.next_anonymous_type;
-        self.next_anonymous_type += 1;
+        let anchor = self.resolve_anonymous_anchor(type_expr.span(), kind)?;
         let identity = crate::AnonymousNominalKey {
             kind,
             producer: self.producer.clone(),
-            anchor: rue_rir::RirStructuralAnchor::new(vec![
-                rue_rir::RirStructuralPathSegment::Body,
-                rue_rir::RirStructuralPathSegment::AnonymousType(occurrence),
-            ]),
+            anchor,
             arguments: self.canonical_arguments.clone(),
         };
         self.provider.anonymous_nominals.insert(
@@ -7469,7 +7546,7 @@ impl RevisionedQueryDatabase {
                                                     ),
                                                     canonical_arguments:
                                                         crate::CanonicalArguments::default(),
-                                                    next_anonymous_type: 0,
+                                                    anonymous_sites: &parsed.anonymous_sites,
                                                     next_call: 0,
                                                     expected_type,
                                                 };
@@ -7958,7 +8035,7 @@ impl RevisionedQueryDatabase {
                                                     locals,
                                                     producer,
                                                     canonical_arguments,
-                                                    next_anonymous_type: 0,
+                                                    anonymous_sites: &parsed.anonymous_sites,
                                                     next_call: 0,
                                                     expected_type: Some(expected_type),
                                                 };

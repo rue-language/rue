@@ -31,10 +31,35 @@ use crate::{
     declaration_candidate::{
         DeclarationCandidateCategory, DeclarationCandidateKey, DeclarationCandidateOwner,
         DeclarationOccurrenceCapability, DeclarationParameterHeader, DeclarationParameterMode,
-        DeclarationShellFact, DeclarationShellFailure, RawConstSyntax, RawDeclarationBodySyntax,
-        RawDeclarationSignatureSyntax,
+        DeclarationShellFact, DeclarationShellFailure, RawAnonymousSite, RawConstSyntax,
+        RawDeclarationBodySyntax, RawDeclarationSignatureSyntax,
     },
 };
+
+/// Slice the module-relative anonymous type sites that fall inside `fragment`
+/// into locators relative to `fragment`'s start. The frontend anchor rides
+/// along unchanged; the relative offsets let the durable evaluator reconnect
+/// each reparsed literal to it without a module-space lookup (RUE-1089).
+///
+/// A site straddling or preceding the fragment is dropped rather than clamped:
+/// the durable evaluator then fails closed on the corresponding reparsed literal
+/// (a loud missing-locator diagnostic) instead of adopting a truncated locator.
+fn fragment_anonymous_sites(
+    sites: &[rue_rir::AnonymousTypeSite],
+    fragment: Span,
+) -> Arc<[RawAnonymousSite]> {
+    sites
+        .iter()
+        .filter(|site| site.span.start >= fragment.start && site.span.end <= fragment.end)
+        .map(|site| RawAnonymousSite {
+            fragment_start: site.span.start - fragment.start,
+            fragment_end: site.span.end - fragment.start,
+            kind: site.kind,
+            anchor: site.anchor.clone(),
+        })
+        .collect::<Vec<_>>()
+        .into()
+}
 
 #[derive(Debug)]
 struct SymbolProvenance;
@@ -221,6 +246,10 @@ impl ParsedDefinitionIndex {
                 None => None,
             },
             initializer: fragment(spans.initializer)?,
+            anonymous_sites: fragment_anonymous_sites(
+                &candidate.anonymous_sites,
+                spans.initializer,
+            ),
         };
         #[cfg(test)]
         self.raw_const_syntax_materializations
@@ -300,6 +329,7 @@ impl ParsedDefinitionIndex {
         let body = candidate.raw_body_span?;
         let syntax = RawDeclarationBodySyntax {
             body: Arc::from(source_text.get(body.start as usize..body.end as usize)?),
+            anonymous_sites: fragment_anonymous_sites(&candidate.anonymous_sites, body),
         };
         #[cfg(test)]
         self.raw_declaration_body_terminal_materializations
@@ -366,6 +396,11 @@ pub(crate) struct ParsedDeclarationCandidate {
     raw_signature_locator: Option<RawDeclarationSignatureLocator>,
     raw_body_span: Option<Span>,
     raw_import_range: Option<RawDeclarationImportRange>,
+    /// Value-position anonymous type literals inside this declaration's constant
+    /// initializer or body, with module-relative spans and their frontend
+    /// anchors. Sliced into fragment-relative sites when the raw const/body
+    /// terminal is materialized (RUE-1089).
+    anonymous_sites: Arc<[rue_rir::AnonymousTypeSite]>,
 }
 
 /// Parser-private locators for syntax that is materialized only after an exact
@@ -1397,6 +1432,16 @@ fn bind_payload(
                 ),
                 raw_body_span: candidate.raw_body_span.map(remap_span),
                 raw_import_range: candidate.raw_import_range,
+                anonymous_sites: candidate
+                    .anonymous_sites
+                    .iter()
+                    .map(|site| rue_rir::AnonymousTypeSite {
+                        span: remap_span(site.span),
+                        kind: site.kind,
+                        anchor: site.anchor.clone(),
+                    })
+                    .collect::<Vec<_>>()
+                    .into(),
             })
             .collect::<Vec<_>>()
             .into(),
@@ -1851,6 +1896,7 @@ fn build_definition_index(
         Option<RawDeclarationSignatureLocator>,
         Option<Span>,
         Option<RawDeclarationImportRange>,
+        Arc<[rue_rir::AnonymousTypeSite]>,
     )>::new();
     let resolve_name = |ident: rue_parser::Ident| -> CompileResult<Arc<str>> {
         let symbol = resolver.symbol(ident.name)?;
@@ -1930,7 +1976,8 @@ fn build_definition_index(
                         signature_spans: Vec<Span>,
                         raw_const_syntax_spans: Option<RawConstSyntaxSpans>,
                         raw_signature_locator: Option<RawDeclarationSignatureLocator>,
-                        raw_body_span: Option<Span>|
+                        raw_body_span: Option<Span>,
+                        anonymous_sites: Arc<[rue_rir::AnonymousTypeSite]>|
          -> CompileResult<()> {
             let signature_fingerprint = declaration_signature_fingerprint(
                 file_id,
@@ -1998,6 +2045,7 @@ fn build_definition_index(
                 raw_signature_locator,
                 raw_body_span,
                 raw_import_range,
+                anonymous_sites,
             ));
             Ok(())
         };
@@ -2025,6 +2073,7 @@ fn build_definition_index(
                     )?,
                 }),
                 Some(function.body.span()),
+                rue_rir::anonymous_type_sites(&function.body).into(),
             )?,
             Item::Struct(structure) => {
                 let owner_name = resolve_name(structure.name)?;
@@ -2044,6 +2093,7 @@ fn build_definition_index(
                     None,
                     Some(struct_signature_locator(structure, tokens)?),
                     None,
+                    Arc::from([]),
                 )?;
                 let owner = DeclarationCandidateOwner {
                     category: DeclarationCandidateCategory::Struct,
@@ -2083,6 +2133,7 @@ fn build_definition_index(
                             )?,
                         }),
                         Some(method.body.span()),
+                        rue_rir::anonymous_type_sites(&method.body).into(),
                     )?;
                 }
             }
@@ -2104,6 +2155,7 @@ fn build_definition_index(
                     declaration: token_bounded_declaration(value.span, tokens)?,
                 }),
                 None,
+                Arc::from([]),
             )?,
             Item::Const(value) => {
                 let declared_type = value.ty.as_ref().map(TypeExpr::span);
@@ -2132,6 +2184,7 @@ fn build_definition_index(
                     Some(raw_const_syntax_spans),
                     None,
                     None,
+                    rue_rir::anonymous_type_sites(&value.init).into(),
                 )?;
             }
             Item::DropFn(value) => push(
@@ -2159,6 +2212,7 @@ fn build_definition_index(
                     )?,
                 }),
                 Some(value.body.span()),
+                rue_rir::anonymous_type_sites(&value.body).into(),
             )?,
             Item::Extern(block) => {
                 for function in &block.fns {
@@ -2181,6 +2235,7 @@ fn build_definition_index(
                             abi: block.abi_span,
                         }),
                         None,
+                        Arc::from([]),
                     )?;
                 }
             }
@@ -2256,6 +2311,7 @@ fn build_definition_index(
                 raw_signature_locator,
                 raw_body_span,
                 raw_import_range,
+                anonymous_sites,
             )| {
                 let duplicate = duplicate_counts
                     .entry((
@@ -2275,6 +2331,7 @@ fn build_definition_index(
                     raw_signature_locator,
                     raw_body_span,
                     raw_import_range,
+                    anonymous_sites,
                 })
             },
         )

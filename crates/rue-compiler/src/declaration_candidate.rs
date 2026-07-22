@@ -90,10 +90,32 @@ pub(crate) enum DeclarationShellFailure {
 /// fragments contain no positional or interned handles and can therefore be
 /// reparsed by a later standalone constant evaluator without retaining an AST,
 /// RIR, resolver, or file table.
+/// One value-position anonymous type literal transported from the frontend
+/// (module) coordinate space into a durable declaration fragment.
+///
+/// `fragment_start` / `fragment_end` are byte offsets **relative to the start of
+/// the reparsed fragment text** (the constant initializer, or the body block) —
+/// not module offsets and not identity. They only reconnect the reparsed
+/// literal to the anchor `AstGen` already minted for it, once the fragment
+/// evaluator translates them into its own fragment-local coordinate space. The
+/// `anchor` is the durable, definition-relative frontend anchor (position- and
+/// trivia-insensitive by construction); it is the only identity-bearing field.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct RawAnonymousSite {
+    pub(crate) fragment_start: u32,
+    pub(crate) fragment_end: u32,
+    pub(crate) kind: rue_rir::AnonymousTypeSiteKind,
+    pub(crate) anchor: rue_rir::RirStructuralAnchor,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct RawConstSyntax {
     pub(crate) declared_type: Option<Arc<str>>,
     pub(crate) initializer: Arc<str>,
+    /// Anonymous type literals inside `initializer`, located relative to its
+    /// start, each carrying its frontend anchor. Fail-closed transport for the
+    /// durable comptime evaluator (RUE-1089).
+    pub(crate) anonymous_sites: Arc<[RawAnonymousSite]>,
 }
 
 /// Stable, position-free failure retained by the exact raw-constant family.
@@ -141,6 +163,10 @@ pub(crate) enum RawDeclarationSignatureFailure {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct RawDeclarationBodySyntax {
     pub(crate) body: Arc<str>,
+    /// Anonymous type literals inside `body`, located relative to its start,
+    /// each carrying its frontend anchor. Fail-closed transport for the durable
+    /// comptime evaluator (RUE-1089).
+    pub(crate) anonymous_sites: Arc<[RawAnonymousSite]>,
 }
 
 /// Stable, position-free failure retained by the exact raw-body family.

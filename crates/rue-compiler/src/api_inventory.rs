@@ -2123,7 +2123,13 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         .split("pub(crate) enum DeclarationOccurrenceFailure")
         .nth(1)
         .and_then(|tail| tail.split("impl DeclarationCandidateKey").next())
-        .unwrap();
+        .unwrap()
+        // The raw syntax terminals carry the durable, definition-relative
+        // frontend anchor for each transported anonymous type literal
+        // (RUE-1089). `RirStructuralAnchor` is position- and trivia-insensitive
+        // by construction — the antithesis of a live IR handle — so it is
+        // sanctioned here while raw `Rir`/`InstRef`/`Span` handles stay banned.
+        .replace("rue_rir::RirStructuralAnchor", "<durable-anchor>");
     for forbidden in [
         "CompileErrors",
         "Span",
