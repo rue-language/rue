@@ -1344,7 +1344,13 @@ impl TypeInternPoolInner {
         // (`__anon_struct_<id>`) that distinguishes every producer, and their
         // destructor/member symbols are spelled from that bare name; qualifying
         // them would only desynchronize those spellings, so they are exempt.
-        if data.def.is_builtin || data.def.name.starts_with("__anon_struct_") {
+        // Language-item builtins (`str`, `StrBuf`, `Str(N)`) also keep their bare
+        // names: they pair with runtime-provided definitions, and the lang-item
+        // marker survives durable import even when `is_builtin` is not carried.
+        if data.def.is_builtin
+            || self.struct_lang_items.contains_key(&id)
+            || data.def.name.starts_with("__anon_struct_")
+        {
             return data.def.name.clone();
         }
         format!(

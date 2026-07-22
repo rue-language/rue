@@ -3195,7 +3195,12 @@ mod tests {
             output
                 .functions()
                 .iter()
-                .filter(|function| function.analyzed.name.ends_with("Value.choose"))
+                // The named struct's method symbol is file-qualified
+                // (`Value$<file>.choose`) under ADR-0066.
+                .filter(|function| {
+                    function.analyzed.name.starts_with("Value$")
+                        && function.analyzed.name.ends_with(".choose")
+                })
                 .count(),
             1
         );
