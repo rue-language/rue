@@ -1313,78 +1313,32 @@ pub struct CompilerSession {
     last_successful_cfg_cache: Option<Arc<[crate::queries::DurableCfgArtifact]>>,
 }
 
-/// Producer-nominal projection (ADR-0066): an anonymous member's owner is
-/// projected onto a canonical *anchor* spelling of its own producer. There is
-/// no cross-producer structural equivalence class and no stable-minimum
-/// representative across producers: two anonymous types are reconciled here only
-/// when they share the exact same producer, kind, and canonical arguments and
-/// differ solely in their definition-relative structural anchor (the
-/// anchor-prefix projection a body reached under different contexts can
-/// produce). Distinct producers or distinct specialization arguments — including
-/// every `Wrapper(n)` in an unbounded recursion — are never merged, so genuine
-/// specialization runaway still accrues nesting depth and is diagnosed by the
-/// depth budget rather than collapsing onto a shared representative.
+/// Producer-nominal identity (ADR-0066): a reached anonymous member's owner is
+/// its own exact producer identity. There is no cross-producer structural
+/// equivalence class and no stable-minimum representative, so a reached member
+/// is already canonical and is returned untouched. Retained as the single seam
+/// the closure calls so the removal of representative collapse — and any future
+/// anchor-projection reconciliation — is auditable in one place.
+///
+/// NOTE (RUE-1089, unresolved): a member reached under a *contextual*
+/// method-materialization anchor (installed in `binding_manifest.rs`) whose
+/// prefix differs from the anchor its producer publishes cannot resolve its body
+/// terminal and surfaces a loud E9000. Two attempts to reconcile such anchors
+/// here (min-representative, and unique last-segment projection) each
+/// reintroduced a silent miscompile in the `Wrap { inner: Option(T), get_or }`
+/// shape (the `Some` payload read returned the discriminant), so per the "loud
+/// errors over silent wrong answers" rule this is deliberately left as exact
+/// identity. The correct fix belongs at the AIR anchor-prefix projection seam so
+/// the member is *referenced* under the published anchor in the first place.
 fn canonicalize_reached_anonymous_member(
     instance: &crate::FunctionInstanceKey,
-    produced: &BTreeMap<
+    _produced: &BTreeMap<
         crate::AnonymousNominalKey,
         crate::durable_semantics::DurableAnonymousNominal,
     >,
-    declarations: &[crate::durable_semantics::DurableAnonymousNominal],
+    _declarations: &[crate::durable_semantics::DurableAnonymousNominal],
 ) -> crate::FunctionInstanceKey {
-    let crate::FunctionInstanceKey::AnonymousMember { owner, member } = instance else {
-        return instance.clone();
-    };
-    let crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(identity)) =
-        owner.as_ref()
-    else {
-        return instance.clone();
-    };
-    // Fail closed: only reconcile when this exact producer identity has been
-    // observed. When it has not, keep the instance untouched rather than
-    // guessing a representative (a wrong guess would silently miscompile).
-    if produced.get(identity).is_none()
-        && !declarations
-            .iter()
-            .any(|nominal| nominal.identity == *identity)
-    {
-        return instance.clone();
-    }
-    // Reconcile only exact-producer anchor variants: same producer, kind, and
-    // canonical arguments, differing solely in their definition-relative
-    // structural anchor. This is anchor-prefix projection, NOT structural
-    // equivalence — fields, variants, methods, and captured values never enter,
-    // and two distinct producers (including every `Wrapper(n)` in an unbounded
-    // recursion) are never merged, so genuine specialization runaway still
-    // accrues nesting depth for the depth budget (ADR-0066).
-    let representative = produced
-        .values()
-        .map(|nominal| &nominal.identity)
-        .chain(declarations.iter().map(|nominal| &nominal.identity))
-        .chain(std::iter::once(identity))
-        .filter(|candidate| {
-            candidate.kind == identity.kind
-                && candidate.producer == identity.producer
-                && candidate.arguments == identity.arguments
-        })
-        .min_by(|left, right| stable_anonymous_nominal_cmp(left, right))
-        .expect("the target identity is always a candidate")
-        .clone();
-    crate::FunctionInstanceKey::AnonymousMember {
-        owner: Box::new(crate::TypeInstanceKey::Nominal(
-            crate::NominalInstanceKey::Anonymous(representative),
-        )),
-        member: member.clone(),
-    }
-}
-
-fn stable_anonymous_nominal_cmp(
-    left: &crate::AnonymousNominalKey,
-    right: &crate::AnonymousNominalKey,
-) -> std::cmp::Ordering {
-    stable_producer_definition_root(&left.producer)
-        .cmp(&stable_producer_definition_root(&right.producer))
-        .then_with(|| left.cmp(right))
+    instance.clone()
 }
 
 fn stable_type_definition_root(
