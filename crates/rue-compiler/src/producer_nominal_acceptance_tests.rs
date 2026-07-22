@@ -425,12 +425,19 @@ fn wrap_single_nominal_identity_executes_to_the_payload() {
     session.update(&snapshot).into_result().expect("publish");
     let output = crate::queries::compile_with_session(&mut session, &snapshot, &options)
         .expect("Wrap repro links");
-    let execution = execute_wrap(&output, "single");
-    assert_eq!(
-        execution.status.code(),
-        Some(42),
-        "Wrap repro must execute to the payload value 42: {execution:?}",
-    );
+    // The default target is `x86-64-linux`; only run the linked ELF when the
+    // host triple matches it (mirrors `wrap_payload_executes_on_both_backend_targets`).
+    // The semantic/compile/link assertions above stay unconditional.
+    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        let execution = execute_wrap(&output, "single");
+        assert_eq!(
+            execution.status.code(),
+            Some(42),
+            "Wrap repro must execute to the payload value 42: {execution:?}",
+        );
+    } else {
+        let _ = output;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -606,12 +613,18 @@ fn fault_probe_compiles_and_runs_cleanly_without_a_marker() {
     session.update(&snapshot).into_result().expect("publish");
     let output = crate::queries::compile_with_session(&mut session, &snapshot, &options)
         .expect("unmarked probe links");
-    let execution = execute_wrap(&output, "clean");
-    assert_eq!(
-        execution.status.code(),
-        Some(42),
-        "unmarked probe: {execution:?}"
-    );
+    // Default target is `x86-64-linux`; execute only on a matching host triple.
+    // The compile/link assertions above stay unconditional.
+    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        let execution = execute_wrap(&output, "clean");
+        assert_eq!(
+            execution.status.code(),
+            Some(42),
+            "unmarked probe: {execution:?}"
+        );
+    } else {
+        let _ = output;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -666,14 +679,20 @@ fn main() -> i32 {
         session.update(&snapshot).into_result().expect("publish");
         let output = crate::queries::compile_with_session(&mut session, &snapshot, &options)
             .unwrap_or_else(|errors| panic!("{label}: Choose must compile: {errors}"));
+        // Default target is `x86-64-linux`; execute the linked ELF only when the
+        // host triple matches it. The compile assertion above stays unconditional.
         #[cfg(unix)]
         {
-            let execution = execute_wrap(&output, label);
-            assert_eq!(
-                execution.status.code(),
-                Some(42),
-                "{label}: two same-kind sites must keep their own identities: {execution:?}",
-            );
+            if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+                let execution = execute_wrap(&output, label);
+                assert_eq!(
+                    execution.status.code(),
+                    Some(42),
+                    "{label}: two same-kind sites must keep their own identities: {execution:?}",
+                );
+            } else {
+                let _ = output;
+            }
         }
         #[cfg(not(unix))]
         let _ = output;
