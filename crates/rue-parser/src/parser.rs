@@ -465,12 +465,6 @@ mod tests {
             ("lib.pair.Pair(i32)", |t| {
                 matches!(t, TypeExpr::QualifiedTypeCall { .. })
             }),
-            ("struct { x: i32, y: Pair(i32) }", |t| {
-                matches!(t, TypeExpr::AnonymousStruct { .. })
-            }),
-            ("enum { A, B(i32) }", |t| {
-                matches!(t, TypeExpr::AnonymousEnum { .. })
-            }),
         ];
         for (spelling, is_expected_variant) in rows {
             for intrinsic in [
@@ -495,6 +489,18 @@ mod tests {
                 "@offset_of({spelling}, x) parsed as {args:?}"
             );
             assert!(matches!(&args[1], IntrinsicArg::Expr(Expr::Ident(_))));
+        }
+
+        // Anonymous type literals are creation sites, legal only in comptime
+        // expression position (a type constructor's body). The shared type
+        // grammar rejects them everywhere it is entered — annotations, returns,
+        // and type-position intrinsic arguments alike (RUE-1089).
+        for spelling in ["struct { x: i32, y: Pair(i32) }", "enum { A, B(i32) }"] {
+            let source = format!("fn f() -> i32 {{ @size_of({spelling}) }}");
+            assert!(
+                parse_source(&source).is_err(),
+                "@size_of({spelling}) must be rejected in type position"
+            );
         }
     }
 
