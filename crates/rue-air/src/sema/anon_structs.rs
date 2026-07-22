@@ -398,7 +398,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         match self.stable_definition_endpoints.get(token) {
             Some(endpoint) => format!(
                 "D\u{1}{}\u{1}{}\u{1}{}\u{1}{}",
-                endpoint.file,
+                self.stable_logical_module_component(endpoint.file),
                 endpoint.name,
                 endpoint.owner.as_deref().unwrap_or(""),
                 endpoint.kind as u8,
@@ -407,13 +407,32 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         }
     }
 
-    /// The request-independent content of one module token (its file), with the
-    /// same installed/standalone split as `stable_definition_symbol_component`.
+    /// The request-independent content of one module token (its logical module
+    /// identity), with the same installed/standalone split as
+    /// `stable_definition_symbol_component`.
     fn stable_module_symbol_component(&self, token: &crate::SemanticModuleToken) -> String {
         match self.stable_module_endpoints.get(token) {
-            Some(endpoint) => format!("M\u{1}{}", endpoint.file),
+            Some(endpoint) => format!(
+                "M\u{1}{}",
+                self.stable_logical_module_component(endpoint.file)
+            ),
             None => format!("m\u{1}{}\u{1}{}", token.issuer(), token.slot()),
         }
+    }
+
+    /// The stable LOGICAL identity of a file — its canonical module path — used
+    /// in place of the request-local numeric `FileId`. Two sessions that assign
+    /// different `FileId`s to the same logical program (a different input order,
+    /// added/removed unrelated files) still hash the same module string, so the
+    /// emitted anonymous symbols are `FileId`/input-order independent (ADR-0066,
+    /// RUE-1089 Theme 4). Every installed endpoint's file is a module of the
+    /// current request and therefore has a canonical logical path; its absence is
+    /// a broken request invariant and fails loud.
+    fn stable_logical_module_component(&self, file: u32) -> &str {
+        self.symbol_paths
+            .get(&rue_span::FileId::new(file))
+            .map(String::as_str)
+            .expect("every installed endpoint's file has a canonical logical module path")
     }
 
     /// Return the producer-nominal anonymous struct for `identity`, creating it
