@@ -5512,6 +5512,21 @@ impl CompilerSession {
                     );
                     let transaction = match transaction {
                         Ok(terminal) => terminal,
+                        Err(crate::revisioned_query_database::BodyTransactionRequestFailure::ProducerFailed(
+                            failure,
+                        )) => {
+                            // A depended-on anonymous producer committed an
+                            // anchor-transport internal error (RUE-1089). It is a
+                            // corrupt-input invariant violation, not a retryable
+                            // deferral: record it as this body's fatal error and
+                            // stop — never rescheduled, never rescued by RIR
+                            // recomputation.
+                            body_query_errors.insert(
+                                instance.clone(),
+                                semantic_nucleus_failure_diagnostics(merged.ast(), None, &failure),
+                            );
+                            break;
+                        }
                         Err(crate::revisioned_query_database::BodyTransactionRequestFailure::DeferredAnonymousProducers(
                             producers,
                         )) => {
@@ -5601,6 +5616,22 @@ impl CompilerSession {
                         };
                         let rue_query::QueryOutcome::Success(produced) = produced.outcome() else {
                             unreachable!("BodyProducedAnonymous publishes typed values")
+                        };
+                        let produced = match produced {
+                            crate::body_query::ProducedAnonymous::Produced(produced) => produced,
+                            crate::body_query::ProducedAnonymous::ProducerFailed(failure) => {
+                                // A committed anchor-transport internal error
+                                // (RUE-1089) is fatal for this body; never rescued.
+                                body_query_errors.insert(
+                                    instance.clone(),
+                                    semantic_nucleus_failure_diagnostics(
+                                        merged.ast(),
+                                        None,
+                                        failure,
+                                    ),
+                                );
+                                break;
+                            }
                         };
                         // Accumulate this body's produced anonymous nominals into
                         // the request-wide set consumed after the closure. Each

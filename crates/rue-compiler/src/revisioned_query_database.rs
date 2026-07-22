@@ -445,10 +445,8 @@ pub(crate) struct RevisionedQueryDatabase {
     #[cfg_attr(not(test), allow(dead_code))]
     body_references:
         QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyReferences>,
-    body_produced_anonymous: QueryFamily<
-        crate::body_query::BodyQueryKey,
-        crate::body_query::BodyProducedAnonymousNominals,
-    >,
+    body_produced_anonymous:
+        QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::ProducedAnonymous>,
     module_rirs: QueryFamily<ModuleQueryKey, ModuleRirValue>,
     resolve_imports: QueryFamily<ResolveImportKey, ResolveImportValue>,
     #[cfg(test)]
@@ -1441,6 +1439,37 @@ fn anonymous_nominal_query_key(
 pub(crate) enum BodyTransactionRequestFailure {
     Query(QueryAbort),
     DeferredAnonymousProducers(Arc<[crate::FunctionInstanceKey]>),
+    /// An anonymous producer this body depends on committed an internal-error
+    /// (E9000-class) failure — the anchor-transport invariant violation
+    /// (RUE-1089). The dependent body cannot be built and must fail closed; the
+    /// failure is never retried and never rescued by RIR recomputation.
+    ProducerFailed(crate::semantic_query_nucleus::SemanticNucleusFailure),
+}
+
+/// Whether a committed semantic-nucleus failure is an internal-error
+/// (E9000-class) diagnostic. The anonymous-anchor transport invariant violation
+/// (RUE-1089) surfaces exactly as `Diagnostic(InternalError(_))`. Such a
+/// committed failure is a corrupt-input fact and must fail closed, never be
+/// downgraded to a retryable abort or rescued by structural recomputation.
+pub(crate) fn semantic_nucleus_failure_is_internal_error(
+    failure: &crate::semantic_query_nucleus::SemanticNucleusFailure,
+) -> bool {
+    use crate::semantic_query_nucleus::SemanticNucleusFailure as F;
+    let kind = match failure {
+        F::Diagnostic(kind)
+        | F::DiagnosticAtParameter { kind, .. }
+        | F::DiagnosticAtDeclaration { kind, .. }
+        | F::OwnershipGate { kind, .. }
+        | F::DiagnosticWithHelp { kind, .. } => kind,
+        F::Shell(_)
+        | F::Syntax(_)
+        | F::Resolution(_)
+        | F::SignatureReentry { .. }
+        | F::Cycle(_) => {
+            return false;
+        }
+    };
+    matches!(kind, rue_error::ErrorKind::InternalError(_))
 }
 
 pub(crate) fn collect_instance_anonymous_nominals(
@@ -6849,10 +6878,7 @@ impl RevisionedQueryDatabase {
             .family_with_equality_and_evaluator(
                 "compiler.body-produced-anonymous",
                 BODY_QUERY_MEMO_RETENTION,
-                |left: &crate::body_query::BodyProducedAnonymousNominals,
-                 right: &crate::body_query::BodyProducedAnonymousNominals| {
-                    left == right
-                },
+                crate::body_query::produced_anonymous_equal,
                 move |context, _, key: &crate::body_query::BodyQueryKey| {
                     match context.query(&transactions_for_produced_anonymous, key.clone(), |_| {
                         Err(QueryAbort::Canceled)
@@ -6867,7 +6893,11 @@ impl RevisionedQueryDatabase {
                             else {
                                 return Err(QueryAbort::Canceled);
                             };
-                            return Ok(QueryOutput::success(produced_anonymous_nominals.clone()));
+                            return Ok(QueryOutput::success(
+                                crate::body_query::ProducedAnonymous::Produced(
+                                    produced_anonymous_nominals.clone(),
+                                ),
+                            ));
                         }
                         Err(QueryAbort::Canceled) => {}
                         Err(abort) => return Err(abort),
@@ -6928,13 +6958,35 @@ impl RevisionedQueryDatabase {
                         semantic_nucleus,
                         crate::semantic_query_nucleus::SemanticNucleusKey::ComptimeCall(call),
                     )?;
-                    let rue_query::QueryOutcome::Success(
-                        crate::semantic_query_nucleus::SemanticNucleusValue::ComptimeCall(
-                            projected,
-                        ),
-                    ) = projected.outcome()
-                    else {
-                        return Err(QueryAbort::Canceled);
+                    let projected = match projected.outcome() {
+                        rue_query::QueryOutcome::Success(
+                            crate::semantic_query_nucleus::SemanticNucleusValue::ComptimeCall(
+                                projected,
+                            ),
+                        ) => projected,
+                        // A COMMITTED internal-error (E9000-class) failure — the
+                        // anchored-fragment anchor-transport invariant violation
+                        // (missing/duplicate/kind-mismatch, RUE-1089) — is a
+                        // corrupt-input fact about a raw fragment terminal that
+                        // already exists. It must never collapse into a
+                        // retryable `Canceled` abort that a consuming body treats
+                        // as "producer unavailable" and rescues by recomputing
+                        // the identity from RIR. Carry it so every consumer fails
+                        // closed; the transported anchor stays the sole identity
+                        // authority.
+                        rue_query::QueryOutcome::Success(
+                            crate::semantic_query_nucleus::SemanticNucleusValue::Failure(failure),
+                        ) if semantic_nucleus_failure_is_internal_error(failure) => {
+                            return Ok(QueryOutput::success(
+                                crate::body_query::ProducedAnonymous::ProducerFailed(
+                                    failure.clone(),
+                                ),
+                            ));
+                        }
+                        // Any other non-`ComptimeCall` outcome (an ordinary
+                        // domain failure, or a genuinely-unavailable producer)
+                        // stays a retryable `Canceled` abort, unchanged.
+                        _ => return Err(QueryAbort::Canceled),
                     };
                     let owner = crate::StableProducerId::Function(Box::new(key.instance.clone()));
                     let owned = projected
@@ -6947,7 +6999,9 @@ impl RevisionedQueryDatabase {
                         return Err(QueryAbort::Canceled);
                     }
                     Ok(QueryOutput::success(
-                        crate::body_query::BodyProducedAnonymousNominals(owned.into()),
+                        crate::body_query::ProducedAnonymous::Produced(
+                            crate::body_query::BodyProducedAnonymousNominals(owned.into()),
+                        ),
                     ))
                 },
             )
@@ -7769,7 +7823,18 @@ impl RevisionedQueryDatabase {
                                                 "BodyProducedAnonymous publishes typed values"
                                             )
                                         };
-                                        Ok(producer.0.clone())
+                                        match producer {
+                                            crate::body_query::ProducedAnonymous::Produced(
+                                                produced,
+                                            ) => Ok(produced.0.clone()),
+                                            // The producer committed an
+                                            // anchor-transport internal error;
+                                            // fail closed rather than rescue the
+                                            // identity (RUE-1089).
+                                            crate::body_query::ProducedAnonymous::ProducerFailed(
+                                                failure,
+                                            ) => Err(failure.clone()),
+                                        }
                                     }
                                 }
                             };
@@ -8410,6 +8475,14 @@ impl RevisionedQueryDatabase {
         let candidate = declaration_candidate_for_stable_key(&definition)
             .ok_or(BodyTransactionRequestFailure::Query(QueryAbort::Canceled))?;
         let deferred_anonymous_producers = std::cell::RefCell::new(BTreeSet::new());
+        // Set when a depended-on anonymous producer committed an anchor-transport
+        // internal error (RUE-1089). It is carried out of the query closure — which
+        // can only signal a bare `QueryAbort` — and mapped to a fatal
+        // `ProducerFailed` at the request boundary, so the corrupt producer sinks
+        // this body instead of being retried or rescued by RIR recomputation.
+        let producer_transport_failure: std::cell::RefCell<
+            Option<crate::semantic_query_nucleus::SemanticNucleusFailure>,
+        > = std::cell::RefCell::new(None);
         let result = self.runtime.query(
             &self.body_transactions,
             revision,
@@ -8469,6 +8542,13 @@ impl RevisionedQueryDatabase {
                         };
                         let rue_query::QueryOutcome::Success(produced) = produced.outcome() else {
                             unreachable!("BodyProducedAnonymous publishes typed values")
+                        };
+                        let produced = match produced {
+                            crate::body_query::ProducedAnonymous::Produced(produced) => produced,
+                            crate::body_query::ProducedAnonymous::ProducerFailed(failure) => {
+                                *producer_transport_failure.borrow_mut() = Some(failure.clone());
+                                return Err(QueryAbort::Canceled);
+                            }
                         };
                         selected_anonymous.extend(
                             produced
@@ -8598,6 +8678,13 @@ impl RevisionedQueryDatabase {
                             else {
                                 unreachable!("BodyProducedAnonymous publishes typed values")
                             };
+                            let produced = match produced {
+                                crate::body_query::ProducedAnonymous::Produced(produced) => produced,
+                                crate::body_query::ProducedAnonymous::ProducerFailed(failure) => {
+                                    *producer_transport_failure.borrow_mut() = Some(failure.clone());
+                                    return Err(QueryAbort::Canceled);
+                                }
+                            };
                             if !produced.0.iter().any(|nominal| nominal.identity == identity) {
                                 return Err(QueryAbort::Canceled);
                             }
@@ -8672,6 +8759,16 @@ impl RevisionedQueryDatabase {
         );
         match result {
             Ok(terminal) => Ok(terminal),
+            // A committed anchor-transport internal error takes precedence over a
+            // deferral: the producer definitively failed, so this body must fail
+            // closed rather than reschedule the producer forever (RUE-1089).
+            Err(QueryAbort::Canceled) if producer_transport_failure.borrow().is_some() => {
+                Err(BodyTransactionRequestFailure::ProducerFailed(
+                    producer_transport_failure
+                        .into_inner()
+                        .expect("guarded by is_some"),
+                ))
+            }
             Err(QueryAbort::Canceled) if !deferred_anonymous_producers.borrow().is_empty() => {
                 Err(BodyTransactionRequestFailure::DeferredAnonymousProducers(
                     deferred_anonymous_producers
@@ -8741,10 +8838,8 @@ impl RevisionedQueryDatabase {
         revision: Revision,
         key: crate::body_query::BodyQueryKey,
         cancellation: CancellationToken,
-    ) -> Result<
-        Arc<rue_query::QueryTerminal<crate::body_query::BodyProducedAnonymousNominals>>,
-        QueryAbort,
-    > {
+    ) -> Result<Arc<rue_query::QueryTerminal<crate::body_query::ProducedAnonymous>>, QueryAbort>
+    {
         self.runtime
             .request_registered(&self.body_produced_anonymous, revision, key, cancellation)
             .into_result()

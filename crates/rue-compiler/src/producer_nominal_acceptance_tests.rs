@@ -542,15 +542,21 @@ fn divergent_anchor_transport_fails_closed_loud() {
     );
 }
 
-/// The resolve-level corruptions — a missing locator, a duplicate locator, or a
-/// kind mismatch — each raise the fail-closed diagnostic BEFORE any nominal
-/// terminal publishes. Because no wrong terminal is published, the request never
-/// yields a silent WRONG answer: it either fails closed or the frontend recovers
-/// the correct nominal. This asserts the "loud errors over silent wrong answers"
-/// invariant for every corruption mode.
-#[cfg(unix)]
+/// HARDENED (RUE-1089 Stage D). The resolve-level corruptions — a missing
+/// locator, a duplicate locator, or a kind mismatch — are each an invariant
+/// violation of the atomic `{source, anonymous_sites}` anchored artifact once
+/// the raw fragment terminal exists. They must fail closed LOUD, exactly like a
+/// divergent anchor: the committed E9000-class internal error is the sole
+/// authority and must NEVER be downgraded to a retryable abort that AIR rescues
+/// by recomputing the identity from RIR.
+///
+/// Previously these three modes were "frontend-recoverable" (the durable
+/// producer's failure was masked by a live AIR mint), which created a second
+/// identity authority and hid transport defects. The reviewer ruled that
+/// unacceptable; every mode now sinks the request with a typed internal
+/// diagnostic and publishes NO semantic output.
 #[test]
-fn resolve_level_transport_corruptions_never_miscompile() {
+fn resolve_level_transport_corruptions_fail_closed_loud() {
     let options = CompileOptions::default();
     for marker in [
         "__RUE1089_FAULT_MISSING__",
@@ -558,28 +564,22 @@ fn resolve_level_transport_corruptions_never_miscompile() {
         "__RUE1089_FAULT_WRONG_KIND__",
     ] {
         let program = fault_probe_program(marker);
-        match fresh_semantic(&program, &options) {
-            // Fail-closed: acceptable (loud, no wrong answer).
-            Err(_) => {}
-            // Recovered: the result must be the CORRECT payload value, never a
-            // wrong one. Compile and execute to confirm exit 42.
-            Ok(_) => {
-                let snapshot = SourceSnapshot::single("<fault>", &program).expect("snapshot");
-                let mut session = CompilerSession::new();
-                session.update(&snapshot).into_result().expect("publish");
-                match crate::queries::compile_with_session(&mut session, &snapshot, &options) {
-                    Err(_) => {}
-                    Ok(output) => {
-                        let execution = execute_wrap(&output, "corruption");
-                        assert_eq!(
-                            execution.status.code(),
-                            Some(42),
-                            "fault {marker} recovered but produced a WRONG answer: {execution:?}",
-                        );
-                    }
-                }
-            }
-        }
+        // Zero publication: the request yields NO `CanonicalSemanticOutput`, so
+        // no nominal/member/alias terminal reached the caller.
+        let errors = match fresh_semantic(&program, &options) {
+            Err(errors) => errors,
+            Ok(_) => panic!(
+                "corruption mode {marker} must fail closed with no published semantic output, \
+                 but the program compiled",
+            ),
+        };
+        let rendered = rendered_errors(&errors);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.kind.code() == rue_error::ErrorCode::INTERNAL_ERROR),
+            "corruption mode {marker} must raise a typed E9000 internal diagnostic, got:\n{rendered}",
+        );
     }
 }
 
