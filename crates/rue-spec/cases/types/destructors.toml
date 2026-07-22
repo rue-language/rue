@@ -1195,9 +1195,9 @@ exit_code = 9
 # --- Destructors on anonymous (generic) struct types (RUE-312) ---
 
 [[case]]
-name = "structurally_equal_anon_destructor_uses_stable_representative"
+name = "anon_destructor_distinct_producers_mismatch"
 spec = ["3.9:42", "4.14:15"]
-description = "Structurally equal anonymous types dispatch the stable representative destructor body"
+description = "Two producers each declaring a destructor are distinct types; a cross-producer assignment is a type mismatch (ADR-0066)"
 source = """
 fn A() -> type {
     struct {
@@ -1214,43 +1214,12 @@ fn B() -> type {
 fn main() -> i32 {
     let TA = A();
     let TB = B();
-    let value: TB = TA { v: 7 };
+    let value: TB = TA { v: 7 };  // ERROR: A and B are different producers
     0
 }
 """
-exit_code = 0
-expected_stdout = "7\n"
-
-[[case]]
-name = "late_specialization_replaces_anonymous_destructor_with_stable_representative"
-spec = ["3.9:42", "4.14:15"]
-description = "A lower stable anonymous producer discovered during specialization replaces an already analyzed destructor body"
-source = """
-fn Z() -> type {
-    struct {
-        value: i32,
-        drop fn(self) { @dbg(self.value + 1); }
-    }
-}
-fn A() -> type {
-    struct {
-        value: i32,
-        drop fn(self) { @dbg(self.value + 10); }
-    }
-}
-fn discover(comptime T: type) -> i32 {
-    let Item = A();
-    let value: Item = Item { value: 10 };
-    0
-}
-fn main() -> i32 {
-    let Item = Z();
-    let value: Item = Item { value: 10 };
-    discover(i32)
-}
-"""
-exit_code = 0
-expected_stdout = "20\n20\n"
+compile_fail = true
+error_contains = "type mismatch"
 
 [[case]]
 name = "anon_struct_in_body_destructor_runs"

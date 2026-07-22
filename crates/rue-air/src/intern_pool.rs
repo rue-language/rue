@@ -1330,29 +1330,28 @@ impl TypeInternPoolInner {
             .unwrap_or_else(|| file_id.index().to_string())
     }
 
-    fn nominal_name_collides(&self, name: Spur) -> bool {
-        self.struct_by_file_name
-            .keys()
-            .chain(self.enum_by_file_name.keys())
-            .filter(|(_, existing_name)| *existing_name == name)
-            .take(2)
-            .count()
-            > 1
-    }
-
     fn struct_symbol_name(&self, id: StructId) -> String {
         let data = match self.data(id.0) {
             TypeData::DeclaredStruct(data) | TypeData::Struct(data) => data,
             other => panic!("Expected struct at pool index {}, got {:?}", id.0, other),
         };
-        if !data.def.is_builtin && self.nominal_name_collides(data.name) {
-            return format!(
-                "{}${}",
-                data.def.name,
-                self.file_symbol_component(data.def.file_id)
-            );
+        // Every named user nominal is unconditionally file-qualified (ADR-0066,
+        // RUE-1089): producer-nominal identity means two same-named types in
+        // different files are distinct, so their symbols must never depend on
+        // whether a collision happened to be observed. Builtins keep their bare
+        // source names because they pair with runtime-provided definitions.
+        // Anonymous structs already carry a globally-unique synthetic name
+        // (`__anon_struct_<id>`) that distinguishes every producer, and their
+        // destructor/member symbols are spelled from that bare name; qualifying
+        // them would only desynchronize those spellings, so they are exempt.
+        if data.def.is_builtin || data.def.name.starts_with("__anon_struct_") {
+            return data.def.name.clone();
         }
-        data.def.name.clone()
+        format!(
+            "{}${}",
+            data.def.name,
+            self.file_symbol_component(data.def.file_id)
+        )
     }
 
     fn enum_symbol_name(&self, id: EnumId) -> String {
@@ -1360,14 +1359,19 @@ impl TypeInternPoolInner {
             TypeData::DeclaredEnum(data) | TypeData::Enum(data) => data,
             other => panic!("Expected enum at pool index {}, got {:?}", id.0, other),
         };
-        if self.nominal_name_collides(data.name) {
-            return format!(
-                "{}${}",
-                data.def.name,
-                self.file_symbol_component(data.def.file_id)
-            );
+        // See `struct_symbol_name`: unconditional qualification, with the
+        // reserved built-in enums and the uniquely-named anonymous enums
+        // (`__anon_enum_<id> { … }`) keeping their bare names.
+        if rue_builtins::is_reserved_enum_name(&data.def.name)
+            || data.def.name.starts_with("__anon_enum_")
+        {
+            return data.def.name.clone();
         }
-        data.def.name.clone()
+        format!(
+            "{}${}",
+            data.def.name,
+            self.file_symbol_component(data.def.file_id)
+        )
     }
 
     fn safe_type_name(&self, ty: Type) -> String {

@@ -734,14 +734,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         );
     }
 
-    pub(crate) fn remove_callable_methods_for_owner(&mut self, struct_id: StructId) {
-        for candidates in self.anonymous_callable_methods_by_symbol.values_mut() {
-            candidates.retain(|(owner, _)| *owner != struct_id);
-        }
-        self.anonymous_callable_methods_by_symbol
-            .retain(|_, candidates| !candidates.is_empty());
-    }
-
     fn rebuild_callable_method_index(&mut self) {
         let named_methods = self
             .methods

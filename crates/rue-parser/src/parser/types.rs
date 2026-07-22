@@ -52,14 +52,29 @@ impl Parser {
                     TypeExpr::PointerConst { pointee, span }
                 })
             }
-            TokenKind::Struct => self.anonymous_struct_type(false),
+            // An anonymous struct or enum declaration expression is producer-
+            // nominal (ADR-0066, rule 4.14:23a) and may not appear directly or
+            // nested within a type annotation — `let`, parameter, return, field,
+            // array-element, pointer-pointee, and type-constructor-argument
+            // positions all reach `ty()`. They remain legal as comptime values
+            // and as type-constructor results, so the fix is to bind the type or
+            // name it through a constructor. The keyword token is the accurate
+            // span; `self.error` reports at the current (unbumped) token.
+            TokenKind::Struct => {
+                self.error(
+                    "an anonymous `struct` type cannot appear in a type annotation; \
+                     bind it with `let` or return it from a type constructor and use \
+                     that name here",
+                );
+                Err(())
+            }
             TokenKind::Enum => {
-                self.bump();
-                let variants = self.enum_variants()?;
-                Ok(TypeExpr::AnonymousEnum {
-                    variants,
-                    span: self.span_from(start),
-                })
+                self.error(
+                    "an anonymous `enum` type cannot appear in a type annotation; \
+                     bind it with `let` or return it from a type constructor and use \
+                     that name here",
+                );
+                Err(())
             }
             kind if self.primitive_spur(kind).is_some() => {
                 let token = self.bump();

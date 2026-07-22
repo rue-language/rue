@@ -1313,6 +1313,17 @@ pub struct CompilerSession {
     last_successful_cfg_cache: Option<Arc<[crate::queries::DurableCfgArtifact]>>,
 }
 
+/// Producer-nominal projection (ADR-0066): an anonymous member's owner is
+/// projected onto a canonical *anchor* spelling of its own producer. There is
+/// no cross-producer structural equivalence class and no stable-minimum
+/// representative across producers: two anonymous types are reconciled here only
+/// when they share the exact same producer, kind, and canonical arguments and
+/// differ solely in their definition-relative structural anchor (the
+/// anchor-prefix projection a body reached under different contexts can
+/// produce). Distinct producers or distinct specialization arguments — including
+/// every `Wrapper(n)` in an unbounded recursion — are never merged, so genuine
+/// specialization runaway still accrues nesting depth and is diagnosed by the
+/// depth budget rather than collapsing onto a shared representative.
 fn canonicalize_reached_anonymous_member(
     instance: &crate::FunctionInstanceKey,
     produced: &BTreeMap<
@@ -1329,36 +1340,35 @@ fn canonicalize_reached_anonymous_member(
     else {
         return instance.clone();
     };
-    let Some(target) = produced.get(identity).or_else(|| {
-        declarations
+    // Fail closed: only reconcile when this exact producer identity has been
+    // observed. When it has not, keep the instance untouched rather than
+    // guessing a representative (a wrong guess would silently miscompile).
+    if produced.get(identity).is_none()
+        && !declarations
             .iter()
-            .find(|nominal| nominal.identity == *identity)
-    }) else {
+            .any(|nominal| nominal.identity == *identity)
+    {
         return instance.clone();
-    };
-    let value_specialized = |nominal: &crate::durable_semantics::DurableAnonymousNominal| {
-        matches!(
-            &nominal.identity.producer,
-            crate::StableProducerId::Function(producer)
-                if matches!(
-                    producer.as_ref(),
-                    crate::FunctionInstanceKey::Specialization { arguments, .. }
-                        if !arguments.values.is_empty()
-                )
-        )
-    };
+    }
+    // Reconcile only exact-producer anchor variants: same producer, kind, and
+    // canonical arguments, differing solely in their definition-relative
+    // structural anchor. This is anchor-prefix projection, NOT structural
+    // equivalence — fields, variants, methods, and captured values never enter,
+    // and two distinct producers (including every `Wrapper(n)` in an unbounded
+    // recursion) are never merged, so genuine specialization runaway still
+    // accrues nesting depth for the depth budget (ADR-0066).
     let representative = produced
         .values()
-        .chain(declarations.iter())
+        .map(|nominal| &nominal.identity)
+        .chain(declarations.iter().map(|nominal| &nominal.identity))
+        .chain(std::iter::once(identity))
         .filter(|candidate| {
-            candidate.shape == target.shape
-                && candidate.type_captures == target.type_captures
-                && (candidate.value_captures == target.value_captures
-                    || (value_specialized(candidate) && value_specialized(target)))
+            candidate.kind == identity.kind
+                && candidate.producer == identity.producer
+                && candidate.arguments == identity.arguments
         })
-        .map(|candidate| &candidate.identity)
         .min_by(|left, right| stable_anonymous_nominal_cmp(left, right))
-        .expect("anonymous equivalence class contains its target")
+        .expect("the target identity is always a candidate")
         .clone();
     crate::FunctionInstanceKey::AnonymousMember {
         owner: Box::new(crate::TypeInstanceKey::Nominal(
@@ -15418,164 +15428,6 @@ fn main() -> i32 { selected.value() }"#,
                 crate::FunctionInstanceKey::Specialization { .. }
             )),
             "the reachable specialization must be composed into canonical output"
-        );
-    }
-
-    #[test]
-    fn closure_restart_retracts_facts_from_an_abandoned_anonymous_member() {
-        let source = SourceSnapshot::single(
-            "main.rue",
-            "fn a_value() -> i32 { let A = struct { value: i32, fn get(borrow self) -> i32 { let Nested = struct { value: i32 }; let nested = Nested { value: self.value }; nested.value + a_value() } }; let a = A { value: 2 }; a.value } fn z_value() -> i32 { let Z = struct { value: i32, fn get(borrow self) -> i32 { let Nested = struct { value: i32 }; let nested = Nested { value: self.value }; nested.value + a_value() } }; let z = Z { value: 1 }; z.get() } fn main() -> i32 { z_value() }",
-        )
-        .unwrap();
-        let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
-        let options = CompileOptions::default();
-        let output = session.canonical_semantic(&options).unwrap();
-        let mut outer_nominals = Vec::new();
-        for name in ["a_value", "z_value"] {
-            let key = body_query_key(&mut session, &options, name);
-            let crate::body_query::BodyTransaction::Success {
-                produced_anonymous_nominals,
-                ..
-            } = retained_body_transaction(&session, &key).2
-            else {
-                panic!("{name} must publish its structural producer fact")
-            };
-            let outer = produced_anonymous_nominals
-                .0
-                .iter()
-                .find(|nominal| {
-                    matches!(
-                        &nominal.shape,
-                        crate::durable_semantics::DurableAnonymousNominalShape::Struct { methods, .. }
-                            if methods.iter().any(|method| method.name.as_ref() == "get")
-                    )
-                })
-                .expect("each producer body publishes its get-bearing struct")
-                .clone();
-            outer_nominals.push(outer);
-        }
-        assert_eq!(outer_nominals[0].shape, outer_nominals[1].shape);
-        assert_eq!(
-            outer_nominals[0].type_captures,
-            outer_nominals[1].type_captures
-        );
-        assert_eq!(
-            outer_nominals[0].value_captures,
-            outer_nominals[1].value_captures
-        );
-
-        let produced = outer_nominals
-            .iter()
-            .cloned()
-            .map(|nominal| (nominal.identity.clone(), nominal))
-            .collect::<BTreeMap<_, _>>();
-        let members = outer_nominals
-            .iter()
-            .map(|nominal| crate::FunctionInstanceKey::AnonymousMember {
-                owner: Box::new(crate::TypeInstanceKey::Nominal(
-                    crate::NominalInstanceKey::Anonymous(nominal.identity.clone()),
-                )),
-                member: crate::AnonymousMemberKey {
-                    kind: crate::AnonymousMemberKind::Method,
-                    name: Arc::from("get"),
-                },
-            })
-            .collect::<Vec<_>>();
-        let member_keys = members
-            .iter()
-            .cloned()
-            .map(|instance| crate::body_query::BodyQueryKey {
-                instance,
-                configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration {
-                    target: options.target,
-                    preview_features: StablePreviewFeatures::new(&options.preview_features),
-                },
-            })
-            .collect::<Vec<_>>();
-        let mut nested_nominals = Vec::new();
-        for key in &member_keys {
-            let crate::body_query::BodyTransaction::Success {
-                produced_anonymous_nominals,
-                ..
-            } = retained_body_transaction(&session, key).2
-            else {
-                panic!("both pre- and post-restart member queries must publish terminals")
-            };
-            assert_eq!(produced_anonymous_nominals.0.len(), 1);
-            assert_eq!(
-                produced_anonymous_nominals.0[0].identity.producer,
-                crate::StableProducerId::Function(Box::new(key.instance.clone()))
-            );
-            nested_nominals.push(produced_anonymous_nominals.0[0].clone());
-        }
-
-        let canonical_members = members
-            .iter()
-            .filter(|instance| {
-                produced_anonymous_survives_closure_restart(instance, &produced, &[])
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            canonical_members.len(),
-            1,
-            "only the canonical member seeds a restart"
-        );
-        let canonical_member = canonical_members[0];
-        let abandoned_member = members
-            .iter()
-            .find(|member| *member != canonical_member)
-            .expect("the first traversal reached a now-abandoned member");
-        assert!(
-            output
-                .functions()
-                .iter()
-                .any(|function| { &function.semantic_identity == canonical_member })
-        );
-        assert!(
-            !output
-                .functions()
-                .iter()
-                .any(|function| { &function.semantic_identity == abandoned_member })
-        );
-
-        let canonical_nested = nested_nominals
-            .iter()
-            .find(|nominal| {
-                nominal.identity.producer
-                    == crate::StableProducerId::Function(Box::new(canonical_member.clone()))
-            })
-            .expect("the surviving member publishes its nested nominal");
-        let abandoned_nested = nested_nominals
-            .iter()
-            .find(|nominal| nominal != &canonical_nested)
-            .expect("the abandoned member terminal retains its retracted fact for diagnostics");
-        assert_eq!(
-            stable_producer_definition_root(&canonical_nested.identity.producer),
-            stable_function_definition_root(canonical_member)
-        );
-        assert_eq!(
-            stable_producer_definition_root(&abandoned_nested.identity.producer),
-            stable_function_definition_root(abandoned_member)
-        );
-
-        let mut drop_rooted = canonical_nested.identity.clone();
-        let crate::FunctionInstanceKey::AnonymousMember { owner, .. } = canonical_member else {
-            unreachable!()
-        };
-        drop_rooted.producer = crate::StableProducerId::Function(Box::new(
-            crate::FunctionInstanceKey::DropGlue(owner.clone()),
-        ));
-        assert_eq!(
-            stable_producer_definition_root(&drop_rooted.producer),
-            stable_function_definition_root(canonical_member),
-            "anonymous-member and drop-glue producers use the owning definition root"
-        );
-        assert_eq!(
-            stable_anonymous_nominal_cmp(&canonical_nested.identity, &drop_rooted),
-            canonical_nested.identity.cmp(&drop_rooted),
-            "equal producer roots fall back to the complete stable identity"
         );
     }
 

@@ -88,7 +88,7 @@ exit_code = 0
 
 [[case]]
 name = "alternating_specialization_method_recursion_is_bounded"
-description = "Structurally equal anonymous specializations converge on the stable lowest representative even when their captured values would otherwise alternate scheduler waves."
+description = "Producer-nominal identity (ADR-0066) makes each Wrapper(n) a distinct type, so runaway(n) -> Wrapper(n).go() -> runaway(n+1) is genuinely unbounded specialization recursion and is diagnosed by the specialization-depth limit (4.14:18) rather than silently converging on a stable representative."
 files = [
     { path = "main.rue", source = """
 const lib = @import("lib.rue");
@@ -111,4 +111,5 @@ fn runaway(comptime n: i32) -> i32 {
 pub fn start() -> i32 { runaway(0) }
 """ },
 ]
-compile_only = true
+compile_fail = true
+error_contains = ["exceeded the maximum nesting depth"]
