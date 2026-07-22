@@ -322,7 +322,100 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     }
 }
 
+/// A fixed-seed FNV-1a 128-bit hasher. Unlike the standard-library
+/// `DefaultHasher`, its algorithm and seed are pinned in source, so the digest
+/// of one byte stream is identical across every compile of the same program —
+/// warm, fresh, or differently scheduled. It is used only to spell stable
+/// anonymous-symbol names; it is not a cryptographic hash.
+struct StableFnv1a128(u128);
+
+impl StableFnv1a128 {
+    /// The 128-bit FNV-1a offset basis.
+    const OFFSET_BASIS: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
+    /// The 128-bit FNV-1a prime.
+    const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
+
+    fn new() -> Self {
+        Self(Self::OFFSET_BASIS)
+    }
+
+    fn digest(self) -> u128 {
+        self.0
+    }
+}
+
+impl std::hash::Hasher for StableFnv1a128 {
+    fn finish(&self) -> u64 {
+        // Truncation is never used for identity; `digest()` reads all 128 bits.
+        self.0 as u64
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 ^= u128::from(byte);
+            self.0 = self.0.wrapping_mul(Self::PRIME);
+        }
+    }
+}
+
 impl<D: DeclarationPhase> Sema<'_, D> {
+    /// Stable, allocation-order-independent digest of a producer-nominal
+    /// anonymous identity (ADR-0066, RUE-1089).
+    ///
+    /// The AIR-domain `AnonymousNominalKey` embeds issuer-scoped definition and
+    /// module tokens whose numeric `slot`/`issuer` are session-local and change
+    /// across warm/fresh and differently-scheduled compiles. This relocates
+    /// every embedded token to its request-independent endpoint content — the
+    /// `(file, name, owner, kind)` of a definition and the `file` of a module —
+    /// before hashing, so the digest is a pure function of the program. The
+    /// nominal kind, structural anchor, and scalar/string argument values are
+    /// already stable content and hash directly. Two independent cold compiles
+    /// of the same program therefore derive the same digest for one producer
+    /// key, and distinct producer keys derive distinct digests.
+    fn stable_anonymous_identity_digest(&self, identity: &IssuedAnonymousNominalKey) -> u128 {
+        use std::hash::Hash;
+
+        let stable: crate::AnonymousNominalKey<String, String> = identity
+            .try_map_identities::<String, String, std::convert::Infallible>(
+                &|token| Ok(self.stable_definition_symbol_component(token)),
+                &|token| Ok(self.stable_module_symbol_component(token)),
+            )
+            .expect("anonymous identity relocation to stable content is infallible");
+
+        let mut hasher = StableFnv1a128::new();
+        stable.hash(&mut hasher);
+        hasher.digest()
+    }
+
+    /// The request-independent content of one definition token. When the token
+    /// resolves to an installed endpoint (every compiler-issued universe) the
+    /// content is its `(file, name, owner, kind)`. The standalone-pool embedding
+    /// installs no endpoints, but there the token's `slot` is itself a
+    /// content-derived FNV of that same tuple (see `stable_definition_token`), so
+    /// the raw token is already stable; it is used verbatim as a distinct
+    /// fallback namespace.
+    fn stable_definition_symbol_component(&self, token: &crate::SemanticDefinitionToken) -> String {
+        match self.stable_definition_endpoints.get(token) {
+            Some(endpoint) => format!(
+                "D\u{1}{}\u{1}{}\u{1}{}\u{1}{}",
+                endpoint.file,
+                endpoint.name,
+                endpoint.owner.as_deref().unwrap_or(""),
+                endpoint.kind as u8,
+            ),
+            None => format!("d\u{1}{}\u{1}{}", token.issuer(), token.slot()),
+        }
+    }
+
+    /// The request-independent content of one module token (its file), with the
+    /// same installed/standalone split as `stable_definition_symbol_component`.
+    fn stable_module_symbol_component(&self, token: &crate::SemanticModuleToken) -> String {
+        match self.stable_module_endpoints.get(token) {
+            Some(endpoint) => format!("M\u{1}{}", endpoint.file),
+            None => format!("m\u{1}{}\u{1}{}", token.issuer(), token.slot()),
+        }
+    }
+
     /// Return the producer-nominal anonymous struct for `identity`, creating it
     /// if this producer key has not been materialized yet.
     ///
@@ -352,8 +445,17 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         // two-phase naming where a temp name is replaced.
         let struct_id = self.type_pool.reserve_struct_id();
 
-        // Now we know the ID, so we can create the final name directly
-        let name = format!("__anon_struct_{}", struct_id.0);
+        // The synthetic name distinguishes every producer and is spelled from a
+        // STABLE digest of the producer identity, not the allocation-order pool
+        // index: two independent or differently-scheduled compiles of the same
+        // program must emit identical anonymous symbols (ADR-0066, RUE-1089).
+        // The `__anon_struct_` prefix stays load-bearing — the pool's
+        // symbol/destructor spellings and every `starts_with` classifier key on
+        // it — so only the disambiguating suffix changes.
+        let name = format!(
+            "__anon_struct_{:032x}",
+            self.stable_anonymous_identity_digest(&identity)
+        );
         let name_spur = self.interner.get_or_intern(&name);
 
         // A `drop fn(self)` inside the struct body is carried as a method under
@@ -442,8 +544,16 @@ impl<D: DeclarationPhase> Sema<'_, D> {
 
         // Names are presentation/lookup handles only. Source anonymous enums
         // receive a unique live name because producer-distinct identities must
-        // not be collapsed by the pool's name interning.
-        let mut name = format!("__anon_enum_{} {{ ", self.anon_enum_identities.len());
+        // not be collapsed by the pool's name interning (`register_enum` dedups
+        // by interned name). The disambiguating component is a STABLE digest of
+        // the producer identity, not an allocation-order counter, so two
+        // independent or differently-scheduled compiles emit identical anonymous
+        // symbols and distinct producers never share a name (ADR-0066,
+        // RUE-1089).
+        let mut name = format!(
+            "__anon_enum_{:032x} {{ ",
+            self.stable_anonymous_identity_digest(&identity)
+        );
         for (i, vname) in variant_names.iter().enumerate() {
             if i > 0 {
                 name.push_str(", ");

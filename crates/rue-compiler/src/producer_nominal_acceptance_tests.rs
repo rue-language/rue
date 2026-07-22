@@ -152,14 +152,27 @@ fn symbol_names(semantic: &CanonicalSemanticOutput) -> BTreeSet<String> {
 
 /// The named (non-anonymous) type/function symbols of a semantic output. These
 /// are invariant under reordering and unrelated edits. Anonymous synthetic
-/// names (`__anon_struct_N` / `__anon_enum_N`) are excluded because their base
-/// display name is presently allocation-order-derived (Stage-4 note); their
-/// COUNT is asserted separately via [`anonymous_type_count`].
+/// symbols are asserted separately via [`anonymous_symbols`], which since the
+/// Stage-A stable-naming cut (ADR-0066, RUE-1089) are also invariant under those
+/// edits — their disambiguating suffix is a digest of the producer identity, not
+/// an allocation-order counter.
 fn named_symbols(semantic: &CanonicalSemanticOutput) -> BTreeSet<String> {
     symbol_names(semantic)
         .into_iter()
         .filter(|name| !name.contains("__anon_"))
         .filter(|name| !name.contains("unrelated")) // the intentionally-added extra decl
+        .collect()
+}
+
+/// The anonymous synthetic type symbols of a semantic output — the struct/enum
+/// symbols whose spelling carries the `__anon_struct_`/`__anon_enum_` prefix.
+/// Since the Stage-A cut (ADR-0066, RUE-1089) each spelling is a STABLE digest
+/// of the producer identity, so this set is identical across independent cold
+/// compiles and across warm/fresh, and unchanged by unrelated edits.
+fn anonymous_symbols(semantic: &CanonicalSemanticOutput) -> BTreeSet<String> {
+    symbol_names(semantic)
+        .into_iter()
+        .filter(|name| name.contains("__anon_struct_") || name.contains("__anon_enum_"))
         .collect()
 }
 
@@ -210,6 +223,23 @@ fn producer_nominal_identity_is_stable_under_unrelated_edits() {
         named_symbols(&reordered),
         "reordering methods / adding an unrelated decl changed the named symbol surface",
     );
+
+    // Stage A (RUE-1089): the ANONYMOUS symbol surface is likewise unchanged.
+    // Each anonymous symbol's suffix is a digest of its producer identity
+    // (method name + definition-relative anchor), both preserved when sibling
+    // methods are reordered and an unrelated top-level decl is added, so the
+    // allocation-order-independent spellings match exactly.
+    let baseline_anon = anonymous_symbols(&baseline);
+    assert!(
+        !baseline_anon.is_empty(),
+        "the Holder producer must emit at least one anonymous symbol to assert stability over",
+    );
+    assert_eq!(
+        baseline_anon,
+        anonymous_symbols(&reordered),
+        "reordering methods / adding an unrelated decl changed the anonymous symbol spellings \
+         (Stage-A stable naming must make them allocation-order-independent)",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +268,62 @@ fn producer_nominal_semantic_output_is_deterministic_across_cold_compiles() {
         symbol_names(&second),
         "two cold compiles of the same program emitted different symbol names",
     );
+
+    // Stage A (RUE-1089): assert the ANONYMOUS symbols specifically, not merely
+    // that the full set matches. Their spellings are stable digests of the
+    // producer identity, so two independent cold compiles must agree on every
+    // `__anon_struct_`/`__anon_enum_` symbol exactly — the property that made
+    // the prior allocation-order counter unsound for incremental linking and
+    // parallel compilation.
+    let first_anon = anonymous_symbols(&first);
+    assert!(
+        !first_anon.is_empty(),
+        "the acceptance producer must emit anonymous symbols to assert determinism over",
+    );
+    assert_eq!(
+        first_anon,
+        anonymous_symbols(&second),
+        "two cold compiles emitted different anonymous symbol spellings",
+    );
+}
+
+/// Distinct producers minting same-shape anonymous types receive DISTINCT stable
+/// anonymous symbols; the same producer key receives the same symbol. This is
+/// the identity half of the Stage-A naming property (a digest that both
+/// disambiguates producers and is allocation-order-independent).
+#[test]
+fn distinct_producers_receive_distinct_stable_anonymous_symbols() {
+    // Two separate producers `L` and `R` each mint an anonymous struct of the
+    // SAME shape (`{ x: i32 }`). Producer-nominal identity makes them distinct
+    // types, so their stable symbols must differ.
+    let source = r#"
+fn L() -> type { struct { x: i32 } }
+fn R() -> type { struct { x: i32 } }
+fn main() -> i32 {
+    let TL = L();
+    let TR = R();
+    let a: TL = TL { x: 40 };
+    let b: TR = TR { x: 2 };
+    a.x + b.x
+}
+"#;
+    let options = CompileOptions::default();
+    let first = fresh_semantic(source, &options).expect("distinct-producer program compiles");
+    let anon = anonymous_symbols(&first);
+    assert_eq!(
+        anon.len(),
+        2,
+        "two distinct same-shape producers must yield two distinct anonymous symbols, got {anon:?}",
+    );
+
+    // The same program compiled again yields the SAME two symbols (stability),
+    // and they are the same set (determinism) — never a re-numbered pair.
+    let second = fresh_semantic(source, &options).expect("second compile");
+    assert_eq!(
+        anon,
+        anonymous_symbols(&second),
+        "distinct-producer anonymous symbols were not stable across cold compiles",
+    );
 }
 
 /// A WARM (incremental) compile of the acceptance program — reached after the
@@ -260,6 +346,22 @@ fn producer_nominal_warm_and_fresh_semantic_output_agree() {
         symbol_names(&warm),
         symbol_names(&fresh),
         "warm/fresh emitted symbol names diverged for the acceptance producer",
+    );
+
+    // Stage A (RUE-1089): the warm incremental session and the fresh session
+    // assign different session-local token issuers, so an allocation-order name
+    // could diverge here. The stable digest resolves each token to its
+    // request-independent endpoint content first, so every anonymous symbol
+    // agrees exactly.
+    let warm_anon = anonymous_symbols(&warm);
+    assert!(
+        !warm_anon.is_empty(),
+        "the acceptance producer must emit anonymous symbols to compare warm vs fresh",
+    );
+    assert_eq!(
+        warm_anon,
+        anonymous_symbols(&fresh),
+        "warm/fresh emitted different anonymous symbol spellings",
     );
 }
 
