@@ -4,6 +4,7 @@
 //! queries and the request-local AIR materializer. Values here deliberately
 //! contain no parser, RIR, AIR, type-pool, source-position, or interner handles.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::declaration_candidate::{
@@ -278,7 +279,7 @@ pub(crate) struct ParsedSemanticConst {
     pub(crate) declaration: rue_parser::ast::ConstDecl,
     pub(crate) interner: crate::ThreadedRodeo,
     pub(crate) import_sites: Vec<crate::ImportDirective>,
-    pub(crate) anonymous_sites: Vec<TransportedAnonymousSite>,
+    pub(crate) anonymous_sites: TransportedAnonymousSites,
 }
 
 pub(crate) struct ParsedSemanticBody {
@@ -286,25 +287,131 @@ pub(crate) struct ParsedSemanticBody {
     pub(crate) expression: rue_parser::ast::Expr,
     pub(crate) interner: crate::ThreadedRodeo,
     pub(crate) import_sites: Vec<crate::ImportDirective>,
-    pub(crate) anonymous_sites: Vec<TransportedAnonymousSite>,
+    pub(crate) anonymous_sites: TransportedAnonymousSites,
+}
+
+/// A validated, keyed index over the anonymous-type sites transported into one
+/// reparsed producer fragment.
+///
+/// Well-formedness — no two sites sharing a fragment-local locator, no two
+/// sharing an anchor — is checked exactly ONCE, when the fragment is parsed and
+/// this index is built (`parse_semantic_const`/`parse_semantic_body`). Every
+/// eval-time lookup is then an O(log S) keyed probe with no revalidation, and
+/// the produced-nominal cross-check consults [`Self::authorizes`] in O(log S).
+/// This replaces the former per-lookup O(S²) whole-table rescan that made a
+/// producer with S sites cost O(S³) to reduce (RUE-1089, Theme 5).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TransportedAnonymousSites {
+    by_locator: BTreeMap<(u32, u32), TransportedAnonymousSite>,
+    authorized_anchors: BTreeSet<rue_rir::RirStructuralAnchor>,
+    /// The first well-formedness violation found at construction, if any. A
+    /// malformed table is anchor-transport corruption; the evaluator promotes
+    /// this to a fail-closed E9000 before any lookup resolves or any terminal
+    /// publishes, so a corrupt table can never mint an identity.
+    malformed: Option<Arc<str>>,
+}
+
+impl TransportedAnonymousSites {
+    fn from_sites(sites: Vec<TransportedAnonymousSite>) -> Self {
+        let mut by_locator: BTreeMap<(u32, u32), TransportedAnonymousSite> = BTreeMap::new();
+        let mut authorized_anchors = BTreeSet::new();
+        let mut malformed: Option<Arc<str>> = None;
+        for site in sites {
+            let locator = (site.span.start, site.span.end);
+            if let Some(existing) = by_locator.get(&locator) {
+                malformed.get_or_insert_with(|| {
+                    Arc::from(format!(
+                        "carries a duplicate anonymous-type locator {}..{} (anchors {:?} and {:?})",
+                        locator.0, locator.1, existing.anchor, site.anchor,
+                    ))
+                });
+                continue;
+            }
+            if !authorized_anchors.insert(site.anchor.clone()) {
+                malformed.get_or_insert_with(|| {
+                    Arc::from(format!(
+                        "carries two distinct anonymous sites sharing the anchor {:?}",
+                        site.anchor,
+                    ))
+                });
+            }
+            by_locator.insert(locator, site);
+        }
+        Self {
+            by_locator,
+            authorized_anchors,
+            malformed,
+        }
+    }
+
+    /// The first well-formedness violation, if the transported table is corrupt.
+    pub(crate) fn malformed(&self) -> Option<&str> {
+        self.malformed.as_deref()
+    }
+
+    /// The site transported for the anonymous literal at `span`, by exact
+    /// fragment-local locator. `None` means no site was transported for it.
+    pub(crate) fn resolve(&self, span: rue_span::Span) -> Option<&TransportedAnonymousSite> {
+        self.by_locator.get(&(span.start, span.end))
+    }
+
+    /// Whether the transported table authorizes `anchor` — some transported site
+    /// carries exactly it. The produced-nominal cross-check fails the producer
+    /// terminal for any minted nominal whose anchor is not authorized here.
+    pub(crate) fn authorizes(&self, anchor: &rue_rir::RirStructuralAnchor) -> bool {
+        self.authorized_anchors.contains(anchor)
+    }
 }
 
 /// Shift each fragment-relative anonymous locator into the reparsed fragment's
 /// synthetic-source coordinate space by the byte length of the synthetic prefix
-/// preceding the reparsed initializer/body text.
+/// preceding the reparsed initializer/body text, then build and validate the
+/// keyed index once.
 fn transport_anonymous_sites(
     sites: &[crate::declaration_candidate::RawAnonymousSite],
     prefix_len: usize,
-) -> Vec<TransportedAnonymousSite> {
+    fragment_source: &str,
+) -> TransportedAnonymousSites {
     let prefix = prefix_len as u32;
-    sites
+    #[cfg_attr(not(test), allow(unused_mut))]
+    let mut transported: Vec<TransportedAnonymousSite> = sites
         .iter()
         .map(|site| TransportedAnonymousSite {
             span: rue_span::Span::new(prefix + site.fragment_start, prefix + site.fragment_end),
             kind: site.kind,
             anchor: site.anchor.clone(),
         })
-        .collect()
+        .collect();
+    #[cfg(test)]
+    inject_transport_faults(fragment_source, &mut transported);
+    #[cfg(not(test))]
+    let _ = fragment_source;
+    TransportedAnonymousSites::from_sites(transported)
+}
+
+/// Test-only anchor-transport corruption (RUE-1089 acceptance criterion 7),
+/// selected by a marker embedded in the reparsed fragment source. It corrupts
+/// the transported table at construction exactly as a real transport bug would,
+/// so the fail-closed validation is exercised without a real divergence. The
+/// mode is fully determined by the fragment source, so it is race-free under
+/// parallel test execution — no global state, no reset. The DIVERGENT mode is
+/// injected at resolve time instead (it must diverge the RESOLVED anchor from
+/// what this table authorizes), so it is absent here.
+#[cfg(test)]
+fn inject_transport_faults(source: &str, sites: &mut Vec<TransportedAnonymousSite>) {
+    if source.contains("__RUE1089_FAULT_MISSING__") {
+        sites.clear();
+    } else if source.contains("__RUE1089_FAULT_DUPLICATE__") {
+        let doubled = sites.clone();
+        sites.extend(doubled);
+    } else if source.contains("__RUE1089_FAULT_WRONG_KIND__") {
+        for site in sites.iter_mut() {
+            site.kind = match site.kind {
+                rue_rir::AnonymousTypeSiteKind::Struct => rue_rir::AnonymousTypeSiteKind::Enum,
+                rue_rir::AnonymousTypeSiteKind::Enum => rue_rir::AnonymousTypeSiteKind::Struct,
+            };
+        }
+    }
 }
 
 /// Reparse one exact declaration body without consulting its module AST. The
@@ -333,12 +440,13 @@ pub(crate) fn parse_semantic_body(
     let import_sites =
         crate::parsed_modules::exact_syntax_import_sites(&ast, &key.module, &parsed.interner)
             .map_err(|error| Arc::from(error.to_string()))?;
+    let anonymous_sites = transport_anonymous_sites(&syntax.anonymous_sites, prefix_len, &source);
     Ok(ParsedSemanticBody {
         source,
         expression: function.body.clone(),
         interner: parsed.interner,
         import_sites,
-        anonymous_sites: transport_anonymous_sites(&syntax.anonymous_sites, prefix_len),
+        anonymous_sites,
     })
 }
 
@@ -373,12 +481,13 @@ pub(crate) fn parse_semantic_const(
     let import_sites =
         crate::parsed_modules::exact_syntax_import_sites(&ast, &key.module, &parsed.interner)
             .map_err(|error| Arc::from(error.to_string()))?;
+    let anonymous_sites = transport_anonymous_sites(&syntax.anonymous_sites, prefix_len, &source);
     Ok(ParsedSemanticConst {
         source,
         declaration: declaration.clone(),
         interner: parsed.interner,
         import_sites,
-        anonymous_sites: transport_anonymous_sites(&syntax.anonymous_sites, prefix_len),
+        anonymous_sites,
     })
 }
 

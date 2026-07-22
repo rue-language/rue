@@ -1743,6 +1743,47 @@ fn collect_durable_anonymous_nominal_dependencies(
     }
 }
 
+/// Validate that every anonymous nominal THIS producer minted carries an anchor
+/// the transported table authorizes, BEFORE the producer terminal publishes.
+///
+/// A divergent (wrong-but-present) anchor — the pre-fix hazard where a reached
+/// member could not later match its owner terminal — is failed at the producer
+/// terminal itself here, so no nominal/member/alias/cache entry is ever
+/// published (RUE-1089, Theme 5). Nominals minted by nested producers carry a
+/// different producer id; they are validated at their own terminals and skipped.
+fn validate_transported_anchor_authority(
+    producer: &crate::StableProducerId,
+    nominals: &BTreeMap<
+        crate::AnonymousNominalKey,
+        crate::durable_semantics::DurableAnonymousNominal,
+    >,
+    sites: &crate::semantic_query_nucleus::TransportedAnonymousSites,
+) -> Result<(), crate::semantic_query_nucleus::SemanticNucleusFailure> {
+    let internal = |message: String| {
+        crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+            rue_error::ErrorKind::InternalError(message),
+        )
+    };
+    if let Some(reason) = sites.malformed() {
+        return Err(internal(format!(
+            "anchor transport for producer {producer:?} {reason}"
+        )));
+    }
+    for nominal in nominals.values() {
+        if &nominal.identity.producer != producer {
+            continue;
+        }
+        if !sites.authorizes(&nominal.identity.anchor) {
+            return Err(internal(format!(
+                "producer {producer:?} minted an anonymous nominal at anchor {:?} that the \
+                 transported anchor table does not authorize",
+                nominal.identity.anchor,
+            )));
+        }
+    }
+    Ok(())
+}
+
 struct SemanticConstEvaluator<'a, 'provider> {
     provider: &'provider mut SemanticNucleusTypeProvider<'a>,
     imports: &'a QueryFamily<DeclarationImportQueryKey, DeclarationImportQueryValue>,
@@ -1755,10 +1796,12 @@ struct SemanticConstEvaluator<'a, 'provider> {
     canonical_arguments: crate::CanonicalArguments,
     /// Anonymous type literals transported from the frontend, in this fragment's
     /// synthetic-source coordinate space, each carrying the exact `AstGen`
-    /// anchor. The single anchor authority: `eval_type_literal` looks each
-    /// reparsed literal up here and fails closed on any locator/kind/anchor
-    /// disagreement (RUE-1089).
-    anonymous_sites: &'a [crate::semantic_query_nucleus::TransportedAnonymousSite],
+    /// anchor, as a validate-once keyed index. The single anchor authority:
+    /// `eval_type_literal` looks each reparsed literal up here (O(log S), no
+    /// revalidation) and fails closed on any locator/kind/anchor disagreement,
+    /// and the producer terminal cross-checks its whole minted set against the
+    /// authorized anchors before publishing (RUE-1089).
+    anonymous_sites: &'a crate::semantic_query_nucleus::TransportedAnonymousSites,
     next_call: u32,
     expected_type: Option<crate::durable_semantics::DurableType>,
 }
@@ -2662,86 +2705,24 @@ impl SemanticConstEvaluator<'_, '_> {
             rue_air::AnonymousNominalKind::Struct => rue_rir::AnonymousTypeSiteKind::Struct,
             rue_air::AnonymousNominalKind::Enum => rue_rir::AnonymousTypeSiteKind::Enum,
         };
-        // Test-only fault injection (RUE-1089 acceptance criterion 7). The mode
-        // is selected entirely by a marker embedded in the fragment source, so it
-        // affects only the one declaration under test and is race-free under
-        // parallel test execution — no global state, no reset. It corrupts the
-        // transported table exactly as a real anchor-transport bug would, so the
-        // fail-closed path below is exercised without a real divergence.
-        #[cfg(test)]
-        let injected_sites: Vec<crate::semantic_query_nucleus::TransportedAnonymousSite>;
-        #[cfg(test)]
-        let sites: &[crate::semantic_query_nucleus::TransportedAnonymousSite] =
-            if self.source.contains("__RUE1089_FAULT_MISSING__") {
-                &[]
-            } else if self.source.contains("__RUE1089_FAULT_DUPLICATE__") {
-                injected_sites = self
-                    .anonymous_sites
-                    .iter()
-                    .chain(self.anonymous_sites.iter())
-                    .cloned()
-                    .collect();
-                &injected_sites
-            } else if self.source.contains("__RUE1089_FAULT_WRONG_KIND__") {
-                injected_sites = self
-                    .anonymous_sites
-                    .iter()
-                    .map(|site| {
-                        let mut site = site.clone();
-                        site.kind = match site.kind {
-                            rue_rir::AnonymousTypeSiteKind::Struct => {
-                                rue_rir::AnonymousTypeSiteKind::Enum
-                            }
-                            rue_rir::AnonymousTypeSiteKind::Enum => {
-                                rue_rir::AnonymousTypeSiteKind::Struct
-                            }
-                        };
-                        site
-                    })
-                    .collect();
-                &injected_sites
-            } else {
-                self.anonymous_sites
-            };
-        #[cfg(not(test))]
         let sites = self.anonymous_sites;
-        // Whole-producer well-formedness: no two frontend sites may share a
-        // locator or an anchor. Either is anchor-transport corruption.
-        for (index, left) in sites.iter().enumerate() {
-            for right in &sites[index + 1..] {
-                if (left.span.start, left.span.end) == (right.span.start, right.span.end) {
-                    return self.anchor_transport_failure(format!(
-                        "anchor transport for producer {:?} carries a duplicate anonymous-type \
-                         locator {}..{} (anchors {:?} and {:?})",
-                        self.producer, left.span.start, left.span.end, left.anchor, right.anchor,
-                    ));
-                }
-                if left.anchor == right.anchor {
-                    return self.anchor_transport_failure(format!(
-                        "anchor transport for producer {:?} carries two distinct anonymous sites \
-                         with the same anchor {:?}",
-                        self.producer, left.anchor,
-                    ));
-                }
-            }
+        // Whole-producer well-formedness (no duplicate locator, no duplicate
+        // anchor) was validated exactly once when this keyed index was built. A
+        // malformed table is anchor-transport corruption and fails closed before
+        // any lookup can mint an identity (RUE-1089, Theme 5).
+        if let Some(reason) = sites.malformed() {
+            return self.anchor_transport_failure(format!(
+                "anchor transport for producer {:?} {reason}",
+                self.producer,
+            ));
         }
-        let mut matching = sites
-            .iter()
-            .filter(|site| (site.span.start, site.span.end) == (span.start, span.end));
-        let Some(site) = matching.next() else {
+        let Some(site) = sites.resolve(span) else {
             return self.anchor_transport_failure(format!(
                 "anchor transport for producer {:?} has no anchor for the anonymous type at \
                  {}..{}",
                 self.producer, span.start, span.end,
             ));
         };
-        if matching.next().is_some() {
-            return self.anchor_transport_failure(format!(
-                "anchor transport for producer {:?} carries a duplicate locator for the anonymous \
-                 type at {}..{}",
-                self.producer, span.start, span.end,
-            ));
-        }
         if site.kind != expected_kind {
             return self.anchor_transport_failure(format!(
                 "anchor transport for producer {:?} disagrees on the kind of the anonymous type at \
@@ -2750,10 +2731,11 @@ impl SemanticConstEvaluator<'_, '_> {
             ));
         }
         // Test-only divergent-anchor injection (RUE-1089 acceptance criterion 7):
-        // publish a WRONG-but-present anchor, reproducing the exact pre-fix
-        // hazard where a reached member cannot match its owner terminal. The fix
-        // is load-bearing — this must fail closed (loud E9000) downstream, never
-        // miscompile.
+        // return a WRONG-but-present anchor, reproducing the exact pre-fix hazard
+        // where a reached member cannot match its owner terminal. The transported
+        // table does NOT authorize this anchor, so the producer terminal's
+        // cross-check fails it closed (loud E9000) before any nominal/member/
+        // alias/cache entry publishes — never a silent miscompile.
         #[cfg(test)]
         if self.source.contains("__RUE1089_FAULT_DIVERGE__") {
             let mut segments = site.anchor.segments().to_vec();
@@ -7579,6 +7561,10 @@ impl RevisionedQueryDatabase {
                                                 ))
                                                 .with_terminal_kind(QueryTerminalKind::Failure));
                                             }
+                                            let const_producer =
+                                                crate::StableProducerId::Definition(
+                                                    const_identity.key.clone(),
+                                                );
                                             let result = {
                                                 let mut evaluator = SemanticConstEvaluator {
                                                     provider: &mut provider,
@@ -7588,9 +7574,7 @@ impl RevisionedQueryDatabase {
                                                     interner: &parsed.interner,
                                                     import_sites: &parsed.import_sites,
                                                     locals: BTreeMap::new(),
-                                                    producer: crate::StableProducerId::Definition(
-                                                        const_identity.key.clone(),
-                                                    ),
+                                                    producer: const_producer.clone(),
                                                     canonical_arguments:
                                                         crate::CanonicalArguments::default(),
                                                     anonymous_sites: &parsed.anonymous_sites,
@@ -7599,6 +7583,20 @@ impl RevisionedQueryDatabase {
                                                 };
                                                 evaluator.eval(&parsed.declaration.init)
                                             };
+                                            // RUE-1089 Theme 5: fail the const
+                                            // producer terminal BEFORE it publishes
+                                            // if any anonymous nominal it minted
+                                            // diverges from the transported anchor
+                                            // table.
+                                            let result = result.and_then(|value| {
+                                                validate_transported_anchor_authority(
+                                                    &const_producer,
+                                                    &provider.anonymous_nominals,
+                                                    &parsed.anonymous_sites,
+                                                )
+                                                .map_err(EvaluateSemanticConstError::failure)?;
+                                                Ok(value)
+                                            });
                                             match result {
                                                 Ok(EvaluatedSemanticConst::Module(target)) => {
                                                     if parsed.declaration.ty.is_some() {
@@ -8088,7 +8086,7 @@ impl RevisionedQueryDatabase {
                                                     interner: &parsed.interner,
                                                     import_sites: &parsed.import_sites,
                                                     locals,
-                                                    producer,
+                                                    producer: producer.clone(),
                                                     canonical_arguments,
                                                     anonymous_sites: &parsed.anonymous_sites,
                                                     next_call: 0,
@@ -8096,6 +8094,21 @@ impl RevisionedQueryDatabase {
                                                 };
                                                 evaluator.eval(&parsed.expression)
                                             };
+                                            // RUE-1089 Theme 5: fail the producer
+                                            // terminal BEFORE it publishes if any
+                                            // anonymous nominal it minted diverges
+                                            // from the transported anchor table, so
+                                            // no nominal/member/alias/cache entry is
+                                            // published from a corrupt table.
+                                            let result = result.and_then(|value| {
+                                                validate_transported_anchor_authority(
+                                                    &producer,
+                                                    &provider.anonymous_nominals,
+                                                    &parsed.anonymous_sites,
+                                                )
+                                                .map_err(EvaluateSemanticConstError::failure)?;
+                                                Ok(value)
+                                            });
                                             match result {
                                                 Ok(EvaluatedSemanticConst::Value(value))
                                                     if matches!(value.value, crate::durable_semantics::DurableConstValue::Type(_)) =>
@@ -10511,6 +10524,85 @@ mod tests {
             panic!("direct target-selected const failed: {keyed:?}")
         };
         assert_eq!(i128::from(retired), keyed);
+    }
+
+    /// RUE-1089 Theme 5 (fail-before-terminal). A divergent (wrong-but-present)
+    /// transported anchor must fail the PRODUCER terminal itself — the direct
+    /// `ComptimeCall` reduction of `Wrap(i32)` — with a typed E9000-class internal
+    /// diagnostic, and that terminal must publish NO anonymous nominal.
+    ///
+    /// Before the fix the divergent anchor rode through the producer terminal as a
+    /// successful `ComptimeCall` projection carrying the (divergent) Wrap nominal,
+    /// and only outer materialization noticed the mismatch. Asserting the terminal
+    /// value directly gives this test teeth against that pre-fix ordering: a
+    /// `ComptimeCall` projection here (rather than a `Failure`) is exactly the
+    /// transiently-wrong terminal the cut forbids.
+    #[test]
+    fn divergent_anchor_fails_the_producer_comptime_terminal_directly() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::semantic_query_nucleus::{
+            ComptimeCallQueryKey, SemanticNucleusFailure as Failure, SemanticNucleusKey as Key,
+            SemanticNucleusValue as V,
+        };
+
+        // The Wrap repro carrying the divergence marker inside the producer body,
+        // so the reparsed `Wrap` fragment drives the resolve-time divergent-anchor
+        // injection (see `resolve_anonymous_anchor`).
+        let program = "fn Option(comptime T: type) -> type { enum { Some(T), None } }\n\
+             fn Wrap(comptime T: type) -> type {\n\
+                 // __RUE1089_FAULT_DIVERGE__\n\
+                 struct {\n\
+                     inner: Option(T),\n\
+                     fn get_or(self, d: T) -> T {\n\
+                         let O = Option(T);\n\
+                         match self.inner { O.Some(v) => v, O.None => d }\n\
+                     }\n\
+                 }\n\
+             }\n\
+             fn main() -> i32 { let W = Wrap(i32); let O = Option(i32); let w: W = W { inner: O.Some(42) }; w.get_or(0) }";
+        let source = source_snapshot(&[(1, "/main.rue", "main.rue", program)], 1);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let value = request_semantic_nucleus(
+            &database,
+            revision,
+            Key::ComptimeCall(ComptimeCallQueryKey {
+                declaration: crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration: declaration_candidate(
+                        &database,
+                        revision,
+                        &module,
+                        Category::Function,
+                        "Wrap",
+                    ),
+                    configuration: semantic_configuration(),
+                },
+                type_arguments: Arc::from([(
+                    Arc::from("T"),
+                    crate::durable_semantics::DurableType::I32,
+                )]),
+                value_arguments: Arc::from([]),
+            }),
+        );
+        // The producer terminal IS the typed E9000-class internal diagnostic — not
+        // a `ComptimeCall` projection (which would necessarily carry the divergent
+        // published nominal). A `Failure` value carries no anonymous nominals, so
+        // this is also the zero-publication assertion.
+        match value {
+            V::Failure(Failure::Diagnostic(rue_error::ErrorKind::InternalError(_))) => {}
+            V::ComptimeCall(_) => panic!(
+                "divergent anchor published a ComptimeCall producer terminal — the transiently \
+                 wrong terminal the fail-before-terminal cut forbids"
+            ),
+            other => panic!(
+                "divergent anchor must fail the Wrap producer terminal with an E9000 internal \
+                 diagnostic, got: {other:?}"
+            ),
+        }
     }
 
     #[test]
