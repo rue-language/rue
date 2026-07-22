@@ -5247,9 +5247,10 @@ impl CompilerSession {
                 // (`f<T>` -> `f<Wrap<T>>` -> `f<Wrap<Wrap<T>>>` -> ...) accrue
                 // depth and eventually exceed the budget.
                 //
-                // All state is re-initialized per `'closure` restart, so the map
-                // is simply recomputed from scratch each time an anonymous
-                // representative changes; no cross-restart carry is required.
+                // The map is built once for this single body pass. Producer-
+                // nominal identity is exact (RUE-1089), so there is no
+                // representative-change restart that would require recomputing or
+                // carrying it across iterations.
                 let mut instance_depth: BTreeMap<crate::FunctionInstanceKey, usize> =
                     roots.iter().map(|root| (root.clone(), 0usize)).collect();
                 let record_depth =
