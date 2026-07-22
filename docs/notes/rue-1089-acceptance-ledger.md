@@ -95,3 +95,43 @@ appears only when the transported table is genuinely corrupt (criterion 7).
 | Generic struct method declaring a nested anon **struct** | compiles, exit 42 | unchanged |
 | Generic struct with anon-enum field, method never reaches it | compiles, exit 7 | unchanged |
 | **Generic struct method matching its anon-enum field** (Wrap) | **E9000 fail-closed** | **compiles, exit 42** |
+
+## Review-response revision (adversarial re-review themes)
+
+This section records the acceptance-relevant test changes made while addressing
+the four architectural review themes. Only the themes verified in this revision
+are listed; see the PR review report for per-theme status and the themes still
+open (single anchor authority, bare-intrinsic `?` via ComptimeCall, transport
+validate-once, and the digest-collision registry).
+
+- **Theme 6 — macOS execution guards.**
+  `wrap_single_nominal_identity_executes_to_the_payload`,
+  `fault_probe_compiles_and_runs_cleanly_without_a_marker`, and
+  `evaluator_correspondence_two_same_kind_sites_do_not_swap` now gate the
+  *execution* of the default `x86-64-linux` ELF behind
+  `cfg!(all(target_os = "linux", target_arch = "x86_64"))` (the predicate
+  `wrap_payload_executes_on_both_backend_targets` already used), keeping their
+  semantic/compile/link assertions unconditional. On macOS they now compile and
+  link the output without running a Linux binary.
+
+- **Theme 2 — representative deletion.** `AnonymousNominalIdentitySet` and the
+  compiler-side `CanonicalAnonymousNominalAssociation` are gone;
+  `SemaOutput::anonymous_nominal_identities_by_type` is now a direct
+  `Type -> AnonymousNominalKey`. The degenerate `canonical_anonymous_aliases`
+  singleton map, alias insertions, stable-min selection, and the flatten
+  consumers are removed. No acceptance criterion outcome changes; determinism is
+  preserved (retained via the direct-key sort in `one_body.rs`). Proven by the
+  criterion-4 cold/warm/fresh parity tests and the full spec suite.
+
+- **Theme 4a — FileId-independent anonymous symbols.** NEW unit test
+  `anonymous_symbols_are_stable_across_permuted_file_ids` (compiler): the same
+  single-file logical program (same path) presented at `FileId(0)` vs
+  `FileId(7)` must emit byte-identical `__anon_*` symbols. The digest now hashes
+  the canonical logical module path (via `Sema::symbol_paths`) instead of the
+  request-local numeric `FileId`. The test was confirmed to fail when the
+  component is reverted to the numeric FileId.
+
+Verification for this revision (Linux x86-64 host): `scripts/rue unit air`
+(565), `scripts/rue unit compiler` (686, incl. `producer_nominal` 13 with the
+Wrap→42 execution), `scripts/rue spec` (2173), clippy clean for `rue-air` and
+`rue-compiler`.
