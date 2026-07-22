@@ -3168,17 +3168,17 @@ fn main() -> i32 {
 "#,
         )
         .unwrap();
-        let identities = output
+        let identity = output
             .anonymous_nominal_identities_by_type
             .values()
             .next()
             .unwrap();
         assert_eq!(
-            identities.representative.arguments.types.as_ref(),
+            identity.arguments.types.as_ref(),
             &[crate::TypeInstanceKey::I64, crate::TypeInstanceKey::I32]
         );
         assert_eq!(
-            identities.representative.arguments.values.as_ref(),
+            identity.arguments.values.as_ref(),
             &[
                 crate::CanonicalArgumentValue::Integer(2),
                 crate::CanonicalArgumentValue::Bool(true),

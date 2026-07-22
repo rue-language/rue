@@ -358,20 +358,17 @@ fn produced_anonymous_nominals(
     sema: &BodySema<'_>,
 ) -> Result<Arc<[SemanticProducedAnonymousNominal]>, crate::SemanticBodyExportFailure> {
     let mut identities = sema
-        .canonical_anonymous_aliases
+        .canonical_anonymous_types
         .iter()
-        .flat_map(|(ty, aliases)| {
-            aliases
-                .iter()
-                .filter(|identity| {
-                    !sema
-                        .one_body_initial_anonymous_identities
-                        .contains(*identity)
-                })
-                .cloned()
-                .map(|identity| (*ty, identity))
+        .filter(|(_, identity)| {
+            !sema
+                .one_body_initial_anonymous_identities
+                .contains(*identity)
         })
+        .map(|(ty, identity)| (*ty, identity.clone()))
         .collect::<Vec<_>>();
+    // Deterministic total order over the direct producer keys so the exported
+    // nominal stream never depends on `HashMap` iteration order.
     identities.sort_by(|(_, left), (_, right)| BodySema::anonymous_key_cmp(left, right));
 
     identities
@@ -842,14 +839,14 @@ pub(super) fn analyze_one_body(
         return interruption_outcome(interruption);
     }
     sema.one_body_initial_anonymous_identities = sema
-        .canonical_anonymous_aliases
+        .canonical_anonymous_types
         .values()
-        .flat_map(|aliases| aliases.iter().cloned())
         .filter(|identity| {
             sema.one_body_requested_producer
                 .as_ref()
                 .is_none_or(|producer| &identity.producer != producer)
         })
+        .cloned()
         .collect();
     sema.one_body_error_recovery = true;
     sema.one_body_recovered_errors.clear();
@@ -1146,11 +1143,8 @@ fn analyze_anonymous_member(
     if let Some(interruption) = interruption {
         return interruption_outcome(interruption);
     }
-    sema.one_body_initial_anonymous_identities = sema
-        .canonical_anonymous_aliases
-        .values()
-        .flat_map(|aliases| aliases.iter().cloned())
-        .collect();
+    sema.one_body_initial_anonymous_identities =
+        sema.canonical_anonymous_types.values().cloned().collect();
     sema.one_body_error_recovery = true;
     sema.one_body_recovered_errors.clear();
     sema.one_body_inference_failure_incomplete = false;

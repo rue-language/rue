@@ -1948,23 +1948,9 @@ fn install_stable_identity_endpoints<D: super::DeclarationPhase>(
             .iter()
             .map(|(ty, key)| Ok((*ty, remap(key)?)))
             .collect::<Result<_, crate::SemanticStableResolutionFailure>>()?;
-        let canonical_anonymous_aliases = sema
-            .canonical_anonymous_aliases
-            .iter()
-            .map(|(ty, aliases)| {
-                Ok((
-                    *ty,
-                    aliases
-                        .iter()
-                        .map(remap)
-                        .collect::<Result<_, crate::SemanticStableResolutionFailure>>()?,
-                ))
-            })
-            .collect::<Result<_, crate::SemanticStableResolutionFailure>>()?;
         sema.anon_struct_identities = anon_struct_identities;
         sema.anon_enum_identities = anon_enum_identities;
         sema.canonical_anonymous_types = canonical_anonymous_types;
-        sema.canonical_anonymous_aliases = canonical_anonymous_aliases;
     }
     sema.stable_definition_tokens = definition_tokens;
     sema.stable_definition_endpoints = definition_endpoints;

@@ -574,11 +574,7 @@ pub(crate) fn import_staged_body(
                         )?)
                     }
                 };
-                if !sema
-                    .canonical_anonymous_aliases
-                    .get(&ty)
-                    .is_some_and(|aliases| aliases.contains(identity))
-                {
+                if sema.canonical_anonymous_types.get(&ty) != Some(identity) {
                     return Err(BF::StableResolution(
                         crate::SemanticStableResolutionFailure::WrongKind,
                     ));
@@ -1198,27 +1194,7 @@ fn finalize_function_body_analysis(
             .canonical_anonymous_types
             .iter()
             .filter(|(ty, _)| active_aggregate_types.contains(ty))
-            .map(|(ty, _representative)| {
-                let mut aliases = sema
-                    .canonical_anonymous_aliases
-                    .get(ty)
-                    .expect("every anonymous representative must retain its aliases")
-                    .iter()
-                    .cloned()
-                    .collect::<Vec<_>>();
-                aliases.sort_by(BodySema::anonymous_key_cmp);
-                let representative = aliases
-                    .first()
-                    .expect("every anonymous type must retain its representative")
-                    .clone();
-                (
-                    *ty,
-                    crate::AnonymousNominalIdentitySet {
-                        representative,
-                        aliases: aliases.into(),
-                    },
-                )
-            })
+            .map(|(ty, identity)| (*ty, identity.clone()))
             .collect(),
         aggregate_type_identities_by_type,
         body_analysis_work: sema.body_analysis_work,

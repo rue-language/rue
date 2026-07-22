@@ -32,12 +32,6 @@ pub(crate) struct PreparedDurableAnonymousBodyCandidate {
     pub body: rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>,
 }
 
-#[derive(Debug, Clone)]
-struct CanonicalAnonymousNominalAssociation {
-    representative: crate::AnonymousNominalKey,
-    aliases: Arc<[crate::AnonymousNominalKey]>,
-}
-
 fn fold_body_import_work(durable: &mut crate::DurableBodyWork, body: BodyAnalysisWork) {
     durable.import_attempts += body.ordinary_body_import_attempts;
     durable.import_successes += body.ordinary_body_import_successes;
@@ -541,7 +535,7 @@ pub struct CanonicalSemanticOutput {
     /// Request-independent anonymous nominal identities. The AIR issuer tokens
     /// have already been projected through `body_owner_issuer`; no live pool or
     /// issuer identity crosses this retention boundary.
-    anonymous_nominal_associations: Arc<[CanonicalAnonymousNominalAssociation]>,
+    anonymous_nominal_associations: Arc<[crate::AnonymousNominalKey]>,
     body_owner_issuer: BoundDefinitionSet,
     durable_ordinary_body_payloads: Arc<[crate::DurableOrdinaryBodyPayload]>,
     durable_specialized_body_payloads: Arc<[crate::DurableSpecializedBodyPayload]>,
@@ -611,14 +605,9 @@ impl CanonicalSemanticOutput {
         record!("functions", &self.functions);
         record!("type_pool", type_pool);
         record!("bound_definitions", &self.bound_definitions);
-        let anonymous_nominal_associations = self
-            .anonymous_nominal_associations
-            .iter()
-            .map(|association| (&association.representative, &association.aliases))
-            .collect::<Vec<_>>();
         record!(
             "anonymous_nominal_associations",
-            anonymous_nominal_associations
+            &self.anonymous_nominal_associations
         );
         record!("strings", &self.strings);
         record!("warnings", &self.warnings);
@@ -2476,21 +2465,8 @@ fn finish_canonical_analysis_with(
     let anonymous_nominal_associations = sema_output
         .anonymous_nominal_identities_by_type
         .values()
-        .map(|identities| {
-            let representative = project_anonymous_nominal_key(
-                &identities.representative,
-                merged,
-                &authoritative_definitions,
-            )?;
-            let aliases = identities
-                .aliases
-                .iter()
-                .map(|key| project_anonymous_nominal_key(key, merged, &authoritative_definitions))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(CanonicalAnonymousNominalAssociation {
-                representative,
-                aliases: aliases.into(),
-            })
+        .map(|identity| {
+            project_anonymous_nominal_key(identity, merged, &authoritative_definitions)
         })
         .collect::<Result<Vec<_>, rue_air::SemanticStableResolutionFailure>>();
     let mut anonymous_nominal_associations = match anonymous_nominal_associations {
@@ -2519,19 +2495,10 @@ fn finish_canonical_analysis_with(
             ));
         }
     };
-    anonymous_nominal_associations.sort_by(|left, right| {
-        left.representative
-            .cmp(&right.representative)
-            .then_with(|| left.aliases.cmp(&right.aliases))
-    });
-    for association in &anonymous_nominal_associations {
-        debug_assert_eq!(
-            association.aliases.first(),
-            Some(&association.representative),
-            "AIR must expose the stable-min representative first"
-        );
-    }
-    let anonymous_nominal_associations: Arc<[CanonicalAnonymousNominalAssociation]> =
+    // Deterministic order over the direct producer keys so the retained
+    // artifact never depends on `HashMap` iteration order (ADR-0066).
+    anonymous_nominal_associations.sort();
+    let anonymous_nominal_associations: Arc<[crate::AnonymousNominalKey]> =
         anonymous_nominal_associations.into();
     let analyzed_body_owners = sema_output.analyzed_body_owners.clone();
     let body_named_dependencies = sema_output.body_named_dependencies.clone();

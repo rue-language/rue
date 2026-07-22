@@ -302,10 +302,6 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     /// bridge used while recursively canonicalizing type arguments; retained
     /// keys never contain the live `Type` values used as lookup keys here.
     pub(crate) canonical_anonymous_types: HashMap<Type, anon_structs::IssuedAnonymousNominalKey>,
-    /// Every producer identity which is structurally represented by a live
-    /// anonymous type. The set always contains the representative above.
-    pub(crate) canonical_anonymous_aliases:
-        HashMap<Type, std::collections::BTreeSet<anon_structs::IssuedAnonymousNominalKey>>,
     /// Canonical producer currently issuing identities during body analysis.
     /// Entry-point wrappers scope this value around the shared body engine.
     pub(crate) active_anonymous_producer: Option<(
@@ -502,7 +498,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             anonymous_struct_ids,
             anonymous_enum_ids,
             canonical_anonymous_types,
-            canonical_anonymous_aliases,
             active_anonymous_producer,
             body_analysis_work,
             analyzed_body_owners,
@@ -581,7 +576,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             anonymous_struct_ids,
             anonymous_enum_ids,
             canonical_anonymous_types,
-            canonical_anonymous_aliases,
             active_anonymous_producer,
             body_analysis_work,
             analyzed_body_owners,
@@ -1092,7 +1086,6 @@ impl<'a> Sema<'a> {
             anonymous_struct_ids: HashSet::new(),
             anonymous_enum_ids: HashSet::new(),
             canonical_anonymous_types: HashMap::new(),
-            canonical_anonymous_aliases: HashMap::new(),
             active_anonymous_producer: None,
             body_analysis_work: BodyAnalysisWork::default(),
             analyzed_body_owners: Vec::new(),
