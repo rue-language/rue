@@ -822,6 +822,42 @@ impl CompilerSession {
     }
 }
 
+/// Drive this session's pipeline through the pre-link boundary: RIR, semantic
+/// analysis, CFG lowering, code generation, and object-file creation — but NOT
+/// linking. Returns the total number of generated object bytes so a caller can
+/// keep the result alive without depending on link availability.
+///
+/// This is the exact pre-link interval the RUE-1086 scaling-bench runner times
+/// (the ~45 ms Caldera target is a pre-link number). It shares the RIR and
+/// semantic query terminals with [`compile_with_session`], so calling it after a
+/// `semantic()` reuses the cached semantic result and times only the backend
+/// tail through object generation.
+pub(crate) fn pre_link_object_bytes_with_session(
+    session: &mut CompilerSession,
+    options: &CompileOptions,
+) -> MultiErrorResult<usize> {
+    let _span = info_span!("compile_pipeline_pre_link").entered();
+    let rir = {
+        let _span = info_span!("semantic_astgen").entered();
+        session.canonical_rir()?
+    };
+    let semantic = session.canonical_semantic(options)?;
+    let foreign_symbols =
+        crate::backend::collect_foreign_symbols(rir.rir(), rir.semantic_symbols().interner());
+    let export_symbols =
+        crate::backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
+    let objects = crate::backend::generate_pre_link_objects(
+        semantic.functions(),
+        semantic.type_pool(),
+        semantic.strings(),
+        rir.semantic_symbols().interner(),
+        options,
+        &foreign_symbols,
+        &export_symbols,
+    )?;
+    Ok(objects.iter().map(|object| object.len()).sum())
+}
+
 fn compile_snapshot_impl(
     snapshot: &SourceSnapshot,
     options: &CompileOptions,

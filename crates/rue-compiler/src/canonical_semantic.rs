@@ -1743,7 +1743,7 @@ pub(crate) fn analyze_body_query(
     work.shells_prepared += shell_records.len();
     drop(prepare_span);
     let project_span = info_span!("body_project_declarations").entered();
-    let (projected, _) = match crate::project_durable_declaration_semantics(
+    let (projected, projection_work) = match crate::project_durable_declaration_semantics(
         merged,
         &provisional,
         &shell_records,
@@ -1770,10 +1770,17 @@ pub(crate) fn analyze_body_query(
             ));
         }
     };
-    // Project-stage source: declaration and anonymous-nominal semantics this
-    // stage actually projected. Charged before install, so a body that fails to
-    // install still records the projection work it performed.
-    work.projections_performed += projected.len() + projected_anonymous.len();
+    // Project-stage source: the durable declaration records the projection join
+    // actually traversed (`DurableSemanticProjectionWork::durable_records_visited`,
+    // the value the projector returns and previously discarded), plus the
+    // anonymous-nominal exports the anonymous projector produced (it exposes no
+    // work struct, so its result cardinality is the only available measure).
+    // Sourcing the declaration term from the projector's recorded work rather
+    // than `projected.len()` means a projection shortcut that visits fewer
+    // records — e.g. a shared base that skips already-projected declarations —
+    // drops this counter even if the exported slice length is unchanged.
+    work.projections_performed +=
+        projection_work.durable_records_visited + projected_anonymous.len();
     drop(project_span);
     let install_span = info_span!("body_install_declarations").entered();
     let bound = match shells
@@ -1787,10 +1794,14 @@ pub(crate) fn analyze_body_query(
             ));
         }
     };
-    // Install-stage source: declaration semantics this stage actually installed.
-    // Charged only after the install completes, never on a prepare/project
-    // failure path, so the counter records performed installation work only.
-    work.semantics_installed += projected.len();
+    // Install-stage source: the durable payloads the install stage recorded that
+    // it installed (`DeclarationBindingWork::durable_payloads_installed`), read
+    // back from the bound manifest's own work rather than the projected slice
+    // length. Charged only after the install completes, never on a
+    // prepare/project failure path, so the counter records performed
+    // installation work only. An install shortcut that reuses a shared bound
+    // base and installs fewer payloads therefore drops this counter.
+    work.semantics_installed += bound.binding_work().durable_payloads_installed;
     let manifest = bound.binding_manifest();
     let definitions = match issue_bound_definitions(
         merged,
@@ -1834,9 +1845,11 @@ pub(crate) fn analyze_body_query(
         }
     };
     let semantic_definition_endpoints = definitions.semantic_definition_endpoints();
+    let semantic_module_endpoints = definitions.semantic_module_endpoints(merged);
+    let semantic_module_endpoints_installed = semantic_module_endpoints.len();
     let bound = match bound.install_stable_identity_endpoints(
         &semantic_definition_endpoints,
-        &definitions.semantic_module_endpoints(merged),
+        &semantic_module_endpoints,
     ) {
         Ok(bound) => bound,
         Err(failure) => {
@@ -1846,11 +1859,15 @@ pub(crate) fn analyze_body_query(
             ));
         }
     };
-    // Endpoint-stage source: body-owner and stable-identity endpoints this stage
-    // actually installed. Only reached after a successful install, isolating
-    // endpoint traversal work from the projection/install terms.
-    work.endpoints_installed +=
-        body_owner_endpoints_installed + semantic_definition_endpoints.len();
+    // Endpoint-stage source: every endpoint this stage actually installed — the
+    // body-owner endpoints, the stable definition endpoints, AND the module
+    // endpoints passed to `install_stable_identity_endpoints` (previously
+    // omitted from the counter even though the stage traverses and validates
+    // them). Only reached after a successful install, isolating endpoint
+    // traversal work from the projection/install terms.
+    work.endpoints_installed += body_owner_endpoints_installed
+        + semantic_definition_endpoints.len()
+        + semantic_module_endpoints_installed;
     drop(install_span);
     let analyze_span = info_span!("body_analyze").entered();
     let outcome = bound.analyze_one_body_instance(

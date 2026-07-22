@@ -83,6 +83,40 @@ pub(crate) fn compile_backend(
     // an additional C-ABI entry thunk object exposing that name globally.
     export_symbols: &[String],
 ) -> MultiErrorResult<CompileOutput> {
+    let object_files = generate_pre_link_objects(
+        functions,
+        type_pool,
+        strings,
+        interner,
+        options,
+        foreign_symbols,
+        export_symbols,
+    )?;
+
+    // Link to executable
+    match &options.linker {
+        LinkerMode::Internal => link_internal_with_warnings(options, &object_files, warnings),
+        LinkerMode::System(linker_cmd) => {
+            link_system_with_warnings(options, &object_files, linker_cmd, warnings)
+        }
+    }
+}
+
+/// Everything the backend does *before* linking: main-function validation, CFG
+/// lowering, per-architecture code generation, and object-file creation with
+/// relocations. This is the pre-link boundary the RUE-1086 scaling-bench runner
+/// times as its `pre_link` interval; `compile_backend` calls it and then links
+/// the returned objects.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn generate_pre_link_objects(
+    functions: &[FunctionWithCfg],
+    type_pool: &FrozenTypeInternPool,
+    strings: &[String],
+    interner: &ThreadedRodeo,
+    options: &CompileOptions,
+    foreign_symbols: &[String],
+    export_symbols: &[String],
+) -> MultiErrorResult<Vec<Vec<u8>>> {
     // Check for main function
     let _main_fn = functions
         .iter()
@@ -145,13 +179,7 @@ pub(crate) fn compile_backend(
         export_symbols,
     ));
 
-    // Link to executable
-    match &options.linker {
-        LinkerMode::Internal => link_internal_with_warnings(options, &object_files, warnings),
-        LinkerMode::System(linker_cmd) => {
-            link_system_with_warnings(options, &object_files, linker_cmd, warnings)
-        }
-    }
+    Ok(object_files)
 }
 
 /// Generate x86-64 object files for all functions.
