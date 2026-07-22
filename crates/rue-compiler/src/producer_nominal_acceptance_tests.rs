@@ -324,6 +324,68 @@ fn main() -> i32 {
     );
 }
 
+/// Compile one single-file program whose only file is assigned an explicit,
+/// caller-chosen request-local `FileId` while keeping the same LOGICAL module
+/// identity (same path). This lets a test present the same logical program under
+/// different `FileId` assignments.
+fn semantic_at_root_file_id(
+    source: &str,
+    file_id: FileId,
+    logical_path: &str,
+    options: &CompileOptions,
+) -> Arc<CanonicalSemanticOutput> {
+    let physical: std::collections::HashMap<FileId, String> =
+        [(file_id, logical_path.to_owned())].into();
+    let logical = physical.clone();
+    let metadata =
+        SourceMetadata::new(file_id, physical, logical).expect("single-file metadata is valid");
+    let snapshot = SourceSnapshot::new(metadata, vec![(file_id, Arc::new(source.to_owned()))])
+        .expect("single-file snapshot is valid");
+    let mut session = CompilerSession::new();
+    session.update(&snapshot).into_result().expect("publish");
+    session
+        .canonical_semantic(options)
+        .expect("permuted-FileId program compiles")
+}
+
+/// Theme 4 (RUE-1089, ADR-0066). The stable anonymous-symbol digest hashes the
+/// LOGICAL module identity (its canonical path) rather than the request-local
+/// numeric `FileId`. Presenting the same logical program under different `FileId`
+/// assignments (as differing input orders or added/removed unrelated files do
+/// across sessions) must therefore emit byte-identical anonymous symbols.
+///
+/// Before the fix the digest relocated tokens through the numeric `FileId`
+/// endpoint, so the two presentations below (file at `FileId(0)` vs `FileId(7)`,
+/// same path) would have derived different `__anon_*` spellings — the exact
+/// cross-session instability the reviewer flagged.
+#[test]
+fn anonymous_symbols_are_stable_across_permuted_file_ids() {
+    let source = r#"
+fn Producer() -> type { struct { x: i32 } }
+fn Wrapper() -> type { enum { Some(i32), None } }
+fn main() -> i32 {
+    let T = Producer();
+    let t: T = T { x: 42 };
+    t.x
+}
+"#;
+    let options = CompileOptions::default();
+    let at_zero = semantic_at_root_file_id(source, FileId::new(0), "prog.rue", &options);
+    let at_seven = semantic_at_root_file_id(source, FileId::new(7), "prog.rue", &options);
+
+    let anon = anonymous_symbols(&at_zero);
+    assert!(
+        !anon.is_empty(),
+        "the permuted-FileId program must mint anonymous symbols to compare",
+    );
+    assert_eq!(
+        anon,
+        anonymous_symbols(&at_seven),
+        "anonymous symbols must be identical across permuted FileId assignments — the digest \
+         hashes the logical module identity, not the numeric FileId",
+    );
+}
+
 /// A WARM (incremental) compile of the acceptance program — reached after the
 /// session already compiled an unrelated prior revision — produces semantic
 /// output identical to a FRESH compile of the same program. This reuses the
