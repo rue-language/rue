@@ -14,36 +14,66 @@ filegroup(
 
 # Per-target runtime staticlibs are mapped into src/ so the compiler can embed
 # all supported runtimes and select the matching archive at link time.
+_RUNTIME_MAPPED_SRCS = {
+    "//crates/rue-runtime:rue-runtime-aarch64-apple-darwin": "src/librue_runtime-aarch64-apple-darwin.a",
+    "//crates/rue-runtime:rue-runtime-aarch64-unknown-linux-gnu": "src/librue_runtime-aarch64-unknown-linux-gnu.a",
+    "//crates/rue-runtime:rue-runtime-x86_64-unknown-linux-gnu": "src/librue_runtime-x86_64-unknown-linux-gnu.a",
+}
+
+_DEPS = [
+    "//crates/rue-air:rue-air",
+    "//crates/rue-builtins:rue-builtins",
+    "//crates/rue-cfg:rue-cfg",
+    "//crates/rue-codegen:rue-codegen",
+    "//crates/rue-error:rue-error",
+    "//crates/rue-lexer:rue-lexer",
+    "//crates/rue-linker:rue-linker",
+    "//crates/rue-parser:rue-parser",
+    "//crates/rue-query:rue-query",
+    "//crates/rue-rir:rue-rir",
+    "//crates/rue-runtime-abi:rue-runtime-abi",
+    "//crates/rue-span:rue-span",
+    "//crates/rue-target:rue-target",
+    "//third-party:annotate-snippets",
+    "//third-party:lasso",
+    "//third-party:libc",
+    "//third-party:rayon",
+    "//third-party:sha2",
+    "//third-party:serde",
+    "//third-party:serde_json",
+    "//third-party:tempfile",
+    "//third-party:tracing",
+]
+
+# The default library and `rue-compiler-test` target declare `scaling_matrix` as
+# a known cfg name (so the RUE-1086 scaling harness's matrix-only tests do not
+# trip `unexpected_cfgs` under `-Dwarnings`) but never SET it, so the heavy
+# 100/1k structural matrix is excluded from the fast unit suite.
 rue_crate(
     name = "rue-compiler",
-    mapped_srcs = {
-        "//crates/rue-runtime:rue-runtime-aarch64-apple-darwin": "src/librue_runtime-aarch64-apple-darwin.a",
-        "//crates/rue-runtime:rue-runtime-aarch64-unknown-linux-gnu": "src/librue_runtime-aarch64-unknown-linux-gnu.a",
-        "//crates/rue-runtime:rue-runtime-x86_64-unknown-linux-gnu": "src/librue_runtime-x86_64-unknown-linux-gnu.a",
-    },
-    deps = [
-        "//crates/rue-air:rue-air",
-        "//crates/rue-builtins:rue-builtins",
-        "//crates/rue-cfg:rue-cfg",
-        "//crates/rue-codegen:rue-codegen",
-        "//crates/rue-error:rue-error",
-        "//crates/rue-lexer:rue-lexer",
-        "//crates/rue-linker:rue-linker",
-        "//crates/rue-parser:rue-parser",
-        "//crates/rue-query:rue-query",
-        "//crates/rue-rir:rue-rir",
-        "//crates/rue-runtime-abi:rue-runtime-abi",
-        "//crates/rue-span:rue-span",
-        "//crates/rue-target:rue-target",
-        "//third-party:annotate-snippets",
-        "//third-party:lasso",
-        "//third-party:libc",
-        "//third-party:rayon",
-        "//third-party:sha2",
-        "//third-party:serde",
-        "//third-party:serde_json",
-        "//third-party:tempfile",
-        "//third-party:tracing",
+    mapped_srcs = _RUNTIME_MAPPED_SRCS,
+    deps = _DEPS,
+    rustc_flags = [
+        "--check-cfg=cfg(scaling_matrix)",
+        "--check-cfg=cfg(test)",
+    ],
+)
+
+# Dedicated heavy-matrix test target (Finding 6, RUE-1086). Compiling with
+# `--cfg=scaling_matrix` turns on the `#[cfg(scaling_matrix)]` 100/1k (opt-in
+# 10k via RUE_SCALING_LARGE=1) structural scaling tests that the default unit
+# target excludes. CI runs this as its own job, filtered to `scaling_matrix`, so
+# only the matrix cases execute here. Marking the CI check required in branch
+# protection is a maintainer action.
+rust_test(
+    name = "scaling-matrix-test",
+    srcs = glob(["src/**/*.rs"]),
+    mapped_srcs = _RUNTIME_MAPPED_SRCS,
+    deps = _DEPS,
+    rustc_flags = [
+        "--cfg=scaling_matrix",
+        "--check-cfg=cfg(scaling_matrix)",
+        "--check-cfg=cfg(test)",
     ],
 )
 

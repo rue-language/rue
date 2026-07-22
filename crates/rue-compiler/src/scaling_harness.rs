@@ -8,53 +8,97 @@
 //! binding/manifest/body counters that already exist on
 //! [`CanonicalSemanticWork`].
 //!
+//! Wall-time, allocation-count, and peak-memory measurement live in a *separate*
+//! opt-in binary, `//crates/rue-scaling-bench`, so they never mix with these
+//! counter assertions. See that crate's module docs for the reproducible runner
+//! command lines and the recorded-baseline provenance.
+//!
 //! # What it proves
 //!
 //! 1. Deterministic synthetic corpus varying reached-body count and
 //!    unrelated-declaration count independently.
 //! 2. Scaling rows (counter-based): fixed bodies / growing declarations, and
 //!    fixed declarations / growing bodies.
-//! 3. Two-revision invalidation rows asserted via counters and the warm-vs-fresh
-//!    oracle.
+//! 3. Two-revision invalidation rows asserted via counters and one shared
+//!    warm-vs-fresh parity oracle used by *every* edit row.
 //! 4. Specialization rows (breadth compiles, depth fails E1200), referencing the
 //!    canonical boundary unit tests rather than duplicating them.
-//! 5. A warm-vs-fresh oracle after every edit row.
-//! 6. Timing/allocation measurement kept in a *separate opt-in mode* that never
-//!    mixes with counter assertions.
+//! 5. A warm-vs-fresh parity oracle after every edit row.
 //!
-//! # Current reality and the expected-failure discipline
+//! # The two-envelope expected-failure discipline
 //!
 //! Per-body work is O(declarations) today (tracked by RUE-1090/RUE-1091): the
 //! demand body pipeline re-prepares, re-projects, and re-installs the whole
 //! declaration universe for every reached body. Rows that assert *flat* per-body
-//! work therefore cannot pass yet. They are recorded through a single mechanism
-//! ([`Row::flat_or_track`]) that:
+//! work therefore cannot pass yet. Each such row is recorded through a single
+//! two-envelope mechanism ([`Row::envelope`]) that asserts EITHER:
 //!
-//! * passes as a hard assertion the moment the measured value goes flat (the
-//!   repair landed), and
-//! * until then asserts the *documented known-bad witness* (per-body work still
-//!   growing) so an unrelated regression still fails loudly, and records a
+//! * **(a) the repaired target envelope** — the measured value at or below the
+//!   flat/linear/incremental target (within a tight tolerance). This is a hard
+//!   PASS. A repair *better* than the target still passes; the envelope never
+//!   panics on an improvement.
+//! * **(b) the documented unrepaired witness** — the measured value inside a
+//!   *tight* band around the structurally predicted known-bad shape (e.g. per
+//!   body prepare/install growing 1:1 with the declaration universe). This is a
 //!   tracked expected-failure naming its issue.
+//!
+//! Anything **worse** than the witness band (e.g. duplicate body analyses, or a
+//! warm recompute worse than a full fresh one), or **structurally between** the
+//! two envelopes (a partial repair that is neither flat nor the documented
+//! witness), FAILS the test so a human reconciles the row with the new reality.
+//! The witnesses are predicted from the corpus knobs, not copied from a prior
+//! run, so an unrelated regression that inflates the counters still fails loudly.
 //!
 //! Tracking issues, each named at its row:
 //!
 //! * **RUE-1089** — identity rows: per-body identity/lookup installation work
 //!   should be invariant to unrelated-declaration count.
 //! * **RUE-1091** — per-body shared-base / narrow-epoch repair: fixed bodies,
-//!   growing declarations should leave per-body install/project work unchanged.
+//!   growing declarations should leave per-body install/project work unchanged,
+//!   and a purely-unrelated declaration edit should invalidate no body.
 //! * **RUE-1090** — measurement gate: total declaration-context work should be
 //!   linear in reached bodies (fixed declarations), not quadratic.
 //!
-//! ## Recorded prediction (pre-implementation, 2026-07-21)
+//! # Stage-source counter provenance
 //!
-//! Hashed typed-key lookup plus producer-nominal machinery deletion will not
-//! materially reduce the O(bodies × declarations) per-body
-//! installation/projection/endpoint term (~62% of cold wall time at Caldera
-//! scale). Decision rule: after the identity cut lands, if the harness shows
-//! per-body install/project/endpoint work still increasing with
-//! unrelated-declaration count, the shared-base or narrow-epoch repair proceeds;
-//! an incidental wall-time improvement without flat per-body counters is not
-//! success.
+//! The per-body declaration-context counters are accrued INSIDE
+//! `analyze_body_query`, at each stage's own source, as the stage actually
+//! performs the work (see `canonical_semantic.rs`). The coordinator no longer
+//! charges them from the input slice lengths it happens to hold, and a body that
+//! fails before install is not charged for installation it never performed. A
+//! shortcut added inside any stage (a shared base that predeclares fewer shells,
+//! a projection that reuses cached exports) therefore drops the corresponding
+//! counter, and this harness observes it.
+//!
+//! # Reference host and recorded prediction
+//!
+//! The recorded structural baselines below were captured on the CI/dev host; the
+//! `//crates/rue-scaling-bench` runner prints `nproc`, total memory, and the
+//! commit hash at run time so any wall-time/allocation/memory baseline is
+//! attributable to a concrete host and revision. The frozen Caldera prediction
+//! (RUE-1083): base commit 586f50c cutover measured at commit aca4acb (release
+//! build, linux x64, 4-core dev container), ~85% of cold wall in per-body
+//! prepare/project/install via a 200-sample stack profile plus per-stage
+//! `--time-passes` spans; commands
+//! `scripts/rue-bin --target-platforms //platforms:release` and
+//! `RUE_STD_PATH=$PWD/std <rue> --time-passes examples/caldera/main.rue`. The
+//! ~45 ms pre-link target is an eventual reference-host goal, not a current gate.
+//!
+//! ## Recorded structural baseline (stage-sourced counters)
+//!
+//! Single-file corpus, no std import, so the declaration universe is exactly
+//! `reached_bodies + unrelated_decls + 1` (`main`) and `cold_bodies` is exactly
+//! `reached_bodies + 1`:
+//!
+//! ```text
+//!   bodies × decls | cold_bodies per_body_shells per_body_semantics shells_total
+//!     100 ×   100  |        101            201                201          20301
+//!    1000 ×   100  |       1001           1101               1101        1102101
+//! ```
+//!
+//! per-body prepare/install grow 1:1 with the universe (witness), and total
+//! declaration-context work is `(bodies+1)·(bodies+decls+1)` — quadratic, the
+//! RUE-1090 witness the gate reads.
 
 use crate::*;
 use std::sync::Arc;
@@ -117,10 +161,11 @@ impl Corpus {
 struct Measure {
     /// Cold reached-body analyses that paid the declaration-context cost.
     cold_bodies: usize,
-    /// Σ_body declaration-shell predeclarations (the per-body "prepare" term).
+    /// Σ_body declaration-shell predeclarations (the per-body "prepare" term),
+    /// sourced from the prepare stage's own output.
     shells_total: usize,
-    /// Σ_body declaration semantics projected + installed (the "install/project"
-    /// term).
+    /// Σ_body declaration semantics installed (the "install" term), sourced from
+    /// the install stage, charged only when the install actually ran.
     semantics_total: usize,
     /// AIR instructions produced — genuine per-body body work, independent of the
     /// unrelated-declaration universe.
@@ -154,99 +199,80 @@ impl Measure {
         self.shells_total / self.cold_bodies.max(1)
     }
 
-    /// Per-body declaration "install/project" work. Flat under the same repair.
+    /// Per-body declaration "install" work. Flat under the same repair.
     fn per_body_semantics(&self) -> usize {
         self.semantics_total / self.cold_bodies.max(1)
     }
 }
 
 // ---------------------------------------------------------------------------
-// Expected-failure discipline (single consistent mechanism)
+// Two-envelope expected-failure discipline (single consistent mechanism)
 // ---------------------------------------------------------------------------
 
 /// Outcome of one scaling/identity row.
 #[derive(Debug, Clone)]
 enum Row {
-    /// The ideal (flat/linear) relationship holds today — a hard pass.
+    /// The repaired target envelope holds today — a hard pass.
     Met { label: String },
-    /// The ideal does not hold yet; the documented known-bad witness holds
-    /// instead and the row is a tracked expected-failure.
+    /// The target does not hold yet; the documented known-bad witness holds
+    /// within a tight band and the row is a tracked expected-failure.
     Tracked { label: String, issue: &'static str },
 }
 
 impl Row {
-    /// Assert `growing`'s per-body work equals `baseline`'s (the flat, repaired
-    /// shape). If not, assert the *known-bad witness* — per-body work strictly
-    /// grew — and record a tracked expected-failure for `issue`.
+    /// Lower-is-better two-envelope check for one tracked row.
     ///
-    /// This flips to a hard pass automatically once the repair lands, because the
-    /// equality branch is taken the moment per-body work goes flat.
-    fn flat_or_track(
+    /// Asserts the measured value is EITHER within the repaired target envelope
+    /// (`measured <= target + target_tol` — a hard PASS, including any repair
+    /// strictly better than the target) OR inside the tight documented witness
+    /// band (`[witness - witness_tol, witness + witness_tol]` — a tracked XFAIL
+    /// naming `issue`). Anything worse than the witness band, or structurally
+    /// between the two envelopes, panics: the row must be reconciled with the
+    /// new reality before it can be edited.
+    fn envelope(
         label: impl Into<String>,
-        baseline: usize,
-        growing: usize,
+        measured: usize,
+        target: usize,
+        target_tol: usize,
+        witness: usize,
+        witness_tol: usize,
         issue: &'static str,
     ) -> Row {
         let label = label.into();
-        if growing == baseline {
-            Row::Met { label }
-        } else {
-            assert!(
-                growing > baseline,
-                "{label}: per-body work must be flat (repaired) or growing \
-                 (known-bad, {issue}); got growing={growing} < baseline={baseline}, \
-                 which is neither — investigate before editing this row"
-            );
-            Row::Tracked { label, issue }
+        if measured <= target.saturating_add(target_tol) {
+            return Row::Met { label };
         }
+        let witness_lo = witness.saturating_sub(witness_tol);
+        let witness_hi = witness.saturating_add(witness_tol);
+        assert!(
+            (witness_lo..=witness_hi).contains(&measured),
+            "{label}: measured {measured} is neither within the repaired target \
+             envelope (<= {target}+{target_tol}) nor the documented {issue} \
+             witness band [{witness_lo}, {witness_hi}]. It is worse than the \
+             witness or a partial/unrecognized shape — reconcile this row with \
+             the current pipeline before editing it."
+        );
+        Row::Tracked { label, issue }
     }
 
-    /// Assert a warm (incremental) recompute stays within an `incremental_target`
-    /// cone — a hard pass, the repair landed — else record a tracked
-    /// expected-failure, first asserting the known-bad witness that warm is no
-    /// better than a full `fresh` recompute (so a *worse-than-full* regression
-    /// still fails loudly).
-    ///
-    /// This flips to a hard pass the moment the warm session stops recomputing
-    /// the whole body universe after a declaration-set change.
-    fn incremental_or_track(
-        label: impl Into<String>,
-        warm_recomputed: usize,
-        fresh_recomputed: usize,
-        incremental_target: usize,
-        issue: &'static str,
-    ) -> Row {
-        let label = label.into();
-        if warm_recomputed <= incremental_target {
-            Row::Met { label }
-        } else {
-            assert!(
-                warm_recomputed <= fresh_recomputed,
-                "{label}: warm recompute {warm_recomputed} exceeds a full fresh \
-                 recompute {fresh_recomputed} — that is worse than no reuse at all, \
-                 a real regression, not the known-bad {issue} shape"
-            );
-            Row::Tracked { label, issue }
-        }
-    }
-
-    /// Assert `measured` is within `tolerance` of the `expected` linear target —
-    /// a hard pass — else record a tracked expected-failure for `issue`.
-    fn linear_or_track(
+    /// Hard linear invariant: `measured` must be within `tolerance` of the linear
+    /// `expected` target. There is no known-bad witness — a non-linear result is
+    /// a real regression, so this panics rather than tracking.
+    fn linear_hard(
         label: impl Into<String>,
         measured: usize,
         expected: usize,
         tolerance: usize,
-        issue: &'static str,
     ) -> Row {
         let label = label.into();
         let low = expected.saturating_sub(tolerance);
-        let high = expected + tolerance;
-        if (low..=high).contains(&measured) {
-            Row::Met { label }
-        } else {
-            Row::Tracked { label, issue }
-        }
+        let high = expected.saturating_add(tolerance);
+        assert!(
+            (low..=high).contains(&measured),
+            "{label}: measured {measured} is not within the linear target \
+             [{low}, {high}] — a non-linear body-analysis count is a regression"
+        );
+        Row::Met { label }
     }
 
     fn describe(&self) -> String {
@@ -260,14 +286,14 @@ impl Row {
 /// Collects row outcomes and prints one report block. The harness stays green
 /// with expected-failures marked; a `Tracked` row is not a test failure.
 struct Report {
-    title: &'static str,
+    title: String,
     rows: Vec<Row>,
 }
 
 impl Report {
-    fn new(title: &'static str) -> Self {
+    fn new(title: impl Into<String>) -> Self {
         Self {
-            title,
+            title: title.into(),
             rows: Vec::new(),
         }
     }
@@ -285,18 +311,79 @@ impl Report {
 }
 
 // ---------------------------------------------------------------------------
-// CI vs bench sizing
+// Full-parity warm/fresh oracle (single shared helper)
 // ---------------------------------------------------------------------------
 
-/// The larger 10k-per-axis corpus runs only when `RUE_SCALING_LARGE=1`. CI runs
-/// the bounded 100/1k subset; the huge sizes stay behind this explicit flag so a
-/// normal `buck2 test` stays fast.
+/// Render a full-fidelity diagnostic string for a failed compile: every error in
+/// natural order, each with its kind, span, labels, notes, helps, and
+/// suggestions (the `Debug` of `CompileError` is the diagnostic presentation
+/// state). Comparing this warm-vs-fresh catches divergence in success/failure,
+/// diagnostic ordering, spans, and labels.
+fn render_diagnostics(errors: &CompileErrors) -> String {
+    errors
+        .iter()
+        .map(|error| format!("{error:?}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The one shared warm-vs-fresh oracle every edit row uses. Built on the exact
+/// semantic-parity machinery (`CanonicalSemanticOutput::unstable_parity_snapshot`
+/// — the same owned projection the in-tree cold-vs-reused differential compares),
+/// it asserts full parity between a warm (incremental) rev2 compile and a fresh
+/// rev2 compile:
+///
+/// * success vs failure agreement;
+/// * on success, the full parity snapshot: functions, strings, type pool, bound
+///   definitions, anonymous-nominal associations, every dependency surface,
+///   full warnings (kind/spans/labels/order/presentation), and durable status;
+/// * on failure, the full ordered diagnostic presentation.
+fn assert_warm_fresh_parity(
+    label: &str,
+    warm: &Result<Arc<CanonicalSemanticOutput>, CompileErrors>,
+    fresh: &Result<Arc<CanonicalSemanticOutput>, CompileErrors>,
+) {
+    match (warm, fresh) {
+        (Ok(warm), Ok(fresh)) => {
+            assert_eq!(
+                warm.unstable_parity_snapshot(),
+                fresh.unstable_parity_snapshot(),
+                "{label}: warm/fresh semantic parity snapshot diverged"
+            );
+        }
+        (Err(warm), Err(fresh)) => {
+            assert_eq!(
+                render_diagnostics(warm),
+                render_diagnostics(fresh),
+                "{label}: warm/fresh failure diagnostics diverged"
+            );
+        }
+        (Ok(_), Err(fresh)) => panic!(
+            "{label}: warm compiled but fresh failed:\n{}",
+            render_diagnostics(fresh)
+        ),
+        (Err(warm), Ok(_)) => panic!(
+            "{label}: warm failed but fresh compiled:\n{}",
+            render_diagnostics(warm)
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CI vs bench sizing (matrix mode only)
+// ---------------------------------------------------------------------------
+
+/// The larger 10k-per-axis corpus runs only when `RUE_SCALING_LARGE=1`. The
+/// dedicated matrix target runs the bounded 100/1k subset; the huge sizes stay
+/// behind this explicit flag.
+#[cfg(scaling_matrix)]
 fn large_sizes_enabled() -> bool {
     std::env::var_os("RUE_SCALING_LARGE").is_some_and(|v| v == "1")
 }
 
-/// The reached-body / declaration size ladder for the current mode.
-fn size_ladder() -> Vec<usize> {
+/// The reached-body / declaration size ladder for the matrix target.
+#[cfg(scaling_matrix)]
+fn matrix_size_ladder() -> Vec<usize> {
     if large_sizes_enabled() {
         vec![100, 1_000, 10_000]
     } else {
@@ -305,43 +392,50 @@ fn size_ladder() -> Vec<usize> {
 }
 
 // ---------------------------------------------------------------------------
-// Scaling rows
+// Scaling-row logic (shared by the small unit smoke and the heavy matrix)
 // ---------------------------------------------------------------------------
 
-#[test]
-fn scaling_fixed_bodies_growing_declarations() {
-    // Axis: unrelated declarations grow while reached bodies stay fixed. The
-    // ideal is that per-body install/project/prepare work is UNCHANGED — a body
-    // does not care how many declarations it never touches. Today it grows
-    // linearly with the declaration universe (RUE-1091 shared-base repair).
-    let bodies = 100;
-    let ladder = size_ladder();
+/// Axis: unrelated declarations grow while reached bodies stay fixed. The
+/// repaired target is that per-body install/project/prepare work is UNCHANGED —
+/// a body does not care how many declarations it never touches. The documented
+/// witness (RUE-1091) is per-body work growing 1:1 with the declaration
+/// universe: at `decls`, per-body work is `baseline_per_body + (decls -
+/// baseline_decls)`.
+fn run_fixed_bodies_growing_declarations(bodies: usize, ladder: &[usize]) {
     let baseline_decls = ladder[0];
-
     let baseline = Measure::cold(&Corpus::new(bodies, baseline_decls));
-    let mut report = Report::new("scaling: fixed bodies, growing declarations");
+    let mut report = Report::new(format!(
+        "scaling: fixed {bodies} bodies, growing declarations"
+    ));
 
     for &decls in ladder.iter().skip(1) {
         let grown = Measure::cold(&Corpus::new(bodies, decls));
+        let witness_delta = decls - baseline_decls;
 
-        report.push(Row::flat_or_track(
+        report.push(Row::envelope(
             format!(
                 "per-body prepare (shells) @ {bodies} bodies: {decls} decls={} vs {baseline_decls} decls={}",
                 grown.per_body_shells(),
                 baseline.per_body_shells()
             ),
-            baseline.per_body_shells(),
             grown.per_body_shells(),
+            baseline.per_body_shells(),
+            2,
+            baseline.per_body_shells() + witness_delta,
+            2,
             "RUE-1091",
         ));
-        report.push(Row::flat_or_track(
+        report.push(Row::envelope(
             format!(
-                "per-body install/project (semantics) @ {bodies} bodies: {decls} decls={} vs {baseline_decls} decls={}",
+                "per-body install (semantics) @ {bodies} bodies: {decls} decls={} vs {baseline_decls} decls={}",
                 grown.per_body_semantics(),
                 baseline.per_body_semantics()
             ),
-            baseline.per_body_semantics(),
             grown.per_body_semantics(),
+            baseline.per_body_semantics(),
+            2,
+            baseline.per_body_semantics() + witness_delta,
+            2,
             "RUE-1091",
         ));
 
@@ -356,28 +450,22 @@ fn scaling_fixed_bodies_growing_declarations() {
     report.emit();
 }
 
-#[test]
-fn scaling_fixed_declarations_growing_bodies() {
-    // Axis: reached bodies grow while unrelated declarations stay fixed.
-    //
-    // Hard invariant (holds today): the NUMBER of body analyses is linear in
-    // reached bodies — each reached body is analyzed exactly once. That is the
-    // `bodies_attempted` / `cold_bodies` count.
-    //
-    // Tracked (RUE-1090): TOTAL declaration-context work should also be linear in
-    // reached bodies, but today it is quadratic (each body re-installs the whole
-    // universe), so `shells_total` grows as bodies × (bodies + decls).
-    let decls = 100;
-    let ladder = size_ladder();
+/// Axis: reached bodies grow while unrelated declarations stay fixed.
+///
+/// Hard invariant (holds today): the NUMBER of body analyses is linear in
+/// reached bodies — each reached body is analyzed exactly once (`cold_bodies`).
+///
+/// Tracked (RUE-1090): TOTAL declaration-context work should also be linear in
+/// reached bodies, but today it is quadratic (each body re-installs the whole
+/// universe), so `shells_total` grows as `(bodies+1)·(bodies+decls+1)`. Strong
+/// invariant (Finding 5): total AIR body work stays linear in reached bodies.
+fn run_fixed_declarations_growing_bodies(decls: usize, ladder: &[usize]) {
     let base_bodies = ladder[0];
-
     let baseline = Measure::cold(&Corpus::new(base_bodies, decls));
-    let mut report = Report::new("scaling: fixed declarations, growing bodies");
+    let mut report = Report::new(format!(
+        "scaling: fixed {decls} declarations, growing bodies"
+    ));
 
-    // RUE-1090 gate baseline table: per-body counters at each corpus size. This
-    // is the measurement the RUE-1090 gate reads to decide whether per-body work
-    // went flat. `per_body_shells`/`per_body_semantics` are the O(declarations)
-    // term today; the gate flips when they stop rising with corpus size.
     eprintln!(
         "\n== RUE-1086 BASELINE (RUE-1090 gate): per-body declaration-context counters ==\n  \
          {:>6} bodies × {:>4} decls | cold_bodies={:>5} per_body_shells={:>5} \
@@ -396,27 +484,25 @@ fn scaling_fixed_declarations_growing_bodies() {
 
         eprintln!(
             "  {:>6} bodies × {:>4} decls | cold_bodies={:>5} per_body_shells={:>5} \
-             per_body_semantics={:>5} shells_total={:>9}",
+             per_body_semantics={:>5} shells_total={:>9} air={:>7}",
             bodies,
             decls,
             grown.cold_bodies,
             grown.per_body_shells(),
             grown.per_body_semantics(),
             grown.shells_total,
+            grown.air_instructions,
         );
 
         // Hard: analysis COUNT is linear in reached bodies (+1 for `main`).
-        let expected_cold = baseline.cold_bodies * factor;
-        let cold_tolerance = factor + 2;
-        report.push(Row::linear_or_track(
+        report.push(Row::linear_hard(
             format!(
                 "body-analysis count @ {decls} decls: {bodies} bodies cold={} (~{factor}x of {})",
                 grown.cold_bodies, baseline.cold_bodies
             ),
             grown.cold_bodies,
-            expected_cold,
-            cold_tolerance,
-            "RUE-1090",
+            baseline.cold_bodies * factor,
+            factor + 2,
         ));
         assert!(
             grown.cold_bodies >= bodies,
@@ -424,16 +510,37 @@ fn scaling_fixed_declarations_growing_bodies() {
             grown.cold_bodies
         );
 
-        // Tracked: total declaration-context work should be linear (factor x) but
-        // is quadratic today.
-        let expected_linear_total = baseline.shells_total * factor;
-        report.push(Row::flat_or_track(
+        // Hard (Finding 5): real per-body body work (AIR) is linear in reached
+        // bodies within a small tolerance. This is the genuine body work the
+        // per-body pipeline must do; only the declaration-context term is
+        // quadratic, so AIR must not be.
+        report.push(Row::linear_hard(
             format!(
-                "total declaration-context work @ {decls} decls: {bodies} bodies shells={} (linear target ~{expected_linear_total})",
+                "total AIR body work @ {decls} decls: {bodies} bodies air={} (linear ~{})",
+                grown.air_instructions,
+                baseline.air_instructions * factor
+            ),
+            grown.air_instructions,
+            baseline.air_instructions * factor,
+            baseline.air_instructions * factor / 20 + factor + 2,
+        ));
+
+        // Tracked (RUE-1090): total declaration-context work should be linear
+        // (factor x baseline) but is quadratic today. The witness is predicted
+        // structurally from the knobs: (bodies+1) reached analyses each
+        // traversing a (bodies+decls+1) universe.
+        let expected_linear_total = baseline.shells_total * factor;
+        let witness_total = (bodies + 1) * (bodies + decls + 1);
+        report.push(Row::envelope(
+            format!(
+                "total declaration-context work @ {decls} decls: {bodies} bodies shells={} (linear target ~{expected_linear_total}, witness ~{witness_total})",
                 grown.shells_total
             ),
-            expected_linear_total,
             grown.shells_total,
+            expected_linear_total,
+            expected_linear_total / 10,
+            witness_total,
+            bodies + decls + 1,
             "RUE-1090",
         ));
     }
@@ -441,28 +548,29 @@ fn scaling_fixed_declarations_growing_bodies() {
     report.emit();
 }
 
-#[test]
-fn identity_per_body_lookup_invariant_to_unrelated_declarations() {
-    // Identity rows (RUE-1089). The identity/lookup installation a body performs
-    // over the declaration universe should be invariant to declarations the body
-    // never references. Measured as per-body install/project work at a FIXED
-    // reached-body count across a growing declaration universe. Today the hashed
-    // typed-key lookup has not landed, so this per-body work still tracks the
-    // whole universe and the rows are tracked expected-failures.
-    let bodies = 50;
-    let mut report = Report::new("identity: per-body lookup invariant to unrelated declarations");
+/// Identity rows (RUE-1089). The identity/lookup installation a body performs
+/// over the declaration universe should be invariant to declarations the body
+/// never references. Measured as per-body install work at a FIXED reached-body
+/// count across a growing declaration universe.
+fn run_identity_invariant(bodies: usize, decl_ladder: &[usize]) {
+    let mut report = Report::new(format!(
+        "identity: per-body lookup invariant to unrelated declarations ({bodies} bodies)"
+    ));
 
     let baseline = Measure::cold(&Corpus::new(bodies, 0));
-    for &decls in &[bodies, 4 * bodies, 8 * bodies] {
+    for &decls in decl_ladder {
         let grown = Measure::cold(&Corpus::new(bodies, decls));
-        report.push(Row::flat_or_track(
+        report.push(Row::envelope(
             format!(
                 "per-body identity install @ {bodies} bodies: +{decls} unrelated decls => {} vs {}",
                 grown.per_body_semantics(),
                 baseline.per_body_semantics()
             ),
-            baseline.per_body_semantics(),
             grown.per_body_semantics(),
+            baseline.per_body_semantics(),
+            2,
+            baseline.per_body_semantics() + decls,
+            2,
             "RUE-1089",
         ));
     }
@@ -471,54 +579,56 @@ fn identity_per_body_lookup_invariant_to_unrelated_declarations() {
 }
 
 // ---------------------------------------------------------------------------
-// Warm-vs-fresh oracle
+// Small always-on unit smoke (default `rue-compiler-test`)
 // ---------------------------------------------------------------------------
 
-/// Outcome of one compile, reduced to what the oracle compares: success/failure,
-/// diagnostics (by kind), and — when successful — the cheap equivalent-artifact
-/// projections used by the existing cold-vs-reused differential
-/// (`durable_compatibility_tests`): functions debug, strings, and type-pool
-/// stats.
-#[derive(Debug, PartialEq, Eq)]
-struct Outcome {
-    succeeded: bool,
-    diagnostics: Vec<String>,
-    functions: Option<String>,
-    strings: Option<Vec<String>>,
-    type_pool_stats: Option<String>,
+#[test]
+fn scaling_smoke_fixed_bodies_growing_declarations() {
+    // Genuinely small corpus (20 bodies, 20 -> 40 decls) so the default unit
+    // target stays fast. Same envelope logic the matrix runs at 100/1k.
+    run_fixed_bodies_growing_declarations(20, &[20, 40]);
 }
 
-impl Outcome {
-    fn of(result: &Result<Arc<CanonicalSemanticOutput>, CompileErrors>) -> Self {
-        match result {
-            Ok(output) => Outcome {
-                succeeded: true,
-                diagnostics: Vec::new(),
-                functions: Some(format!("{:?}", output.functions())),
-                strings: Some(output.strings().to_vec()),
-                type_pool_stats: Some(format!("{:?}", output.type_pool().stats())),
-            },
-            Err(errors) => {
-                let mut diagnostics: Vec<String> = errors
-                    .iter()
-                    .map(|error| format!("{:?}:{:?}", error.kind.code(), error.kind))
-                    .collect();
-                diagnostics.sort();
-                Outcome {
-                    succeeded: false,
-                    diagnostics,
-                    functions: None,
-                    strings: None,
-                    type_pool_stats: None,
-                }
-            }
-        }
-    }
+#[test]
+fn scaling_smoke_fixed_declarations_growing_bodies() {
+    // 20 -> 40 reached bodies at a fixed 20 declarations.
+    run_fixed_declarations_growing_bodies(20, &[20, 40]);
 }
+
+#[test]
+fn identity_per_body_lookup_invariant_to_unrelated_declarations() {
+    run_identity_invariant(20, &[20, 40, 80]);
+}
+
+// ---------------------------------------------------------------------------
+// Heavy structural matrix (dedicated `scaling-matrix-test` target only)
+// ---------------------------------------------------------------------------
+
+#[cfg(scaling_matrix)]
+#[test]
+fn scaling_matrix_fixed_bodies_growing_declarations() {
+    run_fixed_bodies_growing_declarations(100, &matrix_size_ladder());
+}
+
+#[cfg(scaling_matrix)]
+#[test]
+fn scaling_matrix_fixed_declarations_growing_bodies() {
+    run_fixed_declarations_growing_bodies(100, &matrix_size_ladder());
+}
+
+#[cfg(scaling_matrix)]
+#[test]
+fn scaling_matrix_identity_invariant() {
+    run_identity_invariant(50, &[50, 200, 400]);
+}
+
+// ---------------------------------------------------------------------------
+// Two-revision edit scenarios (share the warm/fresh parity oracle)
+// ---------------------------------------------------------------------------
 
 /// A two-revision edit scenario. `warm` walks rev1 -> rev2 in one session; the
-/// oracle recompiles rev2 in a `fresh` session and asserts equivalence, then
-/// returns the warm rev2 work counters for the caller's invalidation assertions.
+/// oracle recompiles rev2 in a `fresh` session, asserts full parity, and returns
+/// the warm rev2 work counters for the caller's invalidation assertions.
 struct EditScenario {
     label: &'static str,
     rev1: Corpus,
@@ -526,15 +636,15 @@ struct EditScenario {
 }
 
 impl EditScenario {
-    /// Run rev1 then rev2 warm, run rev2 fresh, assert the warm-vs-fresh oracle,
-    /// and return the warm rev2 counters (plus its `Outcome` for callers that
-    /// key on success/failure).
-    fn run(&self) -> (Option<Measure>, Outcome) {
+    /// Run rev1 then rev2 warm, run rev2 fresh, assert the shared warm-vs-fresh
+    /// parity oracle, and return the warm rev2 counters (plus a success flag for
+    /// callers that key on it).
+    fn run(&self) -> (Option<Measure>, bool) {
         let options = CompileOptions::default();
 
         let mut warm = CompilerSession::new();
         warm.update(&self.rev1.snapshot()).into_result().unwrap();
-        warm.canonical_semantic(&options).ok(); // rev1 result is not oracled; only the post-edit rev2 is.
+        warm.canonical_semantic(&options).ok(); // rev1 is not oracled; only rev2.
         warm.update(&self.rev2.snapshot()).into_result().unwrap();
         let warm_rev2 = warm.canonical_semantic(&options);
 
@@ -542,82 +652,48 @@ impl EditScenario {
         fresh.update(&self.rev2.snapshot()).into_result().unwrap();
         let fresh_rev2 = fresh.canonical_semantic(&options);
 
-        let warm_outcome = Outcome::of(&warm_rev2);
-        let fresh_outcome = Outcome::of(&fresh_rev2);
-        assert_eq!(
-            warm_outcome.succeeded, fresh_outcome.succeeded,
-            "{}: warm/fresh success disagreement",
-            self.label
-        );
-        assert_eq!(
-            warm_outcome.diagnostics, fresh_outcome.diagnostics,
-            "{}: warm/fresh diagnostics disagreement",
-            self.label
-        );
-        assert_eq!(
-            warm_outcome.functions, fresh_outcome.functions,
-            "{}: warm/fresh function artifacts diverged",
-            self.label
-        );
-        assert_eq!(
-            warm_outcome.strings, fresh_outcome.strings,
-            "{}: warm/fresh strings diverged",
-            self.label
-        );
-        assert_eq!(
-            warm_outcome.type_pool_stats, fresh_outcome.type_pool_stats,
-            "{}: warm/fresh type-pool diverged",
-            self.label
-        );
+        assert_warm_fresh_parity(self.label, &warm_rev2, &fresh_rev2);
 
+        let succeeded = warm_rev2.is_ok();
         let measure = warm_rev2
             .as_ref()
             .ok()
-            .map(|o| Measure::from_work(&o.work()));
-        (measure, warm_outcome)
+            .map(|output| Measure::from_work(&output.work()));
+        (measure, succeeded)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Two-revision invalidation rows
-// ---------------------------------------------------------------------------
 
 #[test]
 fn invalidation_unrelated_declaration_added_keeps_bodies_green() {
     // Add one unrelated declaration. Every previously-green body terminal must
-    // stay green: warm rev2 succeeds and equals a fresh rev2 compile.
+    // stay green: warm rev2 succeeds and equals a fresh rev2 compile (the shared
+    // parity oracle inside `run` asserts that).
     let scenario = EditScenario {
         label: "unrelated declaration added",
         rev1: Corpus::new(40, 5),
         rev2: Corpus::new(40, 6),
     };
-    // HARD: terminals stay green. `scenario.run()` already asserted the
-    // warm-vs-fresh oracle (same success, diagnostics, and artifacts); here we
-    // pin that the compile succeeded at all.
-    let (warm, outcome) = scenario.run();
-    assert!(
-        outcome.succeeded,
-        "adding an unrelated declaration must compile"
-    );
+    let (warm, succeeded) = scenario.run();
+    assert!(succeeded, "adding an unrelated declaration must compile");
     let warm = warm.unwrap();
 
-    // TRACKED (RUE-1091): no reached body's meaning changed, so the ideal warm
-    // recompute is zero — a purely-unrelated declaration should invalidate no
-    // body. Today adding one declaration mutates the shared declaration epoch and
-    // busts every body's durable-import key, so the warm session recomputes the
-    // whole universe (warm == fresh). The counter makes that entanglement
-    // visible; the row flips to a hard pass once the narrow-epoch / shared-base
-    // repair lands and unrelated bodies survive.
+    // TRACKED (RUE-1091): no reached body's meaning changed, so the repaired
+    // target is zero warm recompute — a purely-unrelated declaration should
+    // invalidate no body. The documented witness is that adding one declaration
+    // mutates the shared declaration epoch and busts every body's durable-import
+    // key, so the warm session recomputes the whole universe (warm == fresh).
     let fresh = Measure::cold(&scenario.rev2);
     let mut report = Report::new("invalidation: unrelated declaration added");
-    report.push(Row::incremental_or_track(
+    report.push(Row::envelope(
         format!(
-            "unrelated declaration invalidates no body: warm cold_bodies={} (ideal 0, fresh {})",
+            "unrelated declaration invalidates no body: warm cold_bodies={} (target 0, witness fresh {})",
             warm.cold_bodies, fresh.cold_bodies
         ),
         warm.cold_bodies,
-        fresh.cold_bodies,
         0,
+        0,
+        fresh.cold_bodies,
+        1,
         "RUE-1091",
     ));
     report.emit();
@@ -628,49 +704,49 @@ fn invalidation_single_body_edit_declaration_work_does_not_rerun() {
     // Edit exactly one reached body's *text*, leaving every declaration signature
     // untouched. Because no declaration changed, declaration-level work does not
     // invalidate the other bodies: they survive via durable body import and only
-    // the edited body's cone recomputes. This is the counterpart to the
-    // add/remove rows below — those DO mutate the declaration set and (today)
-    // bust every body. The contrast localizes the RUE-1091 entanglement to
-    // declaration-set changes, not body edits.
+    // the edited body's cone recomputes.
     let rev1_src = Corpus::new(40, 5).source();
     let rev2_src = rev1_src.replacen("fn b0() -> i32 { 0 }", "fn b0() -> i32 { 123 }", 1);
     assert_ne!(rev1_src, rev2_src, "the edit must change source");
 
     let options = CompileOptions::default();
     let rev1_snap = SourceSnapshot::single("main.rue", rev1_src).unwrap();
-    let rev2_snap = SourceSnapshot::single("main.rue", rev2_src.clone()).unwrap();
+    let rev2_snap = SourceSnapshot::single("main.rue", rev2_src).unwrap();
 
     let mut warm = CompilerSession::new();
     warm.update(&rev1_snap).into_result().unwrap();
     warm.canonical_semantic(&options).unwrap();
     warm.update(&rev2_snap).into_result().unwrap();
-    let warm_out = warm.canonical_semantic(&options).unwrap();
-    let warm_measure = Measure::from_work(&warm_out.work());
+    let warm_rev2 = warm.canonical_semantic(&options);
+    let warm_measure = warm_rev2
+        .as_ref()
+        .map(|output| Measure::from_work(&output.work()))
+        .expect("single-body-edit warm rev2 compiles");
+    let warm_binding = warm_rev2.as_ref().unwrap().work().binding;
 
-    // Fresh rev2 compile for both the oracle and the cold-cost comparison.
+    // Fresh rev2 compile for the shared parity oracle and the cold-cost floor.
     let mut fresh = CompilerSession::new();
     fresh.update(&rev2_snap).into_result().unwrap();
-    let fresh_out = fresh.canonical_semantic(&options).unwrap();
-    let fresh_measure = Measure::from_work(&fresh_out.work());
+    let fresh_rev2 = fresh.canonical_semantic(&options);
+    let fresh_measure = fresh_rev2
+        .as_ref()
+        .map(|output| Measure::from_work(&output.work()))
+        .expect("single-body-edit fresh rev2 compiles");
+    let fresh_binding = fresh_rev2.as_ref().unwrap().work().binding;
 
-    // Warm-vs-fresh oracle.
-    assert_eq!(
-        format!("{:?}", warm_out.functions()),
-        format!("{:?}", fresh_out.functions()),
-        "single-body-edit warm/fresh functions diverged"
-    );
-    assert_eq!(warm_out.strings(), fresh_out.strings());
-    assert_eq!(warm_out.type_pool().stats(), fresh_out.type_pool().stats());
+    assert_warm_fresh_parity("single body edit", &warm_rev2, &fresh_rev2);
 
     eprintln!(
         "\n== RUE-1086 invalidation: single body edit (declaration work does not rerun) ==\n  \
-         warm cold_bodies={} vs fresh cold_bodies={} (only the edited cone recomputes)",
-        warm_measure.cold_bodies, fresh_measure.cold_bodies
+         warm cold_bodies={} vs fresh cold_bodies={} (only the edited cone recomputes)\n  \
+         declaration resolution invocations: warm={} vs fresh={} (warm reuses the base)",
+        warm_measure.cold_bodies,
+        fresh_measure.cold_bodies,
+        warm_binding.declaration_resolution_invocations,
+        fresh_binding.declaration_resolution_invocations,
     );
     // HARD: a body-text edit reuses the 39 untouched bodies and main, recomputing
-    // only the edited cone. Because declaration signatures did not change, the
-    // survivors' durable-import keys stay valid — declaration-level work did not
-    // invalidate them. The edited cone is tiny and far below a full fresh compile.
+    // only the edited cone, far below a full fresh compile.
     assert!(
         warm_measure.cold_bodies < fresh_measure.cold_bodies,
         "editing one body must reuse the untouched bodies: warm {} vs fresh {}",
@@ -682,6 +758,29 @@ fn invalidation_single_body_edit_declaration_work_does_not_rerun() {
         "a single body edit must recompute only its cone, not {} bodies",
         warm_measure.cold_bodies
     );
+    // HARD (Finding 5): the declaration base stayed green in revision 2. A
+    // body-text edit changes no declaration signature, so every declaration
+    // record must be served from the durable base by exact reuse — none
+    // re-resolved, none fell back to a rebuild. If b0's *signature* had changed
+    // instead, `durable_records_reused` would drop below `durable_records_compared`
+    // and `fallbacks` would rise, so this is a real green assertion, not a
+    // vacuous one. (The session rebuilds the declaration base per request via the
+    // durable path, so this is identical warm and fresh; the incremental win
+    // shows up in the body work asserted above, cold_bodies warm 1 vs fresh 41.)
+    let warm_reuse = warm_rev2.as_ref().unwrap().work().declaration_reuse;
+    assert_eq!(
+        warm_binding.declaration_resolution_invocations, 0,
+        "a body-text edit must not re-resolve any declaration: {warm_binding:?}"
+    );
+    assert_eq!(
+        warm_reuse.fallbacks, 0,
+        "a body-text edit must not fall back to rebuilding the declaration base: {warm_reuse:?}"
+    );
+    assert!(
+        warm_reuse.durable_records_compared > 0
+            && warm_reuse.durable_records_reused == warm_reuse.durable_records_compared,
+        "every declaration record must be reused from the durable base: {warm_reuse:?}"
+    );
 }
 
 #[test]
@@ -689,12 +788,8 @@ fn invalidation_referenced_declaration_removed_recomputes_affected_cone() {
     // Remove a referenced declaration together with its single reference: drop
     // `b0` from `main`'s body and delete `fn b0`. The affected cone is `main`
     // (whose body changed); the 39 surviving reached bodies are unchanged and the
-    // program stays green. Correctness (the oracle) is asserted hard; the ideal
-    // that ONLY the affected cone recomputes is tracked (RUE-1091): removing a
-    // declaration mutates the shared declaration epoch, so today the survivors'
-    // durable-import keys are busted and the warm session recomputes them all.
+    // program stays green.
     let rev1_src = Corpus::new(40, 5).source();
-    // Remove the definition of b0 and its call site.
     let rev2_src = rev1_src.replacen("fn b0() -> i32 { 0 }\n", "", 1).replacen(
         "    acc = acc + b0();\n",
         "",
@@ -713,33 +808,38 @@ fn invalidation_referenced_declaration_removed_recomputes_affected_cone() {
     warm.update(&rev1_snap).into_result().unwrap();
     warm.canonical_semantic(&options).unwrap();
     warm.update(&rev2_snap).into_result().unwrap();
-    let warm_out = warm.canonical_semantic(&options).unwrap();
-    let warm_measure = Measure::from_work(&warm_out.work());
+    let warm_rev2 = warm.canonical_semantic(&options);
+    let warm_measure = warm_rev2
+        .as_ref()
+        .map(|output| Measure::from_work(&output.work()))
+        .expect("referenced-removal warm rev2 compiles");
 
     let mut fresh = CompilerSession::new();
     fresh.update(&rev2_snap).into_result().unwrap();
-    let fresh_out = fresh.canonical_semantic(&options).unwrap();
-    let fresh_measure = Measure::from_work(&fresh_out.work());
+    let fresh_rev2 = fresh.canonical_semantic(&options);
+    let fresh_measure = fresh_rev2
+        .as_ref()
+        .map(|output| Measure::from_work(&output.work()))
+        .expect("referenced-removal fresh rev2 compiles");
 
-    assert_eq!(
-        format!("{:?}", warm_out.functions()),
-        format!("{:?}", fresh_out.functions()),
-        "referenced-removal warm/fresh functions diverged"
-    );
-    assert_eq!(warm_out.strings(), fresh_out.strings());
-    assert_eq!(warm_out.type_pool().stats(), fresh_out.type_pool().stats());
+    assert_warm_fresh_parity("referenced declaration removed", &warm_rev2, &fresh_rev2);
 
     // TRACKED (RUE-1091): the affected cone is just `main`; the 39 survivors
-    // should be reused. The `+2` target admits `main` plus a slack body.
+    // should be reused (repaired target <= 2 for `main` plus a slack body). The
+    // documented witness is that removing a declaration mutates the shared
+    // declaration epoch, busting every survivor's durable-import key (warm ==
+    // fresh, whole-universe recompute).
     let mut report = Report::new("invalidation: referenced declaration removed");
-    report.push(Row::incremental_or_track(
+    report.push(Row::envelope(
         format!(
-            "only the affected cone recomputes: warm cold_bodies={} (ideal <=2, fresh {})",
+            "only the affected cone recomputes: warm cold_bodies={} (target <=2, witness fresh {})",
             warm_measure.cold_bodies, fresh_measure.cold_bodies
         ),
         warm_measure.cold_bodies,
-        fresh_measure.cold_bodies,
         2,
+        0,
+        fresh_measure.cold_bodies,
+        1,
         "RUE-1091",
     ));
     report.emit();
@@ -750,9 +850,12 @@ fn invalidation_negative_lookup_becoming_positive_invalidates_consumers() {
     // rev1: `main` calls `extra()`, which does not exist — a negative lookup that
     // fails the compile. rev2: define `extra`, turning the lookup positive. The
     // consumer (`main`) must invalidate and the program must go green, matching a
-    // fresh rev2 compile exactly.
-    let rev1_src = "fn main() -> i32 { extra() }\n".to_string();
-    let rev2_src = "fn extra() -> i32 { 7 }\nfn main() -> i32 { extra() }\n".to_string();
+    // fresh rev2 compile exactly. A `control` body that references neither must
+    // NOT be dragged into the recompute (Finding 5).
+    let control = "fn control() -> i32 { 99 }\n";
+    let rev1_src = format!("{control}fn main() -> i32 {{ extra() + control() }}\n");
+    let rev2_src =
+        format!("fn extra() -> i32 {{ 7 }}\n{control}fn main() -> i32 {{ extra() + control() }}\n");
 
     let options = CompileOptions::default();
     let rev1_snap = SourceSnapshot::single("main.rue", rev1_src).unwrap();
@@ -768,21 +871,42 @@ fn invalidation_negative_lookup_becoming_positive_invalidates_consumers() {
 
     warm.update(&rev2_snap).into_result().unwrap();
     let warm_rev2 = warm.canonical_semantic(&options);
+    let warm_measure = warm_rev2
+        .as_ref()
+        .map(|output| Measure::from_work(&output.work()))
+        .expect("defining the previously-missing function must make the consumer compile");
 
     let mut fresh = CompilerSession::new();
     fresh.update(&rev2_snap).into_result().unwrap();
     let fresh_rev2 = fresh.canonical_semantic(&options);
+    let fresh_measure = fresh_rev2
+        .as_ref()
+        .map(|output| Measure::from_work(&output.work()))
+        .expect("fresh rev2 compiles");
 
-    let warm_outcome = Outcome::of(&warm_rev2);
-    let fresh_outcome = Outcome::of(&fresh_rev2);
-    assert!(
-        warm_outcome.succeeded,
-        "defining the previously-missing function must make the consumer compile"
-    );
-    assert_eq!(
-        warm_outcome, fresh_outcome,
-        "negative->positive warm result must equal a fresh rev2 compile"
-    );
+    // Shared full-parity oracle: warm negative->positive result equals fresh.
+    assert_warm_fresh_parity("negative->positive", &warm_rev2, &fresh_rev2);
+
+    // Finding 5: only the exact consumers recompute. The affected cone is the
+    // newly-defined `extra` plus its consumer `main` (repaired target <= 2). The
+    // documented witness (RUE-1091) is that a rev1 whole-compile failure drops
+    // every body terminal, so warm rev2 recomputes the whole universe including
+    // the unaffected `control` (warm == fresh). `warm > fresh` — recomputing
+    // more than a cold compile — fails.
+    let mut report = Report::new("invalidation: negative->positive lookup (with control body)");
+    report.push(Row::envelope(
+        format!(
+            "only exact consumers recompute: warm cold_bodies={} (target <=2 [extra,main], witness fresh {})",
+            warm_measure.cold_bodies, fresh_measure.cold_bodies
+        ),
+        warm_measure.cold_bodies,
+        2,
+        0,
+        fresh_measure.cold_bodies,
+        1,
+        "RUE-1091",
+    ));
+    report.emit();
 }
 
 // ---------------------------------------------------------------------------
@@ -801,7 +925,7 @@ fn specialization_breadth_compiles_depth_fails_e1200() {
     let options = CompileOptions::default();
 
     // Breadth: a wide fan of shallow (depth-1) specializations must compile and
-    // each must be a distinct specialized body the coordinator counts.
+    // EACH distinct argument must produce its own specialized body.
     let breadth = 64;
     let mut wide = String::from("fn tag(comptime n: i32) -> i32 { n }\n");
     wide.push_str("fn main() -> i32 {\n    let mut total = 0;\n");
@@ -817,9 +941,13 @@ fn specialization_breadth_compiles_depth_fails_e1200() {
     let wide_out = wide_session
         .canonical_semantic(&options)
         .expect("many shallow specializations must compile");
-    assert!(
-        wide_out.work().body_analysis.specialized_bodies_succeeded >= 1,
-        "shallow specialization breadth must produce specialized bodies"
+    // Finding 5: assert ALL 64 distinct specializations were analyzed, not merely
+    // that at least one was.
+    assert_eq!(
+        wide_out.work().body_analysis.specialized_bodies_succeeded,
+        breadth,
+        "each of the {breadth} distinct comptime arguments must produce its own \
+         specialized body"
     );
 
     // Depth: an unbounded cross-body instantiation chain must fail E1200. We
@@ -845,39 +973,7 @@ fn specialization_breadth_compiles_depth_fails_e1200() {
     );
 
     eprintln!(
-        "\n== RUE-1086 specialization ==\n  PASS  breadth {breadth} shallow specializations compile\
+        "\n== RUE-1086 specialization ==\n  PASS  breadth {breadth} shallow specializations compile (all {breadth} analyzed)\
          \n  PASS  unbounded depth chain fails E1200"
     );
-}
-
-// ---------------------------------------------------------------------------
-// Timing / allocation mode (opt-in, NEVER mixed with counter assertions)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn timing_mode_is_opt_in_only() {
-    // Wall-time and allocation measurement is a separate mode gated on
-    // `RUE_SCALING_TIMING=1`. It performs NO counter assertions. When the flag is
-    // unset (the CI default) this test is an immediate no-op, so timing noise
-    // never enters the counter-based suite.
-    if std::env::var_os("RUE_SCALING_TIMING").is_none_or(|v| v != "1") {
-        return;
-    }
-
-    use std::time::Instant;
-    let ladder = size_ladder();
-    eprintln!("\n== RUE-1086 timing mode (opt-in; NOT a counter assertion) ==");
-    for &bodies in &ladder {
-        for &decls in &ladder {
-            let corpus = Corpus::new(bodies, decls);
-            let mut session = CompilerSession::new();
-            session.update(&corpus.snapshot()).into_result().unwrap();
-            let start = Instant::now();
-            session
-                .canonical_semantic(&CompileOptions::default())
-                .unwrap();
-            let elapsed = start.elapsed();
-            eprintln!("  bodies={bodies:>6} decls={decls:>6}  cold_compile={elapsed:?}");
-        }
-    }
 }

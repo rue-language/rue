@@ -236,6 +236,49 @@ jobs:
           path: ${{ runner.temp }}/rue-compiler-repro-artifacts
           if-no-files-found: ignore
 
+  # RUE-1086: the heavy 100/1k structural scaling matrix is split out of the
+  # fast `rue-compiler-test` unit suite (which keeps only the small 20x20 smoke)
+  # into its own `scaling-matrix-test` target, compiled with `--cfg=scaling_matrix`.
+  # Run it as its own job, filtered to the matrix cases. Set RUE_SCALING_LARGE=1
+  # to also exercise the opt-in 10k ladder. Marking this check required in branch
+  # protection is a maintainer action.
+  scaling-matrix:
+    runs-on: ubuntu-latest
+    name: scaling matrix (linux-x64)
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dotslash
+        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
+
+      - name: Cache dotslash artifacts
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/dotslash
+          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          restore-keys: |
+            dotslash-linux-x64-
+
+      - name: Provision remote build cache
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          if [ -z "${BUILDBUDDY_API_KEY:-}" ]; then
+            echo "BUILDBUDDY_API_KEY unavailable (fork PR or unset); building without the remote cache."
+            exit 0
+          fi
+          scripts/provision-build-cache install
+          scripts/provision-build-cache apply
+
+      - name: Build scaling matrix target
+        run: scripts/ci-timed "scaling-matrix build" -- ./buck2 build //crates/rue-compiler:scaling-matrix-test
+
+      - name: Run scaling matrix
+        # `buck2 run` drives the libtest binary directly so the trailing
+        # `scaling_matrix` filter selects only the heavy matrix cases compiled in
+        # by `--cfg=scaling_matrix`, not the whole compiler unit suite.
+        run: scripts/ci-timed "scaling-matrix run" -- ./buck2 run //crates/rue-compiler:scaling-matrix-test -- scaling_matrix --nocapture
+
   # The macOS CLI and spec corpora dominate that platform's wall clock, and
   # Caldera intentionally stresses compiler resources on every architecture.
   # Run them on separate machines while each main platform lane retains broad
