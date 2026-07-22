@@ -20,12 +20,16 @@ compiler-reproducibility job is the deliberate exception: its two independently
 materialized compiler builds stay local and cache-free, while the ordinary
 linux-x64 test lane may use BuildBuddy.
 
-The platform test lanes all retain broad target discovery. On macOS, the main
-lane defers the two longest heavy targets (`//:cli-tests` and `//:spec-tests`)
-to explicit required jobs so those corpora overlap. `test.sh` accepts that
-deferral only under `CI=true`, validates each target against Buck's live
-`rue_heavy_suite` query, and continues to audit every corpus target it owns.
-Local full suites never defer coverage.
+The platform test lanes all retain broad target discovery. Every platform
+(linux-x64, linux-arm64, macOS) defers its three heaviest corpora —
+`//:cli-tests`, `//:cli-tests-caldera`, and `//:spec-tests` — to explicit
+`platform-corpus` jobs so those corpora overlap the main lane instead of
+serializing behind it (RUE-1115). Each architecture therefore has a matching
+`cli`, `cli-caldera`, and `spec` shard in the `platform-corpus` matrix, and
+those checks must be marked required in branch protection (a maintainer
+action). `test.sh` accepts that deferral only under `CI=true`, validates each
+target against Buck's live `rue_heavy_suite` query, and continues to audit
+every corpus target it owns. Local full suites never defer coverage.
 
 Major Buck commands run through `scripts/ci-timed`, which preserves output and
 the exact command exit status while appending wall time and aggregate

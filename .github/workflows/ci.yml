@@ -196,11 +196,14 @@ jobs:
         run: scripts/ci-timed "${{ matrix.name }} build" -- ./buck2 build //crates/...
 
       - name: Run tests
-        # Every platform runs Caldera on an explicit parallel shard below;
-        # macOS also shards its ordinary CLI and spec corpora. Local full suites
-        # still own every discovered target in one invocation.
+        # Every platform now shards its Caldera, ordinary CLI, and spec corpora
+        # onto explicit parallel jobs below (RUE-1115); the main lane keeps the
+        # broad discovery pass plus the smaller heavy suites. The deferral set is
+        # identical across platforms, so it is a constant rather than a
+        # per-matrix expression. Local full suites still own every discovered
+        # target in one invocation.
         env:
-          RUE_CI_DEFER_HEAVY_SUITES: ${{ matrix.name == 'macos' && '//:cli-tests //:cli-tests-caldera //:spec-tests' || '//:cli-tests-caldera' }}
+          RUE_CI_DEFER_HEAVY_SUITES: '//:cli-tests //:cli-tests-caldera //:spec-tests'
         run: scripts/ci-timed "${{ matrix.name }} tests" -- ./test.sh
 
   # RUE-617/RUE-1019: keep the byte-reproducibility proof independent of the
@@ -279,10 +282,12 @@ jobs:
         # by `--cfg=scaling_matrix`, not the whole compiler unit suite.
         run: scripts/ci-timed "scaling-matrix run" -- ./buck2 run //crates/rue-compiler:scaling-matrix-test -- scaling_matrix --nocapture
 
-  # The macOS CLI and spec corpora dominate that platform's wall clock, and
-  # Caldera intentionally stresses compiler resources on every architecture.
-  # Run them on separate machines while each main platform lane retains broad
-  # discovery, the smaller corpora, and omission-audit coverage.
+  # The CLI and spec corpora dominate each platform's wall clock, and Caldera
+  # intentionally stresses compiler resources on every architecture. Run them on
+  # separate machines (RUE-1115) while each main platform lane retains broad
+  # discovery, the smaller corpora, and omission-audit coverage. Every platform
+  # defers the same three heavy corpora (see RUE_CI_DEFER_HEAVY_SUITES on the
+  # `test` job), so each architecture gets a cli / cli-caldera / spec shard here.
   platform-corpus:
     strategy:
       matrix:
@@ -304,14 +309,34 @@ jobs:
             check_name: macos-spec
           - os: ubuntu-latest
             cache_name: linux-x64
+            target: //:cli-tests
+            name: cli
+            check_name: linux-x64-cli
+          - os: ubuntu-latest
+            cache_name: linux-x64
             target: //:cli-tests-caldera
             name: cli-caldera
             check_name: linux-x64-cli-caldera
+          - os: ubuntu-latest
+            cache_name: linux-x64
+            target: //:spec-tests
+            name: spec
+            check_name: linux-x64-spec
+          - os: ubuntu-24.04-arm
+            cache_name: linux-arm64
+            target: //:cli-tests
+            name: cli
+            check_name: linux-arm64-cli
           - os: ubuntu-24.04-arm
             cache_name: linux-arm64
             target: //:cli-tests-caldera
             name: cli-caldera
             check_name: linux-arm64-cli-caldera
+          - os: ubuntu-24.04-arm
+            cache_name: linux-arm64
+            target: //:spec-tests
+            name: spec
+            check_name: linux-arm64-spec
     runs-on: ${{ matrix.os }}
     name: test (${{ matrix.check_name }})
     steps:
