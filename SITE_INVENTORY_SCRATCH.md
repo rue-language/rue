@@ -43,3 +43,21 @@ Sema state fields to remove/simplify — crates/rue-air/src/sema/mod.rs: `canoni
 ## F. Downstream keyed by the equivalence machinery
 
 - Durable body export uses the representative: `canonicalize_reached_anonymous_member` rewrites reached `AnonymousMember` keys before durable body/CFG/codegen consume them (session.rs closure → `durable_body_candidates`, 6023–6025). durable_body.rs `validate_anonymous_identity` (308) and `collect_anonymous_definition_keys` (487) are keyed on `AnonymousNominalKey` and stay, but no longer receive representative-rewritten keys. `SemanticImportType::AnonymousNominal` exports (durable_body.rs 258–276) currently carry representative identities — after the cut they carry the exact producer identity. Codegen symbol emission and drop-glue synthesis must agree with the always-qualified names.
+
+---
+
+## RUE-1089 progress dispositions (implementation session)
+
+- **Stage 1 (AIR identity core)**: DONE, verified. Cross-producer structural collapse removed (anon_structs.rs). RETAINED anon_struct_method_sigs/captured_values/type_subst (durable-export load-bearing). anonymous_key_cmp kept (same-producer anchor ordering).
+- **Stage 2 (representative machinery)**: PARTIAL. session.rs canonicalize_reached_anonymous_member reduced to exact-identity (safe: loud E9000 on the method-materialization anchor case, never a silent miscompile). Restart code inert-but-present. NOT deleted: materialize_contextual_anonymous_aliases / projected_anonymous_nominal_for_identity / binding_manifest same-producer anchor install (blocked on the anchor fix below).
+- **Stage 3 (Option mint)**: NOT done. find_compatible_anon_enum kept (documented deviation). Interim design (canonical_builtin_nominal) deferred until anchor identity is correct.
+- **Stage 4 (always-qualify)**: DONE for named types + lang-item/builtin/anon exemptions, verified. NOTE (codex): the __anon_struct_<id>/__anon_enum_<id> exemption is allocation-order-based and UNSOUND for warm/fresh/schedule parity — must be redone to derive anon symbol names from the stable producer identity, sequenced WITH the anchor fix.
+- **Stage 5 (annotation rejection)**: DONE, verified (E0102, span-accurate).
+- **Stage 6 (spec + corpus)**: DONE. spec 14-comptime.md amended (4.14:8/15/21/22/25 + new 23a). comptime.toml/destructors.toml/lazy_specialization migrated. Scenario 6 added to notes. air unit GREEN (565/565); compiler unit 671/672; spec comptime 202/204.
+- **Stage 7 (downstream audit + std examples)**: NOT done (blocked by anchor fix; std examples with Option-wrappers hit the E9000 blocker).
+
+### CRITICAL ANCHOR-FIX FINDING (redirects codex's span-based recipe)
+The durable declaration/const evaluator (`semantic_query_nucleus::parse_semantic_const` / `parse_semantic_body`) REPARSES each declaration fragment as an ISOLATED synthetic source (`const NAME = <init>;` / `fn __semantic_body() { <body> }`) with a fresh `FileId(0)`. Its span space is therefore DISJOINT from the module RIR's file-relative spans (verified: const-eval span `FileId(0) start:23` vs RIR span `FileId(1) start:38` for the same `enum {…}`).
+=> Consuming the frontend/RIR anchor BY SPAN is impossible. A span-lookup implementation fixed the Wrap repro (→42) but regressed spec comptime 202→190 (fail-closed ICE on nested-generic cases whose fragment spans miss the RIR map) and was reverted.
+The independent-minting site is `revisioned_query_database.rs SemanticConstEvaluator::eval_type_literal` (mints `[Body, AnonymousType(next_anonymous_type++)]`, a traversal-order approximation). astgen always uses occurrence `AnonymousType(0)`; uniqueness comes from the full structural PATH.
+Correct fix options: (a) thread a structural path through the fragment evaluator's traversal, minting `path + AnonymousType(0)` to MATCH astgen exactly (span-independent, but fragile and not cross-checkable against the RIR in the fragment span space — miscompile risk on path divergence); or (b) re-architect so durable declaration semantics carry the frontend anchors rather than re-deriving them from a fragment reparse. Both are larger than a localized edit and need full warm/fresh/schedule-permuted parity verification.
