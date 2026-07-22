@@ -22,9 +22,10 @@
 //!   is a *pre-link* number, so `pre_link` is its instrument; `semantic` is
 //!   never labeled pre-link.
 //! * **Allocation** in `--warm` mode snapshots the counting allocator's totals
-//!   immediately before the warm edit query and reports the DELTA as the
-//!   warm-edit allocations, alongside a separately labeled whole-run total that
-//!   still includes rev1 priming.
+//!   immediately before the rev2 source update and reports the DELTA as the
+//!   warm-edit allocations over the same update-through-object-generation scope
+//!   as the timed `pre_link` interval, alongside a separately labeled whole-run
+//!   total that still includes rev1 priming.
 //! * **Memory** peak: a cold compile's peak is measured in a *child process* so
 //!   the parent's warmup does not pollute the process high-water mark; a warm
 //!   edit cannot be isolated from priming by a process HWM, so it is labeled
@@ -289,30 +290,33 @@ struct Intervals {
     pre_link: Duration,
 }
 
-/// One cold compile in a fresh session: time `semantic()`, then time the backend
-/// tail through object generation. `pre_link` is `semantic + backend_tail`
-/// because the pre-link driver reuses the cached semantic terminal.
+/// One cold compile in a fresh session. The compiler pipeline starts at the
+/// source snapshot, so `pre_link` runs from immediately before
+/// `session.update` (parse and invalidation are compiler work) through object
+/// generation, stopping before linking. `semantic` remains the useful
+/// semantic-only sub-interval. Snapshot construction is corpus setup and stays
+/// outside both intervals.
 fn cold_intervals(bodies: usize, decls: usize) -> Intervals {
     let options = CompileOptions::default();
+    let source = snapshot(corpus_source(bodies, decls));
     let mut session = CompilerSession::new();
-    session
-        .update(&snapshot(corpus_source(bodies, decls)))
-        .into_result()
-        .expect("corpus parses");
     let start = Instant::now();
+    session.update(&source).into_result().expect("corpus parses");
+    let semantic_start = Instant::now();
     session.semantic(&options).expect("corpus compiles");
-    let semantic = start.elapsed();
-    let backend_start = Instant::now();
+    let semantic = semantic_start.elapsed();
     rue_compiler::unstable::pre_link_object_bytes(&mut session, &options)
         .expect("pre-link backend succeeds");
-    let pre_link = semantic + backend_start.elapsed();
+    let pre_link = start.elapsed();
     Intervals { semantic, pre_link }
 }
 
 /// Warm single-body-edit latency: prime rev1 fully through pre-link, edit exactly
-/// one reached body's text, then time only the rev2 recompile (`semantic` and the
-/// backend tail through object generation). This is the incremental pre-link edit
-/// latency, distinct from the cold number.
+/// one reached body's text, then measure the rev2 recompile. The edit's compiler
+/// work starts at the source update — parse and invalidation are caused by the
+/// edit — so `pre_link` runs from immediately before `session.update(rev2)`
+/// through object generation. `semantic` remains the semantic-only
+/// sub-interval; rev2 snapshot construction stays outside both.
 fn warm_intervals(bodies: usize, decls: usize) -> Intervals {
     let options = CompileOptions::default();
     let rev1 = corpus_source(bodies, decls);
@@ -329,17 +333,18 @@ fn warm_intervals(bodies: usize, decls: usize) -> Intervals {
     session.semantic(&options).expect("rev1 compiles");
     rue_compiler::unstable::pre_link_object_bytes(&mut session, &options)
         .expect("rev1 pre-link succeeds");
+    let rev2_snapshot = snapshot(rev2);
+    let start = Instant::now();
     session
-        .update(&snapshot(rev2))
+        .update(&rev2_snapshot)
         .into_result()
         .expect("rev2 parses");
-    let start = Instant::now();
+    let semantic_start = Instant::now();
     session.semantic(&options).expect("rev2 compiles");
-    let semantic = start.elapsed();
-    let backend_start = Instant::now();
+    let semantic = semantic_start.elapsed();
     rue_compiler::unstable::pre_link_object_bytes(&mut session, &options)
         .expect("rev2 pre-link succeeds");
-    let pre_link = semantic + backend_start.elapsed();
+    let pre_link = start.elapsed();
     Intervals { semantic, pre_link }
 }
 
@@ -583,15 +588,17 @@ fn run_alloc(config: &Config) {
             session.semantic(&options).expect("rev1 compiles");
             rue_compiler::unstable::pre_link_object_bytes(&mut session, &options)
                 .expect("rev1 pre-link succeeds");
+            // Snapshot immediately before the rev2 source update; the DELTA to
+            // the post-edit snapshot is the warm-edit allocation cost over the
+            // same request scope as the timed pre_link interval (update through
+            // object generation), excluding all priming. Snapshot construction
+            // stays outside the delta as corpus setup.
+            let rev2_snapshot = snapshot(rev2);
+            let before = allocation::snapshot();
             session
-                .update(&snapshot(rev2))
+                .update(&rev2_snapshot)
                 .into_result()
                 .expect("rev2 parses");
-
-            // Snapshot immediately before the warm edit query; the DELTA to the
-            // post-edit snapshot is the warm-edit allocation cost, excluding all
-            // priming.
-            let before = allocation::snapshot();
             session.semantic(&options).expect("rev2 compiles");
             rue_compiler::unstable::pre_link_object_bytes(&mut session, &options)
                 .expect("rev2 pre-link succeeds");
@@ -601,7 +608,7 @@ fn run_alloc(config: &Config) {
             let edit_allocations = after.allocations.saturating_sub(before.allocations);
             let edit_bytes = after.allocated_bytes.saturating_sub(before.allocated_bytes);
             eprintln!(
-                "  warm_edit_allocations={} warm_edit_bytes={} ({:.1} MiB) [delta around the rev2 edit only]",
+                "  warm_edit_allocations={} warm_edit_bytes={} ({:.1} MiB) [delta over the rev2 update-through-object-generation scope]",
                 edit_allocations,
                 edit_bytes,
                 edit_bytes as f64 / (1024.0 * 1024.0)
