@@ -381,6 +381,15 @@ mod tests {
     #[test]
     fn parses_nested_type_position_forms() {
         assert!(parses(
+            "fn f(x: ptr const [Result(i32, [u8]); N]) -> Out { loop {} }"
+        ));
+    }
+
+    #[test]
+    fn rejects_an_anonymous_struct_in_return_position() {
+        // Anonymous type literals are creation sites, legal only in comptime
+        // expression position; the return annotation is type grammar (RUE-1089).
+        assert!(!parses(
             "fn f(x: ptr const [Result(i32, [u8]); N]) -> struct { value: i32 } { loop {} }"
         ));
     }
