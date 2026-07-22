@@ -82,6 +82,8 @@ mod durable_compatibility_tests;
 #[cfg(test)]
 mod integration_tests;
 #[cfg(test)]
+mod scaling_harness;
+#[cfg(test)]
 mod supported_api_inventory;
 
 // Supported source, identity, option, session, and diagnostic surface.

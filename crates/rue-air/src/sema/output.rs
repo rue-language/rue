@@ -599,6 +599,48 @@ pub struct BodyAnalysisWork {
     /// This excludes one-time implicit-root scans, unused-reference scans, and
     /// comptime evaluation. Indexed dispatch keeps this value at zero.
     pub reachable_declaration_rir_visits: usize,
+    /// Declaration-context work repeated inside each cold reached-body analysis.
+    ///
+    /// See [`PerBodyDeclarationContextWork`]. These counters make the
+    /// O(reached-bodies × unrelated-declarations) per-body installation term
+    /// visible: today the demand body pipeline re-prepares, re-projects, and
+    /// re-installs the whole declaration universe for every reached body, so
+    /// these fields grow with the product of both axes rather than their sum.
+    pub per_body_declaration_context: PerBodyDeclarationContextWork,
+}
+
+/// Declaration-context work the per-body pipeline repeats for every cold
+/// reached-body analysis.
+///
+/// The demand body coordinator (`CompilerSession`) drives one
+/// `analyze_body_query` per reached body, and that query re-runs the whole
+/// declaration prepare/project/install/endpoint sequence over the entire
+/// declaration universe before analyzing the single body. These counters
+/// therefore accumulate as O(reached_bodies × declarations) today — the exact
+/// shape RUE-1086 makes visible and the RUE-1090 measurement gate reads. The
+/// conditional RUE-1091 shared-base / narrow-epoch repair is expected to drive
+/// them toward O(declarations + Σ bodies) by hoisting the declaration base out
+/// of the per-body loop; the scaling harness flips its expected-failure rows to
+/// hard assertions once these go flat per body.
+///
+/// Only cold (actually computed) body analyses contribute. A warm reused body
+/// terminal never re-enters `analyze_body_query`, so reuse leaves every field
+/// at zero — which is what lets the invalidation rows assert that untouched
+/// bodies pay no declaration-context cost.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PerBodyDeclarationContextWork {
+    /// Cold reached-body analyses that paid the declaration-context cost, i.e.
+    /// the number of `analyze_body_query` invocations that actually computed.
+    pub cold_body_preparations: usize,
+    /// Declaration shells predeclared by the per-body prepare stage, summed
+    /// across every cold reached-body analysis. Equals
+    /// Σ_body declaration_universe_size, so it grows as (declarations × bodies)
+    /// under the current per-body installation shape.
+    pub shells_prepared: usize,
+    /// Declaration semantics projected and installed by the per-body
+    /// project/install stages, summed across every cold reached-body analysis.
+    /// Same product shape as `shells_prepared`.
+    pub semantics_installed: usize,
 }
 
 /// Diagnostics and value-only structural work from a failed body-analysis
