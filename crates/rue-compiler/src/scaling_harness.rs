@@ -27,11 +27,10 @@
 //!
 //! # The two-envelope expected-failure discipline
 //!
-//! Per-body work is O(declarations) today (tracked by RUE-1090/RUE-1091): the
-//! demand body pipeline re-prepares, re-projects, and re-installs the whole
-//! declaration universe for every reached body. Rows that assert *flat* per-body
-//! work therefore cannot pass yet. Each such row is recorded through a single
-//! two-envelope mechanism ([`Row::envelope`]) that asserts EITHER:
+//! Most long-lived expected-failure rows use [`Row::envelope`], which asserts
+//! either a repaired target envelope or a documented known-bad witness. RUE-1090
+//! is intentionally different: it is a post-identity-cut decision gate, so it
+//! compares observed baseline and grown per-body counters directly.
 //!
 //! * **(a) the repaired target envelope** — the measured value at or below the
 //!   flat/linear/incremental target (within a tight tolerance). This is a hard
@@ -53,11 +52,11 @@
 //!
 //! * **RUE-1089** — identity rows: per-body identity/lookup installation work
 //!   should be invariant to unrelated-declaration count.
-//! * **RUE-1091** — per-body shared-base / narrow-epoch repair: fixed bodies,
-//!   growing declarations should leave per-body install/project work unchanged,
-//!   and a purely-unrelated declaration edit should invalidate no body.
-//! * **RUE-1090** — measurement gate: total declaration-context work should be
-//!   linear in reached bodies (fixed declarations), not quadratic.
+//! * **RUE-1091** — conditional shared-base / narrow-epoch repair: activated by
+//!   RUE-1090 if per-body install/project/endpoint work grows with unrelated
+//!   declarations; its edit-invalidation rows remain expected-failure evidence.
+//! * **RUE-1090** — measurement gate: fixed bodies / growing declarations must
+//!   leave observed per-body project/install/endpoint work flat.
 //!
 //! # Stage-source counter provenance
 //!
@@ -115,11 +114,9 @@
 //! ```
 //!
 //! per-body prepare/project/install grow 1:1 with the universe and endpoints
-//! grow 2:1 (witness), and total declaration-context work is
-//! `(bodies+1)·(bodies+decls+1)` — quadratic, the RUE-1090 witness the gate
-//! reads. Every target and witness the harness asserts is a closed form in the
-//! corpus knobs (see `CorpusWitness`), never a same-process measured run, so a
-//! uniform regression that inflates a counter at every size fails loudly.
+//! grow 2:1. These are retained as historical predictions in the RUE-1090 audit
+//! output, but the gate itself compares the observed baseline and grown values:
+//! the post-identity-cut constant may change while remaining flat.
 
 use crate::*;
 use std::sync::Arc;
@@ -306,6 +303,8 @@ enum Row {
     /// The target does not hold yet; the documented known-bad witness holds
     /// within a tight band and the row is a tracked expected-failure.
     Tracked { label: String, issue: &'static str },
+    /// A measurement gate fired and requires the named follow-up action.
+    Activation { label: String },
 }
 
 impl Row {
@@ -368,6 +367,7 @@ impl Row {
         match self {
             Row::Met { label } => format!("  PASS  {label}"),
             Row::Tracked { label, issue } => format!("  XFAIL {label}  (tracked {issue})"),
+            Row::Activation { label } => format!("  ACTIVATE  {label}"),
         }
     }
 }
@@ -375,6 +375,7 @@ impl Row {
 /// Collects row outcomes and prints one report block. The harness stays green
 /// with expected-failures marked; a `Tracked` row is not a test failure.
 struct Report {
+    issue: &'static str,
     title: String,
     rows: Vec<Row>,
 }
@@ -382,6 +383,15 @@ struct Report {
 impl Report {
     fn new(title: impl Into<String>) -> Self {
         Self {
+            issue: "RUE-1086",
+            title: title.into(),
+            rows: Vec::new(),
+        }
+    }
+
+    fn rue_1090_gate(title: impl Into<String>) -> Self {
+        Self {
+            issue: "RUE-1090",
             title: title.into(),
             rows: Vec::new(),
         }
@@ -392,7 +402,7 @@ impl Report {
     }
 
     fn emit(&self) {
-        eprintln!("\n== RUE-1086 {} ==", self.title);
+        eprintln!("\n== {} {} ==", self.issue, self.title);
         for row in &self.rows {
             eprintln!("{}", row.describe());
         }
@@ -484,98 +494,176 @@ fn matrix_size_ladder() -> Vec<usize> {
 // Scaling-row logic (shared by the small unit smoke and the heavy matrix)
 // ---------------------------------------------------------------------------
 
+/// The RUE-1090 decision produced by an observed baseline/grown counter pair.
+///
+/// The frozen decision rule is about slope, not an absolute post-identity-cut
+/// count: a new implementation may legitimately have a different constant
+/// amount of per-body work. A positive slope as unrelated declarations grow
+/// activates RUE-1091; a flat or lower count cancels it. These are deterministic
+/// integer counters, so the comparison has zero tolerance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Rue1090GateVerdict {
+    Flat,
+    ActivateRue1091,
+}
+
+impl Rue1090GateVerdict {
+    fn combine(self, other: Self) -> Self {
+        if matches!(self, Self::ActivateRue1091) || matches!(other, Self::ActivateRue1091) {
+            Self::ActivateRue1091
+        } else {
+            Self::Flat
+        }
+    }
+
+    fn summary(self) -> &'static str {
+        match self {
+            Self::Flat => "CANCEL RUE-1091 (all gated counters flat)",
+            Self::ActivateRue1091 => "ACTIVATE RUE-1091 (positive per-body slope observed)",
+        }
+    }
+}
+
+/// Compare exact per-body ratios without normalizing them through integer
+/// division. This matters even though the current corpus keeps the number of
+/// cold bodies fixed: a future pipeline change must not hide a positive slope
+/// merely because two truncated integer quotients happen to agree.
+fn rue_1090_gate_verdict(
+    baseline_total: usize,
+    baseline_bodies: usize,
+    grown_total: usize,
+    grown_bodies: usize,
+) -> Rue1090GateVerdict {
+    assert!(baseline_bodies > 0 && grown_bodies > 0, "per-body denominator is zero");
+    let baseline_scaled = baseline_total as u128 * grown_bodies as u128;
+    let grown_scaled = grown_total as u128 * baseline_bodies as u128;
+    if grown_scaled <= baseline_scaled {
+        Rue1090GateVerdict::Flat
+    } else {
+        Rue1090GateVerdict::ActivateRue1091
+    }
+}
+
+/// Render one self-contained audit row. Historical formulas remain in the
+/// output for comparison only; they do not participate in the RUE-1090 verdict.
+fn rue_1090_audit_line(
+    counter: &str,
+    bodies: usize,
+    baseline_decls: usize,
+    grown_decls: usize,
+    baseline_total: usize,
+    baseline_bodies: usize,
+    grown_total: usize,
+    grown_bodies: usize,
+    historical_baseline: usize,
+    historical_grown: usize,
+) -> (Rue1090GateVerdict, String) {
+    let verdict = rue_1090_gate_verdict(
+        baseline_total,
+        baseline_bodies,
+        grown_total,
+        grown_bodies,
+    );
+    let slope_numerator = grown_total as i128 * baseline_bodies as i128
+        - baseline_total as i128 * grown_bodies as i128;
+    let decision = match verdict {
+        Rue1090GateVerdict::Flat => "FLAT",
+        Rue1090GateVerdict::ActivateRue1091 => "ACTIVATE RUE-1091",
+    };
+    (
+        verdict,
+        format!(
+            "RUE-1090 {decision}: per-body {counter} @ {bodies} bodies; \
+             baseline={baseline_total}/{baseline_bodies} ({baseline_decls} decls), \
+             grown={grown_total}/{grown_bodies} ({grown_decls} decls), \
+             exact_ratio_slope_numerator={slope_numerator:+}; \
+             historical_prediction={historical_baseline}->{historical_grown} (informational)",
+        ),
+    )
+}
+
 /// Axis: unrelated declarations grow while reached bodies stay fixed.
 ///
-/// The repaired target is that per-body prepare/project/install/endpoint work is
-/// UNCHANGED as `decls` grows — a body does not care how many declarations it
-/// never touches — so the flat target is the corpus-predicted per-body work at
-/// the *baseline* declaration count (`CorpusWitness::predict(bodies,
-/// baseline_decls)`). The documented witness (RUE-1091) is per-body work growing
-/// 1:1 with the declaration universe, which is also corpus-predicted:
-/// `CorpusWitness::predict(bodies, decls)`.
-///
-/// Both envelopes are closed forms in the corpus knobs. Neither is read back
-/// from a measured run, so a uniform per-body regression (an extra
-/// whole-universe traversal at *every* size, including the baseline) inflates
-/// the measured value past `2·U+1` at the endpoint term and past `U` at the
-/// others, landing outside both bands and failing loudly rather than tracking a
-/// scaled measured baseline.
+/// This is the RUE-1090 activation measurement. It compares the observed
+/// per-body projection, installation, and endpoint counters at each size with
+/// the observed baseline. The historical whole-universe formulas are printed as
+/// context only; they are deliberately not an acceptance envelope.
 fn run_fixed_bodies_growing_declarations(bodies: usize, ladder: &[usize]) {
     let baseline_decls = ladder[0];
-    // Flat target = corpus-predicted per-body work at the smallest declaration
-    // count. This is what the counters would read if per-body work were
-    // invariant to unrelated declarations.
-    let target = CorpusWitness::predict(bodies, baseline_decls);
-    let mut report = Report::new(format!(
-        "scaling: fixed {bodies} bodies, growing declarations"
+    let historical_baseline = CorpusWitness::predict(bodies, baseline_decls);
+    let mut report = Report::rue_1090_gate(format!(
+        "gate: fixed {bodies} bodies, growing unrelated declarations"
     ));
 
-    // A body's real AIR work is fixed by the reached bodies alone; capture it
-    // once from the baseline corpus to assert it stays invariant to unrelated
-    // declarations (a hard invariant that holds today).
-    let baseline_air = Measure::cold(&Corpus::new(bodies, baseline_decls)).air_instructions;
+    // A body's real AIR work is fixed by the reached bodies alone; retain that
+    // independent hard invariant alongside the declaration-context gate.
+    let baseline = Measure::cold(&Corpus::new(bodies, baseline_decls));
+    let baseline_air = baseline.air_instructions;
+    report.push(Row::Met {
+        label: format!(
+            "RUE-1090 raw baseline @ {bodies} bodies, {baseline_decls} decls: \
+             per_body_project={}/{} per_body_install={}/{} per_body_endpoints={}/{}",
+            baseline.projections_total,
+            baseline.cold_bodies,
+            baseline.semantics_total,
+            baseline.cold_bodies,
+            baseline.endpoints_total,
+            baseline.cold_bodies,
+        ),
+    });
+
+    let mut overall = Rue1090GateVerdict::Flat;
 
     for &decls in ladder.iter().skip(1) {
         let grown = Measure::cold(&Corpus::new(bodies, decls));
-        // Unrepaired witness = corpus-predicted per-body work at THIS decl count.
-        let witness = CorpusWitness::predict(bodies, decls);
-
-        report.push(Row::envelope(
-            format!(
-                "per-body prepare (shells) @ {bodies} bodies: {decls} decls={} (target {} @ {baseline_decls} decls, witness {})",
-                grown.per_body_shells(),
-                target.per_body_shells,
-                witness.per_body_shells
+        let historical_grown = CorpusWitness::predict(bodies, decls);
+        for (
+            counter,
+            baseline_value,
+            grown_value,
+            historical_baseline_value,
+            historical_grown_value,
+        ) in [
+            (
+                "projection",
+                baseline.projections_total,
+                grown.projections_total,
+                historical_baseline.per_body_projections,
+                historical_grown.per_body_projections,
             ),
-            grown.per_body_shells(),
-            target.per_body_shells,
-            2,
-            witness.per_body_shells,
-            2,
-            "RUE-1091",
-        ));
-        report.push(Row::envelope(
-            format!(
-                "per-body project @ {bodies} bodies: {decls} decls={} (target {} @ {baseline_decls} decls, witness {})",
-                grown.per_body_projections(),
-                target.per_body_projections,
-                witness.per_body_projections
+            (
+                "install",
+                baseline.semantics_total,
+                grown.semantics_total,
+                historical_baseline.per_body_semantics,
+                historical_grown.per_body_semantics,
             ),
-            grown.per_body_projections(),
-            target.per_body_projections,
-            2,
-            witness.per_body_projections,
-            2,
-            "RUE-1091",
-        ));
-        report.push(Row::envelope(
-            format!(
-                "per-body install (semantics) @ {bodies} bodies: {decls} decls={} (target {} @ {baseline_decls} decls, witness {})",
-                grown.per_body_semantics(),
-                target.per_body_semantics,
-                witness.per_body_semantics
+            (
+                "endpoints",
+                baseline.endpoints_total,
+                grown.endpoints_total,
+                historical_baseline.per_body_endpoints,
+                historical_grown.per_body_endpoints,
             ),
-            grown.per_body_semantics(),
-            target.per_body_semantics,
-            2,
-            witness.per_body_semantics,
-            2,
-            "RUE-1091",
-        ));
-        report.push(Row::envelope(
-            format!(
-                "per-body endpoints @ {bodies} bodies: {decls} decls={} (target {} @ {baseline_decls} decls, witness {})",
-                grown.per_body_endpoints(),
-                target.per_body_endpoints,
-                witness.per_body_endpoints
-            ),
-            grown.per_body_endpoints(),
-            target.per_body_endpoints,
-            2,
-            witness.per_body_endpoints,
-            2,
-            "RUE-1091",
-        ));
+        ] {
+            let (verdict, line) = rue_1090_audit_line(
+                counter,
+                bodies,
+                baseline_decls,
+                decls,
+                baseline_value,
+                baseline.cold_bodies,
+                grown_value,
+                grown.cold_bodies,
+                historical_baseline_value,
+                historical_grown_value,
+            );
+            overall = overall.combine(verdict);
+            report.push(match verdict {
+                Rue1090GateVerdict::Flat => Row::Met { label: line },
+                Rue1090GateVerdict::ActivateRue1091 => Row::Activation { label: line },
+            });
+        }
 
         // Hard invariant that holds today: AIR (real per-body body work) is
         // invariant to unrelated declarations. Same reached bodies => same AIR.
@@ -584,6 +672,12 @@ fn run_fixed_bodies_growing_declarations(bodies: usize, ladder: &[usize]) {
             "unrelated declarations must not change real per-body AIR work"
         );
     }
+
+    let final_label = format!("RUE-1090 VERDICT: {}", overall.summary());
+    report.push(match overall {
+        Rue1090GateVerdict::Flat => Row::Met { label: final_label },
+        Rue1090GateVerdict::ActivateRue1091 => Row::Activation { label: final_label },
+    });
 
     report.emit();
 }
@@ -812,8 +906,40 @@ fn run_identity_invariant(bodies: usize, decl_ladder: &[usize]) {
 #[test]
 fn scaling_smoke_fixed_bodies_growing_declarations() {
     // Genuinely small corpus (20 bodies, 20 -> 40 decls) so the default unit
-    // target stays fast. Same envelope logic the matrix runs at 100/1k.
+    // target stays fast. Same observed-slope gate the matrix runs at 100/1k.
     run_fixed_bodies_growing_declarations(20, &[20, 40]);
+}
+
+#[test]
+fn rue_1090_gate_accepts_a_flat_changed_constant() {
+    // The frozen rule is flatness, not equality with the historical 201-count
+    // baseline. A producer-nominal cut may change the constant work amount.
+    let (verdict, line) =
+        rue_1090_audit_line("install", 100, 100, 1_000, 250, 1, 250, 1, 201, 1_101);
+
+    assert_eq!(verdict, Rue1090GateVerdict::Flat);
+    assert!(line.contains("baseline=250/1 (100 decls)"));
+    assert!(line.contains("grown=250/1 (1000 decls)"));
+    assert!(line.contains("exact_ratio_slope_numerator=+0"));
+    assert!(line.contains("RUE-1090 FLAT"));
+    assert!(line.contains("historical_prediction=201->1101 (informational)"));
+}
+
+#[test]
+fn rue_1090_gate_activates_on_a_positive_per_body_slope() {
+    let (verdict, line) =
+        rue_1090_audit_line("endpoints", 100, 100, 1_000, 250, 1, 251, 1, 403, 2_203);
+
+    assert_eq!(verdict, Rue1090GateVerdict::ActivateRue1091);
+    assert!(line.contains("exact_ratio_slope_numerator=+1"));
+    assert!(line.contains("RUE-1090 ACTIVATE RUE-1091"));
+
+    // This is also activating even though integer division would show 250 for
+    // both ratios (`500 / 2` and `751 / 3`).
+    assert_eq!(
+        rue_1090_gate_verdict(500, 2, 751, 3),
+        Rue1090GateVerdict::ActivateRue1091
+    );
 }
 
 #[test]
