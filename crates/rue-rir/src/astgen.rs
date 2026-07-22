@@ -5,6 +5,8 @@
 //! has no per-AST construction path: callers normalize symbols, append module
 //! items in order, and finish one lowering session.
 
+use std::collections::HashMap;
+
 use lasso::{Spur, ThreadedRodeo};
 
 use rue_parser::ast::{ConstDecl, DropFn, ExternBlock, ExternFn};
@@ -51,8 +53,18 @@ pub struct AstGen<'a> {
     for_counter: u32,
     /// Typed structural route to the AST node currently being lowered. The
     /// route is relative to its producing definition and contains no spans or
-    /// global instruction ordinals.
+    /// global instruction ordinals. Still the source of string-literal and
+    /// read-only-data anchors; anonymous-type anchors no longer derive from it.
     structural_path: Vec<crate::RirStructuralPathSegment>,
+    /// The single anonymous-type anchor authority (RUE-1089, Theme 1). Each
+    /// value-position anonymous type literal reachable while reducing a producer
+    /// body is recorded here by exact source span when that producer root is
+    /// entered, carrying the anchor the shared [`crate::anonymous_type_sites`]
+    /// walk mints. `AstGen` looks each anonymous literal up here instead of
+    /// minting a second, drift-prone anchor from its own `structural_path`; a
+    /// missing or kind-mismatched lookup fails closed as an internal error.
+    anonymous_anchors:
+        HashMap<rue_span::Span, (crate::AnonymousTypeSiteKind, crate::RirStructuralAnchor)>,
     normalize_symbol: Box<dyn Fn(Spur) -> Spur + 'a>,
 }
 
@@ -69,6 +81,7 @@ impl<'a> AstGen<'a> {
             payload_error: None,
             for_counter: 0,
             structural_path: Vec::new(),
+            anonymous_anchors: HashMap::new(),
             normalize_symbol: Box::new(normalize_symbol),
         }
     }
@@ -140,13 +153,33 @@ impl<'a> AstGen<'a> {
         result
     }
 
-    /// Run one semantic producer with a producer-relative structural path.
+    /// Run one semantic producer with a producer-relative structural path,
+    /// recording every value-position anonymous type literal reachable while
+    /// reducing `root` with the anchor the shared [`crate::anonymous_type_sites`]
+    /// walk mints for it.
     ///
     /// A method may be discovered while traversing a containing struct, for
     /// example, but its body is an independent semantic producer. Anchors in
     /// that body must therefore be unaffected by sibling member insertion or
-    /// reordering in the owner.
-    fn with_producer_root<T>(&mut self, action: impl FnOnce(&mut Self) -> T) -> T {
+    /// reordering in the owner. The walk is the single anchor authority: it does
+    /// not descend into an anonymous struct's method bodies, so each such method
+    /// is entered here as its own root and contributes its own sites. Spans are
+    /// globally unique, so the accumulated map needs no per-root reset.
+    fn with_producer_root<T>(&mut self, root: &Expr, action: impl FnOnce(&mut Self) -> T) -> T {
+        let outer_path = std::mem::take(&mut self.structural_path);
+        for site in crate::anonymous_type_sites(root) {
+            self.anonymous_anchors
+                .insert(site.span, (site.kind, site.anchor));
+        }
+        let result = action(self);
+        self.structural_path = outer_path;
+        result
+    }
+
+    /// Run one body-less semantic producer (an `extern` foreign function) with a
+    /// producer-relative structural path. Such a producer has no body to reduce
+    /// and therefore no value-position anonymous type literals.
+    fn with_bodyless_producer_root<T>(&mut self, action: impl FnOnce(&mut Self) -> T) -> T {
         let outer_path = std::mem::take(&mut self.structural_path);
         let result = action(self);
         self.structural_path = outer_path;
@@ -161,10 +194,41 @@ impl<'a> AstGen<'a> {
         self.with_structural_segment(segment, |this| this.intern_type(ty))
     }
 
-    fn anonymous_type_anchor(&self, occurrence: u32) -> crate::RirStructuralAnchor {
-        let mut segments = self.structural_path.clone();
-        segments.push(crate::RirStructuralPathSegment::AnonymousType(occurrence));
-        crate::RirStructuralAnchor::new(segments)
+    /// The exact frontend anchor for the anonymous type literal at `span`, from
+    /// the single-authority table populated when its producer root was entered
+    /// (RUE-1089, Theme 1). A missing locator or a kind disagreement is an
+    /// invariant violation between the walk and this lowering; it fails closed as
+    /// a typed internal error (no recompute, no fallback) rather than mint a
+    /// silent second anchor.
+    fn anonymous_type_anchor(
+        &mut self,
+        span: rue_span::Span,
+        kind: crate::AnonymousTypeSiteKind,
+    ) -> crate::RirStructuralAnchor {
+        match self.anonymous_anchors.get(&span) {
+            Some((site_kind, anchor)) if *site_kind == kind => anchor.clone(),
+            Some(_) => {
+                self.record_anonymous_anchor_failure(
+                    "anonymous type literal kind disagrees with its transported frontend anchor",
+                );
+                crate::RirStructuralAnchor::new(Vec::new())
+            }
+            None => {
+                self.record_anonymous_anchor_failure(
+                    "anonymous type literal has no transported frontend anchor",
+                );
+                crate::RirStructuralAnchor::new(Vec::new())
+            }
+        }
+    }
+
+    fn record_anonymous_anchor_failure(&mut self, reason: &'static str) {
+        if self.payload_error.is_none() {
+            self.payload_error = Some(crate::RirPayloadBuildError::InvalidBuilderInput {
+                family: "anonymous type anchor",
+                reason,
+            });
+        }
     }
 
     fn string_literal_anchor(&self, occurrence: u32) -> crate::RirStructuralAnchor {
@@ -473,7 +537,7 @@ impl<'a> AstGen<'a> {
     }
 
     fn gen_const(&mut self, const_decl: &ConstDecl) -> InstRef {
-        self.with_producer_root(|this| this.gen_const_body(const_decl))
+        self.with_producer_root(&const_decl.init, |this| this.gen_const_body(const_decl))
     }
 
     fn gen_const_body(&mut self, const_decl: &ConstDecl) -> InstRef {
@@ -498,7 +562,7 @@ impl<'a> AstGen<'a> {
     }
 
     fn gen_drop_fn(&mut self, drop_fn: &DropFn) -> InstRef {
-        self.with_producer_root(|this| this.gen_drop_fn_body(drop_fn))
+        self.with_producer_root(&drop_fn.body, |this| this.gen_drop_fn_body(drop_fn))
     }
 
     fn gen_drop_fn_body(&mut self, drop_fn: &DropFn) -> InstRef {
@@ -514,7 +578,7 @@ impl<'a> AstGen<'a> {
     }
 
     fn gen_method(&mut self, method: &Method) -> InstRef {
-        self.with_producer_root(|this| this.gen_method_body(method))
+        self.with_producer_root(&method.body, |this| this.gen_method_body(method))
     }
 
     fn gen_method_body(&mut self, method: &Method) -> InstRef {
@@ -640,7 +704,7 @@ impl<'a> AstGen<'a> {
     }
 
     fn gen_function(&mut self, func: &Function) -> InstRef {
-        self.with_producer_root(|this| this.gen_function_body(func))
+        self.with_producer_root(&func.body, |this| this.gen_function_body(func))
     }
 
     fn gen_function_body(&mut self, func: &Function) -> InstRef {
@@ -704,7 +768,7 @@ impl<'a> AstGen<'a> {
     /// to the declaration lowers to an undefined linker symbol (ADR-0064).
     fn gen_extern_block(&mut self, extern_block: &ExternBlock) {
         for foreign in &extern_block.fns {
-            self.with_producer_root(|this| this.gen_extern_fn(foreign));
+            self.with_bodyless_producer_root(|this| this.gen_extern_fn(foreign));
         }
     }
 
@@ -1249,7 +1313,10 @@ impl<'a> AstGen<'a> {
                     TypeExpr::AnonymousStruct {
                         fields, methods, ..
                     } => {
-                        let anchor = self.anonymous_type_anchor(0);
+                        let anchor = self.anonymous_type_anchor(
+                            type_lit.type_expr.span(),
+                            crate::AnonymousTypeSiteKind::Struct,
+                        );
                         // Generate an anonymous struct type instruction with methods
                         let field_decls: Vec<(Spur, Spur)> = fields
                             .iter()
@@ -1306,7 +1373,10 @@ impl<'a> AstGen<'a> {
                                     .collect()
                             })
                             .collect();
-                        let anchor = self.anonymous_type_anchor(0);
+                        let anchor = self.anonymous_type_anchor(
+                            type_lit.type_expr.span(),
+                            crate::AnonymousTypeSiteKind::Enum,
+                        );
                         self.rir
                             .add_anon_enum_type(
                                 &variant_syms,

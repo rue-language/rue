@@ -1,16 +1,23 @@
 //! Definition-relative anchors for value-position anonymous type literals.
 //!
-//! This walk mirrors [`crate::AstGen`]'s structural-path discipline exactly for
-//! the subset of the expression grammar that can enclose a value-position
-//! anonymous `struct`/`enum` type literal, and yields the same
-//! [`RirStructuralAnchor`] `AstGen` mints for each such literal.
+//! This walk is the single anchor authority for value-position anonymous
+//! `struct`/`enum` type literals (RUE-1089). It mints one
+//! [`RirStructuralAnchor`] per such literal reachable while reducing a producer
+//! body, keyed by the literal's source span, using the structural-path
+//! discipline that defines the anchor scheme.
 //!
-//! It is the single anchor authority the durable declaration-time comptime
-//! evaluator consumes. That evaluator reparses one isolated declaration fragment
-//! whose `FileId(0)` spans are disjoint from module RIR, so the frontend anchor
-//! cannot be reconstructed by looking a fragment span up in module RIR after the
-//! fact. Instead the anchors are computed against the module AST — where the
-//! anchor scheme is defined — and transported to the fragment out of band.
+//! Both consumers derive their anchors from this one walk, so there is no second
+//! anchor-minting algorithm that could drift:
+//!
+//! - [`crate::AstGen`] populates a span-keyed table from this walk when it enters
+//!   each producer root and looks every anonymous literal it lowers up in it,
+//!   failing closed on a miss instead of computing an anchor from its own
+//!   `structural_path`.
+//! - The durable declaration-time comptime evaluator reparses one isolated
+//!   declaration fragment whose `FileId(0)` spans are disjoint from module RIR,
+//!   so the frontend anchor cannot be reconstructed by looking a fragment span up
+//!   in module RIR after the fact. Instead these anchors are computed against the
+//!   module AST and transported to the fragment out of band.
 //!
 //! A method body of an anonymous struct is deliberately NOT descended: `AstGen`
 //! resets it to its own producer root (`with_producer_root`), and the durable
@@ -292,7 +299,16 @@ mod tests {
     use rue_parser::Parser;
     use rue_parser::ast::Item;
 
-    /// Anchors `AstGen` mints, in dense RIR order.
+    /// The anonymous-type anchors `AstGen` emits into RIR, in dense RIR order.
+    ///
+    /// Since the single-authority cut (RUE-1089, Theme 1) `AstGen` no longer
+    /// mints these; it looks each anonymous literal up in the very
+    /// [`anonymous_type_sites`] walk table these tests compare against, and fails
+    /// closed (its `finish` panics via the recorded payload error) if the walk
+    /// does not cover a literal it lowers. So the assertions below no longer test
+    /// a second, independent mint — they are the walk-coverage guard that keeps
+    /// the walk a total authority over every anonymous literal position `AstGen`
+    /// can reach.
     fn rir_anonymous_anchors(source: &str) -> Vec<RirStructuralAnchor> {
         let lexer = Lexer::new(source);
         let (tokens, interner) = lexer.tokenize().unwrap();
@@ -340,6 +356,9 @@ mod tests {
         anchors
     }
 
+    /// Assert `AstGen` consumes exactly the walk's anchors for `source`: every
+    /// anonymous literal `AstGen` lowers resolves against the walk table (no
+    /// fail-closed miss) and no anonymous type reaches RIR without a walk site.
     fn assert_walk_matches_rir(source: &str) {
         let mut walk = walk_anonymous_anchors(source);
         let mut rir = rir_anonymous_anchors(source);
@@ -347,7 +366,7 @@ mod tests {
         rir.sort_by(|a, b| a.segments().cmp(b.segments()));
         assert_eq!(
             walk, rir,
-            "walk anchors diverged from AstGen for:\n{source}"
+            "AstGen did not consume the walk's anchors verbatim for:\n{source}"
         );
     }
 
