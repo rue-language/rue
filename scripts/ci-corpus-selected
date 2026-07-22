@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Decide whether one platform-corpus CI job should run its heavy suite, given
+# the affected-targets determinator's outputs (RUE-1119).
+#
+# The `platform-corpus` matrix jobs consult this before running their corpus.
+# It selects WITHIN the job rather than skipping the job: the check still runs
+# and reports success, so no branch-protection change is required, and a
+# deselected corpus costs only the runner spin-up instead of the full suite.
+#
+# FAIL-OPEN. The heavy suite runs unless the determinator explicitly said this
+# is a selective run (`RUE_AFFECTED_FULL == "false"`) AND this target is absent
+# from the selected set. An empty/unset `RUE_AFFECTED_FULL`, an unknown target,
+# or anything unexpected runs the suite.
+#
+# Exit 0  -> run the corpus.
+# Exit 1  -> corpus intentionally deselected (records the RUE-924 accounting).
+set -uo pipefail
+
+if [[ $# -ne 1 ]]; then
+    echo "usage: scripts/ci-corpus-selected //:TARGET" >&2
+    exit 2
+fi
+target="$1"
+
+full="${RUE_AFFECTED_FULL:-}"
+selected="${RUE_AFFECTED_TARGETS:-}"
+
+# Anything other than an explicit selective decision runs the suite.
+if [[ "$full" != "false" ]]; then
+    exit 0
+fi
+
+# Selective run: run only if this exact target is in the selected set.
+if [[ " ${selected} " == *" ${target} "* ]]; then
+    exit 0
+fi
+
+# Intentional deselection — record it so it is never mistaken for a silent
+# corpus drop (RUE-924).
+note="corpus ${target} intentionally deselected by the affected-targets determinator (RUE-1119); it is not affected by this PR's diff and runs in the merge-queue full suite."
+echo "$note"
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    printf '%s\n' "$note" >>"$GITHUB_STEP_SUMMARY"
+fi
+exit 1

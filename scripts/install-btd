@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Provision a pinned `btd` (Buck Target Determinator, from Meta's
+# facebookincubator/buck2-change-detector) into a destination directory.
+#
+# BTD is the off-the-shelf Buck2 target determinator used by scripts/affected-
+# targets (RUE-1119) to select which corpus suites a pull request actually
+# affects. It is deliberately NOT pinned via DotSlash like ./buck2 or
+# ./reindeer: the release publishes a per-artifact `.sha256` we can verify
+# against, but capturing the DotSlash digest/size triple for every platform
+# requires downloading each asset first. Until that is done, this installer
+# pins the *immutable dated release tag* and verifies the download against the
+# checksum the release itself ships. Converting this to a `btd` DotSlash
+# manifest later is a mechanical follow-up (see docs/process/ci.md).
+#
+# Usage:
+#   scripts/install-btd <dest-dir>
+#
+# On success the executable is available at <dest-dir>/btd. The download is
+# skipped when a btd for the pinned version is already present there.
+set -euo pipefail
+
+# Pin the immutable dated release, never the moving `latest` tag. The
+# 2026-07-20 release is the first with git support (`--vcs git`); Sapling-only
+# releases cannot serve this repo.
+BTD_VERSION="2026-07-20"
+BTD_REPO="facebookincubator/buck2-change-detector"
+BTD_BASE_URL="https://github.com/${BTD_REPO}/releases/download/${BTD_VERSION}"
+
+if [[ $# -ne 1 ]]; then
+    echo "usage: scripts/install-btd <dest-dir>" >&2
+    exit 2
+fi
+dest_dir="$1"
+
+# Map (uname -s, uname -m) onto the release asset. The determinator job runs on
+# linux-x64; macOS is supported so maintainers can run scripts/affected-targets
+# locally. linux-arm64 has no published asset — callers there fall back to a
+# full run, which is the fail-open default anyway.
+os="$(uname -s)"
+arch="$(uname -m)"
+case "${os}:${arch}" in
+    Linux:x86_64)
+        asset="btd-x86_64-unknown-linux-musl.tar.gz" ;;
+    Darwin:arm64 | Darwin:aarch64)
+        asset="btd-aarch64-apple-darwin.tar.gz" ;;
+    Darwin:x86_64)
+        asset="btd-x86_64-apple-darwin.tar.gz" ;;
+    *)
+        echo "install-btd: no published btd asset for ${os}/${arch}" >&2
+        exit 3 ;;
+esac
+
+mkdir -p "$dest_dir"
+dest_dir="$(cd "$dest_dir" && pwd)"
+btd_bin="${dest_dir}/btd"
+version_stamp="${dest_dir}/.btd-version"
+
+# Reuse an already-provisioned binary for the same pinned version.
+if [[ -x "$btd_bin" ]] && [[ "$(cat "$version_stamp" 2>/dev/null)" == "$BTD_VERSION" ]]; then
+    echo "install-btd: btd ${BTD_VERSION} already present at ${btd_bin}"
+    exit 0
+fi
+
+work="$(mktemp -d)"
+cleanup() { rm -rf "$work"; }
+trap cleanup EXIT
+
+archive="${work}/${asset}"
+checksum="${archive}.sha256"
+
+echo "install-btd: downloading ${asset} (${BTD_VERSION})..."
+curl -fsSL --retry 4 --retry-delay 2 -o "$archive" "${BTD_BASE_URL}/${asset}"
+curl -fsSL --retry 4 --retry-delay 2 -o "$checksum" "${BTD_BASE_URL}/${asset}.sha256"
+
+# The release ships `<sha256>  <filename>`; some tooling emits the bare digest.
+# Normalize to a bare lowercase hex digest and compare against what we hashed.
+expected="$(tr '[:upper:]' '[:lower:]' < "$checksum" | grep -oE '[0-9a-f]{64}' | head -n1)"
+if [[ -z "$expected" ]]; then
+    echo "install-btd: could not parse a sha256 digest from ${asset}.sha256" >&2
+    exit 1
+fi
+
+if command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "$archive" | awk '{print $1}')"
+else
+    # macOS ships shasum, not sha256sum.
+    actual="$(shasum -a 256 "$archive" | awk '{print $1}')"
+fi
+
+if [[ "$actual" != "$expected" ]]; then
+    echo "install-btd: checksum mismatch for ${asset}" >&2
+    echo "install-btd:   expected ${expected}" >&2
+    echo "install-btd:   actual   ${actual}" >&2
+    exit 1
+fi
+
+tar -xzf "$archive" -C "$work"
+
+# Locate the extracted executable regardless of whether the tarball nests it.
+extracted="$(find "$work" -type f -name btd -perm -u+x 2>/dev/null | head -n1)"
+if [[ -z "$extracted" ]]; then
+    extracted="$(find "$work" -type f -name btd 2>/dev/null | head -n1)"
+fi
+if [[ -z "$extracted" ]]; then
+    echo "install-btd: no 'btd' executable found inside ${asset}" >&2
+    exit 1
+fi
+
+install -m 0755 "$extracted" "$btd_bin"
+printf '%s\n' "$BTD_VERSION" > "$version_stamp"
+echo "install-btd: installed btd ${BTD_VERSION} -> ${btd_bin}"

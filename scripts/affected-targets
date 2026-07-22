@@ -1,0 +1,274 @@
+#!/usr/bin/env bash
+# Affected-corpus selection for pull-request CI (RUE-1119).
+#
+# On a pull_request run, only the heavy corpus suites a change actually affects
+# need to run; the merge queue (merge_group) remains the authoritative full
+# `//...` run. This script decides, for one PR, which of the selectable corpus
+# targets are affected, using Meta's off-the-shelf Buck Target Determinator
+# (BTD, facebookincubator/buck2-change-detector) rather than a hand-rolled
+# `owner()`/`rdeps()` query.
+#
+# SAFETY MODEL (this is the whole point). Under-selection silently drops
+# coverage — a suite that never runs cannot fail (RUE-924). So every decision
+# path here is CONSERVATIVE and FAIL-OPEN: any change that could affect the
+# graph globally, any tool/VCS/Buck error, any parse failure, anything
+# unexpected forces a full run. Over-selection costs wall time; under-selection
+# merges a regression. We always choose wall time.
+#
+# BTD's two-dump design (compare `buck2 targets` at the merge-base and at the
+# head) already handles most graph-global changes — `.bzl`/macro edits, added
+# or removed targets, changed `glob()` results all surface as target-hash
+# differences. This script adds a short OUT-OF-GRAPH force-full list for things
+# Buck's graph cannot see: the `./buck2` dotslash pin itself, `test.sh`, the
+# `scripts/ci-*` runners, this selection engine, and the workflow files. It also
+# force-runs on `.buckconfig`/`BUCK`/`.bzl`/toolchain/platform/prelude changes
+# as belt-and-suspenders — cheap to over-select, and it keeps correctness from
+# depending on BTD internals we cannot exercise locally.
+#
+# Subcommands:
+#   decide             Emit the selection decision for the current PR. Writes
+#                      `full` and `selected` to $GITHUB_OUTPUT when set and a
+#                      human-readable manifest to $GITHUB_STEP_SUMMARY.
+#   force-full-match   Read candidate paths on stdin; exit 0 (and print the
+#                      first matching reason) if any forces a full run, else
+#                      exit 1. Used by the unit tests and reusable locally.
+#
+# Deliberately NOT `set -e`: a full run is the safe fallback, so failures are
+# handled explicitly and converted into "full", never into a hard error that
+# could be misread as "nothing to run".
+set -uo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+repo_root="$PWD"
+
+# Temp paths to reclaim on exit. decide_full/decide_select exit the process
+# directly, so cleanup must hang off EXIT rather than a function RETURN.
+_af_cleanup=()
+_af_worktrees=()
+af_cleanup() {
+    local wt path
+    for wt in "${_af_worktrees[@]:-}"; do
+        [[ -n "$wt" ]] || continue
+        git worktree remove --force "$wt" >/dev/null 2>&1 || true
+    done
+    git worktree prune >/dev/null 2>&1 || true
+    for path in "${_af_cleanup[@]:-}"; do
+        [[ -n "$path" ]] && rm -rf "$path"
+    done
+}
+trap af_cleanup EXIT
+
+# The corpus targets whose per-platform CI jobs are gated by this selection
+# (the `platform-corpus` matrix in .github/workflows/ci.yml). Keep this in sync
+# with that matrix; an unknown target is always treated as "run" downstream, so
+# drift fails safe toward over-selection.
+SELECTABLE_CORPUS=(
+    //:cli-tests-shard-0
+    //:cli-tests-shard-1
+    //:cli-tests-shard-2
+    //:cli-tests-shard-3
+    //:cli-tests-caldera
+    //:spec-tests
+)
+
+# Out-of-graph (and belt-and-suspenders in-graph) paths that force a full run.
+# Anchored, repo-root-relative, extended-regex alternation.
+FORCE_FULL_REGEX='(^|/)BUCK$|\.bzl$|^\.buckconfig|^\.buckroot$|^\.github/workflows/|^toolchains/|^platforms/|^constraints/|^third-party/|^prelude/|^rust-toolchain\.toml$|^buck2$|^buck2-bin$|^reindeer$|^btd$|^test\.sh$|^scripts/ci-|^scripts/affected-targets$|^scripts/install-btd$|^scripts/provision-build-cache$|^scripts/with-full-suite-lock$|^scripts/rue$|^scripts/rue-bin$'
+
+# buck2 targets invocation BTD's own `targets` wrapper uses (td_util buck::run
+# targets_arguments). Both dumps use the identical command so their unconfigured
+# target hashes are directly comparable; any per-environment config difference
+# cancels out because it is present in both.
+buck_targets_dump() {
+    local buck="$1" outfile="$2"
+    "$buck" targets root//... \
+        --streaming \
+        --keep-going \
+        --no-cache \
+        --json-lines \
+        --show-unconfigured-target-hash \
+        --imports \
+        --output-attribute '^buck\.|^name$|^labels$|^ci_srcs$|^ci_srcs_must_match$|^ci_deps$|^remote_execution$|^tests$' \
+        --output "$outfile"
+}
+
+# Print the first force-full reason found on stdin; exit 0 if forced, 1 if not.
+force_full_match() {
+    local match
+    match="$(grep -E "$FORCE_FULL_REGEX" || true)"
+    if [[ -n "$match" ]]; then
+        printf '%s\n' "$(head -n1 <<<"$match")"
+        return 0
+    fi
+    return 1
+}
+
+# Emit `key=value` to $GITHUB_OUTPUT when running under Actions; harmless
+# otherwise.
+emit_output() {
+    [[ -n "${GITHUB_OUTPUT:-}" ]] || return 0
+    printf '%s=%s\n' "$1" "$2" >>"$GITHUB_OUTPUT"
+}
+
+# Write the RUE-924 selection manifest: every selectable corpus is accounted for
+# as either RUN or DESELECTED, so an intentional deselection is never confused
+# with a silent drop.
+emit_manifest() {
+    local mode="$1" reason="$2" selected="$3"
+    [[ -n "${GITHUB_STEP_SUMMARY:-}" ]] || return 0
+    {
+        echo "### Affected-corpus selection (RUE-1119)"
+        echo
+        echo "- Decision: **${mode}**"
+        echo "- Reason: ${reason}"
+        echo
+        echo "| Corpus target | Selection |"
+        echo "| --- | --- |"
+        local target state
+        for target in "${SELECTABLE_CORPUS[@]}"; do
+            if [[ "$mode" == "full" ]] || [[ " ${selected} " == *" ${target} "* ]]; then
+                state="RUN"
+            else
+                state="DESELECTED (intentional)"
+            fi
+            echo "| ${target} | ${state} |"
+        done
+        echo
+    } >>"$GITHUB_STEP_SUMMARY"
+}
+
+decide_full() {
+    local reason="$1"
+    echo "affected-targets: FULL run — ${reason}"
+    emit_output full "true"
+    emit_output selected ""
+    emit_manifest "full" "$reason" ""
+    exit 0
+}
+
+decide_select() {
+    local selected="$1" reason="$2"
+    echo "affected-targets: SELECTIVE run — ${reason}"
+    echo "affected-targets: selected corpus targets: ${selected:-<none>}"
+    emit_output full "false"
+    emit_output selected "$selected"
+    emit_manifest "select" "$reason" "$selected"
+    exit 0
+}
+
+cmd_decide() {
+    local event="${RUE_AFFECTED_EVENT:-pull_request}"
+    if [[ "$event" != "pull_request" ]]; then
+        decide_full "authoritative full run for event '${event}'"
+    fi
+
+    # Resolve base and head. In Actions these come from the pull_request event;
+    # locally they default to the merge-base against origin/trunk.
+    local base_ref head_ref
+    base_ref="${RUE_AFFECTED_BASE_SHA:-}"
+    head_ref="${RUE_AFFECTED_HEAD_SHA:-HEAD}"
+    if [[ -z "$base_ref" ]]; then
+        base_ref="$(git merge-base origin/trunk HEAD 2>/dev/null)" || base_ref=""
+    fi
+    if [[ -z "$base_ref" ]]; then
+        decide_full "could not resolve a base ref for the diff"
+    fi
+
+    # Merge-base diff (three-dot) so unrelated changes on the base branch do not
+    # inflate the changed-file set.
+    local changes_file
+    changes_file="$(mktemp)"
+    _af_cleanup+=("$changes_file")
+    if ! git diff --name-only "${base_ref}...${head_ref}" >"$changes_file" 2>/dev/null; then
+        decide_full "git diff against base '${base_ref}' failed"
+    fi
+    if [[ ! -s "$changes_file" ]]; then
+        decide_full "empty changed-file set (unexpected on a PR)"
+    fi
+
+    local reason
+    if reason="$(force_full_match <"$changes_file")"; then
+        decide_full "changed path forces a full run: ${reason}"
+    fi
+
+    # From here on, a full run is still the fallback for any tooling failure.
+    local work
+    work="$(mktemp -d)"
+    _af_cleanup+=("$work")
+
+    # Provision btd. No linux-arm64 asset exists; the determinator job runs on
+    # linux-x64, but guard anyway.
+    if ! "$repo_root/scripts/install-btd" "$work/bin" >&2; then
+        decide_full "btd could not be provisioned"
+    fi
+    local btd="$work/bin/btd"
+
+    # Head dump from the current checkout (the tree CI will test).
+    if ! buck_targets_dump "$repo_root/buck2" "$work/head.jsonl" >&2; then
+        decide_full "buck2 targets dump at head failed"
+    fi
+
+    # Base dump from a detached worktree at the base ref. A separate worktree
+    # shares the committed prelude/toolchains, so buck2 can parse it standalone.
+    local base_tree="$work/base-tree"
+    if ! git worktree add --detach "$base_tree" "$base_ref" 1>&2; then
+        decide_full "could not create a base worktree at '${base_ref}'"
+    fi
+    _af_worktrees+=("$base_tree")
+    local base_ok=1
+    if ! ( cd "$base_tree" && buck_targets_dump "$base_tree/buck2" "$work/base.jsonl" ) >&2; then
+        base_ok=0
+    fi
+    if [[ "$base_ok" -ne 1 ]]; then
+        decide_full "buck2 targets dump at base failed"
+    fi
+
+    # Run BTD over the two dumps and the changed-file list.
+    local btd_out="$work/impacted.jsonl"
+    if ! "$btd" \
+        --changes "$changes_file" \
+        --base "$work/base.jsonl" \
+        --diff "$work/head.jsonl" \
+        --universe root//... \
+        --vcs git \
+        --json-lines >"$btd_out" 2>"$work/btd.err"; then
+        echo "affected-targets: btd failed:" >&2
+        cat "$work/btd.err" >&2 || true
+        decide_full "btd returned non-zero"
+    fi
+
+    # Extract impacted target labels and intersect with the selectable corpus.
+    # `root//:foo` and `//:foo` are the same target; normalize the `root` cell.
+    local impacted
+    if ! impacted="$(python3 "$repo_root/scripts/parse-btd-impacted.py" <"$btd_out")"; then
+        decide_full "could not parse btd output"
+    fi
+
+    local selected="" target
+    for target in "${SELECTABLE_CORPUS[@]}"; do
+        if grep -Fxq "$target" <<<"$impacted"; then
+            selected+="${selected:+ }$target"
+        fi
+    done
+
+    decide_select "$selected" "btd affected-target closure over the PR diff"
+}
+
+main() {
+    local sub="${1:-decide}"
+    case "$sub" in
+        decide)
+            cmd_decide ;;
+        force-full-match)
+            if reason="$(force_full_match)"; then
+                printf 'FULL: %s\n' "$reason"
+                exit 0
+            fi
+            exit 1 ;;
+        *)
+            echo "usage: scripts/affected-targets [decide|force-full-match]" >&2
+            exit 2 ;;
+    esac
+}
+
+main "$@"
