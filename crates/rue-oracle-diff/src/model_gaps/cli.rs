@@ -163,10 +163,11 @@ const ENTRIES: &[Entry] = &[
     ),
     // std.fs v1 follow-ups (ADR-0057 "Future Work"): seek/tell, fstat/newfstatat
     // metadata, rename, unlink, and directory create/remove. Same raw-pointer
-    // substrate as v0 (StrBuf/ArrayBuf `@int_to_ptr` prologue), so the oracle
-    // model, with the heap now modeled, stops at the inout-forwarding gap. These cases are `only_on` the two
-    // Linux targets (macOS stat layout + Darwin *at syscall numbers are a
-    // documented, unverified follow-up), so their scope is Linux-only to match.
+    // substrate as v0; with heap allocation and inout forwarding modeled, the
+    // oracle reaches the still-unmodeled byte-copy intrinsic. These cases are
+    // `only_on` the two Linux targets (macOS stat layout + Darwin *at syscall
+    // numbers are a documented, unverified follow-up), so their scope is
+    // Linux-only to match.
     Entry::new(
         "cli.fs_file_io",
         "fs_seek_set_read_back",
@@ -601,9 +602,6 @@ fn render_kind(kind: ModelGapKind) -> String {
         }
         ModelGapKind::Semantic(SemanticGapKind::TextProjectionRead) => {
             "semantic(SemanticGapKind::TextProjectionRead)".to_string()
-        }
-        ModelGapKind::Semantic(SemanticGapKind::InoutParameterForwarding) => {
-            "semantic(SemanticGapKind::InoutParameterForwarding)".to_string()
         }
         ModelGapKind::ExternalDependency(kind) => {
             format!("external(ExternalDependencyKind::{kind:?})")

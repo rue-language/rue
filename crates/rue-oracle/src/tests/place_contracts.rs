@@ -72,7 +72,7 @@ fn core_str_length_is_modeled_and_inout_forwarding_threads_through_nested_calls(
     // argument is now modeled (RUE-1010): `f` forwards its own `inout v` to
     // `g`, whose mutation threads back through both call boundaries. This is the
     // container `self`-chain (`push` -> `self.reserve()`) that previously
-    // reached the `InoutParameterForwarding` gap.
+    // reached an oracle model gap.
     let forwarding = run_source_with_preview_features(
         "struct D { x: i32 }
         fn g(inout v: D) -> i32 { v.x = v.x + 1; v.x }

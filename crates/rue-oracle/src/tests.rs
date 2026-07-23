@@ -800,8 +800,8 @@ fn inout_param_forwarded_to_nested_inout_call() {
     // Forwarding a writable `inout` parameter as a *nested* call's `inout`
     // argument. This is the container `self`-chain — `ArrayBuf::push` calls
     // `self.reserve()`, forwarding its own `inout self` — and before RUE-1010 it
-    // was the `InoutParameterForwarding` model gap. The mutation must thread
-    // through both call boundaries back to the original caller.
+    // was an oracle model gap. The mutation must thread through both call
+    // boundaries back to the original caller.
     let src = "fn add(inout x: i32, k: i32) { x = x + k; }
     fn bump(inout x: i32) { add(inout x, 1); }
     fn main() -> i32 {

@@ -473,9 +473,6 @@ fn render_kind(kind: ModelGapKind) -> String {
         ModelGapKind::Semantic(SemanticGapKind::TextProjectionRead) => {
             "semantic(SemanticGapKind::TextProjectionRead)".to_string()
         }
-        ModelGapKind::Semantic(SemanticGapKind::InoutParameterForwarding) => {
-            "semantic(SemanticGapKind::InoutParameterForwarding)".to_string()
-        }
         ModelGapKind::ExternalDependency(kind) => {
             format!("external(ExternalDependencyKind::{kind:?})")
         }

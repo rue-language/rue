@@ -191,34 +191,64 @@ fn main() -> i32 {
 stdout = ""
 exit_code = 42
 
-# Exact fixed-string references retain one-pointer identity through forwarding
-# and projected field/array-element lvalues. The typed `make` calls construct
-# the array elements as Str(8); contextual typing of bare literals inside an
-# annotated fixed-string array is a separate inference concern.
+# Exact fixed-string references retain one-pointer identity through direct and
+# multi-hop forwarding into projected field/array-element lvalues. Equality,
+# indexing, and length checks prove the copied-back value's content, while every
+# helper's exact Str(8) signature pins the nominal capacity. The separate
+# `inout str` chain is read-only: a view may be forwarded, but unlike an exact
+# `inout Str(8)` it cannot replace the caller's whole value.
 [[case]]
 name = "fixed_string_inout_forwarding_and_projected_lvalues_across_opt_levels"
 differential_opt = true
 files = [{ path = "main.rue", source = """
-struct Holder { value: Str(8) }
+struct Holder {
+    direct: Str(8),
+    forwarded: Str(8),
+}
 
 fn replace(inout value: Str(8), replacement: Str(8)) {
     value = replacement;
 }
 
-fn forward(inout value: Str(8)) {
-    replace(inout value, "forward");
+fn forward(inout value: Str(8), replacement: Str(8)) {
+    replace(inout value, replacement);
 }
 
 fn make(value: Str(8)) -> Str(8) { value }
 
+fn exact(value: Str(8), expected: Str(8), expected_len: u64) -> bool {
+    value == expected && value.len() == expected_len && value[0] == expected[0]
+}
+
+fn view_len(inout value: str) -> u64 {
+    value.len()
+}
+
+fn forward_view_len(inout value: str) -> u64 {
+    view_len(inout value)
+}
+
 fn main() -> i32 {
     let mut local: Str(8) = "local";
-    let mut holder = Holder { value: "field" };
+    let mut holder = Holder { direct: "field", forwarded: "other" };
     let mut values: [Str(8); 2] = [make("zero"), make("one")];
-    forward(inout local);
-    replace(inout holder.value, "project");
-    replace(inout values[1], "array");
-    if local.len() == 7 && holder.value.len() == 7 && values[1].len() == 5 {
+
+    forward(inout local, "forward");
+    replace(inout holder.direct, "project");
+    forward(inout holder.forwarded, "nested");
+    replace(inout values[0], "array");
+    forward(inout values[1], "element");
+
+    let field_view_len = forward_view_len(inout holder.forwarded);
+    let array_view_len = forward_view_len(inout values[1]);
+    if exact(local, "forward", 7)
+        && exact(holder.direct, "project", 7)
+        && exact(holder.forwarded, "nested", field_view_len)
+        && exact(values[0], "array", 5)
+        && exact(values[1], "element", array_view_len)
+        && field_view_len == 6
+        && array_view_len == 7
+    {
         42
     } else {
         1
