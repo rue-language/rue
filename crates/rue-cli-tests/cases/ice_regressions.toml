@@ -457,3 +457,24 @@ fn main() -> i32 {
 """ }]
 compile_fail = true
 error_contains = ["E0425", "inout argument must be"]
+[[case]]
+name = "invalid_comptime_type_argument_reports_diagnostic"
+description = "A rejected comptime type argument is a deterministic user error, not an incomplete body query."
+files = [{ path = "main.rue", source = """
+fn id(comptime T: type, value: T) -> T { value }
+fn main() -> i32 { id(32, 42) }
+""" }]
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+compile_stderr_not_contains = ["internal compiler error", "did not publish a terminal"]
+
+[[case]]
+name = "unknown_comptime_type_argument_reports_diagnostic"
+description = "An unknown type passed to a comptime type parameter does not abort body-query publication."
+files = [{ path = "main.rue", source = """
+fn id(comptime T: type, value: T) -> T { value }
+fn main() -> i32 { id(i34, 42) }
+""" }]
+compile_fail = true
+error_contains = ["E0206", "type mismatch"]
+compile_stderr_not_contains = ["internal compiler error", "did not publish a terminal"]
