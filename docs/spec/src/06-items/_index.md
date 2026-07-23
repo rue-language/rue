@@ -42,7 +42,7 @@ implementations under a type the way an `impl` block does in other languages.
 
 {{ rule(id="6.0:2", cat="legality-rule") }}
 
-User-defined type names (structs and enums) **MUST** be unique within a program. Defining multiple types with the same name produces a compile-time error.
+User-defined type names (structs and enums) **MUST** be unique within their defining module (source file). Defining multiple types with the same name in one file produces a compile-time error (E0436; this is the per-file check of 10.5:1). Distinct modules **MAY** each define a type with the same name (10.5:2); declarations in other modules do not participate in this check and do not constrain the names a module may define.
 
 {{ rule(id="6.0:3", cat="legality-rule") }}
 
