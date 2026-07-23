@@ -19,6 +19,7 @@
 #![allow(dead_code)] // RUE-1091 slice 2b is inert: driven by later slices.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rue_air::{
@@ -42,6 +43,42 @@ pub(crate) enum LocalToken {
 /// compared across overlays except by inequality.
 static NEXT_OVERLAY_ISSUER: AtomicU64 = AtomicU64::new(1);
 
+/// Cumulative overlay-materialization metering (RUE-1091 slice 3d, ADR-0066 §4
+/// "Structural accounting": overlays created; body-local type/parameter/endpoint
+/// units created; and clone-from-template probes). Each field is incremented at
+/// the exact overlay operation it measures — an overlay birth, a fresh local
+/// token mint, or a unit copied out of a cached recipe template — never from an
+/// input slice length, so a shortcut that mints fewer units drops the counter.
+///
+/// The overlay is exercised only by the test-only overlay path; no production
+/// path constructs a `BodySemanticOverlay`, so every field here reads zero on the
+/// production path. The counters live behind an `Arc` so the session can hold one
+/// meter and hand it to the overlays its test path mints, mirroring the
+/// recipe-cache metering. Exposed through the unstable surface as
+/// [`crate::unstable::OverlayMaterializationMetrics`].
+#[derive(Debug, Default)]
+pub(crate) struct OverlayMaterializationCounters {
+    overlays_created: AtomicU64,
+    definition_units_created: AtomicU64,
+    module_units_created: AtomicU64,
+    endpoint_units_created: AtomicU64,
+    clone_from_template_units: AtomicU64,
+}
+
+impl OverlayMaterializationCounters {
+    /// An owned snapshot of the current counters. Owned plain data, never a
+    /// query-engine record.
+    pub(crate) fn snapshot(&self) -> crate::unstable::OverlayMaterializationMetrics {
+        crate::unstable::OverlayMaterializationMetrics {
+            overlays_created: self.overlays_created.load(Ordering::Relaxed),
+            definition_units_created: self.definition_units_created.load(Ordering::Relaxed),
+            module_units_created: self.module_units_created.load(Ordering::Relaxed),
+            endpoint_units_created: self.endpoint_units_created.load(Ordering::Relaxed),
+            clone_from_template_units: self.clone_from_template_units.load(Ordering::Relaxed),
+        }
+    }
+}
+
 /// One task-owned body-local semantic overlay.
 ///
 /// The overlay owns every compact ID it hands out. Definition slots are dense
@@ -57,11 +94,24 @@ pub(crate) struct BodySemanticOverlay {
     module_ids: Vec<ModuleId>,
     module_slots: HashMap<ModuleId, u32>,
     recipe_tokens: HashMap<RecipeLogicalKey, LocalToken>,
+    counters: Arc<OverlayMaterializationCounters>,
 }
 
 impl BodySemanticOverlay {
-    /// Create an empty overlay with a fresh, unshared local token space.
+    /// Create an empty overlay with a fresh, unshared local token space and its
+    /// own private materialization meter. Convenience for isolated unit tests that
+    /// do not observe the counters; the overlay-birth event is still metered on
+    /// its private meter.
     pub(crate) fn new() -> Self {
+        Self::with_counters(Arc::new(OverlayMaterializationCounters::default()))
+    }
+
+    /// Create an empty overlay whose materialization events accrue to the shared
+    /// `counters` meter. The session's test-only overlay path passes its own meter
+    /// so overlay births and unit mints are observable through the unstable
+    /// surface; the overlay-birth event is metered here.
+    pub(crate) fn with_counters(counters: Arc<OverlayMaterializationCounters>) -> Self {
+        counters.overlays_created.fetch_add(1, Ordering::Relaxed);
         Self {
             issuer: NEXT_OVERLAY_ISSUER.fetch_add(1, Ordering::Relaxed),
             definition_keys: Vec::new(),
@@ -69,7 +119,16 @@ impl BodySemanticOverlay {
             module_ids: Vec::new(),
             module_slots: HashMap::new(),
             recipe_tokens: HashMap::new(),
+            counters,
         }
+    }
+
+    /// An owned snapshot of this overlay's materialization meter (RUE-1091 slice
+    /// 3d). When the overlay shares the session meter, this reflects every overlay
+    /// filled from that meter.
+    #[cfg(test)]
+    pub(crate) fn materialization_metrics(&self) -> crate::unstable::OverlayMaterializationMetrics {
+        self.counters.snapshot()
     }
 
     /// This overlay's issuer. Two overlays never share an issuer, so a token
@@ -89,6 +148,12 @@ impl BodySemanticOverlay {
         if let Some(&slot) = self.definition_slots.get(key) {
             return SemanticDefinitionToken::new(self.issuer, slot);
         }
+        // A fresh body-local definition unit: metered at the mint, not from an
+        // input length, so a shared-slot shortcut that reuses an existing slot
+        // (the branch above) does not charge it.
+        self.counters
+            .definition_units_created
+            .fetch_add(1, Ordering::Relaxed);
         let slot = self.definition_keys.len() as u32;
         self.definition_keys.push(Some(key.clone()));
         self.definition_slots.insert(key.clone(), slot);
@@ -100,6 +165,10 @@ impl BodySemanticOverlay {
         if let Some(&slot) = self.module_slots.get(module) {
             return SemanticModuleToken::new(self.issuer, slot);
         }
+        // A fresh body-local module unit, metered at the mint.
+        self.counters
+            .module_units_created
+            .fetch_add(1, Ordering::Relaxed);
         let slot = self.module_ids.len() as u32;
         self.module_ids.push(module.clone());
         self.module_slots.insert(module.clone(), slot);
@@ -111,6 +180,10 @@ impl BodySemanticOverlay {
     /// token space stays dense; the reverse map records no key, which publication
     /// treats as unresolved (analysis never issues such a token for a real body).
     fn mint_endpoint_definition(&mut self) -> SemanticDefinitionToken {
+        // A fresh body-local endpoint unit, metered at the mint.
+        self.counters
+            .endpoint_units_created
+            .fetch_add(1, Ordering::Relaxed);
         let slot = self.definition_keys.len() as u32;
         self.definition_keys.push(None);
         SemanticDefinitionToken::new(self.issuer, slot)
@@ -165,6 +238,14 @@ impl BodySemanticOverlay {
         F: FnOnce() -> DeclarationRecipe,
     {
         let recipe = cache.get_or_build(key, terminal, build)?;
+        // Clone-from-template probe (ADR-0066 §4 "any clone-from-template probe,
+        // including copied units"): a cached recipe template is copied out into
+        // this overlay's local unit. Metered once per materialization through the
+        // cache; a body-local cache hit inside `import_recipe` still mints no new
+        // slot, but the copy-out of the shared template is the measured event.
+        self.counters
+            .clone_from_template_units
+            .fetch_add(1, Ordering::Relaxed);
         Ok(self.import_recipe(recipe.as_ref()))
     }
 
@@ -387,6 +468,83 @@ mod tests {
         assert!(
             second.key_for_semantic_token(first_shared).is_err(),
             "one overlay's token must be foreign to another overlay"
+        );
+    }
+
+    // Mechanical proof (RUE-1091 slice 3d, ADR-0066 §4 "every counter is
+    // incremented at the operation it measures"): each overlay-materialization
+    // family is charged at exactly its operation — an overlay birth, a fresh
+    // local unit mint, and a clone-out of a cached recipe template — and never
+    // from an input length. Two overlays share one meter so the counts aggregate,
+    // and a repeated import of an already-materialized fact mints no new unit.
+    #[test]
+    fn overlay_materialization_counters_charge_each_unit_at_its_operation() {
+        use crate::declaration_recipe::{DefinitionEndpointRecipe, EndpointRecipe};
+        use crate::revisioned_query_database::ModuleIndexEntry;
+        use crate::{DefinitionKind, DefinitionNamespace};
+
+        let meter = Arc::new(OverlayMaterializationCounters::default());
+        // Two overlay births on the shared meter.
+        let mut first = BodySemanticOverlay::with_counters(meter.clone());
+        let mut second = BodySemanticOverlay::with_counters(meter.clone());
+        assert_eq!(meter.snapshot().overlays_created, 2);
+
+        // A definition unit is minted on first import; a repeated import of the
+        // same recipe is a cache read that mints no second unit.
+        let apply = definition_recipe("apply");
+        first.import_recipe(&apply);
+        first.import_recipe(&apply);
+        assert_eq!(
+            meter.snapshot().definition_units_created,
+            1,
+            "the repeated import must not mint a second definition unit"
+        );
+        // A second overlay materializing the same fact mints its OWN unit.
+        second.import_recipe(&apply);
+        assert_eq!(meter.snapshot().definition_units_created, 2);
+
+        // A module unit is minted at the module intern.
+        let module = ModuleId::from_logical_path("pkg/main.rue").unwrap();
+        first.intern_module(&module);
+        first.intern_module(&module);
+        assert_eq!(
+            meter.snapshot().module_units_created,
+            1,
+            "the repeated module intern must not mint a second module unit"
+        );
+
+        // An endpoint unit is minted for an endpoint-only definition recipe.
+        let entry = ModuleIndexEntry {
+            namespace: DefinitionNamespace::ModuleItem,
+            kind: DefinitionKind::Function,
+            visibility: Some(rue_parser::ast::Visibility::Public),
+            name: Arc::from("endpoint_only"),
+            language_item: None,
+            name_span: rue_span::Span::with_file(FileId::new(7), 41, 48),
+            declaration_span: rue_span::Span::with_file(FileId::new(7), 12, 96),
+        };
+        let endpoint = DeclarationRecipe::Endpoint(EndpointRecipe::Definition(
+            DefinitionEndpointRecipe::from_module_index_entry(&module, &entry),
+        ));
+        first.import_recipe(&endpoint);
+        assert_eq!(meter.snapshot().endpoint_units_created, 1);
+
+        // A clone-from-template probe fires when a cached recipe template is
+        // materialized into an overlay-local unit through the recipe cache.
+        let cache = crate::recipe_cache::RecipeCache::new(Arc::default());
+        let template = definition_recipe("cached");
+        let key = template.logical_key();
+        let terminal = crate::recipe_cache::TerminalStamp::new(1, 1);
+        first
+            .import_via_cache(&cache, key.clone(), terminal, || template.clone())
+            .unwrap();
+        second
+            .import_via_cache(&cache, key, terminal, || template.clone())
+            .unwrap();
+        assert_eq!(
+            meter.snapshot().clone_from_template_units,
+            2,
+            "each overlay copying the cached template out is one probe"
         );
     }
 

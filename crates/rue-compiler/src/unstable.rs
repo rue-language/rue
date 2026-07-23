@@ -250,6 +250,35 @@ pub fn provider_observation_metrics(
     session.provider_observation_metrics()
 }
 
+/// An owned snapshot of the overlay-materialization counters (RUE-1091 slice 3d,
+/// ADR-0066 §4 "Structural accounting"): overlays created, body-local
+/// type/parameter/endpoint units created, and clone-from-template probes. Owned
+/// plain data, not a query-engine record: a `BodySemanticOverlay` is minted only
+/// by the test-only overlay path, so every field reads zero on a production
+/// compile until the step-4 flip routes production body analysis through the
+/// overlay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OverlayMaterializationMetrics {
+    /// Task-owned body-local overlays created (one per analyzed body).
+    pub overlays_created: u64,
+    /// Body-local definition units minted (a fresh issuer-scoped definition slot).
+    pub definition_units_created: u64,
+    /// Body-local module units minted (a fresh issuer-scoped module slot).
+    pub module_units_created: u64,
+    /// Body-local endpoint units minted (a fresh endpoint-only definition slot).
+    pub endpoint_units_created: u64,
+    /// Units copied out of a cached recipe template into an overlay-local unit.
+    pub clone_from_template_units: u64,
+}
+
+/// A snapshot of the overlay-materialization counters. See
+/// [`OverlayMaterializationMetrics`]; zero on the production path.
+pub fn overlay_materialization_metrics(
+    session: &crate::CompilerSession,
+) -> OverlayMaterializationMetrics {
+    session.overlay_materialization_metrics()
+}
+
 /// A snapshot of the lookup-family pressure metrics (RUE-1091, ADR-0066 §4): the
 /// session-held `PublishedRootLookupLease`'s retained working set and its
 /// grow-with-pressure, eviction, and rederivation-after-eviction accounting.
