@@ -507,6 +507,24 @@ pub(crate) struct RevisionedQueryDatabase {
         crate::semantic_query_nucleus::SemanticNucleusValue,
     >,
     lookup_names: QueryFamily<LookupNameKey, LookupNameValue>,
+    /// Per-`(module, import-path)` binding-resolution family. Registered query
+    /// machinery for the RUE-1091 exact provider boundary. No production consumer
+    /// exists until the step-4 flip adopts it, so — unlike `declaration_imports`,
+    /// whose family runs in production and only test-gates its field handle — both
+    /// this family's registration and its handle are `#[cfg(test)]` for now.
+    #[cfg(test)]
+    lookup_imports: QueryFamily<LookupImportKey, LookupImportValue>,
+    /// Test-only log of every module whose immutable name index was built,
+    /// proving in-module fan-out (ADR-0066 §4).
+    #[cfg(test)]
+    module_index_build_log: Arc<Mutex<Vec<ModuleId>>>,
+    /// Test-only log of every consulted name-lookup key evaluated, proving that
+    /// editing a module revalidates only retained lookups against that module.
+    #[cfg(test)]
+    lookup_name_eval_log: Arc<Mutex<Vec<LookupNameKey>>>,
+    /// Test-only log of every consulted import-path key evaluated.
+    #[cfg(test)]
+    lookup_import_eval_log: Arc<Mutex<Vec<LookupImportKey>>>,
     next_import_request: u64,
     current_import_revision: Option<ImportInputRevision>,
     #[cfg(test)]
@@ -574,8 +592,46 @@ pub(crate) struct ModuleIndexEntry {
     pub(crate) kind: DefinitionKind,
     pub(crate) visibility: Option<rue_parser::ast::Visibility>,
     pub(crate) name: Arc<str>,
+    /// Language-item identity of this candidate, classified purely from its
+    /// module's trusted-standard-library provenance and unqualified spelling
+    /// (RUE-1091 / ADR-0066 §4 "visibility/kind metadata needed by
+    /// resolution"). It is derived in-module, without enumerating other modules
+    /// or bodies, so the index stays `O(module declarations)`.
+    pub(crate) language_item: Option<rue_air::LangItem>,
     pub(crate) name_span: rue_span::Span,
     pub(crate) declaration_span: rue_span::Span,
+}
+
+impl ModuleIndexEntry {
+    /// The position-free lookup fact projected from this index entry. Spans and
+    /// the module revision stay in `ModuleIndex`; only the durable resolution
+    /// columns cross into `LookupName`.
+    fn lookup_fact(&self) -> LookupNameFact {
+        LookupNameFact {
+            namespace: self.namespace,
+            kind: self.kind,
+            visibility: self.visibility,
+            name: self.name.clone(),
+            language_item: self.language_item,
+        }
+    }
+}
+
+/// Classify a candidate's language-item identity from parse-level facts alone:
+/// its module's trusted-standard-library provenance plus its unqualified name.
+/// This never enumerates other modules, keeping `ModuleIndex` construction
+/// `O(module declarations)`. It delegates to the shared crate predicate so the
+/// name-index and declaration-recipe classifications cannot drift apart.
+fn module_index_entry_language_item(
+    module: &ModuleId,
+    kind: DefinitionKind,
+    name: &str,
+) -> Option<rue_air::LangItem> {
+    crate::declaration_recipe::standard_library_language_item(
+        kind == DefinitionKind::Struct,
+        module,
+        name,
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -828,6 +884,11 @@ struct LookupNameFact {
     kind: DefinitionKind,
     visibility: Option<rue_parser::ast::Visibility>,
     name: Arc<str>,
+    /// Language-item identity carried through from the module name index so
+    /// resolution can distinguish a trusted-standard-library nominal from a
+    /// same-named user declaration without re-consulting other modules
+    /// (RUE-1091 / ADR-0066 §4 kind/visibility metadata).
+    language_item: Option<rue_air::LangItem>,
 }
 
 /// Position-free semantic result retained by `LookupName`.
@@ -843,6 +904,178 @@ enum LookupNameFailure {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LookupNameValue(Result<Arc<[LookupNameFact]>, LookupNameFailure>);
+
+/// The canonical §4 name-resolution outcome for one consulted
+/// `(module, namespace, name)` key, classified from the retained `LookupName`
+/// candidate set. It makes success, absence, ambiguity, and index
+/// unavailability first-class typed variants so consumers distinguish them
+/// without each re-deriving the classification, while every carried candidate
+/// still exposes its visibility, kind, and language-item columns.
+///
+/// This is registered query machinery for the RUE-1091 exact provider boundary:
+/// the production body path does not consume it yet. It is a pure projection of
+/// the existing `LookupNameValue`, so it inherits that terminal's stamp — equal
+/// candidate sets classify to equal canonical results.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CanonicalNameResolution {
+    /// The consulted module's index was unavailable (its parse failed).
+    IndexUnavailable(ModuleId),
+    /// No candidate matches the consulted `(module, namespace, name)`.
+    Absent,
+    /// Exactly one candidate matches.
+    Unique(LookupNameFact),
+    /// More than one candidate shares the consulted key — an ambiguous result.
+    Ambiguous(Arc<[LookupNameFact]>),
+}
+
+#[cfg(test)]
+impl CanonicalNameResolution {
+    /// Classify a retained `LookupName` value into its canonical outcome.
+    fn classify(value: &LookupNameValue) -> Self {
+        match &value.0 {
+            Err(LookupNameFailure::ModuleIndexUnavailable(module)) => {
+                Self::IndexUnavailable(module.clone())
+            }
+            Ok(facts) => match facts.as_ref() {
+                [] => Self::Absent,
+                [single] => Self::Unique(single.clone()),
+                _ => Self::Ambiguous(Arc::from(facts.as_ref())),
+            },
+        }
+    }
+
+    /// The candidates carried by this resolution, in candidate order. Empty for
+    /// `Absent` and `IndexUnavailable`.
+    fn candidates(&self) -> &[LookupNameFact] {
+        match self {
+            Self::Unique(fact) => std::slice::from_ref(fact),
+            Self::Ambiguous(facts) => facts,
+            Self::Absent | Self::IndexUnavailable(_) => &[],
+        }
+    }
+
+    /// Re-classify keeping only candidates of the requested syntactic kind. A
+    /// kind-distinguished view of the same index answer: two lookups over one
+    /// candidate set that request different kinds yield distinct canonical
+    /// records.
+    fn of_kind(&self, kind: DefinitionKind) -> Self {
+        if let Self::IndexUnavailable(module) = self {
+            return Self::IndexUnavailable(module.clone());
+        }
+        let retained: Vec<LookupNameFact> = self
+            .candidates()
+            .iter()
+            .filter(|fact| fact.kind == kind)
+            .cloned()
+            .collect();
+        Self::from_candidates(retained)
+    }
+
+    /// Re-classify keeping only candidates visible under the given public
+    /// predicate. `public_only` retains public candidates when accessed across a
+    /// visibility boundary; passing `false` retains every candidate (same-domain
+    /// access). A visibility-filtered view is a distinct canonical record from
+    /// the unfiltered one whenever a private candidate is dropped.
+    fn visible(&self, public_only: bool) -> Self {
+        if let Self::IndexUnavailable(module) = self {
+            return Self::IndexUnavailable(module.clone());
+        }
+        let retained: Vec<LookupNameFact> = self
+            .candidates()
+            .iter()
+            .filter(|fact| {
+                !public_only || fact.visibility == Some(rue_parser::ast::Visibility::Public)
+            })
+            .cloned()
+            .collect();
+        Self::from_candidates(retained)
+    }
+
+    fn from_candidates(mut candidates: Vec<LookupNameFact>) -> Self {
+        match candidates.len() {
+            0 => Self::Absent,
+            1 => Self::Unique(candidates.pop().expect("length checked")),
+            _ => Self::Ambiguous(Arc::from(candidates)),
+        }
+    }
+}
+
+/// Key for the per-`(module, import-path)` binding-resolution family. One
+/// logical terminal per distinct consulted import path in a consulting module,
+/// matching ADR-0066 §4 "one logical terminal per … import-path key".
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct LookupImportKey {
+    module: ModuleId,
+    specifier: Arc<str>,
+}
+
+#[cfg(test)]
+impl QueryKey for LookupImportKey {
+    fn stable_identity(&self) -> String {
+        format!("{}::@import::{}", self.module, self.specifier)
+    }
+}
+
+/// A resolved import binding. Position-free by construction: it carries only the
+/// normalized specifier, never the `@import` call's source offset, so a
+/// trivia-only edit that shifts the call preserves the binding's stamp.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedImportBinding {
+    normalized_specifier: Arc<str>,
+}
+
+/// A deterministic import-binding failure. Absent, rejected, and ambiguous are
+/// first-class terminal results and dependency edges (ADR-0066 §4 "A failed or
+/// absent module binding is a first-class terminal result and dependency
+/// edge"): a later edit that makes the path resolve changes this stamp and
+/// invalidates exactly the consumers of the failed lookup.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ImportBindingFailure {
+    /// No `@import` directive in the consulting module names this specifier.
+    Absent,
+    /// Exactly one directive names it, but the specifier is malformed (it
+    /// normalizes to an empty module path).
+    Rejected,
+    /// Multiple `@import` directives in the consulting module name it.
+    Ambiguous,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LookupImportValue(Result<ResolvedImportBinding, ImportBindingFailure>);
+
+#[cfg(test)]
+impl LookupImportValue {
+    /// Classify a consulted import path against the consulting module's declared
+    /// `@import` specifiers. Pure and `O(module imports)`; it reads only the
+    /// consulting module's own index, never another module's, matching the §4
+    /// requirement to resolve "only the paths consulted by the lookup".
+    fn classify<'a>(
+        specifier: &str,
+        directives: impl IntoIterator<Item = &'a crate::ImportDirective>,
+    ) -> Self {
+        let mut matches = directives
+            .into_iter()
+            .filter(|directive| directive.specifier() == specifier);
+        let Some(_) = matches.next() else {
+            return Self(Err(ImportBindingFailure::Absent));
+        };
+        if matches.next().is_some() {
+            return Self(Err(ImportBindingFailure::Ambiguous));
+        }
+        let normalized = rue_air::normalize_module_path(specifier);
+        if normalized.is_empty() {
+            return Self(Err(ImportBindingFailure::Rejected));
+        }
+        Self(Ok(ResolvedImportBinding {
+            normalized_specifier: Arc::from(normalized),
+        }))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ImportHostOperationKey {
@@ -5934,13 +6167,32 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the ParseModule family has one canonical name");
+        // Test-only per-evaluator probes recording which modules and lookup keys
+        // are (re)built. They make the ADR-0066 §4 fan-out bound observable:
+        // building one module's index consults no other module, and editing a
+        // module revalidates only retained lookups against that module. The
+        // probes are `#[cfg(test)]` so the production path locks nothing.
+        #[cfg(test)]
+        let module_index_build_log: Arc<Mutex<Vec<ModuleId>>> = Arc::new(Mutex::new(Vec::new()));
+        #[cfg(test)]
+        let lookup_name_eval_log: Arc<Mutex<Vec<LookupNameKey>>> = Arc::new(Mutex::new(Vec::new()));
+        #[cfg(test)]
+        let lookup_import_eval_log: Arc<Mutex<Vec<LookupImportKey>>> =
+            Arc::new(Mutex::new(Vec::new()));
         let parse_for_index = parse_modules.clone();
+        #[cfg(test)]
+        let module_index_build_probe = module_index_build_log.clone();
         let module_indexes = runtime
             .family_with_equality_and_evaluator(
                 "compiler.module-index",
                 MODULE_QUERY_MEMO_RETENTION,
                 module_index_value_equal,
                 move |context, _, key: &ModuleQueryKey| {
+                    #[cfg(test)]
+                    module_index_build_probe
+                        .lock()
+                        .expect("module-index probe is not poisoned")
+                        .push(key.0.clone());
                     let parsed = context.query_registered(&parse_for_index, key.clone())?;
                     let rue_query::QueryOutcome::Success(parsed) = parsed.outcome() else {
                         unreachable!("ParseModule publishes typed values")
@@ -5957,6 +6209,11 @@ impl RevisionedQueryDatabase {
                                     kind: candidate.kind(),
                                     visibility: candidate.visibility(),
                                     name: Arc::from(candidate.name()),
+                                    language_item: module_index_entry_language_item(
+                                        &key.0,
+                                        candidate.kind(),
+                                        candidate.name(),
+                                    ),
                                     name_span: candidate.name_span(),
                                     declaration_span: candidate.declaration_span(),
                                 })
@@ -6577,12 +6834,19 @@ impl RevisionedQueryDatabase {
             )
             .expect("the RawDeclarationBody family has one canonical name");
         let index_for_lookup = module_indexes.clone();
+        #[cfg(test)]
+        let lookup_name_eval_probe = lookup_name_eval_log.clone();
         let lookup_names = runtime
             .family_with_equality_and_evaluator(
                 "compiler.lookup-name",
                 declaration_memo_retention,
                 |left: &LookupNameValue, right: &LookupNameValue| left == right,
                 move |context, _, key: &LookupNameKey| {
+                    #[cfg(test)]
+                    lookup_name_eval_probe
+                        .lock()
+                        .expect("lookup-name probe is not poisoned")
+                        .push(key.clone());
                     let indexed = context
                         .query_registered(&index_for_lookup, ModuleQueryKey(key.module.clone()))?;
                     let rue_query::QueryOutcome::Success(indexed) = indexed.outcome() else {
@@ -6595,12 +6859,7 @@ impl RevisionedQueryDatabase {
                             .filter(|entry| {
                                 entry.namespace == key.namespace && entry.name == key.name
                             })
-                            .map(|entry| LookupNameFact {
-                                namespace: entry.namespace,
-                                kind: entry.kind,
-                                visibility: entry.visibility,
-                                name: entry.name.clone(),
-                            })
+                            .map(ModuleIndexEntry::lookup_fact)
                             .collect::<Vec<_>>()
                             .into()),
                         Err(_) => Err(LookupNameFailure::ModuleIndexUnavailable(
@@ -6611,6 +6870,46 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the LookupName family has one canonical name");
+        #[cfg(test)]
+        let index_for_import_lookup = module_indexes.clone();
+        #[cfg(test)]
+        let lookup_import_eval_probe = lookup_import_eval_log.clone();
+        #[cfg(test)]
+        let lookup_imports = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.lookup-import",
+                declaration_memo_retention,
+                |left: &LookupImportValue, right: &LookupImportValue| left == right,
+                move |context, _, key: &LookupImportKey| {
+                    lookup_import_eval_probe
+                        .lock()
+                        .expect("lookup-import probe is not poisoned")
+                        .push(key.clone());
+                    let indexed = context.query_registered(
+                        &index_for_import_lookup,
+                        ModuleQueryKey(key.module.clone()),
+                    )?;
+                    let rue_query::QueryOutcome::Success(indexed) = indexed.outcome() else {
+                        unreachable!("ModuleIndex publishes typed values")
+                    };
+                    let value = match &indexed.0 {
+                        Ok(index) => {
+                            LookupImportValue::classify(&key.specifier, index.imports.iter())
+                        }
+                        // An unavailable index carries no consultable import
+                        // directives, so the consulted path is a first-class
+                        // absent binding.
+                        Err(_) => LookupImportValue(Err(ImportBindingFailure::Absent)),
+                    };
+                    let kind = if value.0.is_ok() {
+                        QueryTerminalKind::Success
+                    } else {
+                        QueryTerminalKind::Failure
+                    };
+                    Ok(QueryOutput::success(value).with_terminal_kind(kind))
+                },
+            )
+            .expect("the LookupImport family has one canonical name");
         let parse_for_rir = parse_modules.clone();
         let index_for_rir = module_indexes.clone();
         let module_rirs = runtime
@@ -8494,6 +8793,14 @@ impl RevisionedQueryDatabase {
             declaration_imports,
             semantic_nucleus,
             lookup_names,
+            #[cfg(test)]
+            lookup_imports,
+            #[cfg(test)]
+            module_index_build_log,
+            #[cfg(test)]
+            lookup_name_eval_log,
+            #[cfg(test)]
+            lookup_import_eval_log,
             next_import_request: 0,
             current_import_revision: None,
             #[cfg(test)]
@@ -10612,12 +10919,7 @@ impl RevisionedQueryDatabase {
                             .collect::<Vec<_>>();
                         let current_facts = current
                             .iter()
-                            .map(|entry| LookupNameFact {
-                                namespace: entry.namespace,
-                                kind: entry.kind,
-                                visibility: entry.visibility,
-                                name: entry.name.clone(),
-                            })
+                            .map(ModuleIndexEntry::lookup_fact)
                             .collect::<Vec<_>>();
                         if current_facts.as_slice() == found.as_ref() {
                             definitions.extend(current);
@@ -16351,5 +16653,570 @@ mod tests {
         // The bridged attempt was alive throughout: the release was driven by
         // selection, not by the attempt dropping.
         assert!(bridged.terminal().is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // RUE-1091 slice 3a — widened module name index + lookup families.
+    //
+    // These exercise the registered query machinery for the ADR-0066 §4 exact
+    // provider boundary. The production body path does not consume the widened
+    // records or the `lookup-import` family yet (the step-4 flip does), so every
+    // property below is proven by focused tests over the query terminals.
+    // -----------------------------------------------------------------------
+
+    fn revision_for(database: &mut RevisionedQueryDatabase, snapshot: &SourceSnapshot) -> Revision {
+        database.source_revision(
+            &super::super::session::ExactSourceInput::new(snapshot),
+            snapshot,
+        )
+    }
+
+    fn request_lookup_name(
+        database: &RevisionedQueryDatabase,
+        revision: Revision,
+        module: &ModuleId,
+        namespace: DefinitionNamespace,
+        name: &str,
+    ) -> QueryRequestAttempt<LookupNameValue> {
+        database.runtime.request_registered(
+            &database.lookup_names,
+            revision,
+            LookupNameKey {
+                module: module.clone(),
+                namespace,
+                name: Arc::from(name),
+            },
+            CancellationToken::new(),
+        )
+    }
+
+    fn canonical_of(attempt: &QueryRequestAttempt<LookupNameValue>) -> CanonicalNameResolution {
+        let terminal = attempt.terminal().unwrap();
+        let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+            unreachable!("LookupName publishes typed values")
+        };
+        CanonicalNameResolution::classify(value)
+    }
+
+    fn request_lookup_import(
+        database: &RevisionedQueryDatabase,
+        revision: Revision,
+        module: &ModuleId,
+        specifier: &str,
+    ) -> QueryRequestAttempt<LookupImportValue> {
+        database.runtime.request_registered(
+            &database.lookup_imports,
+            revision,
+            LookupImportKey {
+                module: module.clone(),
+                specifier: Arc::from(specifier),
+            },
+            CancellationToken::new(),
+        )
+    }
+
+    fn import_binding(attempt: &QueryRequestAttempt<LookupImportValue>) -> LookupImportValue {
+        let terminal = attempt.terminal().unwrap();
+        let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+            unreachable!("LookupImport publishes typed values")
+        };
+        value.clone()
+    }
+
+    #[test]
+    fn module_index_carries_candidate_columns_and_stays_in_module() {
+        // Requesting one module's index must build that module's index alone,
+        // carrying kind and visibility for every namespace, without enumerating
+        // any other module (ADR-0066 §4: O(module declarations), no cross reach).
+        let snapshot = source_snapshot(
+            &[
+                (
+                    1,
+                    "/a.rue",
+                    "a.rue",
+                    "pub struct Public {}\nstruct Private {}\ndrop fn Public(self) {}\n",
+                ),
+                (2, "/b.rue", "b.rue", "fn b() -> i32 { 1 }\n"),
+            ],
+            1,
+        );
+        let a = ModuleId::from_logical_path("a.rue").unwrap();
+        let b = ModuleId::from_logical_path("b.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let attempt = database.runtime.request_registered(
+            &database.module_indexes,
+            revision,
+            ModuleQueryKey(a.clone()),
+            CancellationToken::new(),
+        );
+        let terminal = attempt.terminal().unwrap();
+        let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+            unreachable!()
+        };
+        let index = value.0.clone().unwrap();
+
+        let public = index
+            .definitions
+            .iter()
+            .find(|entry| {
+                entry.namespace == DefinitionNamespace::ModuleItem
+                    && entry.name.as_ref() == "Public"
+            })
+            .expect("public struct candidate");
+        assert_eq!(public.kind, DefinitionKind::Struct);
+        assert_eq!(
+            public.visibility,
+            Some(rue_parser::ast::Visibility::Public),
+            "the candidate set carries visibility"
+        );
+        let private = index
+            .definitions
+            .iter()
+            .find(|entry| entry.name.as_ref() == "Private")
+            .expect("private struct candidate");
+        assert_eq!(private.kind, DefinitionKind::Struct);
+        assert_ne!(
+            private.visibility,
+            Some(rue_parser::ast::Visibility::Public)
+        );
+        let destructor = index
+            .definitions
+            .iter()
+            .find(|entry| entry.namespace == DefinitionNamespace::Destructor)
+            .expect("destructor namespace candidate");
+        assert_eq!(
+            destructor.kind,
+            DefinitionKind::Destructor,
+            "the index carries a candidate for every namespace"
+        );
+
+        let built = database.module_index_build_log.lock().unwrap().clone();
+        assert!(
+            built.contains(&a),
+            "a's index must have been built: {built:?}"
+        );
+        assert!(
+            !built.contains(&b),
+            "building a's index must not enumerate module b: {built:?}"
+        );
+    }
+
+    #[test]
+    fn lookup_records_distinguish_every_canonical_outcome() {
+        // Positive, negative, ambiguous, visibility-filtered, and
+        // kind-distinguished results are each a distinct, correct canonical
+        // record derived from the same module index.
+        let snapshot = source_snapshot(
+            &[(
+                1,
+                "/m.rue",
+                "m.rue",
+                "pub struct Uniq {}\nfn dup() {}\nfn dup() {}\nstruct Hidden {}\n",
+            )],
+            1,
+        );
+        let m = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+
+        let positive = canonical_of(&request_lookup_name(
+            &database,
+            revision,
+            &m,
+            DefinitionNamespace::ModuleItem,
+            "Uniq",
+        ));
+        assert!(matches!(positive, CanonicalNameResolution::Unique(_)));
+
+        let absent = canonical_of(&request_lookup_name(
+            &database,
+            revision,
+            &m,
+            DefinitionNamespace::ModuleItem,
+            "missing",
+        ));
+        assert_eq!(absent, CanonicalNameResolution::Absent);
+
+        let ambiguous = canonical_of(&request_lookup_name(
+            &database,
+            revision,
+            &m,
+            DefinitionNamespace::ModuleItem,
+            "dup",
+        ));
+        assert!(matches!(ambiguous, CanonicalNameResolution::Ambiguous(_)));
+        assert_eq!(ambiguous.candidates().len(), 2);
+
+        // Success, absence, and ambiguity are mutually distinct records.
+        assert_ne!(positive, absent);
+        assert_ne!(positive, ambiguous);
+        assert_ne!(absent, ambiguous);
+
+        // Visibility filtering yields a distinct record: a private candidate is
+        // dropped when consulted across a visibility boundary.
+        let hidden = canonical_of(&request_lookup_name(
+            &database,
+            revision,
+            &m,
+            DefinitionNamespace::ModuleItem,
+            "Hidden",
+        ));
+        assert!(matches!(hidden, CanonicalNameResolution::Unique(_)));
+        assert_eq!(
+            hidden.visible(false),
+            hidden,
+            "same-domain access retains it"
+        );
+        assert_eq!(
+            hidden.visible(true),
+            CanonicalNameResolution::Absent,
+            "a private candidate is filtered out across the boundary"
+        );
+        assert_ne!(hidden, hidden.visible(true));
+
+        // Kind distinguishes the same candidate set: the ambiguous function pair
+        // survives `of_kind(Function)` but vanishes under `of_kind(Struct)`, and
+        // the unique struct survives only under `of_kind(Struct)`.
+        assert_eq!(ambiguous.of_kind(DefinitionKind::Function), ambiguous);
+        assert_eq!(
+            ambiguous.of_kind(DefinitionKind::Struct),
+            CanonicalNameResolution::Absent
+        );
+        assert_ne!(
+            positive.of_kind(DefinitionKind::Struct),
+            positive.of_kind(DefinitionKind::Function)
+        );
+        assert_eq!(positive.of_kind(DefinitionKind::Struct), positive);
+    }
+
+    #[test]
+    fn equal_lookup_output_preserves_stamp_across_unrelated_module_edit() {
+        let first = source_snapshot(
+            &[
+                (1, "/a.rue", "a.rue", "fn keep() -> i32 { 1 }\n"),
+                (2, "/b.rue", "b.rue", "fn other() -> i32 { 1 }\n"),
+            ],
+            1,
+        );
+        let second = source_snapshot(
+            &[
+                (1, "/a.rue", "a.rue", "fn keep() -> i32 { 1 }\n"),
+                // Only module b changes.
+                (2, "/b.rue", "b.rue", "fn other() -> i32 { 2 }\n"),
+            ],
+            1,
+        );
+        let a = ModuleId::from_logical_path("a.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let first_revision = revision_for(&mut database, &first);
+        let first_stamp = request_lookup_name(
+            &database,
+            first_revision,
+            &a,
+            DefinitionNamespace::ModuleItem,
+            "keep",
+        )
+        .terminal()
+        .unwrap()
+        .stamp();
+
+        let second_revision = revision_for(&mut database, &second);
+        let warm = request_lookup_name(
+            &database,
+            second_revision,
+            &a,
+            DefinitionNamespace::ModuleItem,
+            "keep",
+        );
+        assert_eq!(
+            execution(&warm),
+            RequestExecution::Reused,
+            "a's lookup must not recompute when only b changed"
+        );
+        assert_eq!(
+            warm.terminal().unwrap().stamp(),
+            first_stamp,
+            "equal lookup output preserves its stamp (consumer-green precondition)"
+        );
+    }
+
+    #[test]
+    fn negative_to_positive_flips_lookup_while_unrelated_name_keeps_stamp() {
+        let first = source_snapshot(&[(1, "/m.rue", "m.rue", "fn stable() -> i32 { 1 }\n")], 1);
+        let second = source_snapshot(
+            &[(
+                1,
+                "/m.rue",
+                "m.rue",
+                "fn stable() -> i32 { 1 }\nfn extra() -> i32 { 2 }\n",
+            )],
+            1,
+        );
+        let m = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let first_revision = revision_for(&mut database, &first);
+
+        let extra_first = request_lookup_name(
+            &database,
+            first_revision,
+            &m,
+            DefinitionNamespace::ModuleItem,
+            "extra",
+        );
+        assert_eq!(canonical_of(&extra_first), CanonicalNameResolution::Absent);
+        let extra_first_stamp = extra_first.terminal().unwrap().stamp();
+        let stable_first_stamp = request_lookup_name(
+            &database,
+            first_revision,
+            &m,
+            DefinitionNamespace::ModuleItem,
+            "stable",
+        )
+        .terminal()
+        .unwrap()
+        .stamp();
+
+        let second_revision = revision_for(&mut database, &second);
+        // The queried name gains a declaration: negative -> positive flips it.
+        let extra_second = request_lookup_name(
+            &database,
+            second_revision,
+            &m,
+            DefinitionNamespace::ModuleItem,
+            "extra",
+        );
+        assert!(matches!(
+            canonical_of(&extra_second),
+            CanonicalNameResolution::Unique(_)
+        ));
+        assert_ne!(
+            extra_second.terminal().unwrap().stamp(),
+            extra_first_stamp,
+            "adding the queried name must change its lookup stamp"
+        );
+
+        // An unrelated name in the same edited module recomputes but its result
+        // is equal, so its stamp is preserved — the firewall the design rests on.
+        // Assert recompute-then-preserve on the one key: the sibling is genuinely
+        // re-evaluated (its module index changed) yet keeps its stamp, not merely
+        // reused without evaluation.
+        let stable_second = request_lookup_name(
+            &database,
+            second_revision,
+            &m,
+            DefinitionNamespace::ModuleItem,
+            "stable",
+        );
+        assert_eq!(
+            execution(&stable_second),
+            RequestExecution::Computed,
+            "the edited module's sibling lookup must actually re-evaluate"
+        );
+        assert_eq!(
+            stable_second.terminal().unwrap().stamp(),
+            stable_first_stamp,
+            "adding an unrelated name must leave a sibling lookup's stamp equal"
+        );
+    }
+
+    #[test]
+    fn import_binding_lookups_are_first_class_records_with_stamp_discipline() {
+        let first = source_snapshot(
+            &[(
+                1,
+                "/m.rue",
+                "m.rue",
+                "const a = @import(\"dep.rue\");\n\
+                 const b = @import(\"dup.rue\");\n\
+                 const c = @import(\"dup.rue\");\n\
+                 fn main() -> i32 { 0 }\n",
+            )],
+            1,
+        );
+        let m = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let first_revision = revision_for(&mut database, &first);
+
+        let resolved = request_lookup_import(&database, first_revision, &m, "dep.rue");
+        assert_eq!(
+            import_binding(&resolved),
+            LookupImportValue(Ok(ResolvedImportBinding {
+                normalized_specifier: Arc::from("dep.rue"),
+            }))
+        );
+        let absent = request_lookup_import(&database, first_revision, &m, "missing.rue");
+        assert_eq!(
+            import_binding(&absent),
+            LookupImportValue(Err(ImportBindingFailure::Absent))
+        );
+        let ambiguous = request_lookup_import(&database, first_revision, &m, "dup.rue");
+        assert_eq!(
+            import_binding(&ambiguous),
+            LookupImportValue(Err(ImportBindingFailure::Ambiguous))
+        );
+        let absent_stamp = absent.terminal().unwrap().stamp();
+        let resolved_stamp = resolved.terminal().unwrap().stamp();
+
+        // Making the previously-absent path present flips exactly that terminal;
+        // the unrelated resolved binding keeps its stamp.
+        let second = source_snapshot(
+            &[(
+                1,
+                "/m.rue",
+                "m.rue",
+                "const a = @import(\"dep.rue\");\n\
+                 const b = @import(\"dup.rue\");\n\
+                 const c = @import(\"dup.rue\");\n\
+                 const d = @import(\"missing.rue\");\n\
+                 fn main() -> i32 { 0 }\n",
+            )],
+            1,
+        );
+        let second_revision = revision_for(&mut database, &second);
+        let now_present = request_lookup_import(&database, second_revision, &m, "missing.rue");
+        assert_eq!(
+            import_binding(&now_present),
+            LookupImportValue(Ok(ResolvedImportBinding {
+                normalized_specifier: Arc::from("missing.rue"),
+            }))
+        );
+        assert_ne!(
+            now_present.terminal().unwrap().stamp(),
+            absent_stamp,
+            "a failed binding becoming present must change its stamp"
+        );
+        let resolved_again = request_lookup_import(&database, second_revision, &m, "dep.rue");
+        assert_eq!(
+            resolved_again.terminal().unwrap().stamp(),
+            resolved_stamp,
+            "an unrelated resolved binding keeps its stamp"
+        );
+
+        // Every import-binding evaluation consulted only the consulting module's
+        // own index — the lookup never reaches into another module.
+        let evaluated = database.lookup_import_eval_log.lock().unwrap().clone();
+        assert!(!evaluated.is_empty());
+        assert!(
+            evaluated.iter().all(|key| key.module == m),
+            "import lookups must consult only their own module: {evaluated:?}"
+        );
+    }
+
+    #[test]
+    fn import_binding_classifier_covers_absent_rejected_and_ambiguous() {
+        let m = ModuleId::from_logical_path("m.rue").unwrap();
+        // A specifier that normalizes to an empty module path is a first-class
+        // rejected binding.
+        let dot = crate::ImportDirective::new(m.clone(), 0, 1, Arc::from("."));
+        assert_eq!(
+            LookupImportValue::classify(".", std::slice::from_ref(&dot)),
+            LookupImportValue(Err(ImportBindingFailure::Rejected))
+        );
+        assert_eq!(
+            LookupImportValue::classify("other.rue", std::slice::from_ref(&dot)),
+            LookupImportValue(Err(ImportBindingFailure::Absent))
+        );
+        let duplicated = [
+            crate::ImportDirective::new(m.clone(), 0, 1, Arc::from("dep.rue")),
+            crate::ImportDirective::new(m.clone(), 2, 3, Arc::from("dep.rue")),
+        ];
+        assert_eq!(
+            LookupImportValue::classify("dep.rue", &duplicated),
+            LookupImportValue(Err(ImportBindingFailure::Ambiguous))
+        );
+        assert_eq!(
+            LookupImportValue::classify("dep.rue", std::slice::from_ref(&duplicated[0])),
+            LookupImportValue(Ok(ResolvedImportBinding {
+                normalized_specifier: Arc::from("dep.rue"),
+            }))
+        );
+    }
+
+    #[test]
+    fn editing_module_revalidates_only_its_own_retained_lookups() {
+        let first = source_snapshot(
+            &[
+                (1, "/a.rue", "a.rue", "fn a_fn() -> i32 { 1 }\n"),
+                (2, "/b.rue", "b.rue", "fn b_fn() -> i32 { 1 }\n"),
+            ],
+            1,
+        );
+        // Editing a's declarations changes a's name index; b is untouched.
+        let second = source_snapshot(
+            &[
+                (
+                    1,
+                    "/a.rue",
+                    "a.rue",
+                    "fn a_fn() -> i32 { 1 }\nfn a_added() -> i32 { 2 }\n",
+                ),
+                (2, "/b.rue", "b.rue", "fn b_fn() -> i32 { 1 }\n"),
+            ],
+            1,
+        );
+        let a = ModuleId::from_logical_path("a.rue").unwrap();
+        let b = ModuleId::from_logical_path("b.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let first_revision = revision_for(&mut database, &first);
+        let _ = request_lookup_name(
+            &database,
+            first_revision,
+            &a,
+            DefinitionNamespace::ModuleItem,
+            "a_fn",
+        )
+        .terminal();
+        let _ = request_lookup_name(
+            &database,
+            first_revision,
+            &b,
+            DefinitionNamespace::ModuleItem,
+            "b_fn",
+        )
+        .terminal();
+        database.lookup_name_eval_log.lock().unwrap().clear();
+
+        let second_revision = revision_for(&mut database, &second);
+        let _ = request_lookup_name(
+            &database,
+            second_revision,
+            &a,
+            DefinitionNamespace::ModuleItem,
+            "a_fn",
+        )
+        .terminal();
+        let b_second = request_lookup_name(
+            &database,
+            second_revision,
+            &b,
+            DefinitionNamespace::ModuleItem,
+            "b_fn",
+        );
+        assert_eq!(
+            execution(&b_second),
+            RequestExecution::Reused,
+            "b's lookup must reuse its terminal when only a changed"
+        );
+
+        let evaluated = database.lookup_name_eval_log.lock().unwrap().clone();
+        let a_key = LookupNameKey {
+            module: a.clone(),
+            namespace: DefinitionNamespace::ModuleItem,
+            name: Arc::from("a_fn"),
+        };
+        let b_key = LookupNameKey {
+            module: b.clone(),
+            namespace: DefinitionNamespace::ModuleItem,
+            name: Arc::from("b_fn"),
+        };
+        assert!(
+            evaluated.contains(&a_key),
+            "the edited module's retained lookup must revalidate: {evaluated:?}"
+        );
+        assert!(
+            !evaluated.contains(&b_key),
+            "an unedited module's lookup must not recompute: {evaluated:?}"
+        );
     }
 }

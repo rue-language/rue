@@ -309,15 +309,38 @@ impl ModuleEndpointRecipe {
     }
 }
 
+/// Standard-library language-item classification, shared by every rue-compiler
+/// site that maps a declaration to a [`LangItem`] (the recipe converter below
+/// and the module name index in `revisioned_query_database`). A candidate is a
+/// language item only when it is a struct whose module has crossed the trusted
+/// standard-library provenance boundary; [`LangItem::from_standard_library_nominal`]
+/// remains the name authority. The two rue-air mirrors of this rule
+/// (`durable_semantics` durable-import classification and the `LangItem` name
+/// table itself) apply the same struct-only predicate, so a future non-struct
+/// language item must widen every site together. The caller passes the
+/// already-computed struct flag because kind is spelled with different enums
+/// (`StableDefinitionKind` vs `DefinitionKind`) at the two call sites.
+pub(crate) fn standard_library_language_item(
+    is_struct: bool,
+    module: &ModuleId,
+    name: &str,
+) -> Option<LangItem> {
+    if is_struct && module.is_trusted_standard_library() {
+        LangItem::from_standard_library_nominal(module.as_str(), name)
+    } else {
+        None
+    }
+}
+
 /// The language-item identity of a declaration, classified only after its module
 /// has crossed a trusted standard-library provenance boundary. This mirrors the
 /// classification performed during durable declaration import.
 fn definition_language_item(key: &StableDefinitionKey) -> Option<LangItem> {
-    if key.kind() == StableDefinitionKind::Struct && key.module().is_trusted_standard_library() {
-        LangItem::from_standard_library_nominal(key.module().as_str(), key.name())
-    } else {
-        None
-    }
+    standard_library_language_item(
+        key.kind() == StableDefinitionKind::Struct,
+        key.module(),
+        key.name(),
+    )
 }
 
 #[cfg(test)]
@@ -865,6 +888,7 @@ mod tests {
             kind,
             visibility,
             name: Arc::from(name),
+            language_item: None,
             name_span: rue_span::Span::with_file(rue_span::FileId::new(7), 41, 48),
             declaration_span: rue_span::Span::with_file(rue_span::FileId::new(7), 12, 96),
         }
