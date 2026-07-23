@@ -241,7 +241,10 @@ The cache container is created once in constant work and fills on exact demand;
 it does not enumerate the declaration universe at construction. Concurrent
 misses for one exact recipe claim or join one construction, while unrelated
 recipe keys may build concurrently. No cache shard lock spans recipe
-construction or a nested query request.
+construction or a nested query request. Cache accounting distinguishes an
+ordinary first build from rebuilding an equal-stamp fact whose prior terminal
+incarnation was evicted and rederived. The latter is correctness-neutral but is
+reported separately as retention-induced recipe thrash.
 
 Each body evaluation creates one task-owned `BodySemanticOverlay`. The overlay
 owns all compact type/nominal/parameter IDs, inference variables, generated and
@@ -257,7 +260,16 @@ durable body artifact. Compact overlay IDs do not cross the query boundary.
 Producer-owned anonymous nominals continue to arrive through their exact
 producer terminals and are materialized in the consuming overlay. A
 body-specific trusted-standard-library demand likewise remains local to the
-demanding overlay.
+demanding overlay. Conversion sorts diagnostics by the existing stable
+diagnostic ordering before publication; task schedule, provider observation
+order, compact-ID allocation order, cache hits, and warm reuse cannot change
+observable diagnostic order. The warm/fresh ordered-diagnostics oracle is the
+executable proof of that invariant.
+
+Program-level definitions, references, and dependency manifests continue to
+aggregate published body artifacts. Their cost is `O(published bodies and
+reported facts)`, and those consumers do not attach a declaration-universe or
+aggregate-topology edge back to each body.
 
 This representation makes future parallelism a property of ownership rather
 than locking: query terminals and recipes are immutable and shareable; overlays
@@ -276,27 +288,60 @@ query edge before the body terminal can publish.
 The provider exposes typed operations for:
 
 - exact unqualified and qualified name lookup, including empty and ambiguous
-  results;
+  results, visibility filtering, method candidates, and operator candidates;
 - exact declaration identity, signature, constant/comptime result, nominal
-  well-formedness, and anonymous-nominal facts;
+  well-formedness, anonymous-nominal facts, language-item identity, and
+  drop/`@copy` metadata;
 - exact module-binding or import resolution for only the paths consulted by the
-  lookup; and
+  lookup, including absent, rejected, and ambiguous results; and
 - exact producer-body and trusted-toolchain facts already required by the body.
 
-Name lookup is keyed by the consulted module, namespace, and name. Its canonical
-result includes all candidates needed to distinguish success, absence,
-ambiguity, visibility, and kind. Adding another name to the same module may
-recompute the lookup query during red/green validation, but equal lookup output
-preserves its stamp and therefore leaves the body green. Adding a candidate for
-the queried name changes the lookup result, including the negative-to-positive
+Each parsed module publishes one immutable name-index input, built once in
+`O(module declarations)` for that module revision. The index maps namespace and
+name to the stable candidate set and the visibility/kind metadata needed by
+resolution; building it does not enumerate other modules or bodies. Name lookup
+is keyed by the consulted module, namespace, and name and reads that index in
+expected `O(1)` work. Its canonical result includes all candidates needed to
+distinguish success, absence, ambiguity, visibility, and kind. After a module
+edit, validation rebuilds the module index once and re-evaluates only retained
+lookup terminals against that module. Validation fan-out is therefore bounded
+by the distinct retained lookups consulted against the edited module, never by
+the number of declarations or bodies in the program. Equal lookup output
+preserves its stamp and leaves body consumers green; adding a candidate for the
+queried name changes the lookup result, including the negative-to-positive
 case, and invalidates exactly its consumers.
+
+Lookup families expect one logical terminal per distinct consulted
+`(module, namespace, name)` or import-path key, rather than per declaration or
+per body occurrence. On successful semantic-root publication, the compiler
+promotes the request's exact set of observed lookup-terminal pins into a
+session-held `SuccessfulRootLookupLease`. Promotion acquires no terminal by
+revision or family-wide approximation: the request lease remains live until the
+same exact pins have transferred, the new set replaces the prior successful
+root atomically, and only then does batched release enforce retention. Failed,
+canceled, and merely speculative lookups are never promoted. Thus the current
+exact lookup working set may grow beyond the configured historical floor under
+RUE-1087's
+grow-with-pressure-and-meter policy, but it cannot be evicted merely because a
+large program consults more names than the floor. Historical incarnations remain
+subject to bounded FIFO retention, and unleased logical nodes with no retained
+terminal are reclaimable. Pressure metrics report retained logical keys,
+terminals, evictions, protected growth, and re-derivations after eviction. A
+forced-pressure test exceeds both the current-root working set and historical
+retention floor, then publishes a successor and revisits hot positive, negative,
+ambiguous, qualified, and import keys: current-root keys remain warm, superseded
+cold keys may rederive once, no request-to-root handoff loses a pin, speculative
+keys remain evictable, and the released root's unneeded entries return to the
+configured historical bound.
 
 The aggregate `module_declaration_sets` loop and aggregate accepted-topology
 input are removed from `BodyTransaction` once the exact provider is complete.
 Positive semantic references continue to observe their exact semantic-nucleus
 terminals. Exact negative, ambiguous, qualified, and import-path observations
 are recorded during resolution rather than reconstructed from only the
-successful body artifact.
+successful body artifact. A failed or absent module binding is a first-class
+terminal result and dependency edge; if a later edit makes that path resolve,
+its stamp changes and invalidates exactly the consumers of that failed lookup.
 
 Post-hoc dependency replay is not an accepted provider boundary: analysis may
 not read an untracked complete namespace and attach narrower edges afterward.
@@ -304,6 +349,18 @@ Likewise, a lexical pre-scan of a body is not proof of semantic dependency
 completeness because imports, comptime evaluation, generics, and type-directed
 resolution may add or reject lookups. The typed provider call that supplies the
 semantic fact is the dependency observation.
+
+A type-level boundary enforces provider completeness. After the production cut,
+the rue-air body analyzer can receive only the provider capability, the selected
+body/producer inputs, and body-local configuration. No complete merged program,
+declaration slice, namespace table, prepared `Sema`/`BoundSema`, aggregate
+module-declaration set, or accepted-topology view is reachable through its
+types. Rue-air remains independent of the query runtime: the compiler-side
+provider implementation owns the `BodyTransaction` query context and returns
+owned typed facts through the rue-air trait. Method and operator resolution,
+visibility, language items, drop/`@copy`, imports, comptime, anonymous types,
+producer bodies, and trusted-toolchain facts have no side channel around that
+trait.
 
 A body does not adopt a complete per-revision recipe-base terminal. Even an
 exact-terminal adoption capability would make that aggregate terminal a real
@@ -362,6 +419,8 @@ from install/project/endpoint into “base” work to make the ratio appear flat
 The repair adds separate counters for:
 
 - recipe entries built, reused, represented, and evicted;
+- equal-stamp recipes rebuilt solely because the terminal incarnation was
+  evicted and rederived;
 - recipe-cache/base containers created and reused;
 - overlays created;
 - exact provider facts observed and overlay facts materialized;
@@ -397,16 +456,22 @@ The production cut proceeds in dependency order:
 2. Introduce owned declaration recipes and the body-local overlay with focused
    conversion, failure, cancellation, and two-overlay isolation tests.
 3. Route name, import, declaration, comptime, anonymous, and trusted-toolchain
-   reads through the exact provider while retaining warm/fresh differential
-   comparison.
-4. Make `analyze_body_query` consume only the body key, exact provider, selected
-   producer facts, and body-local configuration. Remove its complete merged
-   program, declaration-shell, durable-declaration, and endpoint-universe
-   inputs.
-5. Delete the per-body
-   prepare/project/install/issue-all-definitions/install-all-endpoints path and
-   the aggregate module/topology observations. A source guard prevents either
-   path from returning as a fallback.
+   reads through the exact provider in focused and test-only differential
+   adapters. These adapters are not a selectable production body-analysis path.
+4. In one production slice, make `analyze_body_query` consume only the body key,
+   exact provider, selected producer facts, and body-local configuration;
+   remove its complete merged-program, declaration-shell, durable-declaration,
+   and endpoint-universe inputs; and delete the per-body
+   prepare/project/install/issue-all-definitions/install-all-endpoints path plus
+   aggregate module/topology observations. The slice includes all RUE-1121
+   counter and exact-invalidation targets, so it moves each tracked envelope
+   directly from its known-bad witness to its repaired target.
+5. In that same slice, add the named source guard
+   `body_analysis_has_no_whole_program_context_path`. It inspects the production
+   body-analyzer signature and implementation and rejects complete-context types
+   or calls to the retired prepare/project/install/endpoint and aggregate
+   module/topology symbols. This is an enduring capability guard, not a
+   transitional old/new-path assertion.
 6. Rerun both RUE-1090 matrices, the RUE-1121 invalidation rows, differential
    oracles, forced eviction/cancellation tests, schedule permutations, and the
    Caldera budget before RUE-1092 sign-off.
@@ -667,7 +732,10 @@ representatives, or restart behavior; those mechanisms are out of scope.
 | Lookup invalidation | Exercise positive, negative, and ambiguous name lookup, then edit each candidate set | Only the recorded lookup projection invalidates; outcome/diagnostic matches fresh | Unrelated declaration invalidates lookup, or a relevant edit does not |
 | Depth stabilization | Run the current `source(63)`/`source(64)` convention in fresh and reused sessions | 63 materializes 64 specializations and succeeds; 64 would require 65 and has the deterministic overflow witness | Boundary, count, or witness depends on schedule or reuse |
 | Local work | Independently vary declarations `D`, reached bodies `B`, and unreachable declarations/bodies `U` | Report one-time declaration/index work separately; total rooted work is `O(D + ΣB)`; normalized per-reached-body install/project/endpoint work stays flat as `D` grows; increasing `U` adds zero rooted semantic/codegen work | Total work follows `O(D×B)`, a normalized body counter grows with `D`, or `U` produces rooted semantic/codegen work |
+| Lookup-index validation | Edit one module while independently varying other modules, bodies, declarations, and the retained lookup count against the edited module | Rebuild that module's index once; revalidate each retained lookup against it in expected `O(1)`; unchanged results preserve stamps; validation fan-out equals only the retained lookups against that module | One lookup scans declarations, another module contributes work, fan-out follows program size, or an equal result changes stamp |
+| Provider capability guard | Inventory the rue-air body-analyzer signature and reachable calls after the production cut | Only the typed provider, selected body/producer facts, and body-local configuration are reachable; all named semantic fact families pass through provider calls | Any complete program/table/epoch capability or semantic side channel remains reachable |
 | Retention leases | Force pressure eviction before and after rooted completion, cancellation, and supersession | Live root closures remain pinned; released/speculative terminals reclaim; accounting has no unowned pin; warm result/diagnostics equal fresh after eviction | A live closure evicts, a released pin remains, accounting leaks, or eviction changes observable output |
+| Lookup retention pressure | Exceed the lookup family's historical floor with positive, negative, ambiguous, qualified, failed-import, and speculative keys; publish a successor; revisit hot and superseded keys | The exact request pin set hands off atomically to `SuccessfulRootLookupLease`; current-root keys remain warm; speculative and superseded cold keys reclaim or rederive at most once; released entries return to the historical bound; thrash is metered | A hot key is evicted, a speculative key becomes rooted, handoff opens a birth-eviction window, retained memory never falls after supersession, or rederivation is invisible |
 | Differential oracle | After every edit run reused and fresh sessions over canonical queries | Artifacts, diagnostics, and changed sets agree | Any warm/fresh disagreement |
 | Codegen seam | Edit one function, one data item, then one symbol reference | Per-function/data/symbol artifacts identify exactly the changed-symbol set | Whole-program artifact is the only observable delta |
 | Schedule audit | Permute dependency evaluation order and review API locking/traversal state | Same result; no global traversal state or lock spans execution | Output, cycle result, or witness changes with schedule |
