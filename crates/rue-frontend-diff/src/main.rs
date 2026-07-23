@@ -2,11 +2,15 @@
 //! `examples/ruelex`. Every source must first match the production token dump
 //! byte-for-byte; only then is its lexeme-erased AST shape accepted.
 
+mod corpus_manifest;
+
 use lasso::ThreadedRodeo;
 use rue_lexer::Lexer;
 use rue_parser::Parser;
 use rue_parser::ast::*;
+use std::collections::BTreeSet;
 use std::env;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -18,7 +22,7 @@ const MUT: u64 = 15;
 const COMPTIME: u64 = 25;
 const IDENT_TOKEN: u64 = 2;
 const UNDERSCORE: u64 = 95;
-const EXPECTED_CORPUS_FILES: usize = 1443;
+const MANIFEST_PATH: &str = "crates/rue-frontend-diff/src/corpus_manifest.rs";
 // RUE-1083: temporary cold-Linux headroom while query-cutover compile-time
 // regressions are repaired. The frontend differential remains fully real.
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(60);
@@ -978,6 +982,161 @@ fn collect_rue_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), String
     Ok(())
 }
 
+type CorpusIdentity = (String, String);
+
+fn path_components(path: &Path) -> Result<Vec<String>, String> {
+    path.components()
+        .map(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| format!("corpus path is not UTF-8: {}", path.display()))
+        })
+        .collect()
+}
+
+fn manifest_sets(
+    manifest: &[(&str, &[&str])],
+) -> Result<(BTreeSet<String>, BTreeSet<CorpusIdentity>), String> {
+    let mut roots = BTreeSet::new();
+    let mut files = BTreeSet::new();
+    for &(root, paths) in manifest {
+        if root.is_empty() || root.contains(['/', '\\']) {
+            return Err(format!("invalid corpus root `{root}` in {MANIFEST_PATH}"));
+        }
+        if !roots.insert(root.to_owned()) {
+            return Err(format!("duplicate corpus root `{root}` in {MANIFEST_PATH}"));
+        }
+        for &path in paths {
+            let components = path_components(Path::new(path))?;
+            if components.is_empty()
+                || components.iter().any(|component| component == "..")
+                || Path::new(path).is_absolute()
+            {
+                return Err(format!(
+                    "invalid path `{path}` for corpus root `{root}` in {MANIFEST_PATH}"
+                ));
+            }
+            if !files.insert((root.to_owned(), components.join("/"))) {
+                return Err(format!("duplicate path `{root}/{path}` in {MANIFEST_PATH}"));
+            }
+        }
+    }
+    if roots.is_empty() {
+        return Err(format!("{MANIFEST_PATH} declares no corpus roots"));
+    }
+    Ok((roots, files))
+}
+
+fn identity(corpus: &Path, path: &Path) -> Result<CorpusIdentity, String> {
+    let relative = path.strip_prefix(corpus).map_err(|_| {
+        format!(
+            "corpus file {} is outside {}",
+            path.display(),
+            corpus.display()
+        )
+    })?;
+    let mut components = path_components(relative)?.into_iter();
+    let root = components
+        .next()
+        .ok_or_else(|| format!("corpus file has no owning root: {}", path.display()))?;
+    let relative = components.collect::<Vec<_>>().join("/");
+    if relative.is_empty() {
+        return Err(format!(
+            "corpus file has no path below root `{root}`: {}",
+            path.display()
+        ));
+    }
+    Ok((root, relative))
+}
+
+fn audit_corpus(corpus: &Path, manifest: &[(&str, &[&str])]) -> Result<Vec<PathBuf>, String> {
+    let (roots, expected) = manifest_sets(manifest)?;
+    let missing_roots = roots
+        .iter()
+        .filter(|root| !corpus.join(root).is_dir())
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let mut paths = Vec::new();
+    collect_rue_files(corpus, &mut paths)?;
+    let actual = paths
+        .iter()
+        .map(|path| identity(corpus, path))
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    let removed = expected.difference(&actual).cloned().collect::<Vec<_>>();
+    let added = actual.difference(&expected).cloned().collect::<Vec<_>>();
+
+    if missing_roots.is_empty() && removed.is_empty() && added.is_empty() {
+        paths.sort();
+        return Ok(paths);
+    }
+
+    let mut report = format!("declared corpus does not match {MANIFEST_PATH}:");
+    for root in missing_roots {
+        let _ = write!(report, "\n  missing corpus root `{root}`");
+    }
+    for (root, path) in removed {
+        let _ = write!(report, "\n  removed [{root}] `{root}/{path}`");
+    }
+    for (root, path) in added {
+        let kind = if roots.contains(&root) {
+            "added"
+        } else {
+            "unexpected"
+        };
+        let _ = write!(report, "\n  {kind} [{root}] `{root}/{path}`");
+    }
+    let _ = write!(
+        report,
+        "\nrefresh intentional path changes with `scripts/rue frontend-manifest`"
+    );
+    Err(report)
+}
+
+fn render_manifest(roots: &BTreeSet<String>, files: &BTreeSet<CorpusIdentity>) -> String {
+    let mut output = String::from(
+        "// @generated by `scripts/rue frontend-manifest`; review path changes before committing.\n\
+         // Each entry is relative to its explicit corpus root.\n\n\
+         pub(crate) const ROOTS: &[(&str, &[&str])] = &[\n",
+    );
+    for root in roots {
+        let _ = writeln!(output, "    (");
+        let _ = writeln!(output, "        {root:?},");
+        let _ = writeln!(output, "        &[");
+        for (_, path) in files.iter().filter(|(owner, _)| owner == root) {
+            let _ = writeln!(output, "            {path:?},");
+        }
+        let _ = writeln!(output, "        ],");
+        let _ = writeln!(output, "    ),");
+    }
+    output.push_str("];\n");
+    output
+}
+
+fn refresh_manifest(corpus: &Path, destination: &Path) -> Result<usize, String> {
+    let (roots, _) = manifest_sets(corpus_manifest::ROOTS)?;
+    let mut paths = Vec::new();
+    for root in &roots {
+        let root_path = corpus.join(root);
+        if !root_path.is_dir() {
+            return Err(format!(
+                "cannot refresh: corpus root `{root}` is missing at {}",
+                root_path.display()
+            ));
+        }
+        collect_rue_files(&root_path, &mut paths)?;
+    }
+    let files = paths
+        .iter()
+        .map(|path| identity(corpus, path))
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    fs::write(destination, render_manifest(&roots, &files))
+        .map_err(|error| format!("write {}: {error}", destination.display()))?;
+    Ok(files.len())
+}
+
 fn mismatch(kind: &str, path: &Path, expected: &str, actual: &str) -> String {
     let at = expected
         .bytes()
@@ -1053,10 +1212,11 @@ fn compare_source(frontend: &Path, path: &Path, source: &str) -> Result<(), Stri
     Ok(())
 }
 
-fn run() -> Result<usize, String> {
+fn run_differential() -> Result<usize, String> {
     let compiler = env::var_os("RUE_BINARY").ok_or("RUE_BINARY is not set")?;
     let corpus =
         PathBuf::from(env::var_os("RUE_FRONTEND_DIFF_CORPUS").unwrap_or_else(|| ".".into()));
+    let files = audit_corpus(&corpus, corpus_manifest::ROOTS)?;
     let root = corpus.join("examples/ruelex/main.rue");
     if !root.is_file() {
         return Err(format!(
@@ -1078,15 +1238,6 @@ fn run() -> Result<usize, String> {
             String::from_utf8_lossy(&compile.stderr)
         ));
     }
-    let mut files = Vec::new();
-    collect_rue_files(&corpus, &mut files)?;
-    files.sort();
-    if files.len() != EXPECTED_CORPUS_FILES {
-        return Err(format!(
-            "declared corpus contains {} .rue files, expected {EXPECTED_CORPUS_FILES}; update the explicit corpus and audited count together",
-            files.len()
-        ));
-    }
     for path in &files {
         let source =
             fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
@@ -1100,13 +1251,49 @@ fn run() -> Result<usize, String> {
     Ok(files.len())
 }
 
+enum Success {
+    Compared(usize),
+    Refreshed { count: usize, path: PathBuf },
+}
+
+fn run() -> Result<Success, String> {
+    let mut args = env::args_os().skip(1);
+    match args.next() {
+        None => run_differential().map(Success::Compared),
+        Some(flag) if flag == "--refresh-manifest" => {
+            let destination = args
+                .next()
+                .map(PathBuf::from)
+                .ok_or("--refresh-manifest requires a destination path")?;
+            if args.next().is_some() {
+                return Err("--refresh-manifest accepts exactly one destination path".into());
+            }
+            let corpus = PathBuf::from(
+                env::var_os("RUE_FRONTEND_DIFF_CORPUS")
+                    .ok_or("RUE_FRONTEND_DIFF_CORPUS is not set")?,
+            );
+            refresh_manifest(&corpus, &destination).map(|count| Success::Refreshed {
+                count,
+                path: destination,
+            })
+        }
+        Some(_) => Err(format!(
+            "usage: rue-frontend-diff [--refresh-manifest {MANIFEST_PATH}]"
+        )),
+    }
+}
+
 fn main() -> ExitCode {
     match run() {
-        Ok(count) => {
+        Ok(Success::Compared(count)) => {
             println!(
                 "frontend token + structural differential: {count}/{count} corpus files and {} syntax probes agree",
                 SYNTAX_PROBES.len()
             );
+            ExitCode::SUCCESS
+        }
+        Ok(Success::Refreshed { count, path }) => {
+            println!("refreshed {} with {count} corpus files", path.display());
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -1193,6 +1380,77 @@ mod tests {
         assert!(report.contains("x.rue: first AST shape mismatch at byte 10"));
         assert!(report.contains("production:"));
         assert!(report.contains("ruelex:"));
+    }
+
+    fn write_corpus_file(corpus: &Path, relative: &str) {
+        let path = corpus.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "fn main() {}").unwrap();
+    }
+
+    #[test]
+    fn corpus_manifest_is_order_and_relocation_independent() {
+        let temp = tempfile::tempdir().unwrap();
+        let corpus = temp.path().join("relocated");
+        write_corpus_file(&corpus, "examples/z.rue");
+        write_corpus_file(&corpus, "examples/a.rue");
+        fs::create_dir_all(corpus.join("std")).unwrap();
+        let manifest: &[(&str, &[&str])] = &[("std", &[]), ("examples", &["a.rue", "z.rue"])];
+
+        let files = audit_corpus(&corpus, manifest).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0], corpus.join("examples/a.rue"));
+        assert_eq!(files[1], corpus.join("examples/z.rue"));
+    }
+
+    #[test]
+    fn corpus_manifest_reports_exact_added_removed_and_unexpected_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let corpus = temp.path();
+        write_corpus_file(corpus, "examples/kept.rue");
+        write_corpus_file(corpus, "examples/added.rue");
+        write_corpus_file(corpus, "surprise/new.rue");
+        let manifest: &[(&str, &[&str])] = &[("examples", &["kept.rue", "removed.rue"])];
+
+        let error = audit_corpus(corpus, manifest).unwrap_err();
+        assert!(
+            error.contains("removed [examples] `examples/removed.rue`"),
+            "{error}"
+        );
+        assert!(
+            error.contains("added [examples] `examples/added.rue`"),
+            "{error}"
+        );
+        assert!(
+            error.contains("unexpected [surprise] `surprise/new.rue`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn removing_a_corpus_root_is_a_hard_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest: &[(&str, &[&str])] = &[("std", &["_std.rue"])];
+
+        let error = audit_corpus(temp.path(), manifest).unwrap_err();
+        assert!(error.contains("missing corpus root `std`"), "{error}");
+        assert!(error.contains("removed [std] `std/_std.rue`"), "{error}");
+    }
+
+    #[test]
+    fn generated_manifest_is_sorted_and_stable() {
+        let roots = BTreeSet::from(["std".to_owned(), "examples".to_owned()]);
+        let files = BTreeSet::from([
+            ("examples".to_owned(), "z.rue".to_owned()),
+            ("examples".to_owned(), "a.rue".to_owned()),
+            ("std".to_owned(), "_std.rue".to_owned()),
+        ]);
+
+        let first = render_manifest(&roots, &files);
+        let second = render_manifest(&roots, &files);
+        assert_eq!(first, second);
+        assert!(first.find("\"examples\"").unwrap() < first.find("\"std\"").unwrap());
+        assert!(first.find("\"a.rue\"").unwrap() < first.find("\"z.rue\"").unwrap());
     }
 
     #[cfg(unix)]
