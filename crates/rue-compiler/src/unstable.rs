@@ -250,6 +250,62 @@ pub fn provider_observation_metrics(
     session.provider_observation_metrics()
 }
 
+/// A snapshot of the lookup-family pressure metrics (RUE-1091, ADR-0066 §4): the
+/// session-held `PublishedRootLookupLease`'s retained working set and its
+/// grow-with-pressure, eviction, and rederivation-after-eviction accounting.
+///
+/// The lease-scoped fields (`published_roots`, `leased_terminals`,
+/// `retained_logical_keys`) and the lease-attributed counters (`protected_growth`,
+/// `evictions`, `rederivations_after_eviction`) read zero on a production compile:
+/// production body analysis observes no lookup terminals, so a rooted publication
+/// promotes an empty set and no root is ever installed. The step-4 flip routes
+/// body analysis through the exact provider and makes them live. The
+/// `retained_family_*` fields report the lookup families' current runtime
+/// retention and are informational — they are nonzero on production, since
+/// module-index projection builds `compiler.lookup-name` terminals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LookupPressureMetrics {
+    /// Distinct published roots currently held by the session lease.
+    pub published_roots: u64,
+    /// Total lookup-terminal pins the lease currently holds across all roots.
+    pub leased_terminals: u64,
+    /// Distinct logical lookup keys currently retained under the lease.
+    pub retained_logical_keys: u64,
+    /// Lookup-family logical memo nodes currently retained by the runtime
+    /// (name plus, under test, import). Informational; nonzero on production.
+    pub retained_family_nodes: u64,
+    /// Lookup-family terminals currently retained by the runtime (name plus,
+    /// under test, import). Informational; nonzero on production.
+    pub retained_family_terminals: u64,
+    /// Grow-with-pressure gauge: how far the lookup families' currently retained
+    /// terminals exceed their configured historical floor. This is a live gauge
+    /// (retained-terminals-above-floor), not a cumulative count of the runtime's
+    /// `retention_growth` events: the runtime grows a family past its floor only
+    /// when every eviction candidate is a protected root — a waiter, an explicit
+    /// pin, a request-scoped observation lease, or a retained revision — so any
+    /// excess is a set held above the floor by protection of some kind rather
+    /// than an eviction of a name merely because a large program consults more
+    /// than the floor. Zero on production: nothing pins a lookup terminal above
+    /// the floor without the lease.
+    pub protected_growth: u64,
+    /// Lookup terminals evicted while a superseded root batch-released — the
+    /// runtime eviction delta captured across the prior root's release.
+    pub evictions: u64,
+    /// Lookup keys re-observed with a changed node incarnation: a key whose
+    /// retained terminal is gone (evicted, or otherwise a fresh node) so the
+    /// re-observation sees a new incarnation. Under retention pressure this is
+    /// eviction-forced rederivation — the acceptance falsifier (invisible to
+    /// correctness: the recomputed value equals the evicted one) — but a changed
+    /// incarnation from a legitimate source-driven recompute counts here too.
+    pub rederivations_after_eviction: u64,
+}
+
+/// A snapshot of the lookup-family pressure metrics. See
+/// [`LookupPressureMetrics`]; the lease-scoped fields are zero on production.
+pub fn lookup_pressure_metrics(session: &crate::CompilerSession) -> LookupPressureMetrics {
+    session.lookup_pressure_metrics()
+}
+
 /// Cumulative dependency-graph invalidation events across the retained
 /// frontend query families (RUE-1112). A strictly-additive successor adoption
 /// keeps the predecessor's immutable source leaf live and contributes zero

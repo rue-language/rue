@@ -3213,6 +3213,14 @@ impl CompilerSession {
         self.queries.revisioned.provider_observation_metrics()
     }
 
+    /// A snapshot of the lookup-family pressure metrics (RUE-1091, ADR-0066 §4).
+    /// The lease-scoped and lease-attributed fields read zero on the production
+    /// path — no production body observes a lookup terminal, so the session
+    /// `PublishedRootLookupLease` promotes only empty sets until the step-4 flip.
+    pub(crate) fn lookup_pressure_metrics(&self) -> crate::unstable::LookupPressureMetrics {
+        self.queries.revisioned.lookup_pressure_metrics()
+    }
+
     /// Acquire the session's shared recipe cache for the test-only overlay path,
     /// constructing it on first use (metered as one container created) and
     /// reusing it afterward (metered as reuse). No production path calls this, so
@@ -11526,6 +11534,73 @@ mod tests {
             session.recipe_cache_metrics(),
             crate::recipe_cache::RecipeCacheMetrics::default(),
             "the provider slice must leave the RUE-1090 production counters unchanged"
+        );
+    }
+
+    #[test]
+    fn published_lookup_root_lease_is_inert_on_the_production_path() {
+        // RUE-1091 slice 3c: the `PublishedRootLookupLease` promotion point is
+        // wired into the rooted semantic publication path, but a production body
+        // observes no lookup terminal (the exact provider that consults the lookup
+        // families is a test-only differential adapter until the step-4 flip), so
+        // every semantic-root publication promotes an EMPTY set — no root is
+        // installed and no lease-scoped or lease-attributed metric moves. The
+        // RUE-1090 recipe-cache and RUE-1091 provider counters stay unchanged too.
+        let source = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn helper(x: i32) -> i32 { x + 1 } fn main() -> i32 { helper(2) }",
+            )],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .expect("the program analyzes");
+
+        let metrics = crate::unstable::lookup_pressure_metrics(&session);
+        assert_eq!(
+            metrics.published_roots, 0,
+            "no root is promoted on the production path"
+        );
+        assert_eq!(
+            metrics.leased_terminals, 0,
+            "the session lease holds no pin"
+        );
+        assert_eq!(metrics.retained_logical_keys, 0);
+        assert_eq!(
+            metrics.protected_growth, 0,
+            "no lease supersession grew a family"
+        );
+        assert_eq!(
+            metrics.evictions, 0,
+            "no lease supersession evicted a terminal"
+        );
+        assert_eq!(metrics.rederivations_after_eviction, 0);
+        // Mechanical (not inferred) proof that the empty path costs nothing: the
+        // promotion hook never entered its non-empty branch on any of this
+        // compile's body publications, so it formatted no root identity and took
+        // no lease lock.
+        assert_eq!(
+            session.queries.revisioned.lookup_promotion_entries(),
+            0,
+            "the promotion hook never entered the non-empty branch on the production path"
+        );
+        // RUE-1090 recipe-cache and RUE-1091 provider inertness hold at the same
+        // time: wiring the lease promotion point did not perturb the production
+        // path.
+        assert_eq!(
+            crate::unstable::provider_observation_metrics(&session),
+            crate::unstable::ProviderObservationMetrics::default(),
+            "the lease slice must leave the provider counters at zero"
+        );
+        assert_eq!(
+            session.recipe_cache_metrics(),
+            crate::recipe_cache::RecipeCacheMetrics::default(),
+            "the lease slice must leave the RUE-1090 production counters unchanged"
         );
     }
 

@@ -574,6 +574,21 @@ pub(crate) struct RevisionedQueryDatabase {
     /// on a production compile. Exposed through the unstable surface, mirroring
     /// the recipe-cache meter.
     provider_observation_meter: Arc<ProviderObservationCounters>,
+    /// Session-held retention lease over the lookup families (RUE-1091,
+    /// ADR-0066 §4). A rooted semantic publication promotes its exact observed
+    /// lookup-pin set here. Inert on the production path in this slice — a
+    /// production body observes no lookup terminals, so nothing is ever promoted;
+    /// the mechanism is production code the step-4 flip makes live. Behind a
+    /// `Mutex` because promotion is a `&self` operation on the shared database.
+    lookup_root_lease: Mutex<PublishedRootLookupLease>,
+    /// Test-only witness that the rooted-publication promotion hook took its
+    /// non-empty branch — i.e. entered the promotion path at all (RUE-1091). The
+    /// hook checks the observed set for emptiness FIRST, before formatting the
+    /// root identity or taking the lease lock, and increments this only past that
+    /// gate. A full production compile leaves it zero, mechanically proving the
+    /// empty path costs no identity format and no lock acquisition.
+    #[cfg(test)]
+    lookup_promotion_entries: std::sync::atomic::AtomicU64,
     /// Test-only probe family hosting one provider-observation task so a driven
     /// body's recorded query edges are inspectable through the task terminal's
     /// `dependencies()`.
@@ -610,6 +625,144 @@ impl ProviderObservationCounters {
             anonymous_facts: self.anonymous_facts.load(Relaxed),
             producer_facts: self.producer_facts.load(Relaxed),
             toolchain_facts: self.toolchain_facts.load(Relaxed),
+        }
+    }
+}
+
+/// Upper bound on the per-key node-incarnation history the published-root lookup
+/// lease keeps for rederivation-after-eviction detection (RUE-1091, ADR-0066 §4).
+/// The history is bounded FIFO: it exists only to notice that a re-observed key's
+/// terminal was evicted and rebuilt (a fresh incarnation), never to retain a
+/// terminal.
+const LOOKUP_INCARNATION_HISTORY_BOUND: usize = 4096;
+
+/// One rooted request's exact observed lookup-terminal pin set, collected while
+/// the request lease is still live so every terminal is continuously protected
+/// (the pin-under-lock discipline: no birth-eviction window). Promotion transfers
+/// this into the session-held [`PublishedRootLookupLease`].
+///
+/// Production body analysis observes no lookup terminals in this slice — the
+/// exact body-fact provider that consults the lookup families is a test-only
+/// differential adapter until the RUE-1091 step-4 flip — so a production body's
+/// collected root is empty and its promotion is inert.
+pub(crate) struct ObservedLookupRoot {
+    /// The exact pins, retained past the request through the batched-release set.
+    pins: rue_query::RetainedPinSet,
+    /// `(logical key display, node incarnation)` per distinct observed terminal,
+    /// so promotion can detect a rederived-after-eviction key by its fresh
+    /// incarnation. Parallel to the pins: only terminals newly leased (not
+    /// deduplicated re-observations) are recorded.
+    observed_keys: Vec<(String, u64)>,
+}
+
+impl ObservedLookupRoot {
+    fn new() -> Self {
+        Self {
+            pins: rue_query::RetainedPinSet::new(),
+            observed_keys: Vec::new(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pins.is_empty()
+    }
+
+    /// Pin one observed lookup terminal into the set and record its logical
+    /// identity. Acquiring the pin while the observing request task still holds
+    /// its request-scoped lease keeps the terminal protected across the transfer.
+    /// A terminal already present (same incarnation/stamp/revision) deduplicates:
+    /// the redundant pin is dropped and no duplicate key is recorded.
+    ///
+    /// Reachable in this slice only from the test-only exact provider — no
+    /// production body observes a lookup terminal until the step-4 flip.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn record<K, V>(
+        &mut self,
+        family: &QueryFamily<K, V>,
+        terminal: &Arc<rue_query::QueryTerminal<V>>,
+    ) where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+    {
+        let Ok(pin) = family.pin_terminal(terminal) else {
+            return;
+        };
+        let node = terminal.node();
+        let identity = format!("{}\u{1}{}", node.family(), node.key());
+        let incarnation = terminal.node_incarnation();
+        if self.pins.lease(pin) {
+            self.observed_keys.push((identity, incarnation));
+        }
+    }
+}
+
+/// Session-held retention lease over the lookup families (`compiler.lookup-name`
+/// and `compiler.lookup-import`) — the `PublishedRootLookupLease` of ADR-0066 §4.
+///
+/// On semantic-root publication, success or deterministic failure, a rooted
+/// request's exact observed lookup-terminal pin set is promoted here, keyed by
+/// the root's stable identity, atomically replacing that root's prior published
+/// set; the superseded set is then batch-released. An attempt that aborts or
+/// cancels before publishing a root is never promoted, and a merely speculative
+/// lookup no published root observed is never pinned into a set, so it stays
+/// evictable. The current root's set may grow a family beyond its historical
+/// floor under pressure (grow-with-pressure-and-meter) but cannot be evicted
+/// because a large program consults more names than the floor.
+///
+/// Inert on the production path in this slice: production bodies observe no
+/// lookup terminals, so every promoted set is empty and no root is ever
+/// installed. The mechanism is production code because the step-4 flip makes it
+/// live; it simply has nothing to promote until bodies observe lookup terminals.
+/// One published root's retained lookup pins plus the distinct logical keys they
+/// cover, so the lease can report its currently retained logical working set.
+#[derive(Debug, Default)]
+struct RootLeaseEntry {
+    pins: rue_query::RetainedPinSet,
+    keys: BTreeSet<String>,
+}
+
+#[derive(Debug, Default)]
+struct PublishedRootLookupLease {
+    /// One retained pin set per published root, keyed by the root's stable
+    /// identity. A promotion installs the successor set here before releasing the
+    /// predecessor, so the shared terminals of an edit/error/fix loop are never
+    /// left unprotected across the swap.
+    roots: BTreeMap<String, RootLeaseEntry>,
+    /// Last observed node incarnation per distinct logical lookup key, bounded
+    /// FIFO, for rederivation-after-eviction detection.
+    incarnations: BTreeMap<String, u64>,
+    /// FIFO order of `incarnations` keys, to bound the history.
+    incarnation_order: VecDeque<String>,
+    /// Cumulative lookup keys re-observed with a changed node incarnation — a
+    /// previously seen key whose retained terminal is gone (evicted, or otherwise
+    /// a fresh node), so the re-observation sees a new incarnation. Under
+    /// retention pressure this is eviction-forced rederivation (the acceptance
+    /// falsifier, invisible to correctness); a legitimate source-driven recompute
+    /// that changes the incarnation counts here too.
+    rederivations_after_eviction: u64,
+    /// Lookup-family terminal evictions attributed to lease supersession — the
+    /// runtime-metric delta captured while a superseded root's pins batch-release.
+    supersession_evictions: u64,
+}
+
+impl PublishedRootLookupLease {
+    fn seen_incarnation(&self, key: &str) -> Option<u64> {
+        self.incarnations.get(key).copied()
+    }
+
+    fn record_incarnation(&mut self, key: String, incarnation: u64) {
+        let existed = self.incarnations.insert(key.clone(), incarnation).is_some();
+        if existed {
+            // Refresh recency: a re-observed hot key moves to the back so it is
+            // not aged out of the bounded history ahead of colder keys. This keeps
+            // the deque entries unique, so a popped-front key is still its map key.
+            self.incarnation_order.retain(|entry| entry != &key);
+        }
+        self.incarnation_order.push_back(key);
+        while self.incarnation_order.len() > LOOKUP_INCARNATION_HISTORY_BOUND {
+            if let Some(oldest) = self.incarnation_order.pop_front() {
+                self.incarnations.remove(&oldest);
+            }
         }
     }
 }
@@ -8867,6 +9020,9 @@ impl RevisionedQueryDatabase {
             import_view_read_entries_compared: std::sync::atomic::AtomicU64::new(0),
             lineage_additions: Vec::new(),
             provider_observation_meter: Arc::new(ProviderObservationCounters::default()),
+            lookup_root_lease: Mutex::new(PublishedRootLookupLease::default()),
+            #[cfg(test)]
+            lookup_promotion_entries: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             provider_probe: runtime
                 .family_with_equality(
@@ -8887,6 +9043,130 @@ impl RevisionedQueryDatabase {
         &self,
     ) -> crate::unstable::ProviderObservationMetrics {
         self.provider_observation_meter.snapshot()
+    }
+
+    /// Promote a rooted request's exact observed lookup-terminal pin set into the
+    /// session-held [`PublishedRootLookupLease`] at semantic-root publication —
+    /// success or deterministic failure (RUE-1091, ADR-0066 §4).
+    ///
+    /// The successor set is installed for `root` FIRST — it already holds every
+    /// pin, acquired while the request lease was live, so the terminals stay
+    /// continuously protected — and only THEN is the superseded set for the same
+    /// root batch-released, so an edit/error/fix loop's shared lookup terminals
+    /// are never left unprotected across the swap (no birth-eviction window). A
+    /// key re-derived after its prior incarnation was evicted is metered here by
+    /// its fresh incarnation; the supersession's eviction delta is attributed
+    /// across the release (grow-with-pressure is reported as a gauge at read
+    /// time — the current excess of retained terminals over the floor).
+    ///
+    /// An empty observation is an unconditional no-op: it never installs, never
+    /// supersedes, and never touches a prior root's lease. A warm green
+    /// revalidation (or any publication that consulted no lookups) observes
+    /// nothing, so it preserves the prior root's leased set by construction —
+    /// which IS the §4 edit/error/fix warmth semantic. Promotion happens only on
+    /// publications that observed lookups. Inert on the production path: a
+    /// production body observes no lookup terminal, so this always returns early.
+    pub(crate) fn promote_published_lookup_root(&self, root: String, observed: ObservedLookupRoot) {
+        if observed.is_empty() {
+            return;
+        }
+        let mut lease = self
+            .lookup_root_lease
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Rederivation-after-eviction accounting: a re-observed key whose retained
+        // terminal was evicted and rebuilt shows a fresh node incarnation.
+        for (key, incarnation) in &observed.observed_keys {
+            if let Some(previous) = lease.seen_incarnation(key)
+                && previous != *incarnation
+            {
+                lease.rederivations_after_eviction += 1;
+            }
+            lease.record_incarnation(key.clone(), *incarnation);
+        }
+        let ObservedLookupRoot {
+            pins,
+            observed_keys,
+        } = observed;
+        let entry = RootLeaseEntry {
+            pins,
+            keys: observed_keys.into_iter().map(|(key, _)| key).collect(),
+        };
+        // Atomic handoff: install the successor set before releasing the prior.
+        let prior = lease.roots.insert(root, entry);
+        // Attribute the supersession's eviction delta across the batched release
+        // of the prior set: the terminals evicted are exactly the superseded
+        // root's entries no successor pin still protects. Snapshot under the lease
+        // lock so a concurrent promotion cannot interleave its own release delta.
+        let evictions_before = self.runtime.metrics().evictions;
+        // Release the prior set's pins (batched two-phase release) while still
+        // holding the lease lock, so the successor is unambiguously the installed
+        // root throughout the release's enforcement pass.
+        drop(prior);
+        lease.supersession_evictions += self.runtime.metrics().evictions - evictions_before;
+    }
+
+    /// An owned snapshot of the lookup-family pressure metrics (RUE-1091,
+    /// ADR-0066 §4): the lease-scoped retained working set (published roots,
+    /// leased terminals, distinct logical keys), the lookup families' currently
+    /// retained nodes and terminals, and the lease-attributed grow-with-pressure,
+    /// eviction, and rederivation-after-eviction counters. The lease-scoped and
+    /// lease-attributed fields read zero on the production path — no production
+    /// body observes a lookup terminal, so nothing is ever promoted.
+    pub(crate) fn lookup_pressure_metrics(&self) -> crate::unstable::LookupPressureMetrics {
+        let lease = self
+            .lookup_root_lease
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let published_roots = lease.roots.len() as u64;
+        let leased_terminals = lease
+            .roots
+            .values()
+            .map(|entry| entry.pins.len())
+            .sum::<usize>() as u64;
+        let retained_logical_keys = lease
+            .roots
+            .values()
+            .flat_map(|entry| entry.keys.iter())
+            .collect::<BTreeSet<_>>()
+            .len() as u64;
+        let name_retention = self.lookup_names.retention();
+        // Grow-with-pressure is a gauge: how far a lookup family's retained
+        // terminals currently exceed its configured historical floor. The runtime
+        // grows past the floor only when every eviction candidate is a protected
+        // root, so any excess is exactly the current root's set held above the
+        // floor — never eviction of a name merely because a large program
+        // consults more than the floor. Zero on production: nothing pins a lookup
+        // terminal above the floor without the lease.
+        let name_growth =
+            (name_retention.terminals as u64).saturating_sub(name_retention.terminal_limit as u64);
+        // The import family is registered only under test in this slice; its
+        // retention folds into the reported totals there and is zero otherwise.
+        #[cfg(test)]
+        let (extra_nodes, extra_terminals, extra_growth) = {
+            let import_retention = self.lookup_imports.retention();
+            (
+                import_retention.memo_nodes as u64,
+                import_retention.terminals as u64,
+                (import_retention.terminals as u64)
+                    .saturating_sub(import_retention.terminal_limit as u64),
+            )
+        };
+        #[cfg(not(test))]
+        let (extra_nodes, extra_terminals, extra_growth) = (0u64, 0u64, 0u64);
+        let retained_family_nodes = name_retention.memo_nodes as u64 + extra_nodes;
+        let retained_family_terminals = name_retention.terminals as u64 + extra_terminals;
+        let protected_growth = name_growth + extra_growth;
+        crate::unstable::LookupPressureMetrics {
+            published_roots,
+            leased_terminals,
+            retained_logical_keys,
+            retained_family_nodes,
+            retained_family_terminals,
+            protected_growth,
+            evictions: lease.supersession_evictions,
+            rederivations_after_eviction: lease.rederivations_after_eviction,
+        }
     }
 }
 
@@ -9460,7 +9740,33 @@ impl RevisionedQueryDatabase {
             },
         );
         match result {
-            Ok(terminal) => Ok(terminal),
+            Ok(terminal) => {
+                // Semantic-root publication (success OR deterministic failure):
+                // promote this request's exact observed lookup-terminal pin set
+                // into the session-held `PublishedRootLookupLease`, superseding
+                // this root's prior set atomically (RUE-1091, ADR-0066 §4).
+                //
+                // Empty observation is an unconditional no-op checked FIRST, with
+                // zero cost — no root-identity format, no lease lock, no map
+                // access. A production body observes no lookup terminals (the
+                // exact provider that consults the lookup families is a test-only
+                // differential adapter until the step-4 flip), and a warm green
+                // revalidation short-circuits with no observations either; both
+                // leave the empty set. So promotion never runs on the production
+                // path, and green reuse preserves the prior root's leased set by
+                // construction — the §4 edit/error/fix warmth semantic. Only a
+                // publication that actually observed lookups formats the identity,
+                // takes the lease, and supersedes. An attempt that aborts before
+                // publishing a root takes an `Err` arm below and is never promoted.
+                let observed = ObservedLookupRoot::new();
+                if !observed.is_empty() {
+                    #[cfg(test)]
+                    self.lookup_promotion_entries
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    self.promote_published_lookup_root(key.stable_identity(), observed);
+                }
+                Ok(terminal)
+            }
             // A committed anchor-transport internal error takes precedence over a
             // deferral: the producer definitively failed, so this body must fail
             // closed rather than reschedule the producer forever (RUE-1089).
@@ -11308,6 +11614,15 @@ pub(crate) struct CompilerBodyFactProvider<'a> {
     database: &'a RevisionedQueryDatabase,
     configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
     aborted: std::cell::RefCell<Option<QueryAbort>>,
+    /// The lookup terminals this provider observes for the rooted request,
+    /// pinned while the request lease is still live (RUE-1091, ADR-0066 §4). A
+    /// name lookup pins its `compiler.lookup-name` terminal; an import resolution
+    /// pins its `compiler.lookup-import` terminal. A speculative lookup no
+    /// published root observes is never promoted, so a terminal touched purely to
+    /// probe is left in this set only if the driving request actually publishes a
+    /// root and promotes it. [`Self::take_observed_root`] hands the set to the
+    /// session lease at promotion.
+    observed: std::cell::RefCell<ObservedLookupRoot>,
 }
 
 #[cfg(test)]
@@ -11322,7 +11637,13 @@ impl<'a> CompilerBodyFactProvider<'a> {
             database,
             configuration,
             aborted: std::cell::RefCell::new(None),
+            observed: std::cell::RefCell::new(ObservedLookupRoot::new()),
         }
+    }
+
+    /// Take the observed lookup-pin set for promotion into the session lease.
+    fn take_observed_root(&self) -> ObservedLookupRoot {
+        self.observed.replace(ObservedLookupRoot::new())
     }
 
     /// Record a nested request's abort with one uniform rule across every op:
@@ -11369,10 +11690,18 @@ impl<'a> CompilerBodyFactProvider<'a> {
             .context
             .query_registered(&self.database.lookup_names, key)
         {
-            Ok(terminal) => match terminal.outcome() {
-                rue_query::QueryOutcome::Success(value) => name_resolution_from_value(value),
-                _ => rue_air::NameResolution::IndexUnavailable,
-            },
+            Ok(terminal) => {
+                // Pin the observed lookup-name terminal while the request lease
+                // still protects it, so the promoted set transfers it with no
+                // birth-eviction window.
+                self.observed
+                    .borrow_mut()
+                    .record(&self.database.lookup_names, &terminal);
+                match terminal.outcome() {
+                    rue_query::QueryOutcome::Success(value) => name_resolution_from_value(value),
+                    _ => rue_air::NameResolution::IndexUnavailable,
+                }
+            }
             Err(abort) => {
                 self.observe_abort(abort);
                 rue_air::NameResolution::IndexUnavailable
@@ -11752,10 +12081,17 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
             .context
             .query_registered(&self.database.lookup_imports, key)
         {
-            Ok(terminal) => match terminal.outcome() {
-                rue_query::QueryOutcome::Success(value) => import_resolution_from_value(value),
-                _ => rue_air::ImportResolution::Absent,
-            },
+            Ok(terminal) => {
+                // Pin the observed lookup-import terminal under the live request
+                // lease, exactly as the name-lookup op does.
+                self.observed
+                    .borrow_mut()
+                    .record(&self.database.lookup_imports, &terminal);
+                match terminal.outcome() {
+                    rue_query::QueryOutcome::Success(value) => import_resolution_from_value(value),
+                    _ => rue_air::ImportResolution::Absent,
+                }
+            }
             Err(abort) => {
                 self.observe_abort(abort);
                 rue_air::ImportResolution::Absent
@@ -11830,6 +12166,15 @@ struct ProviderProbeOutcome<R> {
 
 #[cfg(test)]
 impl RevisionedQueryDatabase {
+    /// The number of times the rooted-publication promotion hook entered its
+    /// non-empty branch — the point past the zero-cost empty gate at which it
+    /// formats the root identity and takes the lease. Zero across a production
+    /// compile proves the empty path acquired no lock and formatted no identity.
+    pub(crate) fn lookup_promotion_entries(&self) -> u64 {
+        self.lookup_promotion_entries
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Run `run` against a fresh [`CompilerBodyFactProvider`] inside one query
     /// task at `revision`. The returned outcome carries the closure's result and
     /// the exact set of query edges the provider recorded, so a test proves both
@@ -11874,6 +12219,62 @@ impl RevisionedQueryDatabase {
         ProviderProbeOutcome {
             result: captured.into_inner().expect("probe captured a result"),
             dependencies,
+        }
+    }
+
+    /// Drive `run` (a set of provider lookups) as one rooted request under the
+    /// unique probe node `probe_label`, then — unless `cancel` aborts the request
+    /// before it publishes — promote the request's exact observed lookup-pin set
+    /// into the session `PublishedRootLookupLease` under the logical `root` key,
+    /// atomically superseding that root's prior published set (RUE-1091).
+    ///
+    /// The probe node label is kept distinct from the logical root key so a
+    /// successor publication of the same logical root re-runs its lookups (its
+    /// probe node is fresh) instead of reusing the predecessor probe terminal,
+    /// while the promotion still targets the same evolving root. Returns whether a
+    /// root was published (and therefore promoted); a canceled request publishes
+    /// no root and its observed pins release with the request, never promoted.
+    fn publish_lookup_root(
+        &self,
+        revision: Revision,
+        configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
+        probe_label: &str,
+        root: &str,
+        cancel: bool,
+        run: impl FnOnce(&CompilerBodyFactProvider<'_>),
+    ) -> bool {
+        let captured: std::cell::RefCell<Option<ObservedLookupRoot>> =
+            std::cell::RefCell::new(None);
+        let run_cell = std::cell::RefCell::new(Some(run));
+        let result = self.runtime.query(
+            &self.provider_probe,
+            revision,
+            ProviderProbeKey {
+                label: Arc::from(probe_label),
+            },
+            CancellationToken::new(),
+            |context| {
+                let provider = CompilerBodyFactProvider::new(context, self, configuration.clone());
+                let run = run_cell.borrow_mut().take().expect("probe runs once");
+                run(&provider);
+                if cancel {
+                    // Abort before publishing a root: the observed pins drop with
+                    // the provider and are never promoted (the never-promote rule).
+                    return Err(QueryAbort::Canceled);
+                }
+                *captured.borrow_mut() = Some(provider.take_observed_root());
+                Ok(QueryOutput::success(ProviderProbeValue))
+            },
+        );
+        match result {
+            Ok(_) => {
+                let observed = captured
+                    .into_inner()
+                    .expect("a published root captured its observations");
+                self.promote_published_lookup_root(root.to_owned(), observed);
+                true
+            }
+            Err(_) => false,
         }
     }
 }
@@ -18640,6 +19041,499 @@ mod tests {
             "a deferred producer publishes no terminal, so no producer edge is \
              recorded: {:?}",
             outcome.dependencies
+        );
+    }
+
+    // ---- RUE-1091 slice 3c: PublishedRootLookupLease pressure acceptance ----
+
+    /// A source with enough distinct module-item names to exceed a small lookup
+    /// floor: unique positives (A, B, C, main), an ambiguous pair (`dup`), and
+    /// room for many negatives.
+    fn lookup_pressure_source() -> SourceSnapshot {
+        source_snapshot(
+            &[(
+                1,
+                "/m.rue",
+                "m.rue",
+                "pub struct A {}\npub struct B {}\npub struct C {}\n\
+                 fn dup() {}\nfn dup() {}\nfn main() -> i32 { 0 }\n",
+            )],
+            1,
+        )
+    }
+
+    /// The claims incurred by requesting one module-item lookup: zero when the
+    /// terminal is warm (retained, reused), positive when it was evicted and must
+    /// re-derive. The runtime claim counter is the executable warm/cold oracle.
+    fn lookup_claims_delta(
+        database: &RevisionedQueryDatabase,
+        revision: Revision,
+        module: &ModuleId,
+        name: &str,
+    ) -> u64 {
+        let before = database.runtime.metrics().claims;
+        let _ = request_lookup_name(
+            database,
+            revision,
+            module,
+            DefinitionNamespace::ModuleItem,
+            name,
+        );
+        database.runtime.metrics().claims - before
+    }
+
+    /// The current node incarnation of one module-item lookup terminal. Reading a
+    /// warm key returns its retained incarnation; an evicted key would rebuild a
+    /// fresh incarnation, which is exactly what a birth-eviction window would
+    /// leave behind.
+    fn lookup_incarnation(
+        database: &RevisionedQueryDatabase,
+        revision: Revision,
+        module: &ModuleId,
+        name: &str,
+    ) -> u64 {
+        request_lookup_name(
+            database,
+            revision,
+            module,
+            DefinitionNamespace::ModuleItem,
+            name,
+        )
+        .terminal()
+        .unwrap()
+        .node_incarnation()
+    }
+
+    #[test]
+    fn published_lookup_root_pressure_exceeds_floor_supersedes_and_meters_thrash() {
+        use rue_air::BodyFactProvider;
+        use rue_air::ProviderNamespace::ModuleItem as NS;
+        let source = lookup_pressure_source();
+        let module = ModuleId::from_logical_path("m.rue").unwrap();
+        // A tiny floor of 4 lookup terminals per family, so a root that consults
+        // more names than the floor forces grow-with-pressure.
+        let mut database = RevisionedQueryDatabase::with_declaration_memo_retention(4);
+        let revision = revision_for(&mut database, &source);
+        let config = semantic_configuration();
+
+        // Root R1 (success): the six ADR key classes at once — positive (A, B),
+        // superseded-only positives (C, main), negatives (Nope1, Nope2), an
+        // ambiguous qualified lookup (dup), and a failed import (missing.rue).
+        // Eight+ distinct terminals, well past the floor of 4.
+        assert!(database.publish_lookup_root(
+            revision,
+            config.clone(),
+            "probe-r1",
+            "root",
+            false,
+            |p| {
+                p.lookup_unqualified(&module, NS, "A");
+                p.lookup_unqualified(&module, NS, "B");
+                p.lookup_unqualified(&module, NS, "C");
+                p.lookup_unqualified(&module, NS, "main");
+                p.lookup_unqualified(&module, NS, "Nope1");
+                p.lookup_unqualified(&module, NS, "Nope2");
+                p.lookup_qualified(&module, NS, "dup");
+                p.resolve_import(&module, "missing.rue");
+            }
+        ));
+
+        let after_r1 = database.lookup_pressure_metrics();
+        assert_eq!(after_r1.published_roots, 1);
+        assert!(
+            after_r1.leased_terminals >= 8,
+            "the published root leased every observed terminal: {after_r1:?}"
+        );
+        assert!(
+            after_r1.protected_growth > 0,
+            "the current root grew a lookup family past its floor of 4 rather than \
+             evict a protected pin: {after_r1:?}"
+        );
+        assert!(
+            after_r1.retained_family_terminals > 4,
+            "the family was grown to hold the protected current-root set, not \
+             evicted down to the floor: {after_r1:?}"
+        );
+
+        // Every current-root key is warm: revisiting reuses the retained terminal
+        // (falsifier: retained memory falls after publication; a rooted key evicts).
+        for name in ["A", "B", "C", "main", "Nope1", "Nope2", "dup"] {
+            assert_eq!(
+                lookup_claims_delta(&database, revision, &module, name),
+                0,
+                "current-root key `{name}` must stay warm"
+            );
+        }
+        let a_incarnation = lookup_incarnation(&database, revision, &module, "A");
+
+        // Root R2 (deterministic failure): a SMALLER set — hot {A, B}, ambiguous
+        // dup, one fresh negative (Nope3), and the failed import. Promotion
+        // supersedes R1, batch-releasing R1's now-unneeded pins.
+        assert!(database.publish_lookup_root(
+            revision,
+            config.clone(),
+            "probe-r2",
+            "root",
+            false,
+            |p| {
+                p.lookup_unqualified(&module, NS, "A");
+                p.lookup_unqualified(&module, NS, "B");
+                p.lookup_qualified(&module, NS, "dup");
+                p.lookup_unqualified(&module, NS, "Nope3");
+                p.resolve_import(&module, "missing.rue");
+            }
+        ));
+
+        let after_r2 = database.lookup_pressure_metrics();
+        assert_eq!(
+            after_r2.published_roots, 1,
+            "the successor replaced the prior published root, it did not accumulate"
+        );
+        // The CURRENT FAILURE root's keys stay warm (falsifier: a current failure
+        // key is evicted).
+        for name in ["A", "B", "dup", "Nope3"] {
+            assert_eq!(
+                lookup_claims_delta(&database, revision, &module, name),
+                0,
+                "current failure-root key `{name}` must stay warm"
+            );
+        }
+        // A current-root key kept its exact terminal across the handoff — no
+        // rebuild, so the same incarnation.
+        assert_eq!(
+            lookup_incarnation(&database, revision, &module, "A"),
+            a_incarnation,
+            "a current-root key is never rebuilt across a supersession"
+        );
+        // The superseded root's released entries returned toward the floor: total
+        // retained lookup terminals fell after supersession.
+        assert!(
+            after_r2.retained_family_terminals < after_r1.retained_family_terminals,
+            "the superseded root's unneeded entries were reclaimed toward the bound: \
+             {after_r1:?} -> {after_r2:?}"
+        );
+
+        // Root R3 (fixed successor): observe hot {A, B} plus the SUPERSEDED key C,
+        // which R2 dropped and pressure evicted. Observing it re-derives it once —
+        // metered as retention-induced thrash — while A, B stay warm (no thrash).
+        let rederiv_before = after_r2.rederivations_after_eviction;
+        assert!(database.publish_lookup_root(
+            revision,
+            config.clone(),
+            "probe-r3",
+            "root",
+            false,
+            |p| {
+                p.lookup_unqualified(&module, NS, "A");
+                p.lookup_unqualified(&module, NS, "B");
+                p.lookup_unqualified(&module, NS, "C");
+            }
+        ));
+        let after_r3 = database.lookup_pressure_metrics();
+        assert_eq!(
+            after_r3.rederivations_after_eviction,
+            rederiv_before + 1,
+            "exactly the evicted superseded key C re-derived; the warm keys A and B \
+             did not: {after_r2:?} -> {after_r3:?}"
+        );
+        // The rederivation is invisible: C now resolves to the same canonical
+        // Unique fact it did under R1.
+        let c = request_lookup_name(
+            &database,
+            revision,
+            &module,
+            DefinitionNamespace::ModuleItem,
+            "C",
+        );
+        assert!(matches!(
+            canonical_of(&c),
+            CanonicalNameResolution::Unique(_)
+        ));
+    }
+
+    #[test]
+    fn published_lookup_root_handoff_has_no_birth_eviction_window() {
+        use rue_air::BodyFactProvider;
+        use rue_air::ProviderNamespace::ModuleItem as NS;
+        let source = lookup_pressure_source();
+        let module = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::with_declaration_memo_retention(4);
+        let revision = revision_for(&mut database, &source);
+        let config = semantic_configuration();
+
+        // Root A holds four shared terminals (at the floor).
+        assert!(database.publish_lookup_root(
+            revision,
+            config.clone(),
+            "probe-a",
+            "root",
+            false,
+            |p| {
+                for name in ["A", "B", "C", "main"] {
+                    p.lookup_unqualified(&module, NS, name);
+                }
+            }
+        ));
+        let shared_incarnations: Vec<u64> = ["A", "B", "C", "main"]
+            .iter()
+            .map(|name| lookup_incarnation(&database, revision, &module, name))
+            .collect();
+
+        // Drive successor root B observing the SAME shared terminals — its pins
+        // are acquired while B's request lease is live — but do NOT promote yet.
+        let observed_b = {
+            let captured: std::cell::RefCell<Option<ObservedLookupRoot>> =
+                std::cell::RefCell::new(None);
+            database
+                .runtime
+                .query(
+                    &database.provider_probe,
+                    revision,
+                    ProviderProbeKey {
+                        label: Arc::from("probe-b"),
+                    },
+                    CancellationToken::new(),
+                    |context| {
+                        let provider =
+                            CompilerBodyFactProvider::new(context, &database, config.clone());
+                        for name in ["A", "B", "C", "main"] {
+                            provider.lookup_unqualified(&module, NS, name);
+                        }
+                        *captured.borrow_mut() = Some(provider.take_observed_root());
+                        Ok(QueryOutput::success(ProviderProbeValue))
+                    },
+                )
+                .expect("probe B published");
+            captured.into_inner().unwrap()
+        };
+
+        // Deterministic pressure injected DURING the handoff window — after B's
+        // pins are acquired, before B supersedes A: request many fresh negative
+        // keys to drive the family far past its floor and force eviction passes.
+        // B's explicit pins (and A's, until released) protect the shared terminals
+        // throughout, so none is evicted.
+        for i in 0..24 {
+            let _ = request_lookup_name(
+                &database,
+                revision,
+                &module,
+                DefinitionNamespace::ModuleItem,
+                &format!("Filler{i}"),
+            );
+        }
+
+        // Now supersede A with B. If a birth-eviction window existed (B pinned a
+        // terminal after protection lapsed), a shared terminal would have been
+        // evicted and rebuilt with a fresh incarnation.
+        database.promote_published_lookup_root("root".to_owned(), observed_b);
+
+        for (name, incarnation) in ["A", "B", "C", "main"].iter().zip(&shared_incarnations) {
+            assert_eq!(
+                lookup_claims_delta(&database, revision, &module, name),
+                0,
+                "shared key `{name}` survived the handoff warm"
+            );
+            assert_eq!(
+                lookup_incarnation(&database, revision, &module, name),
+                *incarnation,
+                "shared key `{name}` kept its exact terminal — no birth-eviction window"
+            );
+        }
+    }
+
+    #[test]
+    fn published_lookup_root_never_promotes_canceled_or_speculative() {
+        use rue_air::BodyFactProvider;
+        use rue_air::ProviderNamespace::ModuleItem as NS;
+        let source = lookup_pressure_source();
+        let module = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::with_declaration_memo_retention(4);
+        let revision = revision_for(&mut database, &source);
+        let config = semantic_configuration();
+
+        // A request that aborts before publishing a root promotes nothing: its
+        // observed pins release with the request.
+        let published = database.publish_lookup_root(
+            revision,
+            config.clone(),
+            "probe-cancel",
+            "root",
+            true,
+            |p| {
+                for name in ["A", "B", "C", "main"] {
+                    p.lookup_unqualified(&module, NS, name);
+                }
+            },
+        );
+        assert!(!published, "a canceled attempt publishes no root");
+        let metrics = database.lookup_pressure_metrics();
+        assert_eq!(
+            metrics.published_roots, 0,
+            "a canceled attempt promotes no root (never-promote rule)"
+        );
+        assert_eq!(
+            metrics.leased_terminals, 0,
+            "a canceled attempt leases no terminal into the session lease"
+        );
+
+        // The keys the canceled attempt merely validated are speculative: no
+        // published root observes them, so they are not lease-pinned and stay
+        // evictable. Drive the family far past its floor and confirm a speculative
+        // key can be reclaimed (falsifier: a speculative key becomes rooted).
+        for i in 0..24 {
+            let _ = request_lookup_name(
+                &database,
+                revision,
+                &module,
+                DefinitionNamespace::ModuleItem,
+                &format!("Filler{i}"),
+            );
+        }
+        assert_eq!(
+            database.lookup_pressure_metrics().leased_terminals,
+            0,
+            "speculative keys are never promoted, so the lease stays empty under pressure"
+        );
+        assert!(
+            lookup_claims_delta(&database, revision, &module, "C") >= 1,
+            "the speculative key C was evictable and re-derived under pressure"
+        );
+    }
+
+    #[test]
+    fn published_lookup_root_edit_error_fix_loop_keeps_failure_set_warm() {
+        use rue_air::BodyFactProvider;
+        use rue_air::ProviderNamespace::ModuleItem as NS;
+        let module = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::with_declaration_memo_retention(4);
+        let config = semantic_configuration();
+
+        // Three iterations of an edit/error/fix loop. Each iteration edits an
+        // UNRELATED trailing declaration (so the observed keys A, B, dup keep their
+        // position-free facts and stay green) and republishes the SAME logical
+        // root over {A, B, dup}: a success, then a deterministic-failure body, then
+        // a fix. The failure root's lookup set stays warm between iterations —
+        // proven by zero rederivations for its keys throughout.
+        let variants = [
+            "pub struct A {}\npub struct B {}\nfn dup() {}\nfn dup() {}\nfn main() -> i32 { 0 }\n",
+            "pub struct A {}\npub struct B {}\nfn dup() {}\nfn dup() {}\nfn main() -> i32 { 1 }\n\
+             fn extra_one() {}\n",
+            "pub struct A {}\npub struct B {}\nfn dup() {}\nfn dup() {}\nfn main() -> i32 { 2 }\n",
+        ];
+        let labels = ["loop-success", "loop-error", "loop-fix"];
+        let mut a_incarnation = None;
+        for (iteration, (variant, label)) in variants.iter().zip(labels).enumerate() {
+            let source = source_snapshot(&[(1, "/m.rue", "m.rue", variant)], 1);
+            let revision = revision_for(&mut database, &source);
+            assert!(database.publish_lookup_root(
+                revision,
+                config.clone(),
+                label,
+                "root",
+                false,
+                |p| {
+                    p.lookup_unqualified(&module, NS, "A");
+                    p.lookup_unqualified(&module, NS, "B");
+                    p.lookup_qualified(&module, NS, "dup");
+                }
+            ));
+            // The failure root's (and every iteration's) lookup keys are warm: no
+            // key was evicted between iterations, so none re-derived.
+            assert_eq!(
+                database
+                    .lookup_pressure_metrics()
+                    .rederivations_after_eviction,
+                0,
+                "iteration {iteration}: the retained deterministic dependency set stayed \
+                 warm, so no key re-derived"
+            );
+            for name in ["A", "B", "dup"] {
+                assert_eq!(
+                    lookup_claims_delta(&database, revision, &module, name),
+                    0,
+                    "iteration {iteration}: key `{name}` stays warm across the loop"
+                );
+            }
+            // The hot key keeps its exact terminal identity across the whole loop.
+            let incarnation = lookup_incarnation(&database, revision, &module, "A");
+            match a_incarnation {
+                None => a_incarnation = Some(incarnation),
+                Some(previous) => assert_eq!(
+                    incarnation, previous,
+                    "iteration {iteration}: the retained key `A` is never rebuilt across the loop"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn published_lookup_root_green_revalidation_preserves_prior_lease() {
+        use rue_air::BodyFactProvider;
+        use rue_air::ProviderNamespace::ModuleItem as NS;
+        let source = lookup_pressure_source();
+        let module = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::with_declaration_memo_retention(4);
+        let revision = revision_for(&mut database, &source);
+        let config = semantic_configuration();
+
+        // A published root with a live, non-empty lease.
+        assert!(database.publish_lookup_root(
+            revision,
+            config.clone(),
+            "probe-r1",
+            "root",
+            false,
+            |p| {
+                for name in ["A", "B", "C", "main"] {
+                    p.lookup_unqualified(&module, NS, name);
+                }
+            }
+        ));
+        let before = database.lookup_pressure_metrics();
+        assert_eq!(before.published_roots, 1);
+        assert!(
+            before.leased_terminals >= 4,
+            "the root leased its observed terminals: {before:?}"
+        );
+        let a_incarnation = lookup_incarnation(&database, revision, &module, "A");
+
+        // A warm green revalidation of the SAME root observes nothing — the body
+        // short-circuited with no lookups. Promoting an empty set must be an
+        // unconditional no-op: it never supersedes, releases no pin, and moves no
+        // metric, so the prior root's leased set persists untouched (Finding 1;
+        // the §4 edit/error/fix warmth semantic).
+        database.promote_published_lookup_root("root".to_owned(), ObservedLookupRoot::new());
+        let after = database.lookup_pressure_metrics();
+        assert_eq!(
+            after.published_roots, before.published_roots,
+            "green revalidation must not supersede the prior root"
+        );
+        assert_eq!(
+            after.leased_terminals, before.leased_terminals,
+            "green revalidation releases no pin"
+        );
+        assert_eq!(
+            after.evictions, before.evictions,
+            "green revalidation triggers no supersession eviction"
+        );
+        assert_eq!(
+            after.rederivations_after_eviction, before.rederivations_after_eviction,
+            "green revalidation re-derives nothing"
+        );
+
+        // The prior root's keys are still warm and keep their exact terminals: the
+        // lease was preserved by construction, not rebuilt.
+        for name in ["A", "B", "C", "main"] {
+            assert_eq!(
+                lookup_claims_delta(&database, revision, &module, name),
+                0,
+                "key `{name}` stays warm across the green revalidation"
+            );
+        }
+        assert_eq!(
+            lookup_incarnation(&database, revision, &module, "A"),
+            a_incarnation,
+            "the prior lease kept `A`'s exact terminal across green revalidation"
         );
     }
 }
