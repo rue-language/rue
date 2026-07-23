@@ -3186,17 +3186,123 @@ impl Drop for TaskLeases {
     /// that family's decrements are visible. The result is O(pins) decrements
     /// plus O(distinct families) enforcement passes.
     fn drop(&mut self) {
-        if self.held.is_empty() {
-            return;
+        batched_release(&mut self.held);
+    }
+}
+
+/// Two-phase batched release of a heterogeneous pin set. First decrement every
+/// held pin (`release_deferred`), which never enforces — a decrement is a pure
+/// narrowing of protection, so ordering among released pins is free and no
+/// still-leased terminal is left unprotected. Each release yields a
+/// [`FamilyEnforcer`] keyed by its owning family's stable identity, kept
+/// deduplicated so heterogeneous families collapse to one enforcer apiece.
+/// Second, run each distinct family's enforcement exactly once — after all of
+/// that family's decrements are visible. The result is O(pins) decrements plus
+/// O(distinct families) enforcement passes. Shared by task-scoped
+/// [`TaskLeases`] teardown and the session-held [`RetainedPinSet`].
+fn batched_release(held: &mut Vec<Box<dyn ObservedLease>>) {
+    if held.is_empty() {
+        return;
+    }
+    let mut enforcers: BTreeMap<usize, FamilyEnforcer> = BTreeMap::new();
+    for lease in held.drain(..) {
+        let enforcer = lease.release_deferred();
+        enforcers.entry(enforcer.family_id).or_insert(enforcer);
+    }
+    for (_family_id, enforcer) in enforcers {
+        enforcer.enforce();
+    }
+}
+
+/// A session-held set of request-scoped observation pins promoted out of a
+/// completed rooted request and retained above the request's task.
+///
+/// [`TaskLeases`] retains a rooted request's observed terminals only for the
+/// lifetime of its task; when the task drops the pins release. A caller that
+/// wants a published root's exact observed terminals to stay retained *past*
+/// the request — a session/revision selection root for a set of terminals
+/// rather than a single one — acquires each pin while the request lease is
+/// still live (so the terminal is continuously protected: the pin-under-lock
+/// discipline that leaves no birth-eviction window) and transfers it here.
+///
+/// The set deduplicates by exact terminal identity `(node incarnation, red/green
+/// stamp, terminal revision)`, so re-leasing the same terminal never double-pins
+/// it. Release is the same two-phase batched teardown as [`TaskLeases`]: on drop
+/// every held pin is decrement-released first, then each distinct family enforces
+/// its retention bound exactly once — linear in the pin count, not quadratic,
+/// which matters when a superseded root releases thousands of pins in one family.
+///
+/// This is the substrate for an atomic handoff between a superseded published
+/// root and its successor: install the successor set (already holding every pin)
+/// first, then drop the predecessor set, so no shared terminal is ever left
+/// unprotected across the swap.
+#[derive(Default)]
+pub struct RetainedPinSet {
+    /// `(node incarnation, stamp, terminal revision)` of every terminal already
+    /// leased here, mirroring [`TaskLeases::observed`] so a redundant re-lease is
+    /// dropped rather than double-held.
+    observed: BTreeSet<(u64, u64, Revision)>,
+    /// Live pins, type-erased across families. Dropping the set drops these
+    /// through the batched two-phase release.
+    held: Vec<Box<dyn ObservedLease>>,
+}
+
+impl fmt::Debug for RetainedPinSet {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RetainedPinSet")
+            .field("observed", &self.observed.len())
+            .field("held", &self.held.len())
+            .finish()
+    }
+}
+
+impl RetainedPinSet {
+    /// An empty set holding no pins.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The number of distinct terminals currently held.
+    pub fn len(&self) -> usize {
+        self.held.len()
+    }
+
+    /// Whether the set holds no pins.
+    pub fn is_empty(&self) -> bool {
+        self.held.is_empty()
+    }
+
+    /// Transfer an already-acquired [`TerminalPin`] into the set, deduplicating
+    /// by exact terminal identity. Returns whether the pin was newly retained; a
+    /// redundant pin (same node incarnation, stamp, and revision already held) is
+    /// dropped here rather than double-held, releasing it through the ordinary
+    /// per-pin path. The caller must have acquired `pin` while the terminal was
+    /// still protected — under the node lock at publication, or before the
+    /// request lease that observed it releases — so there is no instant in which
+    /// the terminal is exposed and evictable.
+    pub fn lease<K, V>(&mut self, pin: TerminalPin<K, V>) -> bool
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+    {
+        let identity = (
+            pin.terminal.node_incarnation,
+            pin.terminal.stamp,
+            pin.terminal.revision,
+        );
+        if self.observed.insert(identity) {
+            self.held.push(Box::new(pin));
+            true
+        } else {
+            false
         }
-        let mut enforcers: BTreeMap<usize, FamilyEnforcer> = BTreeMap::new();
-        for lease in self.held.drain(..) {
-            let enforcer = lease.release_deferred();
-            enforcers.entry(enforcer.family_id).or_insert(enforcer);
-        }
-        for (_family_id, enforcer) in enforcers {
-            enforcer.enforce();
-        }
+    }
+}
+
+impl Drop for RetainedPinSet {
+    fn drop(&mut self) {
+        batched_release(&mut self.held);
     }
 }
 
@@ -6672,6 +6778,117 @@ mod tests {
             .unwrap();
         assert!(Arc::ptr_eq(&reused, &sentinel));
         drop(sentinel_pin);
+    }
+
+    // A session-held `RetainedPinSet` keeps a completed request's observed
+    // terminal retained past its task, deduplicates a re-lease of the same
+    // terminal, and hands off atomically to a successor set: pressure applied
+    // while both sets hold the shared terminal cannot evict it, and only after
+    // the successor is installed does releasing the predecessor free anything.
+    #[test]
+    fn retained_pin_set_bridges_dedups_and_hands_off_atomically() {
+        let runtime = QueryRuntime::new(8);
+        publish_empty(&runtime, [revision(1)]);
+        let leaf = runtime.family::<Slot, u64>("retained-set-leaf", 2).unwrap();
+        let computes = Arc::new(AtomicUsize::new(0));
+
+        let counter = computes.clone();
+        let attempt = runtime.request(
+            &leaf,
+            revision(1),
+            Slot(0),
+            CancellationToken::new(),
+            move |_| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok(QueryOutput::success(7))
+            },
+        );
+        let produced = attempt.terminal().expect("request produced").clone();
+
+        // Transfer an explicit pin into a session-held set while the attempt's
+        // result lease still protects `produced`, then release the attempt: the
+        // set now solely bridges the terminal past the request.
+        let mut set_a = RetainedPinSet::new();
+        assert!(set_a.lease(leaf.pin_terminal(&produced).unwrap()));
+        // A redundant re-lease of the same terminal is dropped, not double-held.
+        assert!(!set_a.lease(leaf.pin_terminal(&produced).unwrap()));
+        assert_eq!(set_a.len(), 1);
+        drop(attempt);
+
+        // Pressure in the gap: only `set_a` protects `produced` now.
+        for i in 1..=8 {
+            runtime
+                .query(
+                    &leaf,
+                    revision(1),
+                    Slot(i),
+                    CancellationToken::new(),
+                    |_| Ok(QueryOutput::success(i)),
+                )
+                .unwrap();
+        }
+        assert!(runtime.metrics().evictions > 0, "fillers were evicted");
+        let reused = runtime
+            .query(
+                &leaf,
+                revision(1),
+                Slot(0),
+                CancellationToken::new(),
+                |_| panic!("the set-retained terminal must be reused, not recomputed"),
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&reused, &produced));
+
+        // Atomic handoff: the successor set acquires its own pin on the SAME
+        // terminal (protected the whole time by `set_a`), pressure is applied
+        // while both hold it, then the successor is installed and the predecessor
+        // released. No instant leaves `produced` unprotected.
+        let mut set_b = RetainedPinSet::new();
+        assert!(set_b.lease(leaf.pin_terminal(&produced).unwrap()));
+        for i in 9..=16 {
+            runtime
+                .query(
+                    &leaf,
+                    revision(1),
+                    Slot(i),
+                    CancellationToken::new(),
+                    |_| Ok(QueryOutput::success(i)),
+                )
+                .unwrap();
+        }
+        let published = std::mem::replace(&mut set_a, set_b); // install successor
+        drop(published); // then release the predecessor's pin
+        let reused = runtime
+            .query(
+                &leaf,
+                revision(1),
+                Slot(0),
+                CancellationToken::new(),
+                |_| panic!("the handed-off terminal must survive the swap"),
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&reused, &produced));
+        assert_eq!(computes.load(Ordering::SeqCst), 1, "never recomputed");
+
+        // Dropping the last set finally releases the terminal: it is no longer a
+        // protected root, so ordinary pressure can evict it.
+        let evictions_before = runtime.metrics().evictions;
+        drop(set_a);
+        for i in 17..=24 {
+            runtime
+                .query(
+                    &leaf,
+                    revision(1),
+                    Slot(i),
+                    CancellationToken::new(),
+                    |_| Ok(QueryOutput::success(i)),
+                )
+                .unwrap();
+        }
+        assert!(
+            runtime.metrics().evictions > evictions_before,
+            "the released terminal is now evictable under pressure"
+        );
     }
 
     // A selected result's attempt-carried bridge lease ends the instant selection
