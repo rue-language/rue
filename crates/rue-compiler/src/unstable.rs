@@ -204,6 +204,18 @@ pub fn parse_invalidation_entries_compared(session: &crate::CompilerSession) -> 
     session.parse_invalidation_entries_compared()
 }
 
+pub use crate::recipe_cache::RecipeCacheMetrics;
+
+/// A snapshot of the recipe-cache metering (RUE-1091, ADR-0066 §4): recipe
+/// entries built, reused, and evicted; equal-stamp rebuilds forced by terminal
+/// eviction/rederivation (retention-induced thrash, reported separately); and
+/// cache containers created and reused. The recipe cache is a physical
+/// optimization exercised only by the test-only overlay path; no production path
+/// constructs it, so on the production path every field here reads zero.
+pub fn recipe_cache_metrics(session: &crate::CompilerSession) -> RecipeCacheMetrics {
+    session.recipe_cache_metrics()
+}
+
 /// Cumulative dependency-graph invalidation events across the retained
 /// frontend query families (RUE-1112). A strictly-additive successor adoption
 /// keeps the predecessor's immutable source leaf live and contributes zero

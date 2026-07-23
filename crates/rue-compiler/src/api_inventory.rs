@@ -43,6 +43,7 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("parsed_modules", include_str!("parsed_modules.rs")),
     ("queries", include_str!("queries.rs")),
     ("query_graph", include_str!("query_graph.rs")),
+    ("recipe_cache", include_str!("recipe_cache.rs")),
     (
         "revisioned_query_database",
         include_str!("revisioned_query_database.rs"),
@@ -1413,9 +1414,10 @@ fn unstable_views_do_not_alias_query_engine_records() {
         [
             "pubusecrate::diagnostic::{ColorChoice,DiagnosticFormatter,JsonDiagnostic,JsonDiagnosticFormatter,JsonSpan,JsonSuggestion,MultiFileFormatter,MultiFileJsonFormatter,SourceInfo,};",
             "pubusecrate::import_discovery::{DiscoverySourceAssembler,ImportDemandFrontier,ImportDemandMode,ImportDemandRoots,ImportInputRevision,};",
+            "pubusecrate::recipe_cache::RecipeCacheMetrics;",
             "pubusecrate::session::{ClosedDiscoveryContinuation,SemanticParkOutcome,TrustedSuccessorDelta};",
         ],
-        "unstable may reexport only reviewed presentation, source-assembly, and Phase-2 demand helpers"
+        "unstable may reexport only reviewed presentation, source-assembly, Phase-2 demand, and recipe-cache metering helpers"
     );
 
     let facade = include_str!("lib.rs");

@@ -1358,6 +1358,16 @@ pub struct CompilerSession {
     definition_shard_baseline: Option<crate::DefinitionSnapshot>,
     metrics: CompilerSessionMetrics,
     diagnostics: DiagnosticAttemptStore,
+    /// Recipe-cache metering (RUE-1091, ADR-0066 §4). The recipe cache is a
+    /// physical optimization exercised only by the test-only overlay path; no
+    /// production path constructs it, so on the production path every counter
+    /// here reads zero. Exposed through the unstable surface, mirroring parse_*.
+    recipe_cache_meter: Arc<crate::recipe_cache::RecipeCacheCounters>,
+    /// The test-only shared recipe cache. Constructed on first acquisition so
+    /// container creation is metered once and later acquisitions are metered as
+    /// reuse. Never populated on the production path.
+    #[cfg(test)]
+    recipe_cache_slot: std::sync::Mutex<Option<Arc<crate::recipe_cache::RecipeCache>>>,
     #[cfg(test)]
     durable_declaration_cache: Option<DurableDeclarationCache>,
     #[cfg(test)]
@@ -3184,6 +3194,34 @@ impl CompilerSession {
     /// See the field docs on `parse_invalidation_entries_compared`.
     pub(crate) fn parse_invalidation_entries_compared(&self) -> u64 {
         self.parse_invalidation_entries_compared
+    }
+
+    /// A snapshot of the recipe-cache metering (RUE-1091, ADR-0066 §4). Zero on
+    /// the production path — the recipe cache is constructed only by the
+    /// test-only overlay path via [`Self::acquire_recipe_cache_for_test`].
+    pub(crate) fn recipe_cache_metrics(&self) -> crate::recipe_cache::RecipeCacheMetrics {
+        self.recipe_cache_meter.snapshot()
+    }
+
+    /// Acquire the session's shared recipe cache for the test-only overlay path,
+    /// constructing it on first use (metered as one container created) and
+    /// reusing it afterward (metered as reuse). No production path calls this, so
+    /// the recipe-cache counters stay zero on the production path.
+    #[cfg(test)]
+    pub(crate) fn acquire_recipe_cache_for_test(&self) -> Arc<crate::recipe_cache::RecipeCache> {
+        let mut slot = self
+            .recipe_cache_slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(cache) = slot.as_ref() {
+            cache.note_container_reused();
+            return cache.clone();
+        }
+        let cache = Arc::new(crate::recipe_cache::RecipeCache::new(
+            self.recipe_cache_meter.clone(),
+        ));
+        *slot = Some(cache.clone());
+        cache
     }
 
     /// The currently selected parse terminal, for identity assertions.
@@ -11419,6 +11457,50 @@ mod tests {
             error.kind.code(),
             rue_error::ErrorCode::UNSATISFIED_TRUSTED_TOOLCHAIN_INPUT
         );
+    }
+
+    #[test]
+    fn recipe_cache_counters_read_zero_on_the_production_path() {
+        // RUE-1091 slice 2c: the recipe cache is inert to production. A full
+        // production semantic analysis constructs no cache, so every recipe-cache
+        // counter exposed through the unstable surface stays at its zero default.
+        let source = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn helper(x: i32) -> i32 { x + 1 } fn main() -> i32 { helper(2) }",
+            )],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .expect("the program analyzes");
+        assert_eq!(
+            session.recipe_cache_metrics(),
+            crate::recipe_cache::RecipeCacheMetrics::default(),
+            "the production semantic path must never touch a recipe-cache counter"
+        );
+    }
+
+    #[test]
+    fn recipe_cache_container_is_created_once_and_reused_through_the_session() {
+        // The session vends one shared recipe cache: the first acquisition is
+        // metered as one container created, and every later acquisition as reuse.
+        let session = CompilerSession::new();
+        assert_eq!(
+            session.recipe_cache_metrics(),
+            crate::recipe_cache::RecipeCacheMetrics::default()
+        );
+        let first = session.acquire_recipe_cache_for_test();
+        let second = session.acquire_recipe_cache_for_test();
+        assert!(Arc::ptr_eq(&first, &second), "one shared container");
+        let metrics = session.recipe_cache_metrics();
+        assert_eq!(metrics.containers_created, 1);
+        assert_eq!(metrics.containers_reused, 1);
+        assert_eq!(metrics.entries_built, 0);
     }
 
     #[test]
