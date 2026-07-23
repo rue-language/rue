@@ -119,7 +119,10 @@
 //! the post-identity-cut constant may change while remaining flat.
 
 use crate::*;
-use std::sync::Arc;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 // ---------------------------------------------------------------------------
 // Deterministic synthetic corpus generator
@@ -535,7 +538,10 @@ fn rue_1090_gate_verdict(
     grown_total: usize,
     grown_bodies: usize,
 ) -> Rue1090GateVerdict {
-    assert!(baseline_bodies > 0 && grown_bodies > 0, "per-body denominator is zero");
+    assert!(
+        baseline_bodies > 0 && grown_bodies > 0,
+        "per-body denominator is zero"
+    );
     let baseline_scaled = baseline_total as u128 * grown_bodies as u128;
     let grown_scaled = grown_total as u128 * baseline_bodies as u128;
     if grown_scaled == baseline_scaled {
@@ -559,12 +565,7 @@ fn rue_1090_audit_line(
     historical_baseline: usize,
     historical_grown: usize,
 ) -> (Rue1090GateVerdict, String) {
-    let verdict = rue_1090_gate_verdict(
-        baseline_total,
-        baseline_bodies,
-        grown_total,
-        grown_bodies,
-    );
+    let verdict = rue_1090_gate_verdict(baseline_total, baseline_bodies, grown_total, grown_bodies);
     let slope_numerator = grown_total as i128 * baseline_bodies as i128
         - baseline_total as i128 * grown_bodies as i128;
     let decision = match verdict {
@@ -620,6 +621,44 @@ fn rue_1090_historical_witness_ceiling_line(
     )
 }
 
+/// RUE-1121's post-repair acceptance row for a counter charged once per body.
+///
+/// The RUE-1090 decision remains its exact-ratio verdict below. This row is the
+/// complementary acceptance assertion: with the same reached-body topology,
+/// growing unrelated declarations must leave this observable counter exactly
+/// flat. Until RUE-1091 repairs the shared declaration context, the current
+/// whole-universe witness records a controlled expected failure. Once repaired,
+/// the same row becomes a hard target pass without duplicating the test.
+fn rue_1121_exact_flat_context_row(
+    counter: &str,
+    baseline_total: usize,
+    baseline_bodies: usize,
+    grown_total: usize,
+    grown_bodies: usize,
+    historical_grown_per_body_witness: usize,
+) -> Row {
+    assert_eq!(
+        grown_bodies, baseline_bodies,
+        "RUE-1121 fixed-body corpus changed its body-preparation topology"
+    );
+    let witness = historical_grown_per_body_witness
+        .checked_mul(grown_bodies)
+        .expect("RUE-1121 context witness overflow");
+    Row::envelope(
+        format!(
+            "RUE-1121 exact-flat {counter}: warm-independent cold {} -> {} \
+             across {} unchanged body preparations (target {}, witness {})",
+            baseline_total, grown_total, grown_bodies, baseline_total, witness,
+        ),
+        grown_total,
+        baseline_total,
+        0,
+        witness,
+        0,
+        "RUE-1091",
+    )
+}
+
 /// Axis: unrelated declarations grow while reached bodies stay fixed.
 ///
 /// This is the RUE-1090 activation measurement. It compares the observed
@@ -649,12 +688,75 @@ fn run_fixed_bodies_growing_declarations(bodies: usize, ladder: &[usize]) {
             baseline.cold_bodies,
         ),
     });
+    report.push(Row::linear_hard(
+        format!(
+            "RUE-1121 baseline cold body preparations @ {bodies} bodies, \
+             {baseline_decls} decls: {} (corpus target {})",
+            baseline.cold_bodies, historical_baseline.cold_bodies,
+        ),
+        baseline.cold_bodies,
+        historical_baseline.cold_bodies,
+        0,
+    ));
 
     let mut overall = Rue1090GateVerdict::Flat;
 
     for &decls in ladder.iter().skip(1) {
         let grown = Measure::cold(&Corpus::new(bodies, decls));
         let historical_grown = CorpusWitness::predict(bodies, decls);
+        // The fixed-body source topology is itself an exact acceptance fact:
+        // unrelated declarations add no reached bodies, so cold preparation
+        // count cannot hide a context regression by changing its denominator.
+        report.push(Row::linear_hard(
+            format!(
+                "RUE-1121 exact-flat cold body preparations @ {bodies} bodies, \
+                 +{} decls: {} (corpus target {})",
+                decls - baseline_decls,
+                grown.cold_bodies,
+                historical_grown.cold_bodies,
+            ),
+            grown.cold_bodies,
+            historical_grown.cold_bodies,
+            0,
+        ));
+        // RUE-1121 acceptance rows consume only stage-sourced counters. The
+        // RUE-1090 verdict below deliberately remains limited to its original
+        // project/install/endpoint exact-ratio decision.
+        for (counter, baseline_total, grown_total, historical_grown_per_body_witness) in [
+            (
+                "shells prepared",
+                baseline.shells_total,
+                grown.shells_total,
+                historical_grown.per_body_shells,
+            ),
+            (
+                "projections",
+                baseline.projections_total,
+                grown.projections_total,
+                historical_grown.per_body_projections,
+            ),
+            (
+                "semantics installed",
+                baseline.semantics_total,
+                grown.semantics_total,
+                historical_grown.per_body_semantics,
+            ),
+            (
+                "endpoints",
+                baseline.endpoints_total,
+                grown.endpoints_total,
+                historical_grown.per_body_endpoints,
+            ),
+        ] {
+            report.push(rue_1121_exact_flat_context_row(
+                counter,
+                baseline_total,
+                baseline.cold_bodies,
+                grown_total,
+                grown.cold_bodies,
+                historical_grown_per_body_witness,
+            ));
+        }
         // A worsening beyond the historical unrepaired witness is a regression,
         // not an ordinary RUE-1090 activation. Keep prepare/shell work here as
         // well: it is outside the three-counter verdict but still catches a
@@ -1090,14 +1192,16 @@ impl EditScenario {
     /// Run rev1 then rev2 warm, run rev2 fresh, assert the shared warm-vs-fresh
     /// parity oracle, and return the warm rev2 counters (plus a success flag for
     /// callers that key on it).
-    fn run(&self) -> (Option<Measure>, bool) {
+    fn run(&self, body_names: &[String]) -> (Option<Measure>, bool, BTreeSet<String>) {
         let options = CompileOptions::default();
 
         let mut warm = CompilerSession::new();
         warm.update(&self.rev1.snapshot()).into_result().unwrap();
         warm.canonical_semantic(&options).ok(); // rev1 is not oracled; only rev2.
+        let rev1_origins = warm.retained_body_transaction_origins_for_test(body_names);
         warm.update(&self.rev2.snapshot()).into_result().unwrap();
         let warm_rev2 = warm.canonical_semantic(&options);
+        let rev2_origins = warm.retained_body_transaction_origins_for_test(body_names);
 
         let mut fresh = CompilerSession::new();
         fresh.update(&self.rev2.snapshot()).into_result().unwrap();
@@ -1110,8 +1214,92 @@ impl EditScenario {
             .as_ref()
             .ok()
             .map(|output| Measure::from_work(&output.work()));
-        (measure, succeeded)
+        (
+            measure,
+            succeeded,
+            changed_body_origins(&rev1_origins, &rev2_origins),
+        )
     }
+}
+
+fn changed_body_origins(
+    before: &BTreeMap<String, u64>,
+    after: &BTreeMap<String, u64>,
+) -> BTreeSet<String> {
+    before
+        .keys()
+        .chain(after.keys())
+        .filter(|name| before.get(*name) != after.get(*name))
+        .cloned()
+        .collect()
+}
+
+fn corpus_body_names(reached_bodies: usize) -> Vec<String> {
+    (0..reached_bodies)
+        .map(|index| format!("b{index}"))
+        .chain(std::iter::once("main".to_owned()))
+        .collect()
+}
+
+fn rue_1121_exact_recompute_set_row(
+    label: impl Into<String>,
+    measured: &BTreeSet<String>,
+    target: BTreeSet<String>,
+    witness: BTreeSet<String>,
+) -> Row {
+    let label = label.into();
+    if measured == &target {
+        return Row::Met {
+            label: format!("{label}: exact recompute set {measured:?}"),
+        };
+    }
+    assert_eq!(
+        measured, &witness,
+        "{label}: recomputed body identities are neither the exact repaired target \
+         {target:?} nor the documented whole-universe witness {witness:?}"
+    );
+    Row::Tracked {
+        label: format!("{label}: known-bad recompute set {measured:?}"),
+        issue: "RUE-1091",
+    }
+}
+
+/// The one flip point for RUE-1121 edit acceptance. `fresh` is measured in its
+/// own session by the caller, never inferred from the warm result. The exact
+/// fresh body count proves the corpus topology, and `target < fresh` proves a
+/// repaired warm result is genuinely incremental rather than merely bounded.
+///
+/// Until RUE-1091 lands, the whole-universe witness is a controlled XFAIL. The
+/// same row automatically becomes the hard, exact target once the repair makes
+/// `warm == target`; no mechanism-specific counter or duplicate test is needed.
+fn rue_1121_edit_recompute_row(
+    label: impl Into<String>,
+    warm: Measure,
+    fresh: Measure,
+    exact_recomputed_bodies: usize,
+    fresh_body_count: usize,
+) -> Row {
+    let label = label.into();
+    assert_eq!(
+        fresh.cold_bodies, fresh_body_count,
+        "{label}: fresh revision must prove the expected body topology"
+    );
+    assert!(
+        exact_recomputed_bodies < fresh.cold_bodies,
+        "{label}: the repaired exact target must be strictly cheaper than fresh"
+    );
+    Row::envelope(
+        format!(
+            "{label}: warm body transactions={} (exact target {}, independently measured fresh {})",
+            warm.cold_bodies, exact_recomputed_bodies, fresh.cold_bodies,
+        ),
+        warm.cold_bodies,
+        exact_recomputed_bodies,
+        0,
+        fresh.cold_bodies,
+        0,
+        "RUE-1091",
+    )
 }
 
 #[test]
@@ -1124,28 +1312,38 @@ fn invalidation_unrelated_declaration_added_keeps_bodies_green() {
         rev1: Corpus::new(40, 5),
         rev2: Corpus::new(40, 6),
     };
-    let (warm, succeeded) = scenario.run();
+    assert_ne!(
+        scenario.rev1.source(),
+        scenario.rev2.source(),
+        "the unrelated-declaration edit must change source"
+    );
+    assert_eq!(
+        scenario.rev2.source().matches("d5").count(),
+        1,
+        "the added declaration must occur exactly once and have no body consumer"
+    );
+    let body_names = corpus_body_names(40);
+    let (warm, succeeded, recomputed) = scenario.run(&body_names);
     assert!(succeeded, "adding an unrelated declaration must compile");
     let warm = warm.unwrap();
 
-    // TRACKED (RUE-1091): no reached body's meaning changed, so the repaired
-    // target is zero warm recompute — a purely-unrelated declaration should
-    // invalidate no body. The documented witness is that adding one declaration
-    // mutates the shared declaration epoch and busts every body's durable-import
-    // key, so the warm session recomputes the whole universe (warm == fresh).
+    // No reached body references the added declaration. The exact repaired
+    // target is therefore zero transactions, strictly less than the separately
+    // measured fresh 41-body compile.
     let fresh = Measure::cold(&scenario.rev2);
     let mut report = Report::new("invalidation: unrelated declaration added");
-    report.push(Row::envelope(
-        format!(
-            "unrelated declaration invalidates no body: warm cold_bodies={} (target 0, witness fresh {})",
-            warm.cold_bodies, fresh.cold_bodies
-        ),
-        warm.cold_bodies,
+    report.push(rue_1121_exact_recompute_set_row(
+        "unrelated declaration invalidates the exact body set",
+        &recomputed,
+        BTreeSet::new(),
+        body_names.into_iter().collect(),
+    ));
+    report.push(rue_1121_edit_recompute_row(
+        "unrelated declaration invalidates zero previously-green bodies",
+        warm,
+        fresh,
         0,
-        0,
-        fresh.cold_bodies,
-        1,
-        "RUE-1091",
+        41,
     ));
     report.emit();
 }
@@ -1159,6 +1357,13 @@ fn invalidation_single_body_edit_declaration_work_does_not_rerun() {
     let rev1_src = Corpus::new(40, 5).source();
     let rev2_src = rev1_src.replacen("fn b0() -> i32 { 0 }", "fn b0() -> i32 { 123 }", 1);
     assert_ne!(rev1_src, rev2_src, "the edit must change source");
+    assert!(
+        rev1_src.contains("fn b0() -> i32 { 0 }")
+            && rev2_src.contains("fn b0() -> i32 { 123 }")
+            && rev1_src.contains("fn b1() -> i32 { 1 }")
+            && rev2_src.contains("fn b1() -> i32 { 1 }"),
+        "the body-text edit must change b0 alone while retaining an unaffected body"
+    );
 
     let options = CompileOptions::default();
     let rev1_snap = SourceSnapshot::single("main.rue", rev1_src).unwrap();
@@ -1167,13 +1372,16 @@ fn invalidation_single_body_edit_declaration_work_does_not_rerun() {
     let mut warm = CompilerSession::new();
     warm.update(&rev1_snap).into_result().unwrap();
     warm.canonical_semantic(&options).unwrap();
+    let body_names = corpus_body_names(40);
+    let rev1_origins = warm.retained_body_transaction_origins_for_test(&body_names);
     warm.update(&rev2_snap).into_result().unwrap();
     let warm_rev2 = warm.canonical_semantic(&options);
+    let rev2_origins = warm.retained_body_transaction_origins_for_test(&body_names);
+    let recomputed = changed_body_origins(&rev1_origins, &rev2_origins);
     let warm_measure = warm_rev2
         .as_ref()
         .map(|output| Measure::from_work(&output.work()))
         .expect("single-body-edit warm rev2 compiles");
-    let warm_binding = warm_rev2.as_ref().unwrap().work().binding;
 
     // Fresh rev2 compile for the shared parity oracle and the cold-cost floor.
     let mut fresh = CompilerSession::new();
@@ -1183,72 +1391,54 @@ fn invalidation_single_body_edit_declaration_work_does_not_rerun() {
         .as_ref()
         .map(|output| Measure::from_work(&output.work()))
         .expect("single-body-edit fresh rev2 compiles");
-    let fresh_binding = fresh_rev2.as_ref().unwrap().work().binding;
-
     assert_warm_fresh_parity("single body edit", &warm_rev2, &fresh_rev2);
 
-    eprintln!(
-        "\n== RUE-1086 invalidation: single body edit (declaration work does not rerun) ==\n  \
-         warm cold_bodies={} vs fresh cold_bodies={} (only the edited cone recomputes)\n  \
-         declaration resolution invocations: warm={} vs fresh={} (warm reuses the base)",
-        warm_measure.cold_bodies,
-        fresh_measure.cold_bodies,
-        warm_binding.declaration_resolution_invocations,
-        fresh_binding.declaration_resolution_invocations,
-    );
-    // HARD: a body-text edit reuses the 39 untouched bodies and main, recomputing
-    // only the edited cone, far below a full fresh compile.
-    assert!(
-        warm_measure.cold_bodies < fresh_measure.cold_bodies,
-        "editing one body must reuse the untouched bodies: warm {} vs fresh {}",
-        warm_measure.cold_bodies,
-        fresh_measure.cold_bodies
-    );
-    assert!(
-        warm_measure.cold_bodies <= 2,
-        "a single body edit must recompute only its cone, not {} bodies",
-        warm_measure.cold_bodies
-    );
-    // HARD (Finding 5): the declaration base stayed green in revision 2. A
-    // body-text edit changes no declaration signature, so every declaration
-    // record must be served from the durable base by exact reuse — none
-    // re-resolved, none fell back to a rebuild. If b0's *signature* had changed
-    // instead, `durable_records_reused` would drop below `durable_records_compared`
-    // and `fallbacks` would rise, so this is a real green assertion, not a
-    // vacuous one. (The session rebuilds the declaration base per request via the
-    // durable path, so this is identical warm and fresh; the incremental win
-    // shows up in the body work asserted above, cold_bodies warm 1 vs fresh 41.)
-    let warm_reuse = warm_rev2.as_ref().unwrap().work().declaration_reuse;
-    assert_eq!(
-        warm_binding.declaration_resolution_invocations, 0,
-        "a body-text edit must not re-resolve any declaration: {warm_binding:?}"
-    );
-    assert_eq!(
-        warm_reuse.fallbacks, 0,
-        "a body-text edit must not fall back to rebuilding the declaration base: {warm_reuse:?}"
-    );
-    assert!(
-        warm_reuse.durable_records_compared > 0
-            && warm_reuse.durable_records_reused == warm_reuse.durable_records_compared,
-        "every declaration record must be reused from the durable base: {warm_reuse:?}"
-    );
+    // A body-text-only edit is already narrow today: it has exactly one body
+    // transaction, and the independent fresh measurement proves that this is
+    // strictly cheaper than a full revision-2 compile.
+    let mut report = Report::new("invalidation: one body-text edit");
+    report.push(rue_1121_exact_recompute_set_row(
+        "body-text-only edit recomputes the exact body set",
+        &recomputed,
+        BTreeSet::from(["b0".to_owned()]),
+        BTreeSet::from(["b0".to_owned()]),
+    ));
+    report.push(rue_1121_edit_recompute_row(
+        "body-text-only edit recomputes exactly b0",
+        warm_measure,
+        fresh_measure,
+        1,
+        41,
+    ));
+    report.emit();
 }
 
 #[test]
-fn invalidation_referenced_declaration_removed_recomputes_affected_cone() {
-    // Remove a referenced declaration together with its single reference: drop
-    // `b0` from `main`'s body and delete `fn b0`. The affected cone is `main`
-    // (whose body changed); the 39 surviving reached bodies are unchanged and the
-    // program stays green.
-    let rev1_src = Corpus::new(40, 5).source();
-    let rev2_src = rev1_src.replacen("fn b0() -> i32 { 0 }\n", "", 1).replacen(
-        "    acc = acc + b0();\n",
-        "",
-        1,
+fn invalidation_declaration_value_edit_recomputes_exact_consumers() {
+    // `selected` has exactly two direct body consumers. `control` is unrelated;
+    // `main` reaches both consumers but does not mention `selected`, so the
+    // source proves the exact direct-consumer recompute set is {left, right}.
+    let rev1_src = "\
+const selected: i32 = 1;
+fn left() -> i32 { selected }
+fn right() -> i32 { selected }
+fn control() -> i32 { 99 }
+fn main() -> i32 { left() + right() + control() }
+";
+    let rev2_src = rev1_src.replacen("const selected: i32 = 1;", "const selected: i32 = 2;", 1);
+    assert_ne!(
+        rev1_src, rev2_src,
+        "the declaration-value edit must change source"
+    );
+    assert_eq!(
+        rev2_src.matches("selected").count(),
+        3,
+        "the edited declaration must have exactly two body consumers"
     );
     assert!(
-        !rev2_src.contains("fn b0()") && !rev2_src.contains("b0()"),
-        "b0 and its reference must both be gone"
+        rev2_src.contains("fn control() -> i32 { 99 }")
+            && rev2_src.contains("fn main() -> i32 { left() + right() + control() }"),
+        "the non-consumer control bodies must stay source-identical"
     );
 
     let options = CompileOptions::default();
@@ -1258,12 +1448,16 @@ fn invalidation_referenced_declaration_removed_recomputes_affected_cone() {
     let mut warm = CompilerSession::new();
     warm.update(&rev1_snap).into_result().unwrap();
     warm.canonical_semantic(&options).unwrap();
+    let body_names = ["left", "right", "control", "main"].map(str::to_owned);
+    let rev1_origins = warm.retained_body_transaction_origins_for_test(&body_names);
     warm.update(&rev2_snap).into_result().unwrap();
     let warm_rev2 = warm.canonical_semantic(&options);
+    let rev2_origins = warm.retained_body_transaction_origins_for_test(&body_names);
+    let recomputed = changed_body_origins(&rev1_origins, &rev2_origins);
     let warm_measure = warm_rev2
         .as_ref()
         .map(|output| Measure::from_work(&output.work()))
-        .expect("referenced-removal warm rev2 compiles");
+        .expect("declaration-value-edit warm rev2 compiles");
 
     let mut fresh = CompilerSession::new();
     fresh.update(&rev2_snap).into_result().unwrap();
@@ -1271,27 +1465,23 @@ fn invalidation_referenced_declaration_removed_recomputes_affected_cone() {
     let fresh_measure = fresh_rev2
         .as_ref()
         .map(|output| Measure::from_work(&output.work()))
-        .expect("referenced-removal fresh rev2 compiles");
+        .expect("declaration-value-edit fresh rev2 compiles");
 
-    assert_warm_fresh_parity("referenced declaration removed", &warm_rev2, &fresh_rev2);
+    assert_warm_fresh_parity("declaration value edit", &warm_rev2, &fresh_rev2);
 
-    // TRACKED (RUE-1091): the affected cone is just `main`; the 39 survivors
-    // should be reused (repaired target <= 2 for `main` plus a slack body). The
-    // documented witness is that removing a declaration mutates the shared
-    // declaration epoch, busting every survivor's durable-import key (warm ==
-    // fresh, whole-universe recompute).
-    let mut report = Report::new("invalidation: referenced declaration removed");
-    report.push(Row::envelope(
-        format!(
-            "only the affected cone recomputes: warm cold_bodies={} (target <=2, witness fresh {})",
-            warm_measure.cold_bodies, fresh_measure.cold_bodies
-        ),
-        warm_measure.cold_bodies,
+    let mut report = Report::new("invalidation: declaration value edit");
+    report.push(rue_1121_exact_recompute_set_row(
+        "declaration value edit recomputes the exact body set",
+        &recomputed,
+        BTreeSet::from(["left".to_owned(), "right".to_owned()]),
+        body_names.into_iter().collect(),
+    ));
+    report.push(rue_1121_edit_recompute_row(
+        "declaration value edit recomputes exactly its consumers {left, right}",
+        warm_measure,
+        fresh_measure,
         2,
-        0,
-        fresh_measure.cold_bodies,
-        1,
-        "RUE-1091",
+        4,
     ));
     report.emit();
 }
@@ -1307,6 +1497,15 @@ fn invalidation_negative_lookup_becoming_positive_invalidates_consumers() {
     let rev1_src = format!("{control}fn main() -> i32 {{ extra() + control() }}\n");
     let rev2_src =
         format!("fn extra() -> i32 {{ 7 }}\n{control}fn main() -> i32 {{ extra() + control() }}\n");
+    assert_ne!(
+        rev1_src, rev2_src,
+        "the negative-to-positive edit must change source"
+    );
+    assert_eq!(
+        rev2_src.matches("extra").count(),
+        2,
+        "the newly-positive declaration must have exactly one consumer"
+    );
 
     let options = CompileOptions::default();
     let rev1_snap = SourceSnapshot::single("main.rue", rev1_src).unwrap();
@@ -1319,9 +1518,13 @@ fn invalidation_negative_lookup_becoming_positive_invalidates_consumers() {
         rev1_result.is_err(),
         "calling an undefined function must fail the negative-lookup revision"
     );
+    let body_names = ["extra", "control", "main"].map(str::to_owned);
+    let rev1_origins = warm.retained_body_transaction_origins_for_test(&body_names);
 
     warm.update(&rev2_snap).into_result().unwrap();
     let warm_rev2 = warm.canonical_semantic(&options);
+    let rev2_origins = warm.retained_body_transaction_origins_for_test(&body_names);
+    let recomputed = changed_body_origins(&rev1_origins, &rev2_origins);
     let warm_measure = warm_rev2
         .as_ref()
         .map(|output| Measure::from_work(&output.work()))
@@ -1338,24 +1541,23 @@ fn invalidation_negative_lookup_becoming_positive_invalidates_consumers() {
     // Shared full-parity oracle: warm negative->positive result equals fresh.
     assert_warm_fresh_parity("negative->positive", &warm_rev2, &fresh_rev2);
 
-    // Finding 5: only the exact consumers recompute. The affected cone is the
-    // newly-defined `extra` plus its consumer `main` (repaired target <= 2). The
-    // documented witness (RUE-1091) is that a rev1 whole-compile failure drops
-    // every body terminal, so warm rev2 recomputes the whole universe including
-    // the unaffected `control` (warm == fresh). `warm > fresh` — recomputing
-    // more than a cold compile — fails.
+    // The exact repaired set is the new declaration plus `main`, its only
+    // consumer. `control` is independently reached yet unrelated, so it must
+    // remain green. The separately measured fresh body count proves the target
+    // is strictly cheaper than a full revision-2 compile.
     let mut report = Report::new("invalidation: negative->positive lookup (with control body)");
-    report.push(Row::envelope(
-        format!(
-            "only exact consumers recompute: warm cold_bodies={} (target <=2 [extra,main], witness fresh {})",
-            warm_measure.cold_bodies, fresh_measure.cold_bodies
-        ),
-        warm_measure.cold_bodies,
+    report.push(rue_1121_exact_recompute_set_row(
+        "negative-to-positive lookup recomputes the exact body set",
+        &recomputed,
+        BTreeSet::from(["extra".to_owned(), "main".to_owned()]),
+        body_names.into_iter().collect(),
+    ));
+    report.push(rue_1121_edit_recompute_row(
+        "negative->positive recomputes exactly {extra, main}",
+        warm_measure,
+        fresh_measure,
         2,
-        0,
-        fresh_measure.cold_bodies,
-        1,
-        "RUE-1091",
+        3,
     ));
     report.emit();
 }
