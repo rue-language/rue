@@ -266,7 +266,6 @@ pub enum SemanticGapKind {
     RuntimeCall(UnsupportedRuntimeCallKind),
     FlattenedParameterSlot,
     TextProjectionRead,
-    InoutParameterForwarding,
 }
 
 /// A dependency whose value comes from outside deterministic Rue semantics.
