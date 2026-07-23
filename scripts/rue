@@ -15,6 +15,7 @@
 #   scripts/rue spec [pattern]     Spec tests, optional filter
 #   scripts/rue cli [pattern]      CLI integration tests, optional filter
 #   scripts/rue ui [pattern]       UI/diagnostics tests, optional filter
+#   scripts/rue frontend-manifest  Refresh the audited frontend corpus manifest
 #   scripts/rue perf [args...]     Per-pass compiler perf baseline (scripts/perf-baseline.py)
 #   scripts/rue fmt                Format the code (./fmt.sh)
 #   scripts/rue gc                 Reclaim disk: drop buck-out artifacts unused for 1+ week
@@ -161,6 +162,12 @@ case "$cmd" in
         RUE_BINARY="$(scripts/rue-bin)" \
         RUE_UI_CASES="crates/rue-ui-tests/cases" \
         ./buck2 run //crates/rue-ui-tests:rue-ui-tests -- "$@"
+        ;;
+    frontend-manifest)
+        corpus_output="$(./buck2 build root//:frontend-diff-corpus --show-simple-output)"
+        RUE_FRONTEND_DIFF_CORPUS="$repo_root/$corpus_output" \
+        ./buck2 run //crates/rue-frontend-diff:rue-frontend-diff -- \
+            --refresh-manifest "$repo_root/crates/rue-frontend-diff/src/corpus_manifest.rs"
         ;;
     perf)
         # Per-pass compiler performance baseline (RUE-249). Builds the compiler
