@@ -18,6 +18,7 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
         "declaration_candidate",
         include_str!("declaration_candidate.rs"),
     ),
+    ("declaration_recipe", include_str!("declaration_recipe.rs")),
     (
         "definition_snapshot",
         include_str!("definition_snapshot.rs"),
