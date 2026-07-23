@@ -42,6 +42,10 @@
 // scope-exit destructor is then a safe no-op. `get`/`pop` return `Option(T)`
 // (RUE-313).
 //
+// Absence is represented with `Option`, never an integer sentinel. Use `get`
+// when an index may be out of bounds and `index_of` when searching for a value;
+// reserve `get_or` for callers that truly have a domain value to substitute.
+//
 // SCOPE / KNOWN LIMITATIONS (tracked separately — this file deliberately does
 // not work around them):
 //

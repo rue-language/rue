@@ -3,6 +3,7 @@
 // buffer (0=empty, 1=full, 2=tombstone).
 const std = @import("std");
 const Ints = std.arraybuf.ArrayBuf(i64);
+const OptI64 = std.option.Option(i64);
 
 pub struct Map {
     keys: Ints,
@@ -60,25 +61,28 @@ pub struct Map {
         }
     }
 
-    fn get_or(borrow self, key: i64, default: i64) -> i64 {
+    fn get(borrow self, key: i64) -> OptI64 {
         let mut i = self.hash(key);
         let mut probes: u64 = 0;
-        let mut result = default;
-        let mut found = false;
         while probes < self.cap {
             let s = self.state.get_or(i, 0);
             if s == 0 { break; }
             if s == 1 {
                 if self.keys.get_or(i, 0) == key {
-                    result = self.vals.get_or(i, 0);
-                    found = true;
-                    break;
+                    return OptI64.Some(self.vals.get_or(i, 0));
                 }
             }
             i = (i + 1) % self.cap;
             probes = probes + 1;
         }
-        if found { result } else { result }
+        OptI64.None
+    }
+
+    fn get_or(borrow self, key: i64, default: i64) -> i64 {
+        match self.get(key) {
+            OptI64.Some(value) => value,
+            OptI64.None => default,
+        }
     }
 
     fn remove(inout self, key: i64) -> bool {

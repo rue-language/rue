@@ -1,0 +1,77 @@
+[section]
+id = "warnings.sentinel_lookup"
+name = "Sentinel lookup warnings"
+description = "Prefer Option-returning lookup APIs when absence is meaningful."
+
+[[case]]
+name = "get_or_negative_one_membership_test_warns"
+source = """
+struct Map {
+    value: i64,
+
+    fn get_or(borrow self, key: i64, default: i64) -> i64 {
+        if key == 0 { self.value } else { default }
+    }
+}
+
+fn main() -> i32 {
+    let map = Map { value: 7 };
+    if map.get_or(1, 0 - 1) == 0 - 1 { 42 } else { 0 }
+}
+"""
+exit_code = 42
+warning_contains = [
+    "integer sentinel used to test lookup absence",
+    "Option-returning lookup",
+]
+expected_warning_count = 1
+
+[[case]]
+name = "get_or_unsigned_max_membership_test_warns"
+source = """
+struct Map {
+    value: u64,
+
+    fn get_or(borrow self, key: u64, default: u64) -> u64 {
+        if key == 0 { self.value } else { default }
+    }
+}
+
+fn main() -> i32 {
+    let map = Map { value: 7 };
+    if 18446744073709551615 != map.get_or(1, 18446744073709551615) { 0 } else { 42 }
+}
+"""
+exit_code = 42
+warning_contains = ["integer sentinel used to test lookup absence"]
+expected_warning_count = 1
+
+[[case]]
+name = "get_or_sentinel_as_domain_default_does_not_warn"
+source = """
+struct Map {
+    value: i64,
+
+    fn get_or(borrow self, key: i64, default: i64) -> i64 {
+        if key == 0 { self.value } else { default }
+    }
+}
+
+fn main() -> i32 {
+    let map = Map { value: 7 };
+    @intCast(map.get_or(1, 0 - 1) + 43)
+}
+"""
+exit_code = 42
+no_warnings = true
+
+[[case]]
+name = "ordinary_max_arithmetic_does_not_warn"
+source = """
+fn main() -> i32 {
+    let max: u64 = 18446744073709551615;
+    if max - 1 < max { 42 } else { 0 }
+}
+"""
+exit_code = 42
+no_warnings = true

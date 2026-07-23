@@ -2188,6 +2188,9 @@ pub enum WarningKind {
     /// A pattern that will never be matched because a previous pattern already covers it.
     #[error("unreachable pattern '{0}'")]
     UnreachablePattern(String),
+    /// A lookup's fallback sentinel is compared with the same sentinel to test absence.
+    #[error("integer sentinel used to test lookup absence")]
+    SentinelLookup,
 }
 
 /// A compilation warning with optional source location information.

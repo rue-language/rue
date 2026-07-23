@@ -1,4 +1,6 @@
 const map = @import("map.rue");
+const std = @import("std");
+const OptI64 = std.option.Option(i64);
 
 fn main() -> i32 {
     let mut m = map.Map.with_capacity(4);
@@ -23,7 +25,10 @@ fn main() -> i32 {
         k = k + 1;
     }
     // Spot checks
-    @assert(m.get_or(0 - 300, 0 - 1) == 0 - 1 || true, "probe");
+    match m.get(0 - 300) {
+        OptI64.Some(unexpected) => @assert(unexpected != unexpected, "removed key is absent"),
+        OptI64.None => {},
+    }
     let a = m.get_or(98 * 7 - 300, 0 - 1);        // overwritten -> 98 (98*7-300=386, not on the 21k-300 removal stride)
     let b = m.get_or(151 * 7 - 300, 0 - 1);       // untouched -> 151*151 (757 not on the removal stride)
     let c = m.get_or(7000, 0 - 1);                // absent -> -1
