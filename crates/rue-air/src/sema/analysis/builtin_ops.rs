@@ -5,6 +5,12 @@
 
 use super::*;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IntegerSentinel {
+    UnsignedMax,
+    NegativeOne,
+}
+
 impl<'a> BodySema<'a> {
     /// Convert RIR argument mode to AIR argument mode.
     pub(super) fn convert_arg_mode(mode: RirArgMode) -> AirArgMode {
@@ -367,6 +373,15 @@ impl<'a> BodySema<'a> {
             ));
         }
 
+        if allow_bool && self.is_sentinel_lookup_test(lhs, rhs) {
+            ctx.warnings.push(
+                CompileWarning::new(WarningKind::SentinelLookup, span).with_help(
+                    "preserve absence in the type system: use an Option-returning lookup \
+                     such as `get`, `index_of`, or `find`, then match on `Some`/`None`",
+                ),
+            );
+        }
+
         let comparison = make_data(lhs_result.air_ref, rhs_result.air_ref);
         if matches!(comparison, AirInstData::Eq(..) | AirInstData::Ne(..))
             && let Some(result) = self.try_prepare_aggregate_equality(
@@ -387,6 +402,42 @@ impl<'a> BodySema<'a> {
             span,
         });
         Ok(AnalysisResult::new(air_ref, Type::BOOL))
+    }
+
+    fn is_sentinel_lookup_test(&self, lhs: InstRef, rhs: InstRef) -> bool {
+        self.integer_sentinel(rhs)
+            .is_some_and(|sentinel| self.is_get_or_with_sentinel(lhs, sentinel))
+            || self
+                .integer_sentinel(lhs)
+                .is_some_and(|sentinel| self.is_get_or_with_sentinel(rhs, sentinel))
+    }
+
+    fn is_get_or_with_sentinel(&self, inst: InstRef, sentinel: IntegerSentinel) -> bool {
+        let InstData::MethodCall { method, args, .. } = &self.rir.get(inst).data else {
+            return false;
+        };
+        if self.interner.resolve(method) != "get_or" {
+            return false;
+        }
+        let args = self.rir.call_args(args);
+        let mut args = args.iter();
+        let (Some(_index), Some(default), None) = (args.next(), args.next(), args.next()) else {
+            return false;
+        };
+        self.integer_sentinel(default.value) == Some(sentinel)
+    }
+
+    fn integer_sentinel(&self, inst: InstRef) -> Option<IntegerSentinel> {
+        match self.rir.get(inst).data {
+            InstData::IntConst(u64::MAX) => Some(IntegerSentinel::UnsignedMax),
+            InstData::Sub { lhs, rhs }
+                if matches!(self.rir.get(lhs).data, InstData::IntConst(0))
+                    && matches!(self.rir.get(rhs).data, InstData::IntConst(1)) =>
+            {
+                Some(IntegerSentinel::NegativeOne)
+            }
+            _ => None,
+        }
     }
 
     /// Check if an RIR instruction is a VarRef to a comptime type variable.

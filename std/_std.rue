@@ -14,8 +14,10 @@
 // - std.intmap.IntMap / std.strmap.StrMap: open-addressing hash maps
 // - std.strbuf.StrBuf: Growable strings, with copying bridges to str and
 //   ArrayBuf(u8) (`from_str`, `from_bytes`, `to_bytes`, and append variants)
-// - std.arraybuf.ArrayBuf: Growable heap-backed collections; ArrayBuf(u8) can
-//   copy from str with `from_str` / `extend_str`
+// - std.arraybuf.ArrayBuf: Growable heap-backed collections; `get` and
+//   `index_of` preserve absence as `Option`, while `get_or` is for a genuine
+//   fallback value. ArrayBuf(u8) can copy from str with `from_str` /
+//   `extend_str`.
 // - std.fs.File: File IO (open/create/append/read/write/seek/tell/metadata/close
 //   over @syscall) plus fs.rename/remove/create_dir/remove_dir/metadata
 // - std.binary: endianness-explicit integer<->byte conversions
