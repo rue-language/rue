@@ -94,6 +94,96 @@ fn is_bss_section(name: &str) -> bool {
     classify_section(name) == SectionKind::Bss
 }
 
+/// Number of bytes written by a supported relocation.
+///
+/// Keeping this next to the shared patcher gives collection and application
+/// one width authority. That lets the collector reject a malformed patch site
+/// while it still knows the source section's exact bounds.
+fn relocation_patch_size(rel_type: RelocationType) -> Result<usize, LinkError> {
+    match rel_type {
+        RelocationType::Abs64 | RelocationType::Aarch64Abs64 => Ok(8),
+        RelocationType::Pc32
+        | RelocationType::Plt32
+        | RelocationType::GotPcRel
+        | RelocationType::RexGotPcRelX
+        | RelocationType::GotPcRelX
+        | RelocationType::Abs32
+        | RelocationType::Abs32S
+        | RelocationType::Jump26
+        | RelocationType::Call26
+        | RelocationType::AdrpPage21
+        | RelocationType::AddLo12
+        | RelocationType::Ldst8Lo12
+        | RelocationType::Ldst16Lo12
+        | RelocationType::Ldst32Lo12
+        | RelocationType::Ldst64Lo12
+        | RelocationType::Ldst128Lo12 => Ok(4),
+        RelocationType::Unknown(t) => Err(LinkError::UnsupportedRelocation(format!(
+            "unknown type {t}"
+        ))),
+    }
+}
+
+/// Return an overflow-safe native range for a relocation patch site.
+fn checked_patch_range(
+    patch_offset: u64,
+    patch_size: usize,
+    section_size: usize,
+    rel_type: RelocationType,
+) -> Result<std::ops::Range<usize>, LinkError> {
+    let patch_size_u64 = patch_size as u64;
+    let section_size_u64 = section_size as u64;
+    let patch_end = patch_offset.checked_add(patch_size_u64).ok_or_else(|| {
+        LinkError::RelocationPatchOutOfBounds {
+            patch_offset,
+            patch_size,
+            section_size,
+            rel_type: format!("{rel_type:?}"),
+        }
+    })?;
+    if patch_end > section_size_u64 {
+        return Err(LinkError::RelocationPatchOutOfBounds {
+            patch_offset,
+            patch_size,
+            section_size,
+            rel_type: format!("{rel_type:?}"),
+        });
+    }
+
+    // Both values are bounded by a native slice length above. Keep the
+    // conversions checked anyway so malformed input never reaches a panic even
+    // if the supported target-width assumptions change.
+    let start =
+        usize::try_from(patch_offset).map_err(|_| LinkError::RelocationPatchOutOfBounds {
+            patch_offset,
+            patch_size,
+            section_size,
+            rel_type: format!("{rel_type:?}"),
+        })?;
+    let end = usize::try_from(patch_end).map_err(|_| LinkError::RelocationPatchOutOfBounds {
+        patch_offset,
+        patch_size,
+        section_size,
+        rel_type: format!("{rel_type:?}"),
+    })?;
+    Ok(start..end)
+}
+
+/// Compose a section's merged offset with a section-relative relocation.
+fn checked_relocation_offset(
+    base_offset: u64,
+    relocation_offset: u64,
+    rel_type: RelocationType,
+) -> Result<u64, LinkError> {
+    base_offset
+        .checked_add(relocation_offset)
+        .ok_or_else(|| LinkError::RelocationOffsetOverflow {
+            base_offset,
+            relocation_offset,
+            rel_type: format!("{rel_type:?}"),
+        })
+}
+
 /// Apply a single already-resolved relocation by patching `buf` in place.
 ///
 /// Shared by both `link_elf` and `link_macho` (RUE-335): the per-kind patch
@@ -112,13 +202,16 @@ fn is_bss_section(name: &str) -> bool {
 /// * `sym_name`     — referenced symbol name, used only for diagnostics.
 fn apply_relocation(
     buf: &mut [u8],
-    patch_offset: usize,
+    patch_offset: u64,
     place: u64,
     target_addr: u64,
     addend: i64,
     rel_type: RelocationType,
     sym_name: &str,
 ) -> Result<(), LinkError> {
+    let patch_size = relocation_patch_size(rel_type)?;
+    let patch_range = checked_patch_range(patch_offset, patch_size, buf.len(), rel_type)?;
+    let patch_offset = patch_range.start;
     let pc = place; // `P` in the S + A - P PC-relative arms below
     match rel_type {
         RelocationType::Pc32 | RelocationType::Plt32 => {
@@ -131,15 +224,7 @@ fn apply_relocation(
                     rel_type: format!("{:?}", rel_type),
                 });
             }
-            if patch_offset + 4 > buf.len() {
-                return Err(LinkError::RelocationPatchOutOfBounds {
-                    patch_offset,
-                    patch_size: 4,
-                    section_size: buf.len(),
-                    rel_type: format!("{:?}", rel_type),
-                });
-            }
-            buf[patch_offset..patch_offset + 4].copy_from_slice(&(value as i32).to_le_bytes());
+            buf[patch_range.clone()].copy_from_slice(&(value as i32).to_le_bytes());
         }
         RelocationType::GotPcRel => {
             // R_X86_64_GOTPCREL: Load from GOT entry.
@@ -181,15 +266,7 @@ fn apply_relocation(
                     rel_type: format!("{:?}", rel_type),
                 });
             }
-            if patch_offset + 4 > buf.len() {
-                return Err(LinkError::RelocationPatchOutOfBounds {
-                    patch_offset,
-                    patch_size: 4,
-                    section_size: buf.len(),
-                    rel_type: format!("{:?}", rel_type),
-                });
-            }
-            buf[patch_offset..patch_offset + 4].copy_from_slice(&(value as i32).to_le_bytes());
+            buf[patch_range.clone()].copy_from_slice(&(value as i32).to_le_bytes());
         }
         RelocationType::GotPcRelX => {
             // R_X86_64_GOTPCRELX: GOT access without REX prefix.
@@ -231,15 +308,7 @@ fn apply_relocation(
                     rel_type: format!("{:?}", rel_type),
                 });
             }
-            if patch_offset + 4 > buf.len() {
-                return Err(LinkError::RelocationPatchOutOfBounds {
-                    patch_offset,
-                    patch_size: 4,
-                    section_size: buf.len(),
-                    rel_type: format!("{:?}", rel_type),
-                });
-            }
-            buf[patch_offset..patch_offset + 4].copy_from_slice(&(value as i32).to_le_bytes());
+            buf[patch_range.clone()].copy_from_slice(&(value as i32).to_le_bytes());
         }
         RelocationType::RexGotPcRelX => {
             // R_X86_64_REX_GOTPCRELX: GOT access with REX prefix.
@@ -282,28 +351,12 @@ fn apply_relocation(
                     rel_type: format!("{:?}", rel_type),
                 });
             }
-            if patch_offset + 4 > buf.len() {
-                return Err(LinkError::RelocationPatchOutOfBounds {
-                    patch_offset,
-                    patch_size: 4,
-                    section_size: buf.len(),
-                    rel_type: format!("{:?}", rel_type),
-                });
-            }
-            buf[patch_offset..patch_offset + 4].copy_from_slice(&(value as i32).to_le_bytes());
+            buf[patch_range.clone()].copy_from_slice(&(value as i32).to_le_bytes());
         }
         RelocationType::Abs64 | RelocationType::Aarch64Abs64 => {
             // 64-bit absolute address (pointer slots in rodata/data).
             let value = (target_addr as i64 + addend) as u64;
-            if patch_offset + 8 > buf.len() {
-                return Err(LinkError::RelocationPatchOutOfBounds {
-                    patch_offset,
-                    patch_size: 8,
-                    section_size: buf.len(),
-                    rel_type: format!("{:?}", rel_type),
-                });
-            }
-            buf[patch_offset..patch_offset + 8].copy_from_slice(&value.to_le_bytes());
+            buf[patch_range.clone()].copy_from_slice(&value.to_le_bytes());
         }
         RelocationType::Abs32 => {
             let value = target_addr as i64 + addend;
@@ -314,15 +367,7 @@ fn apply_relocation(
                     rel_type: "Abs32".to_string(),
                 });
             }
-            if patch_offset + 4 > buf.len() {
-                return Err(LinkError::RelocationPatchOutOfBounds {
-                    patch_offset,
-                    patch_size: 4,
-                    section_size: buf.len(),
-                    rel_type: "Abs32".to_string(),
-                });
-            }
-            buf[patch_offset..patch_offset + 4].copy_from_slice(&(value as u32).to_le_bytes());
+            buf[patch_range.clone()].copy_from_slice(&(value as u32).to_le_bytes());
         }
         RelocationType::Abs32S => {
             let value = target_addr as i64 + addend;
@@ -333,15 +378,7 @@ fn apply_relocation(
                     rel_type: "Abs32S".to_string(),
                 });
             }
-            if patch_offset + 4 > buf.len() {
-                return Err(LinkError::RelocationPatchOutOfBounds {
-                    patch_offset,
-                    patch_size: 4,
-                    section_size: buf.len(),
-                    rel_type: "Abs32S".to_string(),
-                });
-            }
-            buf[patch_offset..patch_offset + 4].copy_from_slice(&(value as i32).to_le_bytes());
+            buf[patch_range.clone()].copy_from_slice(&(value as i32).to_le_bytes());
         }
         RelocationType::Jump26 | RelocationType::Call26 => {
             // AArch64 branch (B) or branch with link (BL) - 26-bit PC-relative offset
@@ -361,19 +398,10 @@ fn apply_relocation(
                     rel_type: rel_name.to_string(),
                 });
             }
-            if patch_offset + 4 > buf.len() {
-                return Err(LinkError::RelocationPatchOutOfBounds {
-                    patch_offset,
-                    patch_size: 4,
-                    section_size: buf.len(),
-                    rel_type: rel_name.to_string(),
-                });
-            }
             // Read existing instruction and patch the immediate field
-            let mut inst =
-                u32::from_le_bytes(buf[patch_offset..patch_offset + 4].try_into().unwrap());
+            let mut inst = u32::from_le_bytes(buf[patch_range.clone()].try_into().unwrap());
             inst = (inst & 0xFC000000) | ((offset as u32) & 0x03FFFFFF);
-            buf[patch_offset..patch_offset + 4].copy_from_slice(&inst.to_le_bytes());
+            buf[patch_range.clone()].copy_from_slice(&inst.to_le_bytes());
         }
         RelocationType::AdrpPage21 => {
             // AArch64 ADRP - loads PC-relative page address (21-bit page offset)
@@ -392,39 +420,21 @@ fn apply_relocation(
                     rel_type: "AdrpPage21".to_string(),
                 });
             }
-            if patch_offset + 4 > buf.len() {
-                return Err(LinkError::RelocationPatchOutOfBounds {
-                    patch_offset,
-                    patch_size: 4,
-                    section_size: buf.len(),
-                    rel_type: "AdrpPage21".to_string(),
-                });
-            }
             // ADRP instruction format: imm is split into immlo (bits 29-30) and immhi (bits 5-23)
             let imm = page_count as u32;
             let immlo = (imm & 0x3) << 29; // bits 0-1 of imm -> bits 29-30
             let immhi = ((imm >> 2) & 0x7FFFF) << 5; // bits 2-20 of imm -> bits 5-23
-            let mut inst =
-                u32::from_le_bytes(buf[patch_offset..patch_offset + 4].try_into().unwrap());
+            let mut inst = u32::from_le_bytes(buf[patch_range.clone()].try_into().unwrap());
             // Clear immlo and immhi fields, then set them
             inst = (inst & 0x9F00001F) | immlo | immhi;
-            buf[patch_offset..patch_offset + 4].copy_from_slice(&inst.to_le_bytes());
+            buf[patch_range.clone()].copy_from_slice(&inst.to_le_bytes());
         }
         RelocationType::AddLo12 => {
             // AArch64 ADD/load-store PAGEOFF12 - low 12 bits of the effective
             // address. S + A gives the effective address; extract its low 12 bits.
             let effective_addr = (target_addr as i64 + addend) as u64;
             let lo12 = (effective_addr & 0xFFF) as u32;
-            if patch_offset + 4 > buf.len() {
-                return Err(LinkError::RelocationPatchOutOfBounds {
-                    patch_offset,
-                    patch_size: 4,
-                    section_size: buf.len(),
-                    rel_type: "AddLo12".to_string(),
-                });
-            }
-            let mut inst =
-                u32::from_le_bytes(buf[patch_offset..patch_offset + 4].try_into().unwrap());
+            let mut inst = u32::from_le_bytes(buf[patch_range.clone()].try_into().unwrap());
 
             // PAGEOFF12 applies to both ADD and load/store instructions. For
             // loads/stores the imm12 field is SCALED by the access size encoded
@@ -459,7 +469,7 @@ fn apply_relocation(
             // ADD instruction format: imm12 is in bits 10-21
             // Clear imm12 field (bits 10-21) and set it
             inst = (inst & 0xFFC003FF) | (imm << 10);
-            buf[patch_offset..patch_offset + 4].copy_from_slice(&inst.to_le_bytes());
+            buf[patch_range.clone()].copy_from_slice(&inst.to_le_bytes());
         }
         RelocationType::Ldst8Lo12
         | RelocationType::Ldst16Lo12
@@ -484,14 +494,6 @@ fn apply_relocation(
             };
             let effective_addr = (target_addr as i64 + addend) as u64;
             let lo12 = (effective_addr & 0xFFF) as u32;
-            if patch_offset + 4 > buf.len() {
-                return Err(LinkError::RelocationPatchOutOfBounds {
-                    patch_offset,
-                    patch_size: 4,
-                    section_size: buf.len(),
-                    rel_type: rel_name.to_string(),
-                });
-            }
             // The result must be aligned to the access width; otherwise the low
             // scale bits would be lost by the >> below and the reference would be
             // silently corrupted.
@@ -505,11 +507,10 @@ fn apply_relocation(
                 });
             }
             let imm = lo12 >> scale;
-            let mut inst =
-                u32::from_le_bytes(buf[patch_offset..patch_offset + 4].try_into().unwrap());
+            let mut inst = u32::from_le_bytes(buf[patch_range.clone()].try_into().unwrap());
             // Load/store imm12 is in bits 10-21, same field position as ADD.
             inst = (inst & 0xFFC003FF) | (imm << 10);
-            buf[patch_offset..patch_offset + 4].copy_from_slice(&inst.to_le_bytes());
+            buf[patch_range].copy_from_slice(&inst.to_le_bytes());
         }
         RelocationType::Unknown(t) => {
             return Err(LinkError::UnsupportedRelocation(format!(
@@ -584,8 +585,12 @@ fn collect_section_relocations(
             }
         }
 
+        let patch_size = relocation_patch_size(reloc.rel_type)?;
+        checked_patch_range(reloc.offset, patch_size, section.data.len(), reloc.rel_type)?;
+        let offset = checked_relocation_offset(merged_offset, reloc.offset, reloc.rel_type)?;
+
         pending.push(PendingRelocation {
-            offset: merged_offset + reloc.offset,
+            offset,
             sym_name: sym.name.clone(),
             sym_section: sym.section_index,
             sym_binding: sym.binding,
@@ -640,11 +645,17 @@ pub enum LinkError {
     UnsupportedRelocation(String),
     /// Relocation overflow (value doesn't fit).
     RelocationOverflow { symbol: String, rel_type: String },
-    /// Relocation patch extends beyond code section bounds.
+    /// Relocation patch extends beyond its containing section.
     RelocationPatchOutOfBounds {
-        patch_offset: usize,
+        patch_offset: u64,
         patch_size: usize,
         section_size: usize,
+        rel_type: String,
+    },
+    /// Merging a section-relative relocation offset overflowed.
+    RelocationOffsetOverflow {
+        base_offset: u64,
+        relocation_offset: u64,
         rel_type: String,
     },
     /// Symbol references invalid section index.
@@ -687,9 +698,20 @@ impl std::fmt::Display for LinkError {
             } => {
                 write!(
                     f,
-                    "relocation patch extends beyond code section: {} relocation at offset {} \
-                     requires {} bytes, but code section is only {} bytes",
+                    "relocation patch extends beyond section: {} relocation at offset {} \
+                     requires {} bytes, but section is only {} bytes",
                     rel_type, patch_offset, patch_size, section_size
+                )
+            }
+            LinkError::RelocationOffsetOverflow {
+                base_offset,
+                relocation_offset,
+                rel_type,
+            } => {
+                write!(
+                    f,
+                    "relocation offset overflow: {rel_type} relocation base {base_offset} \
+                     plus section offset {relocation_offset} exceeds u64"
                 )
             }
             LinkError::InvalidSectionIndex {
@@ -1286,8 +1308,7 @@ impl Linker {
                     )));
                 };
 
-            let patch_vaddr = base_vaddr + patch_offset;
-            let patch_idx = patch_offset as usize;
+            let patch_vaddr = checked_relocation_offset(base_vaddr, patch_offset, rel_type)?;
 
             tracing::trace!(
                 symbol = %sym_name,
@@ -1304,7 +1325,7 @@ impl Linker {
             // the ELF path via `apply_relocation` (RUE-335).
             apply_relocation(
                 buf,
-                patch_idx,
+                patch_offset,
                 patch_vaddr,
                 target_vaddr,
                 addend,
@@ -1675,20 +1696,11 @@ impl Linker {
                     )));
                 };
 
-            let pc = base_vaddr + offset;
-            let patch_offset = offset as usize;
+            let pc = checked_relocation_offset(base_vaddr, offset, rel_type)?;
 
             // Patch the site; the per-kind encoding is shared with the
             // Mach-O path via `apply_relocation` (RUE-335).
-            apply_relocation(
-                buf,
-                patch_offset,
-                pc,
-                target_addr,
-                addend,
-                rel_type,
-                &sym_name,
-            )?;
+            apply_relocation(buf, offset, pc, target_addr, addend, rel_type, &sym_name)?;
         }
 
         // Build the ELF with proper W^X segment separation
@@ -1871,9 +1883,9 @@ impl Default for Linker {
 mod tests {
     use super::*;
     use crate::constants::{
-        E_MACHINE_OFFSET, E_TYPE_OFFSET, EI_CLASS, EI_DATA, EI_VERSION,
-        ELF64_EHDR_SIZE as TEST_EHDR_SIZE, ELF64_PHDR_SIZE as TEST_PHDR_SIZE, EM_AARCH64,
-        EM_X86_64,
+        E_MACHINE_OFFSET, E_SHNUM_OFFSET, E_SHOFF_OFFSET, E_TYPE_OFFSET, EI_CLASS, EI_DATA,
+        EI_VERSION, ELF64_EHDR_SIZE as TEST_EHDR_SIZE, ELF64_PHDR_SIZE as TEST_PHDR_SIZE,
+        EM_AARCH64, EM_X86_64, SHT_RELA,
     };
     use crate::elf::{ObjectFile, SectionFlags};
     use crate::emit::{CodeRelocation, ObjectBuilder};
@@ -1912,6 +1924,83 @@ mod tests {
             .to_string(),
             "relocation overflow for sym (Pc32)"
         );
+        assert_eq!(
+            LinkError::RelocationOffsetOverflow {
+                base_offset: u64::MAX,
+                relocation_offset: 1,
+                rel_type: "Abs64".into(),
+            }
+            .to_string(),
+            format!(
+                "relocation offset overflow: Abs64 relocation base {} plus section offset 1 \
+                 exceeds u64",
+                u64::MAX
+            )
+        );
+    }
+
+    #[test]
+    fn relocation_patch_range_rejects_overflow_and_crossing_end() {
+        for (patch_offset, patch_size, section_size) in [(u64::MAX, 4, 8), (1, 8, 8)] {
+            let err = checked_patch_range(
+                patch_offset,
+                patch_size,
+                section_size,
+                RelocationType::Abs64,
+            )
+            .unwrap_err();
+            assert!(matches!(
+                err,
+                LinkError::RelocationPatchOutOfBounds {
+                    patch_offset: actual,
+                    patch_size: actual_size,
+                    section_size: actual_section,
+                    ..
+                } if actual == patch_offset
+                    && actual_size == patch_size
+                    && actual_section == section_size
+            ));
+        }
+
+        assert_eq!(
+            checked_patch_range(0, 8, 8, RelocationType::Abs64).unwrap(),
+            0..8
+        );
+    }
+
+    #[test]
+    fn relocation_offset_composition_rejects_u64_overflow() {
+        let err = checked_relocation_offset(u64::MAX, 1, RelocationType::Abs64).unwrap_err();
+        assert!(matches!(
+            err,
+            LinkError::RelocationOffsetOverflow {
+                base_offset: u64::MAX,
+                relocation_offset: 1,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn shared_relocation_patcher_rejects_unrepresentable_offset() {
+        let mut buf = vec![0u8; 4];
+        let err = apply_relocation(
+            &mut buf,
+            u64::MAX,
+            0,
+            0,
+            0,
+            RelocationType::GotPcRel,
+            "malformed",
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            LinkError::RelocationPatchOutOfBounds {
+                patch_offset: u64::MAX,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2125,6 +2214,84 @@ mod tests {
             machine: crate::elf::ElfMachine::X86_64,
             format: crate::elf::ObjectFormat::Elf,
         }
+    }
+
+    #[test]
+    fn link_rejects_relocation_outside_its_source_section() {
+        let mut obj = object_with_reloc_section(".rodata", SectionFlags::ALLOC);
+        obj.sections[1].relocations[0].offset = u64::MAX;
+
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(obj).unwrap();
+        let err = linker.link("main").unwrap_err();
+
+        assert!(matches!(
+            err,
+            LinkError::RelocationPatchOutOfBounds {
+                patch_offset: u64::MAX,
+                patch_size: 8,
+                section_size: 8,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parsed_elf_with_max_relocation_offset_returns_link_error() {
+        let mut bytes = ObjectBuilder::new(ELF_TARGET, "main")
+            .code(vec![0xE8, 0, 0, 0, 0, 0xC3])
+            .relocation(CodeRelocation {
+                offset: 1,
+                symbol: "callee".into(),
+                rel_type: RelocationType::Pc32,
+                addend: -4,
+            })
+            .build();
+
+        let section_headers = u64::from_le_bytes(
+            bytes[E_SHOFF_OFFSET..E_SHOFF_OFFSET + 8]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let section_header_size = u16::from_le_bytes(bytes[58..60].try_into().unwrap()) as usize;
+        let section_count = u16::from_le_bytes(
+            bytes[E_SHNUM_OFFSET..E_SHNUM_OFFSET + 2]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let relocation_data = (0..section_count)
+            .find_map(|index| {
+                let header = section_headers + index * section_header_size;
+                let section_type =
+                    u32::from_le_bytes(bytes[header + 4..header + 8].try_into().unwrap());
+                (section_type == SHT_RELA).then(|| {
+                    u64::from_le_bytes(bytes[header + 24..header + 32].try_into().unwrap()) as usize
+                })
+            })
+            .expect("ObjectBuilder must emit a relocation section");
+        bytes[relocation_data..relocation_data + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+
+        let obj = ObjectFile::parse(&bytes).expect("malformed patch offset remains parseable");
+        let parsed_relocation = obj
+            .sections
+            .iter()
+            .flat_map(|section| &section.relocations)
+            .next()
+            .expect("parsed object must retain its relocation");
+        assert_eq!(parsed_relocation.offset, u64::MAX);
+
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(obj).unwrap();
+        let err = linker.link("main").unwrap_err();
+        assert!(matches!(
+            err,
+            LinkError::RelocationPatchOutOfBounds {
+                patch_offset: u64::MAX,
+                patch_size: 4,
+                section_size: 6,
+                ..
+            }
+        ));
     }
 
     /// RUE-131 item 1: relocations in `.rodata` used to be silently dropped,
