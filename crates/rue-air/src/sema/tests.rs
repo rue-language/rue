@@ -4227,7 +4227,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn failed_one_body_inference_with_unresolved_generic_identity_is_non_terminal() {
+    fn failed_one_body_inference_with_unresolved_generic_identity_is_deterministic() {
         use crate::sema::{OneBodyRequest as R, OneBodyTransactionOutcome as O};
         let source = r#"
             fn generic(comptime T: type, value: T) -> T { value }
@@ -4245,8 +4245,11 @@ fn main() -> i32 {
             None,
         );
         let outcome = bound.analyze_one_body_for_test(R::Definition(bad), None);
-        assert!(matches!(outcome, O::NonTerminal { .. }), "{outcome:?}");
-        assert_eq!(outcome.references(), None);
+        let O::DeterministicFailure { errors, references } = outcome else {
+            panic!("inference failure did not publish a deterministic terminal: {outcome:?}")
+        };
+        assert!(!errors.is_empty());
+        assert!(references.is_empty(), "{references:?}");
     }
 
     #[test]
