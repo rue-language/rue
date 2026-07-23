@@ -216,6 +216,40 @@ pub fn recipe_cache_metrics(session: &crate::CompilerSession) -> RecipeCacheMetr
     session.recipe_cache_metrics()
 }
 
+/// An owned snapshot of the provider-op observation counters (RUE-1091,
+/// ADR-0066 §4): how many facts of each §4 family the exact body-fact provider
+/// observed. Owned plain data, not a query-engine record: the provider is a
+/// test-only differential adapter that cross-checks each returned fact against
+/// the production epoch, so every field reads zero on a production compile until
+/// the step-4 flip routes production body analysis through the provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ProviderObservationMetrics {
+    /// Name-lookup observations (unqualified, qualified, and language-item).
+    pub name_lookups: u64,
+    /// Import/module-binding observations.
+    pub import_lookups: u64,
+    /// Method-candidate observations.
+    pub method_candidates: u64,
+    /// Operator-candidate observations.
+    pub operator_candidates: u64,
+    /// Declaration identity/signature/const/well-formedness observations.
+    pub declaration_facts: u64,
+    /// Anonymous-nominal fact observations.
+    pub anonymous_facts: u64,
+    /// Producer-body fact observations.
+    pub producer_facts: u64,
+    /// Trusted-toolchain fact observations.
+    pub toolchain_facts: u64,
+}
+
+/// A snapshot of the provider-op observation counters. See
+/// [`ProviderObservationMetrics`]; zero on the production path.
+pub fn provider_observation_metrics(
+    session: &crate::CompilerSession,
+) -> ProviderObservationMetrics {
+    session.provider_observation_metrics()
+}
+
 /// Cumulative dependency-graph invalidation events across the retained
 /// frontend query families (RUE-1112). A strictly-additive successor adoption
 /// keeps the predecessor's immutable source leaf live and contributes zero
