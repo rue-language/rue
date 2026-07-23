@@ -192,7 +192,12 @@ impl<'a> BodySema<'a> {
                     }
                 }
                 crate::inference::InferenceBodyDependency::IncompleteCallable => {
-                    incomplete = true;
+                    // This path is reached only while publishing an inference
+                    // error. An unresolved callable is therefore part of the
+                    // rejected source construct, not evidence that a query
+                    // dependency is absent. Treating it as retryable discards
+                    // the user diagnostic and makes the uncanceled body query
+                    // surface E9000 instead.
                 }
             }
         }
