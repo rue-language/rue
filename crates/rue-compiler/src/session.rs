@@ -10236,6 +10236,31 @@ fn continues_discovery_lifecycle(
 }
 
 #[cfg(test)]
+impl CompilerSession {
+    /// Return the producer request that owns each currently retained ordinary
+    /// body terminal named by `names`. A missing declaration or a declaration
+    /// with no retained reached-body terminal is omitted.
+    ///
+    /// The scaling harness compares these stable provenance identities across
+    /// revisions to prove the exact recomputed body set. Equal work counts alone
+    /// cannot distinguish recomputing the intended consumers from recomputing
+    /// the same number of unrelated bodies.
+    pub(crate) fn retained_body_transaction_origins_for_test(
+        &self,
+        names: &[String],
+    ) -> BTreeMap<String, u64> {
+        let revision = self
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .expect("the acceptance corpus has a semantic revision");
+        self.queries
+            .revisioned
+            .retained_body_transaction_origins_for_test(revision, names)
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::{
         collections::{HashMap, HashSet},

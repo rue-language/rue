@@ -9191,6 +9191,59 @@ impl RevisionedQueryDatabase {
         self.body_transactions.any_retained_key(|_| true)
     }
 
+    /// Test-only exact provenance for retained ordinary body terminals.
+    ///
+    /// Looking up retained keys directly keeps failed-revision acceptance tests
+    /// independent of the aggregate stable-definition request, which may itself
+    /// fail after a negative name lookup even though unrelated body terminals
+    /// remain reusable.
+    #[cfg(test)]
+    pub(crate) fn retained_body_transaction_origins_for_test(
+        &self,
+        revision: Revision,
+        names: &[String],
+    ) -> BTreeMap<String, u64> {
+        let mut origins = BTreeMap::new();
+        for name in names {
+            let mut retained_key = None;
+            self.body_transactions.any_retained_key(|candidate| {
+                let crate::FunctionInstanceKey::Definition(definition) = &candidate.instance else {
+                    return false;
+                };
+                if definition.name() != name.as_str() {
+                    return false;
+                }
+                retained_key = Some(candidate.clone());
+                true
+            });
+            let Some(key) = retained_key else {
+                continue;
+            };
+            let compute_called = std::cell::Cell::new(false);
+            let terminal = self.body_transaction(
+                revision,
+                key,
+                Arc::new(BTreeMap::new()),
+                Arc::from([]),
+                false,
+                Arc::from([]),
+                CancellationToken::new(),
+                |_, _| {
+                    compute_called.set(true);
+                    Err(QueryAbort::Canceled)
+                },
+            );
+            if let Ok(terminal) = terminal {
+                assert!(
+                    !compute_called.get(),
+                    "a retained body terminal must bypass the supplied computation"
+                );
+                origins.insert(name.clone(), terminal.origin_request_id());
+            }
+        }
+        origins
+    }
+
     pub(crate) fn projected_declaration_semantics(
         &self,
         revision: Revision,
