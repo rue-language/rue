@@ -186,6 +186,24 @@ impl BodySemanticOverlay {
     pub(crate) fn module_slot_count(&self) -> usize {
         self.module_ids.len()
     }
+
+    /// The number of stable definition keys recorded in the forward mint map.
+    #[cfg(test)]
+    pub(crate) fn definition_slots_len(&self) -> usize {
+        self.definition_slots.len()
+    }
+
+    /// The number of module ids recorded in the forward mint map.
+    #[cfg(test)]
+    pub(crate) fn module_slots_len(&self) -> usize {
+        self.module_slots.len()
+    }
+
+    /// The number of recipes cached in the body-local stable-fact → local-ID map.
+    #[cfg(test)]
+    pub(crate) fn recipe_tokens_len(&self) -> usize {
+        self.recipe_tokens.len()
+    }
 }
 
 impl BodyOutcomeResolver for BodySemanticOverlay {
@@ -547,11 +565,12 @@ mod tests {
         );
     }
 
-    // A canceled overlay evaluation publishes nothing and retains no state: the
-    // request control state dominates before any recipe is materialized, so the
-    // overlay's token space stays empty and no `BodyTransaction` is produced.
+    // A cancellation observed BEFORE the body is reached publishes nothing and
+    // leaves the overlay empty: the request control state dominates before any
+    // recipe is materialized, so every map stays empty and no `BodyTransaction`
+    // is produced.
     #[test]
-    fn canceled_overlay_publishes_nothing_and_leaks_no_state() {
+    fn cancel_before_body_publishes_nothing_and_mints_no_state() {
         let inputs = BodyQueryInputs::build("fn main() -> i32 { 0 }");
         let key = inputs.body_key(StableDefinitionKind::Function, "main");
         let cancellation = rue_query::CancellationToken::new();
@@ -559,11 +578,61 @@ mod tests {
         let mut overlay = BodySemanticOverlay::new();
         let result = inputs.overlay(&key, &cancellation, &mut overlay);
         assert!(matches!(result, Err(rue_query::QueryAbort::Canceled)));
-        assert_eq!(
-            overlay.definition_slot_count(),
-            0,
-            "a canceled overlay materializes no recipe and retains no local ID"
-        );
+        // No recipe was materialized: every owned map is empty.
+        assert_eq!(overlay.definition_slot_count(), 0);
         assert_eq!(overlay.module_slot_count(), 0);
+        assert_eq!(overlay.definition_slots_len(), 0);
+        assert_eq!(overlay.module_slots_len(), 0);
+        assert_eq!(overlay.recipe_tokens_len(), 0);
+    }
+
+    // A cancellation observed MID-ANALYSIS — after the overlay has already
+    // materialized recipes and minted local slots — still publishes no partial
+    // overlay or dependency set. The injection flips cancellation between seeding
+    // and body analysis, so the overlay is populated at cancel time; the driver
+    // returns `Canceled` and produces no `BodyTransaction`. The overlay owns all
+    // of its state by value (owned `StableDefinitionKey`/`ModuleId` maps, no
+    // handle to live analysis state and no published artifact escapes), so
+    // dropping it is the end of that state — there is nothing left to retain.
+    #[test]
+    fn cancel_mid_analysis_with_populated_overlay_publishes_nothing() {
+        let inputs =
+            BodyQueryInputs::build("fn helper() -> i32 { 7 } fn main() -> i32 { helper() }");
+        let key = inputs.body_key(StableDefinitionKind::Function, "main");
+        // Not canceled at entry: the driver runs its prefix and seeds the overlay.
+        let cancellation = rue_query::CancellationToken::new();
+        let mut overlay = BodySemanticOverlay::new();
+        // Materialize a recipe first so the stable-fact -> local-ID cache is also
+        // populated at cancel time, not just the seed maps.
+        let recipe = definition_recipe("helper");
+        overlay.import_recipe(&recipe);
+
+        let result =
+            crate::canonical_semantic::with_test_overlay_cancel_after_seed_injection(|| {
+                inputs.overlay(&key, &cancellation, &mut overlay)
+            });
+        assert!(
+            matches!(result, Err(rue_query::QueryAbort::Canceled)),
+            "a mid-analysis cancellation must publish no transaction, got {result:?}"
+        );
+
+        // The overlay is populated: seeding minted a local token space and the
+        // recipe cache holds the imported fact.
+        assert!(
+            overlay.definition_slots_len() > 0,
+            "seed minted definitions"
+        );
+        assert!(overlay.module_slots_len() > 0, "seed minted modules");
+        assert_eq!(
+            overlay.recipe_tokens_len(),
+            1,
+            "the recipe was materialized"
+        );
+        assert!(overlay.definition_slot_count() >= overlay.recipe_tokens_len());
+
+        // No partial artifact escaped: `result` carries no `BodyTransaction`, and
+        // the overlay owns its whole token space by value. Dropping it reclaims
+        // every mint with no observable residue.
+        drop(overlay);
     }
 }
