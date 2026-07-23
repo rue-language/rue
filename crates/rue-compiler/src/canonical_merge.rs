@@ -246,6 +246,7 @@ fn canonical_duplicate_errors(modules: &[&Arc<ParsedModule>]) -> Vec<CompileErro
                     kind: candidate.kind(),
                     visibility: candidate.visibility(),
                     name: Arc::from(candidate.name()),
+                    language_item: None,
                     name_span: candidate.name_span(),
                     declaration_span: candidate.declaration_span(),
                 })
