@@ -28,6 +28,22 @@ use crate::types::{EnumDef, StructDef, StructField, Type};
 use super::info::AnonMethodSig;
 use super::{DeclarationPhase, Sema};
 
+/// Canonical logical paths of the trusted standard-library `Option`/`Result`
+/// modules. The leading NUL is disjoint from every project-relative identity, so
+/// a user module can never spell one (RUE-1112). A module resolved under the
+/// captured std root — whether pulled by a user `@import` or compiler-rooted for
+/// a freestanding fallible intrinsic — is classified onto exactly these paths.
+const TRUSTED_OPTION_MODULE_PATH: &str = "\0rue-std/option.rue";
+const TRUSTED_RESULT_MODULE_PATH: &str = "\0rue-std/result.rue";
+
+/// The trusted standard-library producer family a `?` operand or enclosing
+/// return type is an exact specialization of (RUE-1112).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TrustedTryProducer {
+    Option,
+    Result,
+}
+
 pub(crate) type IssuedAnonymousNominalKey =
     crate::AnonymousNominalKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>;
 
@@ -53,42 +69,94 @@ impl EpochLocalConstCandidateProducer {
     }
 }
 
+/// The root source definition a producer-nominal key ultimately derives from,
+/// unwinding function specializations, anonymous members, and drop glue down to
+/// the owning definition token. `None` for a producer with no source definition
+/// root (a builtin or primitive owner).
+///
+/// This is the single place the AIR domain walks a `StableProducerId` to its
+/// definition. It backs both the deterministic export ordering
+/// ([`Sema::anonymous_key_cmp`]) and trusted-producer recognition under `?`
+/// (RUE-1112): a `Type` whose anonymous key roots at the trusted
+/// `std/option.rue::Option` (or `std/result.rue::Result`) function definition is
+/// an exact std producer, everything else a lookalike.
+pub(crate) fn anonymous_producer_root(
+    producer: &IssuedStableProducerId,
+) -> Option<crate::SemanticDefinitionToken> {
+    fn type_root(value: &IssuedTypeInstanceKey) -> Option<crate::SemanticDefinitionToken> {
+        use crate::{NominalInstanceKey as N, TypeInstanceKey as T};
+        match value {
+            T::Nominal(N::Named(value)) => Some(*value),
+            T::Nominal(N::Anonymous(value)) => anonymous_producer_root(&value.producer),
+            T::Array { element, .. } | T::PtrConst(element) | T::PtrMut(element) => {
+                type_root(element)
+            }
+            _ => None,
+        }
+    }
+    fn function_root(value: &IssuedFunctionInstanceKey) -> Option<crate::SemanticDefinitionToken> {
+        use crate::FunctionInstanceKey as F;
+        match value {
+            F::Definition(value) => Some(*value),
+            F::Specialization { base, .. } => function_root(base),
+            F::AnonymousMember { owner, .. } | F::DropGlue(owner) => type_root(owner),
+        }
+    }
+    match producer {
+        crate::StableProducerId::Definition(value) => Some(*value),
+        crate::StableProducerId::Function(value) => function_root(value),
+    }
+}
+
 impl<D: DeclarationPhase> Sema<'_, D> {
+    /// Deterministic export/presentation ordering of two producer-nominal keys.
+    ///
+    /// This is a *presentation* order only — it decides how anonymous exports are
+    /// listed and sorted (see the `one_body.rs` sort), never type identity.
+    /// Identity is the producer-nominal `AnonymousNominalKey` itself (ADR-0066);
+    /// two keys that order equal here are still distinct types unless they are
+    /// the same key. Since RUE-1112 deleted the last min-selection consumer
+    /// (`find_compatible_anon_enum`), no code treats this ordering as identity
+    /// authority.
     pub(crate) fn anonymous_key_cmp(
         left: &IssuedAnonymousNominalKey,
         right: &IssuedAnonymousNominalKey,
     ) -> Ordering {
-        fn type_root(value: &IssuedTypeInstanceKey) -> Option<crate::SemanticDefinitionToken> {
-            use crate::{NominalInstanceKey as N, TypeInstanceKey as T};
-            match value {
-                T::Nominal(N::Named(value)) => Some(*value),
-                T::Nominal(N::Anonymous(value)) => producer_root(&value.producer),
-                T::Array { element, .. } | T::PtrConst(element) | T::PtrMut(element) => {
-                    type_root(element)
-                }
-                _ => None,
-            }
-        }
-        fn function_root(
-            value: &IssuedFunctionInstanceKey,
-        ) -> Option<crate::SemanticDefinitionToken> {
-            use crate::FunctionInstanceKey as F;
-            match value {
-                F::Definition(value) => Some(*value),
-                F::Specialization { base, .. } => function_root(base),
-                F::AnonymousMember { owner, .. } | F::DropGlue(owner) => type_root(owner),
-            }
-        }
-        fn producer_root(value: &IssuedStableProducerId) -> Option<crate::SemanticDefinitionToken> {
-            match value {
-                crate::StableProducerId::Definition(value) => Some(*value),
-                crate::StableProducerId::Function(value) => function_root(value),
-            }
-        }
-
-        producer_root(&left.producer)
-            .cmp(&producer_root(&right.producer))
+        anonymous_producer_root(&left.producer)
+            .cmp(&anonymous_producer_root(&right.producer))
             .then_with(|| left.cmp(right))
+    }
+
+    /// The trusted standard-library producer family `ty` is an exact
+    /// specialization of, or `None` for a non-enum or a lookalike (RUE-1112).
+    ///
+    /// `?` legality is exact-producer identity, not shape: an enum is a trusted
+    /// `Option`/`Result` only when its producer-nominal key roots at the trusted
+    /// `std/option.rue::Option` / `std/result.rue::Result` function definition.
+    /// Recognition compares the enum's producer key — obtained through the
+    /// `Type` -> `AnonymousNominalKey` map — against that well-known trusted
+    /// identity, reading the producer's endpoint (module logical path + name +
+    /// kind). It never loads or materializes std `Result`/`Option` to reject a
+    /// same-shape lookalike: a lookalike simply roots at a different (user)
+    /// definition and is rejected without touching the trusted module.
+    pub(crate) fn trusted_try_producer(&self, ty: Type) -> Option<TrustedTryProducer> {
+        let enum_id = ty.as_enum()?;
+        let identity = self
+            .canonical_anonymous_types
+            .get(&Type::new_enum(enum_id))?;
+        let root = anonymous_producer_root(&identity.producer)?;
+        let endpoint = self.stable_definition_endpoints.get(&root)?;
+        if endpoint.owner.is_some() || endpoint.kind != crate::StableDefinitionKind::Function {
+            return None;
+        }
+        match (
+            self.stable_logical_module_component(endpoint.file),
+            endpoint.name.as_ref(),
+        ) {
+            (TRUSTED_OPTION_MODULE_PATH, "Option") => Some(TrustedTryProducer::Option),
+            (TRUSTED_RESULT_MODULE_PATH, "Result") => Some(TrustedTryProducer::Result),
+            _ => None,
+        }
     }
 
     pub(crate) fn canonical_definition_producer(
@@ -678,37 +746,6 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         self.canonical_anonymous_types.insert(ty, identity);
 
         Ok(Type::new_enum(enum_id))
-    }
-
-    /// Find the canonical-key-minimum anonymous enum compatible with a
-    /// compiler-synthesized use site. This path is lookup-only: a source-less
-    /// intrinsic may consume an existing §4.14-compatible type, but it cannot
-    /// allocate an entity without a stable producer and structural anchor.
-    pub(crate) fn find_compatible_anon_enum(
-        &self,
-        variant_names: &[String],
-        variant_payloads: &[Vec<Type>],
-    ) -> Option<Type> {
-        self.anon_enum_identities
-            .iter()
-            .filter(|(_, id)| {
-                let def = self.type_pool.enum_def(**id);
-                def.variants == variant_names
-                    && def.variant_payloads.len() == variant_payloads.len()
-                    && def
-                        .variant_payloads
-                        .iter()
-                        .zip(variant_payloads)
-                        .all(|(left, right)| {
-                            left.len() == right.len()
-                                && left
-                                    .iter()
-                                    .zip(right)
-                                    .all(|(left, right)| self.types_equivalent(*left, *right))
-                        })
-            })
-            .min_by(|(left, _), (right, _)| Self::anonymous_key_cmp(left, right))
-            .map(|(_, id)| Type::new_enum(*id))
     }
 
     /// Canonical semantic type equivalence.

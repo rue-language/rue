@@ -131,6 +131,8 @@ Hello
 5
 """
 
+# @read_line() yields the exact trusted std Option(StrBuf); context checks that
+# identity. This exercises fallible intrinsics matching against the trusted type.
 [[case]]
 name = "string_equality_branches"
 env = { RUE_STD_PATH = "${REAL_STD}" }
@@ -139,7 +141,7 @@ files = [
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let OptStr = @import("opt.rue").Option(StrBuf);
+    let OptStr = std.option.Option(StrBuf);
     match @read_line() {
         OptStr.Some(answer) => {
             if answer == "yes" {
@@ -152,9 +154,6 @@ fn main() -> i32 {
     }
     0
 }
-""" },
-  { path = "opt.rue", source = """
-pub fn Option(comptime T: type) -> type { enum { Some(T), None } }
 """ },
 ]
 stdin = "yes"

@@ -6,7 +6,8 @@
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
 
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
+// RUE-1112: fallible intrinsics return the exact trusted std Option; a local
+// lookalike is no longer a legal annotation for @parse_i32's result.
 
 @copy
 struct Nine {
@@ -54,7 +55,7 @@ fn main() -> i32 {
     @dbg(signed);
     @dbg(unsigned);
 
-    let Opt = Option(i32);
+    let Opt = std.option.Option(i32);
     let parsed: Opt = @parse_i32("42");
     match parsed {
         Opt.Some(value) => @dbg(value),

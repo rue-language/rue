@@ -18,7 +18,7 @@ mod timing;
 
 use emit::EmitStage;
 #[cfg(test)]
-use emit::{EmitFrontendRoute, build_emit_frontend, emit_frontend_route};
+use emit::{EmitFrontendRoute, build_emit_frontend, emit_frontend_route, emit_requires_semantic};
 #[cfg(test)]
 use rue_compiler::unstable::update_for_presentation;
 use rue_compiler::unstable::{MultiFileFormatter, MultiFileJsonFormatter, SourceInfo};
@@ -945,6 +945,38 @@ fn get_peak_memory_bytes() -> Option<u64> {
     }
 }
 
+/// Present a source-loading failure and exit. The four classes carry disjoint
+/// presentations: an ordinary message; a broken-toolchain (environmental) error;
+/// a hermetic build-configuration denial (distinct from a broken toolchain — the
+/// remedy is the source manifest, not the installation); and program diagnostics
+/// rendered against the failing snapshot's source views.
+fn report_source_load_error(error: SourceLoadError, error_format: ErrorFormat) -> ! {
+    match error {
+        SourceLoadError::Message(message) => {
+            eprintln!("{message}");
+        }
+        SourceLoadError::Toolchain(error) => {
+            eprintln!("{error}");
+        }
+        SourceLoadError::HermeticDenial(error) => {
+            eprintln!("{error}");
+        }
+        SourceLoadError::Compiler { snapshot, errors } => {
+            let infos = snapshot
+                .as_ref()
+                .map(|snapshot| {
+                    snapshot
+                        .files()
+                        .map(|source| (source.file_id, SourceInfo::new(source.source, source.path)))
+                        .collect()
+                })
+                .unwrap_or_default();
+            DiagnosticOutput::new(error_format, infos).print_errors(&errors);
+        }
+    }
+    std::process::exit(1);
+}
+
 fn main() {
     // Rust's startup ignores SIGPIPE, so a write to a closed pipe
     // (`rue --emit tokens x.rue | head`) returns EPIPE and `println!` panics
@@ -1025,27 +1057,45 @@ fn main() {
             std_root: captured_std_root.as_deref(),
         }) {
             Ok(result) => result,
-            Err(SourceLoadError::Message(message)) => {
-                eprintln!("{message}");
-                std::process::exit(1);
-            }
-            Err(SourceLoadError::Compiler { snapshot, errors }) => {
-                let infos = snapshot
-                    .as_ref()
-                    .map(|snapshot| {
-                        snapshot
-                            .files()
-                            .map(|source| {
-                                (source.file_id, SourceInfo::new(source.source, source.path))
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                DiagnosticOutput::new(options.error_format, infos).print_errors(&errors);
-                std::process::exit(1);
-            }
+            Err(error) => report_source_load_error(error, options.error_format),
         }
     };
+
+    let compile_options = CompileOptions {
+        target: options.target,
+        linker: options.linker.clone(),
+        opt_level: options.opt_level,
+        preview_features: options.preview_features.clone(),
+        link_archives: options.link_archives.clone(),
+    };
+
+    // Acquire any trusted toolchain modules a reached fallible intrinsic requires
+    // but no `@import` pulled — the compiler-rooted std `Option` for a fallible
+    // intrinsic, plus std `StrBuf` for `@read_line`'s `Option(StrBuf)` payload.
+    // This runs the rooted, park-aware semantic attempt and satisfies exactly the
+    // demands it parks on, so an unreachable helper never forces a std read; a
+    // reached-body demand a broken or policy-denied toolchain cannot satisfy
+    // surfaces as its own environmental / build-configuration error. Host
+    // filesystem access lives outside the compiler's snapshot/query evaluation,
+    // which is why the driver owns this loop rather than the session.
+    //
+    // INVARIANT: acquisition runs only when the run will analyze bodies — a normal
+    // compile, or an `--emit` of a semantic stage (AIR and later). The park is
+    // raised only by reached-body semantic analysis, so a pre-semantic `--emit`
+    // (tokens/ast/rir/deps) presents its artifact without ever parking; gating the
+    // loop out keeps such an emit at ZERO std reads even for a reached fallible
+    // intrinsic with a broken std on disk. When it does run, it runs before both
+    // emit and compile, matching the acquire-before-everything ordering.
+    if options.emit_stages.is_empty() || emit::emit_requires_semantic(&options.emit_stages) {
+        let _compile = compile_span.enter();
+        if let Err(error) = source_loader::acquire_reached_toolchain_modules(
+            &mut import_discovery,
+            &compile_options,
+        ) {
+            report_source_load_error(error, options.error_format);
+        }
+    }
+
     #[cfg(rue_benchmark_allocations)]
     if options.benchmark_json {
         allocation::pause();
@@ -1080,13 +1130,7 @@ fn main() {
                 session: &mut import_discovery.session,
                 stages: &options.emit_stages,
                 discovery_revision: &import_discovery.revision,
-                compile_options: CompileOptions {
-                    target: options.target,
-                    linker: options.linker.clone(),
-                    opt_level: options.opt_level,
-                    preview_features: options.preview_features.clone(),
-                    link_archives: options.link_archives.clone(),
-                },
+                compile_options: compile_options.clone(),
                 diagnostics: &diagnostics,
             }) {
                 std::process::exit(1);
@@ -1131,13 +1175,6 @@ fn main() {
     };
 
     // Normal compilation - uses multi-file compilation for all source files
-    let compile_options = CompileOptions {
-        target: options.target,
-        linker: options.linker.clone(),
-        opt_level: options.opt_level,
-        preview_features: options.preview_features.clone(),
-        link_archives: options.link_archives.clone(),
-    };
     #[cfg(rue_benchmark_allocations)]
     if options.benchmark_json {
         allocation::resume();
@@ -1637,9 +1674,10 @@ mod tests {
     // ========== --emit tests ==========
 
     #[test]
-    fn rir_and_later_emits_share_the_canonical_frontend_route() {
+    fn semantic_emits_share_the_canonical_frontend_route_but_rir_is_pre_semantic() {
+        // AIR and later stages require semantic body analysis and share the
+        // session-query frontend.
         for stage in [
-            EmitStage::Rir,
             EmitStage::Air,
             EmitStage::Cfg,
             EmitStage::Lowering,
@@ -1649,23 +1687,38 @@ mod tests {
             EmitStage::Asm,
             EmitStage::StackFrame,
         ] {
+            assert!(emit_requires_semantic(&[stage]));
             assert_eq!(
                 emit_frontend_route(&[stage]),
                 EmitFrontendRoute::SessionQuery
             );
         }
+        // RIR is a pre-semantic presentation: it lowers but never analyzes bodies,
+        // so it routes away from the semantic frontend and requires no semantics.
+        assert!(!emit_requires_semantic(&[EmitStage::Rir]));
+        assert_eq!(
+            emit_frontend_route(&[EmitStage::Rir]),
+            EmitFrontendRoute::RirOnly
+        );
+        // A mixed emit that includes any semantic stage still requires semantics
+        // (and so acquisition), regardless of the pre-semantic stages alongside it.
+        assert!(emit_requires_semantic(&[EmitStage::Ast, EmitStage::Air]));
         assert_eq!(
             emit_frontend_route(&[EmitStage::Ast, EmitStage::Air]),
             EmitFrontendRoute::SessionQuery
         );
+        assert!(emit_requires_semantic(&[EmitStage::Rir, EmitStage::Air]));
         assert_eq!(
             emit_frontend_route(&[EmitStage::Rir, EmitStage::Air]),
             EmitFrontendRoute::SessionQuery
         );
+        // Pure pre-semantic emits require no semantics.
+        assert!(!emit_requires_semantic(&[EmitStage::Ast]));
         assert_eq!(
             emit_frontend_route(&[EmitStage::Ast]),
             EmitFrontendRoute::AstOnlySyntax
         );
+        assert!(!emit_requires_semantic(&[EmitStage::Tokens]));
         assert_eq!(
             emit_frontend_route(&[EmitStage::Tokens]),
             EmitFrontendRoute::None

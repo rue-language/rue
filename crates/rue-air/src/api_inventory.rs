@@ -522,11 +522,16 @@ fn source_owned_declaration_producers_are_test_only_entrypoints() {
         "source-owned resolver escaped its test-only gate"
     );
     assert!(sema.contains("#[doc(hidden)]\n    pub fn predeclare_declaration_shells_for_test("));
+    // The shell producer is consumed only by the frozen test-support adapters:
+    // `bind_declarations_for_test` (predeclare + resolve) and
+    // `analyze_all_for_test_with_stable_endpoints` (predeclare + authoritative
+    // stable-identity endpoint install + resolve + analyze). Both are doc-hidden
+    // `_for_test` entry points; no production path calls the shell producer.
     assert_eq!(
         sema.matches(".predeclare_declaration_shells_for_test()")
             .count(),
-        1,
-        "only the frozen bind_declarations_for_test adapter may call the shell producer"
+        2,
+        "only the frozen test-support adapters may call the shell producer"
     );
     let shell_production = shells
         .split("\n#[cfg(test)]\nmod ")

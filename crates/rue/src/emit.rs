@@ -63,17 +63,29 @@ pub(crate) struct EmitWork {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EmitFrontendRoute {
+    /// Tokens — presented directly from parsed modules; no frontend query.
     None,
+    /// AST — presented from the parse terminal; no lowering, no semantics.
     AstOnlySyntax,
+    /// RIR — presented from the RIR terminal (parse + lowering) but WITHOUT any
+    /// semantic body analysis. Because the trusted-toolchain park is raised only
+    /// by reached-body semantic analysis, an RIR emit runs no park and no std
+    /// acquisition: it is a pre-semantic presentation of the untyped IR.
+    RirOnly,
+    /// A backend stage (AIR and later) that requires semantic body analysis.
     SessionQuery,
 }
 
-pub(crate) fn emit_frontend_route(stages: &[EmitStage]) -> EmitFrontendRoute {
-    if stages.iter().any(|stage| {
+/// Whether any requested stage requires semantic body analysis (AIR and later).
+/// RIR, AST, tokens, and deps are all pre-semantic presentations, so an emit made
+/// up only of those never analyzes a body — and therefore never parks on a
+/// trusted-toolchain demand or acquires std. The host acquisition loop is gated on
+/// this so an `--emit rir`/`--emit ast` run performs zero std reads.
+pub(crate) fn emit_requires_semantic(stages: &[EmitStage]) -> bool {
+    stages.iter().any(|stage| {
         matches!(
             stage,
-            EmitStage::Rir
-                | EmitStage::Air
+            EmitStage::Air
                 | EmitStage::Cfg
                 | EmitStage::Lowering
                 | EmitStage::Mir
@@ -82,8 +94,14 @@ pub(crate) fn emit_frontend_route(stages: &[EmitStage]) -> EmitFrontendRoute {
                 | EmitStage::Asm
                 | EmitStage::StackFrame
         )
-    }) {
+    })
+}
+
+pub(crate) fn emit_frontend_route(stages: &[EmitStage]) -> EmitFrontendRoute {
+    if emit_requires_semantic(stages) {
         EmitFrontendRoute::SessionQuery
+    } else if stages.contains(&EmitStage::Rir) {
+        EmitFrontendRoute::RirOnly
     } else if stages.contains(&EmitStage::Ast) {
         EmitFrontendRoute::AstOnlySyntax
     } else {
@@ -264,20 +282,38 @@ pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
         return Err(());
     }
     let frontend_route = emit_frontend_route(stages);
-    let frontend_state = if frontend_route == EmitFrontendRoute::SessionQuery {
-        let frontend = match build_emit_frontend_in_session(session, compile_options.clone()) {
-            Ok(frontend) => frontend,
-            Err(errors) => {
+    let frontend_state = match frontend_route {
+        EmitFrontendRoute::SessionQuery => {
+            let frontend = match build_emit_frontend_in_session(session, compile_options.clone()) {
+                Ok(frontend) => frontend,
+                Err(errors) => {
+                    diagnostics.print_errors(&errors);
+                    return Err(());
+                }
+            };
+            Some(frontend)
+        }
+        EmitFrontendRoute::RirOnly => {
+            // RIR is a pre-semantic presentation: force the RIR terminal so its
+            // parse/lowering diagnostics are attributed canonically, but never run
+            // semantic body analysis. Because the trusted-toolchain park is raised
+            // only by reached-body semantic analysis, this performs no park and no
+            // std acquisition — an `--emit rir` run reads zero std modules even for
+            // a reached fallible intrinsic. Semantic-only diagnostics (e.g. an
+            // undefined variable) belong to a normal build or a later `--emit`
+            // stage, not to the untyped-IR presentation.
+            if let Err(errors) = session.rir() {
                 diagnostics.print_errors(&errors);
                 return Err(());
             }
-        };
-        Some(frontend)
-    } else {
-        None
+            None
+        }
+        EmitFrontendRoute::AstOnlySyntax | EmitFrontendRoute::None => None,
     };
     if let Some(state) = &frontend_state {
-        // Every --emit mode must surface frontend warnings (RUE-130).
+        // Every semantic-frontend --emit mode must surface frontend warnings
+        // (RUE-130). Pre-semantic presentations (tokens/ast/rir) have no semantic
+        // warnings to surface.
         diagnostics.print_warnings(state.warnings());
         let work = state.query_work();
         debug_assert_eq!(state.parsed.modules().len(), source_snapshot.len());

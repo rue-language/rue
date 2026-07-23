@@ -1,3 +1,7 @@
+# `?` accepts ONLY exact specializations of the trusted std producers
+# (std.option.Option / std.result.Result). User-defined Some/None lookalikes
+# are ordinary enums with no `?` behavior. Fallible intrinsics yield the exact
+# trusted std Option in every context.
 [section]
 id = "expressions.try"
 spec_chapter = "4.15"
@@ -10,30 +14,30 @@ description = "The postfix `?` operator unwraps an Option, short-circuiting the 
 # =============================================================================
 
 [[case]]
+# `?` unwraps a trusted std Option value; the function continues if Some.
 name = "try_some_unwraps"
 spec = ["4.15:1", "4.15:2", "4.15:5", "4.15:6"]
 description = "`?` on a Some value unwraps the payload; the function continues."
 source = """
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-fn some_val() -> Option(i64) {
-    let O = Option(i64);
+const std = @import("std");
+fn some_val() -> std.option.Option(i64) {
+    let O = std.option.Option(i64);
     O.Some(20)
 }
-fn use_it() -> Option(i64) {
-    let O = Option(i64);
+fn use_it() -> std.option.Option(i64) {
+    let O = std.option.Option(i64);
     let v = some_val()?;
     O.Some(v + 1)
 }
 fn main() -> i32 {
-    let O = Option(i64);
+    let O = std.option.Option(i64);
     match use_it() {
         O.Some(n) => @intCast(n),
         O.None => 0,
     }
 }
 """
+real_std = true
 exit_code = 21
 
 # =============================================================================
@@ -41,30 +45,30 @@ exit_code = 21
 # =============================================================================
 
 [[case]]
+# `?` short-circuits when applied to a None value.
 name = "try_none_short_circuits"
 spec = ["4.15:1", "4.15:7"]
 description = "`?` on a None value returns None from the enclosing function; code after it does not run."
 source = """
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-fn none_val() -> Option(i64) {
-    let O = Option(i64);
+const std = @import("std");
+fn none_val() -> std.option.Option(i64) {
+    let O = std.option.Option(i64);
     O.None
 }
-fn use_it() -> Option(i64) {
-    let O = Option(i64);
+fn use_it() -> std.option.Option(i64) {
+    let O = std.option.Option(i64);
     let v = none_val()?;
     O.Some(v + 1)
 }
 fn main() -> i32 {
-    let O = Option(i64);
+    let O = std.option.Option(i64);
     match use_it() {
         O.Some(n) => @intCast(n),
         O.None => 7,
     }
 }
 """
+real_std = true
 exit_code = 7
 
 # =============================================================================
@@ -72,29 +76,29 @@ exit_code = 7
 # =============================================================================
 
 [[case]]
+# The `?` operator evaluates to the unwrapped payload type.
 name = "try_result_type_is_payload"
 spec = ["4.15:5", "4.15:6"]
 description = "`operand?` where operand: Option(i64) has type i64 and is usable directly."
 source = """
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-fn wrap(x: i64) -> Option(i64) {
-    let O = Option(i64);
+const std = @import("std");
+fn wrap(x: i64) -> std.option.Option(i64) {
+    let O = std.option.Option(i64);
     O.Some(x)
 }
-fn add_two(x: i64) -> Option(i64) {
-    let O = Option(i64);
+fn add_two(x: i64) -> std.option.Option(i64) {
+    let O = std.option.Option(i64);
     O.Some(wrap(x)? + 2)
 }
 fn main() -> i32 {
-    let O = Option(i64);
+    let O = std.option.Option(i64);
     match add_two(40) {
         O.Some(n) => @intCast(n),
         O.None => 0,
     }
 }
 """
+real_std = true
 exit_code = 42
 
 # =============================================================================
@@ -102,23 +106,23 @@ exit_code = 42
 # =============================================================================
 
 [[case]]
+# `?` requires the operand to be an Option; applying it to other types is E0504.
 name = "try_on_non_option_error"
 spec = ["4.15:3"]
 description = "Applying `?` to a non-Option value is a compile error (E0504)."
 compile_fail = true
 error_contains = "the `?` operator can only be applied to an `Option`"
 source = """
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-fn f() -> Option(i64) {
+const std = @import("std");
+fn f() -> std.option.Option(i64) {
     let x = 5;
     let y = x?;
-    let O = Option(i64);
+    let O = std.option.Option(i64);
     O.Some(y)
 }
 fn main() -> i32 { f(); 0 }
 """
+real_std = true
 
 # =============================================================================
 # Legality: `?` requires the enclosing function to return an Option
@@ -126,17 +130,16 @@ fn main() -> i32 { f(); 0 }
 # =============================================================================
 
 [[case]]
+# `?` requires the enclosing function to return an Option; using it elsewhere is E0503.
 name = "try_outside_option_fn_error"
 spec = ["4.15:4"]
 description = "Using `?` in a function whose return type is not Option is a compile error (E0503)."
 compile_fail = true
 error_contains = "the `?` operator can only be used in a function that returns an `Option`"
 source = """
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-fn some_val() -> Option(i64) {
-    let O = Option(i64);
+const std = @import("std");
+fn some_val() -> std.option.Option(i64) {
+    let O = std.option.Option(i64);
     O.Some(1)
 }
 fn main() -> i32 {
@@ -144,28 +147,81 @@ fn main() -> i32 {
     @intCast(v)
 }
 """
+real_std = true
 
 # =============================================================================
-# `?` on a bare fallible intrinsic resolves the intrinsic's own Option
-# (4.15:9): @read_line()? / @parse_i64(s)? need no annotation. RUE-318.
+# Lookalike rejection: a user-defined Some/None lookalike is an ordinary enum,
+# not the trusted std Option, and receives no `?` behavior (4.15:3, 4.15:4).
 # =============================================================================
 
 [[case]]
+# User-defined Some/None lookalike operands are not accepted by `?` (E0504).
+name = "try_lookalike_operand_rejected"
+spec = ["4.15:3"]
+description = "`?` on a user-defined Some/None lookalike (not trusted std Option) is E0504."
+compile_fail = true
+error_contains = "the `?` operator can only be applied to an `Option`"
+source = """
+const std = @import("std");
+fn Lookalike(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn make() -> Lookalike(i64) {
+    let L = Lookalike(i64);
+    L.Some(1)
+}
+fn use_it() -> std.option.Option(i64) {
+    let O = std.option.Option(i64);
+    let v = make()?;
+    O.Some(v)
+}
+fn main() -> i32 { use_it(); 0 }
+"""
+real_std = true
+
+[[case]]
+# `?` is not permitted in functions returning a user-defined lookalike (E0503).
+name = "try_lookalike_return_rejected"
+spec = ["4.15:4"]
+description = "`?` in a function returning a user-defined lookalike (not trusted std Option) is E0503."
+compile_fail = true
+error_contains = "the `?` operator can only be used in a function that returns an `Option`"
+source = """
+const std = @import("std");
+fn Lookalike(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn make() -> std.option.Option(i64) {
+    let O = std.option.Option(i64);
+    O.Some(1)
+}
+fn use_it() -> Lookalike(i64) {
+    let v = make()?;
+    let L = Lookalike(i64);
+    L.Some(v)
+}
+fn main() -> i32 { use_it(); 0 }
+"""
+real_std = true
+
+# =============================================================================
+# Fallible intrinsics: @read_line()? / @parse_i64(s)? resolve the exact trusted
+# std Option (4.15:9, 4.13:35, 4.13:44) with no local annotation needed.
+# =============================================================================
+
+[[case]]
+# @read_line() yields the exact trusted std Option(StrBuf); `?` unwraps it.
 name = "try_read_line_intrinsic_some"
-spec = ["4.15:9"]
+spec = ["4.15:9", "4.13:35"]
 description = "`@read_line()?` unwraps the line at a non-EOF read; the tail @parse_i64 yields the number."
 source = """
 const std = @import("std");
-const StrBuf = std.strbuf.StrBuf;
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-fn read_num() -> Option(i64) {
+fn read_num() -> std.option.Option(i64) {
     let line = @read_line()?;
     @parse_i64(line)
 }
 fn main() -> i32 {
-    let O = Option(i64);
+    let O = std.option.Option(i64);
     match read_num() {
         O.Some(n) => @intCast(n),
         O.None => 0,
@@ -177,21 +233,18 @@ stdin = "42\n"
 exit_code = 42
 
 [[case]]
+# @read_line() returns None at EOF, and `?` short-circuits (no trap).
 name = "try_read_line_intrinsic_none_at_eof"
-spec = ["4.15:9"]
+spec = ["4.15:9", "4.13:35"]
 description = "`@read_line()?` short-circuits the function to None at end-of-input (no trap)."
 source = """
 const std = @import("std");
-const StrBuf = std.strbuf.StrBuf;
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-fn read_num() -> Option(i64) {
+fn read_num() -> std.option.Option(i64) {
     let line = @read_line()?;
     @parse_i64(line)
 }
 fn main() -> i32 {
-    let O = Option(i64);
+    let O = std.option.Option(i64);
     match read_num() {
         O.Some(n) => @intCast(n),
         O.None => 7,
@@ -203,47 +256,78 @@ stdin = ""
 exit_code = 7
 
 [[case]]
+# @parse_i64(s) yields the exact trusted std Option(i64); `?` unwraps it.
 name = "try_parse_intrinsic_some"
-spec = ["4.15:9"]
+spec = ["4.15:9", "4.13:44"]
 description = "`@parse_i64(s)?` unwraps the parsed integer without an annotated binding."
 source = """
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-fn add_one(s: str) -> Option(i64) {
-    let O = Option(i64);
+const std = @import("std");
+fn add_one(s: str) -> std.option.Option(i64) {
+    let O = std.option.Option(i64);
     let n = @parse_i64(s)?;
     O.Some(n + 1)
 }
 fn main() -> i32 {
-    let O = Option(i64);
+    let O = std.option.Option(i64);
     match add_one("41") {
         O.Some(n) => @intCast(n),
         O.None => 0,
     }
 }
 """
+real_std = true
 exit_code = 42
 
 [[case]]
+# @parse_i64(s) returns None on parse failure; `?` short-circuits.
 name = "try_parse_intrinsic_none_short_circuits"
-spec = ["4.15:9"]
+spec = ["4.15:9", "4.13:44"]
 description = "`@parse_i64(s)?` short-circuits to None when the string is not a number."
 source = """
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-fn add_one(s: str) -> Option(i64) {
-    let O = Option(i64);
+const std = @import("std");
+fn add_one(s: str) -> std.option.Option(i64) {
+    let O = std.option.Option(i64);
     let n = @parse_i64(s)?;
     O.Some(n + 1)
 }
 fn main() -> i32 {
-    let O = Option(i64);
+    let O = std.option.Option(i64);
     match add_one("nope") {
         O.Some(n) => @intCast(n),
         O.None => 9,
     }
 }
 """
+real_std = true
 exit_code = 9
+
+# =============================================================================
+# Compiler-rooted trusted module: even a program that imports nothing still
+# resolves fallible intrinsics to the exact trusted std Option. The intrinsic's
+# Option type is resolved by the compiler's demand for the trusted module,
+# independent of user-written imports. This exercises the guarantee that `?`
+# works on intrinsics with no contextual annotation.
+# =============================================================================
+
+[[case]]
+# Fallible intrinsics yield the exact trusted std Option even in a program that
+# does not import std. The intrinsic's option type is compiler-rooted; the
+# enclosing function must still name std.option.Option to type its return.
+name = "try_parse_freestanding_no_imports"
+spec = ["4.15:9", "4.13:44"]
+description = "`@parse_i64(s)?` with no local Option yields the trusted std Option(i64) and `?` propagates it."
+source = """
+const std = @import("std");
+fn add_one(s: str) -> std.option.Option(i64) {
+    let n = @parse_i64(s)?;
+    std.option.Option(i64).Some(n + 1)
+}
+fn main() -> i32 {
+    match add_one("41") {
+        std.option.Option(i64).Some(n) => @intCast(n),
+        std.option.Option(i64).None => 0,
+    }
+}
+"""
+real_std = true
+exit_code = 42

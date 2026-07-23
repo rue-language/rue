@@ -405,6 +405,7 @@ impl ErrorCode {
     pub const COMPILER_RESOURCE_LIMIT: Self = Self(1401);
     pub const COMPILER_RESOURCE_EXHAUSTION: Self = Self(1402);
     pub const OUTPUT_PUBLICATION: Self = Self(1403);
+    pub const UNSATISFIED_TRUSTED_TOOLCHAIN_INPUT: Self = Self(1404);
 
     // ========================================================================
     // Internal compiler errors (E9000-E9999)
@@ -1733,6 +1734,17 @@ pub enum ErrorKind {
     #[error("output publication failed: {0}")]
     OutputPublication(String),
 
+    /// A required trusted toolchain input — a standard-library module the
+    /// program's reached bodies demand (RUE-1112) — was absent from the
+    /// compilation and the caller did not supply it. The standard library is a
+    /// toolchain guarantee, so a stable no-filesystem entry that observes an
+    /// unsatisfied demand reports this deterministic contract failure at its
+    /// boundary rather than an ICE: the CLI host acquires the module and retries,
+    /// while an embedder that omits a guaranteed toolchain input gets a clear,
+    /// distinguishable contract error.
+    #[error("unsatisfied trusted toolchain input: {0}")]
+    UnsatisfiedTrustedToolchainInput(String),
+
     // Internal compiler errors (bugs in the compiler itself)
     #[error("internal compiler producer invariant: {0}")]
     CompilerProducerInvariant(String),
@@ -1937,6 +1949,9 @@ impl ErrorKind {
             ErrorKind::CompilerResourceLimit(_) => ErrorCode::COMPILER_RESOURCE_LIMIT,
             ErrorKind::CompilerResourceExhaustion(_) => ErrorCode::COMPILER_RESOURCE_EXHAUSTION,
             ErrorKind::OutputPublication(_) => ErrorCode::OUTPUT_PUBLICATION,
+            ErrorKind::UnsatisfiedTrustedToolchainInput(_) => {
+                ErrorCode::UNSATISFIED_TRUSTED_TOOLCHAIN_INPUT
+            }
 
             // Internal compiler errors (E9000-E9999)
             ErrorKind::CompilerProducerInvariant(_) | ErrorKind::InternalError(_) => {

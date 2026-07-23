@@ -479,6 +479,27 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     /// wrote (RUE-610). First writer wins: structurally-deduped types keep
     /// the spelling of their first instantiation.
     pub(crate) ctor_type_displays: HashMap<Type, String>,
+    /// Per-body well-known `Option(payload)` registry (RUE-1112). Maps an
+    /// expected payload `Type` to the trusted standard-library `Option` enum
+    /// specialized with that payload. Populated narrowly, before body analysis,
+    /// from the per-body `WellKnownTypes` demand resolution — never from the
+    /// body's own composition/import universe. Consulted by fallible-intrinsic
+    /// resolution (`resolve_option_result_type`) so `@parse_*`/`@read_line`
+    /// bind the exact trusted std `Option(payload)` in every context even when
+    /// the body does not `@import` it. A structural fallback stays for programs
+    /// where no trusted module is present.
+    pub(crate) well_known_option_by_payload: HashMap<Type, Type>,
+    /// Anonymous enum identities materialized by the well-known `Option`
+    /// registry install for this body. They are subtracted from the initial
+    /// baseline so the installing body EXPORTS them as produced anonymous
+    /// nominals — exactly as a body that materializes `Option(payload)` through
+    /// the ordinary annotation/comptime path would. This is what makes the
+    /// registry-rooted identity durable across composition: the body that binds
+    /// a fallible intrinsic's `Option` is the body that produces it, so a
+    /// consumer (including this same body under `?`) resolves one identity
+    /// instead of failing import-only composition with `StableResolution(Missing)`.
+    pub(crate) well_known_option_identities:
+        std::collections::BTreeSet<anon_structs::IssuedAnonymousNominalKey>,
 }
 
 impl<D: DeclarationPhase> std::ops::Deref for Sema<'_, D> {
@@ -575,6 +596,8 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             comptime_type_call_depth,
             fn_signatures_in_flight,
             ctor_type_displays,
+            well_known_option_by_payload,
+            well_known_option_identities,
         } = self;
         Sema {
             declarations: map(declarations),
@@ -656,6 +679,8 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             comptime_type_call_depth,
             fn_signatures_in_flight,
             ctor_type_displays,
+            well_known_option_by_payload,
+            well_known_option_identities,
         }
     }
 
@@ -1169,6 +1194,8 @@ impl<'a> Sema<'a> {
             comptime_type_call_depth: 0,
             fn_signatures_in_flight: HashSet::new(),
             ctor_type_displays: HashMap::new(),
+            well_known_option_by_payload: HashMap::new(),
+            well_known_option_identities: std::collections::BTreeSet::new(),
         }
     }
 
@@ -1188,6 +1215,86 @@ impl<'a> Sema<'a> {
     #[doc(hidden)]
     pub fn analyze_all_for_test(self) -> MultiErrorResult<SemaOutput> {
         self.bind_declarations_for_test()?
+            .analyze_all_bodies_for_test()
+    }
+
+    /// Bind and analyze every body after installing authoritative
+    /// stable-identity endpoints keyed by each declaration's file.
+    ///
+    /// [`analyze_all_for_test`](Self::analyze_all_for_test) leaves
+    /// `stable_definition_endpoints` empty, so no producer can be recognized as
+    /// the trusted standard-library `Option`/`Result` and `?` on any operand is
+    /// rejected. This entry point installs the endpoints, so `?` legality —
+    /// which is exact producer-module identity (RUE-1112), not shape — can be
+    /// exercised: a producer defined in a file whose symbol path is the trusted
+    /// `\0rue-std/option.rue` / `\0rue-std/result.rue` identity is recognized as
+    /// the std producer and binds under `?`. A synthetic harness grants trusted
+    /// identity by placing the `Option`/`Result` producer in such a file (see
+    /// `set_symbol_paths` / `set_trusted_standard_library_files`).
+    ///
+    /// Endpoints follow the production contract: definition tokens are issued in
+    /// stable declaration-key order, and module resolution uses the empty module
+    /// set (the flat synthetic namespace has no query-owned module registry).
+    #[doc(hidden)]
+    pub fn analyze_all_for_test_with_stable_endpoints(self) -> MultiErrorResult<SemaOutput> {
+        let shells = self.predeclare_declaration_shells_for_test()?;
+        let records = shells.declaration_shells().cloned().collect::<Vec<_>>();
+
+        let mut definition_shells = records.clone();
+        definition_shells.sort_by(|left, right| left.identity.cmp(&right.identity));
+        let definitions = definition_shells
+            .iter()
+            .enumerate()
+            .map(|(slot, shell)| crate::SemanticDefinitionEndpoint {
+                token: crate::SemanticDefinitionToken::new(92, slot as u32),
+                file: shell.declaration_span.file_id.index(),
+                name: shell.identity.name.clone(),
+                kind: shell.identity.kind,
+                owner: shell.identity.owner.clone(),
+            })
+            .collect::<Vec<_>>();
+
+        let owners = records
+            .iter()
+            .filter_map(|shell| {
+                let (kind, name, owner_name) = match shell.identity.kind {
+                    crate::StableDefinitionKind::Function => (
+                        crate::BodyOwnerKind::FreeFunction,
+                        shell.identity.name.to_string(),
+                        None,
+                    ),
+                    crate::StableDefinitionKind::Method => (
+                        crate::BodyOwnerKind::Method,
+                        shell.identity.name.to_string(),
+                        shell.identity.owner.as_deref().map(str::to_owned),
+                    ),
+                    crate::StableDefinitionKind::AssociatedFunction => (
+                        crate::BodyOwnerKind::AssociatedFunction,
+                        shell.identity.name.to_string(),
+                        shell.identity.owner.as_deref().map(str::to_owned),
+                    ),
+                    crate::StableDefinitionKind::Destructor => {
+                        let owner = shell.identity.owner.as_deref()?.to_owned();
+                        (crate::BodyOwnerKind::Destructor, owner.clone(), Some(owner))
+                    }
+                    _ => return None,
+                };
+                Some(crate::BodyOwnerEndpoint {
+                    token: crate::BodyOwnerToken::new(91, shell.source_order),
+                    kind,
+                    file: shell.declaration_span.file_id.index(),
+                    name,
+                    owner_name,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        shells
+            .install_stable_identity_endpoints(&definitions, &[])
+            .expect("synthetic stable-identity endpoints match predeclared shells")
+            .resolve_declarations_for_test()?
+            .install_body_owner_tokens(&owners)
+            .expect("synthetic body-owner tokens match resolved bodies")
             .analyze_all_bodies_for_test()
     }
 

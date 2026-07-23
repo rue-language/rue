@@ -869,6 +869,43 @@ pub(crate) fn project_durable_anonymous_nominals(
     Ok(projected.into())
 }
 
+/// Project a per-body well-known `Option` resolution (RUE-1112) into the AIR
+/// export algebra: the anonymous enum nominals to materialize narrowly, plus
+/// each `(payload, option_enum)` type pair for the demand registry. Projection
+/// runs against the same bound definition set as the ordinary anonymous
+/// nominals, so the trusted `Option` producer/module identities resolve exactly.
+pub(crate) fn project_durable_option_registry(
+    merged: &CanonicalMergedProgram,
+    definitions: &BoundDefinitionSet,
+    resolution: &crate::body_query::WellKnownOptionResolution,
+) -> Result<
+    (
+        Arc<[rue_air::SemanticAnonymousNominalExport]>,
+        Vec<(rue_air::SemanticExportType, rue_air::SemanticExportType)>,
+    ),
+    DurableSemanticProjectionFailure,
+> {
+    let module_files = merged
+        .ast()
+        .modules()
+        .iter()
+        .map(|module| (module.module_id().clone(), module.file_id()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let nominals =
+        project_durable_anonymous_nominals(merged, definitions, &resolution.anonymous_nominals)?;
+    let option_by_payload = resolution
+        .option_by_payload
+        .iter()
+        .map(|(payload, option)| {
+            Ok((
+                project_type(payload, definitions, &module_files)?,
+                project_type(option, definitions, &module_files)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, DurableSemanticProjectionFailure>>()?;
+    Ok((nominals, option_by_payload))
+}
+
 fn project_payload(
     value: &DurableDeclarationPayload,
     definitions: &BoundDefinitionSet,

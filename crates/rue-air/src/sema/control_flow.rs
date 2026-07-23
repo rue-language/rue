@@ -13,6 +13,7 @@ use rue_span::Span;
 
 use super::BodySema;
 use super::analysis::FirstClassStrSite;
+use super::anon_structs::TrustedTryProducer;
 use super::context::{AnalysisContext, AnalysisResult, ConstValue, LocalVar};
 use crate::inst::{Air, AirInst, AirInstData, AirPattern, AirRef};
 use crate::scope::ScopedContext;
@@ -1299,14 +1300,19 @@ impl<'a> BodySema<'a> {
         }
     }
 
-    /// Analyze the `?` operator (RUE-6, ADR-0038).
+    /// Analyze the `?` operator (RUE-6, ADR-0038, RUE-1112).
     ///
-    /// `operand?` requires `operand` to be an `Option(T)` and the enclosing
-    /// function to return an `Option(U)`. It evaluates to `T` on `Some(v)` and
-    /// early-returns the enclosing function's `None` on `None`. This is the
-    /// desugaring `match operand { Some(v) => v, None => return None }`, built
-    /// directly against the resolved enum types (so no source type name is
-    /// needed): a two-arm discriminant `Match` whose `None` arm returns.
+    /// `operand?` requires `operand` to be an exact specialization of a trusted
+    /// std producer (`std/option.rue::Option` or `std/result.rue::Result`) and
+    /// the enclosing function to return an exact specialization of the *same*
+    /// trusted producer (an `Option` success payload may differ; a `Result`
+    /// keeps the exact error type). Legality is producer identity, not shape: a
+    /// same-shape user lookalike gets no `?` behavior. For the Option form it
+    /// evaluates to `T` on `Some(v)` and early-returns the enclosing function's
+    /// `None`; this is the desugaring `match operand { Some(v) => v, None =>
+    /// return None }`, built directly against the resolved enum types (so no
+    /// source type name is needed): a two-arm discriminant `Match` whose failure
+    /// arm returns.
     fn analyze_try(
         &mut self,
         air: &mut Air,
@@ -1338,100 +1344,123 @@ impl<'a> BodySema<'a> {
             return Ok(AnalysisResult::new(operand_result.air_ref, Type::ERROR));
         }
 
-        let operand_enum_id = match operand_ty.as_enum() {
-            Some(id) => id,
-            None => {
-                return Err(CompileError::new(
-                    ErrorKind::QuestionOnNonOption {
-                        found: operand_ty.safe_name_with_pool(Some(&self.type_pool)),
-                    },
-                    span,
-                ));
-            }
+        // RUE-1112: `?` legality is exact trusted-producer identity, not shape.
+        // The operand must be an exact specialization of the trusted
+        // std `Option` or `Result`; a same-shape user lookalike is an ordinary
+        // enum with no `?` behavior. `trusted_try_producer` compares the
+        // operand's producer key against the well-known trusted identity and
+        // never materializes std to reject a lookalike. The
+        // `option_enum_shape`/`result_enum_shape` helpers survive only to read
+        // the confirmed-trusted producer's own `Some(T)`/`None` or
+        // `Ok(T)`/`Err(E)` layout.
+        let non_option = |sema: &Self| {
+            CompileError::new(
+                ErrorKind::QuestionOnNonOption {
+                    found: operand_ty.safe_name_with_pool(Some(&sema.type_pool)),
+                },
+                span,
+            )
         };
-
-        // Option operand: `?` evaluates to `T` on `Some(v)` and early-returns
-        // the enclosing function's `None`.
-        if let Some((some_idx, none_idx, payload_ty)) = self.option_enum_shape(operand_enum_id) {
-            let ret_shape = return_type
-                .as_enum()
-                .and_then(|rid| self.option_enum_shape(rid).map(|(_, n, _)| (rid, n)));
-            let (ret_enum_id, ret_none_idx) = match ret_shape {
-                Some(s) => s,
-                None => {
-                    return Err(CompileError::new(
-                        ErrorKind::QuestionOutsideOptionFn {
-                            return_type: return_type.safe_name_with_pool(Some(&self.type_pool)),
-                        },
-                        span,
-                    ));
-                }
-            };
-            return self.build_try_desugar(
-                air,
-                operand_result.air_ref,
-                operand_enum_id,
-                some_idx,
-                none_idx,
-                payload_ty,
-                return_type,
-                ret_enum_id,
-                ret_none_idx,
-                None,
-                span,
-            );
-        }
-
-        // Result operand: `?` evaluates to `T` on `Ok(v)` and early-returns
-        // `Err(e)`. The error type must match exactly (ADR-0038, no conversion).
-        if let Some((ok_idx, err_idx, ok_ty, err_ty)) = self.result_enum_shape(operand_enum_id) {
-            let ret_shape = return_type.as_enum().and_then(|rid| {
-                self.result_enum_shape(rid)
-                    .map(|(_, e, _, et)| (rid, e, et))
-            });
-            let (ret_enum_id, ret_err_idx, ret_err_ty) = match ret_shape {
-                Some(s) => s,
-                None => {
-                    return Err(CompileError::new(
-                        ErrorKind::QuestionOutsideResultFn {
-                            return_type: return_type.safe_name_with_pool(Some(&self.type_pool)),
-                        },
-                        span,
-                    ));
-                }
-            };
-            if !self.types_equivalent(err_ty, ret_err_ty) {
-                return Err(CompileError::new(
-                    ErrorKind::QuestionErrTypeMismatch {
-                        operand_err: err_ty.safe_name_with_pool(Some(&self.type_pool)),
-                        fn_err: ret_err_ty.safe_name_with_pool(Some(&self.type_pool)),
-                    },
+        match self.trusted_try_producer(operand_ty) {
+            Some(TrustedTryProducer::Option) => {
+                let operand_enum_id = operand_ty
+                    .as_enum()
+                    .expect("a trusted Option producer is an enum type");
+                let Some((some_idx, none_idx, payload_ty)) =
+                    self.option_enum_shape(operand_enum_id)
+                else {
+                    return Err(non_option(self));
+                };
+                // The enclosing function must return an exact std `Option`
+                // specialization too; the success payload may differ (4.15:4).
+                let ret_shape = return_type.as_enum().and_then(|rid| {
+                    (self.trusted_try_producer(return_type) == Some(TrustedTryProducer::Option))
+                        .then(|| self.option_enum_shape(rid).map(|(_, n, _)| (rid, n)))
+                        .flatten()
+                });
+                let (ret_enum_id, ret_none_idx) = match ret_shape {
+                    Some(s) => s,
+                    None => {
+                        return Err(CompileError::new(
+                            ErrorKind::QuestionOutsideOptionFn {
+                                return_type: return_type.safe_name_with_pool(Some(&self.type_pool)),
+                            },
+                            span,
+                        ));
+                    }
+                };
+                self.build_try_desugar(
+                    air,
+                    operand_result.air_ref,
+                    operand_enum_id,
+                    some_idx,
+                    none_idx,
+                    payload_ty,
+                    return_type,
+                    ret_enum_id,
+                    ret_none_idx,
+                    None,
                     span,
-                ));
+                )
             }
-            return self.build_try_desugar(
-                air,
-                operand_result.air_ref,
-                operand_enum_id,
-                ok_idx,
-                err_idx,
-                ok_ty,
-                return_type,
-                ret_enum_id,
-                ret_err_idx,
-                Some(err_ty),
-                span,
-            );
+            Some(TrustedTryProducer::Result) => {
+                let operand_enum_id = operand_ty
+                    .as_enum()
+                    .expect("a trusted Result producer is an enum type");
+                let Some((ok_idx, err_idx, ok_ty, err_ty)) =
+                    self.result_enum_shape(operand_enum_id)
+                else {
+                    return Err(non_option(self));
+                };
+                // The enclosing function must return an exact std `Result`
+                // specialization; the error type must match exactly (ADR-0038,
+                // no conversion).
+                let ret_shape = return_type.as_enum().and_then(|rid| {
+                    (self.trusted_try_producer(return_type) == Some(TrustedTryProducer::Result))
+                        .then(|| {
+                            self.result_enum_shape(rid)
+                                .map(|(_, e, _, et)| (rid, e, et))
+                        })
+                        .flatten()
+                });
+                let (ret_enum_id, ret_err_idx, ret_err_ty) = match ret_shape {
+                    Some(s) => s,
+                    None => {
+                        return Err(CompileError::new(
+                            ErrorKind::QuestionOutsideResultFn {
+                                return_type: return_type.safe_name_with_pool(Some(&self.type_pool)),
+                            },
+                            span,
+                        ));
+                    }
+                };
+                if !self.types_equivalent(err_ty, ret_err_ty) {
+                    return Err(CompileError::new(
+                        ErrorKind::QuestionErrTypeMismatch {
+                            operand_err: err_ty.safe_name_with_pool(Some(&self.type_pool)),
+                            fn_err: ret_err_ty.safe_name_with_pool(Some(&self.type_pool)),
+                        },
+                        span,
+                    ));
+                }
+                self.build_try_desugar(
+                    air,
+                    operand_result.air_ref,
+                    operand_enum_id,
+                    ok_idx,
+                    err_idx,
+                    ok_ty,
+                    return_type,
+                    ret_enum_id,
+                    ret_err_idx,
+                    Some(err_ty),
+                    span,
+                )
+            }
+            // A non-enum operand, or a same-shape user lookalike: no `?`
+            // behavior (4.15:3, E0504).
+            None => Err(non_option(self)),
         }
-
-        // The operand is a two-variant enum but neither Option- nor
-        // Result-shaped.
-        Err(CompileError::new(
-            ErrorKind::QuestionOnNonOption {
-                found: operand_ty.safe_name_with_pool(Some(&self.type_pool)),
-            },
-            span,
-        ))
     }
 
     /// Build the `match`-desugaring shared by the `?` operator's Option and

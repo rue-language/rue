@@ -52,12 +52,18 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("semantic_symbols", include_str!("semantic_symbols.rs")),
     ("semantic_identity", include_str!("semantic_identity.rs")),
     ("session", include_str!("session.rs")),
+    ("shared_segments", include_str!("shared_segments.rs")),
     ("source_identity", include_str!("source_identity.rs")),
     ("source_metadata", include_str!("source_metadata.rs")),
     ("source_snapshot", include_str!("source_snapshot.rs")),
     ("syntax", include_str!("syntax.rs")),
+    (
+        "toolchain_module_demand",
+        include_str!("toolchain_module_demand.rs"),
+    ),
     ("typed_query_store", include_str!("typed_query_store.rs")),
     ("unstable", include_str!("unstable.rs")),
+    ("well_known_option", include_str!("well_known_option.rs")),
 ];
 
 const RUE_868_RAW_FACADE_VOCABULARY: &[&str] = &[
@@ -738,7 +744,8 @@ fn root_export_metadata(owner: &str, symbol: &str) -> (&'static str, &'static st
             | "ImportObservation"
             | "ImportObservationLedger"
             | "ImportObservationStatus" => ("compatibility-boundary", "legacy-embedders"),
-            "AcceptedReadManifestEntry"
+            "AcceptedReadManifest"
+            | "AcceptedReadManifestEntry"
             | "FileMetadataFingerprint"
             | "ImportCandidateRole"
             | "ImportDiscoveryContext"
@@ -777,6 +784,15 @@ fn root_export_metadata(owner: &str, symbol: &str) -> (&'static str, &'static st
         "source_identity" | "source_metadata" | "source_snapshot" | "rue_span" => {
             ("source-input", "cli+embedders")
         }
+        "toolchain_module_demand" => match symbol {
+            "OPTION_MODULE_LOGICAL_PATH"
+            | "ParkedToolchainModules"
+            | "STRBUF_MODULE_LOGICAL_PATH"
+            | "TrustedToolchainModuleDemand" => {
+                ("toolchain-module-demand", "source-loaders+embedders")
+            }
+            _ => panic!("unclassified toolchain-module-demand facade export: {symbol}"),
+        },
         "rue_cfg" | "rue_target" => ("compilation-config", "cli+embedders"),
         _ => panic!("unclassified facade export owner: {owner}::{symbol}"),
     }
@@ -1395,6 +1411,7 @@ fn unstable_views_do_not_alias_query_engine_records() {
         [
             "pubusecrate::diagnostic::{ColorChoice,DiagnosticFormatter,JsonDiagnostic,JsonDiagnosticFormatter,JsonSpan,JsonSuggestion,MultiFileFormatter,MultiFileJsonFormatter,SourceInfo,};",
             "pubusecrate::import_discovery::{DiscoverySourceAssembler,ImportDemandFrontier,ImportDemandMode,ImportDemandRoots,ImportInputRevision,};",
+            "pubusecrate::session::{ClosedDiscoveryContinuation,SemanticParkOutcome,TrustedSuccessorDelta};",
         ],
         "unstable may reexport only reviewed presentation, source-assembly, and Phase-2 demand helpers"
     );

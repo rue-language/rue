@@ -429,8 +429,27 @@ impl ImportObservation {
 /// Public `Default` construction and mutation are retained only for the
 /// RUE-1033 legacy compatibility boundary. A freely constructed ledger is not
 /// freshness- or speculation-safe and must not seed a new canonical request.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
-pub struct ImportObservationLedger(BTreeMap<ImportDiscoveryRequest, ImportObservation>);
+///
+/// The ledger is a persistent structure (RUE-1112): frozen segments are shared
+/// by `Arc` across clones, and entries recorded since the value was cloned live
+/// in a private head. Cloning therefore costs O(entries recorded since the
+/// parent value was itself cloned) — the delta — never the whole ledger, and
+/// the head IS the exact recorded delta of the current step, which the
+/// successor publication consumes directly instead of re-deriving additions by
+/// diffing complete values. Equality and hashing are over the logical merged
+/// sequence, so a flat and a segmented ledger with identical content are
+/// indistinguishable to query memoization.
+#[derive(Debug, Default)]
+pub struct ImportObservationLedger {
+    /// Frozen shared segments, oldest first; mutually disjoint by request.
+    frozen: Vec<Arc<BTreeMap<ImportDiscoveryRequest, ImportObservation>>>,
+    /// Entries recorded since this value was cloned from its parent.
+    head: BTreeMap<ImportDiscoveryRequest, ImportObservation>,
+}
+
+/// Segment chains longer than this are compacted on clone so lookup depth stays
+/// bounded under long frontier-round chains.
+const LEDGER_COMPACTION_DEPTH: usize = 16;
 
 impl ImportObservationLedger {
     /// Record legacy host evidence.
@@ -440,7 +459,7 @@ impl ImportObservationLedger {
     /// canonical protocol instead.
     pub fn record(&mut self, observation: ImportObservation) -> CompileResult<()> {
         let request = observation.request.clone();
-        if let Some(previous) = self.0.get(&request) {
+        if let Some(previous) = self.get(&request) {
             if previous == &observation {
                 return Ok(());
             }
@@ -448,22 +467,135 @@ impl ImportObservationLedger {
                 "one discovery request received conflicting observations",
             ));
         }
-        self.0.insert(request, observation);
+        self.head.insert(request, observation);
         Ok(())
     }
     pub fn get(&self, request: &ImportDiscoveryRequest) -> Option<&ImportObservation> {
-        self.0.get(request)
+        if let Some(observation) = self.head.get(request) {
+            return Some(observation);
+        }
+        self.frozen
+            .iter()
+            .rev()
+            .find_map(|segment| segment.get(request))
     }
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = &ImportObservation> {
-        self.0.values()
+    pub fn iter(&self) -> LedgerIter<'_> {
+        let mut cursors: Vec<std::collections::btree_map::Iter<'_, _, _>> =
+            self.frozen.iter().map(|segment| segment.iter()).collect();
+        cursors.push(self.head.iter());
+        LedgerIter {
+            remaining: self.len(),
+            heads: cursors.iter_mut().map(Iterator::next).collect(),
+            cursors,
+        }
     }
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.frozen
+            .iter()
+            .map(|segment| segment.len())
+            .sum::<usize>()
+            + self.head.len()
     }
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.head.is_empty() && self.frozen.iter().all(|segment| segment.is_empty())
+    }
+
+    /// The exact observations recorded into THIS value since it was cloned from
+    /// its parent — the current step's delta, in canonical request order
+    /// (RUE-1112). The successor publication consumes this recorded delta
+    /// directly rather than re-deriving it by diffing complete ledgers.
+    pub(crate) fn recorded_delta(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &ImportObservation> + Clone {
+        self.head.values()
     }
 }
+
+impl Clone for ImportObservationLedger {
+    fn clone(&self) -> Self {
+        // Freeze the head into a shared segment so the clone starts with an
+        // empty recorded delta; only the head (the parent's own delta) is
+        // copied, never the frozen predecessor segments.
+        let mut frozen = self.frozen.clone();
+        if !self.head.is_empty() {
+            frozen.push(Arc::new(self.head.clone()));
+        }
+        if frozen.len() >= LEDGER_COMPACTION_DEPTH {
+            // Compact a long chain into one segment; the merged map is the same
+            // logical value.
+            let mut merged = BTreeMap::new();
+            for segment in &frozen {
+                for (request, observation) in segment.iter() {
+                    merged.insert(request.clone(), observation.clone());
+                }
+            }
+            frozen = vec![Arc::new(merged)];
+        }
+        Self {
+            frozen,
+            head: BTreeMap::new(),
+        }
+    }
+}
+
+impl PartialEq for ImportObservationLedger {
+    fn eq(&self, other: &Self) -> bool {
+        self.len() == other.len() && self.iter().eq(other.iter())
+    }
+}
+
+impl Eq for ImportObservationLedger {}
+
+impl std::hash::Hash for ImportObservationLedger {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Logical hash over the merged sequence: length then each observation in
+        // canonical request order, so representation never affects identity.
+        self.len().hash(state);
+        for observation in self.iter() {
+            observation.hash(state);
+        }
+    }
+}
+
+/// K-way merge over the ledger's disjoint sorted segments, yielding
+/// observations in canonical request order.
+pub struct LedgerIter<'a> {
+    cursors: Vec<std::collections::btree_map::Iter<'a, ImportDiscoveryRequest, ImportObservation>>,
+    heads: Vec<Option<(&'a ImportDiscoveryRequest, &'a ImportObservation)>>,
+    remaining: usize,
+}
+
+impl<'a> Iterator for LedgerIter<'a> {
+    type Item = &'a ImportObservation;
+
+    fn next(&mut self) -> Option<&'a ImportObservation> {
+        let mut best: Option<usize> = None;
+        for (index, head) in self.heads.iter().enumerate() {
+            if let Some((request, _)) = head {
+                match best {
+                    None => best = Some(index),
+                    Some(current) => {
+                        let (best_request, _) = self.heads[current].as_ref().unwrap();
+                        if request < best_request {
+                            best = Some(index);
+                        }
+                    }
+                }
+            }
+        }
+        let chosen = best?;
+        let (_, observation) = self.heads[chosen].take().unwrap();
+        self.heads[chosen] = self.cursors[chosen].next();
+        self.remaining -= 1;
+        Some(observation)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<'a> ExactSizeIterator for LedgerIter<'a> {}
 
 /// Authority allowed to expose missing external-input requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -553,11 +685,19 @@ impl ImportDemandRoots {
     }
 }
 
+/// Canonical order for request groups: by the first request of each group.
+fn group_order(
+    a: &Arc<[ImportDiscoveryRequest]>,
+    b: &Arc<[ImportDiscoveryRequest]>,
+) -> std::cmp::Ordering {
+    a[0].cmp(&b[0])
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ImportDiscoveryPlan {
     source_revision: SourceRevision,
     context: ImportDiscoveryContext,
-    groups: Arc<[Arc<[ImportDiscoveryRequest]>]>,
+    groups: crate::shared_segments::SharedSegments<Arc<[ImportDiscoveryRequest]>>,
 }
 
 impl ImportDiscoveryPlan {
@@ -602,12 +742,54 @@ impl ImportDiscoveryPlan {
                 &importer_path,
             )?);
         }
-        groups.sort_by(|left: &Arc<[ImportDiscoveryRequest]>, right| left[0].cmp(&right[0]));
+        groups.sort_by(group_order);
         Ok(Self {
             source_revision: program.source_revision().clone(),
             context,
-            groups: groups.into(),
+            groups: crate::shared_segments::SharedSegments::flat(groups.into(), group_order),
         })
+    }
+
+    /// Build a strictly-additive successor plan by carrying a predecessor plan's
+    /// request groups verbatim and constructing groups ONLY for the newly
+    /// appended modules' import occurrences (RUE-1112). The predecessor modules'
+    /// sources are byte-identical in the successor, so their groups are reused
+    /// rather than reconstructed; `discovery_groups_for_occurrence` runs only for
+    /// occurrences owned by `new_modules`. Returns the successor plan and the
+    /// number of groups actually constructed (the new ones), so the caller can
+    /// prove plan construction is O(new leaves), independent of the predecessor
+    /// import topology.
+    pub(crate) fn extend_trusted_successor(
+        predecessor: &ImportDiscoveryPlan,
+        program: &ParsedProgram,
+        context: ImportDiscoveryContext,
+        new_modules: &[ModuleId],
+    ) -> CompileResult<(Self, u64)> {
+        // Construct groups ONLY for the newly appended modules' occurrences; the
+        // predecessor plan's groups are carried by reference through
+        // `SharedSegments::extend`, never copied or re-sorted.
+        let mut delta = Vec::new();
+        let mut constructed = 0u64;
+        for module_id in new_modules {
+            let Some(module) = program.module(module_id) else {
+                continue;
+            };
+            for site in module.imports() {
+                let occurrence = ImportOccurrenceKey::from_directive(site);
+                let importer_path = requested_path_for_module(&context, site.importer())?;
+                let built = discovery_groups_for_occurrence(&context, &occurrence, &importer_path)?;
+                constructed += built.len() as u64;
+                delta.extend(built);
+            }
+        }
+        Ok((
+            Self {
+                source_revision: program.source_revision().clone(),
+                context,
+                groups: crate::shared_segments::SharedSegments::extend(&predecessor.groups, delta),
+            },
+            constructed,
+        ))
     }
 
     pub fn source_revision(&self) -> &SourceRevision {
@@ -616,13 +798,39 @@ impl ImportDiscoveryPlan {
     pub fn context(&self) -> &ImportDiscoveryContext {
         &self.context
     }
+    /// The successor delta groups: request groups owned only by modules added
+    /// since the predecessor close (empty for a full plan). Iterating these
+    /// avoids materializing or filtering the full merged plan on the acquisition
+    /// path (RUE-1112).
+    pub(crate) fn delta_groups(&self) -> &[Arc<[ImportDiscoveryRequest]>] {
+        self.groups.delta_segment()
+    }
+
+    /// The shared request-group representation (RUE-1112 successor sharing).
+    pub(crate) fn group_segments(
+        &self,
+    ) -> &crate::shared_segments::SharedSegments<Arc<[ImportDiscoveryRequest]>> {
+        &self.groups
+    }
+
+    /// The demand roots for the successor delta occurrences alone — the frontier
+    /// and close-time projection for a trusted-toolchain successor root only in
+    /// these, never in the predecessor topology (RUE-1112). Derived directly from
+    /// the delta segment, never by filtering the merged plan.
+    pub(crate) fn delta_roots(&self) -> ImportDemandRoots {
+        ImportDemandRoots::new(
+            self.delta_groups()
+                .iter()
+                .map(|group| group[0].occurrence().clone()),
+        )
+    }
     /// Expose legacy host-driven candidate groups.
     ///
     /// This bypass is retained only for the RUE-1033 compatibility boundary.
     /// It is not freshness- or speculation-safe; new consumers must request a
     /// compiler-produced frontier through the unstable canonical protocol.
     pub fn groups(&self) -> &[Arc<[ImportDiscoveryRequest]>] {
-        &self.groups
+        self.groups.as_slice()
     }
 
     /// Return exactly the next operations allowed by candidate precedence.
@@ -688,42 +896,61 @@ impl ImportDiscoveryPlan {
         &'a self,
         ledger: &'a ImportObservationLedger,
     ) -> Vec<&'a AcceptedImportSource> {
-        let mut by_site: BTreeMap<&ImportOccurrenceKey, Vec<&Arc<[ImportDiscoveryRequest]>>> =
-            BTreeMap::new();
-        for group in self.groups.iter() {
-            by_site.entry(&group[0].occurrence).or_default().push(group);
-        }
-        let mut accepted = Vec::new();
-        for groups in by_site.values() {
-            for group in groups {
-                if group
-                    .iter()
-                    .any(|request| ledger.get(request).is_some_and(|o| o.status.is_failure()))
-                {
-                    break;
-                }
-                let present = group
-                    .iter()
-                    .filter_map(|request| ledger.get(request))
-                    .filter_map(ImportObservation::accepted_source)
-                    .collect::<Vec<_>>();
-                if !present.is_empty() {
-                    accepted.extend(present);
-                    break;
-                }
+        accepted_sources_for(self.groups.iter(), ledger)
+    }
+
+    /// The accepted sources of a trusted-toolchain successor plan's delta groups
+    /// alone — those owned by modules added since the predecessor close (RUE-1112).
+    /// The predecessor leaves are already assembled, so a successor add only needs
+    /// these; the merged plan is never scanned.
+    pub(crate) fn delta_accepted_sources<'a>(
+        &'a self,
+        ledger: &'a ImportObservationLedger,
+    ) -> Vec<&'a AcceptedImportSource> {
+        accepted_sources_for(self.groups.delta_segment().iter(), ledger)
+    }
+}
+
+/// The winning accepted sources across a set of candidate request groups.
+fn accepted_sources_for<'a>(
+    groups: impl Iterator<Item = &'a Arc<[ImportDiscoveryRequest]>>,
+    ledger: &'a ImportObservationLedger,
+) -> Vec<&'a AcceptedImportSource> {
+    let mut by_site: BTreeMap<&ImportOccurrenceKey, Vec<&Arc<[ImportDiscoveryRequest]>>> =
+        BTreeMap::new();
+    for group in groups {
+        by_site.entry(&group[0].occurrence).or_default().push(group);
+    }
+    let mut accepted = Vec::new();
+    for groups in by_site.values() {
+        for group in groups {
+            if group
+                .iter()
+                .any(|request| ledger.get(request).is_some_and(|o| o.status.is_failure()))
+            {
+                break;
+            }
+            let present = group
+                .iter()
+                .filter_map(|request| ledger.get(request))
+                .filter_map(ImportObservation::accepted_source)
+                .collect::<Vec<_>>();
+            if !present.is_empty() {
+                accepted.extend(present);
+                break;
             }
         }
-        accepted.sort_by(|left, right| {
-            left.requested_path
-                .cmp(&right.requested_path)
-                .then(left.canonical_path.cmp(&right.canonical_path))
-        });
-        accepted.dedup_by(|left, right| {
-            left.canonical_path == right.canonical_path
-                && left.content_fingerprint == right.content_fingerprint
-        });
-        accepted
     }
+    accepted.sort_by(|left, right| {
+        left.requested_path
+            .cmp(&right.requested_path)
+            .then(left.canonical_path.cmp(&right.canonical_path))
+    });
+    accepted.dedup_by(|left, right| {
+        left.canonical_path == right.canonical_path
+            && left.content_fingerprint == right.content_fingerprint
+    });
+    accepted
 }
 
 /// Compute candidate precedence for one exact indexed occurrence from captured
@@ -958,7 +1185,7 @@ pub(crate) fn reduce_exact_import_graph(
     root: ModuleId,
     groups: &[Arc<[ImportDiscoveryRequest]>],
     ledger: &ImportObservationLedger,
-    accepted_reads: &[AcceptedReadManifestEntry],
+    accepted_reads: &AcceptedReadManifest,
 ) -> CompileResult<crate::CanonicalImportGraph> {
     validate_exact_import_ledger(groups, ledger)?;
     let manifest = accepted_import_manifest(accepted_reads)?;
@@ -1024,13 +1251,13 @@ pub(crate) fn validate_exact_import_occurrence(
 }
 
 pub(crate) fn validate_accepted_import_manifest(
-    accepted_reads: &[AcceptedReadManifestEntry],
+    accepted_reads: &AcceptedReadManifest,
 ) -> CompileResult<()> {
     accepted_import_manifest(accepted_reads).map(drop)
 }
 
 fn accepted_import_manifest(
-    accepted_reads: &[AcceptedReadManifestEntry],
+    accepted_reads: &AcceptedReadManifest,
 ) -> CompileResult<BTreeMap<PhysicalFileIdentity, &AcceptedReadManifestEntry>> {
     let manifest = accepted_reads
         .iter()
@@ -1109,7 +1336,7 @@ fn module_for_accepted_source(
 
 pub(crate) fn accepted_import_module(
     source: &AcceptedImportSource,
-    accepted_reads: &[AcceptedReadManifestEntry],
+    accepted_reads: &AcceptedReadManifest,
 ) -> CompileResult<ModuleId> {
     let mut matches = accepted_reads
         .iter()
@@ -1148,6 +1375,33 @@ pub struct DiscoverySourceAssembler {
     physical: BTreeMap<PhysicalFileIdentity, PhysicalSourceOwner>,
     canonical_identities: BTreeMap<Arc<str>, PhysicalFileIdentity>,
     accepted_reads: BTreeMap<ModuleId, AcceptedReadManifestEntry>,
+    /// The last produced snapshot; the next [`Self::snapshot`] extends it with
+    /// only the modules added since, sharing every predecessor segment
+    /// (RUE-1112). Predecessor `FileId`s stay stable across extensions.
+    cached_snapshot: Option<SourceSnapshot>,
+    /// Modules added since `cached_snapshot` was produced, in insertion order.
+    appended_since_snapshot: Vec<ModuleId>,
+    /// Cumulative sources materialized by full snapshot builds (the first
+    /// snapshot of a lineage); never incremented on the extension path.
+    snapshot_sources_rebuilt: u64,
+    /// Cumulative sources appended by extension builds — the only per-round
+    /// snapshot work once a lineage's first snapshot exists.
+    snapshot_sources_appended: u64,
+    /// The last produced provenance manifest; the next
+    /// [`Self::accepted_read_manifest`] extends it with only the entries added
+    /// since, sharing every predecessor segment (RUE-1112). Invalidated when a
+    /// retained entry is rewritten (a canonical-path improvement), which falls
+    /// back to a counted full rebuild.
+    cached_manifest: Option<AcceptedReadManifest>,
+    /// Modules whose provenance entries were added since `cached_manifest` was
+    /// produced, in insertion order.
+    appended_since_manifest: Vec<ModuleId>,
+    /// Cumulative provenance entries materialized by full manifest builds;
+    /// never incremented on the extension path.
+    manifest_entries_rebuilt: u64,
+    /// Cumulative provenance entries appended by extension manifest builds —
+    /// the only per-round manifest work once a lineage's first manifest exists.
+    manifest_entries_appended: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -1161,6 +1415,140 @@ struct AssembledSource {
     requested_path: Arc<str>,
     canonical_path: Arc<str>,
     source: Arc<String>,
+}
+
+/// The accepted-read provenance manifest as a persistent segmented sequence
+/// (RUE-1112): `Arc`-shared predecessor segments plus an appended delta, sorted
+/// by module identity within and across segments. A strictly-additive successor
+/// shares every predecessor segment by reference, so extending the manifest
+/// never copies or re-validates a predecessor entry; the merged contiguous
+/// slice materializes lazily, off the acquisition path. Equality and hashing
+/// are logical over the merged sequence.
+#[derive(Clone)]
+pub struct AcceptedReadManifest {
+    entries: crate::shared_segments::SharedSegments<AcceptedReadManifestEntry>,
+    /// Lazily materialized merged slice for consumers that need `Arc<[T]>`
+    /// (the RUE-1033 stable staging boundary and retained artifacts).
+    merged: std::sync::OnceLock<Arc<[AcceptedReadManifestEntry]>>,
+}
+
+fn accepted_read_order(
+    a: &AcceptedReadManifestEntry,
+    b: &AcceptedReadManifestEntry,
+) -> std::cmp::Ordering {
+    a.module.cmp(&b.module)
+}
+
+/// Logical rendering over the merged entry sequence: the lazily materialized
+/// merged cache is derived state and never participates.
+impl std::fmt::Debug for AcceptedReadManifest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+
+/// Logical equality over the merged entry sequence: the lazily materialized
+/// merged cache is derived state and never participates.
+impl PartialEq for AcceptedReadManifest {
+    fn eq(&self, other: &Self) -> bool {
+        self.entries == other.entries
+    }
+}
+
+impl Eq for AcceptedReadManifest {}
+
+impl std::hash::Hash for AcceptedReadManifest {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.entries.hash(state);
+    }
+}
+
+impl AcceptedReadManifest {
+    /// A complete manifest built in one piece (fresh discovery). Entries are
+    /// canonicalized to module order here; duplicate modules are preserved for
+    /// the publication validation to reject.
+    pub(crate) fn from_entries(mut entries: Vec<AcceptedReadManifestEntry>) -> Self {
+        entries.sort_by(accepted_read_order);
+        Self {
+            entries: crate::shared_segments::SharedSegments::flat(
+                entries.into(),
+                accepted_read_order,
+            ),
+            merged: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Wrap a complete shared slice, sharing it without copying when it is
+    /// already in canonical module order (the compatibility boundary makes no
+    /// ordering promise, so an unordered slice is canonicalized by copy).
+    pub(crate) fn from_shared(entries: Arc<[AcceptedReadManifestEntry]>) -> Self {
+        if !entries.is_sorted_by(|a, b| accepted_read_order(a, b) != std::cmp::Ordering::Greater) {
+            return Self::from_entries(entries.to_vec());
+        }
+        let merged = std::sync::OnceLock::new();
+        let _ = merged.set(entries.clone());
+        Self {
+            entries: crate::shared_segments::SharedSegments::flat(entries, accepted_read_order),
+            merged,
+        }
+    }
+
+    /// A strictly-additive successor sharing every segment of `base` by
+    /// reference and appending only `appended` (sorted here; must be new
+    /// modules).
+    pub(crate) fn extend_with_appended(
+        base: &AcceptedReadManifest,
+        appended: Vec<AcceptedReadManifestEntry>,
+    ) -> Self {
+        Self {
+            entries: crate::shared_segments::SharedSegments::extend(&base.entries, appended),
+            merged: std::sync::OnceLock::new(),
+        }
+    }
+
+    pub(crate) fn segments(
+        &self,
+    ) -> &crate::shared_segments::SharedSegments<AcceptedReadManifestEntry> {
+        &self.entries
+    }
+
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &AcceptedReadManifestEntry> {
+        self.entries.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.len() == 0
+    }
+
+    /// The provenance entry for `module`, by per-segment binary search.
+    pub(crate) fn find_module(&self, module: &ModuleId) -> Option<&AcceptedReadManifestEntry> {
+        self.entries.find_by(|entry| entry.module.cmp(module))
+    }
+
+    /// Whether `entry` appears byte-identical in this manifest.
+    pub(crate) fn contains_entry(&self, entry: &AcceptedReadManifestEntry) -> bool {
+        self.find_module(&entry.module) == Some(entry)
+    }
+
+    /// The merged contiguous manifest, materialized lazily at most once per
+    /// value; a flat manifest shares its single segment without copying. The
+    /// acquisition path's publication never calls this.
+    pub fn shared_slice(&self) -> Arc<[AcceptedReadManifestEntry]> {
+        self.merged
+            .get_or_init(|| {
+                let segments = self.entries.segments();
+                if segments.len() == 1 {
+                    segments[0].clone()
+                } else {
+                    self.entries.iter().cloned().collect::<Vec<_>>().into()
+                }
+            })
+            .clone()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1241,6 +1629,14 @@ impl DiscoverySourceAssembler {
             physical,
             canonical_identities,
             accepted_reads,
+            cached_snapshot: None,
+            appended_since_snapshot: Vec::new(),
+            snapshot_sources_rebuilt: 0,
+            snapshot_sources_appended: 0,
+            cached_manifest: None,
+            appended_since_manifest: Vec::new(),
+            manifest_entries_rebuilt: 0,
+            manifest_entries_appended: 0,
         })
     }
 
@@ -1273,6 +1669,26 @@ impl DiscoverySourceAssembler {
         }
         let mut added = 0;
         for source in plan.accepted_sources(ledger) {
+            added += usize::from(self.add_source(source)?);
+        }
+        Ok(added)
+    }
+
+    /// Add only the accepted reads of a trusted-toolchain successor plan's delta
+    /// groups (RUE-1112). The predecessor leaves are already assembled, so the
+    /// merged plan and its winner map are never rebuilt.
+    pub fn add_successor_plan_reads(
+        &mut self,
+        plan: &ImportDiscoveryPlan,
+        ledger: &ImportObservationLedger,
+    ) -> CompileResult<usize> {
+        if plan.context != self.context {
+            return Err(invalid_input(
+                "discovery plan belongs to a different epoch or captured context",
+            ));
+        }
+        let mut added = 0;
+        for source in plan.delta_accepted_sources(ledger) {
             added += usize::from(self.add_source(source)?);
         }
         Ok(added)
@@ -1324,16 +1740,31 @@ impl DiscoverySourceAssembler {
                 )));
             }
             if source.canonical_path() < owner.canonical_path.as_ref() {
-                self.entries.get_mut(&owner.module).unwrap().canonical_path =
-                    source.canonical_path.clone();
-                self.accepted_reads
-                    .get_mut(&owner.module)
-                    .unwrap()
-                    .canonical_path = source.canonical_path.clone();
-                self.physical
-                    .get_mut(&source.metadata_identity)
-                    .unwrap()
-                    .canonical_path = source.canonical_path.clone();
+                // The canonical representative may improve only while this
+                // entry is PENDING — not yet carried by any produced snapshot
+                // or manifest. Once produced, the representative is frozen:
+                // rewriting it would diverge the cached shared snapshot from
+                // the provenance manifest and mutate published predecessor
+                // state, which the strictly-additive publication rejects. A
+                // later alias still registers below and joins by physical
+                // identity; only the retained display/provenance path keeps
+                // its published spelling.
+                let snapshot_pending = self.cached_snapshot.is_none()
+                    || self.appended_since_snapshot.contains(&owner.module);
+                let manifest_pending = self.cached_manifest.is_none()
+                    || self.appended_since_manifest.contains(&owner.module);
+                if snapshot_pending && manifest_pending {
+                    self.entries.get_mut(&owner.module).unwrap().canonical_path =
+                        source.canonical_path.clone();
+                    self.accepted_reads
+                        .get_mut(&owner.module)
+                        .unwrap()
+                        .canonical_path = source.canonical_path.clone();
+                    self.physical
+                        .get_mut(&source.metadata_identity)
+                        .unwrap()
+                        .canonical_path = source.canonical_path.clone();
+                }
             }
             self.canonical_identities
                 .insert(source.canonical_path.clone(), source.metadata_identity);
@@ -1364,6 +1795,8 @@ impl DiscoverySourceAssembler {
                 source: source.source.clone(),
             },
         );
+        self.appended_since_snapshot.push(module.clone());
+        self.appended_since_manifest.push(module.clone());
         self.accepted_reads.insert(
             module.clone(),
             AcceptedReadManifestEntry {
@@ -1378,7 +1811,42 @@ impl DiscoverySourceAssembler {
         Ok(true)
     }
 
-    pub fn snapshot(&self) -> CompileResult<SourceSnapshot> {
+    pub fn snapshot(&mut self) -> CompileResult<SourceSnapshot> {
+        // Extension route: once a lineage's first snapshot exists, each
+        // successor snapshot appends only the modules added since, sharing every
+        // predecessor segment by reference — no predecessor source is copied,
+        // re-hashed, or re-validated, and predecessor FileIds stay stable.
+        if let Some(cached) = self.cached_snapshot.clone() {
+            if self.appended_since_snapshot.is_empty() {
+                return Ok(cached);
+            }
+            let next_index = cached.len() as u32;
+            let appended: Vec<crate::source_snapshot::AppendedSource> = self
+                .appended_since_snapshot
+                .iter()
+                .enumerate()
+                .map(|(offset, module)| {
+                    let entry = self
+                        .entries
+                        .get(module)
+                        .expect("appended modules retain their assembled entries");
+                    crate::source_snapshot::AppendedSource {
+                        file_id: FileId::new(next_index + offset as u32 + 1),
+                        physical_path: display_path_for_module(module, entry),
+                        logical_path: module.as_str().to_owned(),
+                        trusted_standard_library: module.is_trusted_standard_library(),
+                        text: entry.source.clone(),
+                    }
+                })
+                .collect();
+            self.snapshot_sources_appended = self
+                .snapshot_sources_appended
+                .saturating_add(appended.len() as u64);
+            let snapshot = SourceSnapshot::extend_with_appended(&cached, appended)?;
+            self.cached_snapshot = Some(snapshot.clone());
+            self.appended_since_snapshot.clear();
+            return Ok(snapshot);
+        }
         let root_module = &self.root_module;
         let ordered = std::iter::once((root_module, self.entries.get(root_module).unwrap())).chain(
             self.entries
@@ -1423,11 +1891,72 @@ impl DiscoverySourceAssembler {
             .enumerate()
             .map(|(index, (_, entry))| (FileId::new((index + 1) as u32), entry.source.clone()))
             .collect();
-        SourceSnapshot::new(metadata, contents)
+        self.snapshot_sources_rebuilt = self
+            .snapshot_sources_rebuilt
+            .saturating_add(self.entries.len() as u64);
+        let snapshot = SourceSnapshot::new(metadata, contents)?;
+        self.cached_snapshot = Some(snapshot.clone());
+        self.appended_since_snapshot.clear();
+        Ok(snapshot)
     }
 
-    pub fn accepted_read_manifest(&self) -> Arc<[AcceptedReadManifestEntry]> {
-        self.accepted_reads.values().cloned().collect()
+    /// Cumulative sources materialized by full snapshot builds; the extension
+    /// path never increments this.
+    pub fn snapshot_sources_rebuilt(&self) -> u64 {
+        self.snapshot_sources_rebuilt
+    }
+
+    /// Cumulative sources appended by extension snapshot builds.
+    pub fn snapshot_sources_appended(&self) -> u64 {
+        self.snapshot_sources_appended
+    }
+
+    /// The accepted-read provenance manifest. Once a lineage's first manifest
+    /// exists, each successor manifest appends only the entries added since,
+    /// sharing every predecessor segment by reference — no predecessor entry is
+    /// copied, re-validated, or re-compared (RUE-1112).
+    pub fn accepted_read_manifest(&mut self) -> AcceptedReadManifest {
+        if let Some(cached) = self.cached_manifest.clone() {
+            if self.appended_since_manifest.is_empty() {
+                return cached;
+            }
+            let appended: Vec<AcceptedReadManifestEntry> = self
+                .appended_since_manifest
+                .iter()
+                .map(|module| {
+                    self.accepted_reads
+                        .get(module)
+                        .expect("appended modules retain their provenance entries")
+                        .clone()
+                })
+                .collect();
+            self.manifest_entries_appended = self
+                .manifest_entries_appended
+                .saturating_add(appended.len() as u64);
+            let manifest = AcceptedReadManifest::extend_with_appended(&cached, appended);
+            self.cached_manifest = Some(manifest.clone());
+            self.appended_since_manifest.clear();
+            return manifest;
+        }
+        self.manifest_entries_rebuilt = self
+            .manifest_entries_rebuilt
+            .saturating_add(self.accepted_reads.len() as u64);
+        let manifest =
+            AcceptedReadManifest::from_entries(self.accepted_reads.values().cloned().collect());
+        self.cached_manifest = Some(manifest.clone());
+        self.appended_since_manifest.clear();
+        manifest
+    }
+
+    /// Cumulative provenance entries materialized by full manifest builds; the
+    /// extension path never increments this.
+    pub fn manifest_entries_rebuilt(&self) -> u64 {
+        self.manifest_entries_rebuilt
+    }
+
+    /// Cumulative provenance entries appended by extension manifest builds.
+    pub fn manifest_entries_appended(&self) -> u64 {
+        self.manifest_entries_appended
     }
 }
 

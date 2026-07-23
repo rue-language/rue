@@ -866,15 +866,17 @@ runtime_error = "integer cast overflow"
 # =============================================================================
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "read_line_returns_option_string"
 spec = ["4.13:33", "4.13:35"]
 source = """
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    // Type checking: @read_line returns Option(StrBuf).
-    let Opt = Option(StrBuf);
+    // Type checking: @read_line returns std.option.Option(StrBuf).
+    let Opt = std.option.Option(StrBuf);
     let line: Opt = @read_line();
     match line {
         Opt.Some(s) => @dbg(s),
@@ -889,15 +891,17 @@ real_std = true
 compile_only = true
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "read_line_no_args"
 spec = ["4.13:34"]
 source = """
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
     // Verify @read_line takes no arguments.
-    let Opt = Option(StrBuf);
+    let Opt = std.option.Option(StrBuf);
     let line: Opt = @read_line();
     match line {
         Opt.Some(s) => @dbg(s),
@@ -920,6 +924,10 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "argument"
+# A reached fallible intrinsic inherently demands the trusted std Option/StrBuf
+# (RUE-1112); std is a toolchain guarantee. Provide it so the arg-count
+# diagnostic — not the toolchain park — is what this case exercises.
+real_std = true
 
 [[case]]
 name = "read_line_wrong_arg_count_two"
@@ -932,20 +940,24 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "argument"
+# See read_line_wrong_arg_count_one: the fallible intrinsic demands trusted std.
+real_std = true
 
 # =============================================================================
 # @read_line Runtime Behavior
 # =============================================================================
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "read_line_basic_input"
 spec = ["4.13:33", "4.13:36", "4.13:37"]
 source = """
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let Opt = Option(StrBuf);
+    let Opt = std.option.Option(StrBuf);
     match @read_line() {
         Opt.Some(line) => @dbg(line),
         Opt.None => {},
@@ -959,14 +971,16 @@ expected_stdout = "Hello World"
 exit_code = 0
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "read_line_strips_newline"
 spec = ["4.13:37"]
 source = """
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let Opt = Option(StrBuf);
+    let Opt = std.option.Option(StrBuf);
     match @read_line() {
         Opt.Some(line) => @dbg(line),
         Opt.None => {},
@@ -980,14 +994,16 @@ expected_stdout = "test"
 exit_code = 0
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "read_line_multiple_lines"
 spec = ["4.13:36"]
 source = """
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let Opt = Option(StrBuf);
+    let Opt = std.option.Option(StrBuf);
     match @read_line() {
         Opt.Some(line) => @dbg(line),
         Opt.None => {},
@@ -1008,14 +1024,16 @@ second
 exit_code = 0
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "read_line_partial_line_at_eof"
 spec = ["4.13:38"]
 source = """
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let Opt = Option(StrBuf);
+    let Opt = std.option.Option(StrBuf);
     match @read_line() {
         Opt.Some(line) => @dbg(line),
         Opt.None => {},
@@ -1030,14 +1048,16 @@ expected_stdout = "partial"
 exit_code = 0
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "read_line_empty_line"
 spec = ["4.13:36", "4.13:37"]
 source = """
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let Opt = Option(StrBuf);
+    let Opt = std.option.Option(StrBuf);
     match @read_line() {
         Opt.Some(line) => @dbg(line),
         Opt.None => {},
@@ -1052,14 +1072,16 @@ expected_stdout = ""
 exit_code = 0
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "read_line_eof_no_data_yields_none"
 spec = ["4.13:39"]
 source = """
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
 fn main() -> i32 {
-    let Opt = Option(StrBuf);
+    let Opt = std.option.Option(StrBuf);
     let line: Opt = @read_line();
     // EOF with no data is None, not a trap: this returns 0, exit success.
     match line {
@@ -1081,72 +1103,91 @@ exit_code = 0
 # =============================================================================
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "parse_i32_basic"
 spec = ["4.13:43", "4.13:44", "4.13:45"]
 source = """
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
+const std = @import("std");
 fn main() -> i32 {
-    let Opt = Option(i32);
+    let Opt = std.option.Option(i32);
     match @parse_i32("42") {
         Opt.Some(n) => n,
         Opt.None => 0,
     }
 }
 """
+real_std = true
 exit_code = 42
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "parse_i32_negative"
 spec = ["4.13:43", "4.13:44", "4.13:47"]
 source = """
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
+const std = @import("std");
 fn main() -> i32 {
-    let Opt = Option(i32);
+    let Opt = std.option.Option(i32);
     match @parse_i32("-17") {
         Opt.Some(n) => n,
         Opt.None => 0,
     }
 }
 """
+real_std = true
 exit_code = 239
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "parse_i32_zero"
 spec = ["4.13:43", "4.13:44"]
 source = """
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
+const std = @import("std");
 fn main() -> i32 {
-    let Opt = Option(i32);
+    let Opt = std.option.Option(i32);
     match @parse_i32("0") {
         Opt.Some(n) => n,
         Opt.None => 1,
     }
 }
 """
+real_std = true
 exit_code = 0
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "parse_i32_leading_zeros"
 spec = ["4.13:43", "4.13:47"]
 source = """
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
+const std = @import("std");
 fn main() -> i32 {
-    let Opt = Option(i32);
+    let Opt = std.option.Option(i32);
     match @parse_i32("007") {
         Opt.Some(n) => n,
         Opt.None => 0,
     }
 }
 """
+real_std = true
 exit_code = 7
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "parse_i32_string_not_consumed"
 spec = ["4.13:46"]
 source = """
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
+const std = @import("std");
 fn main() -> i32 {
-    let Opt = Option(i32);
+    let Opt = std.option.Option(i32);
     let s = "42";
     let n: Opt = @parse_i32(s);
     @dbg(s);
@@ -1156,66 +1197,83 @@ fn main() -> i32 {
     }
 }
 """
+real_std = true
 exit_code = 42
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "parse_i64_basic"
 spec = ["4.13:43", "4.13:44", "4.13:45"]
 source = """
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
+const std = @import("std");
 fn main() -> i32 {
-    let Opt = Option(i64);
+    let Opt = std.option.Option(i64);
     match @parse_i64("123") {
         Opt.Some(n) => @intCast(n),
         Opt.None => 0,
     }
 }
 """
+real_std = true
 exit_code = 123
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "parse_i64_negative"
 spec = ["4.13:43", "4.13:44", "4.13:47"]
 source = """
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
+const std = @import("std");
 fn main() -> i32 {
-    let Opt = Option(i64);
+    let Opt = std.option.Option(i64);
     match @parse_i64("-5") {
         Opt.Some(n) => @intCast(n),
         Opt.None => 0,
     }
 }
 """
+real_std = true
 exit_code = 251
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "parse_u32_basic"
 spec = ["4.13:43", "4.13:44", "4.13:45"]
 source = """
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
+const std = @import("std");
 fn main() -> i32 {
-    let Opt = Option(u32);
+    let Opt = std.option.Option(u32);
     match @parse_u32("42") {
         Opt.Some(n) => @intCast(n),
         Opt.None => 0,
     }
 }
 """
+real_std = true
 exit_code = 42
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "parse_u64_basic"
 spec = ["4.13:43", "4.13:44", "4.13:45"]
 source = """
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
+const std = @import("std");
 fn main() -> i32 {
-    let Opt = Option(u64);
+    let Opt = std.option.Option(u64);
     match @parse_u64("99") {
         Opt.Some(n) => @intCast(n),
         Opt.None => 0,
     }
 }
 """
+real_std = true
 exit_code = 99
 
 [[case]]
@@ -1228,6 +1286,9 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
+# The fallible intrinsic demands trusted std Option (RUE-1112); provide it so
+# the arg-count diagnostic, not the toolchain park, is exercised.
+real_std = true
 
 [[case]]
 name = "parse_wrong_arg_count_two"
@@ -1239,6 +1300,8 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
+# See parse_wrong_arg_count_zero: the fallible intrinsic demands trusted std.
+real_std = true
 
 [[case]]
 name = "parse_non_string_argument"
@@ -1251,128 +1314,223 @@ fn main() -> i32 {
 compile_fail = true
 # Text consumers accept every text rung and diagnose that shared contract.
 error_contains = "expects text"
+# The fallible intrinsic demands trusted std Option (RUE-1112); provide it so
+# the argument-type diagnostic, not the toolchain park, is exercised.
+real_std = true
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "parse_empty_string_yields_none"
 spec = ["4.13:49"]
 source = """
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
+const std = @import("std");
 fn main() -> i32 {
-    let Opt = Option(i32);
+    let Opt = std.option.Option(i32);
     match @parse_i32("") {
         Opt.Some(n) => n,
         Opt.None => 42,
     }
 }
 """
+real_std = true
 exit_code = 42
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "parse_invalid_char_yields_none"
 spec = ["4.13:49"]
 source = """
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
+const std = @import("std");
 fn main() -> i32 {
-    let Opt = Option(i32);
+    let Opt = std.option.Option(i32);
     match @parse_i32("12abc") {
         Opt.Some(n) => n,
         Opt.None => 42,
     }
 }
 """
+real_std = true
 exit_code = 42
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "parse_overflow_i32_yields_none"
 spec = ["4.13:49"]
 source = """
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
+const std = @import("std");
 fn main() -> i32 {
-    let Opt = Option(i32);
+    let Opt = std.option.Option(i32);
     match @parse_i32("2147483648") {
         Opt.Some(n) => n,
         Opt.None => 42,
     }
 }
 """
+real_std = true
 exit_code = 42
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "parse_overflow_u32_yields_none"
 spec = ["4.13:49"]
 source = """
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
+const std = @import("std");
 fn main() -> i32 {
-    let Opt = Option(u32);
+    let Opt = std.option.Option(u32);
     match @parse_u32("4294967296") {
         Opt.Some(n) => @intCast(n),
         Opt.None => 42,
     }
 }
 """
+real_std = true
 exit_code = 42
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "parse_negative_unsigned_yields_none"
 spec = ["4.13:48", "4.13:49"]
 source = """
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
+const std = @import("std");
 fn main() -> i32 {
-    let Opt = Option(u32);
+    let Opt = std.option.Option(u32);
     match @parse_u32("-1") {
         Opt.Some(n) => @intCast(n),
         Opt.None => 42,
     }
 }
 """
+real_std = true
 exit_code = 42
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "parse_i32_max"
 spec = ["4.13:43", "4.13:44"]
 source = """
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
+const std = @import("std");
 fn main() -> i32 {
-    let Opt = Option(i32);
+    let Opt = std.option.Option(i32);
     match @parse_i32("127") {
         Opt.Some(n) => n,
         Opt.None => 0,
     }
 }
 """
+real_std = true
 exit_code = 127
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "parse_i32_boundary"
 spec = ["4.13:43", "4.13:44"]
 source = """
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
+const std = @import("std");
 fn main() -> i32 {
     // Test parsing of i32.MAX (doesn't overflow)
-    let Opt = Option(i32);
+    let Opt = std.option.Option(i32);
     match @parse_i32("2147483647") {
         Opt.Some(n) => if n == 2147483647 { 255 } else { 1 },
         Opt.None => 1,
     }
 }
 """
+real_std = true
 exit_code = 255
 
 [[case]]
+# Fallible intrinsics yield the exact trusted std Option(payload); context
+# checks that identity (4.13:35/:44). Contextual annotations and matches use
+# std.option.Option.
 name = "parse_i32_min"
 spec = ["4.13:43", "4.13:44", "4.13:47"]
 source = """
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
+const std = @import("std");
 fn main() -> i32 {
     // Test parsing of i32.MIN (doesn't overflow)
-    let Opt = Option(i32);
+    let Opt = std.option.Option(i32);
     match @parse_i32("-2147483648") {
         Opt.Some(n) => if n == -2147483648 { 254 } else { 1 },
         Opt.None => 1,
     }
 }
 """
+real_std = true
 exit_code = 254
+
+# =============================================================================
+# RUE-1112 NEW context-mismatch negatives: an intrinsic yields the EXACT trusted
+# std Option; context only CHECKS that identity. A contextual annotation of a
+# user-defined lookalike receiving an intrinsic result is a type mismatch
+# (E0702, IntrinsicTypeMismatch), not a nominal the intrinsic adopts. Earlier
+# context SELECTED the annotated nominal and these compiled; the diagnostic is
+# the new-rule outcome, so both require the new machinery.
+# =============================================================================
+
+[[case]]
+# RUE-1112: context-mismatch. @parse_i32 yields the trusted std Option(i32); the
+# `let n: Bad` annotation is a lookalike, so context-checking rejects it (E0702).
+# No `@import`: the trusted std Option(i32) is compiler-rooted, so `real_std`
+# supplies the toolchain std root the acquisition reads from.
+name = "parse_lookalike_annotation_mismatch"
+spec = ["4.13:44"]
+description = "Annotating an @parse_i32 result with a user-defined Option lookalike is a type mismatch (E0702)."
+compile_fail = true
+error_contains = ["[E0702]", "@parse_i32"]
+source = """
+fn Lookalike(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn main() -> i32 {
+    let Bad = Lookalike(i32);
+    let n: Bad = @parse_i32("42");
+    match n {
+        Bad.Some(v) => v,
+        Bad.None => 0,
+    }
+}
+"""
+real_std = true
+
+[[case]]
+# RUE-1112: context-mismatch. @read_line yields the trusted std Option(StrBuf);
+# the `let line: Bad` annotation is a lookalike, so context-checking rejects it
+# (E0702).
+name = "read_line_lookalike_annotation_mismatch"
+spec = ["4.13:35"]
+description = "Annotating an @read_line result with a user-defined Option lookalike is a type mismatch (E0702)."
+compile_fail = true
+error_contains = ["[E0702]", "@read_line"]
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn Lookalike(comptime T: type) -> type {
+    enum { Some(T), None }
+}
+fn main() -> i32 {
+    let Bad = Lookalike(StrBuf);
+    let line: Bad = @read_line();
+    match line {
+        Bad.Some(_s) => 1,
+        Bad.None => 0,
+    }
+}
+"""
+real_std = true
 
 # =============================================================================
 # @random_u32 Intrinsic

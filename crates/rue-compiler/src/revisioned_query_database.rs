@@ -22,11 +22,11 @@ type SemanticNucleusFamily = QueryFamily<
 >;
 
 use crate::{
-    AcceptedReadManifestEntry, CompileError, CompileResult, DefinitionKind, DefinitionNamespace,
-    ErrorKind, ImportDemandFrontier, ImportDemandMode, ImportDemandRoots, ImportDiscoveryContext,
-    ImportDiscoveryPlan, ImportDiscoveryRequest, ImportInputRevision, ImportObservation,
-    ImportObservationLedger, ModuleId, ModuleRevision, SourceSnapshot, Span, StableDefinitionKey,
-    SyntaxWork,
+    AcceptedReadManifest, AcceptedReadManifestEntry, CompileError, CompileResult, DefinitionKind,
+    DefinitionNamespace, ErrorKind, ImportDemandFrontier, ImportDemandMode, ImportDemandRoots,
+    ImportDiscoveryContext, ImportDiscoveryPlan, ImportDiscoveryRequest, ImportInputRevision,
+    ImportObservation, ImportObservationLedger, ModuleId, ModuleRevision, SourceRevision,
+    SourceSnapshot, Span, StableDefinitionKey, SyntaxWork,
 };
 
 use crate::canonical_lower::{ModuleRirOutput, lower_module_rir_with_work};
@@ -132,6 +132,7 @@ where
     F::Key: 'static,
     F::Record: 'static,
 {
+    #[cfg(test)]
     pub(crate) fn new(runtime: &QueryRuntime, name: &'static str) -> Self {
         let family = runtime
             .family_with_equality(name, F::MAX_TERMINALS, record_equal::<F>)
@@ -144,8 +145,47 @@ where
         }
     }
 
+    /// A family registered CONTENT-ADDRESSED (RUE-1112): its records are pure
+    /// functions of their keys alone, which is the sole minting authority for
+    /// the exact-terminal adoption capability
+    /// ([`rue_query::QueryFamily::adoptable_terminal`]). The parse family
+    /// qualifies: an ordinary key is the exact source content, table order,
+    /// and presentation; a successor key pins the published immutable lineage
+    /// plus its exact appended segment.
+    pub(crate) fn new_content_addressed(runtime: &QueryRuntime, name: &'static str) -> Self {
+        let family = runtime
+            .content_addressed_family_with_equality(name, F::MAX_TERMINALS, record_equal::<F>)
+            .expect("compiler query families have unique stable names");
+        let selection = family.selection();
+        Self {
+            runtime: runtime.clone(),
+            family,
+            selection,
+        }
+    }
+
     fn key(&mut self, key: F::Key) -> CompatibilityKey<F::Key> {
         CompatibilityKey { key }
+    }
+
+    /// The runtime family handle, for a computing query that declares a
+    /// dependency on one of this family's terminals (RUE-1112): requesting a
+    /// key through it records a real dependency edge, so red/green validation
+    /// and leases flow through the terminal.
+    pub(crate) fn family_handle(&self) -> QueryFamily<CompatibilityKey<F::Key>, F::Record> {
+        self.family.clone()
+    }
+
+    /// The currently selected terminal, for identity assertions.
+    #[cfg(test)]
+    pub(crate) fn selected_terminal(&self) -> Option<Arc<rue_query::QueryTerminal<F::Record>>> {
+        self.selection.current().cloned()
+    }
+
+    /// The last good terminal itself — the exact capability a successor
+    /// computation records as its predecessor dependency (RUE-1112).
+    pub(crate) fn last_good_terminal(&self) -> Option<&Arc<rue_query::QueryTerminal<F::Record>>> {
+        self.selection.last_good()
     }
 
     pub(crate) fn prepare(&mut self, key: F::Key) -> PreparedRevisionedQuery<F> {
@@ -438,6 +478,17 @@ pub(crate) struct RevisionedQueryDatabase {
     raw_declaration_signatures:
         QueryFamily<RawDeclarationSignatureQueryKey, RawDeclarationSignatureQueryValue>,
     raw_declaration_bodies: QueryFamily<RawDeclarationBodyQueryKey, RawDeclarationBodyQueryValue>,
+    // The registered `body-toolchain-demands` node (RUE-1112). It projects one
+    // reached body's exact raw declaration body to the sorted, deduplicated set
+    // of trusted toolchain modules its fallible intrinsics demand plus the
+    // demanding body's stable requester anchor. It is pure (its only input is the
+    // raw-body query, so the dependency edge is honest for invalidation, metrics,
+    // and future parallel scheduling), does no presence check, and does no I/O.
+    // The rooted semantic attempt queries it BEFORE each body transaction, checks
+    // the demanded modules against the satisfied catalogue, and parks the absent
+    // ones without entering the transaction.
+    body_toolchain_demands:
+        QueryFamily<crate::body_query::BodyQueryKey, crate::BodyToolchainDemand>,
     body_transactions:
         QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyTransaction>,
     canonical_bodies:
@@ -460,6 +511,45 @@ pub(crate) struct RevisionedQueryDatabase {
     current_import_revision: Option<ImportInputRevision>,
     #[cfg(test)]
     current_test_import_revision: Option<Revision>,
+    /// Cumulative count of import occurrences the demand frontier has rooted
+    /// through [`Self::import_frontier`] (RUE-1112). One `ResolveImport`
+    /// projection is dispatched per rooted occurrence, so this measures the
+    /// per-round discovery-frontier breadth. The trusted-toolchain re-close roots
+    /// only in the newly appended leaves and modules newly discovered from them,
+    /// so a predecessor occurrence contributes to this counter exactly once — at
+    /// the initial close — and never again during acquisition.
+    import_frontier_roots_requested: u64,
+    /// Cumulative count of occurrences the close-time exact-import projection has
+    /// dispatched a `ResolveImport` query for through [`Self::exact_import_groups`]
+    /// (RUE-1112). A trusted-toolchain successor close projects only the newly
+    /// appended occurrences, so a predecessor occurrence contributes here exactly
+    /// once — at the initial close — and never again during acquisition.
+    exact_import_groups_dispatched: u64,
+    /// Cumulative leaves published through the complete publication path.
+    import_view_full_leaves_published: u64,
+    /// Cumulative delta leaves published through the successor overlay path.
+    import_view_overlay_leaves_published: u64,
+    /// Cumulative ledger observations DEEP-COPIED while cloning a view's
+    /// carried ledger (the cloned value's recorded head — its own delta). The
+    /// persistent ledger shares frozen predecessor segments by `Arc`, so this
+    /// counts only per-step delta entries and stays flat across predecessor
+    /// topologies. Atomic because shared-state accessors count from `&self`.
+    import_view_ledger_entries_cloned: std::sync::atomic::AtomicU64,
+    /// Predecessor source entries element-compared by the overlay publication's
+    /// FALLBACK diff (a host-rebuilt snapshot); the structural-authority path
+    /// never increments this, so the acquisition profile can require it zero.
+    import_view_source_entries_compared: std::sync::atomic::AtomicU64,
+    /// Predecessor accepted-read entries element-compared by the overlay
+    /// publication's FALLBACK provenance diff (a host-rebuilt manifest); the
+    /// structural-authority path never increments this, so the acquisition
+    /// profile can require it zero.
+    import_view_read_entries_compared: std::sync::atomic::AtomicU64,
+    /// The module revisions appended by overlay publications since the last
+    /// committed close (RUE-1112): the session-owned recorded-additions lineage.
+    /// The successor stage/close derive their module delta from THIS record —
+    /// each exact issued batch and the trusted publish append here at
+    /// publication — instead of re-deriving it by scanning complete views.
+    lineage_additions: Vec<ModuleRevision>,
     pub(crate) parse: RevisionedFamily<super::session::ParseQuery>,
 }
 
@@ -774,8 +864,8 @@ struct ImportInputView {
     revision: Revision,
     generation: u64,
     context: ImportDiscoveryContext,
-    sources: Arc<[ModuleRevision]>,
-    accepted_reads: Arc<[AcceptedReadManifestEntry]>,
+    sources: SourceRevision,
+    accepted_reads: AcceptedReadManifest,
     ledger: ImportObservationLedger,
 }
 
@@ -1053,6 +1143,98 @@ fn module_input_view(
         .find(|view| view.revision == revision)
         .cloned()
         .ok_or(QueryAbort::UnpublishedRevision(revision))
+}
+
+/// What authorizes a successor overlay's added modules (RUE-1112): a frontier
+/// batch admits exactly the modules its own accepted observations resolve; a
+/// trusted successor admits exactly the capability-verified leaf set.
+pub(crate) enum OverlayJustification<'a> {
+    BatchAccepted,
+    TrustedLeaves(&'a std::collections::BTreeSet<ModuleId>),
+}
+
+/// Two-pointer walk over two sequences sorted by `order`: returns the entries of
+/// `successor` absent from `parent`, and rejects any parent entry that does not
+/// reappear byte-identical (an additive lineage can only append).
+fn additive_diff<'a, T: Clone + PartialEq + 'a>(
+    parent: impl Iterator<Item = &'a T>,
+    successor: impl Iterator<Item = &'a T>,
+    order: impl Fn(&T, &T) -> std::cmp::Ordering,
+    what: &str,
+) -> CompileResult<Vec<T>> {
+    let mut added = Vec::new();
+    let mut parent = parent.peekable();
+    let mut successor = successor.peekable();
+    loop {
+        match (parent.peek(), successor.peek()) {
+            (Some(old), Some(new)) => match order(old, new) {
+                std::cmp::Ordering::Equal => {
+                    if old != new {
+                        return Err(import_input_error(format!(
+                            "successor overlay mutates a predecessor {what} (the lineage is strictly additive)"
+                        )));
+                    }
+                    parent.next();
+                    successor.next();
+                }
+                std::cmp::Ordering::Greater => {
+                    added.push((*new).clone());
+                    successor.next();
+                }
+                std::cmp::Ordering::Less => {
+                    return Err(import_input_error(format!(
+                        "successor overlay drops a predecessor {what} (the lineage is strictly additive)"
+                    )));
+                }
+            },
+            (Some(_), None) => {
+                return Err(import_input_error(format!(
+                    "successor overlay drops a predecessor {what} (the lineage is strictly additive)"
+                )));
+            }
+            (None, Some(new)) => {
+                added.push((*new).clone());
+                successor.next();
+            }
+            (None, None) => return Ok(added),
+        }
+    }
+}
+
+/// Publish module-source leaves for ONLY the newly added modules of a successor
+/// overlay; inherited modules keep their leaves through the overlay's parent.
+/// The retained module view still records the complete successor snapshot (an
+/// `Arc`-backed clone).
+fn publish_module_inputs_delta(
+    store: &Mutex<ModuleInputStore>,
+    revision: Revision,
+    snapshot: &SourceSnapshot,
+    new_sources: &[ModuleRevision],
+) -> Vec<(InputIdentity, u64)> {
+    let mut store = store
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut leaves = Vec::new();
+    for source in new_sources {
+        let leaf = ModuleInputLeaf {
+            revision: source.clone(),
+        };
+        let ModuleInputStore {
+            next_stamp, stamps, ..
+        } = &mut *store;
+        leaves.push((
+            module_source_input(&source.module),
+            exact_value_stamp(next_stamp, stamps, &leaf),
+        ));
+    }
+    store.revisions.push_back(Arc::new(ModuleInputView {
+        revision,
+        snapshot: snapshot.clone(),
+    }));
+    while store.revisions.len() > MODULE_INPUT_REVISION_RETENTION {
+        store.revisions.pop_front();
+    }
+    leaves
 }
 
 fn publish_module_inputs(
@@ -6503,8 +6685,7 @@ impl RevisionedQueryDatabase {
                     context.input(accepted_read_input(key.occurrence.importer()))?;
                     let importer = view
                         .accepted_reads
-                        .iter()
-                        .find(|entry| entry.module() == key.occurrence.importer())
+                        .find_module(key.occurrence.importer())
                         .expect("indexed importer retains accepted-read provenance");
                     let occurrence = crate::ImportOccurrenceKey::from_directive(site);
                     let groups = crate::import_discovery::discovery_groups_for_occurrence(
@@ -6851,6 +7032,65 @@ impl RevisionedQueryDatabase {
                 crate::body_query::transaction_equal,
             )
             .expect("the BodyTransaction family has one canonical name");
+        // The registered `body-toolchain-demands` node (RUE-1112). Its only
+        // input is the exact raw declaration body, so the raw-body dependency
+        // edge is recorded honestly; the projection itself is a pure lexical
+        // scan of that body's fallible intrinsics. It performs no presence check
+        // and no I/O, so the rooted attempt may evaluate it before deciding to
+        // park. A body with no source declaration, an unavailable raw body, or no
+        // fallible intrinsic projects the empty demand set.
+        let bodies_for_toolchain_demands = raw_declaration_bodies.clone();
+        let body_toolchain_demands = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.body-toolchain-demands",
+                BODY_QUERY_MEMO_RETENTION,
+                |left: &crate::BodyToolchainDemand, right: &crate::BodyToolchainDemand| {
+                    left == right
+                },
+                move |context, _, key: &crate::body_query::BodyQueryKey| {
+                    let Some(definition) = body_source_definition_key(&key.instance).cloned()
+                    else {
+                        return Ok(QueryOutput::success(
+                            crate::BodyToolchainDemand::from_payload_kinds([], None),
+                        ));
+                    };
+                    let Some(candidate) = declaration_candidate_for_stable_key(&definition) else {
+                        return Ok(QueryOutput::success(
+                            crate::BodyToolchainDemand::from_payload_kinds([], Some(definition)),
+                        ));
+                    };
+                    let raw = context.query_registered(
+                        &bodies_for_toolchain_demands,
+                        RawDeclarationBodyQueryKey(candidate),
+                    )?;
+                    let rue_query::QueryOutcome::Success(RawDeclarationBodyQueryValue::Available(
+                        raw_body,
+                    )) = raw.outcome()
+                    else {
+                        // No scannable body text (absent, ambiguous, or an
+                        // occurrence failure): nothing is demanded. The body
+                        // transaction, which runs only on a satisfied prerequisite,
+                        // surfaces that failure through its ordinary path.
+                        return Ok(QueryOutput::success(
+                            crate::BodyToolchainDemand::from_payload_kinds([], Some(definition)),
+                        ));
+                    };
+                    // The single canonical per-body fallible-intrinsic scan
+                    // (RUE-1112 C1). This node is the one authority for a body's
+                    // payload kinds AND the trusted-module demands they imply; the
+                    // body transaction observes this terminal instead of rescanning
+                    // the raw text.
+                    let payload_kinds =
+                        crate::well_known_option::scan_body_payload_kinds(&raw_body.body);
+                    Ok(QueryOutput::success(
+                        crate::BodyToolchainDemand::from_payload_kinds(
+                            payload_kinds,
+                            Some(definition),
+                        ),
+                    ))
+                },
+            )
+            .expect("the BodyToolchainDemands family has one canonical name");
         let transactions_for_produced_anonymous = body_transactions.clone();
         let semantic_nucleus_for_produced_anonymous =
             Arc::new(std::sync::OnceLock::<SemanticNucleusFamily>::new());
@@ -8210,7 +8450,7 @@ impl RevisionedQueryDatabase {
             "SemanticNucleus producer projection is installed once"
         );
         Self {
-            parse: RevisionedFamily::new(&runtime, "compiler.parse"),
+            parse: RevisionedFamily::new_content_addressed(&runtime, "compiler.parse"),
             runtime: runtime.clone(),
             next_revision: 1,
             next_source_stamp: 1,
@@ -8229,6 +8469,7 @@ impl RevisionedQueryDatabase {
             #[cfg(test)]
             raw_declaration_signatures,
             raw_declaration_bodies,
+            body_toolchain_demands,
             body_transactions,
             canonical_bodies: runtime
                 .family_with_equality(
@@ -8257,6 +8498,14 @@ impl RevisionedQueryDatabase {
             current_import_revision: None,
             #[cfg(test)]
             current_test_import_revision: None,
+            import_frontier_roots_requested: 0,
+            exact_import_groups_dispatched: 0,
+            import_view_full_leaves_published: 0,
+            import_view_overlay_leaves_published: 0,
+            import_view_ledger_entries_cloned: std::sync::atomic::AtomicU64::new(0),
+            import_view_source_entries_compared: std::sync::atomic::AtomicU64::new(0),
+            import_view_read_entries_compared: std::sync::atomic::AtomicU64::new(0),
+            lineage_additions: Vec::new(),
         }
     }
 }
@@ -8474,9 +8723,11 @@ impl RevisionedQueryDatabase {
         >,
         declaration_modules: Arc<[ModuleId]>,
         producer_body_terminal_required: bool,
+        well_known_demands: Arc<[crate::body_query::WellKnownOptionDemand]>,
         cancellation: CancellationToken,
         compute: impl FnOnce(
             Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
+            crate::body_query::WellKnownOptionResolution,
         ) -> Result<crate::body_query::BodyTransaction, QueryAbort>,
     ) -> Result<
         Arc<rue_query::QueryTerminal<crate::body_query::BodyTransaction>>,
@@ -8511,6 +8762,19 @@ impl RevisionedQueryDatabase {
                 else {
                     return Err(QueryAbort::Canceled);
                 };
+                // Observe THIS body's exact fallible-intrinsic payload set from the
+                // registered `body-toolchain-demands` node — the ONE canonical
+                // per-body scan (RUE-1112 C1) — instead of rescanning the raw text.
+                // A body roots only the payloads it uses, so an unrelated body gains
+                // no query edge to payloads it does not use.
+                let toolchain_demand =
+                    context.query_registered(&self.body_toolchain_demands, key.clone())?;
+                let rue_query::QueryOutcome::Success(toolchain_demand) =
+                    toolchain_demand.outcome()
+                else {
+                    unreachable!("BodyToolchainDemands publishes typed values")
+                };
+                let body_payload_kinds = toolchain_demand.payload_kinds();
                 // The one-body resolver consumes declaration-set selection,
                 // including negative and qualified lookups that do not become
                 // positive BodyReferences. Until it publishes those exact
@@ -8604,11 +8868,56 @@ impl RevisionedQueryDatabase {
                         );
                     }
                 }
+                // Root the trusted-std `Option(payload)` demands under THIS
+                // body's lease (RUE-1112). Each `ComptimeCall` resolves the real
+                // materialized `Option` specialization with std provenance; the
+                // nucleus memoizes it so bodies sharing a payload share one
+                // terminal while keeping their own per-body edge. The resolved
+                // enums reach AIR through the narrow per-body `WellKnownTypes`
+                // input, never this body's composition universe. A demand that
+                // fails to project (e.g. an absent payload type) is skipped so
+                // the body simply falls through to the legacy structural scan.
+                let well_known = {
+                    let mut option_by_payload = Vec::new();
+                    let mut nominals = BTreeMap::new();
+                    for demand in well_known_demands
+                        .iter()
+                        .filter(|demand| body_payload_kinds.contains(&demand.kind))
+                    {
+                        let projected = context.query_registered(
+                            &self.semantic_nucleus,
+                            crate::semantic_query_nucleus::SemanticNucleusKey::ComptimeCall(
+                                demand.call.clone(),
+                            ),
+                        )?;
+                        if let rue_query::QueryOutcome::Success(
+                            crate::semantic_query_nucleus::SemanticNucleusValue::ComptimeCall(
+                                projection,
+                            ),
+                        ) = projected.outcome()
+                            && let crate::semantic_query_nucleus::ComptimeCallResultProjection::Type(
+                                option_type,
+                            ) = &projection.result
+                        {
+                            option_by_payload.push((demand.payload.clone(), option_type.clone()));
+                            for nominal in projection.anonymous_nominals.iter() {
+                                nominals.insert(nominal.identity.clone(), nominal.clone());
+                            }
+                        }
+                    }
+                    crate::body_query::WellKnownOptionResolution {
+                        option_by_payload: Arc::from(option_by_payload),
+                        anonymous_nominals: Arc::from(
+                            nominals.into_values().collect::<Vec<_>>(),
+                        ),
+                    }
+                };
                 let transaction = compute(
                     selected_anonymous
                         .into_values()
                         .collect::<Vec<_>>()
                         .into(),
+                    well_known,
                 )?;
                 let mut semantic_dependencies = BTreeSet::from([definition]);
                 let mut anonymous_dependencies = BTreeSet::new();
@@ -8858,6 +9167,30 @@ impl RevisionedQueryDatabase {
             .into_result()
     }
 
+    /// Project one reached body's trusted-toolchain-module demand set (RUE-1112)
+    /// from the registered `body-toolchain-demands` node. This is the rooted
+    /// semantic attempt's park prerequisite: it observes the body's exact raw
+    /// body, is pure and I/O-free, and never itself parks. The rooted attempt
+    /// checks the projected modules against the satisfied catalogue and decides
+    /// whether to park BEFORE the body transaction runs.
+    pub(crate) fn body_toolchain_demands(
+        &self,
+        revision: Revision,
+        key: crate::body_query::BodyQueryKey,
+        cancellation: CancellationToken,
+    ) -> Result<Arc<rue_query::QueryTerminal<crate::BodyToolchainDemand>>, QueryAbort> {
+        self.runtime
+            .request_registered(&self.body_toolchain_demands, revision, key, cancellation)
+            .into_result()
+    }
+
+    /// Whether the body-transaction family has published any terminal. Used by
+    /// the RUE-1112 park test to prove a park precedes any body transaction.
+    #[cfg(test)]
+    pub(crate) fn any_body_transaction_terminal(&self) -> bool {
+        self.body_transactions.any_retained_key(|_| true)
+    }
+
     pub(crate) fn projected_declaration_semantics(
         &self,
         revision: Revision,
@@ -9076,11 +9409,12 @@ impl RevisionedQueryDatabase {
         &mut self,
         snapshot: &SourceSnapshot,
         context: ImportDiscoveryContext,
-        accepted_reads: Arc<[AcceptedReadManifestEntry]>,
+        accepted_reads: AcceptedReadManifest,
     ) -> CompileResult<ImportInputRevision> {
         self.next_import_request += 1;
         let generation = self.next_import_request;
         self.current_import_revision = None;
+        self.lineage_additions.clear();
         // A new request generation is a fresh filesystem observation epoch.
         // Reuse requires a future explicit watch/read-policy proof token. The
         // API deliberately has no carried-ledger input that could be mistaken
@@ -9117,9 +9451,7 @@ impl RevisionedQueryDatabase {
                 .cloned()
         }
         .ok_or_else(|| import_input_error("import input revision is no longer retained"))?;
-        if plan.context() != &view.context
-            || plan.source_revision().modules() != view.sources.as_ref()
-        {
+        if plan.context() != &view.context || plan.source_revision() != &view.sources {
             return Err(import_input_error(
                 "import plan does not match its pinned granular input revision",
             ));
@@ -9138,6 +9470,9 @@ impl RevisionedQueryDatabase {
         let mut fanout = Vec::<Vec<ImportDiscoveryRequest>>::new();
         let mut operation_indices = BTreeMap::<ImportHostOperationKey, usize>::new();
         let mut speculative_blocked = false;
+        self.import_frontier_roots_requested = self
+            .import_frontier_roots_requested
+            .saturating_add(roots.occurrences().len() as u64);
         for occurrence in roots.occurrences() {
             let key = ResolveImportKey {
                 occurrence: occurrence.clone(),
@@ -9193,8 +9528,71 @@ impl RevisionedQueryDatabase {
         self.current_import_revision
     }
 
+    /// Cumulative import-occurrence roots dispatched by [`Self::import_frontier`].
+    /// See the field docs on `import_frontier_roots_requested`.
+    pub(crate) fn import_frontier_roots_requested(&self) -> u64 {
+        self.import_frontier_roots_requested
+    }
+
+    /// Cumulative close-time `ResolveImport` projections dispatched by
+    /// [`Self::exact_import_groups`]. See the field docs on
+    /// `exact_import_groups_dispatched`.
+    pub(crate) fn exact_import_groups_dispatched(&self) -> u64 {
+        self.exact_import_groups_dispatched
+    }
+
+    /// Cumulative leaves published through the complete
+    /// [`Self::publish_import_view`] path (fresh generations). Scales with the
+    /// program; never used on the successor overlay path.
+    pub(crate) fn import_view_full_leaves_published(&self) -> u64 {
+        self.import_view_full_leaves_published
+    }
+
+    /// Cumulative leaves published through the sparse successor overlay path
+    /// ([`Self::publish_import_view_overlay`]): delta leaves plus the one
+    /// re-stamped aggregate topology leaf. Predecessor leaves are structurally
+    /// inherited and never counted here, so the acquisition delta is O(new
+    /// leaves), independent of the predecessor topology.
+    pub(crate) fn import_view_overlay_leaves_published(&self) -> u64 {
+        self.import_view_overlay_leaves_published
+    }
+
+    /// Cumulative ledger observations deep-copied while cloning view ledgers
+    /// (each clone copies only the cloned value's recorded delta; frozen
+    /// predecessor segments are shared by `Arc`).
+    pub(crate) fn import_view_ledger_entries_cloned(&self) -> u64 {
+        self.import_view_ledger_entries_cloned
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Predecessor source entries compared by the overlay publication's fallback
+    /// diff; zero whenever the structural-authority path ran.
+    pub(crate) fn import_view_source_entries_compared(&self) -> u64 {
+        self.import_view_source_entries_compared
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Predecessor accepted-read entries compared by the overlay publication's
+    /// fallback provenance diff; zero whenever the structural-authority path
+    /// ran.
+    pub(crate) fn import_view_read_entries_compared(&self) -> u64 {
+        self.import_view_read_entries_compared
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The module revisions appended by overlay publications since the last
+    /// committed close — the recorded-additions lineage (RUE-1112).
+    pub(crate) fn lineage_additions(&self) -> &[ModuleRevision] {
+        &self.lineage_additions
+    }
+
+    /// Reset the recorded-additions lineage at a committed close boundary.
+    pub(crate) fn clear_lineage_additions(&mut self) {
+        self.lineage_additions.clear();
+    }
+
     pub(crate) fn exact_import_groups(
-        &self,
+        &mut self,
         revision: ImportInputRevision,
         roots: &ImportDemandRoots,
     ) -> CompileResult<Vec<Arc<[ImportDiscoveryRequest]>>> {
@@ -9203,6 +9601,9 @@ impl RevisionedQueryDatabase {
                 "exact import projection requested from a non-current revision",
             ));
         }
+        self.exact_import_groups_dispatched = self
+            .exact_import_groups_dispatched
+            .saturating_add(roots.occurrences().len() as u64);
         let runtime_revision = Revision::new(revision.revision_id, revision.request_generation);
         let mut groups = Vec::new();
         for occurrence in roots.occurrences() {
@@ -9239,7 +9640,7 @@ impl RevisionedQueryDatabase {
         &mut self,
         frontier: &ImportDemandFrontier,
         snapshot: &SourceSnapshot,
-        accepted_reads: Arc<[AcceptedReadManifestEntry]>,
+        accepted_reads: AcceptedReadManifest,
         observations: Vec<ImportObservation>,
     ) -> CompileResult<ImportInputRevision> {
         if frontier.mode != ImportDemandMode::Rooted {
@@ -9262,27 +9663,66 @@ impl RevisionedQueryDatabase {
                 "host import results must exactly preserve the compiler-produced batch order",
             ));
         }
-        let (context, mut ledger) = {
+        let mut ledger = {
             let store = lock_import_store(&self.import_store);
             let view = store
                 .revisions
                 .iter()
                 .find(|view| view.revision.id() == frontier.revision.revision_id)
                 .ok_or_else(|| import_input_error("import input revision is no longer retained"))?;
-            (view.context.clone(), view.ledger.clone())
+            // The persistent ledger clone deep-copies only the parent value's
+            // recorded delta; frozen predecessor segments are shared by `Arc`.
+            self.import_view_ledger_entries_cloned.fetch_add(
+                view.ledger.recorded_delta().len() as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            view.ledger.clone()
         };
         for (observation, fanout) in observations.into_iter().zip(frontier.fanout.iter()) {
             for request in fanout.iter().cloned() {
                 ledger.record(observation.fanout_to(request)?)?;
             }
         }
-        self.publish_import_view(
+        // Publish the successor as a sparse overlay over the current view: only
+        // the batch's own additions become leaves, the aggregate topology is
+        // re-stamped, and every predecessor leaf is structurally inherited. The
+        // additions are re-derived and justified against the batch's accepted
+        // observations inside the overlay publication, so an unrelated module in
+        // the supplied snapshot or manifest is rejected there.
+        self.publish_import_view_overlay(
+            frontier.revision,
             snapshot,
-            context,
             accepted_reads,
             ledger,
-            frontier.revision.request_generation,
+            OverlayJustification::BatchAccepted,
             frontier.revision.frontier_round + 1,
+        )
+    }
+
+    /// Publish a strictly-additive trusted-toolchain successor input revision
+    /// (RUE-1112) as a sparse overlay over the current published view. Unlike
+    /// [`Self::publish_import_batch`] this carries no new import observation: the
+    /// appended leaves' own `@import` edges are not yet observed here (the
+    /// driver's subsequent re-close discovers them), so the carried ledger and the
+    /// aggregate topology are inherited unchanged and only the appended leaves'
+    /// source/provenance leaves are published. The additions are re-derived from
+    /// the parent view and must equal the capability-verified `added` set exactly.
+    pub(crate) fn publish_trusted_successor_view(
+        &mut self,
+        parent: ImportInputRevision,
+        snapshot: &SourceSnapshot,
+        accepted_reads: AcceptedReadManifest,
+        ledger: ImportObservationLedger,
+        added: &std::collections::BTreeSet<ModuleId>,
+        frontier_round: u64,
+    ) -> CompileResult<ImportInputRevision> {
+        self.publish_import_view_overlay(
+            parent,
+            snapshot,
+            accepted_reads,
+            ledger,
+            OverlayJustification::TrustedLeaves(added),
+            frontier_round,
         )
     }
 
@@ -9302,16 +9742,66 @@ impl RevisionedQueryDatabase {
             .ok_or_else(|| import_input_error("import input revision is no longer retained"))
     }
 
+    /// The complete published state of the current import-input revision: its
+    /// snapshot, context, accepted-read provenance, and carried ledger
+    /// (RUE-1112). The trusted-toolchain successor stage/close consume THIS
+    /// state rather than any host-supplied replacement, so a caller cannot
+    /// substitute a snapshot, context, provenance manifest, or ledger that
+    /// diverges from what the compiler published.
+    pub(crate) fn current_import_view_state(
+        &self,
+    ) -> Option<(
+        ImportInputRevision,
+        SourceSnapshot,
+        ImportDiscoveryContext,
+        AcceptedReadManifest,
+        ImportObservationLedger,
+    )> {
+        let current = self.current_import_revision?;
+        let runtime = Revision::new(current.revision_id, current.request_generation);
+        let view = {
+            let store = lock_import_store(&self.import_store);
+            store
+                .revisions
+                .iter()
+                .find(|view| view.revision == runtime)
+                .cloned()
+        }?;
+        let snapshot = {
+            let store = self
+                .module_store
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            store
+                .revisions
+                .iter()
+                .find(|module_view| module_view.revision == runtime)
+                .map(|module_view| module_view.snapshot.clone())
+        }?;
+        self.import_view_ledger_entries_cloned.fetch_add(
+            view.ledger.recorded_delta().len() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        Some((
+            current,
+            snapshot,
+            view.context.clone(),
+            view.accepted_reads.clone(),
+            view.ledger.clone(),
+        ))
+    }
+
     fn publish_import_view(
         &mut self,
         snapshot: &SourceSnapshot,
         context: ImportDiscoveryContext,
-        accepted_reads: Arc<[AcceptedReadManifestEntry]>,
+        accepted_reads: AcceptedReadManifest,
         ledger: ImportObservationLedger,
         generation: u64,
         frontier_round: u64,
     ) -> CompileResult<ImportInputRevision> {
-        let sources: Arc<[ModuleRevision]> = snapshot.source_revision().modules().to_vec().into();
+        let source_revision = snapshot.source_revision().clone();
+        let sources = source_revision.modules();
         let provenance = accepted_reads
             .iter()
             .map(|entry| (entry.module(), entry))
@@ -9423,6 +9913,9 @@ impl RevisionedQueryDatabase {
             revision,
             snapshot,
         ));
+        self.import_view_full_leaves_published = self
+            .import_view_full_leaves_published
+            .saturating_add(leaves.len() as u64);
         self.runtime
             .publish_revision(revision, leaves)
             .map_err(|error| {
@@ -9432,7 +9925,7 @@ impl RevisionedQueryDatabase {
             revision,
             generation,
             context,
-            sources,
+            sources: source_revision,
             accepted_reads,
             ledger,
         });
@@ -9448,7 +9941,7 @@ impl RevisionedQueryDatabase {
         store.provenance_stamps.retain(|(candidate, _)| {
             retained
                 .iter()
-                .any(|view| view.accepted_reads.contains(candidate))
+                .any(|view| view.accepted_reads.contains_entry(candidate))
         });
         store.observation_stamps.retain(|(candidate, _)| {
             retained
@@ -9458,6 +9951,267 @@ impl RevisionedQueryDatabase {
         let published = ImportInputRevision {
             revision_id: revision.id(),
             request_generation: generation,
+            frontier_round,
+        };
+        self.current_import_revision = Some(published);
+        Ok(published)
+    }
+
+    /// Publish a same-generation successor input view as a sparse immutable
+    /// overlay over the CURRENT published view (RUE-1112).
+    ///
+    /// The successor's leaves are derived here, never supplied: sorted
+    /// two-pointer diffs against the parent view yield exactly the added module
+    /// sources, accepted reads, and observations, and every parent entry must
+    /// reappear byte-identical (a mutated or dropped predecessor source, read, or
+    /// observation rejects the publication — the lineage is strictly additive at
+    /// this boundary, closing the batch-injection route). Only those delta leaves
+    /// plus, when observations grew, the one re-stamped aggregate topology leaf
+    /// are published through the runtime's sparse overlay; predecessor leaves are
+    /// structurally inherited and never rehashed, revalidated, or republished.
+    fn publish_import_view_overlay(
+        &mut self,
+        parent: ImportInputRevision,
+        snapshot: &SourceSnapshot,
+        accepted_reads: AcceptedReadManifest,
+        ledger: ImportObservationLedger,
+        justification: OverlayJustification<'_>,
+        frontier_round: u64,
+    ) -> CompileResult<ImportInputRevision> {
+        if self.current_import_revision != Some(parent) {
+            return Err(import_input_error(
+                "a successor overlay must extend the current published revision",
+            ));
+        }
+        let parent_runtime = Revision::new(parent.revision_id, parent.request_generation);
+        let parent_view = {
+            let store = lock_import_store(&self.import_store);
+            store
+                .revisions
+                .iter()
+                .find(|view| view.revision == parent_runtime)
+                .cloned()
+        }
+        .ok_or_else(|| import_input_error("import input revision is no longer retained"))?;
+
+        // Source additions come from STRUCTURAL AUTHORITY: when the successor
+        // snapshot's module segments share every parent segment by `Arc`
+        // identity, the shared segments ARE the parent view by construction —
+        // no predecessor comparison — and the appended segments are the exact
+        // source delta. A host handing a rebuilt (non-shared) snapshot instead
+        // falls back to the explicit byte-identical two-pointer diff, whose
+        // element comparisons are counted so the acquisition profile proves the
+        // structural path ran. The observation delta is likewise never
+        // re-derived: the persistent ledger's recorded head IS this step's
+        // delta.
+        let successor_segments = snapshot.source_revision().module_segments();
+        let parent_segments = parent_view.sources.module_segments();
+        let structural_sources = {
+            let parent_count = parent_segments.segments().len();
+            let shared_prefix = successor_segments.segments().len() >= parent_count
+                && successor_segments
+                    .segments()
+                    .iter()
+                    .zip(parent_segments.segments().iter())
+                    .all(|(a, b)| Arc::ptr_eq(a, b));
+            shared_prefix.then(|| {
+                successor_segments.segments()[parent_count..]
+                    .iter()
+                    .flat_map(|segment| segment.iter())
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+        };
+        let new_sources = match structural_sources {
+            Some(appended) => appended,
+            None => {
+                self.import_view_source_entries_compared.fetch_add(
+                    parent_view.sources.modules().len() as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                additive_diff(
+                    parent_view.sources.modules().iter(),
+                    snapshot.source_revision().modules().iter(),
+                    |a, b| a.module.cmp(&b.module),
+                    "module source",
+                )?
+            }
+        };
+        // Accepted-read provenance additions come from the SAME structural
+        // authority: a successor manifest sharing every parent segment by `Arc`
+        // identity IS the parent manifest plus its appended segments, so the
+        // appended segments are the exact provenance delta with no predecessor
+        // comparison. A rebuilt (non-shared) manifest falls back to the counted
+        // byte-identical two-pointer diff.
+        let structural_reads = {
+            let parent_segments = parent_view.accepted_reads.segments();
+            let successor_segments = accepted_reads.segments();
+            let parent_count = parent_segments.segments().len();
+            let shared_prefix = successor_segments.segments().len() >= parent_count
+                && successor_segments
+                    .segments()
+                    .iter()
+                    .zip(parent_segments.segments().iter())
+                    .all(|(a, b)| Arc::ptr_eq(a, b));
+            shared_prefix.then(|| {
+                successor_segments.segments()[parent_count..]
+                    .iter()
+                    .flat_map(|segment| segment.iter())
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+        };
+        let new_reads = match structural_reads {
+            Some(appended) => appended,
+            None => {
+                self.import_view_read_entries_compared.fetch_add(
+                    parent_view.accepted_reads.len() as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                additive_diff(
+                    parent_view.accepted_reads.iter(),
+                    accepted_reads.iter(),
+                    |a, b| a.module().cmp(b.module()),
+                    "accepted-read provenance",
+                )?
+            }
+        };
+        let new_observations: Vec<ImportObservation> = ledger.recorded_delta().cloned().collect();
+
+        // The additions must be EXACTLY what this step's justification derives —
+        // set equality in both directions, not membership. A frontier batch's
+        // accepted observations authorize exactly the newly resolved modules: an
+        // unrelated module riding along in the snapshot/manifest is an
+        // injection, and an authorized module missing from the snapshot or
+        // manifest is an omission (topology would claim "resolved" with no
+        // source leaf behind it); both reject. A trusted successor admits only
+        // the capability-verified leaf set with no observations.
+        let authorized: std::collections::BTreeSet<ModuleId> = match justification {
+            OverlayJustification::BatchAccepted => new_observations
+                .iter()
+                .filter_map(|observation| observation.accepted_source())
+                .map(|source| {
+                    crate::import_discovery::accepted_import_module(source, &accepted_reads)
+                })
+                .collect::<Result<_, _>>()?,
+            OverlayJustification::TrustedLeaves(added) => {
+                if !new_observations.is_empty() {
+                    return Err(import_input_error(
+                        "a trusted successor carries no new import observations",
+                    ));
+                }
+                added.clone()
+            }
+        };
+        // Modules the authorization introduces that the parent does not already
+        // carry (an accepted observation may re-resolve an existing module).
+        let parent_has = |module: &ModuleId| {
+            parent_view
+                .sources
+                .module_segments()
+                .contains_by(|source| source.module.cmp(module))
+        };
+        let required_new: std::collections::BTreeSet<&ModuleId> = authorized
+            .iter()
+            .filter(|module| !parent_has(module))
+            .collect();
+        let new_source_ids: std::collections::BTreeSet<&ModuleId> =
+            new_sources.iter().map(|source| &source.module).collect();
+        let new_read_ids: std::collections::BTreeSet<&ModuleId> =
+            new_reads.iter().map(|read| read.module()).collect();
+        if new_source_ids != required_new {
+            return Err(import_input_error(
+                "successor overlay module sources must equal this step's authorized additions exactly",
+            ));
+        }
+        if new_read_ids != required_new {
+            return Err(import_input_error(
+                "successor overlay accepted-read provenance must equal this step's authorized additions exactly",
+            ));
+        }
+        for observation in &new_observations {
+            if observation.request().context() != &parent_view.context {
+                return Err(import_input_error(
+                    "import observation belongs to a different discovery epoch",
+                ));
+            }
+        }
+
+        let revision = Revision::new(self.next_revision, parent.request_generation);
+        self.next_revision += 1;
+        let mut leaves = Vec::new();
+        {
+            let mut store = lock_import_store(&self.import_store);
+            let ImportInputStore {
+                next_stamp,
+                provenance_stamps,
+                observation_stamps,
+                ..
+            } = &mut *store;
+            if !new_observations.is_empty() {
+                // The observation set strictly grew, so the aggregate topology is
+                // a genuinely new value: re-stamp the SAME stable identity with a
+                // fresh stamp. Observers of the topology dirty through ordinary
+                // red/green validation; every other inherited leaf stays green.
+                let stamp = *next_stamp;
+                *next_stamp += 1;
+                leaves.push((accepted_import_topology_input(), stamp));
+            }
+            for source in &new_sources {
+                let accepted = accepted_reads
+                    .find_module(&source.module)
+                    .expect("delta provenance validated above");
+                leaves.push((
+                    accepted_read_input(&source.module),
+                    exact_value_stamp(next_stamp, provenance_stamps, accepted),
+                ));
+            }
+            for read in &new_reads {
+                leaves.push((
+                    accepted_import_provenance_input(read.metadata_identity()),
+                    exact_value_stamp(next_stamp, provenance_stamps, read),
+                ));
+            }
+            for observation in &new_observations {
+                leaves.push((
+                    import_observation_input(observation.request()),
+                    exact_value_stamp(next_stamp, observation_stamps, observation),
+                ));
+            }
+        }
+        leaves.extend(publish_module_inputs_delta(
+            &self.module_store,
+            revision,
+            snapshot,
+            &new_sources,
+        ));
+        self.import_view_overlay_leaves_published = self
+            .import_view_overlay_leaves_published
+            .saturating_add(leaves.len() as u64);
+        self.runtime
+            .publish_revision_overlay(revision, parent_runtime, leaves)
+            .map_err(|error| {
+                import_input_error(format!("cannot publish successor overlay: {error:?}"))
+            })?;
+        // Record this step's exact additions on the session-owned lineage; the
+        // successor stage/close derive their module delta from this record.
+        self.lineage_additions.extend(new_sources.iter().cloned());
+        let view = Arc::new(ImportInputView {
+            revision,
+            generation: parent.request_generation,
+            context: parent_view.context.clone(),
+            sources: snapshot.source_revision().clone(),
+            accepted_reads,
+            ledger,
+        });
+        let mut store = lock_import_store(&self.import_store);
+        store.revisions.push_back(view);
+        while store.revisions.len() > IMPORT_INPUT_REVISION_RETENTION {
+            store.revisions.pop_front();
+        }
+        let published = ImportInputRevision {
+            revision_id: revision.id(),
+            request_generation: parent.request_generation,
             frontier_round,
         };
         self.current_import_revision = Some(published);
@@ -9498,6 +10252,100 @@ impl RevisionedQueryDatabase {
             .publish_revision(revision, leaves)
             .expect("compiler input revisions are immutable and uniquely numbered");
         revision
+    }
+
+    /// The input-leaf identity of one module's source content, for records
+    /// that depend on exactly an appended segment's leaves (RUE-1112).
+    pub(crate) fn module_source_input(module: &ModuleId) -> InputIdentity {
+        module_source_input(module)
+    }
+
+    /// Parse ONLY a trusted successor's appended modules at the published
+    /// overlay revision and structurally extend the retained predecessor
+    /// program (RUE-1112). Predecessor modules are never re-dispatched,
+    /// re-parsed, or re-enumerated; their leaves and parse terminals are
+    /// inherited through the overlay lineage.
+    pub(crate) fn parse_program_extension(
+        &self,
+        revision: Revision,
+        predecessor: &Arc<ParsedProgram>,
+        appended: &[(ModuleId, crate::FileId)],
+    ) -> (
+        Result<Arc<ParsedProgram>, crate::CompileErrors>,
+        ParsedModulesWork,
+    ) {
+        let snapshot = self
+            .module_store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .revisions
+            .iter()
+            .find(|view| view.revision == revision)
+            .expect("parse projection retains its module input revision")
+            .snapshot
+            .clone();
+        let mut parsed = Vec::with_capacity(appended.len());
+        let mut errors = crate::CompileErrors::new();
+        let mut work = ParsedModulesWork::default();
+        for (module, file_id) in appended {
+            work.modules_considered += 1;
+            work.previous_module_lookups += 1;
+            let attempt = self.runtime.request_registered(
+                &self.parse_modules,
+                revision,
+                ModuleQueryKey(module.clone()),
+                CancellationToken::new(),
+            );
+            let Some(terminal) = attempt.terminal() else {
+                errors.push(import_input_error(format!(
+                    "ParseModule({module}) aborted: {:?}",
+                    attempt.abort()
+                )));
+                continue;
+            };
+            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+                unreachable!("ParseModule publishes typed values")
+            };
+            let computed = matches!(attempt.execution(), RequestExecution::Computed);
+            if computed {
+                work.modules_reparsed += 1;
+                work.syntax.lexer_invocations += value.work.lexer_invocations;
+                work.syntax.parser_invocations += value.work.parser_invocations;
+                work.syntax.lexed_bytes += value.work.lexed_bytes;
+                work.syntax.tokens += value.work.tokens;
+            }
+            match &value.result {
+                Ok(module) => {
+                    let projected = crate::parsed_modules::rebind_parsed_module(&snapshot, module);
+                    if !computed {
+                        if Arc::ptr_eq(&projected, module) {
+                            work.modules_reused += 1;
+                        } else {
+                            work.modules_rebound += 1;
+                        }
+                    }
+                    parsed.push(projected);
+                }
+                Err(module_errors) => {
+                    if !computed {
+                        work.modules_reused += 1;
+                    }
+                    errors.extend(
+                        module_errors
+                            .clone()
+                            .map_spans(|span| Span::with_file(*file_id, span.start, span.end)),
+                    )
+                }
+            }
+        }
+        let result = if errors.is_empty() {
+            ParsedProgram::extend_successor(predecessor, snapshot.source_revision().clone(), parsed)
+                .map(Arc::new)
+                .map_err(crate::CompileErrors::from)
+        } else {
+            Err(errors)
+        };
+        (result, work)
     }
 
     pub(crate) fn parse_program(
@@ -9817,8 +10665,10 @@ impl RevisionedQueryDatabase {
         // Exact source stamps live exactly as long as a parse memo key (or the
         // current request before selection). They are never independently FIFO
         // evicted while a terminal can still observe the stamp.
-        self.source_stamps
-            .retain(|(source, _)| self.parse.any_retained_key(|key| key.source() == source));
+        self.source_stamps.retain(|(source, _)| {
+            self.parse
+                .any_retained_key(|key| key.pinned_source() == Some(source))
+        });
         debug_assert!(self.source_stamps.len() <= self.parse.retention().memo_nodes);
     }
 
@@ -10524,6 +11374,131 @@ mod tests {
             panic!("direct target-selected const failed: {keyed:?}")
         };
         assert_eq!(i128::from(retired), keyed);
+    }
+
+    /// RUE-1112 demand-resolves proof. Once the trusted `\0rue-std/option.rue`
+    /// module is present in the snapshot's module set — exactly as the host
+    /// publishes it on the successor after satisfying a
+    /// `TrustedToolchainModuleDemand` — a directly-rooted `ComptimeCall` for
+    /// `\0rue-std/option.rue::Option(i64)` resolves the real materialized
+    /// nominal with std provenance. This is the proven key shape:
+    ///
+    /// `DeclarationCandidateKey { module: from_trusted_standard_library_path(..),
+    ///  Function, "Option", None }` -> `DeclarationSemanticQueryKey` ->
+    /// `ComptimeCallQueryKey { type_arguments: [("T", DurableType::I64)] }`.
+    ///
+    /// The consumption track wires this into AIR; here we only prove
+    /// resolvability against a present trusted module.
+    #[test]
+    fn trusted_std_option_comptime_call_resolves_for_i64() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::durable_semantics::{DurableAnonymousNominalShape as Shape, DurableType};
+        use crate::semantic_query_nucleus::{
+            ComptimeCallQueryKey, ComptimeCallResultProjection as ResultProjection,
+            SemanticNucleusKey as Key, SemanticNucleusValue as V,
+        };
+        use std::collections::HashSet;
+
+        // The freestanding fallible-intrinsic program plus the trusted Option
+        // module the host published on the successor. `main.rue` names a bare
+        // `@parse_i64`, which is the reason the demand was emitted upstream.
+        let root = FileId::new(1);
+        let option = FileId::new(2);
+        let physical = HashMap::from([
+            (root, "/project/main.rue".to_owned()),
+            (option, "/sdk/option.rue".to_owned()),
+        ]);
+        let logical = HashMap::from([
+            (root, "main.rue".to_owned()),
+            (option, crate::OPTION_MODULE_LOGICAL_PATH.to_owned()),
+        ]);
+        let metadata = SourceMetadata::new_with_trusted_standard_library(
+            root,
+            physical,
+            logical,
+            HashSet::from([option]),
+        )
+        .unwrap();
+        let source = SourceSnapshot::new(
+            metadata,
+            vec![
+                (
+                    root,
+                    Arc::new("fn main() -> i32 { let x: i32 = 0; x }".to_owned()),
+                ),
+                (
+                    option,
+                    Arc::new(
+                        "pub fn Option(comptime T: type) -> type { enum { Some(T), None } }"
+                            .to_owned(),
+                    ),
+                ),
+            ],
+        )
+        .unwrap();
+
+        let module =
+            ModuleId::from_trusted_standard_library_path(crate::OPTION_MODULE_LOGICAL_PATH)
+                .unwrap();
+        assert!(
+            module.is_trusted_standard_library(),
+            "the demand resolves against a trusted std module"
+        );
+
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let value = request_semantic_nucleus(
+            &database,
+            revision,
+            Key::ComptimeCall(ComptimeCallQueryKey {
+                declaration: crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration: declaration_candidate(
+                        &database,
+                        revision,
+                        &module,
+                        Category::Function,
+                        "Option",
+                    ),
+                    configuration: semantic_configuration(),
+                },
+                type_arguments: Arc::from([(Arc::from("T"), DurableType::I64)]),
+                value_arguments: Arc::from([]),
+            }),
+        );
+
+        let V::ComptimeCall(projection) = value else {
+            panic!("trusted Option(i64) comptime call did not resolve: {value:?}");
+        };
+        assert!(
+            matches!(projection.result, ResultProjection::Type(_)),
+            "Option(i64) must resolve to a materialized type, got {:?}",
+            projection.result
+        );
+        // The real materialized nominal: an Option enum whose `Some` carries the
+        // requested `i64` payload and whose `None` is empty.
+        let materialized_option = projection.anonymous_nominals.iter().any(|nominal| {
+            matches!(
+                &nominal.shape,
+                Shape::Enum { variants }
+                    if variants.len() == 2
+                        && variants.iter().any(|(name, payload)| {
+                            name.as_ref() == "Some"
+                                && payload.len() == 1
+                                && payload[0] == DurableType::I64
+                        })
+                        && variants.iter().any(|(name, payload)| {
+                            name.as_ref() == "None" && payload.is_empty()
+                        })
+            )
+        });
+        assert!(
+            materialized_option,
+            "Option(i64) must materialize a real Some(i64)/None nominal: {:?}",
+            projection.anonymous_nominals
+        );
     }
 
     /// RUE-1089 Theme 5 (fail-before-terminal). A divergent (wrong-but-present)
@@ -13531,7 +14506,7 @@ mod tests {
 
     fn begin_and_plan(
         session: &mut CompilerSession,
-        assembler: &DiscoverySourceAssembler,
+        assembler: &mut DiscoverySourceAssembler,
         context: ImportDiscoveryContext,
     ) -> (ImportInputRevision, ImportDiscoveryPlan) {
         let snapshot = assembler.snapshot().unwrap();
@@ -13543,7 +14518,7 @@ mod tests {
             .stage_import_discovery(
                 &snapshot,
                 context,
-                reads,
+                reads.shared_slice(),
                 ImportObservationLedger::default(),
             )
             .unwrap();
@@ -13552,11 +14527,11 @@ mod tests {
 
     fn begin_database_plan(
         database: &mut RevisionedQueryDatabase,
-        assembler: &DiscoverySourceAssembler,
+        assembler: &mut DiscoverySourceAssembler,
         context: ImportDiscoveryContext,
     ) -> (
         SourceSnapshot,
-        Arc<[crate::AcceptedReadManifestEntry]>,
+        AcceptedReadManifest,
         ImportInputRevision,
         ImportDiscoveryPlan,
     ) {
@@ -13581,7 +14556,7 @@ mod tests {
     fn publish_manifest_observations(
         database: &mut RevisionedQueryDatabase,
         snapshot: &SourceSnapshot,
-        reads: Arc<[crate::AcceptedReadManifestEntry]>,
+        reads: AcceptedReadManifest,
         plan: &ImportDiscoveryPlan,
         mut revision: ImportInputRevision,
     ) -> ImportInputRevision {
@@ -13629,7 +14604,7 @@ mod tests {
     fn publish_remapped_observations(
         database: &mut RevisionedQueryDatabase,
         snapshot: &SourceSnapshot,
-        reads: Arc<[crate::AcceptedReadManifestEntry]>,
+        reads: AcceptedReadManifest,
         plan: &ImportDiscoveryPlan,
         mut revision: ImportInputRevision,
         remaps: &[(&str, PhysicalFileIdentity)],
@@ -13705,10 +14680,10 @@ mod tests {
         use crate::declaration_candidate::DeclarationCandidateCategory as Category;
 
         let source = "const selected = if true { @import(\"same\") } else { @import(\"same\") }; const untouched = @import(\"other\"); fn main() {}";
-        let (_, assembler, context) = import_fixture(301, source);
+        let (_, mut assembler, context) = import_fixture(301, source);
         let mut database = RevisionedQueryDatabase::default();
         let (snapshot, reads, revision, plan) =
-            begin_database_plan(&mut database, &assembler, context);
+            begin_database_plan(&mut database, &mut assembler, context);
         let revision =
             publish_manifest_observations(&mut database, &snapshot, reads, &plan, revision);
         let runtime_revision = Revision::new(revision.revision_id, revision.request_generation);
@@ -13843,10 +14818,10 @@ mod tests {
         use crate::declaration_candidate::DeclarationCandidateCategory as Category;
 
         let first_source = "const selected = @import(\"missing\"); fn main() {}";
-        let (_, first_assembler, first_context) = import_fixture(302, first_source);
+        let (_, mut first_assembler, first_context) = import_fixture(302, first_source);
         let mut database = RevisionedQueryDatabase::default();
         let (first_snapshot, first_reads, first_revision, first_plan) =
-            begin_database_plan(&mut database, &first_assembler, first_context);
+            begin_database_plan(&mut database, &mut first_assembler, first_context);
         let old_occurrence = first_plan.groups()[0][0].occurrence().clone();
         assert_ne!(
             ResolveImportKey {
@@ -13890,9 +14865,9 @@ mod tests {
 
         let shifted_source =
             "// position-only relocation\n\nconst selected = @import(\"missing\"); fn main() {}";
-        let (_, shifted_assembler, shifted_context) = import_fixture(303, shifted_source);
+        let (_, mut shifted_assembler, shifted_context) = import_fixture(303, shifted_source);
         let (shifted_snapshot, shifted_reads, shifted_revision, shifted_plan) =
-            begin_database_plan(&mut database, &shifted_assembler, shifted_context);
+            begin_database_plan(&mut database, &mut shifted_assembler, shifted_context);
         let shifted_revision = publish_manifest_observations(
             &mut database,
             &shifted_snapshot,
@@ -13938,11 +14913,11 @@ mod tests {
     fn declaration_import_recovers_when_resolution_observations_arrive() {
         use crate::declaration_candidate::DeclarationCandidateCategory as Category;
 
-        let (_, assembler, context) =
+        let (_, mut assembler, context) =
             import_fixture(306, "const selected = @import(\"missing\"); fn main() {}");
         let mut database = RevisionedQueryDatabase::default();
         let (snapshot, reads, revision, plan) =
-            begin_database_plan(&mut database, &assembler, context);
+            begin_database_plan(&mut database, &mut assembler, context);
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let key = declaration_import_key(
             &module,
@@ -13990,11 +14965,11 @@ mod tests {
             SemanticNucleusValue as Value,
         };
 
-        let (_, assembler, context) =
+        let (_, mut assembler, context) =
             import_fixture(307, "const selected = @import(\"missing\"); fn main() {}");
         let mut database = RevisionedQueryDatabase::default();
         let (snapshot, reads, revision, plan) =
-            begin_database_plan(&mut database, &assembler, context);
+            begin_database_plan(&mut database, &mut assembler, context);
         let runtime_revision = Revision::new(revision.revision_id, revision.request_generation);
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let query =
@@ -14061,7 +15036,7 @@ mod tests {
             .unwrap();
         let mut database = RevisionedQueryDatabase::default();
         let (snapshot, reads, revision, plan) =
-            begin_database_plan(&mut database, &assembler, context);
+            begin_database_plan(&mut database, &mut assembler, context);
         let revision =
             publish_manifest_observations(&mut database, &snapshot, reads, &plan, revision);
         let runtime_revision = Revision::new(revision.revision_id, revision.request_generation);
@@ -14160,7 +15135,7 @@ mod tests {
             .unwrap();
         let mut database = RevisionedQueryDatabase::default();
         let (first_snapshot, first_reads, first_revision, first_plan) =
-            begin_database_plan(&mut database, &first_assembler, first_context);
+            begin_database_plan(&mut database, &mut first_assembler, first_context);
         let first_revision = publish_manifest_observations(
             &mut database,
             &first_snapshot,
@@ -14205,7 +15180,7 @@ mod tests {
             )
             .unwrap();
         let (remapped_snapshot, remapped_reads, remapped_revision, remapped_plan) =
-            begin_database_plan(&mut database, &remapped_assembler, remapped_context);
+            begin_database_plan(&mut database, &mut remapped_assembler, remapped_context);
         let remapped_revision = publish_remapped_observations(
             &mut database,
             &remapped_snapshot,
@@ -14246,7 +15221,7 @@ mod tests {
         let green_context =
             ImportDiscoveryContext::new(307, "/project", Some("/sdk"), "test-policy").unwrap();
         let (green_snapshot, green_reads, green_revision, green_plan) =
-            begin_database_plan(&mut database, &green_assembler, green_context);
+            begin_database_plan(&mut database, &mut green_assembler, green_context);
         let green_revision = publish_remapped_observations(
             &mut database,
             &green_snapshot,
@@ -14299,7 +15274,7 @@ mod tests {
         }
         let mut database = RevisionedQueryDatabase::default();
         let (first_snapshot, first_reads, first_revision, first_plan) =
-            begin_database_plan(&mut database, &first_assembler, first_context);
+            begin_database_plan(&mut database, &mut first_assembler, first_context);
         let first_revision = publish_manifest_observations(
             &mut database,
             &first_snapshot,
@@ -14363,7 +15338,7 @@ mod tests {
                 .unwrap();
         }
         let (remapped_snapshot, remapped_reads, remapped_revision, remapped_plan) =
-            begin_database_plan(&mut database, &remapped_assembler, remapped_context);
+            begin_database_plan(&mut database, &mut remapped_assembler, remapped_context);
         let remaps = [
             ("/project/dep.rue", PhysicalFileIdentity::new(2, 1)),
             ("/project/dep/_dep.rue", PhysicalFileIdentity::new(3, 1)),
@@ -14412,7 +15387,7 @@ mod tests {
         let green_context =
             ImportDiscoveryContext::new(308, "/project", Some("/sdk"), "test-policy").unwrap();
         let (green_snapshot, green_reads, green_revision, green_plan) =
-            begin_database_plan(&mut database, &green_assembler, green_context);
+            begin_database_plan(&mut database, &mut green_assembler, green_context);
         let green_revision = publish_remapped_observations(
             &mut database,
             &green_snapshot,
@@ -14433,27 +15408,96 @@ mod tests {
         assert_eq!(green.terminal().unwrap().stamp(), remapped_stamp);
     }
 
+    /// A hard-link alias with a lexicographically smaller canonical path that is
+    /// observed only AFTER the entry was carried by a produced snapshot/manifest
+    /// must not rewrite the retained representative: the published state is
+    /// immutable, so the assembler keeps reproducing exactly the snapshot,
+    /// manifest, and published view it already handed out. (Observed before the
+    /// first production, the smaller alias still wins — see the hard-link
+    /// order-independence tests.)
+    #[test]
+    fn alias_observed_after_publication_keeps_snapshot_manifest_and_view_in_agreement() {
+        let (_, mut assembler, context) = import_fixture(311, "fn main() {}");
+        assembler
+            .add_explicit(
+                "/project/a.rue",
+                "/real/z-hard-a",
+                PhysicalFileIdentity::new(9, 9),
+                FileMetadataFingerprint::new(1, 2, 3),
+                Arc::new("same inode".into()),
+            )
+            .unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let snapshot = assembler.snapshot().unwrap();
+        let manifest = assembler.accepted_read_manifest();
+        let revision = database
+            .begin_import_inputs(&snapshot, context, manifest.clone())
+            .unwrap();
+
+        // The smaller alias of the SAME physical identity arrives only now.
+        assembler
+            .add_explicit(
+                "/project/a.rue",
+                "/real/a-hard-a",
+                PhysicalFileIdentity::new(9, 9),
+                FileMetadataFingerprint::new(1, 2, 3),
+                Arc::new("same inode".into()),
+            )
+            .unwrap();
+        let successor_snapshot = assembler.snapshot().unwrap();
+        let successor_manifest = assembler.accepted_read_manifest();
+
+        // The retained representative is frozen, so snapshot and manifest stay
+        // in exact agreement with each other...
+        assert_eq!(successor_snapshot.metadata(), snapshot.metadata());
+        assert_eq!(
+            successor_snapshot.source_revision(),
+            snapshot.source_revision()
+        );
+        assert_eq!(successor_manifest, manifest);
+        assert!(
+            successor_manifest
+                .iter()
+                .any(|entry| entry.canonical_path() == "/real/z-hard-a")
+        );
+
+        // ...and with the published view, byte for byte, so a later successor
+        // publication extends this state rather than rejecting it as mutated.
+        let (current, view_snapshot, _, view_manifest, _) =
+            database.current_import_view_state().unwrap();
+        assert_eq!(current, revision);
+        assert_eq!(
+            view_snapshot.source_revision(),
+            successor_snapshot.source_revision()
+        );
+        assert_eq!(view_manifest, successor_manifest);
+    }
+
     #[test]
     fn import_publication_rejects_duplicate_and_unmatched_physical_provenance() {
         let source = "const selected = @import(\"dep\"); fn main() {}";
-        let (_, assembler, context) = import_fixture(309, source);
+        let (_, mut assembler, context) = import_fixture(309, source);
         let snapshot = assembler.snapshot().unwrap();
         let reads = assembler.accepted_read_manifest();
         let duplicated = reads
             .iter()
             .cloned()
-            .chain(std::iter::once(reads[0].clone()))
+            .chain(std::iter::once(reads.iter().next().unwrap().clone()))
             .collect::<Vec<_>>();
         let mut database = RevisionedQueryDatabase::default();
         assert!(
             database
-                .begin_import_inputs(&snapshot, context.clone(), duplicated.into())
+                .begin_import_inputs(
+                    &snapshot,
+                    context.clone(),
+                    AcceptedReadManifest::from_entries(duplicated),
+                )
                 .is_err(),
             "duplicate physical provenance must fail before revision publication"
         );
 
         let (snapshot, reads, revision, plan) =
-            begin_database_plan(&mut database, &assembler, context);
+            begin_database_plan(&mut database, &mut assembler, context);
         let roots = ImportDemandRoots::whole_plan(&plan);
         let frontier = database
             .import_frontier(revision, &plan, ImportDemandMode::Rooted, &roots)
@@ -14496,7 +15540,7 @@ mod tests {
             .map(|index| format!("const c{index} = @import(\"x{index}\");"))
             .collect::<Vec<_>>()
             .join("\n");
-        let (_, assembler, context) = import_fixture(305, &source_text);
+        let (_, mut assembler, context) = import_fixture(305, &source_text);
         let snapshot = assembler.snapshot().unwrap();
         let reads = assembler.accepted_read_manifest();
         let mut database =
@@ -14610,8 +15654,8 @@ mod tests {
             const d = @import("d");
             fn main() -> i32 { 0 }
         "#;
-        let (mut session, assembler, context) = import_fixture(1, source);
-        let (revision, plan) = begin_and_plan(&mut session, &assembler, context);
+        let (mut session, mut assembler, context) = import_fixture(1, source);
+        let (revision, plan) = begin_and_plan(&mut session, &mut assembler, context);
         let frontier = session
             .import_demand_frontier_for_roots(
                 revision,
@@ -14681,11 +15725,11 @@ mod tests {
 
     #[test]
     fn speculative_frontiers_are_effect_free_and_cannot_publish_host_results() {
-        let (mut session, assembler, context) = import_fixture(
+        let (mut session, mut assembler, context) = import_fixture(
             2,
             r#"const helper = @import("helper"); fn main() -> i32 { 0 }"#,
         );
-        let (revision, plan) = begin_and_plan(&mut session, &assembler, context);
+        let (revision, plan) = begin_and_plan(&mut session, &mut assembler, context);
         let speculative = session
             .import_demand_frontier_for_roots(
                 revision,
@@ -14731,12 +15775,12 @@ mod tests {
 
     #[test]
     fn resolve_import_recomputes_when_only_discovery_context_changes() {
-        let (mut session, assembler, first_context) = import_fixture(
+        let (mut session, mut assembler, first_context) = import_fixture(
             24,
             r#"const standard = @import("std"); fn main() -> i32 { 0 }"#,
         );
         let (first_revision, first_plan) =
-            begin_and_plan(&mut session, &assembler, first_context.clone());
+            begin_and_plan(&mut session, &mut assembler, first_context.clone());
         let first = session
             .import_demand_frontier_for_roots(
                 first_revision,
@@ -14764,7 +15808,7 @@ mod tests {
             .stage_import_discovery(
                 &snapshot,
                 second_context.clone(),
-                reads,
+                reads.shared_slice(),
                 ImportObservationLedger::default(),
             )
             .unwrap();
@@ -14805,8 +15849,8 @@ mod tests {
             ));
         }
         source.push_str("fn main() -> i32 { 0 }\n");
-        let (mut session, assembler, context) = import_fixture(21, &source);
-        let (revision, plan) = begin_and_plan(&mut session, &assembler, context);
+        let (mut session, mut assembler, context) = import_fixture(21, &source);
+        let (revision, plan) = begin_and_plan(&mut session, &mut assembler, context);
         let selected = plan
             .groups()
             .iter()
@@ -14847,12 +15891,12 @@ mod tests {
 
     #[test]
     fn new_request_generation_has_no_carried_ledger_authority() {
-        let (mut session, assembler, context) = import_fixture(
+        let (mut session, mut assembler, context) = import_fixture(
             22,
             r#"const missing = @import("missing.rue"); fn main() -> i32 { 0 }"#,
         );
         let (first_revision, first_plan) =
-            begin_and_plan(&mut session, &assembler, context.clone());
+            begin_and_plan(&mut session, &mut assembler, context.clone());
         let first = session
             .import_demand_frontier_for_roots(
                 first_revision,
@@ -14885,7 +15929,7 @@ mod tests {
         let fresh_ledger = session.import_observation_ledger(fresh_revision).unwrap();
         assert!(fresh_ledger.is_empty());
         let fresh_plan = session
-            .stage_import_discovery(&snapshot, context, reads, fresh_ledger)
+            .stage_import_discovery(&snapshot, context, reads.shared_slice(), fresh_ledger)
             .unwrap();
         let reread = session
             .import_demand_frontier_for_roots(
@@ -14911,7 +15955,7 @@ mod tests {
 
     #[test]
     fn duplicate_occurrences_share_one_host_operation_and_fan_out_typed_results() {
-        let (mut session, assembler, context) = import_fixture(
+        let (mut session, mut assembler, context) = import_fixture(
             23,
             r#"
                 const first = @import("shared.rue");
@@ -14919,7 +15963,7 @@ mod tests {
                 fn main() -> i32 { 0 }
             "#,
         );
-        let (revision, plan) = begin_and_plan(&mut session, &assembler, context);
+        let (revision, plan) = begin_and_plan(&mut session, &mut assembler, context);
         let frontier = session
             .import_demand_frontier_for_roots(
                 revision,
@@ -14957,8 +16001,8 @@ mod tests {
     #[test]
     fn successor_revisions_carry_observations_but_new_epochs_reread() {
         let source = r#"const helper = @import("helper"); fn main() -> i32 { 0 }"#;
-        let (mut session, assembler, context) = import_fixture(3, source);
-        let (revision, plan) = begin_and_plan(&mut session, &assembler, context);
+        let (mut session, mut assembler, context) = import_fixture(3, source);
+        let (revision, plan) = begin_and_plan(&mut session, &mut assembler, context);
         let first = session
             .import_demand_frontier_for_roots(
                 revision,
@@ -14991,7 +16035,7 @@ mod tests {
             .stage_import_discovery(
                 &assembler.snapshot().unwrap(),
                 plan.context().clone(),
-                assembler.accepted_read_manifest(),
+                assembler.accepted_read_manifest().shared_slice(),
                 carried,
             )
             .unwrap();
@@ -15023,7 +16067,7 @@ mod tests {
             .stage_import_discovery(
                 &new_snapshot,
                 new_context,
-                assembler.accepted_read_manifest(),
+                assembler.accepted_read_manifest().shared_slice(),
                 ImportObservationLedger::default(),
             )
             .unwrap();
