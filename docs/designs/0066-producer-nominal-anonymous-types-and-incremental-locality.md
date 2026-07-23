@@ -313,17 +313,21 @@ case, and invalidates exactly its consumers.
 
 Lookup families expect one logical terminal per distinct consulted
 `(module, namespace, name)` or import-path key, rather than per declaration or
-per body occurrence. On successful semantic-root publication, the compiler
-promotes the request's exact set of observed lookup-terminal pins into a
-session-held `SuccessfulRootLookupLease`. Promotion acquires no terminal by
-revision or family-wide approximation: the request lease remains live until the
-same exact pins have transferred, the new set replaces the prior successful
-root atomically, and only then does batched release enforce retention. Failed,
-canceled, and merely speculative lookups are never promoted. Thus the current
-exact lookup working set may grow beyond the configured historical floor under
-RUE-1087's
-grow-with-pressure-and-meter policy, but it cannot be evicted merely because a
-large program consults more names than the floor. Historical incarnations remain
+per body occurrence. On semantic-root publication—either success or a
+deterministic failure—the compiler promotes the request's exact set of observed
+lookup-terminal pins into a session-held `PublishedRootLookupLease`. Negative,
+ambiguous, rejected-import, and other deterministic-failure terminals observed
+by that published root are included. Promotion acquires no terminal by revision
+or family-wide approximation: the request lease remains live until the same
+exact pins have transferred, the new set replaces the prior published root
+atomically, and only then does batched release enforce retention. An attempt
+that aborts or is canceled before publishing a root, and a merely speculative
+validation that no published root observes, is never promoted. Thus
+edit/error/fix loops retain their last deterministic dependency set while the
+current exact lookup working set may grow beyond the configured historical
+floor under RUE-1087's grow-with-pressure-and-meter policy, but it cannot be
+evicted merely because a large program consults more names than the floor.
+Historical incarnations remain
 subject to bounded FIFO retention, and unleased logical nodes with no retained
 terminal are reclaimable. Pressure metrics report retained logical keys,
 terminals, evictions, protected growth, and re-derivations after eviction. A
@@ -735,7 +739,7 @@ representatives, or restart behavior; those mechanisms are out of scope.
 | Lookup-index validation | Edit one module while independently varying other modules, bodies, declarations, and the retained lookup count against the edited module | Rebuild that module's index once; revalidate each retained lookup against it in expected `O(1)`; unchanged results preserve stamps; validation fan-out equals only the retained lookups against that module | One lookup scans declarations, another module contributes work, fan-out follows program size, or an equal result changes stamp |
 | Provider capability guard | Inventory the rue-air body-analyzer signature and reachable calls after the production cut | Only the typed provider, selected body/producer facts, and body-local configuration are reachable; all named semantic fact families pass through provider calls | Any complete program/table/epoch capability or semantic side channel remains reachable |
 | Retention leases | Force pressure eviction before and after rooted completion, cancellation, and supersession | Live root closures remain pinned; released/speculative terminals reclaim; accounting has no unowned pin; warm result/diagnostics equal fresh after eviction | A live closure evicts, a released pin remains, accounting leaks, or eviction changes observable output |
-| Lookup retention pressure | Exceed the lookup family's historical floor with positive, negative, ambiguous, qualified, failed-import, and speculative keys; publish a successor; revisit hot and superseded keys | The exact request pin set hands off atomically to `SuccessfulRootLookupLease`; current-root keys remain warm; speculative and superseded cold keys reclaim or rederive at most once; released entries return to the historical bound; thrash is metered | A hot key is evicted, a speculative key becomes rooted, handoff opens a birth-eviction window, retained memory never falls after supersession, or rederivation is invisible |
+| Lookup retention pressure | Exceed the lookup family's historical floor with positive, negative, ambiguous, qualified, failed-import, and speculative keys; publish success, deterministic failure, then a fixed successor; revisit hot and superseded keys | Each published request's exact pin set hands off atomically to `PublishedRootLookupLease`; success and deterministic failure remain warm while current; speculative and superseded cold keys reclaim or rederive at most once; released entries return to the historical bound; thrash is metered | A current failure key is evicted, a speculative key becomes rooted, handoff opens a birth-eviction window, retained memory never falls after supersession, or rederivation is invisible |
 | Differential oracle | After every edit run reused and fresh sessions over canonical queries | Artifacts, diagnostics, and changed sets agree | Any warm/fresh disagreement |
 | Codegen seam | Edit one function, one data item, then one symbol reference | Per-function/data/symbol artifacts identify exactly the changed-symbol set | Whole-program artifact is the only observable delta |
 | Schedule audit | Permute dependency evaluation order and review API locking/traversal state | Same result; no global traversal state or lock spans execution | Output, cycle result, or witness changes with schedule |
