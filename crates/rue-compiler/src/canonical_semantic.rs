@@ -65,6 +65,29 @@ thread_local! {
     static INJECT_DECLARATION_FAILURE: Cell<bool> = const { Cell::new(false) };
     static INJECT_AUTHORITATIVE_KEY_MISMATCH: Cell<bool> = const { Cell::new(false) };
     static INJECT_BODY_QUERY_STAGE_FAILURE: Cell<bool> = const { Cell::new(false) };
+    static INJECT_OVERLAY_CANCEL_AFTER_SEED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Force the test-only overlay driver to observe a cancellation after it has
+/// seeded the overlay's local token space but before it analyzes the body, so
+/// the mid-analysis cancellation path runs against a populated overlay.
+#[cfg(test)]
+pub(crate) fn with_test_overlay_cancel_after_seed_injection<T>(run: impl FnOnce() -> T) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            INJECT_OVERLAY_CANCEL_AFTER_SEED.with(|enabled| enabled.set(false));
+        }
+    }
+
+    INJECT_OVERLAY_CANCEL_AFTER_SEED.with(|enabled| {
+        assert!(
+            !enabled.replace(true),
+            "overlay cancel-after-seed injection is not nestable"
+        );
+    });
+    let _reset = Reset;
+    run()
 }
 
 #[cfg(test)]
@@ -2306,6 +2329,12 @@ pub(crate) fn analyze_body_via_overlay(
     // and owner provenance are unchanged (installation still validates them);
     // only the issuer-scoped token differs, so the analyzed body observes and
     // publishes overlay-local compact IDs rather than the whole-epoch ones.
+    //
+    // Adopting the epoch endpoints' slot indices and re-minting only the issuer
+    // is a test-driver convenience: it couples the overlay's token space to the
+    // bound universe's seed order, which the overlay-equals-production equality
+    // test guards. Slice 3 replaces this adoption with provider-supplied name,
+    // import, and declaration facts consulted on demand.
     let issuer = overlay.issuer();
     let body_owner_endpoints = definitions
         .body_owner_endpoints()
@@ -2384,6 +2413,18 @@ pub(crate) fn analyze_body_via_overlay(
             }
         }
     };
+
+    // A cancellation observed after the overlay has already minted its local
+    // token space must still publish nothing: the request control state
+    // dominates, and the seeded overlay is abandoned whole. This test-only
+    // injection flips cancellation exactly here — between seeding/install and
+    // analysis — so the mid-analysis cancellation path is exercised with a
+    // populated overlay (ADR-0066 §4 "Cancellation publishes no partial overlay
+    // or dependency set").
+    #[cfg(test)]
+    if INJECT_OVERLAY_CANCEL_AFTER_SEED.with(Cell::get) {
+        return Err(rue_query::QueryAbort::Canceled);
+    }
 
     let outcome = bound.analyze_one_body_instance(
         &key.instance,
