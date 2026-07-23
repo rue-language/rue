@@ -717,12 +717,23 @@ impl ObjectFile {
                 // by subtracting the owning section's addr, since the linker
                 // computes final addresses as merged-section-base + value.
                 // (Sections emitted at addr 0 — like our own __text — are
-                // unaffected.) Fall back to the raw value for malformed
-                // objects whose n_value is below the section start.
+                // unaffected.) A value below its section start is malformed;
+                // retaining that raw address as a section-relative value lets
+                // it escape into a later merged section.
                 let value = match section_index {
                     Some(idx) => {
-                        let sect_addr = section_addrs.get(idx).copied().unwrap_or(0);
-                        n_value.checked_sub(sect_addr).unwrap_or(n_value)
+                        let sect_addr = section_addrs.get(idx).copied().ok_or_else(|| {
+                            ParseError::InvalidSymbol(format!(
+                                "symbol '{}' references invalid section {}",
+                                name, idx
+                            ))
+                        })?;
+                        n_value.checked_sub(sect_addr).ok_or_else(|| {
+                            ParseError::InvalidSymbol(format!(
+                                "symbol '{}' value 0x{:x} is below section {} address 0x{:x}",
+                                name, n_value, idx, sect_addr
+                            ))
+                        })?
                     }
                     None => n_value,
                 };
@@ -1791,6 +1802,34 @@ mod tests {
             "n_value must be converted to a section-relative offset"
         );
         assert_eq!(s.binding, SymbolBinding::Local);
+    }
+
+    #[test]
+    fn test_macho_symbol_value_below_section_address_is_rejected() {
+        let obj_bytes = build_test_macho(
+            &[TestMachoSection {
+                sectname: "__cstring",
+                segname: "__TEXT",
+                addr: 0x10,
+                data: vec![0u8; 8],
+                relocs: vec![],
+            }],
+            &[TestMachoSymbol {
+                name: "_bad",
+                n_type: N_EXT | N_SECT,
+                n_sect: 1,
+                n_value: 0x0f,
+            }],
+        );
+
+        let error = ObjectFile::parse(&obj_bytes).unwrap_err();
+        assert!(matches!(
+            error,
+            ParseError::InvalidSymbol(message)
+                if message.contains("bad")
+                    && message.contains("0xf")
+                    && message.contains("0x10")
+        ));
     }
 
     #[test]
