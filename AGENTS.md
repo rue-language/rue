@@ -263,8 +263,9 @@ not push or synchronize `origin/trunk`. See
 `docs/process/fork-workflow.md` for machine-local configuration details.
 
 Commit and PR text should be tool-neutral. Do not add agent attribution,
-co-author trailers, or "generated with" boilerplate. Reference `RUE-NN` and put
-`Fixes RUE-NN` on its own line in the PR body so Linear closes it after merge.
+co-author trailers, or "generated with" boilerplate. Reference `RUE-NN`; see
+"Linear integration" below for exactly which words close an issue and when to
+use them instead of a plain reference.
 
 ## Issue tracking
 
@@ -280,8 +281,123 @@ parallel Markdown backlog.
   linked with `relatedTo` or a real `blockedBy` dependency.
 - Priorities are Urgent, High, Medium, and Low. Use `bug`, `feature`, `task`, or
   `chore` labels consistently.
-- A PR body must use one closing line per issue. After integration, verify the
-  issue actually reached Done; do not rely solely on synchronization.
+- A PR body must use at most one closing word per issue, chosen per the rules
+  below, and only when the issue is actually done. After integration, verify
+  the issue actually reached Done; do not rely solely on synchronization.
+
+## Linear integration
+
+Rue's Linear/GitHub integration is *not* the same as GitHub's own closing-issue
+behavior. Its magic-word list is wider, and its auto-linking has side effects
+that are easy to trigger by accident. This section is the full reference —
+read it instead of Linear's docs when writing a branch name, commit, or PR.
+
+Automatic closing is intentional and should stay in use. The failure mode this
+section prevents is agents closing issues too early or reopening finished ones
+by accident, not automation itself.
+
+### The two vocabularies
+
+These lists are reproduced verbatim from Linear's integration. Nothing here is
+paraphrased — match the words exactly.
+
+**Closing words** (move a linked issue to Done on merge):
+
+```
+close, closes, closed, closing
+fix, fixes, fixed, fixing
+resolve, resolves, resolved, resolving
+complete, completes, completed, completing
+implement, implements, implemented, implementing
+linear issue
+```
+
+**Non-closing words** (link an issue for context only, no status change):
+
+```
+ref, refs, references
+part of
+related to, relates to
+contributes to
+toward, towards
+```
+
+Use a non-closing word whenever a PR references an issue without finishing it.
+
+### The prose trap: `implement*` and `complete*`
+
+GitHub does not treat `implements` or `completed` as closing keywords, so
+agents trained on GitHub conventions reach for them as ordinary descriptive
+prose. In Rue's Linear integration, they close the issue. A PR body that says
+
+> Implements the FFI shim described in RUE-1064
+
+closes RUE-1064 on merge, even if that was never the intent — for example, if
+RUE-1064 is a multi-PR umbrella issue and this PR only covers one piece of it.
+
+If you mean "this PR is part of the work in RUE-1064" rather than "this PR
+finishes RUE-1064," rewrite it with a non-closing word:
+
+> Implements the FFI shim (refs RUE-1064)
+
+### When closing is correct
+
+Use a closing word only when the PR satisfies every acceptance criterion on
+the issue, including tests, docs, and any ADR updates the issue names. If any
+criterion is still outstanding, use a non-closing word instead and state what
+remains in the PR body. Do not close an issue "mostly" and plan to tidy up
+after merge — file or use a follow-up issue for the remainder instead.
+
+### One magic word per ID
+
+A single closing word fans out to every issue ID that follows it in the same
+sentence:
+
+> Fixes RUE-1067, RUE-1068 and RUE-1069
+
+closes all three. This silently wipes out a sequenced issue chain when only
+one issue in the chain is actually done. Give each issue ID its own sentence
+and its own word, closing or not, chosen individually:
+
+> Fixes RUE-1067. Refs RUE-1068, RUE-1069 (follow-up work, not yet done).
+
+### Branch and title discipline
+
+An issue ID in a branch name or PR title auto-links the PR, and the team's
+on-merge automation moves linked issues to In Progress when the PR opens —
+including issues that are already Done. This pulls completed work backward.
+
+- Put at most one issue ID in a branch name, and only the ID of the issue that
+  branch completes.
+- Do not brand a follow-up branch with a prior, already-completed issue's ID.
+  File a new issue for follow-up work instead of reusing the old one.
+- Naming a completed issue in a PR title for context has the same reopening
+  effect as a branch name; prefer referencing it in the PR body with a
+  non-closing word instead.
+
+### `skip` / `ignore`
+
+When an issue ID must appear somewhere in the PR (e.g., an already-completed
+issue is unavoidably present in a carried-over branch name), put `skip RUE-NN`
+or `ignore RUE-NN` in the PR description. This fully unlinks the PR from that
+issue and suppresses all status automation for it, even though the branch name
+still contains the ID.
+
+### Placement rules
+
+- Magic words (closing or non-closing) are only recognized in the **PR title**
+  and **PR description**. They do nothing in PR comments.
+- In commit messages, linking requires a magic word immediately before the
+  issue ID — a bare `RUE-NN` in a commit message does not link or close
+  anything.
+
+### Squash and stacked-PR caveat
+
+Merging several PRs into an intermediate branch and then merging that branch
+onward does **not** carry the original PRs' issue links forward. The final PR
+into `trunk` only links whatever issue IDs and magic words appear in its own
+title and description. Re-state the closing/non-closing references in the
+final PR, even if they were already correct on the PRs merged into it.
 
 ## Code style and logging
 
