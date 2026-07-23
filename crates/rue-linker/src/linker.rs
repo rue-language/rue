@@ -184,6 +184,62 @@ fn checked_relocation_offset(
         })
 }
 
+/// Validate every section-defined symbol before an object mutates linker state.
+///
+/// A zero-size symbol may point exactly one byte past the final section byte
+/// (the conventional end-marker position). Any nonzero extent must remain
+/// wholly inside the defining section.
+fn validate_defined_symbols(obj: &ObjectFile) -> Result<(), LinkError> {
+    for sym in &obj.symbols {
+        let Some(section_index) = sym.section_index else {
+            continue;
+        };
+        let Some(section) = obj.sections.get(section_index) else {
+            return Err(LinkError::InvalidSectionIndex {
+                symbol: sym.name.clone(),
+                section_index,
+                section_count: obj.sections.len(),
+            });
+        };
+        let Some(end) = sym.value.checked_add(sym.size) else {
+            return Err(LinkError::SymbolOutsideSection {
+                symbol: sym.name.clone(),
+                value: sym.value,
+                size: sym.size,
+                section: section.name.clone(),
+                section_size: section.size,
+            });
+        };
+        if sym.value > section.size || end > section.size {
+            return Err(LinkError::SymbolOutsideSection {
+                symbol: sym.name.clone(),
+                value: sym.value,
+                size: sym.size,
+                section: section.name.clone(),
+                section_size: section.size,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Compose a final symbol address without permitting malformed object metadata
+/// to wrap into another segment.
+fn checked_symbol_address(
+    base: u64,
+    section_offset: u64,
+    symbol: &Symbol,
+) -> Result<u64, LinkError> {
+    base.checked_add(section_offset)
+        .and_then(|section_address| section_address.checked_add(symbol.value))
+        .ok_or_else(|| LinkError::SymbolAddressOverflow {
+            symbol: symbol.name.clone(),
+            base,
+            section_offset,
+            value: symbol.value,
+        })
+}
+
 /// Apply a single already-resolved relocation by patching `buf` in place.
 ///
 /// Shared by both `link_elf` and `link_macho` (RUE-335): the per-kind patch
@@ -658,6 +714,21 @@ pub enum LinkError {
         relocation_offset: u64,
         rel_type: String,
     },
+    /// A defined symbol's complete extent does not fit its owning section.
+    SymbolOutsideSection {
+        symbol: String,
+        value: u64,
+        size: u64,
+        section: String,
+        section_size: u64,
+    },
+    /// Final symbol-address composition exceeded the address space.
+    SymbolAddressOverflow {
+        symbol: String,
+        base: u64,
+        section_offset: u64,
+        value: u64,
+    },
     /// Symbol references invalid section index.
     InvalidSectionIndex {
         symbol: String,
@@ -712,6 +783,31 @@ impl std::fmt::Display for LinkError {
                     f,
                     "relocation offset overflow: {rel_type} relocation base {base_offset} \
                      plus section offset {relocation_offset} exceeds u64"
+                )
+            }
+            LinkError::SymbolOutsideSection {
+                symbol,
+                value,
+                size,
+                section,
+                section_size,
+            } => {
+                write!(
+                    f,
+                    "symbol '{symbol}' at offset {value} with size {size} lies outside section \
+                     '{section}' of size {section_size}"
+                )
+            }
+            LinkError::SymbolAddressOverflow {
+                symbol,
+                base,
+                section_offset,
+                value,
+            } => {
+                write!(
+                    f,
+                    "symbol address overflow for '{symbol}': base {base} plus section offset \
+                     {section_offset} plus symbol value {value} exceeds u64"
                 )
             }
             LinkError::InvalidSectionIndex {
@@ -800,6 +896,8 @@ impl Linker {
                 target: format!("{:?}", self.target),
             });
         }
+
+        validate_defined_symbols(&obj)?;
 
         let obj_index = self.objects.len();
 
@@ -1180,18 +1278,19 @@ impl Linker {
                     }
                     if let Some(&section_offset) = section_offsets.get(&(obj_idx, sec_idx)) {
                         let section = &obj.sections[sec_idx];
-                        let addr =
+                        let base =
                             if is_text_section(&section.name) || is_rodata_section(&section.name) {
                                 // Text and rodata are both in merged_text
-                                text_vaddr + section_offset + sym.value
+                                text_vaddr
                             } else if is_data_section(&section.name) {
                                 // Writable data in __DATA segment
-                                data_vaddr + section_offset + sym.value
+                                data_vaddr
                             } else if is_bss_section(&section.name) {
-                                bss_vaddr + section_offset + sym.value
+                                bss_vaddr
                             } else {
                                 continue;
                             };
+                        let addr = checked_symbol_address(base, section_offset, sym)?;
 
                         match sym.binding {
                             SymbolBinding::Local => {
@@ -1568,7 +1667,7 @@ impl Linker {
                             SectionKind::Other => continue,
                         };
 
-                        let addr = base + section_offset + sym.value;
+                        let addr = checked_symbol_address(base, section_offset, sym)?;
 
                         match sym.binding {
                             SymbolBinding::Local => {
@@ -1883,16 +1982,45 @@ impl Default for Linker {
 mod tests {
     use super::*;
     use crate::constants::{
-        E_MACHINE_OFFSET, E_SHNUM_OFFSET, E_SHOFF_OFFSET, E_TYPE_OFFSET, EI_CLASS, EI_DATA,
-        EI_VERSION, ELF64_EHDR_SIZE as TEST_EHDR_SIZE, ELF64_PHDR_SIZE as TEST_PHDR_SIZE,
-        EM_AARCH64, EM_X86_64, SHT_RELA,
+        E_MACHINE_OFFSET, E_SHENTSIZE_OFFSET, E_SHNUM_OFFSET, E_SHOFF_OFFSET, E_TYPE_OFFSET,
+        EI_CLASS, EI_DATA, EI_VERSION, ELF64_EHDR_SIZE as TEST_EHDR_SIZE,
+        ELF64_PHDR_SIZE as TEST_PHDR_SIZE, ELF64_SHDR_SIZE, ELF64_SYM_SIZE, EM_AARCH64, EM_X86_64,
+        SHT_RELA, SHT_SYMTAB,
     };
-    use crate::elf::{ObjectFile, SectionFlags};
+    use crate::elf::{ObjectFile, ObjectFormat, SectionFlags};
     use crate::emit::{CodeRelocation, ObjectBuilder};
 
     // Use X86_64Linux explicitly for ELF tests since ObjectFile only parses ELF
     // and the Linker produces ELF executables
     const ELF_TARGET: Target = Target::X86_64Linux;
+
+    fn defined_symbol(name: &str, value: u64, size: u64) -> Symbol {
+        Symbol {
+            name: name.into(),
+            section_index: Some(0),
+            value,
+            size,
+            binding: SymbolBinding::Global,
+            sym_type: SymbolType::Func,
+        }
+    }
+
+    fn object_with_defined_symbols(section_size: usize, symbols: Vec<Symbol>) -> ObjectFile {
+        ObjectFile {
+            sections: vec![Section {
+                name: ".text".into(),
+                data: vec![0xC3; section_size],
+                size: section_size as u64,
+                flags: crate::elf::SectionFlags::ALLOC | crate::elf::SectionFlags::EXEC,
+                relocations: vec![],
+                align: 1,
+            }],
+            symbols,
+            section_map: HashMap::from([(".text".into(), 0)]),
+            machine: crate::elf::ElfMachine::X86_64,
+            format: ObjectFormat::Elf,
+        }
+    }
 
     #[test]
     fn test_linker_x86_64_linux() {
@@ -1936,6 +2064,17 @@ mod tests {
                  exceeds u64",
                 u64::MAX
             )
+        );
+        assert_eq!(
+            LinkError::SymbolOutsideSection {
+                symbol: "bad".into(),
+                value: 5,
+                size: 1,
+                section: ".text".into(),
+                section_size: 4,
+            }
+            .to_string(),
+            "symbol 'bad' at offset 5 with size 1 lies outside section '.text' of size 4"
         );
     }
 
@@ -1982,6 +2121,70 @@ mod tests {
     }
 
     #[test]
+    fn defined_symbol_extents_accept_boundaries_and_reject_escape() {
+        for (value, size) in [(0, 4), (3, 1), (4, 0)] {
+            let obj = object_with_defined_symbols(4, vec![defined_symbol("valid", value, size)]);
+            validate_defined_symbols(&obj)
+                .unwrap_or_else(|error| panic!("valid extent {value}+{size}: {error}"));
+        }
+
+        for (value, size) in [(5, 0), (4, 1), (3, 2), (u64::MAX, 2)] {
+            let obj = object_with_defined_symbols(4, vec![defined_symbol("bad", value, size)]);
+            let error = validate_defined_symbols(&obj).unwrap_err();
+            assert!(matches!(
+                error,
+                LinkError::SymbolOutsideSection {
+                    symbol,
+                    value: actual_value,
+                    size: actual_size,
+                    section_size: 4,
+                    ..
+                } if symbol == "bad" && actual_value == value && actual_size == size
+            ));
+        }
+    }
+
+    #[test]
+    fn rejected_object_does_not_partially_mutate_linker_state() {
+        let mut linker = Linker::new(ELF_TARGET);
+        linker
+            .add_object(object_with_defined_symbols(
+                1,
+                vec![defined_symbol("main", 0, 1)],
+            ))
+            .unwrap();
+
+        let invalid = object_with_defined_symbols(
+            1,
+            vec![
+                defined_symbol("would_leak", 0, 1),
+                defined_symbol("bad", u64::MAX, 1),
+            ],
+        );
+        let error = linker.add_object(invalid).unwrap_err();
+        assert!(matches!(error, LinkError::SymbolOutsideSection { .. }));
+        assert_eq!(linker.objects.len(), 1);
+        assert!(linker.global_symbols.contains_key("main"));
+        assert!(!linker.global_symbols.contains_key("would_leak"));
+        assert!(!linker.global_symbols.contains_key("bad"));
+    }
+
+    #[test]
+    fn symbol_address_composition_rejects_overflow() {
+        let symbol = defined_symbol("bad", 1, 0);
+        let error = checked_symbol_address(u64::MAX, 0, &symbol).unwrap_err();
+        assert!(matches!(
+            error,
+            LinkError::SymbolAddressOverflow {
+                symbol,
+                base: u64::MAX,
+                section_offset: 0,
+                value: 1,
+            } if symbol == "bad"
+        ));
+    }
+
+    #[test]
     fn shared_relocation_patcher_rejects_unrepresentable_offset() {
         let mut buf = vec![0u8; 4];
         let err = apply_relocation(
@@ -2001,6 +2204,60 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn parsed_elf_symbol_at_max_offset_is_rejected() {
+        let mut obj_bytes = ObjectBuilder::new(ELF_TARGET, "main")
+            .code(vec![0xC3])
+            .build();
+        let main_symbol_index = ObjectFile::parse(&obj_bytes)
+            .expect("original object parses")
+            .symbols
+            .iter()
+            .position(|symbol| symbol.name == "main")
+            .expect("main symbol");
+
+        let section_headers = read_u64_at(&obj_bytes, E_SHOFF_OFFSET) as usize;
+        let section_header_size = u16::from_le_bytes(
+            obj_bytes[E_SHENTSIZE_OFFSET..E_SHENTSIZE_OFFSET + 2]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let section_count = u16::from_le_bytes(
+            obj_bytes[E_SHNUM_OFFSET..E_SHNUM_OFFSET + 2]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        assert_eq!(section_header_size, ELF64_SHDR_SIZE);
+
+        let symbol_table_header = (0..section_count)
+            .map(|index| section_headers + index * section_header_size)
+            .find(|&header| read_u32_at(&obj_bytes, header + 4) == SHT_SYMTAB)
+            .expect("symbol table section");
+        let symbol_table = read_u64_at(&obj_bytes, symbol_table_header + 24) as usize;
+        let symbol_table_size = read_u64_at(&obj_bytes, symbol_table_header + 32) as usize;
+        let symbol_size = read_u64_at(&obj_bytes, symbol_table_header + 56) as usize;
+        assert_eq!(symbol_size, ELF64_SYM_SIZE);
+        assert!(main_symbol_index < symbol_table_size / symbol_size);
+
+        let main_symbol_entry = symbol_table + main_symbol_index * symbol_size;
+        obj_bytes[main_symbol_entry + 8..main_symbol_entry + 16]
+            .copy_from_slice(&u64::MAX.to_le_bytes());
+
+        let obj = ObjectFile::parse(&obj_bytes).expect("malformed extent remains parseable");
+        let mut linker = Linker::new(ELF_TARGET);
+        let error = linker.add_object(obj).unwrap_err();
+        assert!(matches!(
+            error,
+            LinkError::SymbolOutsideSection {
+                symbol,
+                value: u64::MAX,
+                ..
+            } if symbol == "main"
+        ));
+        assert!(linker.objects.is_empty());
+        assert!(linker.global_symbols.is_empty());
     }
 
     #[test]
@@ -3141,14 +3398,14 @@ mod tests {
         };
 
         let mut linker = Linker::new(ELF_TARGET);
-        linker.add_object(obj).unwrap();
-
-        let result = linker.link("main");
+        let result = linker.add_object(obj);
         assert!(
             matches!(result, Err(LinkError::InvalidSectionIndex { .. })),
             "Expected InvalidSectionIndex error, got: {:?}",
             result
         );
+        assert!(linker.objects.is_empty());
+        assert!(linker.global_symbols.is_empty());
     }
 
     #[test]
