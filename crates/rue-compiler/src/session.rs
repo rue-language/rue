@@ -1937,7 +1937,7 @@ pub(crate) enum ParseQueryKey {
     /// equality never touch a predecessor entry.
     Successor {
         revision: crate::ImportInputRevision,
-        delta: Arc<[crate::ModuleRevision]>,
+        segment: Arc<[crate::ModuleRevision]>,
         /// The exact retained predecessor parse terminal this successor
         /// extends, verified by structural source ancestry at preparation.
         predecessor: rue_query::Revision,
@@ -1973,6 +1973,11 @@ struct PreparedSuccessorParse {
     /// edge with the captured terminal's exact node, incarnation, and stamp.
     predecessor_terminal: rue_query::AdoptableTerminal<ParseQueryRecord>,
     appended: Vec<(crate::ModuleId, crate::FileId)>,
+    /// The exact source segment appended by this parse stage. The opaque
+    /// successor capability carries the cumulative additions since the
+    /// committed close, but parse extends the retained predecessor by only this
+    /// suffix, so its key carries only these module revisions.
+    segment: Arc<[crate::ModuleRevision]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -2060,11 +2065,11 @@ impl TypedQueryFamily for ParseQuery {
                     && record.diagnostics.identity() == &FrontendDiagnosticIdentity::Syntax
                     && record.diagnostics.provenance == key.presentation
             }
-            ParseQueryKey::Successor { delta, .. } => {
+            ParseQueryKey::Successor { segment, .. } => {
                 // Content identity is pinned by the published lineage in the
-                // key; consistency stays O(delta) — a predecessor entry is
+                // key; consistency stays O(segment) — a predecessor entry is
                 // never re-enumerated here.
-                record.snapshot.len() >= delta.len()
+                record.snapshot.len() >= segment.len()
                     && match &record.result {
                         Ok(program) => program.modules_len() == record.snapshot.len(),
                         Err(_) => true,
@@ -5092,25 +5097,39 @@ impl CompilerSession {
             };
             appended.push((module.clone(), file_id));
         }
-        // Every appended module must be one of the capability-verified delta
-        // modules (the delta is cumulative since the committed close, so a
-        // later stage of one re-close appends a suffix of it).
-        for (module, _) in &appended {
-            if delta
-                .binary_search_by(|revision| revision.module.cmp(module))
-                .is_err()
-            {
+        // Every appended module revision must be one of the
+        // capability-verified additions. The capability delta is cumulative
+        // since the committed close; the parse key below keeps only this
+        // stage's exact suffix.
+        let mut segment = Vec::with_capacity(appended.len());
+        for (module, file_id) in &appended {
+            let source = snapshot
+                .source_id(*file_id)
+                .expect("the appended source has a stable content identity")
+                .clone();
+            let Ok(index) = delta.binary_search_by(|revision| revision.module.cmp(module)) else {
                 return Err(reject(
                     "an appended module is outside the capability-verified delta",
                 ));
+            };
+            if delta[index].source != source {
+                return Err(reject(
+                    "an appended module's source differs from the capability-verified delta",
+                ));
             }
+            segment.push(crate::ModuleRevision {
+                module: module.clone(),
+                source,
+            });
         }
+        segment.sort_by(|left, right| left.module.cmp(&right.module));
         Ok(PreparedSuccessorParse {
             predecessor_program,
             predecessor_order,
             predecessor_revision,
             predecessor_terminal,
             appended,
+            segment: segment.into(),
         })
     }
 
@@ -5123,7 +5142,6 @@ impl CompilerSession {
         &mut self,
         snapshot: &SourceSnapshot,
         revision: crate::ImportInputRevision,
-        delta: &Arc<[crate::ModuleRevision]>,
         prepared: PreparedSuccessorParse,
         attempt_id: AttemptId,
     ) -> (
@@ -5139,6 +5157,7 @@ impl CompilerSession {
             predecessor_revision,
             predecessor_terminal,
             appended,
+            segment,
         } = prepared;
         let successor_order = crate::shared_segments::SharedList::extend(
             &predecessor_order,
@@ -5151,10 +5170,10 @@ impl CompilerSession {
         // appended segment.
         self.parse_key_entries_compared = self
             .parse_key_entries_compared
-            .saturating_add(delta.len() as u64);
+            .saturating_add(segment.len() as u64);
         let key = ParseQueryKey::Successor {
             revision,
-            delta: delta.clone(),
+            segment,
             predecessor: predecessor_revision,
         };
         let runtime_revision =
@@ -5278,7 +5297,7 @@ impl CompilerSession {
         // back to a full content-keyed build under successor authority.
         let prepared_successor = match successor {
             Some((revision, delta)) => match self.prepare_successor_parse(snapshot, delta) {
-                Ok(prepared) => Some((revision, delta.clone(), prepared)),
+                Ok(prepared) => Some((revision, prepared)),
                 Err(errors) => return (Err(errors), ParsedModulesWork::default(), None),
             },
             None => None,
@@ -5287,8 +5306,8 @@ impl CompilerSession {
         let mut guard = self.metrics.begin_unprojected("parse");
         let attempt_id = guard.id;
         let (record, view, execution, work, _invalidation) = match prepared_successor {
-            Some((revision, delta, prepared)) => {
-                self.execute_parse_query_successor(snapshot, revision, &delta, prepared, attempt_id)
+            Some((revision, prepared)) => {
+                self.execute_parse_query_successor(snapshot, revision, prepared, attempt_id)
             }
             None => {
                 let order = snapshot
@@ -5548,10 +5567,10 @@ impl CompilerSession {
         // stage's selection protects that terminal, so this reuses it without
         // publishing anything new; the recompute body republishes the retained
         // record verbatim only if the terminal were ever evicted.
-        if let ParseQueryKey::Successor { delta, .. } = &retained.key {
+        if let ParseQueryKey::Successor { segment, .. } = &retained.key {
             self.parse_key_entries_compared = self
                 .parse_key_entries_compared
-                .saturating_add(delta.len() as u64);
+                .saturating_add(segment.len() as u64);
         }
         let key = retained.key.clone();
         let runtime_revision = retained.runtime_revision;

@@ -2346,13 +2346,23 @@ mod tests {
             "successor parse keys must not depend on the predecessor topology: small={} big={}",
             small_reclose.parse_key_entries_compared, big_reclose.parse_key_entries_compared
         );
-        assert!(small_reclose.parse_key_entries_compared > 0);
+        // This fixture has two exact parse stages: Option+StrBuf, followed by
+        // ArrayBuf+RawBuf. Each stage keys only its own two-module segment, for
+        // 2+2=4 key entries. A cumulative lineage key would charge 2+4=6 here
+        // while dispatching the same four modules.
+        assert_eq!(
+            small_reclose.parse_key_entries_compared, 4,
+            "successor parse key work must be exact per-stage segment, not cumulative lineage"
+        );
         assert_eq!(
             small_reclose.parse_modules_dispatched, big_reclose.parse_modules_dispatched,
             "successor parse dispatch must not depend on the predecessor topology: small={} big={}",
             small_reclose.parse_modules_dispatched, big_reclose.parse_modules_dispatched
         );
-        assert!(small_reclose.parse_modules_dispatched > 0);
+        assert_eq!(
+            small_reclose.parse_modules_dispatched, 4,
+            "the two exact stages dispatch the four newly acquired trusted modules once"
+        );
         assert_eq!(
             small_reclose.parse_invalidation_entries_compared,
             big_reclose.parse_invalidation_entries_compared,
