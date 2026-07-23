@@ -3203,6 +3203,16 @@ impl CompilerSession {
         self.recipe_cache_meter.snapshot()
     }
 
+    /// A snapshot of the provider-op observation counters (RUE-1091,
+    /// ADR-0066 §4). Zero on the production path — the exact body-fact provider
+    /// is a test-only differential adapter until the step-4 flip routes
+    /// production body analysis through it.
+    pub(crate) fn provider_observation_metrics(
+        &self,
+    ) -> crate::unstable::ProviderObservationMetrics {
+        self.queries.revisioned.provider_observation_metrics()
+    }
+
     /// Acquire the session's shared recipe cache for the test-only overlay path,
     /// constructing it on first use (metered as one container created) and
     /// reusing it afterward (metered as reuse). No production path calls this, so
@@ -11482,6 +11492,40 @@ mod tests {
             session.recipe_cache_metrics(),
             crate::recipe_cache::RecipeCacheMetrics::default(),
             "the production semantic path must never touch a recipe-cache counter"
+        );
+    }
+
+    #[test]
+    fn provider_observation_counters_read_zero_on_the_production_path() {
+        // RUE-1091 slice 3b: the exact body-fact provider is a test-only
+        // differential adapter, inert to production. A full production semantic
+        // analysis constructs no provider, so every provider-op counter exposed
+        // through the unstable surface stays at its zero default.
+        let source = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn helper(x: i32) -> i32 { x + 1 } fn main() -> i32 { helper(2) }",
+            )],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .expect("the program analyzes");
+        assert_eq!(
+            crate::unstable::provider_observation_metrics(&session),
+            crate::unstable::ProviderObservationMetrics::default(),
+            "the production semantic path must never touch a provider-op counter"
+        );
+        // The RUE-1090 recipe-cache inertness holds simultaneously: activating
+        // the provider machinery did not perturb the production path.
+        assert_eq!(
+            session.recipe_cache_metrics(),
+            crate::recipe_cache::RecipeCacheMetrics::default(),
+            "the provider slice must leave the RUE-1090 production counters unchanged"
         );
     }
 

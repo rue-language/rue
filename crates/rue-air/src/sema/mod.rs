@@ -45,6 +45,7 @@ mod known_symbols;
 mod metadata;
 mod one_body;
 mod output;
+pub mod provider;
 mod semantic_body_export;
 mod typeck;
 mod visibility;
@@ -85,6 +86,11 @@ pub use output::{
     NamedMethodDependencyTargetEvent, OrdinaryFreeFunctionDependencyEvent, ParamSlotModes,
     PerBodyDeclarationContextWork, SemaOutput, SourceParamAbi,
     SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
+};
+pub use provider::{
+    BodyFactProvider, DropCopyMetadata, ImportResolution, MemberCandidate, MemberKind,
+    NameCandidate, NameResolution, NominalWellFormedness, OperatorMemberCandidate, OperatorName,
+    ProviderDefinitionKind, ProviderNamespace,
 };
 
 use std::collections::{HashMap, HashSet};

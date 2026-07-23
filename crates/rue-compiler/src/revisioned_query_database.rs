@@ -568,7 +568,50 @@ pub(crate) struct RevisionedQueryDatabase {
     /// each exact issued batch and the trusted publish append here at
     /// publication — instead of re-deriving it by scanning complete views.
     lineage_additions: Vec<ModuleRevision>,
+    /// Provider-op observation counters (RUE-1091, ADR-0066 §4). The exact
+    /// [`CompilerBodyFactProvider`] is a test-only differential adapter in this
+    /// slice; no production path constructs it, so every counter here reads zero
+    /// on a production compile. Exposed through the unstable surface, mirroring
+    /// the recipe-cache meter.
+    provider_observation_meter: Arc<ProviderObservationCounters>,
+    /// Test-only probe family hosting one provider-observation task so a driven
+    /// body's recorded query edges are inspectable through the task terminal's
+    /// `dependencies()`.
+    #[cfg(test)]
+    provider_probe: QueryFamily<ProviderProbeKey, ProviderProbeValue>,
     pub(crate) parse: RevisionedFamily<super::session::ParseQuery>,
+}
+
+/// Cumulative provider-op observation counters, one per §4 fact family. The
+/// exact provider increments these as it observes each backing terminal; a
+/// production compile never constructs the provider, so a production read is all
+/// zeros. Atomic because a provider borrows the database shared.
+#[derive(Debug, Default)]
+pub(crate) struct ProviderObservationCounters {
+    name_lookups: std::sync::atomic::AtomicU64,
+    import_lookups: std::sync::atomic::AtomicU64,
+    method_candidates: std::sync::atomic::AtomicU64,
+    operator_candidates: std::sync::atomic::AtomicU64,
+    declaration_facts: std::sync::atomic::AtomicU64,
+    anonymous_facts: std::sync::atomic::AtomicU64,
+    producer_facts: std::sync::atomic::AtomicU64,
+    toolchain_facts: std::sync::atomic::AtomicU64,
+}
+
+impl ProviderObservationCounters {
+    fn snapshot(&self) -> crate::unstable::ProviderObservationMetrics {
+        use std::sync::atomic::Ordering::Relaxed;
+        crate::unstable::ProviderObservationMetrics {
+            name_lookups: self.name_lookups.load(Relaxed),
+            import_lookups: self.import_lookups.load(Relaxed),
+            method_candidates: self.method_candidates.load(Relaxed),
+            operator_candidates: self.operator_candidates.load(Relaxed),
+            declaration_facts: self.declaration_facts.load(Relaxed),
+            anonymous_facts: self.anonymous_facts.load(Relaxed),
+            producer_facts: self.producer_facts.load(Relaxed),
+            toolchain_facts: self.toolchain_facts.load(Relaxed),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1054,25 +1097,35 @@ impl LookupImportValue {
     /// `@import` specifiers. Pure and `O(module imports)`; it reads only the
     /// consulting module's own index, never another module's, matching the §4
     /// requirement to resolve "only the paths consulted by the lookup".
+    ///
+    /// Both the requested specifier and every directive specifier are normalized
+    /// through the one [`rue_air::normalize_module_path`] authority *before*
+    /// matching (RUE-1091 slice 3b, carried from the 3a review). A raw string
+    /// match would treat `@import("./dep.rue")` and `@import("dep.rue")` — the
+    /// same physical module (path_norm.rs / import_discovery.rs discipline) — as
+    /// distinct specifiers, so a duplicate import would escape the `Ambiguous`
+    /// classification and a normalized request against a `./`-spelled directive
+    /// would falsely classify as `Absent`. Normalizing both sides collapses
+    /// every spelling of one target to a single key.
     fn classify<'a>(
         specifier: &str,
         directives: impl IntoIterator<Item = &'a crate::ImportDirective>,
     ) -> Self {
+        let requested = rue_air::normalize_module_path(specifier);
         let mut matches = directives
             .into_iter()
-            .filter(|directive| directive.specifier() == specifier);
+            .filter(|directive| rue_air::normalize_module_path(directive.specifier()) == requested);
         let Some(_) = matches.next() else {
             return Self(Err(ImportBindingFailure::Absent));
         };
         if matches.next().is_some() {
             return Self(Err(ImportBindingFailure::Ambiguous));
         }
-        let normalized = rue_air::normalize_module_path(specifier);
-        if normalized.is_empty() {
+        if requested.is_empty() {
             return Self(Err(ImportBindingFailure::Rejected));
         }
         Self(Ok(ResolvedImportBinding {
-            normalized_specifier: Arc::from(normalized),
+            normalized_specifier: Arc::from(requested),
         }))
     }
 }
@@ -8813,7 +8866,27 @@ impl RevisionedQueryDatabase {
             import_view_source_entries_compared: std::sync::atomic::AtomicU64::new(0),
             import_view_read_entries_compared: std::sync::atomic::AtomicU64::new(0),
             lineage_additions: Vec::new(),
+            provider_observation_meter: Arc::new(ProviderObservationCounters::default()),
+            #[cfg(test)]
+            provider_probe: runtime
+                .family_with_equality(
+                    "compiler.body-fact-provider-probe",
+                    BODY_QUERY_MEMO_RETENTION,
+                    |left: &ProviderProbeValue, right: &ProviderProbeValue| left == right,
+                )
+                .expect("the provider-probe family has one canonical name"),
         }
+    }
+}
+
+impl RevisionedQueryDatabase {
+    /// An owned snapshot of the provider-op observation counters. Reads all
+    /// zeros on the production path — the exact provider is a test-only
+    /// differential adapter until the RUE-1091 step-4 flip.
+    pub(crate) fn provider_observation_metrics(
+        &self,
+    ) -> crate::unstable::ProviderObservationMetrics {
+        self.provider_observation_meter.snapshot()
     }
 }
 
@@ -11059,6 +11132,750 @@ pub(crate) fn projected_declaration_shells_for_test(
 #[cfg(test)]
 pub(crate) fn execution(attempt: &QueryRequestAttempt<impl Sized>) -> RequestExecution {
     attempt.execution()
+}
+
+// ---------------------------------------------------------------------------
+// RUE-1091 slice 3b — the exact body-fact provider (test-only differential).
+//
+// `CompilerBodyFactProvider` implements the rue-air `BodyFactProvider` boundary
+// inside a `BodyTransaction`-style query context: every op requests its exact
+// backing terminal through `context.query_registered`, so the typed provider
+// call *is* the dependency observation (ADR-0066 §4). It converts the private
+// query-terminal values into rue-air's owned candidate-set / durable facts.
+//
+// The whole provider path is `#[cfg(test)]`: it is a differential adapter that
+// cross-checks each returned fact against the production epoch's equivalent
+// terminal, never a selectable production path. The step-4 flip promotes it.
+// It consumes the `#[cfg(test)]` `lookup-import` family, so gating the whole
+// provider on test keeps the family and its one consumer on the same cfg.
+// ---------------------------------------------------------------------------
+
+/// Owned receiver-type identity the provider keys method/operator candidates
+/// and drop/`@copy` metadata on. It is exactly the `(receiver-type identity,
+/// member name)` key the 3a review binds these ops to — never a per-body
+/// universe walk and never a new module-index column.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReceiverTypeIdentity {
+    module: ModuleId,
+    type_name: Arc<str>,
+    type_category: crate::declaration_candidate::DeclarationCandidateCategory,
+}
+
+#[cfg(test)]
+impl ReceiverTypeIdentity {
+    pub(crate) fn new(
+        module: ModuleId,
+        type_name: impl Into<Arc<str>>,
+        type_category: crate::declaration_candidate::DeclarationCandidateCategory,
+    ) -> Self {
+        Self {
+            module,
+            type_name: type_name.into(),
+            type_category,
+        }
+    }
+}
+
+/// Key for the test-only provider-observation probe task. One task hosts a
+/// batch of provider ops so the driven body's recorded query edges are
+/// inspectable through the terminal's `dependencies()`.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ProviderProbeKey {
+    label: Arc<str>,
+}
+
+#[cfg(test)]
+impl QueryKey for ProviderProbeKey {
+    fn stable_identity(&self) -> String {
+        format!("provider-probe:{}", self.label)
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProviderProbeValue;
+
+/// Convert a rue-air provider namespace to the compiler's presemantic
+/// namespace, and back, so a body names a namespace without depending on the
+/// compiler's candidate model.
+#[cfg(test)]
+fn provider_namespace_to_definition(namespace: rue_air::ProviderNamespace) -> DefinitionNamespace {
+    match namespace {
+        rue_air::ProviderNamespace::ModuleItem => DefinitionNamespace::ModuleItem,
+        rue_air::ProviderNamespace::Destructor => DefinitionNamespace::Destructor,
+    }
+}
+
+#[cfg(test)]
+fn definition_namespace_to_provider(namespace: DefinitionNamespace) -> rue_air::ProviderNamespace {
+    match namespace {
+        DefinitionNamespace::ModuleItem => rue_air::ProviderNamespace::ModuleItem,
+        DefinitionNamespace::Destructor => rue_air::ProviderNamespace::Destructor,
+    }
+}
+
+#[cfg(test)]
+fn definition_kind_to_provider(kind: DefinitionKind) -> rue_air::ProviderDefinitionKind {
+    match kind {
+        DefinitionKind::Function => rue_air::ProviderDefinitionKind::Function,
+        DefinitionKind::Struct => rue_air::ProviderDefinitionKind::Struct,
+        DefinitionKind::Enum => rue_air::ProviderDefinitionKind::Enum,
+        DefinitionKind::Destructor => rue_air::ProviderDefinitionKind::Destructor,
+        DefinitionKind::Const => rue_air::ProviderDefinitionKind::Const,
+    }
+}
+
+/// Project one retained `LookupNameFact` into an owned rue-air candidate.
+#[cfg(test)]
+fn name_candidate_from_fact(fact: &LookupNameFact) -> rue_air::NameCandidate {
+    rue_air::NameCandidate {
+        namespace: definition_namespace_to_provider(fact.namespace),
+        kind: definition_kind_to_provider(fact.kind),
+        is_public: fact.visibility == Some(rue_parser::ast::Visibility::Public),
+        name: fact.name.clone(),
+        language_item: fact.language_item,
+    }
+}
+
+/// Classify a retained `LookupName` value into the owned rue-air candidate set.
+#[cfg(test)]
+fn name_resolution_from_value(value: &LookupNameValue) -> rue_air::NameResolution {
+    match &value.0 {
+        Err(LookupNameFailure::ModuleIndexUnavailable(_)) => {
+            rue_air::NameResolution::IndexUnavailable
+        }
+        Ok(facts) => rue_air::NameResolution::from_candidates(
+            facts.iter().map(name_candidate_from_fact).collect(),
+        ),
+    }
+}
+
+/// Classify a retained `LookupImport` value into the owned rue-air result.
+#[cfg(test)]
+fn import_resolution_from_value(value: &LookupImportValue) -> rue_air::ImportResolution {
+    match &value.0 {
+        Ok(binding) => rue_air::ImportResolution::Resolved {
+            normalized_specifier: binding.normalized_specifier.clone(),
+        },
+        Err(ImportBindingFailure::Absent) => rue_air::ImportResolution::Absent,
+        Err(ImportBindingFailure::Rejected) => rue_air::ImportResolution::Rejected,
+        Err(ImportBindingFailure::Ambiguous) => rue_air::ImportResolution::Ambiguous,
+    }
+}
+
+/// Build the body query key for a plain-function declaration candidate. Producer
+/// and toolchain facts are keyed by body instance; only a free function is
+/// derivable here, which is exactly what the representative differential bodies
+/// exercise. Non-function candidates yield `None`.
+#[cfg(test)]
+fn function_body_query_key_for_candidate(
+    candidate: &crate::declaration_candidate::DeclarationCandidateKey,
+    configuration: &crate::semantic_query_nucleus::SemanticQueryConfiguration,
+) -> Option<crate::body_query::BodyQueryKey> {
+    use crate::declaration_candidate::DeclarationCandidateCategory as Cat;
+    let (namespace, kind) = match candidate.category {
+        Cat::Function => (
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::Function,
+        ),
+        _ => return None,
+    };
+    let key = crate::StableDefinitionKey::from_stable_parts(
+        candidate.module.clone(),
+        namespace,
+        kind,
+        candidate.name.clone(),
+        None,
+    );
+    Some(crate::body_query::BodyQueryKey {
+        instance: crate::FunctionInstanceKey::Definition(key),
+        configuration: configuration.clone(),
+    })
+}
+
+/// The compiler-side implementation of the rue-air exact provider boundary.
+///
+/// Bound entirely inside one query task: `context` records each edge, `database`
+/// supplies the backing family handles, and `configuration` keys the
+/// semantic-nucleus terminals. A `QueryAbort` from any nested request is
+/// captured and surfaced to the task after the batch so the trait methods stay
+/// abort-free (rue-air never sees a query-runtime type).
+#[cfg(test)]
+pub(crate) struct CompilerBodyFactProvider<'a> {
+    context: &'a rue_query::QueryContext,
+    database: &'a RevisionedQueryDatabase,
+    configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
+    aborted: std::cell::RefCell<Option<QueryAbort>>,
+}
+
+#[cfg(test)]
+impl<'a> CompilerBodyFactProvider<'a> {
+    fn new(
+        context: &'a rue_query::QueryContext,
+        database: &'a RevisionedQueryDatabase,
+        configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
+    ) -> Self {
+        Self {
+            context,
+            database,
+            configuration,
+            aborted: std::cell::RefCell::new(None),
+        }
+    }
+
+    /// Record a nested request's abort with one uniform rule across every op:
+    /// `QueryAbort::Canceled` is the runtime's universal "not available at this
+    /// revision / deferred" signal, so the provider maps it to an observed
+    /// absence (the op's empty/`None` sentinel) and does not poison the task —
+    /// the request is still recorded as an observed edge either way. Any other
+    /// abort (a true cycle, a foreign runtime, a missing input) is genuinely
+    /// fatal and is captured so the task surfaces it at its boundary. This keeps
+    /// the abort handling identical for name, nucleus, import, member, producer,
+    /// and toolchain observations.
+    fn observe_abort(&self, abort: QueryAbort) {
+        if matches!(abort, QueryAbort::Canceled) {
+            return;
+        }
+        let mut slot = self.aborted.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(abort);
+        }
+    }
+
+    fn taken_abort(&self) -> Option<QueryAbort> {
+        self.aborted.borrow_mut().take()
+    }
+
+    fn meter(&self) -> &ProviderObservationCounters {
+        &self.database.provider_observation_meter
+    }
+
+    /// Observe the exact `LookupName` terminal for a consulted key, recording
+    /// its edge and classifying the candidate set.
+    fn name_resolution(
+        &self,
+        module: &ModuleId,
+        namespace: rue_air::ProviderNamespace,
+        name: &str,
+    ) -> rue_air::NameResolution {
+        let key = LookupNameKey {
+            module: module.clone(),
+            namespace: provider_namespace_to_definition(namespace),
+            name: Arc::from(name),
+        };
+        match self
+            .context
+            .query_registered(&self.database.lookup_names, key)
+        {
+            Ok(terminal) => match terminal.outcome() {
+                rue_query::QueryOutcome::Success(value) => name_resolution_from_value(value),
+                _ => rue_air::NameResolution::IndexUnavailable,
+            },
+            Err(abort) => {
+                self.observe_abort(abort);
+                rue_air::NameResolution::IndexUnavailable
+            }
+        }
+    }
+
+    /// Observe one semantic-nucleus terminal, recording its edge. Deterministic
+    /// failures publish as `Success(Failure)`; a `QueryAbort` returns `None`
+    /// (Canceled as observed absence, other aborts captured for the boundary).
+    fn nucleus(
+        &self,
+        key: crate::semantic_query_nucleus::SemanticNucleusKey,
+    ) -> Option<crate::semantic_query_nucleus::SemanticNucleusValue> {
+        match self
+            .context
+            .query_registered(&self.database.semantic_nucleus, key)
+        {
+            Ok(terminal) => match terminal.outcome() {
+                rue_query::QueryOutcome::Success(value) => Some(value.clone()),
+                _ => None,
+            },
+            Err(abort) => {
+                self.observe_abort(abort);
+                None
+            }
+        }
+    }
+
+    fn declaration_query_key(
+        &self,
+        decl: &crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+        crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+            declaration: decl.clone(),
+            configuration: self.configuration.clone(),
+        }
+    }
+
+    /// The candidate key for one member of a receiver in a given syntactic
+    /// category (method or associated function), keyed on the receiver-type
+    /// identity plus the member name.
+    fn member_candidate_key(
+        &self,
+        receiver: &ReceiverTypeIdentity,
+        category: crate::declaration_candidate::DeclarationCandidateCategory,
+        name: &str,
+    ) -> crate::declaration_candidate::DeclarationCandidateKey {
+        crate::declaration_candidate::DeclarationCandidateKey {
+            module: receiver.module.clone(),
+            category,
+            name: Arc::from(name),
+            owner: Some(crate::declaration_candidate::DeclarationCandidateOwner {
+                category: receiver.type_category,
+                name: receiver.type_name.clone(),
+            }),
+            duplicate_discriminator: 0,
+        }
+    }
+
+    /// Collect every member of `receiver` named `name`, spanning BOTH the method
+    /// and associated-function categories (they share the compiler's method
+    /// table). For each present member this observes its semantic-nucleus
+    /// identity terminal (presence + visibility) and its signature terminal, and
+    /// sources `has_self` honestly from the signature's callable projection —
+    /// never inferred from the syntactic category. Absent members contribute no
+    /// candidate; the returned set is the §4 candidate set, not a winner.
+    fn member_candidates(
+        &self,
+        receiver: &ReceiverTypeIdentity,
+        name: &str,
+    ) -> Vec<MemberObservation> {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Cat;
+        let mut found = Vec::new();
+        for (category, kind) in [
+            (Cat::Method, rue_air::MemberKind::Method),
+            (
+                Cat::AssociatedFunction,
+                rue_air::MemberKind::AssociatedFunction,
+            ),
+        ] {
+            let key = self.member_candidate_key(receiver, category, name);
+            let Some(crate::semantic_query_nucleus::SemanticNucleusValue::Identity(identity)) =
+                self.nucleus(crate::semantic_query_nucleus::SemanticNucleusKey::Identity(
+                    crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                        declaration: key.clone(),
+                        configuration: self.configuration.clone(),
+                    },
+                ))
+            else {
+                continue;
+            };
+            // `has_self` is authoritative from the signature, not the category.
+            let has_self_receiver = match self.nucleus(
+                crate::semantic_query_nucleus::SemanticNucleusKey::Signature(
+                    crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                        declaration: key.clone(),
+                        configuration: self.configuration.clone(),
+                    },
+                ),
+            ) {
+                Some(crate::semantic_query_nucleus::SemanticNucleusValue::Signature(signature)) => {
+                    matches!(
+                        signature.signature,
+                        crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
+                            has_self: true,
+                            ..
+                        }
+                    )
+                }
+                _ => matches!(category, Cat::Method),
+            };
+            found.push(MemberObservation {
+                declaration: key,
+                kind,
+                has_self_receiver,
+                is_public: identity.is_public,
+            });
+        }
+        found
+    }
+}
+
+/// One observed receiver member: its declaration handle, syntactic kind,
+/// `self`-receiver classification (from the signature), and visibility.
+#[cfg(test)]
+struct MemberObservation {
+    declaration: crate::declaration_candidate::DeclarationCandidateKey,
+    kind: rue_air::MemberKind,
+    has_self_receiver: bool,
+    is_public: bool,
+}
+
+#[cfg(test)]
+impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
+    type ModuleRef = ModuleId;
+    type DeclarationRef = crate::declaration_candidate::DeclarationCandidateKey;
+    type ReceiverType = ReceiverTypeIdentity;
+
+    type DeclarationIdentity = crate::semantic_query_nucleus::DeclarationIdentityProjection;
+    type Signature = crate::semantic_query_nucleus::ResolvedDeclarationSignature;
+    type ConstComptime = crate::semantic_query_nucleus::ConstResolutionProjection;
+    type AnonymousFacts = Arc<[crate::durable_semantics::DurableAnonymousNominal]>;
+    type ProducerBodyFacts = crate::body_query::ProducedAnonymous;
+    type ToolchainFacts = crate::BodyToolchainDemand;
+
+    fn lookup_unqualified(
+        &self,
+        module: &ModuleId,
+        namespace: rue_air::ProviderNamespace,
+        name: &str,
+    ) -> rue_air::NameResolution {
+        self.meter()
+            .name_lookups
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.name_resolution(module, namespace, name)
+    }
+
+    fn lookup_qualified(
+        &self,
+        module: &ModuleId,
+        namespace: rue_air::ProviderNamespace,
+        name: &str,
+    ) -> rue_air::NameResolution {
+        self.meter()
+            .name_lookups
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.name_resolution(module, namespace, name)
+    }
+
+    fn method_candidates(
+        &self,
+        receiver: &ReceiverTypeIdentity,
+        name: &str,
+    ) -> Vec<rue_air::MemberCandidate<crate::declaration_candidate::DeclarationCandidateKey>> {
+        self.meter()
+            .method_candidates
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.member_candidates(receiver, name)
+            .into_iter()
+            .map(|observed| rue_air::MemberCandidate {
+                declaration: observed.declaration,
+                name: Arc::from(name),
+                has_self_receiver: observed.has_self_receiver,
+                kind: observed.kind,
+                is_public: observed.is_public,
+            })
+            .collect()
+    }
+
+    fn operator_candidates(
+        &self,
+        receiver: &ReceiverTypeIdentity,
+        operator: rue_air::OperatorName,
+    ) -> Vec<rue_air::OperatorMemberCandidate<crate::declaration_candidate::DeclarationCandidateKey>>
+    {
+        self.meter()
+            .operator_candidates
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.member_candidates(receiver, operator.method_name())
+            .into_iter()
+            .map(|observed| rue_air::OperatorMemberCandidate {
+                declaration: observed.declaration,
+                operator,
+                has_self_receiver: observed.has_self_receiver,
+                is_public: observed.is_public,
+            })
+            .collect()
+    }
+
+    fn declaration_identity(
+        &self,
+        decl: &crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> Option<crate::semantic_query_nucleus::DeclarationIdentityProjection> {
+        self.meter()
+            .declaration_facts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let query = crate::semantic_query_nucleus::SemanticNucleusKey::Identity(
+            self.declaration_query_key(decl),
+        );
+        match self.nucleus(query) {
+            Some(crate::semantic_query_nucleus::SemanticNucleusValue::Identity(identity)) => {
+                Some(identity)
+            }
+            _ => None,
+        }
+    }
+
+    fn signature(
+        &self,
+        decl: &crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> Option<crate::semantic_query_nucleus::ResolvedDeclarationSignature> {
+        self.meter()
+            .declaration_facts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let query = crate::semantic_query_nucleus::SemanticNucleusKey::Signature(
+            self.declaration_query_key(decl),
+        );
+        match self.nucleus(query) {
+            Some(crate::semantic_query_nucleus::SemanticNucleusValue::Signature(signature)) => {
+                Some(signature)
+            }
+            _ => None,
+        }
+    }
+
+    fn const_comptime(
+        &self,
+        decl: &crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> Option<crate::semantic_query_nucleus::ConstResolutionProjection> {
+        self.meter()
+            .declaration_facts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let query = crate::semantic_query_nucleus::SemanticNucleusKey::ConstResolution(
+            self.declaration_query_key(decl),
+        );
+        match self.nucleus(query) {
+            Some(crate::semantic_query_nucleus::SemanticNucleusValue::ConstResolution(value)) => {
+                Some(value)
+            }
+            _ => None,
+        }
+    }
+
+    fn nominal_well_formedness(
+        &self,
+        decl: &crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> Option<rue_air::NominalWellFormedness> {
+        self.meter()
+            .declaration_facts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let query = crate::semantic_query_nucleus::SemanticNucleusKey::NominalWellFormedness(
+            self.declaration_query_key(decl),
+        );
+        match self.nucleus(query) {
+            Some(crate::semantic_query_nucleus::SemanticNucleusValue::NominalWellFormedness) => {
+                Some(rue_air::NominalWellFormedness::WellFormed)
+            }
+            Some(crate::semantic_query_nucleus::SemanticNucleusValue::Failure(_)) => {
+                Some(rue_air::NominalWellFormedness::IllFormed)
+            }
+            _ => None,
+        }
+    }
+
+    fn anonymous_facts(
+        &self,
+        decl: &crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> Option<Arc<[crate::durable_semantics::DurableAnonymousNominal]>> {
+        self.meter()
+            .anonymous_facts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let query = crate::semantic_query_nucleus::SemanticNucleusKey::Signature(
+            self.declaration_query_key(decl),
+        );
+        match self.nucleus(query) {
+            Some(crate::semantic_query_nucleus::SemanticNucleusValue::Signature(signature)) => {
+                Some(signature.anonymous_nominals.clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn language_item(
+        &self,
+        module: &ModuleId,
+        namespace: rue_air::ProviderNamespace,
+        name: &str,
+    ) -> Option<rue_air::LangItem> {
+        self.meter()
+            .name_lookups
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        match self.name_resolution(module, namespace, name) {
+            rue_air::NameResolution::Unique(candidate) => candidate.language_item,
+            rue_air::NameResolution::Ambiguous(candidates) => candidates
+                .iter()
+                .find_map(|candidate| candidate.language_item),
+            rue_air::NameResolution::Absent | rue_air::NameResolution::IndexUnavailable => None,
+        }
+    }
+
+    fn drop_copy_metadata(
+        &self,
+        receiver: &ReceiverTypeIdentity,
+    ) -> Option<rue_air::DropCopyMetadata> {
+        // A destructor is a first-class name lookup in the Destructor namespace.
+        self.meter()
+            .name_lookups
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let destructor = self.name_resolution(
+            &receiver.module,
+            rue_air::ProviderNamespace::Destructor,
+            &receiver.type_name,
+        );
+        let has_destructor = !destructor.candidates().is_empty();
+        // `@copy` is carried on the receiver type's own struct signature.
+        self.meter()
+            .declaration_facts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let type_key = crate::declaration_candidate::DeclarationCandidateKey {
+            module: receiver.module.clone(),
+            category: receiver.type_category,
+            name: receiver.type_name.clone(),
+            owner: None,
+            duplicate_discriminator: 0,
+        };
+        let query = crate::semantic_query_nucleus::SemanticNucleusKey::Signature(
+            self.declaration_query_key(&type_key),
+        );
+        let is_copy = match self.nucleus(query) {
+            Some(crate::semantic_query_nucleus::SemanticNucleusValue::Signature(signature)) => {
+                matches!(
+                    signature.signature,
+                    crate::semantic_query_nucleus::DeclarationSignatureProjection::Struct {
+                        is_copy: true,
+                        ..
+                    }
+                )
+            }
+            _ => false,
+        };
+        Some(rue_air::DropCopyMetadata {
+            has_destructor,
+            is_copy,
+        })
+    }
+
+    fn resolve_import(&self, module: &ModuleId, specifier: &str) -> rue_air::ImportResolution {
+        self.meter()
+            .import_lookups
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let key = LookupImportKey {
+            module: module.clone(),
+            specifier: Arc::from(specifier),
+        };
+        match self
+            .context
+            .query_registered(&self.database.lookup_imports, key)
+        {
+            Ok(terminal) => match terminal.outcome() {
+                rue_query::QueryOutcome::Success(value) => import_resolution_from_value(value),
+                _ => rue_air::ImportResolution::Absent,
+            },
+            Err(abort) => {
+                self.observe_abort(abort);
+                rue_air::ImportResolution::Absent
+            }
+        }
+    }
+
+    fn producer_body_facts(
+        &self,
+        decl: &crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> Option<crate::body_query::ProducedAnonymous> {
+        self.meter()
+            .producer_facts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let body_key = function_body_query_key_for_candidate(decl, &self.configuration)?;
+        match self
+            .context
+            .query_registered(&self.database.body_produced_anonymous, body_key)
+        {
+            Ok(terminal) => match terminal.outcome() {
+                rue_query::QueryOutcome::Success(value) => Some(value.clone()),
+                _ => None,
+            },
+            // A body with no producer-owned anonymous projection cancels this
+            // terminal. The uniform `observe_abort` rule maps that Canceled to an
+            // observed absence (`None`) exactly as every other op treats a
+            // deferred terminal — the request is still recorded as an observed
+            // edge — while a genuinely fatal abort is captured for the boundary.
+            Err(abort) => {
+                self.observe_abort(abort);
+                None
+            }
+        }
+    }
+
+    fn trusted_toolchain_facts(
+        &self,
+        decl: &crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> crate::BodyToolchainDemand {
+        self.meter()
+            .toolchain_facts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let empty = crate::BodyToolchainDemand::from_payload_kinds([], None);
+        let Some(body_key) = function_body_query_key_for_candidate(decl, &self.configuration)
+        else {
+            return empty;
+        };
+        match self
+            .context
+            .query_registered(&self.database.body_toolchain_demands, body_key)
+        {
+            Ok(terminal) => match terminal.outcome() {
+                rue_query::QueryOutcome::Success(value) => value.clone(),
+                _ => empty,
+            },
+            Err(abort) => {
+                self.observe_abort(abort);
+                empty
+            }
+        }
+    }
+}
+
+/// The recorded edges and captured result of one provider-observation probe.
+#[cfg(test)]
+struct ProviderProbeOutcome<R> {
+    /// The value the probe closure produced.
+    result: R,
+    /// Every dependency node the provider ops recorded, in observation order.
+    dependencies: Vec<rue_query::NodeIdentity>,
+}
+
+#[cfg(test)]
+impl RevisionedQueryDatabase {
+    /// Run `run` against a fresh [`CompilerBodyFactProvider`] inside one query
+    /// task at `revision`. The returned outcome carries the closure's result and
+    /// the exact set of query edges the provider recorded, so a test proves both
+    /// the returned facts (differential vs the production epoch) and that each op
+    /// recorded exactly its backing terminal.
+    fn probe_body_facts<R>(
+        &self,
+        revision: Revision,
+        configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
+        label: &str,
+        run: impl FnOnce(&CompilerBodyFactProvider<'_>) -> R,
+    ) -> ProviderProbeOutcome<R> {
+        let captured: std::cell::RefCell<Option<R>> = std::cell::RefCell::new(None);
+        let run_cell = std::cell::RefCell::new(Some(run));
+        let terminal = self
+            .runtime
+            .query(
+                &self.provider_probe,
+                revision,
+                ProviderProbeKey {
+                    label: Arc::from(label),
+                },
+                CancellationToken::new(),
+                |context| {
+                    let provider =
+                        CompilerBodyFactProvider::new(context, self, configuration.clone());
+                    let run = run_cell.borrow_mut().take().expect("probe runs once");
+                    let result = run(&provider);
+                    if let Some(abort) = provider.taken_abort() {
+                        return Err(abort);
+                    }
+                    *captured.borrow_mut() = Some(result);
+                    Ok(QueryOutput::success(ProviderProbeValue))
+                },
+            )
+            .expect("provider probe published a terminal");
+        let dependencies = terminal
+            .dependencies()
+            .iter()
+            .map(|observation| observation.node.clone())
+            .collect();
+        ProviderProbeOutcome {
+            result: captured.into_inner().expect("probe captured a result"),
+            dependencies,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -17131,6 +17948,38 @@ mod tests {
                 normalized_specifier: Arc::from("dep.rue"),
             }))
         );
+
+        // RUE-1091 slice 3b regression (carried from the 3a review): both the
+        // requested specifier and every directive specifier normalize through
+        // the one `normalize_module_path` authority before matching.
+        //
+        // Case 1 — `./dep.rue` and `dep.rue` are the same physical target, so
+        // two directives spelled the two ways are a duplicate import. A raw
+        // string match would only match the `dep.rue` directive and misclassify
+        // this as a unique `Resolved` binding; normalized matching sees both.
+        let mixed_spellings = [
+            crate::ImportDirective::new(m.clone(), 0, 1, Arc::from("./dep.rue")),
+            crate::ImportDirective::new(m.clone(), 2, 3, Arc::from("dep.rue")),
+        ];
+        assert_eq!(
+            LookupImportValue::classify("dep.rue", &mixed_spellings),
+            LookupImportValue(Err(ImportBindingFailure::Ambiguous)),
+            "`./dep.rue` and `dep.rue` are one target: a duplicate import, not a \
+             unique binding"
+        );
+
+        // Case 2 — a normalized request against a `./`-spelled directive must
+        // resolve, never fall through to a false `Absent`. A raw match of
+        // `dep.rue` against a lone `./dep.rue` directive would be `Absent`.
+        let dot_slash = crate::ImportDirective::new(m.clone(), 0, 1, Arc::from("./dep.rue"));
+        assert_eq!(
+            LookupImportValue::classify("dep.rue", std::slice::from_ref(&dot_slash)),
+            LookupImportValue(Ok(ResolvedImportBinding {
+                normalized_specifier: Arc::from("dep.rue"),
+            })),
+            "a normalized request against a `./`-spelled directive must resolve, \
+             not be a false Absent"
+        );
     }
 
     #[test]
@@ -17217,6 +18066,580 @@ mod tests {
         assert!(
             !evaluated.contains(&b_key),
             "an unedited module's lookup must not recompute: {evaluated:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // RUE-1091 slice 3b — the exact body-fact provider + differential adapter.
+    //
+    // Each op requests its exact backing terminal through the query context, so
+    // the returned owned fact is proven fact-for-fact against the production
+    // epoch's equivalent terminal, and the probe's recorded edges prove each op
+    // observed exactly that terminal.
+    // -----------------------------------------------------------------------
+
+    fn epoch_name_resolution(
+        attempt: &QueryRequestAttempt<LookupNameValue>,
+    ) -> rue_air::NameResolution {
+        let terminal = attempt.terminal().unwrap();
+        let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+            unreachable!("LookupName publishes typed values")
+        };
+        name_resolution_from_value(value)
+    }
+
+    fn recorded_family<'a>(
+        outcome_dependencies: &'a [rue_query::NodeIdentity],
+        family: &str,
+    ) -> Vec<&'a rue_query::NodeIdentity> {
+        outcome_dependencies
+            .iter()
+            .filter(|node| node.family() == family)
+            .collect()
+    }
+
+    #[test]
+    fn provider_name_lookup_matches_epoch_and_records_lookup_name_edge() {
+        use rue_air::BodyFactProvider;
+        let snapshot = source_snapshot(
+            &[(
+                1,
+                "/m.rue",
+                "m.rue",
+                "pub struct Uniq {}\nfn dup() {}\nfn dup() {}\nstruct Hidden {}\n\
+                 fn main() -> i32 { 0 }\n",
+            )],
+            1,
+        );
+        let m = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let config = semantic_configuration();
+
+        let outcome = database.probe_body_facts(revision, config, "name-lookup", |provider| {
+            (
+                provider.lookup_unqualified(&m, rue_air::ProviderNamespace::ModuleItem, "Uniq"),
+                provider.lookup_unqualified(&m, rue_air::ProviderNamespace::ModuleItem, "dup"),
+                provider.lookup_unqualified(&m, rue_air::ProviderNamespace::ModuleItem, "absent"),
+            )
+        });
+        let (uniq, dup, absent) = &outcome.result;
+
+        // Positive / negative / ambiguous are distinct candidate-set outcomes.
+        assert!(matches!(uniq, rue_air::NameResolution::Unique(_)));
+        assert!(
+            matches!(dup, rue_air::NameResolution::Ambiguous(candidates) if candidates.len() == 2)
+        );
+        assert_eq!(*absent, rue_air::NameResolution::Absent);
+
+        // Differential: each provider result equals the production epoch's
+        // canonical classification of the same lookup terminal.
+        assert_eq!(
+            *uniq,
+            epoch_name_resolution(&request_lookup_name(
+                &database,
+                revision,
+                &m,
+                DefinitionNamespace::ModuleItem,
+                "Uniq",
+            ))
+        );
+        assert_eq!(
+            *dup,
+            epoch_name_resolution(&request_lookup_name(
+                &database,
+                revision,
+                &m,
+                DefinitionNamespace::ModuleItem,
+                "dup",
+            ))
+        );
+
+        // Visibility- and kind-filtered views are candidate SETS the caller
+        // narrows locally: `Uniq` is public, `Hidden` is not.
+        let hidden =
+            database.probe_body_facts(revision, semantic_configuration(), "vis", |provider| {
+                provider.lookup_unqualified(&m, rue_air::ProviderNamespace::ModuleItem, "Hidden")
+            });
+        assert!(matches!(hidden.result, rue_air::NameResolution::Unique(_)));
+        assert_eq!(hidden.result.visible(true), rue_air::NameResolution::Absent);
+        assert_eq!(uniq.visible(true), *uniq);
+        assert_eq!(
+            uniq.of_kind(rue_air::ProviderDefinitionKind::Function),
+            rue_air::NameResolution::Absent,
+            "Uniq is a struct, not a function"
+        );
+
+        // Edge-recording proof: the provider recorded exactly a lookup-name edge
+        // per consulted key.
+        let names = recorded_family(&outcome.dependencies, "compiler.lookup-name");
+        assert!(
+            names.iter().any(|node| node.key().contains("Uniq")),
+            "the Uniq lookup recorded its terminal edge: {:?}",
+            outcome.dependencies
+        );
+        assert!(names.iter().any(|node| node.key().contains("dup")));
+        assert!(names.iter().any(|node| node.key().contains("absent")));
+        assert!(
+            outcome
+                .dependencies
+                .iter()
+                .all(|node| node.family() == "compiler.lookup-name"),
+            "a name lookup observes only its lookup-name terminal: {:?}",
+            outcome.dependencies
+        );
+    }
+
+    #[test]
+    fn provider_import_resolution_matches_epoch_including_normalization() {
+        use rue_air::BodyFactProvider;
+        let snapshot = source_snapshot(
+            &[(
+                1,
+                "/m.rue",
+                "m.rue",
+                "const a = @import(\"dep.rue\");\n\
+                 const b = @import(\"./mixed.rue\");\n\
+                 const c = @import(\"mixed.rue\");\n\
+                 fn main() -> i32 { 0 }\n",
+            )],
+            1,
+        );
+        let m = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+
+        let outcome =
+            database.probe_body_facts(revision, semantic_configuration(), "import", |provider| {
+                (
+                    provider.resolve_import(&m, "dep.rue"),
+                    // The requested `mixed.rue` normalizes to the same target as both
+                    // the `./mixed.rue` and `mixed.rue` directives: an ambiguous
+                    // (duplicate) binding, never a false unique resolution.
+                    provider.resolve_import(&m, "mixed.rue"),
+                    // A `./`-spelled request against the same directives still
+                    // resolves through the normalized key.
+                    provider.resolve_import(&m, "./dep.rue"),
+                    provider.resolve_import(&m, "missing.rue"),
+                )
+            });
+        let (dep, mixed, dot_dep, missing) = &outcome.result;
+        assert_eq!(
+            *dep,
+            rue_air::ImportResolution::Resolved {
+                normalized_specifier: Arc::from("dep.rue"),
+            }
+        );
+        assert_eq!(*mixed, rue_air::ImportResolution::Ambiguous);
+        assert_eq!(
+            *dot_dep,
+            rue_air::ImportResolution::Resolved {
+                normalized_specifier: Arc::from("dep.rue"),
+            }
+        );
+        assert_eq!(*missing, rue_air::ImportResolution::Absent);
+
+        // Differential: matches the production epoch's classification of the
+        // same import terminal.
+        let epoch = import_binding(&request_lookup_import(&database, revision, &m, "dep.rue"));
+        assert_eq!(*dep, import_resolution_from_value(&epoch));
+
+        // Edge-recording proof: only lookup-import edges, one per consulted path.
+        assert!(
+            outcome
+                .dependencies
+                .iter()
+                .all(|node| node.family() == "compiler.lookup-import"),
+            "import resolution observes only its lookup-import terminal: {:?}",
+            outcome.dependencies
+        );
+        assert!(
+            recorded_family(&outcome.dependencies, "compiler.lookup-import")
+                .iter()
+                .any(|node| node.key().contains("mixed.rue")),
+        );
+    }
+
+    #[test]
+    fn provider_declaration_facts_match_production_epoch() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Cat;
+        use rue_air::BodyFactProvider;
+        let snapshot = source_snapshot(
+            &[(
+                1,
+                "/m.rue",
+                "m.rue",
+                "@copy struct Box { value: i32, fn get(borrow self) -> i32 { self.value } }\n\
+                 struct Res { handle: i32 }\n\
+                 drop fn Res(self) {}\n\
+                 fn helper(x: i32) -> i32 { x }\n\
+                 fn main() -> i32 { 0 }\n",
+            )],
+            1,
+        );
+        let m = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let config = semantic_configuration();
+
+        let helper = declaration_candidate(&database, revision, &m, Cat::Function, "helper");
+        let box_struct = declaration_candidate(&database, revision, &m, Cat::Struct, "Box");
+        let copy_receiver = ReceiverTypeIdentity::new(m.clone(), "Box", Cat::Struct);
+        let res_receiver = ReceiverTypeIdentity::new(m.clone(), "Res", Cat::Struct);
+
+        let helper_probe = helper.clone();
+        let box_probe = box_struct.clone();
+        let copy_probe = copy_receiver.clone();
+        let res_probe = res_receiver.clone();
+        let outcome =
+            database.probe_body_facts(revision, config.clone(), "decl-facts", move |provider| {
+                (
+                    provider.declaration_identity(&helper_probe),
+                    provider.signature(&helper_probe),
+                    provider.nominal_well_formedness(&box_probe),
+                    provider.signature(&box_probe),
+                    provider.anonymous_facts(&helper_probe),
+                    provider.language_item(&m, rue_air::ProviderNamespace::ModuleItem, "Box"),
+                    provider.drop_copy_metadata(&copy_probe),
+                    provider.drop_copy_metadata(&res_probe),
+                    provider.trusted_toolchain_facts(&helper_probe),
+                )
+            });
+        let (
+            identity,
+            signature,
+            well_formed,
+            box_sig,
+            anon,
+            lang_item,
+            copy_meta,
+            res_meta,
+            toolchain,
+        ) = outcome.result;
+
+        // Identity / signature differential against the semantic-nucleus epoch.
+        let epoch_identity = request_semantic_nucleus(
+            &database,
+            revision,
+            crate::semantic_query_nucleus::SemanticNucleusKey::Identity(
+                crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration: helper.clone(),
+                    configuration: config.clone(),
+                },
+            ),
+        );
+        let crate::semantic_query_nucleus::SemanticNucleusValue::Identity(epoch_identity) =
+            epoch_identity
+        else {
+            panic!("helper has an identity")
+        };
+        assert_eq!(identity, Some(epoch_identity));
+
+        let epoch_signature = request_semantic_nucleus(
+            &database,
+            revision,
+            crate::semantic_query_nucleus::SemanticNucleusKey::Signature(
+                crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration: helper.clone(),
+                    configuration: config.clone(),
+                },
+            ),
+        );
+        let crate::semantic_query_nucleus::SemanticNucleusValue::Signature(epoch_signature) =
+            epoch_signature
+        else {
+            panic!("helper has a signature")
+        };
+        assert_eq!(signature.as_ref(), Some(&epoch_signature));
+        // Anonymous facts are the signature's own anonymous nominals.
+        assert_eq!(anon, Some(epoch_signature.anonymous_nominals.clone()));
+
+        // A well-formed nominal; `@copy` and its destructor are exact facts.
+        assert_eq!(
+            well_formed,
+            Some(rue_air::NominalWellFormedness::WellFormed)
+        );
+        assert!(matches!(
+            box_sig.as_ref().map(|sig| &sig.signature),
+            Some(
+                crate::semantic_query_nucleus::DeclarationSignatureProjection::Struct {
+                    is_copy: true,
+                    ..
+                }
+            )
+        ));
+        // `@copy` Box has no destructor; Res has a destructor and is not copy.
+        // Both facts are sourced from the destructor lookup + struct signature.
+        assert_eq!(
+            copy_meta,
+            Some(rue_air::DropCopyMetadata {
+                has_destructor: false,
+                is_copy: true,
+            })
+        );
+        assert_eq!(
+            res_meta,
+            Some(rue_air::DropCopyMetadata {
+                has_destructor: true,
+                is_copy: false,
+            })
+        );
+        // A user nominal is not a language item.
+        assert_eq!(lang_item, None);
+        // A plain function demands no trusted-toolchain module.
+        assert!(toolchain.modules().is_empty());
+
+        // Edge-recording proof: declaration facts observe semantic-nucleus (and,
+        // for drop metadata, a destructor lookup-name) terminals only.
+        let families: std::collections::BTreeSet<&str> = outcome
+            .dependencies
+            .iter()
+            .map(|node| node.family())
+            .collect();
+        assert!(
+            families.contains("compiler.semantic-nucleus"),
+            "{families:?}"
+        );
+        assert!(
+            families
+                .iter()
+                .all(|family| *family == "compiler.semantic-nucleus"
+                    || *family == "compiler.lookup-name"
+                    || *family == "compiler.body-toolchain-demands"),
+            "declaration facts observe only their exact backing terminals: {families:?}"
+        );
+    }
+
+    #[test]
+    fn provider_member_candidates_span_methods_and_assoc_fns_with_signature_handles() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Cat;
+        use rue_air::BodyFactProvider;
+        // `get` is a method (self receiver); `make` is an associated function
+        // (no self). Both share the compiler's method table and the production
+        // resolver discriminates on `has_self` (MethodCalledAsAssocFn /
+        // AssocFnCalledAsMethod). The provider must reach BOTH.
+        let snapshot = source_snapshot(
+            &[(
+                1,
+                "/m.rue",
+                "m.rue",
+                "struct Counter { value: i32, \
+                 fn get(borrow self) -> i32 { self.value } \
+                 fn make(start: i32) -> Counter { Counter { value: start } } }\n\
+                 fn main() -> i32 { 0 }\n",
+            )],
+            1,
+        );
+        let m = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let config = semantic_configuration();
+        let receiver = ReceiverTypeIdentity::new(m.clone(), "Counter", Cat::Struct);
+
+        let receiver_probe = receiver.clone();
+        let outcome =
+            database.probe_body_facts(revision, config.clone(), "members", move |provider| {
+                (
+                    provider.method_candidates(&receiver_probe, "get"),
+                    provider.method_candidates(&receiver_probe, "make"),
+                    provider.method_candidates(&receiver_probe, "absent_member"),
+                    provider.operator_candidates(&receiver_probe, rue_air::OperatorName::Add),
+                )
+            });
+        let (get, make, absent, add) = outcome.result;
+
+        // `get` is a method (has_self); the candidate carries a follow-up handle.
+        assert_eq!(get.len(), 1, "get is a candidate SET of one");
+        let get_candidate = &get[0];
+        assert_eq!(get_candidate.name.as_ref(), "get");
+        assert_eq!(get_candidate.kind, rue_air::MemberKind::Method);
+        assert!(
+            get_candidate.has_self_receiver,
+            "get takes a self receiver, sourced from its signature"
+        );
+
+        // `make` is an associated function (no self) and is reached through the
+        // SAME member op — the BLOCKER-A category the old impl could not express.
+        assert_eq!(make.len(), 1);
+        let make_candidate = &make[0];
+        assert_eq!(make_candidate.kind, rue_air::MemberKind::AssociatedFunction);
+        assert!(
+            !make_candidate.has_self_receiver,
+            "make takes no self receiver — the MethodCalledAsAssocFn discriminator"
+        );
+
+        assert!(absent.is_empty());
+        assert!(add.is_empty(), "Counter overloads no operator");
+
+        // BLOCKER B: from a candidate's follow-up handle, the full signature is
+        // reachable and equals the production epoch's — including receiver mode,
+        // parameter modes, and return type.
+        let sig_probe = get_candidate.declaration.clone();
+        let sig_outcome =
+            database.probe_body_facts(revision, config.clone(), "member-sig", move |provider| {
+                provider.signature(&sig_probe)
+            });
+        let provider_sig = sig_outcome.result.expect("get has a signature");
+        let epoch_sig = request_semantic_nucleus(
+            &database,
+            revision,
+            crate::semantic_query_nucleus::SemanticNucleusKey::Signature(
+                crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration: get_candidate.declaration.clone(),
+                    configuration: config.clone(),
+                },
+            ),
+        );
+        let crate::semantic_query_nucleus::SemanticNucleusValue::Signature(epoch_sig) = epoch_sig
+        else {
+            panic!("get has a signature")
+        };
+        assert_eq!(
+            provider_sig, epoch_sig,
+            "the candidate handle fetches the exact production signature (modes + return type)"
+        );
+
+        // Differential: the candidate's visibility matches the method's own
+        // semantic-nucleus identity terminal.
+        let epoch_identity = request_semantic_nucleus(
+            &database,
+            revision,
+            crate::semantic_query_nucleus::SemanticNucleusKey::Identity(
+                crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration: get_candidate.declaration.clone(),
+                    configuration: config,
+                },
+            ),
+        );
+        let crate::semantic_query_nucleus::SemanticNucleusValue::Identity(epoch_identity) =
+            epoch_identity
+        else {
+            panic!("get has an identity")
+        };
+        assert_eq!(get_candidate.is_public, epoch_identity.is_public);
+
+        // Edge-recording proof: candidates are sourced from semantic-nucleus,
+        // for both the method and the associated-function member.
+        assert!(
+            outcome
+                .dependencies
+                .iter()
+                .any(|node| node.family() == "compiler.semantic-nucleus"
+                    && node.key().contains("get")),
+            "method candidate observes the method's nucleus terminal: {:?}",
+            outcome.dependencies
+        );
+        assert!(
+            outcome
+                .dependencies
+                .iter()
+                .any(|node| node.family() == "compiler.semantic-nucleus"
+                    && node.key().contains("make")),
+            "assoc-fn candidate observes the assoc fn's nucleus terminal: {:?}",
+            outcome.dependencies
+        );
+    }
+
+    #[test]
+    fn provider_differential_over_representative_bodies() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Cat;
+        use rue_air::BodyFactProvider;
+        // A body with a deterministic diagnostic: an ill-formed nominal naming an
+        // undefined field type.
+        let snapshot = source_snapshot(
+            &[(
+                1,
+                "/m.rue",
+                "m.rue",
+                "struct Bad { field: Missing }\n\
+                 struct Good { value: i32 }\n\
+                 fn plain(x: i32) -> i32 { x }\n\
+                 fn main() -> i32 { 0 }\n",
+            )],
+            1,
+        );
+        let m = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let config = semantic_configuration();
+
+        let bad = declaration_candidate(&database, revision, &m, Cat::Struct, "Bad");
+        let good = declaration_candidate(&database, revision, &m, Cat::Struct, "Good");
+        let plain = declaration_candidate(&database, revision, &m, Cat::Function, "plain");
+
+        let bad_probe = bad.clone();
+        let good_probe = good.clone();
+        let plain_probe = plain.clone();
+        let outcome = database.probe_body_facts(
+            revision,
+            config.clone(),
+            "representative",
+            move |provider| {
+                (
+                    provider.nominal_well_formedness(&bad_probe),
+                    provider.nominal_well_formedness(&good_probe),
+                    provider.producer_body_facts(&plain_probe),
+                    provider.signature(&plain_probe),
+                )
+            },
+        );
+        let (bad_wf, good_wf, produced, plain_sig) = outcome.result;
+
+        // The diagnostics body's nominal is ill-formed; the good one is not. Both
+        // match the semantic-nucleus well-formedness terminal.
+        assert_eq!(bad_wf, Some(rue_air::NominalWellFormedness::IllFormed));
+        assert_eq!(good_wf, Some(rue_air::NominalWellFormedness::WellFormed));
+        let epoch_bad = request_semantic_nucleus(
+            &database,
+            revision,
+            crate::semantic_query_nucleus::SemanticNucleusKey::NominalWellFormedness(
+                crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration: bad.clone(),
+                    configuration: config.clone(),
+                },
+            ),
+        );
+        assert!(
+            matches!(
+                epoch_bad,
+                crate::semantic_query_nucleus::SemanticNucleusValue::Failure(_)
+            ),
+            "the production epoch also fails Bad's well-formedness"
+        );
+
+        // A plain function produces no owned anonymous nominal. The op maps the
+        // producer terminal's deferral to an observed absence (uniform Canceled
+        // rule) rather than swallowing it specially.
+        assert!(produced.is_none());
+        assert!(plain_sig.is_some());
+
+        // MINOR-1 differential: the provider's producer result matches the
+        // production epoch's terminal fact-for-fact. A non-producer body's
+        // `body-produced-anonymous` terminal defers (publishes nothing), so both
+        // the provider and the epoch observe the same absence — and, because no
+        // terminal is published, neither records a producer dependency edge (a
+        // deferred producer yields no fact and therefore no observation, which
+        // is exactly what the ADR's "the typed call IS the observation" implies).
+        let epoch_produced = database.runtime.request_registered(
+            &database.body_produced_anonymous,
+            revision,
+            function_body_query_key_for_candidate(&plain, &config)
+                .expect("plain is a free function"),
+            CancellationToken::new(),
+        );
+        assert!(
+            epoch_produced.terminal().is_none(),
+            "the production epoch's producer terminal is equally unavailable for a \
+             non-producer body"
+        );
+        assert!(
+            !outcome
+                .dependencies
+                .iter()
+                .any(|node| node.family() == "compiler.body-produced-anonymous"),
+            "a deferred producer publishes no terminal, so no producer edge is \
+             recorded: {:?}",
+            outcome.dependencies
         );
     }
 }
