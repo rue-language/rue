@@ -1363,6 +1363,12 @@ pub struct CompilerSession {
     /// production path constructs it, so on the production path every counter
     /// here reads zero. Exposed through the unstable surface, mirroring parse_*.
     recipe_cache_meter: Arc<crate::recipe_cache::RecipeCacheCounters>,
+    /// Overlay-materialization metering (RUE-1091 slice 3d, ADR-0066 §4). A
+    /// task-owned `BodySemanticOverlay` is minted only by the test-only overlay
+    /// path; no production path constructs one, so every counter here reads zero
+    /// on the production path. Exposed through the unstable surface, mirroring the
+    /// recipe-cache meter.
+    overlay_materialization_meter: Arc<crate::body_overlay::OverlayMaterializationCounters>,
     /// The test-only shared recipe cache. Constructed on first acquisition so
     /// container creation is metered once and later acquisitions are metered as
     /// reuse. Never populated on the production path.
@@ -3201,6 +3207,26 @@ impl CompilerSession {
     /// test-only overlay path via [`Self::acquire_recipe_cache_for_test`].
     pub(crate) fn recipe_cache_metrics(&self) -> crate::recipe_cache::RecipeCacheMetrics {
         self.recipe_cache_meter.snapshot()
+    }
+
+    /// A snapshot of the overlay-materialization metering (RUE-1091 slice 3d,
+    /// ADR-0066 §4). Zero on the production path — a `BodySemanticOverlay` is
+    /// minted only by the test-only overlay path via [`Self::overlay_for_test`].
+    pub(crate) fn overlay_materialization_metrics(
+        &self,
+    ) -> crate::unstable::OverlayMaterializationMetrics {
+        self.overlay_materialization_meter.snapshot()
+    }
+
+    /// Mint a task-owned body-local overlay whose materialization events accrue to
+    /// this session's shared overlay meter, for the test-only overlay path. No
+    /// production path calls this, so the overlay-materialization counters stay
+    /// zero on the production path.
+    #[cfg(test)]
+    pub(crate) fn overlay_for_test(&self) -> crate::body_overlay::BodySemanticOverlay {
+        crate::body_overlay::BodySemanticOverlay::with_counters(
+            self.overlay_materialization_meter.clone(),
+        )
     }
 
     /// A snapshot of the provider-op observation counters (RUE-1091,
@@ -11500,6 +11526,64 @@ mod tests {
             session.recipe_cache_metrics(),
             crate::recipe_cache::RecipeCacheMetrics::default(),
             "the production semantic path must never touch a recipe-cache counter"
+        );
+        // RUE-1091 slice 3d: the overlay-materialization counters are inert to
+        // production for the same reason — production constructs no overlay.
+        assert_eq!(
+            crate::unstable::overlay_materialization_metrics(&session),
+            crate::unstable::OverlayMaterializationMetrics::default(),
+            "the production semantic path must never mint an overlay unit"
+        );
+    }
+
+    #[test]
+    fn overlay_materialization_meter_is_live_through_the_session_surface() {
+        // RUE-1091 slice 3d: the unstable overlay-materialization surface is not
+        // an always-zero field. The session's test-only overlay path mints
+        // overlays against the session meter, and materializing a fact charges a
+        // body-local unit — both observable through the unstable snapshot. This is
+        // the mechanical non-zero counterpart to the zero-on-production assertion.
+        let session = CompilerSession::new();
+        assert_eq!(
+            crate::unstable::overlay_materialization_metrics(&session),
+            crate::unstable::OverlayMaterializationMetrics::default(),
+            "a fresh session has minted no overlay"
+        );
+
+        let mut first = session.overlay_for_test();
+        let _second = session.overlay_for_test();
+        let key = crate::StableDefinitionKey::for_test(
+            crate::ModuleId::from_logical_path("pkg/main.rue").unwrap(),
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::Function,
+            "apply",
+            None,
+        );
+        let recipe = crate::declaration_recipe::DeclarationRecipe::Definition(Box::new(
+            crate::declaration_recipe::DefinitionRecipe::from_durable(
+                &crate::durable_semantics::DurableDeclarationSemantic {
+                    key,
+                    is_public: true,
+                    payload: crate::durable_semantics::DurableDeclarationPayload::Callable {
+                        parameters: Arc::from([]),
+                        result: crate::durable_semantics::DurableType::Unit,
+                        has_self: false,
+                        is_unchecked: false,
+                    },
+                },
+                &[],
+            ),
+        ));
+        first.import_recipe(&recipe);
+
+        let metrics = crate::unstable::overlay_materialization_metrics(&session);
+        assert_eq!(
+            metrics.overlays_created, 2,
+            "two overlays minted via session"
+        );
+        assert_eq!(
+            metrics.definition_units_created, 1,
+            "one body-local definition unit was materialized"
         );
     }
 
