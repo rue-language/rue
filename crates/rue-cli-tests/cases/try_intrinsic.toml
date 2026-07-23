@@ -1,36 +1,34 @@
-# The `?` operator on a BARE fallible intrinsic (RUE-318, completing RUE-6).
+# The `?` operator on a bare fallible intrinsic (RUE-318, completing RUE-6).
 #
-# `@read_line()?` and `@parse_i64(s)?` used directly — with no annotated `let`
-# and no `match` to supply the concrete `Option` — resolve the intrinsic's own
-# fixed `Option(payload)` (read_line -> Option(StrBuf), parse_i64 -> Option(i64))
-# and short-circuit the enclosing Option-returning function with None on failure
-# (EOF for read_line, unparseable string for parse_i64). Exercised end to end
-# from real stdin so a driver/ABI regression surfaces, not just a type-check.
+# @read_line() and @parse_i64(s) yield the exact trusted std Option in every
+# context (read_line -> Option(StrBuf), parse_i64 -> Option(i64)). Used bare
+# under `?` they unwrap the payload and short-circuit the enclosing function with
+# the standard None on failure (EOF for read_line, unparseable string for
+# parse_i64). Exercised end to end from real stdin so driver/ABI regressions
+# surface, not just type-check. All four cases return std.option.Option and
+# exercise the trusted-std intrinsic identity.
 
 [section]
 id = "cli.try_intrinsic"
 name = "`?` on a bare fallible intrinsic"
-description = "@read_line()? and @parse_i64(s)? resolve their own Option and propagate None via `?`."
+description = "@read_line()? and @parse_i64(s)? yield the trusted std Option and propagate None via `?`."
 
 # Reads lines and sums the numbers, breaking at EOF or the first non-number.
 # `read_num` chains `@read_line()?` (None at EOF) with `@parse_i64` (None on a
 # bad line). Two numbers then EOF: count 2, sum 30, exits with the count.
+# Exercises the trusted-std @read_line/@parse_i64 identity.
 [[case]]
 name = "read_line_try_sum_until_eof"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
   { path = "prog.rue", source = """
 const std = @import("std");
-const StrBuf = std.strbuf.StrBuf;
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-fn read_num() -> Option(i64) {
+fn read_num() -> std.option.Option(i64) {
     let line = @read_line()?;
     @parse_i64(line)
 }
 fn main() -> i32 {
-    let O = Option(i64);
+    let O = std.option.Option(i64);
     let mut count: i64 = 0;
     let mut sum: i64 = 0;
     loop {
@@ -54,22 +52,19 @@ exit_code = 2
 
 # Immediate EOF: `@read_line()?` short-circuits read_num to None on the first
 # call, so the loop body never runs. No trap; the program exits cleanly.
+# Exercises the trusted-std @read_line identity.
 [[case]]
 name = "read_line_try_eof_no_trap"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
   { path = "prog.rue", source = """
 const std = @import("std");
-const StrBuf = std.strbuf.StrBuf;
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-fn read_num() -> Option(i64) {
+fn read_num() -> std.option.Option(i64) {
     let line = @read_line()?;
     @parse_i64(line)
 }
 fn main() -> i32 {
-    let O = Option(i64);
+    let O = std.option.Option(i64);
     let mut count: i64 = 0;
     loop {
         match read_num() {
@@ -89,20 +84,20 @@ exit_code = 0
 
 # `@parse_i64(s)?` directly on a literal string operand: Some path unwraps the
 # parsed integer and continues; the exit code is derived from it.
+# Exercises the trusted-std @parse_i64 identity.
 [[case]]
 name = "parse_try_some"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
   { path = "prog.rue", source = """
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-fn add_one(s: str) -> Option(i64) {
-    let O = Option(i64);
+const std = @import("std");
+fn add_one(s: str) -> std.option.Option(i64) {
+    let O = std.option.Option(i64);
     let n = @parse_i64(s)?;
     O.Some(n + 1)
 }
 fn main() -> i32 {
-    let O = Option(i64);
+    let O = std.option.Option(i64);
     match add_one("40") {
         O.Some(n) => @intCast(n),
         O.None => 0,
@@ -116,20 +111,20 @@ exit_code = 41
 
 # `@parse_i64(s)?` None path: an unparseable operand short-circuits add_one to
 # None, so main takes the None arm.
+# Exercises the trusted-std @parse_i64 identity.
 [[case]]
 name = "parse_try_none_short_circuits"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
   { path = "prog.rue", source = """
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-fn add_one(s: str) -> Option(i64) {
-    let O = Option(i64);
+const std = @import("std");
+fn add_one(s: str) -> std.option.Option(i64) {
+    let O = std.option.Option(i64);
     let n = @parse_i64(s)?;
     O.Some(n + 1)
 }
 fn main() -> i32 {
-    let O = Option(i64);
+    let O = std.option.Option(i64);
     match add_one("not-a-number") {
         O.Some(n) => @intCast(n),
         O.None => 5,

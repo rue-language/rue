@@ -411,7 +411,7 @@ mod tests {
             .stage_import_discovery(
                 &snapshot,
                 context(1),
-                assembler.accepted_read_manifest(),
+                assembler.accepted_read_manifest().shared_slice(),
                 ImportObservationLedger::default(),
             )
             .unwrap();
@@ -468,14 +468,14 @@ mod tests {
 
     #[test]
     fn missing_envelope_is_revision_labeled_and_incomplete() {
-        let assembler = assembler("const x = @import(\"missing\"); fn main() -> i32 { 0 }");
+        let mut assembler = assembler("const x = @import(\"missing\"); fn main() -> i32 { 0 }");
         let snapshot = assembler.snapshot().unwrap();
         let mut session = CompilerSession::new();
         let plan = session
             .stage_import_discovery(
                 &snapshot,
                 context(1),
-                assembler.accepted_read_manifest(),
+                assembler.accepted_read_manifest().shared_slice(),
                 ImportObservationLedger::default(),
             )
             .unwrap();
@@ -519,14 +519,14 @@ mod tests {
 
     #[test]
     fn malformed_import_shape_is_not_an_incomplete_envelope() {
-        let assembler = assembler("fn main() -> i32 { @import(); 0 }");
+        let mut assembler = assembler("fn main() -> i32 { @import(); 0 }");
         let snapshot = assembler.snapshot().unwrap();
         let mut session = CompilerSession::new();
         let plan = session
             .stage_import_discovery(
                 &snapshot,
                 context(1),
-                assembler.accepted_read_manifest(),
+                assembler.accepted_read_manifest().shared_slice(),
                 ImportObservationLedger::default(),
             )
             .unwrap();

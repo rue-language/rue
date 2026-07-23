@@ -1586,7 +1586,7 @@ fn install_const_candidate_endpoints<D: super::DeclarationPhase>(
     Ok(())
 }
 
-impl Sema<'_> {
+impl<D: super::DeclarationPhase> Sema<'_, D> {
     fn import_anonymous_identity(
         &self,
         identity: &SemanticAnonymousNominalIdentity,
@@ -1990,6 +1990,90 @@ fn stable_module_files<D: super::DeclarationPhase>(sema: &super::Sema<'_, D>) ->
 }
 
 impl<'a> BoundSema<'a> {
+    /// Install a per-body well-known `Option(payload)` registry (RUE-1112)
+    /// narrowly, outside this body's composition/import universe.
+    ///
+    /// `nominals` are the trusted std `Option` enum specializations resolved by
+    /// the per-body demand loop; they are materialized into this epoch's pool by
+    /// reusing the ordinary anonymous-nominal minting. `option_by_payload` pairs
+    /// each demanded payload type with its resolved `Option` enum type, recorded
+    /// so fallible-intrinsic resolution (`resolve_option_result_type`) can bind
+    /// the trusted `Option` under `?` even when the body never `@import`s it.
+    ///
+    /// The enum is never appended to `BodyReferences`, reachability, or the
+    /// revision-global anonymous universe. Its producer's definition and module
+    /// endpoints already exist in this epoch because those endpoints are issued
+    /// whole-program, so this install performs no composition change and the
+    /// fail-closed validation for ordinary nominals stays intact.
+    pub fn install_well_known_option_types(
+        mut self,
+        nominals: &[SemanticAnonymousNominalExport],
+        option_by_payload: &[(SemanticExportType, SemanticExportType)],
+    ) -> Result<Self, DeclarationInstallFailure> {
+        // Materialize the resolved enums. A bounded fixpoint tolerates a nominal
+        // whose payload references another not-yet-installed well-known nominal;
+        // the trusted `Option` shapes are flat today, so one pass suffices.
+        let mut pending = nominals.iter().collect::<Vec<_>>();
+        while !pending.is_empty() {
+            let mut progressed = false;
+            let mut next = Vec::new();
+            for nominal in pending {
+                let SemanticAnonymousNominalShape::Enum { variants } = &nominal.shape else {
+                    return Err(DeclarationInstallFailure::NominalShapeMismatch);
+                };
+                let installed = (|| -> Result<(), DeclarationInstallFailure> {
+                    let identity = self.sema.import_anonymous_identity(&nominal.identity)?;
+                    let names = variants
+                        .iter()
+                        .map(|(name, _)| name.to_string())
+                        .collect::<Vec<_>>();
+                    let payloads = variants
+                        .iter()
+                        .map(|(_, payload)| {
+                            payload
+                                .iter()
+                                .map(|ty| self.sema.import_export_type(ty))
+                                .collect::<Result<Vec<_>, _>>()
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    self.sema
+                        .find_or_create_anon_enum(identity.clone(), &names, &payloads)
+                        .map_err(|error| {
+                            DeclarationInstallFailure::AnonymousDigestCollision(
+                                error.to_string().into_boxed_str(),
+                            )
+                        })?;
+                    // Record the installed identity so the body that binds this
+                    // `Option` exports it as a produced anonymous nominal (see
+                    // `well_known_option_identities`): the registry-rooted
+                    // nominal must enter durable composition exactly as an
+                    // ordinarily-materialized specialization would.
+                    self.sema.well_known_option_identities.insert(identity);
+                    Ok(())
+                })();
+                match installed {
+                    Ok(()) => progressed = true,
+                    Err(DeclarationInstallFailure::MissingNominal) => next.push(nominal),
+                    Err(failure) => return Err(failure),
+                }
+            }
+            if !progressed {
+                return Err(DeclarationInstallFailure::MissingNominal);
+            }
+            pending = next;
+        }
+        // Record the demand map. Both endpoints are pure identity lookups now
+        // that the enums are installed.
+        for (payload, option) in option_by_payload {
+            let payload_ty = self.sema.import_export_type(payload)?;
+            let option_ty = self.sema.import_export_type(option)?;
+            self.sema
+                .well_known_option_by_payload
+                .insert(payload_ty, option_ty);
+        }
+        Ok(self)
+    }
+
     /// Analyze exactly one callable body. Ordinary callees are reported as
     /// stable references and are never analyzed by this transaction.
     pub fn analyze_one_body(

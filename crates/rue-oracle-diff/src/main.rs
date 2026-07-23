@@ -710,7 +710,7 @@ fn run_source_with_real_std(
             .stage_import_discovery(
                 &snapshot,
                 context.clone(),
-                assembler.accepted_read_manifest(),
+                assembler.accepted_read_manifest().shared_slice(),
                 ledger.clone(),
             )
             .map_err(|errors| format!("{errors:#?}"))?;

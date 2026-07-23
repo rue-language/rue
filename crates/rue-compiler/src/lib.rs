@@ -60,12 +60,15 @@ mod semantic_identity;
 mod semantic_query_nucleus;
 mod semantic_symbols;
 mod session;
+mod shared_segments;
 mod source_identity;
 mod source_metadata;
 mod source_snapshot;
 mod syntax;
+mod toolchain_module_demand;
 mod typed_query_store;
 pub mod unstable;
+mod well_known_option;
 
 #[cfg(test)]
 mod test_support;
@@ -103,9 +106,10 @@ pub use dependency_envelope::{
 pub(crate) use diagnostic_attempt_store::FrontendDiagnosticIdentity;
 pub use diagnostic_attempt_store::{DiagnosticStage, FrontendDiagnosticSnapshot};
 pub use import_discovery::{
-    AcceptedImportSource, AcceptedReadManifestEntry, FileMetadataFingerprint, ImportCandidateRole,
-    ImportDiscoveryContext, ImportDiscoveryPlan, ImportDiscoveryRequest, ImportObservation,
-    ImportObservationLedger, ImportObservationStatus, ImportOccurrenceKey, PhysicalFileIdentity,
+    AcceptedImportSource, AcceptedReadManifest, AcceptedReadManifestEntry, FileMetadataFingerprint,
+    ImportCandidateRole, ImportDiscoveryContext, ImportDiscoveryPlan, ImportDiscoveryRequest,
+    ImportObservation, ImportObservationLedger, ImportObservationStatus, ImportOccurrenceKey,
+    PhysicalFileIdentity,
 };
 pub(crate) use import_discovery::{
     ImportDemandFrontier, ImportDemandMode, ImportDemandRoots, ImportInputRevision,
@@ -130,6 +134,12 @@ pub use session::{CanonicalImportGraphOutput, CompilerSession, CompilerSessionUp
 pub use source_identity::{ModuleId, ModuleRevision, SourceId, SourceIdVersion, SourceRevision};
 pub use source_metadata::SourceMetadata;
 pub use source_snapshot::{MAX_SOURCE_BYTES, SourceSnapshot};
+pub use toolchain_module_demand::{
+    OPTION_MODULE_LOGICAL_PATH, ParkedToolchainModules, STRBUF_MODULE_LOGICAL_PATH,
+    TrustedToolchainModuleDemand,
+};
+// Internal registered-query payload — never crosses the crate boundary.
+pub(crate) use toolchain_module_demand::BodyToolchainDemand;
 
 // Query keys, invalidation records, dependency manifests, fingerprints, and
 // work records are compiler implementation. Keep crate-local paths available
@@ -235,7 +245,7 @@ pub(crate) use durable_body::{convert_semantic_body_exports, finalize_durable_or
 pub(crate) use durable_semantics::{
     import_durable_declaration_semantics, project_durable_declaration_semantics,
 };
-pub(crate) use import_graph::validate_canonical_import_graph;
+pub(crate) use import_graph::{validate_additive_successor, validate_canonical_import_graph};
 #[cfg(test)]
 pub(crate) use linking::{parse_runtime_archive, validate_runtime};
 pub(crate) use queries::build_functions_and_cfgs;

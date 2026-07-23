@@ -36,17 +36,66 @@ compile_only = true
 compile_stdout_contains = ["=== RIR ===", "fn answer()", "fn main()", "=== AIR ==="]
 compile_stderr_not_contains = ["E0704", "internal compiler error"]
 
+# RUE-1112: RIR is a pre-semantic presentation — it lowers but never runs
+# semantic body analysis, so a semantic-only error (an undefined variable, which
+# name resolution raises in sema) is NOT reported by `--emit rir`; the untyped RIR
+# is shown instead. A normal build of the same program still reports it with
+# canonical multi-file attribution (see the companion case below). RIR's own
+# multi-file diagnostic attribution (RUE-728) is exercised by the parse-error case
+# `emit_rir_multifile_errors_follow_discovery_not_logical_order`.
 [[case]]
-name = "emit_rir_preserves_canonical_diagnostic_attribution"
-description = "RUE-728: RIR requests no longer detour around canonical multi-file diagnostics."
+name = "emit_rir_is_pre_semantic_and_defers_body_diagnostics"
+description = "RUE-1112: --emit rir presents the untyped RIR without semantic body analysis, deferring semantic-only diagnostics."
 files = [
     { path = "main.rue", source = "const bad = @import(\"bad.rue\"); fn main() -> i32 { bad.broken() }\n" },
     { path = "bad.rue", source = "pub fn broken() -> i32 { missing }\n" },
 ]
 args = ["--emit", "rir", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== RIR ==="]
+compile_stderr_not_contains = ["E0201", "undefined variable"]
+
+[[case]]
+name = "normal_build_reports_the_body_diagnostic_rir_emit_defers"
+description = "RUE-1112: the semantic-only error --emit rir defers is reported by a normal build with canonical multi-file attribution."
+files = [
+    { path = "main.rue", source = "const bad = @import(\"bad.rue\"); fn main() -> i32 { bad.broken() }\n" },
+    { path = "bad.rue", source = "pub fn broken() -> i32 { missing }\n" },
+]
+args = ["main.rue", "-o", "prog"]
 compile_fail = true
 compile_stderr_contains = ["E0201", "bad.rue:", "undefined variable 'missing'"]
-compile_stdout_not_contains = ["=== RIR ==="]
+
+# RUE-1112: --emit ast and --emit rir are pre-semantic presentations, so they run
+# no reached-body semantic analysis and therefore no trusted-toolchain park or std
+# acquisition. Even a reached fallible intrinsic (@parse_i64) with a MALFORMED std
+# option.rue on disk emits successfully: the malformed module is never read (if it
+# were, acquisition would fail with a toolchain-integrity error).
+[[case]]
+name = "emit_ast_reached_fallible_intrinsic_reads_no_std"
+description = "RUE-1112: --emit ast reads zero std for a reached fallible intrinsic, even with a malformed std on disk."
+env = { RUE_STD_PATH = "badstd" }
+files = [
+    { path = "main.rue", source = "fn main() -> i32 { let _ = @parse_i64(\"7\"); 42 }\n" },
+    { path = "badstd/option.rue", source = "this is not a valid rue module @@@ ???\n" },
+]
+args = ["--emit", "ast", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== AST"]
+compile_stderr_not_contains = ["Toolchain integrity error", "malformed"]
+
+[[case]]
+name = "emit_rir_reached_fallible_intrinsic_reads_no_std"
+description = "RUE-1112: --emit rir reads zero std for a reached fallible intrinsic, even with a malformed std on disk."
+env = { RUE_STD_PATH = "badstd" }
+files = [
+    { path = "main.rue", source = "fn main() -> i32 { let _ = @parse_i64(\"7\"); 42 }\n" },
+    { path = "badstd/option.rue", source = "this is not a valid rue module @@@ ???\n" },
+]
+args = ["--emit", "rir", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== RIR ==="]
+compile_stderr_not_contains = ["Toolchain integrity error", "malformed"]
 
 [[case]]
 name = "emit_rir_stops_at_canonical_import_preflight"

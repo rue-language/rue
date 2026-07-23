@@ -310,6 +310,12 @@ impl<V> QueryTerminal<V> {
         self.stamp
     }
 
+    /// Opaque session-local incarnation of the node which owns this terminal,
+    /// preventing stamp ABA after eviction.
+    pub const fn node_incarnation(&self) -> u64 {
+        self.node_incarnation
+    }
+
     /// Runtime request which originally computed this immutable terminal.
     pub fn origin_request_id(&self) -> u64 {
         self.origin_request
@@ -812,11 +818,78 @@ struct RevisionStore {
     retired_through: u64,
 }
 
+impl RevisionStore {
+    /// The stamp of `input` in `revision_id`, resolving through the revision's
+    /// overlay chain. `None` means the leaf is absent (a recorded-absent optional
+    /// leaf reads as absent here).
+    fn input_stamp(&self, revision_id: u64, input: &InputIdentity) -> Option<u64> {
+        self.entries.get(&revision_id)?.inputs.stamp(input)
+    }
+
+    /// Whether `input` is present in `revision_id` (through the overlay chain).
+    fn input_present(&self, revision_id: u64, input: &InputIdentity) -> bool {
+        self.input_stamp(revision_id, input).is_some()
+    }
+}
+
 #[derive(Debug)]
 struct RevisionEntry {
     revision: Revision,
-    inputs: Arc<BTreeMap<InputIdentity, u64>>,
+    inputs: Arc<RevisionInputs>,
     active_requests: usize,
+}
+
+/// Overlay chains longer than this are compacted into one complete map at the
+/// next successor publication, so lookup depth stays bounded even if a caller
+/// publishes an unexpectedly long chain.
+const OVERLAY_COMPACTION_DEPTH: usize = 16;
+
+/// The immutable leaf view of one revision: either a complete map, or a sparse
+/// successor overlay whose unresolved leaves are STRUCTURALLY INHERITED from the
+/// parent's input node by `Arc` (RUE-1112). The parent input node is owned by the
+/// overlay itself, so the parent's revision-store ENTRY may retire while every
+/// child's logical view stays complete — retention never has to pin ancestors.
+#[derive(Debug)]
+enum RevisionInputs {
+    Full(Arc<BTreeMap<InputIdentity, u64>>),
+    Overlay {
+        parent: Arc<RevisionInputs>,
+        delta: Arc<BTreeMap<InputIdentity, u64>>,
+        depth: usize,
+    },
+}
+
+impl RevisionInputs {
+    /// Resolve one leaf: the newest overlay delta wins, then ancestors in order.
+    fn stamp(&self, input: &InputIdentity) -> Option<u64> {
+        match self {
+            Self::Full(map) => map.get(input).copied(),
+            Self::Overlay { parent, delta, .. } => {
+                delta.get(input).copied().or_else(|| parent.stamp(input))
+            }
+        }
+    }
+
+    fn depth(&self) -> usize {
+        match self {
+            Self::Full(_) => 0,
+            Self::Overlay { depth, .. } => *depth,
+        }
+    }
+
+    /// Materialize the complete logical leaf map (used only for compaction).
+    fn flatten(&self) -> BTreeMap<InputIdentity, u64> {
+        match self {
+            Self::Full(map) => map.as_ref().clone(),
+            Self::Overlay { parent, delta, .. } => {
+                let mut merged = parent.flatten();
+                for (input, stamp) in delta.iter() {
+                    merged.insert(input.clone(), *stamp);
+                }
+                merged
+            }
+        }
+    }
 }
 
 struct RevisionLease {
@@ -965,6 +1038,40 @@ impl QueryRuntime {
         K: QueryKey,
         V: Clone + Send + Sync + 'static,
     {
+        self.family_inner(stable_name, retention_limit, value_equal, evaluator, false)
+    }
+
+    /// Creates a typed family REGISTERED CONTENT-ADDRESSED: the family asserts
+    /// every record is a pure function of its key alone, so no revision leaf
+    /// can change the value behind an unchanged key. This registration is the
+    /// SOLE minting authority for [`AdoptableTerminal`]
+    /// ([`QueryFamily::adoptable_terminal`]); an ordinary input-dependent
+    /// family can never endorse a stale value through terminal adoption.
+    pub fn content_addressed_family_with_equality<K, V>(
+        &self,
+        stable_name: impl Into<Arc<str>>,
+        retention_limit: usize,
+        value_equal: fn(&V, &V) -> bool,
+    ) -> Result<QueryFamily<K, V>, FamilyError>
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+    {
+        self.family_inner(stable_name, retention_limit, value_equal, None, true)
+    }
+
+    fn family_inner<K, V>(
+        &self,
+        stable_name: impl Into<Arc<str>>,
+        retention_limit: usize,
+        value_equal: fn(&V, &V) -> bool,
+        evaluator: Option<Arc<FamilyEvaluator<K, V>>>,
+        content_addressed: bool,
+    ) -> Result<QueryFamily<K, V>, FamilyError>
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+    {
         let name = stable_name.into();
         if name.is_empty() {
             return Err(FamilyError::EmptyName);
@@ -980,6 +1087,7 @@ impl QueryRuntime {
                     runtime: self.core.identity,
                     family: self.core.next_family.fetch_add(1, Ordering::Relaxed),
                 },
+                content_addressed,
                 retention_limit,
                 value_equal,
                 evaluator,
@@ -1016,10 +1124,125 @@ impl QueryRuntime {
         let inputs = Arc::new(exact);
         let mut revisions = lock(&self.core.revisions);
         match revisions.entries.get(&revision.id) {
-            Some(previous)
-                if previous.revision == revision && previous.inputs.as_ref() == inputs.as_ref() =>
-            {
+            Some(previous) if previous.revision == revision => match previous.inputs.as_ref() {
+                RevisionInputs::Full(previous_inputs)
+                    if previous_inputs.as_ref() == inputs.as_ref() =>
+                {
+                    Ok(())
+                }
+                _ => Err(RevisionError::AlreadyPublished(revision)),
+            },
+            Some(_) => Err(RevisionError::AlreadyPublished(revision)),
+            None => {
+                if revision.id <= revisions.retired_through {
+                    return Err(RevisionError::Retired(revision));
+                }
+                revisions.entries.insert(
+                    revision.id,
+                    RevisionEntry {
+                        revision,
+                        inputs: Arc::new(RevisionInputs::Full(inputs)),
+                        active_requests: 0,
+                    },
+                );
+                self.core.enforce_revision_retention(&mut revisions);
                 Ok(())
+            }
+        }
+    }
+
+    /// Publishes a sparse immutable successor overlay revision (RUE-1112).
+    ///
+    /// The successor is a logically complete immutable input view: `delta` leaves
+    /// resolve from the overlay, and every other leaf is STRUCTURALLY INHERITED
+    /// from `parent`'s input node by `Arc` — only the delta is materialized. The
+    /// delta may ADD new leaves and may RE-STAMP an existing leaf identity (the
+    /// ordinary sparse representation of a changed derived input in a new
+    /// immutable revision — the parent view itself is never mutated, and
+    /// observers of a re-stamped identity are dirtied by red/green validation
+    /// exactly as under a full publication). Removal is inexpressible.
+    ///
+    /// `parent` must be a currently retained revision of this runtime with the
+    /// SAME compatibility token (an overlay never crosses a fresh observation
+    /// generation), and `revision.id` must be strictly newer than `parent.id`
+    /// (acyclic, monotonic lineage). The overlay owns the parent's input node, so
+    /// the parent's revision-store entry may retire without breaking any child;
+    /// chains deeper than [`OVERLAY_COMPACTION_DEPTH`] are compacted at
+    /// publication. This layer does NOT verify domain additivity — a caller such
+    /// as the compiler's trusted-toolchain lineage enforces its own
+    /// strictly-additive source contract before publishing. Fresh generations
+    /// keep using the complete [`Self::publish_revision`] path.
+    pub fn publish_revision_overlay(
+        &self,
+        revision: Revision,
+        parent: Revision,
+        delta: impl IntoIterator<Item = (InputIdentity, u64)>,
+    ) -> Result<(), RevisionError> {
+        let mut delta_map = BTreeMap::new();
+        for (input, stamp) in delta {
+            if stamp == 0 {
+                return Err(RevisionError::ReservedInputStamp(input));
+            }
+            if let Some(previous) = delta_map.insert(input.clone(), stamp)
+                && previous != stamp
+            {
+                return Err(RevisionError::ConflictingInput(input));
+            }
+        }
+        let delta_map = Arc::new(delta_map);
+        let mut revisions = lock(&self.core.revisions);
+        let Some(parent_entry) = revisions
+            .entries
+            .get(&parent.id)
+            .filter(|entry| entry.revision == parent)
+        else {
+            return Err(RevisionError::OverlayParentUnavailable(parent));
+        };
+        if revision.compatibility != parent.compatibility {
+            return Err(RevisionError::IncompatibleOverlayParent(parent));
+        }
+        if revision.id <= parent.id {
+            return Err(RevisionError::NonMonotonicOverlay(revision));
+        }
+        let parent_inputs = parent_entry.inputs.clone();
+        let inputs = if parent_inputs.depth() >= OVERLAY_COMPACTION_DEPTH {
+            // Compact a deep chain into one complete map so lookup depth stays
+            // bounded; the merged map is the same logical view.
+            let mut merged = parent_inputs.flatten();
+            for (input, stamp) in delta_map.iter() {
+                merged.insert(input.clone(), *stamp);
+            }
+            Arc::new(RevisionInputs::Full(Arc::new(merged)))
+        } else {
+            Arc::new(RevisionInputs::Overlay {
+                depth: parent_inputs.depth() + 1,
+                parent: parent_inputs,
+                delta: delta_map.clone(),
+            })
+        };
+        match revisions.entries.get(&revision.id) {
+            Some(previous) if previous.revision == revision => {
+                // Idempotent only for the identical logical view: same parent
+                // input node and identical delta (or the identical compaction).
+                let identical = match (previous.inputs.as_ref(), inputs.as_ref()) {
+                    (
+                        RevisionInputs::Overlay {
+                            parent: previous_parent,
+                            delta: previous_delta,
+                            ..
+                        },
+                        RevisionInputs::Overlay { parent, delta, .. },
+                    ) => Arc::ptr_eq(previous_parent, parent) && previous_delta == delta,
+                    (RevisionInputs::Full(previous_map), RevisionInputs::Full(map)) => {
+                        previous_map == map
+                    }
+                    _ => false,
+                };
+                if identical {
+                    Ok(())
+                } else {
+                    Err(RevisionError::AlreadyPublished(revision))
+                }
             }
             Some(_) => Err(RevisionError::AlreadyPublished(revision)),
             None => {
@@ -1298,6 +1521,15 @@ pub enum RevisionError {
     ReservedInputStamp(InputIdentity),
     /// This publication identity is older than the bounded retired watermark.
     Retired(Revision),
+    /// A successor overlay named a parent revision that is not currently a
+    /// retained revision of this runtime lineage.
+    OverlayParentUnavailable(Revision),
+    /// A successor overlay named a parent from a different compatibility
+    /// generation; an overlay never crosses a fresh observation generation.
+    IncompatibleOverlayParent(Revision),
+    /// A successor overlay's revision id is not strictly newer than its
+    /// parent's; the overlay lineage is acyclic and monotonic.
+    NonMonotonicOverlay(Revision),
 }
 
 /// Invalid family declaration.
@@ -1378,6 +1610,12 @@ where
 struct FamilyInner<K: QueryKey, V: Clone + Send + Sync + 'static> {
     name: Arc<str>,
     token: FamilyToken,
+    /// Registration policy: the family asserts every record is a pure function
+    /// of its key alone, so no revision leaf can change the value behind an
+    /// unchanged key. This registration is the SOLE minting authority for
+    /// [`AdoptableTerminal`] — an ordinary input-dependent family can never
+    /// endorse a stale value through adoption.
+    content_addressed: bool,
     retention_limit: usize,
     value_equal: fn(&V, &V) -> bool,
     evaluator: Option<Arc<FamilyEvaluator<K, V>>>,
@@ -1442,6 +1680,12 @@ trait ErasedNode: fmt::Debug + Send + Sync {
         task: &Arc<Task>,
         active: &mut BTreeSet<u64>,
     ) -> Result<Option<u64>, QueryAbort>;
+
+    /// The typed node behind this erased handle, for the family-owned
+    /// exact-terminal adoption path ([`QueryFamily::observe_adopted_terminal`])
+    /// to recover its own `Node<K, V>` from the incarnation index without a
+    /// key lookup.
+    fn as_any(self: Arc<Self>) -> Arc<dyn std::any::Any + Send + Sync>;
 }
 
 impl<K, V> ErasedNode for Node<K, V>
@@ -1488,6 +1732,10 @@ where
         });
         active.remove(&self.incarnation);
         stamp
+    }
+
+    fn as_any(self: Arc<Self>) -> Arc<dyn std::any::Any + Send + Sync> {
+        self
     }
 }
 
@@ -2350,6 +2598,187 @@ where
         })
     }
 
+    /// Mint the exact-terminal adoption capability for a terminal of THIS
+    /// family. Only a family REGISTERED CONTENT-ADDRESSED
+    /// ([`QueryRuntime::content_addressed_family_with_equality`]) can mint
+    /// one: the registration is the mechanical assertion that the key alone
+    /// pins each terminal's value, which is what makes an input-free
+    /// endorsement at another revision sound. Any other family is refused.
+    pub fn adoptable_terminal(
+        &self,
+        terminal: &Arc<QueryTerminal<V>>,
+    ) -> Result<AdoptableTerminal<V>, AdoptTerminalError> {
+        if terminal.family_token != self.inner.token {
+            return Err(AdoptTerminalError::ForeignFamily);
+        }
+        if !self.inner.content_addressed {
+            return Err(AdoptTerminalError::NotContentAddressed);
+        }
+        Ok(AdoptableTerminal {
+            terminal: terminal.clone(),
+        })
+    }
+
+    /// Record an ALREADY-HELD adoptable terminal of this family as a
+    /// dependency of the computing task: an exact-terminal capability that
+    /// never hashes or compares the terminal's content key (the node is
+    /// located by incarnation). The terminal must still be retained on its
+    /// node — a stale or evicted terminal is rejected, never silently
+    /// re-derived. On success the task observes the exact
+    /// `{node, incarnation, stamp}` identity of the held terminal and leases
+    /// it for the request's lifetime, and the node is endorsed at the task's
+    /// pinned revision — an input-free republication with the SAME stamp,
+    /// routed through the family's ordinary retained-publication accounting
+    /// (metrics, retention queue, eviction) — so red/green validation of the
+    /// recorded observation succeeds at this revision and its compatible
+    /// descendants without touching the leaves the original computation
+    /// observed. Soundness comes from the capability: only a
+    /// content-addressed registration mints [`AdoptableTerminal`].
+    pub fn observe_adopted_terminal(
+        &self,
+        context: &QueryContext,
+        adoptable: &AdoptableTerminal<V>,
+    ) -> Result<(), AdoptTerminalError> {
+        let terminal = &adoptable.terminal;
+        if terminal.family_token != self.inner.token {
+            return Err(AdoptTerminalError::ForeignFamily);
+        }
+        if !self.inner.content_addressed {
+            return Err(AdoptTerminalError::NotContentAddressed);
+        }
+        if !Arc::ptr_eq(&self.core, &context.task.core) {
+            return Err(AdoptTerminalError::ForeignRuntime);
+        }
+        // Pin FIRST (mirroring reuse-candidate discovery) so the terminal
+        // cannot be evicted between validation and the lease transfer below.
+        let pin = self
+            .pin_terminal(terminal)
+            .map_err(|_| AdoptTerminalError::ForeignFamily)?;
+        // Locate the node by INCARNATION — never by key hash or equality —
+        // and recover this family's typed node from the erased handle.
+        let node = lock(&self.core.nodes)
+            .get(&terminal.node_incarnation)
+            .and_then(Weak::upgrade)
+            .ok_or(AdoptTerminalError::Evicted)?;
+        let node = node
+            .as_any()
+            .downcast::<Node<K, V>>()
+            .map_err(|_| AdoptTerminalError::Evicted)?;
+        // An incarnation-index anomaly (a recycled slot or foreign node) must
+        // never endorse an unrelated node.
+        if node.incarnation != terminal.node_incarnation || node.identity != terminal.node {
+            return Err(AdoptTerminalError::Evicted);
+        }
+        let endorsed_pin = self.endorse_adopted_stamp(&node, context.task.revision, terminal)?;
+        // Record the exact observation and transfer BOTH pins into the task's
+        // request-scoped lease set: the held predecessor and the endorsement
+        // itself, whose lease identity differs by its adopting revision. The
+        // endorsement pin was acquired under the node lock, so there is no
+        // instant in which it is both exposed and evictable.
+        context.task.observe(terminal);
+        self.lease_observed_pin(&context.task, pin);
+        self.lease_observed_pin(&context.task, endorsed_pin);
+        Ok(())
+    }
+
+    /// Endorse a still-retained stamp of `node` at `revision` by an input-free
+    /// republication of the held value with the SAME stamp, accounted exactly
+    /// like an ordinary retained publication: metered, enqueued for retention,
+    /// and evictable — an adoption chain is bounded by the family's retention
+    /// limit, and an evicted endorsement simply dirties its dependents through
+    /// ordinary red/green validation.
+    fn endorse_adopted_stamp(
+        &self,
+        node: &Arc<Node<K, V>>,
+        revision: Revision,
+        held: &Arc<QueryTerminal<V>>,
+    ) -> Result<TerminalPin<K, V>, AdoptTerminalError> {
+        let (attempt_id, endorsed_pin) = {
+            let mut state = lock(&node.state);
+            // The endorsed stamp must still be retained on this node; a stale
+            // or evicted terminal is rejected, never silently re-derived.
+            let retained = state.attempts.iter().any(|attempt| {
+                matches!(
+                    &attempt.state,
+                    AttemptState::Terminal { terminal, .. } if terminal.stamp == held.stamp
+                )
+            });
+            if !retained {
+                return Err(AdoptTerminalError::Evicted);
+            }
+            // Idempotent per (revision, stamp); the scan is bounded by the
+            // retention limit because endorsements are evictable entries. The
+            // existing endorsement is re-pinned under the lock so THIS
+            // adopting attempt protects it too.
+            let endorsed = state.attempts.iter().find_map(|attempt| {
+                if attempt.revision != revision {
+                    return None;
+                }
+                match &attempt.state {
+                    AttemptState::Terminal { terminal, .. }
+                        if terminal.stamp == held.stamp && terminal.inputs.is_empty() =>
+                    {
+                        Some(terminal.clone())
+                    }
+                    _ => None,
+                }
+            });
+            if let Some(endorsed) = endorsed {
+                return Ok(self
+                    .pin_terminal(&endorsed)
+                    .expect("a family pins its own retained terminal"));
+            }
+            let adopted = Arc::new(QueryTerminal {
+                family_token: held.family_token,
+                node: held.node.clone(),
+                node_incarnation: held.node_incarnation,
+                revision,
+                stamp: held.stamp,
+                origin_request: held.origin_request,
+                outcome: held.outcome.clone(),
+                kind: held.kind,
+                diagnostics: held.diagnostics.clone(),
+                work: held.work.clone(),
+                dependencies: Arc::from([]),
+                inputs: Arc::from([]),
+                pins: AtomicUsize::new(0),
+            });
+            let id = state.next_attempt;
+            state.next_attempt += 1;
+            state.attempts.push_back(Attempt {
+                id,
+                revision,
+                state: AttemptState::Terminal {
+                    terminal: adopted.clone(),
+                    waiters: 0,
+                },
+            });
+            // Pin UNDER the node lock, before the endorsement is enqueued or
+            // reachable to a concurrent enforcer: `pins > 0` is established
+            // atomically with insertion, so retention pressure (including the
+            // enforcement pass below) can never evict it at birth.
+            let pin = self
+                .pin_terminal(&adopted)
+                .expect("a family pins its own retained terminal");
+            (id, pin)
+        };
+        self.core
+            .metrics
+            .green_publications
+            .fetch_add(1, Ordering::Relaxed);
+        self.core
+            .metrics
+            .retained_terminals
+            .fetch_add(1, Ordering::Relaxed);
+        self.inner.retained_count.fetch_add(1, Ordering::Relaxed);
+        lock(&self.inner.retention).push_back(RetentionEntry {
+            node: Arc::downgrade(node),
+            attempt: attempt_id,
+        });
+        self.enforce_retention();
+        Ok(endorsed_pin)
+    }
+
     /// Transfers an already-acquired [`TerminalPin`] into a task's request-scoped
     /// lease set, retaining it for the lifetime of the rooted request.
     ///
@@ -2371,7 +2800,11 @@ where
     /// false`) are speculative and their pins are dropped by the caller.
     fn lease_observed_pin(&self, task: &Arc<Task>, pin: TerminalPin<K, V>) {
         let mut leases = lock(&task.leases);
-        let identity = (pin.terminal.node_incarnation, pin.terminal.stamp);
+        let identity = (
+            pin.terminal.node_incarnation,
+            pin.terminal.stamp,
+            pin.terminal.revision,
+        );
         if leases.observed.insert(identity) {
             leases.held.push(Box::new(pin));
         }
@@ -2428,6 +2861,42 @@ where
 pub enum PinError {
     /// The terminal's unforgeable family token does not match.
     ForeignFamily,
+}
+
+/// Errors from minting or recording an exact-terminal adoption capability
+/// ([`QueryFamily::adoptable_terminal`] /
+/// [`QueryFamily::observe_adopted_terminal`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdoptTerminalError {
+    /// The terminal's unforgeable family token does not match this family.
+    ForeignFamily,
+    /// The computing task belongs to a different runtime than this family.
+    ForeignRuntime,
+    /// The family is not registered content-addressed, so it has no authority
+    /// to mint adoption capabilities: an input-dependent family endorsing a
+    /// held value input-free at another revision could validate a stale
+    /// result green.
+    NotContentAddressed,
+    /// The terminal (or its node) is no longer retained: a stale or evicted
+    /// terminal is rejected, never silently re-derived.
+    Evicted,
+}
+
+/// The exact-terminal adoption capability: a terminal of a family whose
+/// CONTENT-ADDRESSED registration is the sole minting authority
+/// ([`QueryFamily::adoptable_terminal`]). Holding one proves the family
+/// asserted its key alone pins the terminal's value, which is what makes an
+/// input-free endorsement at another revision sound.
+#[derive(Debug, Clone)]
+pub struct AdoptableTerminal<V> {
+    terminal: Arc<QueryTerminal<V>>,
+}
+
+impl<V> AdoptableTerminal<V> {
+    /// The held terminal.
+    pub fn terminal(&self) -> &Arc<QueryTerminal<V>> {
+        &self.terminal
+    }
 }
 
 impl<K, V> Drop for TerminalPin<K, V>
@@ -2675,9 +3144,14 @@ struct Task {
 /// Terminals leased for the lifetime of one rooted request (its task).
 #[derive(Default)]
 struct TaskLeases {
-    /// `(node incarnation, red/green stamp)` of every terminal this task has
-    /// already leased, so re-observing a terminal never double-pins it.
-    observed: BTreeSet<(u64, u64)>,
+    /// `(node incarnation, red/green stamp, terminal revision)` of every
+    /// terminal this task has already leased, so re-observing a terminal never
+    /// double-pins it. The revision is part of the identity because an
+    /// adoption endorsement deliberately shares its predecessor's incarnation
+    /// and stamp while being a DISTINCT terminal at the adopting revision —
+    /// both must stay leased; collapsing them would leave the endorsement
+    /// unprotected. Re-observations of one exact terminal still deduplicate.
+    observed: BTreeSet<(u64, u64, Revision)>,
     /// Live pins, type-erased across families. Dropping the task drops these,
     /// each of which decrements its terminal's pin count and re-enforces the
     /// owning family's retention bound.
@@ -2989,11 +3463,15 @@ struct WaitEdge {
 
 impl RuntimeCore {
     fn revision_input(&self, revision: Revision, input: &InputIdentity) -> Option<u64> {
-        lock(&self.revisions)
+        let revisions = lock(&self.revisions);
+        if revisions
             .entries
             .get(&revision.id)
-            .filter(|entry| entry.revision == revision)
-            .and_then(|entry| entry.inputs.get(input).copied())
+            .is_none_or(|entry| entry.revision != revision)
+        {
+            return None;
+        }
+        revisions.input_stamp(revision.id, input)
     }
 
     fn valid_for_revision<V>(
@@ -3017,18 +3495,18 @@ impl RuntimeCore {
         // checked exactly, while dependency stamps are validated recursively
         // against the current compatible terminal of the exact child node.
         let revisions = lock(&self.revisions);
-        let Some(entry) = revisions
+        if revisions
             .entries
             .get(&task.revision.id)
-            .filter(|entry| entry.revision == task.revision)
-        else {
+            .is_none_or(|entry| entry.revision != task.revision)
+        {
             return Ok(false);
-        };
+        }
         let direct_inputs_valid = terminal.inputs.iter().all(|observed| {
             if observed.stamp == 0 {
-                !entry.inputs.contains_key(&observed.input)
+                !revisions.input_present(task.revision.id, &observed.input)
             } else {
-                entry.inputs.get(&observed.input) == Some(&observed.stamp)
+                revisions.input_stamp(task.revision.id, &observed.input) == Some(observed.stamp)
             }
         });
         drop(revisions);
@@ -3076,6 +3554,9 @@ impl RuntimeCore {
     }
 
     fn enforce_revision_retention(&self, revisions: &mut RevisionStore) {
+        // An overlay entry owns its parent's INPUT NODE by `Arc`, so retiring a
+        // parent's revision-store entry never breaks a child's logical view;
+        // retention stays a simple bounded sweep with no ancestor pinning.
         while revisions.entries.len() > REVISION_RETENTION_LIMIT {
             let Some(id) = revisions
                 .entries
@@ -3297,6 +3778,221 @@ mod tests {
         for revision in revisions {
             runtime.publish_revision(revision, []).unwrap();
         }
+    }
+
+    #[test]
+    fn overlay_replaces_one_stamp_recomputing_its_observer_and_reusing_the_rest() {
+        let runtime = QueryRuntime::new(1);
+        let family = runtime.family::<Key, u64>("overlay", 8).unwrap();
+        let base = InputIdentity::new("source", "base.rue");
+        let topology = InputIdentity::new("derived", "topology");
+        let leaf = InputIdentity::new("source", "leaf.rue");
+        let parent = Revision::new(1, 7);
+        let successor = Revision::new(2, 7);
+        runtime
+            .publish_revision(parent, [(base.clone(), 11), (topology.clone(), 1)])
+            .unwrap();
+
+        // Queries at the parent: one reads the stable base leaf, one reads the
+        // aggregate derived identity that the overlay will re-stamp.
+        let base_terminal = runtime
+            .query(&family, parent, Key("base"), CancellationToken::new(), {
+                let base = base.clone();
+                move |context| {
+                    assert_eq!(context.input(base.clone())?, 11);
+                    Ok(QueryOutput::success(1))
+                }
+            })
+            .unwrap();
+        let topology_terminal = runtime
+            .query(
+                &family,
+                parent,
+                Key("topology"),
+                CancellationToken::new(),
+                {
+                    let topology = topology.clone();
+                    move |context| {
+                        assert_eq!(context.input(topology.clone())?, 1);
+                        Ok(QueryOutput::success(10))
+                    }
+                },
+            )
+            .unwrap();
+        assert_eq!(topology_terminal.outcome(), &QueryOutcome::Success(10));
+
+        // A sparse successor overlay: adds one leaf and RE-STAMPS the aggregate
+        // derived identity (same stable identity, new stamp).
+        runtime
+            .publish_revision_overlay(
+                successor,
+                parent,
+                [(leaf.clone(), 22), (topology.clone(), 2)],
+            )
+            .unwrap();
+
+        // The base-reading terminal is REUSED across the overlay boundary: its
+        // inherited leaf is unchanged, so the compute never re-runs.
+        let reused = runtime
+            .query(
+                &family,
+                successor,
+                Key("base"),
+                CancellationToken::new(),
+                |_| panic!("an inherited unchanged leaf must reuse the parent's green terminal"),
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&base_terminal, &reused));
+
+        // The observer of the re-stamped identity is DIRTIED and recomputes
+        // against the overlay's new stamp.
+        let recomputed = runtime
+            .query(
+                &family,
+                successor,
+                Key("topology"),
+                CancellationToken::new(),
+                {
+                    let topology = topology.clone();
+                    move |context| {
+                        assert_eq!(context.input(topology.clone())?, 2);
+                        Ok(QueryOutput::success(20))
+                    }
+                },
+            )
+            .unwrap();
+        assert_eq!(recomputed.outcome(), &QueryOutcome::Success(20));
+
+        // The added leaf resolves through the delta.
+        let added = runtime
+            .query(&family, successor, Key("leaf"), CancellationToken::new(), {
+                let leaf = leaf.clone();
+                move |context| {
+                    assert_eq!(context.input(leaf.clone())?, 22);
+                    Ok(QueryOutput::success(2))
+                }
+            })
+            .unwrap();
+        assert_eq!(added.outcome(), &QueryOutcome::Success(2));
+    }
+
+    #[test]
+    fn overlay_rejects_missing_parent_generation_crossing_and_id_reuse() {
+        let runtime = QueryRuntime::new(1);
+        let base = InputIdentity::new("source", "base.rue");
+        let parent = Revision::new(1, 7);
+        runtime
+            .publish_revision(parent, [(base.clone(), 11)])
+            .unwrap();
+
+        // A parent that is not a retained revision of this lineage is rejected.
+        assert!(matches!(
+            runtime.publish_revision_overlay(
+                Revision::new(3, 7),
+                Revision::new(9, 7),
+                [(InputIdentity::new("source", "x"), 1)],
+            ),
+            Err(RevisionError::OverlayParentUnavailable(_))
+        ));
+        // An overlay never crosses a fresh observation generation: a child whose
+        // compatibility token differs from its parent's is rejected.
+        assert!(matches!(
+            runtime.publish_revision_overlay(
+                Revision::new(2, 8),
+                parent,
+                [(InputIdentity::new("source", "x"), 1)],
+            ),
+            Err(RevisionError::IncompatibleOverlayParent(_))
+        ));
+        // The lineage is acyclic and monotonic: a child id at or below its
+        // parent's is rejected.
+        assert!(matches!(
+            runtime.publish_revision_overlay(
+                Revision::new(1, 7),
+                parent,
+                [(InputIdentity::new("source", "x"), 1)],
+            ),
+            Err(RevisionError::NonMonotonicOverlay(_))
+        ));
+        // Re-publishing the same overlay view is idempotent.
+        let leaf = InputIdentity::new("source", "leaf.rue");
+        runtime
+            .publish_revision_overlay(Revision::new(4, 7), parent, [(leaf.clone(), 5)])
+            .unwrap();
+        runtime
+            .publish_revision_overlay(Revision::new(4, 7), parent, [(leaf.clone(), 5)])
+            .unwrap();
+        // A different delta for the same revision id is rejected.
+        assert!(matches!(
+            runtime.publish_revision_overlay(Revision::new(4, 7), parent, [(leaf.clone(), 6)]),
+            Err(RevisionError::AlreadyPublished(_))
+        ));
+        // One publication supplying two stamps for the same leaf is rejected.
+        assert!(matches!(
+            runtime.publish_revision_overlay(
+                Revision::new(5, 7),
+                parent,
+                [(leaf.clone(), 5), (leaf.clone(), 6)],
+            ),
+            Err(RevisionError::ConflictingInput(_))
+        ));
+    }
+
+    #[test]
+    fn overlay_chain_beyond_retention_keeps_newest_child_queryable() {
+        let runtime = QueryRuntime::new(1);
+        let family = runtime.family::<Slot, u64>("overlay-chain", 4).unwrap();
+        let base = InputIdentity::new("source", "base.rue");
+        let mut parent = Revision::new(1, 7);
+        runtime
+            .publish_revision(parent, [(base.clone(), 11)])
+            .unwrap();
+
+        // A chain of overlays far beyond the revision-retention limit. Each child
+        // owns its parent's input node by Arc, so ancestor revision-store ENTRIES
+        // may retire freely (no pinning) while every child's logical view stays
+        // complete.
+        let depth = REVISION_RETENTION_LIMIT as u64 + 8;
+        for step in 0..depth {
+            let child = Revision::new(parent.id() + 1, 7);
+            runtime
+                .publish_revision_overlay(
+                    child,
+                    parent,
+                    [(
+                        InputIdentity::new("source", format!("leaf-{step}")),
+                        step + 1,
+                    )],
+                )
+                .unwrap();
+            parent = child;
+        }
+        // Retention stayed bounded: ancestor entries retired.
+        assert!(runtime.metrics().retained_revisions <= REVISION_RETENTION_LIMIT as u64);
+
+        // The newest child still resolves the ORIGINAL inherited leaf (whose
+        // publishing entry retired long ago) and its own newest delta leaf.
+        let newest = parent;
+        let inherited = runtime
+            .query(&family, newest, Slot(1), CancellationToken::new(), {
+                let base = base.clone();
+                move |context| {
+                    assert_eq!(context.input(base.clone())?, 11);
+                    Ok(QueryOutput::success(1))
+                }
+            })
+            .unwrap();
+        assert_eq!(inherited.outcome(), &QueryOutcome::Success(1));
+        let newest_leaf = InputIdentity::new("source", format!("leaf-{}", depth - 1));
+        let delta = runtime
+            .query(&family, newest, Slot(2), CancellationToken::new(), {
+                move |context| {
+                    assert_eq!(context.input(newest_leaf.clone())?, depth);
+                    Ok(QueryOutput::success(2))
+                }
+            })
+            .unwrap();
+        assert_eq!(delta.outcome(), &QueryOutcome::Success(2));
     }
 
     #[test]
@@ -6081,5 +6777,410 @@ mod tests {
         // dropped now, at the end of the test.
         assert!(attempt.terminal().is_some());
         drop(attempt);
+    }
+
+    /// An adopted terminal is recorded with its EXACT identity — node,
+    /// incarnation, and stamp — and the endorsement makes the dependent
+    /// validate green at the adopting revision even though the adopted
+    /// terminal's original leaf does not exist there. No key hash or content
+    /// comparison is involved.
+    #[test]
+    fn adopted_terminal_is_an_exact_dependency_across_revisions() {
+        let runtime = QueryRuntime::new(1);
+        let family = runtime
+            .content_addressed_family_with_equality::<Key, u64>("adopt", 8, PartialEq::eq)
+            .unwrap();
+        let dependents = runtime.family::<Key, u64>("adopt-dependent", 8).unwrap();
+        let source = InputIdentity::new("source", "a.rue");
+        let parent = Revision::new(1, 7);
+        let successor = Revision::new(2, 7);
+        runtime
+            .publish_revision(parent, [(source.clone(), 11)])
+            .unwrap();
+        // The successor revision does NOT carry the adopted terminal's leaf.
+        runtime.publish_revision(successor, []).unwrap();
+        let predecessor = runtime
+            .query(&family, parent, Key("pred"), CancellationToken::new(), {
+                let source = source.clone();
+                move |context| {
+                    context.input(source.clone())?;
+                    Ok(QueryOutput::success(7))
+                }
+            })
+            .unwrap();
+
+        let dependent = runtime
+            .query(
+                &dependents,
+                successor,
+                Key("succ"),
+                CancellationToken::new(),
+                {
+                    let family = family.clone();
+                    let adoptable = family.adoptable_terminal(&predecessor).unwrap();
+                    move |context| {
+                        family
+                            .observe_adopted_terminal(context, &adoptable)
+                            .unwrap();
+                        Ok(QueryOutput::success(8))
+                    }
+                },
+            )
+            .unwrap();
+        // The recorded observation is the held terminal's exact identity.
+        assert_eq!(dependent.dependencies().len(), 1);
+        let observation = &dependent.dependencies()[0];
+        assert_eq!(observation.node, *predecessor.node());
+        assert_eq!(observation.incarnation, predecessor.node_incarnation());
+        assert_eq!(observation.stamp, predecessor.stamp());
+        // The dependent revalidates green at the adopting revision through the
+        // endorsement: the compute never re-runs.
+        let reused = runtime
+            .query(
+                &dependents,
+                successor,
+                Key("succ"),
+                CancellationToken::new(),
+                |_| panic!("a green adopted dependency must reuse the terminal"),
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&reused, &dependent));
+    }
+
+    /// Recording a stale or evicted terminal is REJECTED — never silently
+    /// re-derived — and a terminal of another family is refused outright.
+    #[test]
+    fn adopting_a_stale_or_foreign_terminal_is_rejected() {
+        let runtime = QueryRuntime::new(1);
+        let family = runtime
+            .content_addressed_family_with_equality::<Key, u64>("adopt-stale", 1, PartialEq::eq)
+            .unwrap();
+        let dependents = runtime
+            .content_addressed_family_with_equality::<Key, u64>(
+                "adopt-stale-dependent",
+                8,
+                PartialEq::eq,
+            )
+            .unwrap();
+        let parent = Revision::new(1, 7);
+        let successor = Revision::new(2, 7);
+        publish_empty(&runtime, [parent, successor]);
+        let stale = runtime
+            .query(
+                &family,
+                parent,
+                Key("old"),
+                CancellationToken::new(),
+                |_| Ok(QueryOutput::success(1)),
+            )
+            .unwrap();
+        // Flood the retention-1 family so the held terminal is evicted.
+        runtime
+            .query(
+                &family,
+                parent,
+                Key("new"),
+                CancellationToken::new(),
+                |_| Ok(QueryOutput::success(2)),
+            )
+            .unwrap();
+        runtime
+            .query(
+                &dependents,
+                successor,
+                Key("succ"),
+                CancellationToken::new(),
+                {
+                    let family = family.clone();
+                    let dependents = dependents.clone();
+                    let stale = family.adoptable_terminal(&stale).unwrap();
+                    move |context| {
+                        assert_eq!(
+                            family.observe_adopted_terminal(context, &stale),
+                            Err(AdoptTerminalError::Evicted),
+                            "an evicted terminal must be rejected, not re-derived"
+                        );
+                        assert_eq!(
+                            dependents.observe_adopted_terminal(context, &stale),
+                            Err(AdoptTerminalError::ForeignFamily),
+                            "another family's terminal must be refused"
+                        );
+                        Ok(QueryOutput::success(0))
+                    }
+                },
+            )
+            .unwrap();
+    }
+
+    /// The content-addressed registration is the SOLE minting authority for
+    /// adoption capabilities: an ordinary input-dependent family cannot mint
+    /// one at all, so it can never endorse a stale value input-free after its
+    /// input changes — the unsound path is unreachable, not merely
+    /// discouraged.
+    #[test]
+    fn ordinary_input_dependent_family_cannot_mint_adoption_capability() {
+        let runtime = QueryRuntime::new(1);
+        let family = runtime.family::<Key, u64>("adopt-ordinary", 8).unwrap();
+        let source = InputIdentity::new("source", "a.rue");
+        let parent = Revision::new(1, 7);
+        runtime
+            .publish_revision(parent, [(source.clone(), 11)])
+            .unwrap();
+        // An input-DEPENDENT terminal: its value would change with the leaf.
+        let terminal = runtime
+            .query(&family, parent, Key("k"), CancellationToken::new(), {
+                let source = source.clone();
+                move |context| {
+                    let stamp = context.input(source.clone())?;
+                    Ok(QueryOutput::success(stamp))
+                }
+            })
+            .unwrap();
+        // The leaf changes in a later revision; endorsing the old terminal
+        // there would validate a stale value green — minting is refused.
+        assert_eq!(
+            family.adoptable_terminal(&terminal).unwrap_err(),
+            AdoptTerminalError::NotContentAddressed,
+        );
+    }
+
+    /// Endorsements are ordinary retained publications: metered, enqueued for
+    /// retention, and evictable. An adoption chain longer than the family's
+    /// retention limit stays bounded — old endorsements are deterministically
+    /// evicted rather than accumulating unevictable attempts.
+    #[test]
+    fn adoption_chain_is_bounded_by_family_retention() {
+        const LIMIT: usize = 4;
+        let runtime = QueryRuntime::new(1);
+        let family = runtime
+            .content_addressed_family_with_equality::<Key, u64>("adopt-bound", LIMIT, PartialEq::eq)
+            .unwrap();
+        let dependents = runtime
+            .family::<Slot, u64>("adopt-bound-dependent", LIMIT)
+            .unwrap();
+        let parent = Revision::new(1, 7);
+        runtime.publish_revision(parent, []).unwrap();
+        let predecessor = runtime
+            .query(
+                &family,
+                parent,
+                Key("pred"),
+                CancellationToken::new(),
+                |_| Ok(QueryOutput::success(7)),
+            )
+            .unwrap();
+        let adoptable = family.adoptable_terminal(&predecessor).unwrap();
+        // Keep the ORIGINAL terminal protected (as a live selection would);
+        // its endorsements are unprotected and must cycle out.
+        let _pin = family.pin_terminal(&predecessor).unwrap();
+        // Adopt across far more distinct revisions than the retention limit.
+        for round in 2..(LIMIT as u64 * 8) {
+            let revision = Revision::new(round, 7);
+            runtime.publish_revision(revision, []).unwrap();
+            runtime
+                .query(
+                    &dependents,
+                    revision,
+                    Slot(round),
+                    CancellationToken::new(),
+                    {
+                        let family = family.clone();
+                        let adoptable = adoptable.clone();
+                        move |context| {
+                            family
+                                .observe_adopted_terminal(context, &adoptable)
+                                .unwrap();
+                            Ok(QueryOutput::success(round))
+                        }
+                    },
+                )
+                .unwrap();
+            // Bounded: retained terminals never exceed the configured limit
+            // by more than the protected roots (the pinned original).
+            let retention = family.retention();
+            assert!(
+                retention.terminals <= LIMIT + 1,
+                "adoption endorsements must stay bounded by family retention: {retention:?}"
+            );
+        }
+    }
+
+    /// Endorsement protection is atomic with insertion, and its lease
+    /// identity is distinct from its predecessor's. At retention limit 1 the
+    /// enforcement rotations themselves are the pressure: one pass runs inside
+    /// the endorsement's own insertion (where a zero-pin endorsement would be
+    /// evicted at birth while the pinned predecessor rotates through), one at
+    /// every pin release (where a lease identity collapsed with the
+    /// predecessor's `(incarnation, stamp)` would drop the endorsement's pin
+    /// and evict it on the spot), and one at request teardown. The adopting
+    /// attempt's lease holds the endorsement through all of them, so the
+    /// dependent still revalidates GREEN without recomputation.
+    #[test]
+    fn adoption_survives_birth_eviction_pressure_at_retention_limit_one() {
+        let runtime = QueryRuntime::new(1);
+        let family = runtime
+            .content_addressed_family_with_equality::<Key, u64>("adopt-birth", 1, PartialEq::eq)
+            .unwrap();
+        let dependents = runtime
+            .family::<Key, u64>("adopt-birth-dependent", 8)
+            .unwrap();
+        let source = InputIdentity::new("source", "a.rue");
+        let parent = Revision::new(1, 7);
+        let successor = Revision::new(2, 7);
+        runtime
+            .publish_revision(parent, [(source.clone(), 11)])
+            .unwrap();
+        // The successor revision lacks the predecessor's source leaf, so ONLY
+        // the endorsement can validate the recorded dependency there.
+        runtime.publish_revision(successor, []).unwrap();
+        let predecessor = runtime
+            .query(&family, parent, Key("pred"), CancellationToken::new(), {
+                let source = source.clone();
+                move |context| {
+                    context.input(source.clone())?;
+                    Ok(QueryOutput::success(7))
+                }
+            })
+            .unwrap();
+        let adoptable = family.adoptable_terminal(&predecessor).unwrap();
+        let computes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let dependent = runtime
+            .query(
+                &dependents,
+                successor,
+                Key("succ"),
+                CancellationToken::new(),
+                {
+                    let family = family.clone();
+                    let adoptable = adoptable.clone();
+                    let computes = computes.clone();
+                    move |context| {
+                        computes.fetch_add(1, Ordering::SeqCst);
+                        family
+                            .observe_adopted_terminal(context, &adoptable)
+                            .unwrap();
+                        Ok(QueryOutput::success(8))
+                    }
+                },
+            )
+            .unwrap();
+        assert_eq!(computes.load(Ordering::SeqCst), 1);
+        // The retention-1 bound held: at most one unprotected terminal
+        // survives the teardown rotation, and it is the ENDORSEMENT (the
+        // predecessor rotated out), so the family stays within its bound.
+        let retention = family.retention();
+        assert!(
+            retention.terminals <= 1,
+            "the retention bound must hold after the adopting request: {retention:?}"
+        );
+        // The dependent revalidates GREEN through the surviving endorsement:
+        // the compute never re-runs.
+        let reused = runtime
+            .query(
+                &dependents,
+                successor,
+                Key("succ"),
+                CancellationToken::new(),
+                |_| panic!("a green adopted dependency must reuse the terminal"),
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&reused, &dependent));
+        assert_eq!(computes.load(Ordering::SeqCst), 1);
+    }
+
+    /// Exact-terminal adoption never touches the predecessor key's `Hash` or
+    /// `Eq`: after the predecessor is computed, its key instrumentation is
+    /// FROZEN (any further hash or equality panics), and adoption still
+    /// succeeds — the node is located by incarnation alone.
+    #[test]
+    fn adoption_never_hashes_or_compares_the_predecessor_key() {
+        #[derive(Clone)]
+        struct FrozenKey {
+            name: &'static str,
+            frozen: Arc<std::sync::atomic::AtomicBool>,
+        }
+        impl std::hash::Hash for FrozenKey {
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                assert!(
+                    !self.frozen.load(Ordering::SeqCst),
+                    "the predecessor key was hashed after freeze"
+                );
+                self.name.hash(state);
+            }
+        }
+        impl PartialEq for FrozenKey {
+            fn eq(&self, other: &Self) -> bool {
+                assert!(
+                    !self.frozen.load(Ordering::SeqCst),
+                    "the predecessor key was equality-compared after freeze"
+                );
+                self.name == other.name
+            }
+        }
+        impl Eq for FrozenKey {}
+        impl QueryKey for FrozenKey {
+            fn stable_identity(&self) -> String {
+                self.name.to_owned()
+            }
+        }
+
+        let runtime = QueryRuntime::new(1);
+        let family = runtime
+            .content_addressed_family_with_equality::<FrozenKey, u64>(
+                "adopt-frozen",
+                8,
+                PartialEq::eq,
+            )
+            .unwrap();
+        let dependents = runtime
+            .family::<Key, u64>("adopt-frozen-dependent", 8)
+            .unwrap();
+        let parent = Revision::new(1, 7);
+        let successor = Revision::new(2, 7);
+        publish_empty(&runtime, [parent, successor]);
+        let frozen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let key = FrozenKey {
+            name: "pred",
+            frozen: frozen.clone(),
+        };
+        let predecessor = runtime
+            .query(&family, parent, key, CancellationToken::new(), |_| {
+                Ok(QueryOutput::success(7))
+            })
+            .unwrap();
+        let adoptable = family.adoptable_terminal(&predecessor).unwrap();
+        // From here on, ANY hash or equality of the predecessor key panics.
+        frozen.store(true, Ordering::SeqCst);
+        let dependent = runtime
+            .query(
+                &dependents,
+                successor,
+                Key("succ"),
+                CancellationToken::new(),
+                {
+                    let family = family.clone();
+                    let adoptable = adoptable.clone();
+                    move |context| {
+                        family
+                            .observe_adopted_terminal(context, &adoptable)
+                            .unwrap();
+                        Ok(QueryOutput::success(8))
+                    }
+                },
+            )
+            .unwrap();
+        assert_eq!(dependent.dependencies().len(), 1);
+        assert_eq!(dependent.dependencies()[0].stamp, predecessor.stamp());
+        // Reuse validation of the dependent likewise never touches the key.
+        let reused = runtime
+            .query(
+                &dependents,
+                successor,
+                Key("succ"),
+                CancellationToken::new(),
+                |_| panic!("a green adopted dependency must reuse the terminal"),
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&reused, &dependent));
     }
 }

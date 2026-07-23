@@ -787,13 +787,31 @@ impl ParsedModulesWork {
     }
 }
 
-/// Deterministically ordered collection of independently parsed modules.
+/// Deterministically ordered collection of independently parsed modules. The
+/// module table is held as `Arc`-shared sorted segments: a strictly-additive
+/// successor shares every predecessor segment by reference and appends only its
+/// newly parsed modules (RUE-1112). The whole-program merged views — the
+/// contiguous module slice and the merged import directives — are projections
+/// that materialize lazily, never on the successor staging path.
 #[derive(Debug, Clone)]
 pub struct ParsedProgram {
     source_revision: SourceRevision,
-    modules: Arc<[Arc<ParsedModule>]>,
+    modules: crate::shared_segments::SharedSegments<Arc<ParsedModule>>,
     imports: ImportDirectives,
     invalid_imports: Arc<[ParsedInvalidImport]>,
+}
+
+fn parsed_module_order(a: &Arc<ParsedModule>, b: &Arc<ParsedModule>) -> std::cmp::Ordering {
+    a.module_id().cmp(b.module_id())
+}
+
+fn sort_invalid_imports(invalid_imports: &mut [ParsedInvalidImport]) {
+    invalid_imports.sort_by(|left, right| {
+        left.importer
+            .cmp(&right.importer)
+            .then(left.span.file_id.index().cmp(&right.span.file_id.index()))
+            .then(left.span.start.cmp(&right.span.start))
+    });
 }
 
 impl ParsedProgram {
@@ -830,15 +848,76 @@ impl ParsedProgram {
             .iter()
             .flat_map(|module| module.invalid_imports().iter().cloned())
             .collect::<Vec<_>>();
-        invalid_imports.sort_by(|left, right| {
-            left.importer
-                .cmp(&right.importer)
-                .then(left.span.file_id.index().cmp(&right.span.file_id.index()))
-                .then(left.span.start.cmp(&right.span.start))
-        });
+        sort_invalid_imports(&mut invalid_imports);
         Ok(Self {
             source_revision,
-            modules: modules.into(),
+            modules: crate::shared_segments::SharedSegments::flat(
+                modules.into(),
+                parsed_module_order,
+            ),
+            imports,
+            invalid_imports: invalid_imports.into(),
+        })
+    }
+
+    /// A strictly-additive successor program: every predecessor module, import
+    /// directive, and source-revision segment is shared by reference; only the
+    /// newly appended modules are added. `source_revision` is the successor
+    /// snapshot's already-extended revision — the identity the appended leaves
+    /// were published under — never re-derived by enumerating modules.
+    pub(crate) fn extend_successor(
+        predecessor: &ParsedProgram,
+        source_revision: SourceRevision,
+        mut delta: Vec<Arc<ParsedModule>>,
+    ) -> CompileResult<Self> {
+        delta.sort_by(parsed_module_order);
+        let predecessor_len = predecessor.modules.len();
+        for module in &delta {
+            if predecessor.module(module.module_id()).is_some() {
+                return Err(invalid_input(format!(
+                    "successor parse delta re-declares retained module {}",
+                    module.module_id()
+                )));
+            }
+            // Appended sources extend the predecessor's dense file table, so a
+            // delta file ID inside the retained range is a construction error.
+            if (module.file_id().index() as usize) <= predecessor_len {
+                return Err(invalid_input(format!(
+                    "successor parse delta reuses retained file ID {} for module {}",
+                    module.file_id().index(),
+                    module.module_id()
+                )));
+            }
+        }
+        if source_revision.module_segments().len() != predecessor_len + delta.len() {
+            return Err(invalid_input(
+                "successor parse delta does not reconcile with its extended source revision",
+            ));
+        }
+        let imports = ImportDirectives::extend(
+            &predecessor.imports,
+            delta
+                .iter()
+                .flat_map(|module| module.imports().iter())
+                .cloned()
+                .collect(),
+        );
+        // A committed predecessor parsed cleanly, so this concatenation copies
+        // only diagnostics-bearing records (empty in the additive flow).
+        let mut invalid_imports = predecessor
+            .invalid_imports
+            .iter()
+            .cloned()
+            .chain(
+                delta
+                    .iter()
+                    .flat_map(|module| module.invalid_imports().iter().cloned()),
+            )
+            .collect::<Vec<_>>();
+        sort_invalid_imports(&mut invalid_imports);
+        Ok(Self {
+            source_revision,
+            modules: crate::shared_segments::SharedSegments::extend(&predecessor.modules, delta),
             imports,
             invalid_imports: invalid_imports.into(),
         })
@@ -850,16 +929,28 @@ impl ParsedProgram {
     pub fn source_revision(&self) -> &SourceRevision {
         &self.source_revision
     }
+
+    /// The contiguous merged module table — a lazily materialized projection
+    /// (at most once per value). Paths that only iterate or look up single
+    /// modules use [`Self::modules_iter`] / [`Self::module`] instead.
     pub fn modules(&self) -> &[Arc<ParsedModule>] {
-        &self.modules
+        self.modules.as_slice()
     }
 
-    /// Look up a module by its stable logical identity.
+    /// Stream the modules in canonical logical order without materializing the
+    /// merged table.
+    pub(crate) fn modules_iter(&self) -> impl ExactSizeIterator<Item = &Arc<ParsedModule>> {
+        self.modules.iter()
+    }
+
+    pub(crate) fn modules_len(&self) -> usize {
+        self.modules.len()
+    }
+
+    /// Look up a module by its stable logical identity (per-segment binary
+    /// search; never materializes the merged table).
     pub fn module(&self, id: &ModuleId) -> Option<&Arc<ParsedModule>> {
-        self.modules
-            .binary_search_by(|module| module.module_id().cmp(id))
-            .ok()
-            .map(|index| &self.modules[index])
+        self.modules.find_by(|module| module.module_id().cmp(id))
     }
 
     /// Traverse module-qualified ASTs in canonical logical-module order.
@@ -898,7 +989,7 @@ impl ParsedProgram {
 
     #[cfg(test)]
     pub(crate) fn shared_symbol_strings(&self) -> Option<Vec<&str>> {
-        let first = self.modules.first()?;
+        let first = self.modules.iter().next()?;
         if self.modules.iter().all(|module| {
             Arc::ptr_eq(
                 &module.payload.resolver.resolver,
@@ -1026,6 +1117,19 @@ pub(crate) fn reset_parse_operation_entries() {
 #[cfg(test)]
 pub(crate) fn parse_operation_entries() -> usize {
     PARSE_OPERATION_ENTRIES.with(Cell::get)
+}
+
+/// Invalidation classification for a strictly-additive trusted successor
+/// (RUE-1112): relative to its committed predecessor exactly the appended
+/// modules are added — nothing is removed, rebound, or reparsed — so only the
+/// delta is examined; retained modules are never enumerated or compared.
+pub(crate) fn classify_successor_invalidation(delta: &[ModuleId]) -> ParseInvalidationSummary {
+    let mut added = delta.to_vec();
+    added.sort();
+    ParseInvalidationSummary {
+        added,
+        ..Default::default()
+    }
 }
 
 pub(crate) fn classify_invalidation(

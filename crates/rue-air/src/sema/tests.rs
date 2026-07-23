@@ -1786,24 +1786,31 @@ mod tests {
     }
 
     #[test]
-    fn fallible_intrinsic_keeps_structural_result_context() {
+    fn fallible_intrinsic_rejects_local_option_context() {
+        // RUE-1112: a fallible intrinsic's result IS the exact trusted std
+        // `Option`; a local same-shape `Option` lookalike used as its
+        // annotation is not accepted — context only *checks* the identity, and a
+        // lookalike is an ordinary intrinsic type error (E0702), never a way to
+        // select a different nominal. (The trusted-std positive path is covered by
+        // the compiler-crate acceptance tests, which supply the trusted module.)
         let source = r#"
             fn Option(comptime T: type) -> type { enum { Some(T), None } }
 
             fn main() -> i32 {
                 let Opt = Option(i64);
-                let parsed: Opt = if true {
-                    @parse_i64("42")
-                } else {
-                    @parse_i64("7")
-                };
+                let parsed: Opt = @parse_i64("42");
                 match parsed {
                     Opt.Some(value) => @intCast(value),
                     Opt.None => 0,
                 }
             }
         "#;
-        compile_to_air(source).unwrap();
+        let errors =
+            compile_to_air(source).expect_err("a local-Option annotation is no longer accepted");
+        assert!(
+            errors.to_string().contains("parse_i64"),
+            "expected an E0702 intrinsic type mismatch on @parse_i64: {errors}",
+        );
     }
 
     #[test]

@@ -1,3 +1,6 @@
+# `?` accepts only exact specializations of the trusted std Option
+# (std.option.Option). User-defined Some/None lookalikes are ordinary enums with
+# no `?` behavior. This is exercised by pure `?` on std Option (no intrinsics).
 [section]
 id = "cli.try_operator"
 name = "The `?` (try) operator on Option"
@@ -5,28 +8,24 @@ description = "End-to-end runtime behavior of `?`: unwrap Some, short-circuit No
 
 # The `?` operator unwraps Some and short-circuits None, driven from real stdin
 # through the compiled binary. `pick` returns Some for a positive count and None
-# otherwise; `run` uses `?` to propagate.
+# otherwise; `run` uses `?` to propagate with the trusted std Option.
 [[case]]
 name = "try_unwrap_and_short_circuit"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
   { path = "main.rue", source = """
 const std = @import("std");
-const StrBuf = std.strbuf.StrBuf;
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-fn parse_positive(n: i64) -> Option(i64) {
-    let O = Option(i64);
+fn parse_positive(n: i64) -> std.option.Option(i64) {
+    let O = std.option.Option(i64);
     if n > 0 { O.Some(n) } else { O.None }
 }
-fn triple(n: i64) -> Option(i64) {
-    let O = Option(i64);
+fn triple(n: i64) -> std.option.Option(i64) {
+    let O = std.option.Option(i64);
     let v = parse_positive(n)?;
     O.Some(v * 3)
 }
 fn report(n: i64) {
-    let O = Option(i64);
+    let O = std.option.Option(i64);
     match triple(n) {
         O.Some(m) => println("triple: " + @to_string(m)),
         O.None => println("triple: none"),
@@ -49,7 +48,7 @@ triple: none
 exit_code = 0
 
 # A non-Copy (StrBuf) payload moves out through `?` correctly on the Some path
-# and is not touched on the None path.
+# and is not touched on the None path. Uses the trusted std Option.
 [[case]]
 name = "try_string_payload"
 env = { RUE_STD_PATH = "${REAL_STD}" }
@@ -57,20 +56,17 @@ files = [
   { path = "main.rue", source = """
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-fn lookup(found: bool) -> Option(StrBuf) {
-    let O = Option(StrBuf);
+fn lookup(found: bool) -> std.option.Option(StrBuf) {
+    let O = std.option.Option(StrBuf);
     if found { O.Some("world") } else { O.None }
 }
-fn greet(found: bool) -> Option(StrBuf) {
-    let O = Option(StrBuf);
+fn greet(found: bool) -> std.option.Option(StrBuf) {
+    let O = std.option.Option(StrBuf);
     let name = lookup(found)?;
     O.Some("hello " + name)
 }
 fn show(found: bool) {
-    let O = Option(StrBuf);
+    let O = std.option.Option(StrBuf);
     match greet(found) {
         O.Some(s) => println(s),
         O.None => println("(nothing)"),
@@ -90,16 +86,16 @@ hello world
 """
 exit_code = 0
 
-# `?` in a function that does not return Option is E0503.
+# `?` in a function that does not return Option is E0503. Main returns i32,
+# so using `?` on the trusted std Option is an error.
 [[case]]
 name = "try_outside_option_fn_is_e0503"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
   { path = "main.rue", source = """
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-fn some_val() -> Option(i64) {
-    let O = Option(i64);
+const std = @import("std");
+fn some_val() -> std.option.Option(i64) {
+    let O = std.option.Option(i64);
     O.Some(1)
 }
 fn main() -> i32 {
@@ -112,18 +108,17 @@ args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["E0503", "returns an `Option`"]
 
-# `?` applied to a non-Option value is E0504.
+# `?` applied to a non-Option value is E0504. The operand is i32, not an Option.
 [[case]]
 name = "try_on_non_option_is_e0504"
+env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [
   { path = "main.rue", source = """
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-fn f() -> Option(i64) {
+const std = @import("std");
+fn f() -> std.option.Option(i64) {
     let x = 5;
     let y = x?;
-    let O = Option(i64);
+    let O = std.option.Option(i64);
     O.Some(y)
 }
 fn main() -> i32 { f(); 0 }

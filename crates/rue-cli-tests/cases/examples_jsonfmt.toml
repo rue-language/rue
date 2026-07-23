@@ -5,6 +5,11 @@
 id = "cli.examples_jsonfmt"
 name = "JSON parser and formatter written in Rue"
 description = "exercise std.json through the real argv/file-IO jsonfmt program"
+# Compiling the real std.json program takes ~7.5s on 4-core CI-class hardware
+# even at trunk, so the strict default 10s compile budget leaves no headroom
+# under batch parallelism. Classified heavyweight like the other real-std
+# dogfood programs (harbor, lattice, mosaic).
+contract = "heavyweight"
 
 [[case]]
 name = "jsonfmt_compacts_nested_document"

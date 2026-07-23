@@ -33,10 +33,34 @@ pub struct SourceSnapshot {
 #[derive(Debug)]
 struct SourceSnapshotData {
     metadata: SourceMetadata,
-    contents: Vec<SourceRecord>,
-    index: HashMap<FileId, usize>,
+    /// `Arc`-shared record segments, oldest first (RUE-1112): a strictly
+    /// additive successor appends one segment and shares the rest, so extending
+    /// a snapshot never copies, re-hashes, or re-validates a predecessor
+    /// record.
+    segments: Vec<Arc<SnapshotSegment>>,
+    /// Global start index of each segment, aligned with `segments`.
+    segment_offsets: Vec<usize>,
+    len: usize,
     revision: SourceRevision,
     source_store: SourceStore,
+}
+
+#[derive(Debug)]
+struct SnapshotSegment {
+    contents: Vec<SourceRecord>,
+    /// Position within THIS segment for each of its file ids.
+    index: HashMap<FileId, usize>,
+}
+
+impl SnapshotSegment {
+    fn from_records(contents: Vec<SourceRecord>) -> Self {
+        let index = contents
+            .iter()
+            .enumerate()
+            .map(|(index, record)| (record.file_id, index))
+            .collect();
+        Self { contents, index }
+    }
 }
 
 #[derive(Debug)]
@@ -144,8 +168,9 @@ impl SourceSnapshot {
         Ok(Self {
             data: Arc::new(SourceSnapshotData {
                 metadata,
-                contents,
-                index,
+                len: contents.len(),
+                segments: vec![Arc::new(SnapshotSegment { contents, index })],
+                segment_offsets: vec![0],
                 revision,
                 source_store,
             }),
@@ -267,8 +292,9 @@ impl SourceSnapshot {
         Ok(Self {
             data: Arc::new(SourceSnapshotData {
                 metadata,
-                contents,
-                index,
+                len: contents.len(),
+                segments: vec![Arc::new(SnapshotSegment { contents, index })],
+                segment_offsets: vec![0],
                 revision,
                 source_store,
             }),
@@ -303,7 +329,7 @@ impl SourceSnapshot {
     /// Number of source files in this snapshot.
     #[inline]
     pub fn len(&self) -> usize {
-        self.data.contents.len()
+        self.data.len
     }
 
     /// Whether this snapshot contains no source files.
@@ -312,7 +338,7 @@ impl SourceSnapshot {
     /// returns `false`.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.data.contents.is_empty()
+        self.data.len == 0
     }
 
     /// Borrow the source text for `file_id`.
@@ -347,15 +373,20 @@ impl SourceSnapshot {
 
     /// Borrow one supported source record view without copying its text.
     pub fn source(&self, file_id: FileId) -> Option<SourceView<'_>> {
-        let index = *self.data.index.get(&file_id)?;
-        Some(self.file_at(index))
+        let record = self.record(file_id)?;
+        let path = self
+            .data
+            .metadata
+            .physical_path(file_id)
+            .expect("snapshot contents validated against metadata");
+        Some(SourceView::new(path, record.text.as_str(), file_id))
     }
 
     /// Borrow supported source record views in caller-supplied order.
     pub fn files(
         &self,
     ) -> impl DoubleEndedIterator<Item = SourceView<'_>> + ExactSizeIterator + '_ {
-        (0..self.data.contents.len()).map(|index| self.file_at(index))
+        (0..self.data.len).map(|index| self.file_at(index))
     }
 
     fn content(&self, file_id: FileId) -> Option<&Arc<String>> {
@@ -363,13 +394,31 @@ impl SourceSnapshot {
     }
 
     fn record(&self, file_id: FileId) -> Option<&SourceRecord> {
-        let record = &self.data.contents[*self.data.index.get(&file_id)?];
+        let record = self.data.segments.iter().find_map(|segment| {
+            segment
+                .index
+                .get(&file_id)
+                .map(|&position| &segment.contents[position])
+        })?;
         debug_assert_eq!(record.file_id, file_id);
         Some(record)
     }
 
+    fn record_at(&self, index: usize) -> &SourceRecord {
+        // Few segments (one per acquisition step, compacted publication-side),
+        // so a linear offset walk stays cheap.
+        let segment_position = self
+            .data
+            .segment_offsets
+            .iter()
+            .rposition(|&start| start <= index)
+            .expect("segment offsets begin at zero");
+        let segment = &self.data.segments[segment_position];
+        &segment.contents[index - self.data.segment_offsets[segment_position]]
+    }
+
     fn file_at(&self, index: usize) -> SourceView<'_> {
-        let record = &self.data.contents[index];
+        let record = self.record_at(index);
         let file_id = record.file_id;
         let path = self
             .data
@@ -378,6 +427,109 @@ impl SourceSnapshot {
             .expect("snapshot contents validated against metadata");
         SourceView::new(path, record.text.as_str(), file_id)
     }
+
+    /// Build a strictly-additive successor snapshot that shares every record
+    /// segment, metadata segment, store bucket segment, and module-revision
+    /// segment of `base` by reference, appending one validated segment holding
+    /// only `appended` (RUE-1112). Only the appended sources are hashed and
+    /// validated; no predecessor record is copied, re-hashed, or re-validated.
+    /// Appended file ids are assigned after the base's, so predecessor ids stay
+    /// stable across the extension.
+    pub(crate) fn extend_with_appended(
+        base: &SourceSnapshot,
+        appended: Vec<AppendedSource>,
+    ) -> CompileResult<SourceSnapshot> {
+        if appended.is_empty() {
+            return Ok(base.clone());
+        }
+        let mut physical_paths = HashMap::new();
+        let mut logical_paths = HashMap::new();
+        let mut trusted = HashSet::new();
+        for entry in &appended {
+            physical_paths.insert(entry.file_id, entry.physical_path.clone());
+            logical_paths.insert(entry.file_id, entry.logical_path.clone());
+            if entry.trusted_standard_library {
+                trusted.insert(entry.file_id);
+            }
+        }
+        let metadata =
+            base.data
+                .metadata
+                .extend_with_appended(physical_paths, logical_paths, trusted)?;
+        validate_source_lengths(
+            appended
+                .iter()
+                .map(|entry| (entry.file_id, entry.text.len())),
+            &metadata,
+        )?;
+        // Hash ONLY the appended sources.
+        let candidates: Vec<_> = appended
+            .into_iter()
+            .map(|entry| {
+                let module_id = metadata
+                    .module_id(entry.file_id)
+                    .expect("appended entries were just validated into the metadata");
+                let source_id = SourceId::from_shared_text(entry.text);
+                (entry.file_id, module_id, source_id)
+            })
+            .collect();
+        let source_store = SourceStore::extend_with_ids(
+            &base.data.source_store,
+            candidates.iter().map(|(_, _, source_id)| source_id.clone()),
+        );
+        let records: Vec<_> = candidates
+            .into_iter()
+            .map(|(file_id, module_id, requested_id)| {
+                let source_id = source_store
+                    .get(&requested_id)
+                    .expect("store was extended with every appended source")
+                    .clone();
+                let text = source_store
+                    .shared_text(&source_id)
+                    .expect("canonical store identity retains exact source text");
+                SourceRecord {
+                    file_id,
+                    module_id,
+                    source_id,
+                    text,
+                }
+            })
+            .collect();
+        let revision = SourceRevision::extend_with_appended(
+            &base.data.revision,
+            records
+                .iter()
+                .map(|record| ModuleRevision {
+                    module: record.module_id.clone(),
+                    source: record.source_id.clone(),
+                })
+                .collect(),
+        )?;
+        let mut segments = base.data.segments.clone();
+        let mut segment_offsets = base.data.segment_offsets.clone();
+        segment_offsets.push(base.data.len);
+        let len = base.data.len + records.len();
+        segments.push(Arc::new(SnapshotSegment::from_records(records)));
+        Ok(SourceSnapshot {
+            data: Arc::new(SourceSnapshotData {
+                metadata,
+                segments,
+                segment_offsets,
+                len,
+                revision,
+                source_store,
+            }),
+        })
+    }
+}
+
+/// One source appended by a strictly-additive snapshot extension (RUE-1112).
+pub(crate) struct AppendedSource {
+    pub(crate) file_id: FileId,
+    pub(crate) physical_path: String,
+    pub(crate) logical_path: String,
+    pub(crate) trusted_standard_library: bool,
+    pub(crate) text: Arc<String>,
 }
 
 fn validate_source_len(file_id: FileId, path: &str, len: usize) -> CompileResult<()> {

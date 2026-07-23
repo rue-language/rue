@@ -20,9 +20,9 @@ use rue_compiler::unstable::{
     publish_import_observation_batch, semantic_input_debug,
 };
 use rue_compiler::{
-    AcceptedImportSource, AcceptedReadManifestEntry, CompileOptions, CompilerSession,
-    FileMetadataFingerprint, FrontendDiagnosticSnapshot, ImportDiscoveryContext, ImportObservation,
-    PhysicalFileIdentity, PreviewFeature, PreviewFeatures, SourceMetadata, SourceSnapshot,
+    AcceptedImportSource, CompileOptions, CompilerSession, FileMetadataFingerprint,
+    FrontendDiagnosticSnapshot, ImportDiscoveryContext, ImportObservation, PhysicalFileIdentity,
+    PreviewFeature, PreviewFeatures, SourceMetadata, SourceSnapshot,
 };
 use rue_span::FileId;
 use rue_target::Target;
@@ -39,7 +39,7 @@ struct Step {
 #[derive(Clone)]
 struct DiscoveryInput {
     context: ImportDiscoveryContext,
-    accepted_reads: Arc<[AcceptedReadManifestEntry]>,
+    accepted_reads: rue_compiler::AcceptedReadManifest,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -149,7 +149,7 @@ fn close_discovery(session: &mut CompilerSession, step: &Step) -> String {
         let plan = match session.stage_import_discovery(
             &step.snapshot,
             discovery.context.clone(),
-            discovery.accepted_reads.clone(),
+            discovery.accepted_reads.shared_slice(),
             ledger.clone(),
         ) {
             Ok(plan) => plan,

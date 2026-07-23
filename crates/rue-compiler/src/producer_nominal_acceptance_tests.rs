@@ -17,9 +17,881 @@
 
 use crate::*;
 use std::collections::BTreeSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use rue_target::Target;
+
+// ===========================================================================
+// RUE-1112 — per-body well-known `Option(payload)` demand, projection, and AIR
+// try-operand consumption.
+//
+// Every fallible intrinsic (`@read_line`, `@parse_i32/i64/u32/u64`) returns the
+// exact trusted standard-library `Option(payload)`. When the trusted `Option`
+// module is present, the per-body demand loop roots the matching
+// `Option(payload)` comptime specialization under the requesting body's lease,
+// projects it through a narrow per-body `WellKnownTypes` input, and AIR's
+// `resolve_option_result_type` binds it under `?` — winning over any same-shape
+// local lookalike the legacy structural scan would otherwise pick. When the
+// module is absent, the plan is empty and the legacy `find_compatible_anon_enum`
+// scan stays in force (freestanding programs are unchanged).
+// ===========================================================================
+
+/// The trusted standard-library `Option` module source, verbatim from
+/// `std/option.rue`. Provided at the trusted logical path so the demand planner
+/// and projection resolve the real std producer identity.
+const TRUSTED_OPTION_SOURCE: &str = r#"
+pub fn Option(comptime T: type) -> type {
+    enum {
+        Some(T),
+        None,
+    }
+}
+"#;
+
+/// The `FileId` the helpers assign to the root module.
+const ROOT_FILE: FileId = FileId::new(1);
+/// The `FileId` the helpers assign to the trusted `\0rue-std/option.rue` module.
+/// Because the test controls this assignment, an enum whose `EnumDef.file_id`
+/// equals it was produced by the trusted std `Option`, not a local lookalike —
+/// the provenance signal the acceptance criteria demand.
+const TRUSTED_OPTION_FILE: FileId = FileId::new(2);
+
+/// Build a snapshot whose root module is `root_source`, with the trusted std
+/// `Option` module provided at `\0rue-std/option.rue`. The root reaches it with
+/// `@import("std/option.rue")` (physical-path suffix match). The trusted flag is
+/// what makes `plan_well_known_option_demands` treat the module as present.
+fn trusted_option_snapshot(root_source: &str) -> SourceSnapshot {
+    let metadata = SourceMetadata::new_with_trusted_standard_library(
+        ROOT_FILE,
+        HashMap::from([
+            (ROOT_FILE, "/project/main.rue".to_owned()),
+            (TRUSTED_OPTION_FILE, "/project/std/option.rue".to_owned()),
+        ]),
+        HashMap::from([
+            (ROOT_FILE, "main.rue".to_owned()),
+            (TRUSTED_OPTION_FILE, "\0rue-std/option.rue".to_owned()),
+        ]),
+        HashSet::from([TRUSTED_OPTION_FILE]),
+    )
+    .expect("trusted-std metadata is valid");
+    SourceSnapshot::new(
+        metadata,
+        vec![
+            (ROOT_FILE, Arc::new(root_source.to_owned())),
+            (
+                TRUSTED_OPTION_FILE,
+                Arc::new(TRUSTED_OPTION_SOURCE.to_owned()),
+            ),
+        ],
+    )
+    .expect("trusted-option snapshot is valid")
+}
+
+/// Publish `root_source` alongside the trusted std `Option` module and return
+/// the semantic output. Import resolution is the test-fixture graph, exactly as
+/// the other multi-module frontend tests use.
+fn semantic_with_trusted_option(
+    root_source: &str,
+    options: &CompileOptions,
+) -> Result<Arc<CanonicalSemanticOutput>, CompileErrors> {
+    let snapshot = trusted_option_snapshot(root_source);
+    let (_, semantic, _) = crate::test_frontend_snapshot(&snapshot, options)?;
+    Ok(semantic)
+}
+
+/// Compile and link `root_source` with the trusted std `Option` module present,
+/// producing a runnable ELF.
+fn compile_with_trusted_option(
+    root_source: &str,
+    options: &CompileOptions,
+) -> Result<CompileOutput, CompileErrors> {
+    let snapshot = trusted_option_snapshot(root_source);
+    crate::test_compile_snapshot(&snapshot, options)
+}
+
+/// The result Option enum types bound to each fallible parse/read intrinsic in
+/// a semantic output — the exact type `resolve_option_result_type` chose. Each
+/// entry is the intrinsic's runtime kind paired with the `EnumId` of its
+/// `Option` result. Reading the AIR instruction's `ty` directly gives the
+/// binding the `?` site consumed, not merely what exists in the pool.
+fn fallible_intrinsic_option_enums(
+    semantic: &CanonicalSemanticOutput,
+) -> Vec<(rue_air::RuntimeCallKind, rue_air::EnumId)> {
+    let mut found = Vec::new();
+    for function in semantic.functions() {
+        for (_, inst) in function.analyzed.air.iter() {
+            if let rue_air::AirInstData::Intrinsic {
+                runtime: Some(runtime),
+                ..
+            } = &inst.data
+                && matches!(
+                    runtime,
+                    rue_air::RuntimeCallKind::ParseI32
+                        | rue_air::RuntimeCallKind::ParseI64
+                        | rue_air::RuntimeCallKind::ParseU32
+                        | rue_air::RuntimeCallKind::ParseU64
+                        | rue_air::RuntimeCallKind::ReadLine
+                )
+                && let rue_air::TypeKind::Enum(enum_id) = inst.ty.kind()
+            {
+                found.push((*runtime, enum_id));
+            }
+        }
+    }
+    found
+}
+
+/// The stable producer digest (`__anon_enum_<hash>`) of the single `Option`
+/// enum bound to a `@parse_i64(...)?` site. Panics unless there is exactly one.
+/// Because the digest hashes the producer's LOGICAL module identity plus a
+/// definition-relative anchor (RUE-1089, allocation-order-independent), the same
+/// producer yields the same digest across programs — so a digest computed from a
+/// std-only reference program identifies the trusted std `Option(i64)` anywhere.
+fn bound_parse_i64_digest(semantic: &CanonicalSemanticOutput) -> String {
+    let parse = fallible_intrinsic_option_enums(semantic)
+        .into_iter()
+        .filter(|(runtime, _)| *runtime == rue_air::RuntimeCallKind::ParseI64)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        parse.len(),
+        1,
+        "expected exactly one @parse_i64 binding, got {} ({parse:?})",
+        parse.len(),
+    );
+    let def = semantic.type_pool().enum_def(parse[0].1);
+    assert_eq!(
+        def.variants,
+        vec!["Some".to_string(), "None".to_string()],
+        "the ?-bound type must be Option-shaped",
+    );
+    assert_eq!(
+        def.variant_payload(0),
+        &[rue_air::Type::I64],
+        "the ?-bound Option must carry the i64 payload",
+    );
+    def.name.clone()
+}
+
+/// The producer digests of every `Some(i64)/None`-shaped anonymous enum in a
+/// pool. Distinct producers of the same shape (a std `Option` and a local
+/// lookalike) appear as distinct digests, so the size of this set counts how
+/// many independent `Option(i64)` identities the program materialized.
+fn option_i64_pool_digests(semantic: &CanonicalSemanticOutput) -> BTreeSet<String> {
+    let pool = semantic.type_pool();
+    pool.all_enum_ids()
+        .into_iter()
+        .map(|id| pool.enum_def(id))
+        .filter(|def| {
+            def.variants == vec!["Some".to_string(), "None".to_string()]
+                && def.variant_payload(0) == [rue_air::Type::I64]
+        })
+        .map(|def| def.name.clone())
+        .collect()
+}
+
+/// The stable digest that identifies the trusted std `Option(i64)`: computed
+/// from a std-only reference program whose sole `Option(i64)` is unambiguously
+/// the trusted producer.
+fn std_option_i64_reference_digest(options: &CompileOptions) -> String {
+    let reference = r#"
+const opt = @import("std/option.rue");
+fn probe(s: str) -> opt.Option(i64) {
+    let O = opt.Option(i64);
+    O.Some(@parse_i64(s)?)
+}
+fn main() -> i32 {
+    let O = opt.Option(i64);
+    match probe("1") { O.Some(v) => @intCast(v), O.None => 0 }
+}
+"#;
+    let semantic =
+        semantic_with_trusted_option(reference, options).expect("std reference program compiles");
+    bound_parse_i64_digest(&semantic)
+}
+
+/// t-win. With the trusted std `Option` module present, a bare `@parse_i64(s)?`
+/// binds the STD `Option(i64)`. Asserted by provenance: the intrinsic's result
+/// enum carries the trusted producer's stable digest (distinct from the digest a
+/// local `Option` producer yields), and the program links and executes to 42.
+#[test]
+fn well_known_parse_binds_trusted_std_option() {
+    let options = CompileOptions::default();
+    let source = r#"
+const opt = @import("std/option.rue");
+fn read_num(s: str) -> opt.Option(i64) {
+    let O = opt.Option(i64);
+    O.Some(@parse_i64(s)?)
+}
+fn main() -> i32 {
+    let O = opt.Option(i64);
+    match read_num("42") {
+        O.Some(v) => @intCast(v),
+        O.None => 0,
+    }
+}
+"#;
+    let semantic = semantic_with_trusted_option(source, &options)
+        .expect("trusted-option parse program compiles");
+    let bound = bound_parse_i64_digest(&semantic);
+    assert_eq!(
+        bound,
+        std_option_i64_reference_digest(&options),
+        "the ?-bound Option(i64) must carry the trusted std producer's digest",
+    );
+
+    // The digest is provenance-sensitive rather than shape-only: RUE-1112's
+    // `well_known_registry_wins_over_local_lookalike` proves the std producer is
+    // bound even when a same-shape local `Option(i64)` lookalike is materialized
+    // in the very same body. A same-shape local lookalike is not a valid `?`
+    // operand — only the trusted std producer is — so that control lives in the
+    // registry-wins test above.
+
+    // End to end: the trusted-option program links and runs to the payload 42.
+    #[cfg(unix)]
+    {
+        let output = compile_with_trusted_option(source, &options).expect("t-win links");
+        if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+            let execution = execute_wrap(&output, "twin");
+            assert_eq!(
+                execution.status.code(),
+                Some(42),
+                "t-win must execute to 42: {execution:?}",
+            );
+        } else {
+            let _ = output;
+        }
+    }
+}
+
+/// t-win (registry wins over a materialized local lookalike). The requesting
+/// body materializes a LOCAL same-shape `Option(i64)` in its own universe — the
+/// exact enum the legacy structural scan would pick — yet `@parse_i64(s)?` still
+/// binds the TRUSTED std `Option(i64)`. The narrow well-known registry is
+/// consulted before the scan, so provenance is the trusted producer even though
+/// a compatible local enum is in scope.
+#[test]
+fn well_known_registry_wins_over_local_lookalike() {
+    let options = CompileOptions::default();
+    let source = r#"
+const opt = @import("std/option.rue");
+fn Local(comptime T: type) -> type { enum { Some(T), None } }
+fn read_num(s: str) -> opt.Option(i64) {
+    // A local Option(i64) lookalike, materialized in THIS body's universe so the
+    // legacy `find_compatible_anon_enum` scan would find and bind it.
+    let L = Local(i64);
+    let _decoy: L = L.None;
+    let O = opt.Option(i64);
+    O.Some(@parse_i64(s)?)
+}
+fn main() -> i32 {
+    let O = opt.Option(i64);
+    match read_num("42") {
+        O.Some(v) => @intCast(v),
+        O.None => 0,
+    }
+}
+"#;
+    let semantic =
+        semantic_with_trusted_option(source, &options).expect("lookalike program compiles");
+
+    // Both a std and a local Option(i64) identity were materialized.
+    let pool_digests = option_i64_pool_digests(&semantic);
+    let std_digest = std_option_i64_reference_digest(&options);
+    assert!(
+        pool_digests.contains(&std_digest),
+        "the std Option(i64) must be present in the pool: {pool_digests:?}",
+    );
+    assert!(
+        pool_digests.iter().any(|d| *d != std_digest),
+        "a distinct local Option(i64) lookalike must also be present: {pool_digests:?}",
+    );
+
+    // The `?` site bound the trusted std producer, NOT the local lookalike.
+    assert_eq!(
+        bound_parse_i64_digest(&semantic),
+        std_digest,
+        "the registry must win: `?` binds the trusted std Option, not the local lookalike",
+    );
+}
+
+/// Freestanding `?` legality by producer identity (RUE-1112). There is no
+/// structural-shape fallback: `?` legality is exact trusted-producer identity in
+/// every context — even freestanding.
+///
+/// 1. A freestanding program whose `?` operand is a LOCAL (non-std) `Option`
+///    lookalike is rejected (E0504, `QuestionOnNonOption`): the local producer
+///    is not the trusted std `Option`, and no fallback resolves it anymore.
+/// 2. A program with the trusted std `Option` acquired resolves `?` on a bare
+///    `@parse_i64` against that std producer and compiles — the std-acquired
+///    path is the only one that works now.
+#[test]
+fn freestanding_local_option_try_is_now_rejected_without_std() {
+    let options = CompileOptions::default();
+
+    // (1) Freestanding local-Option `?` — no trusted std, no fallible intrinsic.
+    // The operand of `?` is the local `Option(i64)` lookalike; its producer is
+    // the user's own `Option` function, not the trusted std one, so `?` is
+    // rejected: no structural-shape fallback resolves a lookalike.
+    let local_lookalike = r#"
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn make() -> Option(i64) {
+    let O = Option(i64);
+    O.Some(1)
+}
+fn use_it() -> Option(i64) {
+    let v = make()?;
+    let O = Option(i64);
+    O.Some(v)
+}
+fn main() -> i32 {
+    let O = Option(i64);
+    match use_it() {
+        O.Some(v) => @intCast(v),
+        O.None => 0,
+    }
+}
+"#;
+    let errors = fresh_semantic(local_lookalike, &options)
+        .expect_err("a local-Option `?` operand is no longer accepted (fallback deleted)");
+    let rendered = errors.to_string();
+    assert!(
+        rendered.contains("the `?` operator can only be applied to an `Option`"),
+        "expected E0504 QuestionOnNonOption for a lookalike `?` operand: {rendered}",
+    );
+
+    // (2) With the trusted std `Option` acquired, `?` on a bare `@parse_i64`
+    // binds the std producer and the program compiles. This is the freestanding
+    // fallible-intrinsic case's real, std-acquired resolution path.
+    let std_acquired = r#"
+const opt = @import("std/option.rue");
+fn read_num(s: str) -> opt.Option(i64) {
+    let O = opt.Option(i64);
+    O.Some(@parse_i64(s)?)
+}
+fn main() -> i32 {
+    let O = opt.Option(i64);
+    match read_num("42") {
+        O.Some(v) => @intCast(v),
+        O.None => 0,
+    }
+}
+"#;
+    let semantic = semantic_with_trusted_option(std_acquired, &options)
+        .expect("std-acquired `@parse_i64(s)?` compiles");
+    // The `?` bound the trusted std Option(i64).
+    assert_eq!(
+        bound_parse_i64_digest(&semantic),
+        std_option_i64_reference_digest(&options),
+        "std-acquired `?` binds the trusted std Option",
+    );
+}
+
+/// The number of well-known `Option` demands the planner roots for a snapshot.
+/// Built through the same lower path the session uses (`merge_parsed_modules`
+/// then `lower_canonical_rir`), then `plan_well_known_option_demands` directly —
+/// the exact function the session calls once per semantic request.
+fn planned_demand_count(snapshot: &SourceSnapshot, options: &CompileOptions) -> usize {
+    planned_demands(snapshot, options).len()
+}
+
+/// The `FileId` the StrBuf helper assigns to the trusted `\0rue-std/strbuf.rue`
+/// module.
+const TRUSTED_STRBUF_FILE: FileId = FileId::new(3);
+
+/// A minimal trusted `\0rue-std/strbuf.rue` carrying just the `StrBuf` struct in
+/// the canonical `{buf, len, cap}` shape (RUE-1066). The planner only needs the
+/// module present to spell the `StrBuf` nominal `DurableType`; this is enough.
+const TRUSTED_STRBUF_SOURCE: &str = r#"
+pub struct StrBuf {
+    buf: ptr mut u8,
+    len: u64,
+    cap: u64,
+}
+"#;
+
+/// Build a snapshot whose root is `root_source`, with BOTH the trusted std
+/// `Option` and `StrBuf` modules provided at their trusted logical paths.
+fn trusted_option_and_strbuf_snapshot(root_source: &str) -> SourceSnapshot {
+    let metadata = SourceMetadata::new_with_trusted_standard_library(
+        ROOT_FILE,
+        HashMap::from([
+            (ROOT_FILE, "/project/main.rue".to_owned()),
+            (TRUSTED_OPTION_FILE, "/project/std/option.rue".to_owned()),
+            (TRUSTED_STRBUF_FILE, "/project/std/strbuf.rue".to_owned()),
+        ]),
+        HashMap::from([
+            (ROOT_FILE, "main.rue".to_owned()),
+            (TRUSTED_OPTION_FILE, "\0rue-std/option.rue".to_owned()),
+            (TRUSTED_STRBUF_FILE, "\0rue-std/strbuf.rue".to_owned()),
+        ]),
+        HashSet::from([TRUSTED_OPTION_FILE, TRUSTED_STRBUF_FILE]),
+    )
+    .expect("trusted-std metadata is valid");
+    SourceSnapshot::new(
+        metadata,
+        vec![
+            (ROOT_FILE, Arc::new(root_source.to_owned())),
+            (
+                TRUSTED_OPTION_FILE,
+                Arc::new(TRUSTED_OPTION_SOURCE.to_owned()),
+            ),
+            (
+                TRUSTED_STRBUF_FILE,
+                Arc::new(TRUSTED_STRBUF_SOURCE.to_owned()),
+            ),
+        ],
+    )
+    .expect("trusted-option+strbuf snapshot is valid")
+}
+
+/// StrBuf-payload encoding (RUE-1112). `@read_line`'s `Option(StrBuf)` carries a
+/// NOMINAL payload, unlike the scalar `@parse_*` intrinsics. When both trusted
+/// `Option` and `StrBuf` modules are present, the planner roots a demand whose
+/// `ComptimeCallQueryKey` type-argument is the canonical trusted `StrBuf`
+/// `DurableType::Nominal` — the exact spelling `durable_semantics` blesses. Drop
+/// the `StrBuf` module and the read_line demand is skipped (its payload cannot be
+/// spelled), leaving only the scalar demand; the program falls through the scan.
+#[test]
+fn read_line_plans_a_strbuf_nominal_option_demand() {
+    let options = CompileOptions::default();
+    // The demand planner roots an `Option(payload)` only for a fallible
+    // intrinsic that is the operand of `?` (RUE-1112): that is the sole context
+    // where the registry, not the surrounding annotation/`match`, supplies the
+    // intrinsic's trusted std `Option`. So the probe uses `@read_line()?` /
+    // `@parse_i64(s)?` to exercise the StrBuf and i64 demands.
+    let root = r#"
+fn probe(s: str) {
+    let _ = @read_line()?;
+    let _ = @parse_i64(s)?;
+}
+fn main() -> i32 { 0 }
+"#;
+
+    // Expected canonical StrBuf nominal DurableType, spelled exactly as the
+    // planner (and durable_semantics) do.
+    let strbuf_module =
+        crate::ModuleId::from_trusted_standard_library_path("\0rue-std/strbuf.rue").unwrap();
+    let strbuf_nominal = crate::durable_semantics::DurableType::Nominal(
+        crate::StableDefinitionKey::from_stable_parts(
+            strbuf_module,
+            crate::StableDefinitionNamespace::Type,
+            crate::StableDefinitionKind::Struct,
+            "StrBuf",
+            None,
+        ),
+    );
+
+    // Both modules present: read_line's StrBuf demand is rooted.
+    let with_strbuf = trusted_option_and_strbuf_snapshot(root);
+    let demands = planned_demands(&with_strbuf, &options);
+    assert!(
+        demands.iter().any(|d| d.payload == strbuf_nominal),
+        "the read_line demand must carry the trusted StrBuf nominal payload; got {:?}",
+        demands.iter().map(|d| &d.payload).collect::<Vec<_>>(),
+    );
+    assert!(
+        demands
+            .iter()
+            .any(|d| d.payload == crate::durable_semantics::DurableType::I64),
+        "the parse_i64 demand must also be planned",
+    );
+    // And that StrBuf demand's ComptimeCall type-argument is the same nominal.
+    let strbuf_demand = demands
+        .iter()
+        .find(|d| d.payload == strbuf_nominal)
+        .expect("StrBuf demand present");
+    assert!(
+        strbuf_demand
+            .call
+            .type_arguments
+            .iter()
+            .any(|(name, ty)| name.as_ref() == "T" && *ty == strbuf_nominal),
+        "the ComptimeCallQueryKey must bind T = the trusted StrBuf nominal",
+    );
+
+    // Without the StrBuf module the read_line demand is dropped; only i64 remains.
+    let option_only = trusted_option_snapshot(root);
+    let scalar_only = planned_demands(&option_only, &options);
+    assert!(
+        scalar_only.iter().all(|d| d.payload != strbuf_nominal),
+        "without the StrBuf module no StrBuf demand may be planned",
+    );
+    assert!(
+        scalar_only
+            .iter()
+            .any(|d| d.payload == crate::durable_semantics::DurableType::I64),
+        "the scalar i64 demand must still be planned without StrBuf",
+    );
+}
+
+/// The well-known `Option` demands the planner roots for a snapshot — the exact
+/// `WellKnownOptionDemand` list the session builds once per semantic request.
+fn planned_demands(
+    snapshot: &SourceSnapshot,
+    options: &CompileOptions,
+) -> Arc<[crate::body_query::WellKnownOptionDemand]> {
+    let parsed =
+        crate::parsed_modules::parse_source_snapshot_modules(snapshot).expect("snapshot parses");
+    let merged = crate::merge_parsed_modules(&parsed).expect("modules merge");
+    let rir = crate::canonical_lower::lower_canonical_rir(&merged).expect("rir lowers");
+    let configuration = crate::semantic_query_nucleus::SemanticQueryConfiguration {
+        target: options.target,
+        preview_features: crate::StablePreviewFeatures::new(&options.preview_features),
+    };
+    crate::well_known_option::plan_well_known_option_demands(&merged, &rir, &configuration)
+}
+
+/// t1. A body with NO fallible intrinsic plans ZERO `Option` demands even with
+/// the trusted std module present; a body that DOES use one plans a demand;
+/// and a fallible intrinsic with NO trusted module present plans zero (the gate
+/// keeps freestanding programs on the legacy scan). This is the assertable
+/// "zero demands" signal: the count of demands the session roots per request.
+#[test]
+fn no_fallible_intrinsic_plans_zero_option_demands() {
+    let options = CompileOptions::default();
+
+    // Std present, no fallible intrinsic → zero demands.
+    let quiet = trusted_option_snapshot(
+        r#"
+const opt = @import("std/option.rue");
+fn main() -> i32 {
+    let O = opt.Option(i64);
+    match O.Some(41) { O.Some(v) => @intCast(v) + 1, O.None => 0 }
+}
+"#,
+    );
+    assert_eq!(
+        planned_demand_count(&quiet, &options),
+        0,
+        "a std-present program with no fallible intrinsic must plan zero demands",
+    );
+
+    // Std present, a fallible intrinsic → a demand is planned.
+    let loud = trusted_option_snapshot(
+        r#"
+const opt = @import("std/option.rue");
+fn read_num(s: str) -> opt.Option(i64) {
+    let O = opt.Option(i64);
+    O.Some(@parse_i64(s)?)
+}
+fn main() -> i32 { 0 }
+"#,
+    );
+    assert_eq!(
+        planned_demand_count(&loud, &options),
+        1,
+        "a std-present program using @parse_i64 must plan exactly one (i64) demand",
+    );
+
+    // Fallible intrinsic but NO trusted module → gate keeps the plan empty.
+    let freestanding = SourceSnapshot::single(
+        "<freestanding>",
+        r#"
+fn Option(comptime T: type) -> type { enum { Some(T), None } }
+fn read_num(s: str) -> Option(i64) {
+    let O = Option(i64);
+    O.Some(@parse_i64(s)?)
+}
+fn main() -> i32 { 0 }
+"#,
+    )
+    .expect("snapshot");
+    assert_eq!(
+        planned_demand_count(&freestanding, &options),
+        0,
+        "without a trusted std module the plan must be empty (legacy scan stays in force)",
+    );
+}
+
+/// t2. Two distinct bodies each demanding the SAME payload (`i64`) share ONE
+/// materialized `Option(i64)` specialization: the nucleus memoizes the
+/// `ComptimeCall` rooted under each body's lease, so both `?` sites bind the
+/// identical `EnumId` and the pool holds exactly one std `Option(i64)` identity.
+/// (The nucleus's Computed-then-Reused execution is internal to the body-request
+/// loop; the shared identity is its observable, request-stable consequence.)
+#[test]
+fn two_bodies_same_payload_share_one_specialization() {
+    let options = CompileOptions::default();
+    let source = r#"
+const opt = @import("std/option.rue");
+fn first(s: str) -> opt.Option(i64) {
+    let O = opt.Option(i64);
+    O.Some(@parse_i64(s)?)
+}
+fn second(s: str) -> opt.Option(i64) {
+    let O = opt.Option(i64);
+    O.Some(@parse_i64(s)?)
+}
+fn main() -> i32 {
+    let O = opt.Option(i64);
+    match first("1") { O.Some(_a) => match second("2") { O.Some(_b) => 0, O.None => 1 }, O.None => 2 }
+}
+"#;
+    let semantic =
+        semantic_with_trusted_option(source, &options).expect("two-body program compiles");
+    let parse_enums = fallible_intrinsic_option_enums(&semantic)
+        .into_iter()
+        .filter(|(runtime, _)| *runtime == rue_air::RuntimeCallKind::ParseI64)
+        .map(|(_, id)| id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        parse_enums.len(),
+        2,
+        "both bodies must contribute a @parse_i64 binding, got {parse_enums:?}",
+    );
+    assert_eq!(
+        parse_enums[0], parse_enums[1],
+        "both bodies must bind the one shared std Option(i64) specialization",
+    );
+    let std_digest = std_option_i64_reference_digest(&options);
+    let pool = option_i64_pool_digests(&semantic);
+    assert_eq!(
+        pool,
+        BTreeSet::from([std_digest]),
+        "exactly one std Option(i64) identity must exist across both bodies: {pool:?}",
+    );
+}
+
+/// Publish `root_source` (trusted std `Option` present) into `session`, adopting
+/// the test import graph, and return the semantic output.
+fn publish_trusted_semantic(
+    session: &mut CompilerSession,
+    root_source: &str,
+    options: &CompileOptions,
+) -> Result<Arc<CanonicalSemanticOutput>, CompileErrors> {
+    let snapshot = trusted_option_snapshot(root_source);
+    let program = session
+        .update_for_presentation(&snapshot)
+        .into_owner_result()?;
+    if !program.import_directives().is_empty() {
+        let graph = crate::test_fixture_import_graph(&program)?;
+        session.adopt_test_import_graph(graph);
+    }
+    session.canonical_semantic(options)
+}
+
+/// Warm/fresh parity on t-win. A WARM incremental compile (reached after the
+/// session already compiled an unrelated prior revision that also carried the
+/// trusted std module) produces semantic output identical to a FRESH compile:
+/// the per-body demand, projection, and narrow install are deterministic and
+/// session-issuer-independent, so the well-known `Option(i64)` binding and every
+/// symbol agree exactly.
+#[test]
+fn well_known_parse_warm_and_fresh_agree() {
+    let options = CompileOptions::default();
+    let target = r#"
+const opt = @import("std/option.rue");
+fn read_num(s: str) -> opt.Option(i64) {
+    let O = opt.Option(i64);
+    O.Some(@parse_i64(s)?)
+}
+fn main() -> i32 {
+    let O = opt.Option(i64);
+    match read_num("42") { O.Some(v) => @intCast(v), O.None => 0 }
+}
+"#;
+
+    let mut warm_session = CompilerSession::new();
+    // An unrelated prior revision (still trusted-std-bearing) warms the session.
+    publish_trusted_semantic(
+        &mut warm_session,
+        r#"
+const opt = @import("std/option.rue");
+fn main() -> i32 { 0 }
+"#,
+        &options,
+    )
+    .ok();
+    let warm = publish_trusted_semantic(&mut warm_session, target, &options)
+        .expect("warm compile of t-win");
+
+    let fresh = semantic_with_trusted_option(target, &options).expect("fresh compile of t-win");
+
+    assert_eq!(
+        warm.unstable_parity_snapshot(),
+        fresh.unstable_parity_snapshot(),
+        "warm/fresh semantic parity snapshot diverged for t-win",
+    );
+    assert_eq!(
+        bound_parse_i64_digest(&warm),
+        bound_parse_i64_digest(&fresh),
+        "warm/fresh disagreed on the well-known Option(i64) binding",
+    );
+}
+
+/// The per-site `Option(i64)` `EnumId` bound at every `@parse_i64` instruction in
+/// a semantic output, in AIR order. Reading `inst.ty` gives the identity each
+/// site actually consumed, so mixed `?`-operand and plain uses can be compared
+/// directly for shared identity.
+fn parse_i64_bound_enums(semantic: &CanonicalSemanticOutput) -> Vec<rue_air::EnumId> {
+    fallible_intrinsic_option_enums(semantic)
+        .into_iter()
+        .filter(|(runtime, _)| *runtime == rue_air::RuntimeCallKind::ParseI64)
+        .map(|(_, id)| id)
+        .collect()
+}
+
+/// B1(a). A plain, unannotated `let _ = @parse_i64("1")` — no `?`, no type
+/// annotation, no surrounding `match` — compiles, and the intrinsic result type
+/// IS the trusted std `Option(i64)`. The fallible intrinsic OWNS its exact
+/// trusted `Option` identity in every context: context does not select the
+/// nominal, the per-body well-known registry does. Provenance is asserted by the
+/// bound producer's stable digest matching the std-only reference program's.
+#[test]
+fn plain_unannotated_parse_owns_trusted_std_option() {
+    let options = CompileOptions::default();
+    let source = r#"
+const opt = @import("std/option.rue");
+fn main() -> i32 {
+    let _ = @parse_i64("1");
+    0
+}
+"#;
+    let semantic = semantic_with_trusted_option(source, &options)
+        .expect("a plain unannotated @parse_i64 compiles");
+    assert_eq!(
+        bound_parse_i64_digest(&semantic),
+        std_option_i64_reference_digest(&options),
+        "a bare `let _ = @parse_i64(..)` result carries the trusted std producer's digest",
+    );
+}
+
+/// B1(b), one body. A single body mixing a plain `@parse_i64` use and a
+/// `@parse_i64(..)?` operand of the SAME payload compiles with no fail-closed
+/// E9000, both sites bind the identical `EnumId`, and the whole-program pool
+/// holds exactly ONE `Option(i64)` identity (the trusted std producer). The
+/// per-body registry memoizes the one specialization; a plain use and a `?`
+/// operand cannot fork it into two identities.
+#[test]
+fn mixed_plain_and_try_in_one_body_share_one_identity() {
+    let options = CompileOptions::default();
+    let source = r#"
+const opt = @import("std/option.rue");
+fn read_num(s: str) -> opt.Option(i64) {
+    let O = opt.Option(i64);
+    let _plain = @parse_i64(s);
+    O.Some(@parse_i64(s)?)
+}
+fn main() -> i32 {
+    let O = opt.Option(i64);
+    match read_num("42") { O.Some(v) => @intCast(v), O.None => 0 }
+}
+"#;
+    let semantic = semantic_with_trusted_option(source, &options)
+        .expect("mixed plain + `?` in one body compiles with no E9000");
+    let bound = parse_i64_bound_enums(&semantic);
+    assert_eq!(
+        bound.len(),
+        2,
+        "both the plain and the `?` @parse_i64 site must bind, got {bound:?}",
+    );
+    assert!(
+        bound.iter().all(|id| *id == bound[0]),
+        "the plain and `?` sites must bind ONE shared Option(i64) EnumId: {bound:?}",
+    );
+    assert_eq!(
+        option_i64_pool_digests(&semantic),
+        BTreeSet::from([std_option_i64_reference_digest(&options)]),
+        "exactly one std Option(i64) identity must exist for the mixed body",
+    );
+}
+
+/// B1(b), across two bodies. A plain `@parse_i64` in one body and a
+/// `@parse_i64(..)?` operand in another (same payload) compile with no E9000,
+/// every site binds the identical `EnumId`, and the pool holds exactly ONE
+/// `Option(i64)` identity shared across both bodies.
+#[test]
+fn mixed_plain_and_try_across_two_bodies_share_one_identity() {
+    let options = CompileOptions::default();
+    let source = r#"
+const opt = @import("std/option.rue");
+fn plainly(s: str) -> i32 {
+    let _ = @parse_i64(s);
+    0
+}
+fn fallibly(s: str) -> opt.Option(i64) {
+    let O = opt.Option(i64);
+    O.Some(@parse_i64(s)?)
+}
+fn main() -> i32 {
+    let O = opt.Option(i64);
+    match fallibly("42") { O.Some(v) => @intCast(v) + plainly("1"), O.None => 0 }
+}
+"#;
+    let semantic = semantic_with_trusted_option(source, &options)
+        .expect("mixed plain + `?` across two bodies compiles with no E9000");
+    let bound = parse_i64_bound_enums(&semantic);
+    assert_eq!(
+        bound.len(),
+        2,
+        "the plain body and the `?` body must each bind a @parse_i64 site: {bound:?}",
+    );
+    assert!(
+        bound.iter().all(|id| *id == bound[0]),
+        "sites in distinct bodies must bind ONE shared Option(i64) EnumId: {bound:?}",
+    );
+    assert_eq!(
+        option_i64_pool_digests(&semantic),
+        BTreeSet::from([std_option_i64_reference_digest(&options)]),
+        "exactly one std Option(i64) identity must exist across the two bodies",
+    );
+}
+
+/// B1(c). Warm/fresh parity on the mixed (plain + `?`) program: a warm
+/// incremental compile and a fresh compile agree on the full semantic parity
+/// snapshot and on the shared well-known `Option(i64)` binding. The per-body
+/// demand, projection, and narrow install are deterministic and
+/// session-issuer-independent even when a body mixes plain and `?` uses.
+#[test]
+fn mixed_plain_and_try_warm_and_fresh_agree() {
+    let options = CompileOptions::default();
+    let target = r#"
+const opt = @import("std/option.rue");
+fn read_num(s: str) -> opt.Option(i64) {
+    let O = opt.Option(i64);
+    let _plain = @parse_i64(s);
+    O.Some(@parse_i64(s)?)
+}
+fn main() -> i32 {
+    let O = opt.Option(i64);
+    match read_num("42") { O.Some(v) => @intCast(v), O.None => 0 }
+}
+"#;
+
+    let mut warm_session = CompilerSession::new();
+    publish_trusted_semantic(
+        &mut warm_session,
+        r#"
+const opt = @import("std/option.rue");
+fn main() -> i32 { 0 }
+"#,
+        &options,
+    )
+    .ok();
+    let warm = publish_trusted_semantic(&mut warm_session, target, &options)
+        .expect("warm compile of the mixed program");
+    let fresh =
+        semantic_with_trusted_option(target, &options).expect("fresh compile of the mixed program");
+
+    assert_eq!(
+        warm.unstable_parity_snapshot(),
+        fresh.unstable_parity_snapshot(),
+        "warm/fresh semantic parity snapshot diverged for the mixed program",
+    );
+    let warm_bound = parse_i64_bound_enums(&warm);
+    let fresh_bound = parse_i64_bound_enums(&fresh);
+    assert!(
+        warm_bound.iter().all(|id| *id == warm_bound[0])
+            && fresh_bound.iter().all(|id| *id == fresh_bound[0]),
+        "each of warm and fresh must bind one shared identity: {warm_bound:?} / {fresh_bound:?}",
+    );
+    assert_eq!(
+        option_i64_pool_digests(&warm),
+        option_i64_pool_digests(&fresh),
+        "warm/fresh disagreed on the Option(i64) identity set for the mixed program",
+    );
+}
 
 /// The canonical RUE-1089 Wrap repro: a GENERIC struct producer whose method
 /// reaches an anonymous-enum MEMBER (`self.inner`, of type `Option(T)`) under

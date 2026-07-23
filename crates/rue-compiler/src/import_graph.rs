@@ -52,18 +52,40 @@ impl ImportDirective {
     }
 }
 
-/// Canonically ordered import sites from one lowered source snapshot.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
-pub struct ImportDirectives(Arc<[ImportDirective]>);
+/// Canonically ordered import sites from one lowered source snapshot, held as
+/// `Arc`-shared sorted segments: a strictly-additive successor program shares
+/// every predecessor segment by reference and appends only its new modules'
+/// sites (RUE-1112). Equality, hashing, and debug rendering are logical over
+/// the merged order; the contiguous slice materializes lazily, at most once
+/// per value, off the successor staging path.
+#[derive(Clone)]
+pub struct ImportDirectives(crate::shared_segments::SharedSegments<ImportDirective>);
+
+fn import_directive_order(a: &ImportDirective, b: &ImportDirective) -> std::cmp::Ordering {
+    a.cmp(b)
+}
 
 impl ImportDirectives {
     pub(crate) fn from_records(mut records: Vec<ImportDirective>) -> Self {
         records.sort();
-        Self(records.into())
+        Self(crate::shared_segments::SharedSegments::flat(
+            records.into(),
+            import_directive_order,
+        ))
     }
+
+    /// A strictly-additive successor sharing every segment of `base` by
+    /// reference and appending only `delta` (sorted here; must be disjoint —
+    /// sites of modules `base` does not carry).
+    pub(crate) fn extend(base: &ImportDirectives, delta: Vec<ImportDirective>) -> Self {
+        Self(crate::shared_segments::SharedSegments::extend(
+            &base.0, delta,
+        ))
+    }
+
     /// Import sites ordered by logical module, source offset, then specifier.
     pub fn as_slice(&self) -> &[ImportDirective] {
-        &self.0
+        self.0.as_slice()
     }
 
     pub fn len(&self) -> usize {
@@ -71,11 +93,37 @@ impl ImportDirectives {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.0.len() == 0
     }
 
     pub fn iter(&self) -> std::slice::Iter<'_, ImportDirective> {
-        self.0.iter()
+        self.as_slice().iter()
+    }
+}
+
+impl Default for ImportDirectives {
+    fn default() -> Self {
+        Self::from_records(Vec::new())
+    }
+}
+
+impl PartialEq for ImportDirectives {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for ImportDirectives {}
+
+impl std::hash::Hash for ImportDirectives {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+impl std::fmt::Debug for ImportDirectives {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ImportDirectives").field(&self.0).finish()
     }
 }
 
@@ -125,11 +173,22 @@ impl CanonicalImportRecord {
     }
 }
 
+/// Canonical order for the record sequence: importer, normalized spelling, then
+/// outcome (the record's derived total order).
+fn record_order(a: &CanonicalImportRecord, b: &CanonicalImportRecord) -> std::cmp::Ordering {
+    a.cmp(b)
+}
+
 /// Canonical resolved topology, independent of import-site occurrences.
+///
+/// The record sequence is a [`SharedSegments`], so a strictly-additive
+/// trusted-toolchain successor (RUE-1112) reuses the predecessor's record `Arc`
+/// by reference and stores only its sorted delta — no predecessor record is
+/// copied, re-sorted, or reallocated when the successor graph is built.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CanonicalImportGraph {
     root: ModuleId,
-    records: Arc<[CanonicalImportRecord]>,
+    records: crate::shared_segments::SharedSegments<CanonicalImportRecord>,
 }
 
 impl CanonicalImportGraph {
@@ -141,8 +200,29 @@ impl CanonicalImportGraph {
         records.dedup();
         Self {
             root,
-            records: records.into(),
+            records: crate::shared_segments::SharedSegments::flat(records.into(), record_order),
         }
+    }
+
+    /// Build a strictly-additive successor graph that shares `base`'s record
+    /// sequence by reference and appends `delta` (RUE-1112). `delta`'s importers
+    /// must be disjoint from `base`'s.
+    pub(crate) fn from_additive_successor(
+        root: ModuleId,
+        base: &CanonicalImportGraph,
+        delta: Vec<CanonicalImportRecord>,
+    ) -> Self {
+        Self {
+            root,
+            records: crate::shared_segments::SharedSegments::extend(&base.records, delta),
+        }
+    }
+
+    /// The shared record-segment representation (RUE-1112 successor sharing).
+    pub(crate) fn record_segments(
+        &self,
+    ) -> &crate::shared_segments::SharedSegments<CanonicalImportRecord> {
+        &self.records
     }
 
     pub fn root(&self) -> &ModuleId {
@@ -151,7 +231,7 @@ impl CanonicalImportGraph {
 
     /// Records sorted by importer, normalized spelling, then outcome.
     pub fn records(&self) -> &[CanonicalImportRecord] {
-        &self.records
+        self.records.as_slice()
     }
 
     /// Validate and canonicalize an explicitly supplied graph, failing closed.
@@ -172,7 +252,7 @@ impl CanonicalImportGraph {
         records.dedup();
         Ok(Self {
             root,
-            records: records.into(),
+            records: crate::shared_segments::SharedSegments::flat(records.into(), record_order),
         })
     }
 }
@@ -414,6 +494,130 @@ fn validate_records(
     }
 }
 
+/// Validate a strictly-additive trusted-toolchain successor graph incrementally
+/// (RUE-1112).
+///
+/// The predecessor graph closed valid, and the newly appended modules have no
+/// incoming edges from predecessor modules (nothing already in the compilation
+/// imports a freshly demanded trusted leaf). Therefore:
+///
+/// * predecessor records were already validated and carry no problems, so they
+///   are not re-examined;
+/// * a new record can only introduce a problem of its own — a foreign importer
+///   or target, a missing/ambiguous resolution, or a duplicate/conflict among the
+///   new records themselves (new importers are disjoint from predecessor
+///   importers, so no new record can conflict with a predecessor record);
+/// * any cycle involving a new module consists entirely of new modules, because a
+///   cycle edge into a new module can only originate from another new module.
+///
+/// This validates only `new_records` and detects cycles only within the
+/// new-module-induced subgraph, unioning the result with the carried predecessor
+/// validation — never re-walking the predecessor topology. `inputs` supplies the
+/// merged module set for membership checks only.
+pub(crate) fn validate_additive_successor(
+    predecessor: &CanonicalImportGraphValidation,
+    new_records: &[CanonicalImportRecord],
+    inputs: &ModuleResolutionInputs,
+    new_modules: &BTreeSet<ModuleId>,
+) -> CanonicalImportGraphValidation {
+    // Membership is checked by binary search over the shared, structurally
+    // extended resolution inputs, so the predecessor module table is never
+    // materialized into a set on the acquisition path (RUE-1112).
+    let mut problems = predecessor.problems().to_vec();
+    let mut by_key: BTreeMap<(ModuleId, Arc<str>), BTreeSet<CanonicalImportResolution>> =
+        BTreeMap::new();
+    // Cycle adjacency confined to new-module → new-module edges; every key and
+    // target is a new module, so `cycle_components` is well formed.
+    let mut new_adjacency: BTreeMap<ModuleId, BTreeSet<ModuleId>> = new_modules
+        .iter()
+        .cloned()
+        .map(|module| (module, BTreeSet::new()))
+        .collect();
+    let mut sorted = new_records.to_vec();
+    sorted.sort();
+    for pair in sorted.windows(2) {
+        if pair[0] == pair[1] {
+            problems.push(CanonicalImportGraphProblem::DuplicateRecord(
+                pair[0].clone(),
+            ));
+        }
+    }
+    for record in &sorted {
+        let key = (record.importer.clone(), record.normalized_specifier.clone());
+        by_key
+            .entry(key.clone())
+            .or_default()
+            .insert(record.resolution.clone());
+        if !inputs.contains(&record.importer) {
+            problems.push(CanonicalImportGraphProblem::ForeignImporter {
+                importer: key.0,
+                normalized_specifier: key.1,
+            });
+        }
+        match &record.resolution {
+            CanonicalImportResolution::Resolved(target) => {
+                if !inputs.contains(target) {
+                    problems.push(CanonicalImportGraphProblem::ForeignResolvedTarget {
+                        importer: record.importer.clone(),
+                        normalized_specifier: record.normalized_specifier.clone(),
+                        target: target.clone(),
+                    });
+                } else if inputs.contains(&record.importer)
+                    && new_modules.contains(target)
+                    && let Some(edges) = new_adjacency.get_mut(&record.importer)
+                {
+                    edges.insert(target.clone());
+                }
+            }
+            CanonicalImportResolution::Missing => {
+                problems.push(CanonicalImportGraphProblem::MissingResolution {
+                    importer: record.importer.clone(),
+                    normalized_specifier: record.normalized_specifier.clone(),
+                });
+            }
+            CanonicalImportResolution::Ambiguous {
+                file_module,
+                directory_module,
+            } => {
+                for target in [file_module, directory_module] {
+                    if !inputs.contains(target) {
+                        problems.push(CanonicalImportGraphProblem::ForeignResolvedTarget {
+                            importer: record.importer.clone(),
+                            normalized_specifier: record.normalized_specifier.clone(),
+                            target: target.clone(),
+                        });
+                    }
+                }
+                problems.push(CanonicalImportGraphProblem::AmbiguousResolution {
+                    importer: record.importer.clone(),
+                    normalized_specifier: record.normalized_specifier.clone(),
+                    file_module: file_module.clone(),
+                    directory_module: directory_module.clone(),
+                });
+            }
+        }
+    }
+    for ((importer, normalized_specifier), resolutions) in by_key {
+        if resolutions.len() > 1 {
+            problems.push(CanonicalImportGraphProblem::ConflictingCanonicalKey {
+                importer,
+                normalized_specifier,
+                resolutions: resolutions.into_iter().collect::<Vec<_>>().into(),
+            });
+        }
+    }
+    problems.sort();
+    problems.dedup();
+    let mut cycles = predecessor.cycles().to_vec();
+    cycles.extend(cycle_components(&new_adjacency));
+    cycles.sort();
+    cycles.dedup();
+    CanonicalImportGraphValidation {
+        problems: problems.into(),
+        cycles: cycles.into(),
+    }
+}
+
 fn cycle_components(
     adjacency: &BTreeMap<ModuleId, BTreeSet<ModuleId>>,
 ) -> Vec<CanonicalImportCycle> {
@@ -507,6 +711,92 @@ mod tests {
             specifier,
             CanonicalImportResolution::Resolved(ModuleId::from_logical_path(target).unwrap()),
         )
+    }
+
+    fn missing(importer: &str, specifier: &str) -> CanonicalImportRecord {
+        CanonicalImportRecord::new(
+            ModuleId::from_logical_path(importer).unwrap(),
+            specifier,
+            CanonicalImportResolution::Missing,
+        )
+    }
+
+    /// The incremental additive-successor validation must be identical to a full
+    /// validation of the merged graph, so production can carry the predecessor
+    /// validation and validate only the delta. This exercises the same code path
+    /// the trusted-toolchain successor close uses, across a clean additive delta
+    /// and deltas that introduce a new-module self-cycle, a new-module two-cycle,
+    /// a new-to-predecessor edge, and a missing resolution.
+    #[test]
+    fn additive_successor_validation_equals_full_validation() {
+        // A valid predecessor graph: root a imports b, b imports c.
+        let predecessor_records = vec![
+            resolved("a.rue", "b.rue", "b.rue"),
+            resolved("b.rue", "c.rue", "c.rue"),
+        ];
+        let predecessor_inputs = inputs(&["a.rue", "b.rue", "c.rue"], "a.rue");
+        let predecessor_graph = CanonicalImportGraph::from_discovery_records(
+            ModuleId::from_logical_path("a.rue").unwrap(),
+            predecessor_records.clone(),
+        );
+        let predecessor_validation =
+            validate_canonical_import_graph(&predecessor_graph, &predecessor_inputs);
+        assert!(predecessor_validation.is_valid());
+
+        let new_module = |name: &str| ModuleId::from_logical_path(name).unwrap();
+
+        // Each case: (added module names, delta records).
+        let cases: Vec<(Vec<&str>, Vec<CanonicalImportRecord>)> = vec![
+            // Clean additive: new x imports the existing c and a fresh y.
+            (
+                vec!["x.rue", "y.rue"],
+                vec![
+                    resolved("x.rue", "c.rue", "c.rue"),
+                    resolved("x.rue", "y.rue", "y.rue"),
+                ],
+            ),
+            // New-module self-cycle.
+            (vec!["x.rue"], vec![resolved("x.rue", "x.rue", "x.rue")]),
+            // New-module two-cycle among the delta.
+            (
+                vec!["x.rue", "y.rue"],
+                vec![
+                    resolved("x.rue", "y.rue", "y.rue"),
+                    resolved("y.rue", "x.rue", "x.rue"),
+                ],
+            ),
+            // New-to-predecessor edge (cannot create a cycle back into the delta).
+            (vec!["x.rue"], vec![resolved("x.rue", "b.rue", "b.rue")]),
+            // Delta with a missing resolution.
+            (vec!["x.rue"], vec![missing("x.rue", "nope.rue")]),
+        ];
+
+        for (added, delta_records) in cases {
+            let mut all_names = vec!["a.rue", "b.rue", "c.rue"];
+            all_names.extend(added.iter().copied());
+            let merged_inputs = inputs(&all_names, "a.rue");
+            let new_modules: BTreeSet<ModuleId> =
+                added.iter().map(|name| new_module(name)).collect();
+
+            let mut merged_records = predecessor_records.clone();
+            merged_records.extend(delta_records.iter().cloned());
+            let merged_graph = CanonicalImportGraph::from_discovery_records(
+                ModuleId::from_logical_path("a.rue").unwrap(),
+                merged_records,
+            );
+
+            let full = validate_canonical_import_graph(&merged_graph, &merged_inputs);
+            let incremental = validate_additive_successor(
+                &predecessor_validation,
+                &delta_records,
+                &merged_inputs,
+                &new_modules,
+            );
+            assert_eq!(
+                incremental, full,
+                "incremental successor validation must equal full validation for added={added:?}"
+            );
+        }
     }
 
     #[test]

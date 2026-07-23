@@ -1118,7 +1118,7 @@ stdout = "0\n"
 exit_code = 0
 
 # --- RUE-1035: single-slot by-value, array drop glue, and frame @raw ---------
-# Three compact-codegen miscompiles that the flip to the default compact layout
+# Three compact-codegen miscompiles that the switch to the default compact layout
 # exposed, each reproduced then fixed (RUE-1035). M1/M3 now execute correctly
 # across optimization levels; M2 converts a silent miscompile into a loud
 # construct-level refusal that is now the default behavior (RUE-987).

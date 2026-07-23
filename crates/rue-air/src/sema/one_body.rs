@@ -846,6 +846,12 @@ pub(super) fn analyze_one_body(
                 .as_ref()
                 .is_none_or(|producer| &identity.producer != producer)
         })
+        // The well-known `Option` registry install materializes its nominals
+        // before this baseline is taken, but the body that binds them must OWN
+        // them: excluding them here makes `produced_anonymous_nominals` export
+        // them, so the registry-rooted identity is durable across composition
+        // instead of appearing to be a pre-existing import with no producer.
+        .filter(|identity| !sema.well_known_option_identities.contains(*identity))
         .cloned()
         .collect();
     sema.one_body_error_recovery = true;

@@ -12,7 +12,7 @@ use rue_compiler::unstable::{
     publish_import_observation_batch,
 };
 use rue_compiler::{
-    AcceptedImportSource, AcceptedReadManifestEntry, CompileOptions, CompilerSession,
+    AcceptedImportSource, AcceptedReadManifest, CompileOptions, CompilerSession,
     FileMetadataFingerprint, ImportDiscoveryContext, ImportObservation, PhysicalFileIdentity,
     SemanticView, SourceSnapshot,
 };
@@ -74,11 +74,7 @@ fn variant_sources(variant: Variant) -> BTreeMap<String, Arc<String>> {
 
 fn assemble(
     sources: &BTreeMap<String, Arc<String>>,
-) -> (
-    SourceSnapshot,
-    ImportDiscoveryContext,
-    Arc<[AcceptedReadManifestEntry]>,
-) {
+) -> (SourceSnapshot, ImportDiscoveryContext, AcceptedReadManifest) {
     let context =
         ImportDiscoveryContext::new(1, "/bench", Some("/bench/std"), "rue-901-scenario").unwrap();
     let root = sources.get(ROOT).unwrap().clone();
@@ -157,7 +153,7 @@ fn close_discovery(session: &mut CompilerSession, source: &SourceSnapshot) {
             .stage_import_discovery(
                 &discovered,
                 context.clone(),
-                accepted_reads.clone(),
+                accepted_reads.shared_slice(),
                 ledger.clone(),
             )
             .unwrap();

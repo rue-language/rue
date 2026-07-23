@@ -1665,6 +1665,7 @@ pub(crate) fn analyze_body_query(
     query_shells: &[rue_air::SemanticDeclarationShell],
     query_declarations: &[DurableDeclarationSemantic],
     query_anonymous_nominals: &[crate::durable_semantics::DurableAnonymousNominal],
+    well_known: &crate::body_query::WellKnownOptionResolution,
     key: &crate::body_query::BodyQueryKey,
     cancellation: &rue_query::CancellationToken,
     // Per-body declaration-context work is accrued here, at the stage sources,
@@ -1857,6 +1858,42 @@ pub(crate) fn analyze_body_query(
     work.endpoints_installed += body_owner_endpoints_installed
         + semantic_definition_endpoints.len()
         + semantic_module_endpoints_installed;
+    // Install the per-body well-known `Option(payload)` registry (RUE-1112)
+    // narrowly, now that whole-program definition/module endpoints exist. The
+    // resolved trusted-std `Option` enums are materialized into this epoch and
+    // recorded so fallible-intrinsic resolution binds them under `?`; they are
+    // never appended to composition, `BodyReferences`, or reachability, so the
+    // fail-closed validation for ordinary nominals stays intact. A body that
+    // demanded nothing installs nothing.
+    let bound = if well_known.is_empty() {
+        bound
+    } else {
+        let (well_known_nominals, well_known_option_by_payload) =
+            match crate::durable_semantics::project_durable_option_registry(
+                merged,
+                &definitions,
+                well_known,
+            ) {
+                Ok(projected) => projected,
+                Err(failure) => {
+                    return Ok(deterministic_failure(
+                        "project_durable_option_registry",
+                        format!("{failure:?}"),
+                    ));
+                }
+            };
+        match bound
+            .install_well_known_option_types(&well_known_nominals, &well_known_option_by_payload)
+        {
+            Ok(bound) => bound,
+            Err(failure) => {
+                return Ok(deterministic_failure(
+                    "install_well_known_option_types",
+                    format!("{failure:?}"),
+                ));
+            }
+        }
+    };
     drop(install_span);
     let analyze_span = info_span!("body_analyze").entered();
     let outcome = bound.analyze_one_body_instance(

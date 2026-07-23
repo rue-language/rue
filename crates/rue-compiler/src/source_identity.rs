@@ -117,7 +117,9 @@ impl From<&SourceId> for SourceBucketKey {
 /// remain distinct entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceStore {
-    buckets: Arc<BTreeMap<SourceBucketKey, Arc<[SourceId]>>>,
+    /// `Arc`-shared bucket segments, oldest first; a strictly-additive
+    /// successor appends one segment and shares the rest (RUE-1112).
+    buckets: Vec<Arc<BTreeMap<SourceBucketKey, Arc<[SourceId]>>>>,
     len: usize,
 }
 
@@ -151,14 +153,49 @@ impl SourceStore {
                 .push(source);
         }
         Self {
-            buckets: Arc::new(
+            buckets: vec![Arc::new(
                 buckets
                     .into_iter()
                     .map(|(key, bucket)| (key, bucket.into()))
                     .collect(),
-            ),
+            )],
             len,
         }
+    }
+
+    /// Build a strictly-additive successor store that shares every bucket
+    /// segment of `base` by reference and appends one segment holding only the
+    /// genuinely new identities (RUE-1112). No base identity is copied or
+    /// re-bucketed.
+    pub(crate) fn extend_with_ids(
+        base: &SourceStore,
+        appended: impl IntoIterator<Item = SourceId>,
+    ) -> Self {
+        let mut appended: Vec<_> = appended
+            .into_iter()
+            .filter(|source| base.get(source).is_none())
+            .collect();
+        appended.sort();
+        appended.dedup();
+        if appended.is_empty() {
+            return base.clone();
+        }
+        let len = base.len + appended.len();
+        let mut new_bucket = BTreeMap::<_, Vec<_>>::new();
+        for source in appended {
+            new_bucket
+                .entry(SourceBucketKey::from(&source))
+                .or_default()
+                .push(source);
+        }
+        let mut buckets = base.buckets.clone();
+        buckets.push(Arc::new(
+            new_bucket
+                .into_iter()
+                .map(|(key, bucket)| (key, bucket.into()))
+                .collect(),
+        ));
+        Self { buckets, len }
     }
 
     /// Number of distinct exact source byte strings.
@@ -173,11 +210,14 @@ impl SourceStore {
 
     /// Return this store's canonical exact identity for `source`.
     pub fn get(&self, source: &SourceId) -> Option<&SourceId> {
-        let bucket = self.buckets.get(&SourceBucketKey::from(source))?;
-        bucket
-            .binary_search(source)
-            .ok()
-            .map(|index| &bucket[index])
+        let key = SourceBucketKey::from(source);
+        self.buckets.iter().find_map(|segment| {
+            let bucket = segment.get(&key)?;
+            bucket
+                .binary_search(source)
+                .ok()
+                .map(|index| &bucket[index])
+        })
     }
 
     /// Share the exact retained source allocation identified by `source`.
@@ -185,9 +225,12 @@ impl SourceStore {
         self.get(source).map(|source| source.0.text.clone())
     }
 
-    /// Iterate exact identities in version, digest, then byte order.
+    /// Iterate exact identities, segment by segment; within each segment the
+    /// order is version, digest, then byte order.
     pub fn iter(&self) -> impl Iterator<Item = &SourceId> + '_ {
-        self.buckets.values().flat_map(|bucket| bucket.iter())
+        self.buckets
+            .iter()
+            .flat_map(|segment| segment.values().flat_map(|bucket| bucket.iter()))
     }
 }
 
@@ -321,18 +364,30 @@ pub struct ModuleRevision {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SourceRevision {
     root: ModuleId,
-    modules: Arc<[ModuleRevision]>,
+    modules: crate::shared_segments::SharedSegments<ModuleRevision>,
 }
+
+/// Canonical order for the module/source mapping: by module identity.
+fn module_revision_order(a: &ModuleRevision, b: &ModuleRevision) -> std::cmp::Ordering {
+    a.module.cmp(&b.module)
+}
+
 impl SourceRevision {
     pub fn root(&self) -> &ModuleId {
         &self.root
     }
     pub fn modules(&self) -> &[ModuleRevision] {
+        self.modules.as_slice()
+    }
+    /// The shared segmented representation (RUE-1112 successor sharing).
+    pub(crate) fn module_segments(
+        &self,
+    ) -> &crate::shared_segments::SharedSegments<ModuleRevision> {
         &self.modules
     }
     /// Build a complete, canonical module/source mapping.
     pub fn new(root: ModuleId, mut modules: Vec<ModuleRevision>) -> CompileResult<Self> {
-        modules.sort_by(|a, b| a.module.cmp(&b.module));
+        modules.sort_by(module_revision_order);
         if let Some(duplicate) = modules
             .windows(2)
             .find(|pair| pair[0].module == pair[1].module)
@@ -352,7 +407,48 @@ impl SourceRevision {
         }
         Ok(Self {
             root,
-            modules: modules.into(),
+            modules: crate::shared_segments::SharedSegments::flat(
+                modules.into(),
+                module_revision_order,
+            ),
+        })
+    }
+
+    /// Build a strictly-additive successor mapping that shares `base`'s module
+    /// segments by reference and appends only `appended` (RUE-1112). Validates
+    /// the appended entries alone: they must be new module identities. No base
+    /// entry is copied, re-sorted, or re-validated.
+    pub(crate) fn extend_with_appended(
+        base: &SourceRevision,
+        appended: Vec<ModuleRevision>,
+    ) -> CompileResult<Self> {
+        for entry in &appended {
+            if base
+                .modules
+                .contains_by(|candidate| candidate.module.cmp(&entry.module))
+            {
+                return Err(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                    format!(
+                        "source revision successor re-adds existing module ID {:?}",
+                        entry.module
+                    ),
+                )));
+            }
+        }
+        let mut sorted = appended;
+        sorted.sort_by(module_revision_order);
+        if let Some(duplicate) = sorted
+            .windows(2)
+            .find(|pair| pair[0].module == pair[1].module)
+            .map(|pair| &pair[0].module)
+        {
+            return Err(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                format!("source revision contains duplicate module ID {duplicate:?}"),
+            )));
+        }
+        Ok(Self {
+            root: base.root.clone(),
+            modules: crate::shared_segments::SharedSegments::extend(&base.modules, sorted),
         })
     }
 }
@@ -362,17 +458,69 @@ pub struct ModuleResolutionInput {
     pub module: ModuleId,
     pub physical_path: Arc<str>,
 }
+/// Canonical order for module-resolution inputs: by module identity.
+fn module_input_order(a: &ModuleResolutionInput, b: &ModuleResolutionInput) -> std::cmp::Ordering {
+    a.module.cmp(&b.module)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModuleResolutionInputs {
     root: ModuleId,
-    modules: Arc<[ModuleResolutionInput]>,
+    modules: crate::shared_segments::SharedSegments<ModuleResolutionInput>,
 }
 impl ModuleResolutionInputs {
     pub fn root(&self) -> &ModuleId {
         &self.root
     }
     pub fn modules(&self) -> &[ModuleResolutionInput] {
+        self.modules.as_slice()
+    }
+
+    /// Whether `module` is in the resolution set, by binary search over the
+    /// shared segments — O(log n) with no materialization (RUE-1112).
+    pub(crate) fn contains(&self, module: &ModuleId) -> bool {
+        self.modules.contains_by(|entry| entry.module.cmp(module))
+    }
+
+    /// The shared module-table representation (RUE-1112 successor sharing).
+    pub(crate) fn module_segments(
+        &self,
+    ) -> &crate::shared_segments::SharedSegments<ModuleResolutionInput> {
         &self.modules
+    }
+
+    /// Build a strictly-additive successor by structurally sharing `base`'s
+    /// module table and appending `delta` (RUE-1112). Only `delta` is validated
+    /// and sorted; `base`'s table is carried by reference. `delta` must be
+    /// disjoint from `base` (the modules added since the predecessor close).
+    pub(crate) fn extend_successor(
+        base: &ModuleResolutionInputs,
+        delta: Vec<ModuleResolutionInput>,
+    ) -> CompileResult<Self> {
+        if let Some(module) = delta
+            .iter()
+            .find(|entry| entry.physical_path.is_empty())
+            .map(|entry| &entry.module)
+        {
+            return Err(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                format!("module resolution input {module:?} has an empty physical path"),
+            )));
+        }
+        let mut sorted = delta.clone();
+        sorted.sort_by(module_input_order);
+        if let Some(duplicate) = sorted
+            .windows(2)
+            .find(|pair| pair[0].module == pair[1].module)
+            .map(|pair| &pair[0].module)
+        {
+            return Err(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                format!("module resolution inputs contain duplicate module ID {duplicate:?}"),
+            )));
+        }
+        Ok(Self {
+            root: base.root.clone(),
+            modules: crate::shared_segments::SharedSegments::extend(&base.modules, delta),
+        })
     }
     /// Build canonical explicit module-resolution inputs.
     pub fn new(root: ModuleId, mut modules: Vec<ModuleResolutionInput>) -> CompileResult<Self> {
@@ -419,15 +567,17 @@ impl ModuleResolutionInputs {
         }
         Ok(Self {
             root,
-            modules: modules.into(),
+            modules: crate::shared_segments::SharedSegments::flat(
+                modules.into(),
+                module_input_order,
+            ),
         })
     }
 
     pub fn physical_path(&self, module: &ModuleId) -> Option<&str> {
         self.modules
-            .binary_search_by(|entry| entry.module.cmp(module))
-            .ok()
-            .map(|index| self.modules[index].physical_path.as_ref())
+            .find_by(|entry| entry.module.cmp(module))
+            .map(|entry| entry.physical_path.as_ref())
     }
 
     pub fn from_metadata(metadata: &SourceMetadata) -> Self {

@@ -28,7 +28,7 @@ pub fn begin_import_input_request(
     session: &mut crate::CompilerSession,
     snapshot: &crate::SourceSnapshot,
     context: crate::ImportDiscoveryContext,
-    accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
+    accepted_reads: crate::AcceptedReadManifest,
 ) -> crate::CompileResult<ImportInputRevision> {
     session.begin_import_input_request(snapshot, context, accepted_reads)
 }
@@ -43,11 +43,19 @@ pub fn import_demand_frontier_for_roots(
     session.import_demand_frontier_for_roots(revision, plan, mode, roots)
 }
 
+/// The demand roots for a trusted-toolchain successor plan's delta occurrences
+/// alone (RUE-1112). Derived directly from the plan's delta segment, so the host
+/// roots its re-close frontier without materializing or filtering the merged
+/// predecessor plan.
+pub fn plan_delta_roots(plan: &crate::ImportDiscoveryPlan) -> ImportDemandRoots {
+    plan.delta_roots()
+}
+
 pub fn publish_import_observation_batch(
     session: &mut crate::CompilerSession,
     frontier: &ImportDemandFrontier,
     snapshot: &crate::SourceSnapshot,
-    accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
+    accepted_reads: crate::AcceptedReadManifest,
     observations: Vec<crate::ImportObservation>,
 ) -> crate::CompileResult<ImportInputRevision> {
     session.publish_import_observation_batch(frontier, snapshot, accepted_reads, observations)
@@ -58,6 +66,205 @@ pub fn import_observation_ledger(
     revision: ImportInputRevision,
 ) -> crate::CompileResult<crate::ImportObservationLedger> {
     session.import_observation_ledger(revision)
+}
+
+/// Stage a strictly-additive trusted-toolchain successor (RUE-1112). The staged
+/// snapshot, context, provenance, and carried ledger are the CURRENT
+/// compiler-published view's own state and the module delta is derived from the
+/// opaque `delta` capability — the host supplies nothing but the capability, so
+/// no replacement state can be substituted. Predecessor occurrences are never
+/// re-staged.
+pub fn stage_import_discovery_successor(
+    session: &mut crate::CompilerSession,
+    delta: &TrustedSuccessorDelta,
+) -> Result<crate::ImportDiscoveryPlan, crate::CompileErrors> {
+    session.stage_import_discovery_successor(delta)
+}
+
+/// Close a strictly-additive trusted-toolchain successor (RUE-1112). The closing
+/// ledger is the CURRENT compiler-published view's own carried ledger and the
+/// module delta is derived from the opaque `delta` capability — the host
+/// supplies nothing but the capability. Predecessor occurrences are never
+/// re-projected or re-reduced.
+pub fn close_import_discovery_successor(
+    session: &mut crate::CompilerSession,
+    delta: &TrustedSuccessorDelta,
+) -> Result<Arc<crate::ImportDiscoveryView>, crate::CompileErrors> {
+    session
+        .close_import_discovery_successor(delta)
+        .map(|artifact| Arc::new(crate::ImportDiscoveryView::new(artifact)))
+}
+
+/// Cumulative import occurrences the demand frontier has rooted (RUE-1112).
+///
+/// One `ResolveImport` projection is dispatched per rooted occurrence. The delta
+/// across a trusted-toolchain re-close counts only occurrences owned by the newly
+/// appended leaves and modules newly discovered from them; a predecessor
+/// occurrence is rooted once at the initial close and never re-rooted during
+/// acquisition. Host source-loading reads this to prove the re-close is O(new
+/// leaves), independent of the predecessor import topology.
+pub fn import_frontier_roots_requested(session: &crate::CompilerSession) -> u64 {
+    session.import_frontier_roots_requested()
+}
+
+/// Cumulative import-plan request groups constructed during staging (RUE-1112).
+///
+/// A full plan build constructs one group per program import occurrence; a
+/// trusted-toolchain successor stage reuses the committed predecessor plan's
+/// groups and constructs only the newly appended occurrences'. The delta across a
+/// re-close is O(new leaves), independent of the predecessor topology.
+pub fn import_plan_groups_constructed(session: &crate::CompilerSession) -> u64 {
+    session.import_plan_groups_constructed()
+}
+
+/// Cumulative close-time `ResolveImport` projections dispatched (RUE-1112).
+///
+/// A full close projects one per program occurrence; a trusted-toolchain
+/// successor close projects only the newly appended occurrences'. The delta
+/// across a re-close is O(new leaves).
+pub fn exact_import_groups_dispatched(session: &crate::CompilerSession) -> u64 {
+    session.exact_import_groups_dispatched()
+}
+
+/// Cumulative canonical import records reduced and validated during close
+/// (RUE-1112).
+///
+/// A full close reduces/validates one per program occurrence; a trusted-toolchain
+/// successor close carries the predecessor's closed graph and reduces/validates
+/// only the newly appended occurrences'. The delta across a re-close is O(new
+/// leaves).
+pub fn import_close_records_reduced(session: &crate::CompilerSession) -> u64 {
+    session.import_close_records_reduced()
+}
+
+/// Cumulative leaves published through the complete input-publication path
+/// (fresh generations only). Scales with the program (RUE-1112).
+pub fn import_view_full_leaves_published(session: &crate::CompilerSession) -> u64 {
+    session.import_view_full_leaves_published()
+}
+
+/// Cumulative delta leaves published through the sparse successor overlay path
+/// (RUE-1112). Each same-generation successor publishes only its own additions
+/// plus at most one re-stamped aggregate topology leaf; predecessor leaves are
+/// structurally inherited and never republished, so the acquisition delta is
+/// O(new leaves), independent of the predecessor topology.
+pub fn import_view_overlay_leaves_published(session: &crate::CompilerSession) -> u64 {
+    session.import_view_overlay_leaves_published()
+}
+
+/// Cumulative predecessor ledger observations deep-cloned into successor view
+/// ledgers (RUE-1112). The successor view still carries a complete ledger value,
+/// so this cost remains predecessor-scale and is surfaced rather than hidden.
+pub fn import_view_ledger_entries_cloned(session: &crate::CompilerSession) -> u64 {
+    session.import_view_ledger_entries_cloned()
+}
+
+/// Predecessor source entries element-compared by the overlay publication's
+/// fallback diff (RUE-1112). The structural-authority path — a successor
+/// snapshot whose segments share the parent view by `Arc` identity — never
+/// compares a predecessor entry, so acquisition keeps this at zero.
+pub fn import_view_source_entries_compared(session: &crate::CompilerSession) -> u64 {
+    session.import_view_source_entries_compared()
+}
+
+/// Predecessor accepted-read entries element-compared by the overlay
+/// publication's fallback provenance diff (RUE-1112) — a host-rebuilt manifest
+/// that cannot prove itself by segment identity. The structural-authority path
+/// never increments this.
+pub fn import_view_read_entries_compared(session: &crate::CompilerSession) -> u64 {
+    session.import_view_read_entries_compared()
+}
+
+/// Source entries materialized into whole-program parse projections
+/// (RUE-1112): the presentation order, demanded module set, and merged program
+/// a FULL parse build enumerates. A trusted-toolchain successor stage extends
+/// the retained predecessor artifact and never increments this.
+pub fn parse_sources_materialized(session: &crate::CompilerSession) -> u64 {
+    session.parse_sources_materialized()
+}
+
+/// Source entries embedded in parse query keys (RUE-1112): an ordinary key
+/// carries every file's exact content identity; a successor key carries only
+/// the published lineage identity plus its appended segment.
+pub fn parse_key_entries_compared(session: &crate::CompilerSession) -> u64 {
+    session.parse_key_entries_compared()
+}
+
+/// Module parse queries dispatched by the parse projection (RUE-1112). A full
+/// build dispatches one per module; a successor stage dispatches only the
+/// appended modules'.
+pub fn parse_modules_dispatched(session: &crate::CompilerSession) -> u64 {
+    session.parse_modules_dispatched()
+}
+
+/// Entries examined by parse invalidation classification (RUE-1112). A full
+/// classification examines every current module; a successor classifies only
+/// its appended delta.
+pub fn parse_invalidation_entries_compared(session: &crate::CompilerSession) -> u64 {
+    session.parse_invalidation_entries_compared()
+}
+
+/// Cumulative dependency-graph invalidation events across the retained
+/// frontend query families (RUE-1112). A strictly-additive successor adoption
+/// keeps the predecessor's immutable source leaf live and contributes zero
+/// here; only a genuine replacement invalidates retained dependents.
+pub fn frontend_query_invalidations(session: &crate::CompilerSession) -> u64 {
+    session.frontend_query_invalidations()
+}
+
+/// Structural-sharing witnesses for the committed import discovery's three
+/// additively shared artifacts (RUE-1112): `[graph_records, plan_groups,
+/// resolution_modules]`, each `(predecessor_segment_address, delta_len)`. A
+/// trusted-toolchain successor shares each predecessor segment `Arc` by
+/// reference, so every address is identical to the predecessor close's — proving
+/// no predecessor entry was copied when the successor artifacts were built.
+pub fn committed_successor_sharing(
+    session: &crate::CompilerSession,
+) -> Option<[(usize, usize); 3]> {
+    session.committed_successor_sharing()
+}
+
+pub use crate::session::{ClosedDiscoveryContinuation, SemanticParkOutcome, TrustedSuccessorDelta};
+
+/// Run rooted, park-aware semantic analysis on the current committed revision,
+/// surfacing an unsatisfied trusted-toolchain park distinctly (RUE-1112).
+///
+/// This is the host source-loading driver's retry entry: on
+/// [`SemanticParkOutcome::Parked`] the park atomically attaches its exact
+/// missing-demand set to the outstanding closed continuation, so a subsequent
+/// [`closed_discovery_continuation`] mints an authorizing token; the driver
+/// acquires exactly those modules, publishes a successor, re-closes, and calls
+/// this again.
+pub fn semantic_or_toolchain_park(
+    session: &mut crate::CompilerSession,
+    options: &crate::CompileOptions,
+) -> SemanticParkOutcome {
+    session.semantic_or_toolchain_park(options)
+}
+
+/// Mint the single-use trusted-toolchain continuation for the current successful
+/// import-discovery close, if one is outstanding (RUE-1112).
+pub fn closed_discovery_continuation(
+    session: &crate::CompilerSession,
+) -> Option<ClosedDiscoveryContinuation> {
+    session.closed_discovery_continuation()
+}
+
+/// Publish one strictly-additive trusted-toolchain successor on the
+/// continuation's closed revision, verified entirely from records (RUE-1112).
+///
+/// Returns an opaque [`TrustedSuccessorDelta`] capability derived from the
+/// compiler-verified appended module set. The host carries it to the successor
+/// stage and close, which derive the module delta from it; the host cannot
+/// inspect or edit the module identities.
+pub fn publish_trusted_toolchain_successor(
+    session: &mut crate::CompilerSession,
+    token: ClosedDiscoveryContinuation,
+    issued_frontier: &ImportDemandFrontier,
+    successor: &crate::SourceSnapshot,
+    accepted_reads: crate::AcceptedReadManifest,
+) -> Result<TrustedSuccessorDelta, crate::CompileErrors> {
+    session.publish_trusted_toolchain_successor(token, issued_frontier, successor, accepted_reads)
 }
 
 /// Unstable human-readable compiler stages. These are projections of the

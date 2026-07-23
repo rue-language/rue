@@ -3355,6 +3355,8 @@ mod tests {
     use rue_lexer::Lexer;
     use rue_parser::Parser;
     use rue_rir::AstGen;
+    use rue_span::FileId;
+    use std::collections::{HashMap, HashSet};
 
     fn build_cfg(source: &str) -> Cfg {
         build_cfg_for(source, 0)
@@ -3401,6 +3403,70 @@ mod tests {
         let output = sema.analyze_all_for_test().unwrap();
 
         let func = select(&output.functions);
+        CfgBuilder::build(
+            &func.air,
+            func.num_locals,
+            func.num_param_slots,
+            &func.name,
+            &output.type_pool,
+            func.param_modes.clone(),
+            &interner,
+            func.allow_unreachable_code,
+            func.callable_kind,
+        )
+        .cfg
+        .unwrap()
+        .into_editor()
+    }
+
+    /// The trusted standard-library `Option` producer, provided verbatim at the
+    /// trusted `\0rue-std/option.rue` logical identity so a fixture's `?` binds
+    /// the real std `Option`.
+    const TRUSTED_OPTION_PRODUCER: &str =
+        "pub fn Option(comptime T: type) -> type { enum { Some(T), None } }\n";
+
+    /// Build the CFG for the function named `name`, compiling `source` as a
+    /// trusted standard-library `\0rue-std/option.rue` module that also defines
+    /// the std `Option` producer, so `?` on an `Option` specialization is legal.
+    ///
+    /// `?` legality is exact producer-module identity, not shape (RUE-1112): an
+    /// `Option(T)` specialization is the std `Option` only when its producer
+    /// roots at the trusted `\0rue-std/option.rue::Option` definition. The
+    /// synthetic harness grants that identity by carrying the module's symbol
+    /// path and trusted-standard-library provenance on the file that defines the
+    /// producer. `StrBuf` remains an ordinary drop nominal: the sole lang item
+    /// keys on `\0rue-std/strbuf.rue`, so a `StrBuf` declared here is never
+    /// promoted to the trusted-std language item.
+    fn build_cfg_named_with_trusted_option(source: &str, name: &str) -> Cfg {
+        let module = format!(
+            "{TRUSTED_OPTION_PRODUCER}\
+             struct StrBuf {{ cap: u64, fn with_capacity(cap: u64) -> StrBuf {{ StrBuf {{ cap: cap }} }} fn inspect(borrow self) {{}} }}\n\
+             drop fn StrBuf(self) {{}}\n{source}"
+        );
+        let module_file = FileId::DEFAULT;
+
+        let lexer = Lexer::new(&module);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        let (ast, mut interner) = Parser::new(tokens, interner).parse().unwrap();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
+
+        let mut sema = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new());
+        sema.set_root_file_id(module_file);
+        sema.set_file_paths(HashMap::from([(module_file, "/std/option.rue".to_owned())]));
+        sema.set_symbol_paths(HashMap::from([(
+            module_file,
+            "\0rue-std/option.rue".to_owned(),
+        )]));
+        sema.set_trusted_standard_library_files(HashSet::from([module_file]));
+        let output = sema.analyze_all_for_test_with_stable_endpoints().unwrap();
+
+        let func = output
+            .functions
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("no analyzed function named '{}'", name));
         CfgBuilder::build(
             &func.air,
             func.num_locals,
@@ -3682,9 +3748,8 @@ mod tests {
 
     #[test]
     fn fallible_initializer_drops_local_only_after_successful_alloc() {
-        let cfg = build_cfg_named(
-            "fn Option(comptime T: type) -> type { enum { Some(T), None } }\n\
-             fn maybe_buf() -> Option(StrBuf) {\n\
+        let cfg = build_cfg_named_with_trusted_option(
+            "fn maybe_buf() -> Option(StrBuf) {\n\
                  let O = Option(StrBuf);\n\
                  if true { O.Some(StrBuf.with_capacity(8)) } else { O.None }\n\
              }\n\

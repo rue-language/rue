@@ -6,6 +6,7 @@
 //! sibling `pointers` and `ownership` modules.
 
 use super::*;
+use crate::sema::anon_structs::TrustedTryProducer;
 
 impl<'a> BodySema<'a> {
     // ========================================================================
@@ -1178,16 +1179,22 @@ impl<'a> BodySema<'a> {
         Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
-    /// Validate that inference resolved a fallible intrinsic's result to an
-    /// `Option`-shaped enum whose `Some` variant carries `expected_payload` and
-    /// whose `None` variant is empty, and return that enum type.
+    /// Resolve a fallible intrinsic's result to the trusted std `Option(payload)`
+    /// and return that enum type.
     ///
-    /// This is how `@read_line` / `@parse_*` obtain the concrete library
-    /// `Option` from context (RUE-6, ADR-0038): the intrinsic's return unifies
-    /// with the in-scope `Option(T)` (a `let` annotation, or the match arms the
-    /// result feeds), so no new "blessed builtin" tier is introduced — the
-    /// ordinary comptime-generic `Option` enum is used. The runtime signals
-    /// success/failure and codegen fills in this enum's discriminant + payload.
+    /// A fallible intrinsic (`@read_line` / `@parse_*`) OWNS the exact trusted
+    /// std `Option(payload)` in every context (RUE-6, ADR-0038). The per-body
+    /// well-known registry is the single canonical source for that identity: when
+    /// it holds an `Option` for this payload, that instance is authoritative in
+    /// bare, annotated, matched, and `?`-operand positions alike. Context (a `let`
+    /// annotation, or the `match` arms the result feeds) never *selects* the
+    /// nominal — it only *checks* it, and a same-shape user lookalike is a
+    /// mismatch, not a parallel identity. Only when no trusted `Option` module was
+    /// rooted for this body (the registry is empty) does the resolver fall back to
+    /// checking the surrounding context structurally. The ordinary
+    /// comptime-generic `Option` enum is used throughout; no "blessed builtin"
+    /// tier is introduced. The runtime signals success/failure and codegen fills
+    /// in this enum's discriminant + payload.
     pub(super) fn resolve_option_result_type(
         &mut self,
         ctx: &AnalysisContext,
@@ -1198,63 +1205,85 @@ impl<'a> BodySema<'a> {
         payload_display: &str,
         span: Span,
     ) -> CompileResult<Type> {
-        // Prefer the sema-supplied expected type (a let annotation or match
-        // scrutinee pattern), which is how the concrete comptime-generic
-        // `Option` reaches us. Without one, there is no context to infer the
-        // Option type from — report that plainly rather than letting an
-        // unresolved inference variable decay to `<error>` (E9000).
-        let (ty, from_expected) = match result_expected {
-            Some(ty) => (ty, true),
-            None => (
-                Self::get_resolved_type(ctx, inst_ref, span, intrinsic_display)?,
-                false,
-            ),
+        // Every fallible intrinsic OWNS the exact trusted std `Option(payload)`
+        // in every context. The per-body well-known registry is the single
+        // canonical source for that identity: when it holds an `Option` for this
+        // payload, that instance is authoritative in bare, annotated, matched,
+        // and `?`-operand positions alike. Context (a `let` annotation or the
+        // `match` arms the result feeds) never selects the nominal — it only
+        // *checks* the identity. A same-shape user lookalike is a mismatch
+        // (E0702), never used to install a parallel identity.
+        let canonical = self
+            .well_known_option_by_payload
+            .get(&expected_payload)
+            .copied();
+
+        // Whatever context supplies, if anything. Under `?` no context can supply
+        // the `Option` (the enclosing `Option(U)` may carry a different payload),
+        // so a missing inferred type is not an error when the canonical registry
+        // owns the identity.
+        let context_ty = match result_expected {
+            Some(ty) => Some(ty),
+            None if canonical.is_some() && ctx.try_operand => None,
+            None => Some(Self::get_resolved_type(
+                ctx,
+                inst_ref,
+                span,
+                intrinsic_display,
+            )?),
         };
+
+        if let Some(canonical) = canonical {
+            // The intrinsic result IS `canonical`. If context is present, it must
+            // be that exact identity; a lookalike or a differently-payloaded
+            // trusted `Option` is a mismatch. A context that already poisoned to
+            // `error` produced its own diagnostic — don't cascade, but keep the
+            // canonical identity so downstream composition still resolves.
+            if let Some(ty) = context_ty
+                && !ty.is_error()
+                && ty != canonical
+            {
+                return Err(CompileError::new(
+                    ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                        name: intrinsic_display.to_string(),
+                        expected: format!("Option({payload_display})"),
+                        found: ty.safe_name_with_pool(Some(&self.type_pool)),
+                    })),
+                    span,
+                ));
+            }
+            return Ok(canonical);
+        }
+
+        // No trusted `Option` module was rooted for this body (the registry is
+        // empty). Fall back to checking the surrounding context structurally: it
+        // must itself be the exact trusted-std-shaped `Option(payload)`.
+        let ty = context_ty.expect("registry-absent path always resolves a context type");
 
         // A bad annotation/pattern already produced its own diagnostic and
         // poisoned the expected type to `error`; do not cascade a second one.
-        if from_expected && ty.is_error() {
+        if result_expected.is_some() && ty.is_error() {
             return Ok(ty);
         }
 
-        let valid = if let TypeKind::Enum(enum_id) = ty.kind() {
-            let def = self.type_pool.enum_def(enum_id);
-            match (def.find_variant("Some"), def.find_variant("None")) {
-                (Some(si), Some(ni)) if def.variant_count() == 2 => {
-                    let some_payload = def.variant_payload(si);
-                    let none_payload = def.variant_payload(ni);
-                    some_payload.len() == 1
-                        && some_payload[0] == expected_payload
-                        && none_payload.is_empty()
+        let valid = self.trusted_try_producer(ty) == Some(TrustedTryProducer::Option)
+            && matches!(ty.kind(), TypeKind::Enum(enum_id) if {
+                let def = self.type_pool.enum_def(enum_id);
+                match (def.find_variant("Some"), def.find_variant("None")) {
+                    (Some(si), Some(ni)) if def.variant_count() == 2 => {
+                        let some_payload = def.variant_payload(si);
+                        some_payload.len() == 1
+                            && some_payload[0] == expected_payload
+                            && def.variant_payload(ni).is_empty()
+                    }
+                    _ => false,
                 }
-                _ => false,
-            }
-        } else {
-            false
-        };
+            });
 
         if valid {
             return Ok(ty);
         }
 
-        // As the operand of `?` on a bare fallible intrinsic, no valid `Option`
-        // reaches us from context — the `?` site cannot supply one because the
-        // enclosing function's `Option(U)` has the wrong payload (RUE-318). The
-        // intrinsic knows its own payload, so instantiate the canonical library
-        // `Option(payload)` directly: `find_or_create_anon_enum` returns the
-        // very same `EnumId` an in-scope `Option(payload)` produces (ADR-0038),
-        // so `?` then unwraps it exactly like any other typed `Option`.
-        if ctx.try_operand {
-            if let Some(option) = self.find_compatible_anon_enum(
-                &["Some".to_string(), "None".to_string()],
-                &[vec![expected_payload], Vec::new()],
-            ) {
-                return Ok(option);
-            }
-        }
-
-        // Otherwise: with no context at all the resolved type is `<error>`; point
-        // the user at the fix instead of printing the placeholder.
         let found = if ty.is_error() {
             "no expected type — annotate the binding or `match` on the result".to_string()
         } else {

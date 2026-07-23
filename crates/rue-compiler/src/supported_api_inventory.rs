@@ -55,6 +55,7 @@ stable|import_discovery|compatibility-boundary|legacy-embedders|ImportDiscoveryR
 stable|import_discovery|compatibility-boundary|legacy-embedders|ImportObservation|pub use import_discovery::ImportObservation
 stable|import_discovery|compatibility-boundary|legacy-embedders|ImportObservationLedger|pub use import_discovery::ImportObservationLedger
 stable|import_discovery|compatibility-boundary|legacy-embedders|ImportObservationStatus|pub use import_discovery::ImportObservationStatus
+stable|import_discovery|dependency-artifact|source-loaders+embedders|AcceptedReadManifest|pub use import_discovery::AcceptedReadManifest
 stable|import_discovery|dependency-artifact|source-loaders+embedders|AcceptedReadManifestEntry|pub use import_discovery::AcceptedReadManifestEntry
 stable|import_discovery|dependency-artifact|source-loaders+embedders|FileMetadataFingerprint|pub use import_discovery::FileMetadataFingerprint
 stable|import_discovery|dependency-artifact|source-loaders+embedders|ImportCandidateRole|pub use import_discovery::ImportCandidateRole
@@ -96,6 +97,10 @@ stable|source_identity|source-input|cli+embedders|SourceRevision|pub use source_
 stable|source_metadata|source-input|cli+embedders|SourceMetadata|pub use source_metadata::SourceMetadata
 stable|source_snapshot|source-input|cli+embedders|MAX_SOURCE_BYTES|pub use source_snapshot::MAX_SOURCE_BYTES
 stable|source_snapshot|source-input|cli+embedders|SourceSnapshot|pub use source_snapshot::SourceSnapshot
+stable|toolchain_module_demand|toolchain-module-demand|source-loaders+embedders|OPTION_MODULE_LOGICAL_PATH|pub use toolchain_module_demand::OPTION_MODULE_LOGICAL_PATH
+stable|toolchain_module_demand|toolchain-module-demand|source-loaders+embedders|ParkedToolchainModules|pub use toolchain_module_demand::ParkedToolchainModules
+stable|toolchain_module_demand|toolchain-module-demand|source-loaders+embedders|STRBUF_MODULE_LOGICAL_PATH|pub use toolchain_module_demand::STRBUF_MODULE_LOGICAL_PATH
+stable|toolchain_module_demand|toolchain-module-demand|source-loaders+embedders|TrustedToolchainModuleDemand|pub use toolchain_module_demand::TrustedToolchainModuleDemand
 unstable|CompilerSession|debug-tooling|in-tree-tooling|unstable_dependency_baseline|pub fn unstable_dependency_baseline(&mut self,options:&CompileOptions,std_dir:Option<&str>,)->Result<Arc<crate::unstable::DependencyBaseline>,CompileErrors>
 unstable|CompilerSession|debug-tooling|in-tree-tooling|unstable_invalidation_metrics|pub fn unstable_invalidation_metrics(&mut self,previous:&crate::unstable::DependencyBaseline,current:&crate::unstable::DependencyBaseline,)->Result<crate::unstable::InvalidationMetrics,CompileErrors>
 unstable|CompilerSession|debug-tooling|in-tree-tooling|unstable_metrics|pub fn unstable_metrics(&self)->crate::unstable::MetricsSnapshot

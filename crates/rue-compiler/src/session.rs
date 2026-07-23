@@ -1196,10 +1196,15 @@ pub(crate) struct ImportDiscoveryRevisionArtifact {
     parse_work: ParsedModulesWork,
     plan: Option<crate::ImportDiscoveryPlan>,
     ledger: crate::ImportObservationLedger,
-    accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
+    accepted_reads: crate::AcceptedReadManifest,
     graph: Option<Arc<CanonicalImportGraphOutput>>,
     diagnostics: CompileErrors,
     diagnostic_snapshot: Option<Arc<FrontendDiagnosticSnapshot>>,
+    /// The exact successor parse record this stage computed (RUE-1112). The
+    /// successor close adopts by re-selecting THIS terminal — same key, same
+    /// revision — never by re-deriving an extension against the now-selected
+    /// successor state.
+    successor_parse: Option<ParseQueryRecord>,
 }
 
 impl ImportDiscoveryRevisionArtifact {
@@ -1232,7 +1237,7 @@ impl ImportDiscoveryRevisionArtifact {
     pub(crate) fn ledger(&self) -> &crate::ImportObservationLedger {
         &self.ledger
     }
-    pub(crate) fn accepted_read_manifest(&self) -> &[crate::AcceptedReadManifestEntry] {
+    pub(crate) fn accepted_read_manifest(&self) -> &crate::AcceptedReadManifest {
         &self.accepted_reads
     }
     pub(crate) fn graph(&self) -> Option<&Arc<CanonicalImportGraphOutput>> {
@@ -1292,6 +1297,52 @@ pub struct CompilerSession {
     /// Protocol context only while the typed import-closure query is open.
     /// Closed attempts live exclusively in their plan or closure terminal.
     open_discovery: Option<Arc<ImportDiscoveryRevisionArtifact>>,
+    /// Trusted-toolchain continuation state (RUE-1112). Set only at a
+    /// successful import-discovery close and single-use: consumed by a
+    /// successful `publish_trusted_toolchain_successor`, and cleared on any new
+    /// import-input request or source update so a stale token cannot continue.
+    continuation: Option<ContinuationState>,
+    /// Nonce of the outstanding trusted-toolchain successor delta authority
+    /// (RUE-1112), set by a successful `publish_trusted_toolchain_successor` and
+    /// cleared by the successor close it authorizes (or by any new import-input
+    /// request/source update, so a stale delta can neither stage nor close).
+    successor_delta_nonce: Option<u64>,
+    /// Monotonic nonce source for continuation tokens; a token is valid only
+    /// while its nonce matches the outstanding state.
+    next_continuation_nonce: u64,
+    /// Cumulative request groups constructed during import-plan staging
+    /// (RUE-1112). A full plan build constructs one per program occurrence; a
+    /// trusted-toolchain successor stage reuses the predecessor plan's groups and
+    /// constructs only the newly appended occurrences', so a predecessor
+    /// occurrence contributes here exactly once — at the initial close.
+    import_plan_groups_constructed: u64,
+    /// Cumulative canonical import records reduced and validated during
+    /// close (RUE-1112). A full close reduces/validates one per program
+    /// occurrence; a trusted-toolchain successor close carries the predecessor's
+    /// closed graph and reduces/validates only the newly appended occurrences', so
+    /// a predecessor occurrence contributes here exactly once — at the initial
+    /// close.
+    import_close_records_reduced: u64,
+    /// Cumulative source entries materialized into whole-program parse
+    /// projections (RUE-1112): the presentation order, demanded module set, and
+    /// merged program construction a FULL parse build enumerates. A
+    /// trusted-toolchain successor stage extends the retained predecessor
+    /// artifact instead, so a predecessor entry contributes here exactly once —
+    /// at the initial close.
+    parse_sources_materialized: u64,
+    /// Cumulative source entries embedded in parse query keys (RUE-1112): an
+    /// ordinary key carries every file's exact content identity; a successor
+    /// key carries only the published lineage identity plus its appended
+    /// segment, so key hashing and equality never touch a predecessor entry.
+    parse_key_entries_compared: u64,
+    /// Cumulative module parse queries dispatched by the parse projection
+    /// (RUE-1112). A full build dispatches one per module; a successor stage
+    /// dispatches only the appended modules'.
+    parse_modules_dispatched: u64,
+    /// Cumulative entries examined by parse invalidation classification
+    /// (RUE-1112). A full classification examines every current module; a
+    /// successor classifies only its appended delta.
+    parse_invalidation_entries_compared: u64,
     queries: FrontendQueryDatabase,
     #[cfg(test)]
     supplied_test_import_graph: Option<CanonicalImportGraph>,
@@ -1303,7 +1354,7 @@ pub struct CompilerSession {
     cancel_semantic_before_publication: bool,
     published: Option<Arc<ParsedProgram>>,
     published_snapshot: Option<SourceSnapshot>,
-    batch_diagnostic_order: Option<Vec<crate::ModuleId>>,
+    batch_diagnostic_order: Option<crate::shared_segments::SharedList<crate::ModuleId>>,
     definition_shard_baseline: Option<crate::DefinitionSnapshot>,
     metrics: CompilerSessionMetrics,
     diagnostics: DiagnosticAttemptStore,
@@ -1600,6 +1651,132 @@ fn enqueue_owned_destructor_closure(
 enum SemanticRequestControl {
     Compile(CompileErrors),
     Abort(rue_query::QueryAbort),
+    /// A reached body demanded a trusted toolchain module absent from the current
+    /// revision (RUE-1112). The rooted attempt recorded the park before
+    /// entering the body transaction; the host driver acquires the demanded
+    /// modules and retries on a successor, while stable no-filesystem entries
+    /// convert the park to an error/absence result at their outer boundary.
+    Parked(Box<crate::ParkedToolchainModules>),
+}
+
+/// The outcome of the rooted, park-aware semantic entry
+/// [`CompilerSession::semantic_or_toolchain_park`] (RUE-1112), consumed by the
+/// host source-loading driver through the unstable facade.
+pub enum SemanticParkOutcome {
+    /// Analysis completed against a revision that satisfied every reached body's
+    /// trusted-toolchain-module demand.
+    Ready(Arc<crate::SemanticView>),
+    /// Analysis produced deterministic program diagnostics.
+    Errors(CompileErrors),
+    /// A reached body demanded a trusted toolchain module absent from the current
+    /// revision. The host driver must acquire the demanded modules, publish a
+    /// successor, and retry.
+    Parked(Box<crate::ParkedToolchainModules>),
+}
+
+/// An opaque, single-use continuation issued ONLY from a successful close of
+/// import discovery (RUE-1112).
+///
+/// It authorizes exactly one strictly-additive trusted-toolchain successor on
+/// the closed revision, in the same request generation. It is bound to the
+/// issuing session (`session`) and to the outstanding close (`nonce` +
+/// `revision`); a token from a different session, a stale token (superseded by a
+/// newer close or a new request), or a reused token (after a successful publish)
+/// is rejected. The fields are private: the host holds the token and hands it
+/// back, never inspecting or constructing it.
+#[derive(Debug, Clone)]
+pub struct ClosedDiscoveryContinuation {
+    session: Arc<()>,
+    nonce: u64,
+    revision: crate::ImportInputRevision,
+}
+
+/// Opaque, compiler-derived authority for the modules a trusted-toolchain
+/// successor may stage, project, reduce, and commit (RUE-1112).
+///
+/// It is minted ONLY by [`CompilerSession::publish_trusted_toolchain_successor`]
+/// from the verified `added == demanded` set — never from host input — and is
+/// bound to the issuing session and successor revision. Its fields are private,
+/// so the host cannot construct, inspect, or edit the module set: it carries the
+/// value opaquely between the successor stage and close. The successor stage and
+/// close derive the exact module delta from the committed predecessor and the
+/// current snapshot and verify the carried `appended` roots are present, so a
+/// caller can neither omit an authorized module (committing a graph that lacks
+/// imports for modules actually in the snapshot) nor admit an unauthorized one.
+#[derive(Debug, Clone)]
+pub struct TrustedSuccessorDelta {
+    session: Arc<()>,
+    nonce: u64,
+    revision: crate::ImportInputRevision,
+    appended: Arc<[crate::ModuleId]>,
+}
+
+impl TrustedSuccessorDelta {
+    /// The successor input revision this delta was minted on. Exposing the
+    /// revision does not expose the authorized module set; the host needs it only
+    /// to continue discovery in the same request generation.
+    pub fn revision(&self) -> crate::ImportInputRevision {
+        self.revision
+    }
+}
+
+/// Session-held authority backing an outstanding [`ClosedDiscoveryContinuation`].
+/// Retains the predecessor snapshot, context, accepted-read provenance, and the
+/// carried ledger so `publish_trusted_toolchain_successor` can verify a strictly
+/// additive successor entirely from records, without any filesystem access.
+///
+/// A close alone leaves the state NON-AUTHORIZING (`attached_demands` is `None`):
+/// no token can be minted and no successor authorized. Authority is granted
+/// only when a rooted semantic park atomically attaches that park's exact sorted
+/// missing-demand set to this same state. Demand authority therefore lives here,
+/// bound to one closed revision and one park — never in an ambient session field
+/// a later, non-parking close could inherit.
+/// The CURRENT compiler-published view state a verified successor stage/close
+/// consumes, with the derived module delta (RUE-1112). Everything here comes
+/// from the published lineage; none of it is host-suppliable.
+struct SuccessorState {
+    snapshot: SourceSnapshot,
+    context: crate::ImportDiscoveryContext,
+    accepted_reads: crate::AcceptedReadManifest,
+    ledger: crate::ImportObservationLedger,
+    /// The published lineage identity this state was read from.
+    revision: crate::ImportInputRevision,
+    /// The appended module revisions (view sources minus the committed
+    /// predecessor), in canonical module order.
+    delta: Arc<[crate::ModuleRevision]>,
+}
+
+#[derive(Debug, Clone)]
+struct ContinuationState {
+    nonce: u64,
+    revision: crate::ImportInputRevision,
+    snapshot: SourceSnapshot,
+    accepted_reads: crate::AcceptedReadManifest,
+    ledger: crate::ImportObservationLedger,
+    /// The exact sorted missing-demand set the rooted park attached, or `None`
+    /// while the closed state is non-authorizing (no park has arrived for it).
+    attached_demands: Option<Arc<[crate::TrustedToolchainModuleDemand]>>,
+}
+
+/// Convert an unsatisfied trusted-toolchain park to the error a stable
+/// no-filesystem semantic entry returns at its outer boundary (RUE-1112).
+///
+/// This is a deterministic contract failure, never an ICE: the source is
+/// otherwise valid, but a guaranteed toolchain input the reached bodies demand
+/// was not supplied. The park-aware host driver acquires and retries; a stable
+/// embedder that omits the input gets this distinguishable classification.
+fn unresolved_toolchain_park_errors(park: &crate::ParkedToolchainModules) -> CompileErrors {
+    let modules = park
+        .demands()
+        .iter()
+        .map(|demand| demand.logical_path().to_owned())
+        .collect::<Vec<_>>()
+        .join(", ");
+    CompileErrors::from(crate::CompileError::without_span(
+        rue_error::ErrorKind::UnsatisfiedTrustedToolchainInput(format!(
+            "reached bodies demand trusted standard-library module(s) [{modules}] that are not present in this compilation; supply them (a std root the host can acquire from) before semantic analysis"
+        )),
+    ))
 }
 
 impl From<CompileErrors> for SemanticRequestControl {
@@ -1677,6 +1854,17 @@ impl FrontendQueryDatabase {
         previous.is_some_and(|previous| previous != current)
     }
 
+    /// Select `source` as the current exact source WITHOUT disappearing the
+    /// predecessor leaf (RUE-1112). A strictly-additive successor adoption
+    /// leaves the predecessor's immutable leaf live, so every retained
+    /// terminal that correctly depends on it stays valid — nothing is
+    /// invalidated or re-walked; new publications simply observe the new
+    /// leaf. Ordinary updates keep the disappearing [`Self::publish_source`],
+    /// whose invalidation is the real contract for replaced sources.
+    fn publish_source_additive(&mut self, source: ExactSourceInput) {
+        self.source_inputs.publish_retained(&mut self.graph, source);
+    }
+
     fn publish_import_graph(&mut self, imports: CanonicalImportGraph) {
         self.import_inputs.publish(&mut self.graph, imports);
     }
@@ -1738,7 +1926,57 @@ struct DependencyManifestCacheEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct ParseQueryKey {
+pub(crate) enum ParseQueryKey {
+    /// Ordinary content-addressed parsing: keyed on the exact source content,
+    /// table order, and presentation, so any equal re-request reuses the
+    /// terminal.
+    Ordinary(Box<OrdinaryParseKey>),
+    /// A trusted-toolchain successor parse projection (RUE-1112): keyed on the
+    /// published predecessor lineage identity plus the exact appended source
+    /// segment. Content is pinned by the published revision, so key hashing and
+    /// equality never touch a predecessor entry.
+    Successor {
+        revision: crate::ImportInputRevision,
+        delta: Arc<[crate::ModuleRevision]>,
+        /// The exact retained predecessor parse terminal this successor
+        /// extends, verified by structural source ancestry at preparation.
+        predecessor: rue_query::Revision,
+    },
+}
+
+impl ParseQueryKey {
+    /// The exact source identity an Ordinary key pins (and whose stamp it
+    /// retains); a Successor key pins its sources through the published
+    /// lineage identity instead and allocates no stamp.
+    pub(crate) fn pinned_source(&self) -> Option<&ExactSourceInput> {
+        match self {
+            Self::Ordinary(key) => Some(&key.source),
+            Self::Successor { .. } => None,
+        }
+    }
+}
+
+/// The reconciled inputs of one successor parse extension (RUE-1112), prepared
+/// without side effects so both the staging and adoption paths verify the
+/// predecessor binding before starting a metrics attempt.
+struct PreparedSuccessorParse {
+    predecessor_program: Arc<ParsedProgram>,
+    predecessor_order: crate::shared_segments::SharedList<crate::ModuleId>,
+    /// The retained predecessor parse terminal's exact runtime identity; the
+    /// successor key embeds it, so the successor terminal is bound to THIS
+    /// predecessor artifact, never an ambient "latest".
+    predecessor_revision: rue_query::Revision,
+    /// The predecessor parse terminal ITSELF, minted into the exact-terminal
+    /// adoption capability by the parse family's content-addressed
+    /// registration. The successor computation records it as a runtime
+    /// dependency, so the graph carries a real successor-after-predecessor
+    /// edge with the captured terminal's exact node, incarnation, and stamp.
+    predecessor_terminal: rue_query::AdoptableTerminal<ParseQueryRecord>,
+    appended: Vec<(crate::ModuleId, crate::FileId)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct OrdinaryParseKey {
     source: ExactSourceInput,
     /// Caller-owned source table order. This is presentation state rather than
     /// module identity, but a selected parse record retains the exact snapshot
@@ -1746,12 +1984,6 @@ pub(crate) struct ParseQueryKey {
     /// record while granular module terminals remain reusable.
     file_order: Arc<[crate::FileId]>,
     presentation: DiagnosticAttemptProvenance,
-}
-
-impl ParseQueryKey {
-    pub(crate) fn source(&self) -> &ExactSourceInput {
-        &self.source
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -1811,30 +2043,76 @@ impl TypedQueryFamily for ParseQuery {
     }
 
     fn record_is_consistent(record: &Self::Record) -> bool {
-        record.snapshot.source_revision() == &record.key.source.revision
-            && record.snapshot.metadata() == &record.key.source.metadata
-            && record
-                .snapshot
-                .files()
-                .map(|source| source.file_id)
-                .eq(record.key.file_order.iter().copied())
-            && match &record.result {
-                Ok(program) => program.source_revision() == &record.key.source.revision,
-                Err(_) => true,
+        match &record.key {
+            ParseQueryKey::Ordinary(key) => {
+                record.snapshot.source_revision() == &key.source.revision
+                    && record.snapshot.metadata() == &key.source.metadata
+                    && record
+                        .snapshot
+                        .files()
+                        .map(|source| source.file_id)
+                        .eq(key.file_order.iter().copied())
+                    && match &record.result {
+                        Ok(program) => program.source_revision() == &key.source.revision,
+                        Err(_) => true,
+                    }
+                    && record.diagnostics.source_revision() == &key.source.revision
+                    && record.diagnostics.identity() == &FrontendDiagnosticIdentity::Syntax
+                    && record.diagnostics.provenance == key.presentation
             }
-            && record.diagnostics.source_revision() == &record.key.source.revision
-            && record.diagnostics.identity() == &FrontendDiagnosticIdentity::Syntax
-            && record.diagnostics.provenance == record.key.presentation
+            ParseQueryKey::Successor { delta, .. } => {
+                // Content identity is pinned by the published lineage in the
+                // key; consistency stays O(delta) — a predecessor entry is
+                // never re-enumerated here.
+                record.snapshot.len() >= delta.len()
+                    && match &record.result {
+                        Ok(program) => program.modules_len() == record.snapshot.len(),
+                        Err(_) => true,
+                    }
+                    && record.diagnostics.identity() == &FrontendDiagnosticIdentity::Syntax
+            }
+        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct ImportPlanQueryKey {
+enum ImportPlanQueryKey {
+    /// Ordinary content-addressed staging: keyed on the exact inputs, so an
+    /// unchanged program recompiled in a fresh session hits the same memoized
+    /// terminal it does today.
+    Ordinary(Box<OrdinaryImportPlanKey>),
+    /// Trusted-toolchain successor staging (RUE-1112): keyed on the published
+    /// lineage identity being staged plus the exact successor delta. The
+    /// published revision identity is session-unique and immutably bound to its
+    /// leaf view, so it stands in for the full predecessor content without
+    /// hashing or comparing predecessor entries; the delta names the appended
+    /// module revisions exactly. Identities are never fingerprints (ADR-0066):
+    /// a revision id is a published immutable identity, not a content digest.
+    Successor {
+        revision: crate::ImportInputRevision,
+        delta: Arc<[crate::ModuleRevision]>,
+        policy_version: u32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct OrdinaryImportPlanKey {
     source: ExactSourceInput,
     context: crate::ImportDiscoveryContext,
     policy_version: u32,
-    accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
+    accepted_reads: crate::AcceptedReadManifest,
     carried_ledger: crate::ImportObservationLedger,
+}
+
+impl ImportPlanQueryKey {
+    /// The exact source revision an Ordinary key pins; a Successor key pins its
+    /// sources through the published revision identity instead.
+    fn pinned_source_revision(&self) -> Option<&crate::SourceRevision> {
+        match self {
+            Self::Ordinary(key) => Some(&key.source.revision),
+            Self::Successor { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1878,18 +2156,44 @@ impl TypedQueryFamily for ImportPlanQuery {
     }
 
     fn record_is_consistent(record: &Self::Record) -> bool {
-        record.diagnostics.source_revision() == &record.key.source.revision
+        match record.key.pinned_source_revision() {
+            Some(revision) => record.diagnostics.source_revision() == revision,
+            None => true,
+        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct ImportClosureQueryKey {
+enum ImportClosureQueryKey {
+    /// Ordinary content-addressed closure (unchanged warm-reuse semantics).
+    Ordinary(Box<OrdinaryImportClosureKey>),
+    /// Trusted-toolchain successor closure (RUE-1112): keyed on the published
+    /// lineage identity being closed plus the exact successor delta (see the
+    /// plan key's Successor variant for the identity discipline).
+    Successor {
+        revision: crate::ImportInputRevision,
+        delta: Arc<[crate::ModuleRevision]>,
+        policy_version: u32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct OrdinaryImportClosureKey {
     source: ExactSourceInput,
     context: crate::ImportDiscoveryContext,
     policy_version: u32,
-    accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
+    accepted_reads: crate::AcceptedReadManifest,
     plan: crate::ImportDiscoveryPlan,
     ledger: crate::ImportObservationLedger,
+}
+
+impl ImportClosureQueryKey {
+    fn pinned_source_revision(&self) -> Option<&crate::SourceRevision> {
+        match self {
+            Self::Ordinary(key) => Some(&key.source.revision),
+            Self::Successor { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1937,12 +2241,27 @@ impl TypedQueryFamily for ImportClosureQuery {
     }
 
     fn record_is_consistent(record: &Self::Record) -> bool {
-        record.artifact.snapshot().source_revision() == &record.key.source.revision
-            && record.diagnostics.source_revision() == &record.key.source.revision
-            && match &record.result {
-                Ok(graph) => graph.input().sources == record.key.source.revision,
-                Err(_) => true,
+        let mutual =
+            record.artifact.snapshot().source_revision() == record.diagnostics.source_revision();
+        match record.key.pinned_source_revision() {
+            Some(revision) => {
+                record.artifact.snapshot().source_revision() == revision
+                    && record.diagnostics.source_revision() == revision
+                    && match &record.result {
+                        Ok(graph) => &graph.input().sources == revision,
+                        Err(_) => true,
+                    }
             }
+            None => {
+                mutual
+                    && match &record.result {
+                        Ok(graph) => {
+                            &graph.input().sources == record.artifact.snapshot().source_revision()
+                        }
+                        Err(_) => true,
+                    }
+            }
+        }
     }
 }
 
@@ -2778,8 +3097,12 @@ impl CompilerSession {
         &mut self,
         snapshot: &SourceSnapshot,
         context: crate::ImportDiscoveryContext,
-        accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
+        accepted_reads: crate::AcceptedReadManifest,
     ) -> crate::CompileResult<crate::ImportInputRevision> {
+        // A fresh observation generation invalidates any outstanding
+        // trusted-toolchain continuation and successor-delta authority (RUE-1112).
+        self.continuation = None;
+        self.successor_delta_nonce = None;
         self.queries
             .revisioned
             .begin_import_inputs(snapshot, context, accepted_reads)
@@ -2803,7 +3126,7 @@ impl CompilerSession {
         &mut self,
         frontier: &crate::ImportDemandFrontier,
         snapshot: &SourceSnapshot,
-        accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
+        accepted_reads: crate::AcceptedReadManifest,
         observations: Vec<crate::ImportObservation>,
     ) -> crate::CompileResult<crate::ImportInputRevision> {
         self.queries.revisioned.publish_import_batch(
@@ -2820,6 +3143,144 @@ impl CompilerSession {
         revision: crate::ImportInputRevision,
     ) -> crate::CompileResult<crate::ImportObservationLedger> {
         self.queries.revisioned.import_ledger(revision)
+    }
+
+    /// Cumulative import occurrences the demand frontier has rooted (RUE-1112).
+    /// One `ResolveImport` projection is dispatched per rooted occurrence, so the
+    /// delta across a trusted-toolchain re-close counts only the newly appended
+    /// leaves and modules newly discovered from them — never a predecessor
+    /// occurrence. The host driver reads this to prove the re-close does not
+    /// re-root the predecessor import topology.
+    pub(crate) fn import_frontier_roots_requested(&self) -> u64 {
+        self.queries.revisioned.import_frontier_roots_requested()
+    }
+
+    /// Cumulative import-plan request groups constructed during staging
+    /// (RUE-1112). See the field docs on `import_plan_groups_constructed`.
+    pub(crate) fn import_plan_groups_constructed(&self) -> u64 {
+        self.import_plan_groups_constructed
+    }
+
+    /// See the field docs on `parse_sources_materialized`.
+    pub(crate) fn parse_sources_materialized(&self) -> u64 {
+        self.parse_sources_materialized
+    }
+
+    /// See the field docs on `parse_key_entries_compared`.
+    pub(crate) fn parse_key_entries_compared(&self) -> u64 {
+        self.parse_key_entries_compared
+    }
+
+    /// See the field docs on `parse_modules_dispatched`.
+    pub(crate) fn parse_modules_dispatched(&self) -> u64 {
+        self.parse_modules_dispatched
+    }
+
+    /// See the field docs on `parse_invalidation_entries_compared`.
+    pub(crate) fn parse_invalidation_entries_compared(&self) -> u64 {
+        self.parse_invalidation_entries_compared
+    }
+
+    /// The currently selected parse terminal, for identity assertions.
+    #[cfg(test)]
+    pub(crate) fn selected_parse_terminal(
+        &self,
+    ) -> Option<Arc<rue_query::QueryTerminal<ParseQueryRecord>>> {
+        self.queries.revisioned.parse.selected_terminal()
+    }
+
+    /// Cumulative dependency-graph invalidation events across the retained
+    /// frontend query families (merge, import diagnostics, RIR, semantic,
+    /// definitions, dependency manifests). A strictly-additive successor
+    /// adoption keeps the predecessor's immutable source leaf live, so it
+    /// contributes ZERO here regardless of how many variants are retained;
+    /// only a genuine replacement (an ordinary update) invalidates dependents.
+    pub(crate) fn frontend_query_invalidations(&self) -> u64 {
+        let graph = &self.queries.graph;
+        (graph.invalidation_count::<MergeQuery>()
+            + graph.invalidation_count::<ImportDiagnosticQuery>()
+            + graph.invalidation_count::<RirQuery>()
+            + graph.invalidation_count::<SemanticQuery>()
+            + graph.invalidation_count::<DefinitionQuery>()
+            + graph.invalidation_count::<DependencyManifestQuery>()) as u64
+    }
+
+    /// Cumulative close-time `ResolveImport` projections dispatched (RUE-1112).
+    pub(crate) fn exact_import_groups_dispatched(&self) -> u64 {
+        self.queries.revisioned.exact_import_groups_dispatched()
+    }
+
+    /// Cumulative canonical import records reduced and validated during close
+    /// (RUE-1112). See the field docs on `import_close_records_reduced`.
+    pub(crate) fn import_close_records_reduced(&self) -> u64 {
+        self.import_close_records_reduced
+    }
+
+    /// Cumulative leaves published through the complete publication path
+    /// (fresh generations); scales with the program (RUE-1112).
+    pub(crate) fn import_view_full_leaves_published(&self) -> u64 {
+        self.queries.revisioned.import_view_full_leaves_published()
+    }
+
+    /// Cumulative delta leaves published through the sparse successor overlay
+    /// path; predecessor leaves are structurally inherited and never counted
+    /// (RUE-1112).
+    pub(crate) fn import_view_overlay_leaves_published(&self) -> u64 {
+        self.queries
+            .revisioned
+            .import_view_overlay_leaves_published()
+    }
+
+    /// Cumulative predecessor ledger observations deep-cloned into successor
+    /// view ledgers (visible remaining cost; RUE-1112).
+    pub(crate) fn import_view_ledger_entries_cloned(&self) -> u64 {
+        self.queries.revisioned.import_view_ledger_entries_cloned()
+    }
+
+    /// Predecessor source entries compared by the overlay publication's fallback
+    /// diff; zero whenever the structural-authority path ran (RUE-1112).
+    pub(crate) fn import_view_source_entries_compared(&self) -> u64 {
+        self.queries
+            .revisioned
+            .import_view_source_entries_compared()
+    }
+
+    /// Predecessor accepted-read entries compared by the overlay publication's
+    /// provenance diff (RUE-1112).
+    pub(crate) fn import_view_read_entries_compared(&self) -> u64 {
+        self.queries.revisioned.import_view_read_entries_compared()
+    }
+
+    /// Structural-sharing witness for the committed import discovery's three
+    /// additively shared artifacts (RUE-1112): for each of the canonical graph
+    /// records, the plan's request groups, and the module-resolution table, the
+    /// identity address of its shared predecessor segment and its delta length. A
+    /// trusted-toolchain successor carries each predecessor segment `Arc` by
+    /// reference, so every address equals the predecessor close's — proving no
+    /// predecessor entry was copied, re-sorted, or reallocated.
+    pub(crate) fn committed_successor_sharing(&self) -> Option<[(usize, usize); 3]> {
+        let artifact = self.committed_import_discovery_artifact()?;
+        let graph = artifact.graph.as_ref()?;
+        let plan = artifact.plan.as_ref()?;
+        let record_segments = graph.graph().record_segments();
+        let group_segments = plan.group_segments();
+        let module_segments = graph.input().resolution.module_segments();
+        let witness =
+            |predecessor_ptr: *const (), delta_len: usize| (predecessor_ptr as usize, delta_len);
+        Some([
+            witness(
+                Arc::as_ptr(record_segments.predecessor_segment()) as *const (),
+                record_segments.delta_segment().len(),
+            ),
+            witness(
+                Arc::as_ptr(group_segments.predecessor_segment()) as *const (),
+                group_segments.delta_segment().len(),
+            ),
+            witness(
+                Arc::as_ptr(module_segments.predecessor_segment()) as *const (),
+                module_segments.delta_segment().len(),
+            ),
+        ])
     }
     #[cfg(test)]
     pub(crate) fn discovery_attempt(&self) -> Option<&Arc<ImportDiscoveryRevisionArtifact>> {
@@ -2932,7 +3393,7 @@ impl CompilerSession {
                 context: None,
                 plan: None,
                 ledger: crate::ImportObservationLedger::default(),
-                accepted_reads: Arc::from([]),
+                accepted_reads: crate::AcceptedReadManifest::from_entries(Vec::new()),
             };
             if let Some((cached, handle)) = self
                 .queries
@@ -3006,6 +3467,124 @@ impl CompilerSession {
         accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
         carried_ledger: crate::ImportObservationLedger,
     ) -> Result<crate::ImportDiscoveryPlan, CompileErrors> {
+        self.stage_import_discovery_inner(
+            snapshot,
+            context,
+            crate::AcceptedReadManifest::from_shared(accepted_reads),
+            carried_ledger,
+            None,
+        )
+    }
+
+    /// Verify a [`TrustedSuccessorDelta`] against this session and the CURRENT
+    /// compiler-published import-input view, returning that view's exact state
+    /// together with the derived module delta (RUE-1112). The successor stage and
+    /// close consume ONLY this published state — snapshot, context, provenance,
+    /// and ledger — so a caller cannot substitute any replacement; the view
+    /// itself is only extendable through justified overlay publications, so the
+    /// derived delta always equals the accumulated compiler-authorized additions.
+    fn derive_successor_state(
+        &self,
+        delta: &TrustedSuccessorDelta,
+    ) -> Result<SuccessorState, CompileErrors> {
+        let reject = |message: &str| {
+            CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                format!("trusted-toolchain successor delta rejected: {message}"),
+            )))
+        };
+        if !Arc::ptr_eq(&delta.session, &self.identity) {
+            return Err(reject("the successor delta belongs to a different session"));
+        }
+        let Some(outstanding) = self.successor_delta_nonce else {
+            return Err(reject(
+                "no outstanding successor-delta authority; it was already consumed or invalidated",
+            ));
+        };
+        if outstanding != delta.nonce {
+            return Err(reject(
+                "the successor delta is stale (superseded by a newer publish, request, or close)",
+            ));
+        }
+        let Some((current, snapshot, context, accepted_reads, ledger)) =
+            self.queries.revisioned.current_import_view_state()
+        else {
+            return Err(reject(
+                "no current import-input view backs the successor delta",
+            ));
+        };
+        if current.request_generation != delta.revision.request_generation {
+            return Err(reject(
+                "the successor delta belongs to a different request generation than the current view",
+            ));
+        }
+        // The module delta is the session-owned recorded-additions lineage: the
+        // exact additions each overlay publication recorded since the committed
+        // close. Predecessor byte-identity is enforced where state changes — at
+        // every overlay publication — so nothing is re-derived by scanning
+        // complete views here; this read is O(delta).
+        let mut new_modules: Vec<crate::ModuleRevision> =
+            self.queries.revisioned.lineage_additions().to_vec();
+        new_modules.sort_by(|a, b| a.module.cmp(&b.module));
+        new_modules.dedup();
+        // Every authorized appended module must be present, so the successor can
+        // never omit a demanded trusted module.
+        let new_set: std::collections::BTreeSet<&crate::ModuleId> = new_modules
+            .iter()
+            .map(|revision| &revision.module)
+            .collect();
+        for module in delta.appended.iter() {
+            if !new_set.contains(module) {
+                return Err(reject(
+                    "the successor omits an authorized appended module; it must contain every demanded trusted module",
+                ));
+            }
+        }
+        Ok(SuccessorState {
+            snapshot,
+            context,
+            accepted_reads,
+            ledger,
+            revision: current,
+            delta: new_modules.into(),
+        })
+    }
+
+    /// Stage a strictly-additive trusted-toolchain successor (RUE-1112). The
+    /// staged snapshot, context, provenance, and carried ledger are the CURRENT
+    /// compiler-published view's own state, and the module delta is derived and
+    /// verified from the opaque `delta` capability — the caller supplies nothing
+    /// but the capability. The plan reuses the committed predecessor plan's
+    /// request groups and constructs groups only for the delta's import
+    /// occurrences, so predecessor occurrences are never re-staged.
+    pub(crate) fn stage_import_discovery_successor(
+        &mut self,
+        delta: &TrustedSuccessorDelta,
+    ) -> Result<crate::ImportDiscoveryPlan, CompileErrors> {
+        let state = self.derive_successor_state(delta)?;
+        self.stage_import_discovery_inner(
+            &state.snapshot,
+            state.context,
+            state.accepted_reads,
+            state.ledger,
+            Some((state.revision, state.delta)),
+        )
+    }
+
+    fn stage_import_discovery_inner(
+        &mut self,
+        snapshot: &SourceSnapshot,
+        context: crate::ImportDiscoveryContext,
+        accepted_reads: crate::AcceptedReadManifest,
+        carried_ledger: crate::ImportObservationLedger,
+        successor: Option<(crate::ImportInputRevision, Arc<[crate::ModuleRevision]>)>,
+    ) -> Result<crate::ImportDiscoveryPlan, CompileErrors> {
+        let new_module_ids: Option<Vec<crate::ModuleId>> = successor.as_ref().map(|(_, delta)| {
+            delta
+                .iter()
+                .map(|revision| revision.module.clone())
+                .collect()
+        });
+        let new_modules: Option<&[crate::ModuleId]> = new_module_ids.as_deref();
         let continuation = self.open_discovery.as_deref().filter(|attempt| {
             continues_discovery_lifecycle(
                 attempt,
@@ -3021,12 +3600,22 @@ impl CompilerSession {
         // failure. Reinstall protocol context only if staging reaches Open.
         self.open_discovery = None;
         let source_revision = snapshot.source_revision().clone();
-        let plan_key = ImportPlanQueryKey {
-            source: ExactSourceInput::new(snapshot),
-            context: context.clone(),
-            policy_version: crate::IMPORT_DISCOVERY_POLICY_VERSION,
-            accepted_reads: accepted_reads.clone(),
-            carried_ledger: carried_ledger.clone(),
+        // A successor stage keys on {published lineage identity, exact delta}
+        // rather than re-hashing the full content; the ordinary path keeps its
+        // exact content key and therefore its warm reuse.
+        let plan_key = match &successor {
+            Some((revision, delta)) => ImportPlanQueryKey::Successor {
+                revision: *revision,
+                delta: delta.clone(),
+                policy_version: crate::IMPORT_DISCOVERY_POLICY_VERSION,
+            },
+            None => ImportPlanQueryKey::Ordinary(Box::new(OrdinaryImportPlanKey {
+                source: ExactSourceInput::new(snapshot),
+                context: context.clone(),
+                policy_version: crate::IMPORT_DISCOVERY_POLICY_VERSION,
+                accepted_reads: accepted_reads.clone(),
+                carried_ledger: carried_ledger.clone(),
+            })),
         };
         let (plan_dependency, publish_plan) = self.select_import_plan_query(plan_key.clone());
         if let Err(errors) = validate_accepted_read_manifest(snapshot, &accepted_reads) {
@@ -3051,6 +3640,7 @@ impl CompilerSession {
                 graph: None,
                 diagnostics: errors.clone(),
                 diagnostic_snapshot: Some(diagnostic_snapshot),
+                successor_parse: None,
             });
             self.publish_import_plan_query(
                 plan_key,
@@ -3066,7 +3656,12 @@ impl CompilerSession {
             );
             return Err(errors);
         }
-        let (parse_result, staged_work) = self.parse_staging_snapshot(snapshot);
+        let (parse_result, staged_work, staged_successor_parse) = self.parse_staging_snapshot(
+            snapshot,
+            successor
+                .as_ref()
+                .map(|(revision, delta)| (*revision, delta)),
+        );
         parse_work.accumulate(staged_work);
         let program = match parse_result {
             Ok(program) => program,
@@ -3092,6 +3687,7 @@ impl CompilerSession {
                     graph: None,
                     diagnostics: errors.clone(),
                     diagnostic_snapshot: Some(diagnostic_snapshot),
+                    successor_parse: None,
                 });
                 self.publish_import_plan_query(
                     plan_key,
@@ -3108,7 +3704,37 @@ impl CompilerSession {
                 return Err(errors);
             }
         };
-        let plan = match crate::ImportDiscoveryPlan::new(&program, context.clone()) {
+        // A trusted-toolchain successor stage reuses the committed predecessor
+        // plan's request groups and constructs groups only for the newly appended
+        // modules' occurrences; predecessor occurrences are never re-staged. When
+        // no predecessor plan is retained (an unexpected legacy state) it falls
+        // back to a full build so the plan is always complete.
+        let predecessor_plan = new_modules.and_then(|_| {
+            self.last_good_discovery_artifact()
+                .and_then(|artifact| artifact.plan.clone())
+        });
+        let plan_build = match (new_modules, predecessor_plan) {
+            (Some(new_modules), Some(predecessor)) => {
+                crate::ImportDiscoveryPlan::extend_trusted_successor(
+                    &predecessor,
+                    &program,
+                    context.clone(),
+                    new_modules,
+                )
+                .map(|(plan, constructed)| {
+                    self.import_plan_groups_constructed = self
+                        .import_plan_groups_constructed
+                        .saturating_add(constructed);
+                    plan
+                })
+            }
+            _ => crate::ImportDiscoveryPlan::new(&program, context.clone()).inspect(|plan| {
+                self.import_plan_groups_constructed = self
+                    .import_plan_groups_constructed
+                    .saturating_add(plan.groups().len() as u64);
+            }),
+        };
+        let plan = match plan_build {
             Ok(plan) => plan,
             Err(error) => {
                 let errors = CompileErrors::from(error);
@@ -3133,6 +3759,7 @@ impl CompilerSession {
                     graph: None,
                     diagnostics: errors.clone(),
                     diagnostic_snapshot: Some(diagnostic_snapshot),
+                    successor_parse: None,
                 });
                 self.publish_import_plan_query(
                     plan_key,
@@ -3191,6 +3818,7 @@ impl CompilerSession {
             graph: None,
             diagnostics: CompileErrors::new(),
             diagnostic_snapshot: None,
+            successor_parse: staged_successor_parse,
         }));
         Ok(plan)
     }
@@ -3207,7 +3835,7 @@ impl CompilerSession {
         &mut self,
         ledger: crate::ImportObservationLedger,
     ) -> Result<Arc<crate::ImportDiscoveryView>, CompileErrors> {
-        self.close_import_discovery_artifact(ledger)
+        self.close_import_discovery_artifact(ledger, None)
             .map(|artifact| Arc::new(crate::ImportDiscoveryView::new(artifact)))
     }
 
@@ -3216,13 +3844,40 @@ impl CompilerSession {
         &mut self,
         ledger: crate::ImportObservationLedger,
     ) -> Result<Arc<ImportDiscoveryRevisionArtifact>, CompileErrors> {
-        self.close_import_discovery_artifact(ledger)
+        self.close_import_discovery_artifact(ledger, None)
+    }
+
+    /// Close a strictly-additive trusted-toolchain successor (RUE-1112). The
+    /// closing ledger is the CURRENT compiler-published view's own carried
+    /// ledger and the module delta is derived from the opaque capability — the
+    /// caller supplies nothing but the capability, so no replacement ledger or
+    /// module set can be substituted. The close projects and reduces only the
+    /// delta occurrences and merges them into the committed predecessor's closed
+    /// graph, never re-projecting or re-reducing predecessor occurrences.
+    pub(crate) fn close_import_discovery_successor(
+        &mut self,
+        delta: &TrustedSuccessorDelta,
+    ) -> Result<Arc<ImportDiscoveryRevisionArtifact>, CompileErrors> {
+        let state = self.derive_successor_state(delta)?;
+        let closed = self
+            .close_import_discovery_artifact(state.ledger, Some((state.revision, state.delta)))?;
+        // Consume the single-use delta authority only on a successful close.
+        self.successor_delta_nonce = None;
+        Ok(closed)
     }
 
     fn close_import_discovery_artifact(
         &mut self,
         ledger: crate::ImportObservationLedger,
+        successor: Option<(crate::ImportInputRevision, Arc<[crate::ModuleRevision]>)>,
     ) -> Result<Arc<ImportDiscoveryRevisionArtifact>, CompileErrors> {
+        let new_module_ids: Option<Vec<crate::ModuleId>> = successor.as_ref().map(|(_, delta)| {
+            delta
+                .iter()
+                .map(|revision| revision.module.clone())
+                .collect()
+        });
+        let new_modules: Option<&[crate::ModuleId]> = new_module_ids.as_deref();
         let open = self
             .open_discovery
             .as_deref()
@@ -3239,7 +3894,26 @@ impl CompilerSession {
             .as_ref()
             .expect("open discovery attempt retains its program")
             .clone();
-        let roots = crate::ImportDemandRoots::whole_plan(&plan);
+        // A trusted-toolchain successor close carries the committed predecessor's
+        // closed graph and projects/reduces only the newly appended modules'
+        // occurrences. When no predecessor graph is retained it falls back to a
+        // full close so the committed graph is always complete.
+        let new_module_set: Option<std::collections::BTreeSet<crate::ModuleId>> =
+            new_modules.map(|modules| modules.iter().cloned().collect());
+        let predecessor_graph = new_modules.and_then(|_| {
+            self.last_good_discovery_artifact()
+                .and_then(|artifact| artifact.graph.clone())
+        });
+        let narrow = match (new_module_set, predecessor_graph) {
+            (Some(set), Some(graph)) => Some((set, graph)),
+            _ => None,
+        };
+        // A successor projects only the delta occurrences, derived directly from
+        // the plan's delta segment — never by filtering the merged plan.
+        let roots = match &narrow {
+            Some(_) => plan.delta_roots(),
+            None => crate::ImportDemandRoots::whole_plan(&plan),
+        };
         let exact_groups = match self.queries.revisioned.current_import_revision() {
             Some(revision) => match self
                 .queries
@@ -3253,6 +3927,7 @@ impl CompilerSession {
                         open,
                         plan,
                         ledger,
+                        successor.as_ref(),
                         ImportDiscoveryRevisionStatus::ClosedAttempted,
                         None,
                         &errors,
@@ -3265,21 +3940,61 @@ impl CompilerSession {
             // groups until that entire public boundary is removed together.
             None => plan.groups().to_vec(),
         };
+        // The predecessor ledger portion was validated at the predecessor close;
+        // a successor close validates and reduces only the newly appended
+        // occurrences' observations. Those observations are gathered directly from
+        // the plan's delta groups (O(delta)), never by scanning the full carried
+        // ledger. The full `ledger` is still what the committed artifact carries.
+        let narrow_ledger = match &narrow {
+            Some(_) => {
+                let new_observations = plan
+                    .delta_groups()
+                    .iter()
+                    .flat_map(|group| group.iter())
+                    .filter_map(|request| ledger.get(request).cloned())
+                    .collect::<Vec<_>>();
+                let mut filtered = crate::ImportObservationLedger::default();
+                let mut record_error = None;
+                for observation in new_observations {
+                    if let Err(error) = filtered.record(observation) {
+                        record_error = Some(error);
+                        break;
+                    }
+                }
+                if let Some(error) = record_error {
+                    let errors = CompileErrors::from(error);
+                    self.publish_failed_import_attempt(
+                        open,
+                        plan,
+                        ledger,
+                        successor.as_ref(),
+                        ImportDiscoveryRevisionStatus::ClosedAttempted,
+                        None,
+                        &errors,
+                    );
+                    return Err(errors);
+                }
+                Some(filtered)
+            }
+            None => None,
+        };
+        let check_ledger = narrow_ledger.as_ref().unwrap_or(&ledger);
         if let Err(error) =
-            crate::import_discovery::validate_exact_import_ledger(&exact_groups, &ledger)
+            crate::import_discovery::validate_exact_import_ledger(&exact_groups, check_ledger)
         {
             let errors = CompileErrors::from(error);
             self.publish_failed_import_attempt(
                 open,
                 plan,
                 ledger,
+                successor.as_ref(),
                 ImportDiscoveryRevisionStatus::ClosedAttempted,
                 None,
                 &errors,
             );
             return Err(errors);
         }
-        if !crate::import_discovery::exact_import_pending_requests(&exact_groups, &ledger)
+        if !crate::import_discovery::exact_import_pending_requests(&exact_groups, check_ledger)
             .is_empty()
         {
             let errors =
@@ -3291,19 +4006,24 @@ impl CompilerSession {
                 open,
                 plan,
                 ledger,
+                successor.as_ref(),
                 ImportDiscoveryRevisionStatus::ClosedAttempted,
                 None,
                 &errors,
             );
             return Err(errors);
         }
-        let diagnostics =
-            crate::import_discovery::exact_import_diagnostics(&program, &exact_groups, &ledger);
-        if crate::import_discovery::exact_import_has_failures(&exact_groups, &ledger) {
+        let diagnostics = crate::import_discovery::exact_import_diagnostics(
+            &program,
+            &exact_groups,
+            check_ledger,
+        );
+        if crate::import_discovery::exact_import_has_failures(&exact_groups, check_ledger) {
             self.publish_failed_import_attempt(
                 open,
                 plan,
                 ledger,
+                successor.as_ref(),
                 ImportDiscoveryRevisionStatus::ClosedAttempted,
                 None,
                 &diagnostics,
@@ -3311,17 +4031,38 @@ impl CompilerSession {
             return Err(diagnostics);
         }
 
-        let resolution = match ModuleResolutionInputs::new(
-            program.root().clone(),
-            program
-                .modules()
-                .iter()
-                .map(|module| crate::ModuleResolutionInput {
-                    module: module.module_id().clone(),
-                    physical_path: Arc::from(module.physical_path()),
-                })
-                .collect(),
-        ) {
+        // A successor shares the committed predecessor's module-resolution table
+        // by reference and appends only the delta modules (looked up by identity),
+        // so the complete table is never reconstructed or re-sorted. A full close
+        // builds the whole table.
+        let resolution_build = match &narrow {
+            Some((set, predecessor)) => {
+                let delta: Vec<crate::ModuleResolutionInput> = set
+                    .iter()
+                    .filter_map(|module_id| program.module(module_id))
+                    .map(|module| crate::ModuleResolutionInput {
+                        module: module.module_id().clone(),
+                        physical_path: Arc::from(module.physical_path()),
+                    })
+                    .collect();
+                crate::ModuleResolutionInputs::extend_successor(
+                    &predecessor.input().resolution,
+                    delta,
+                )
+            }
+            None => crate::ModuleResolutionInputs::new(
+                program.root().clone(),
+                program
+                    .modules()
+                    .iter()
+                    .map(|module| crate::ModuleResolutionInput {
+                        module: module.module_id().clone(),
+                        physical_path: Arc::from(module.physical_path()),
+                    })
+                    .collect(),
+            ),
+        };
+        let resolution = match resolution_build {
             Ok(resolution) => resolution,
             Err(error) => {
                 let errors = CompileErrors::from(error);
@@ -3329,6 +4070,7 @@ impl CompilerSession {
                     open,
                     plan,
                     ledger,
+                    successor.as_ref(),
                     ImportDiscoveryRevisionStatus::ClosedAttempted,
                     None,
                     &errors,
@@ -3341,10 +4083,13 @@ impl CompilerSession {
             resolution,
             std_dir: open.context.std_root().map(Arc::from),
         };
+        // Reduce only the projected occurrences: the whole plan for a full close,
+        // or exactly the newly appended modules' occurrences for a trusted-toolchain
+        // successor. `reduced` therefore holds the new records in successor mode.
         let reduced = match crate::import_discovery::reduce_exact_import_graph(
             program.root().clone(),
             &exact_groups,
-            &ledger,
+            check_ledger,
             &open.accepted_reads,
         ) {
             Ok(graph) => graph,
@@ -3354,6 +4099,7 @@ impl CompilerSession {
                     open,
                     plan,
                     ledger,
+                    successor.as_ref(),
                     ImportDiscoveryRevisionStatus::ClosedAttempted,
                     None,
                     &errors,
@@ -3361,7 +4107,38 @@ impl CompilerSession {
                 return Err(errors);
             }
         };
-        let validation = validate_canonical_import_graph(&reduced, &input.resolution);
+        self.import_close_records_reduced = self
+            .import_close_records_reduced
+            .saturating_add(reduced.records().len() as u64);
+        // In successor mode, merge the new records into the committed predecessor's
+        // closed graph and validate incrementally (the predecessor topology is
+        // carried, never re-walked). A full close reduces and validates the whole
+        // graph directly.
+        let (reduced, validation) = match &narrow {
+            Some((set, predecessor)) => {
+                // The reduction produced only the delta records; build the
+                // successor graph by structurally sharing the predecessor's record
+                // segment (no predecessor record is copied or re-sorted) and
+                // validate only the delta against the carried predecessor result.
+                let new_records = reduced.records().to_vec();
+                let merged = crate::CanonicalImportGraph::from_additive_successor(
+                    program.root().clone(),
+                    predecessor.graph(),
+                    new_records.clone(),
+                );
+                let validation = crate::validate_additive_successor(
+                    predecessor.validation(),
+                    &new_records,
+                    &input.resolution,
+                    set,
+                );
+                (merged, validation)
+            }
+            None => {
+                let validation = validate_canonical_import_graph(&reduced, &input.resolution);
+                (reduced, validation)
+            }
+        };
         let graph = Arc::new(CanonicalImportGraphOutput {
             input: input.clone(),
             graph: reduced,
@@ -3383,6 +4160,7 @@ impl CompilerSession {
                 open,
                 plan,
                 ledger,
+                successor.as_ref(),
                 ImportDiscoveryRevisionStatus::ClosedAttempted,
                 None,
                 &errors,
@@ -3394,6 +4172,7 @@ impl CompilerSession {
                 open,
                 plan,
                 ledger,
+                successor.as_ref(),
                 ImportDiscoveryRevisionStatus::ClosedAttempted,
                 Some(graph),
                 &diagnostics,
@@ -3405,12 +4184,15 @@ impl CompilerSession {
             &open.snapshot,
             program.clone(),
             open.parse_work,
+            successor.is_some(),
+            open.successor_parse.clone(),
         );
         if let Err(errors) = adoption.into_result() {
             self.publish_failed_import_attempt(
                 open,
                 plan,
                 ledger,
+                successor.as_ref(),
                 ImportDiscoveryRevisionStatus::ClosedAttempted,
                 None,
                 &errors,
@@ -3418,7 +4200,7 @@ impl CompilerSession {
             return Err(errors);
         }
         let (closure_key, closure_dependencies, publish_closure) =
-            self.select_import_closure_query(&open, &plan, &ledger);
+            self.select_import_closure_query(&open, &plan, &ledger, successor.as_ref());
         let diagnostic_snapshot = self.publish_import_diagnostics(
             &open.snapshot,
             Some(open.context.clone()),
@@ -3443,7 +4225,250 @@ impl CompilerSession {
             publish_closure,
         );
         self.open_discovery = None;
+        // A committed close is a lineage boundary: additions recorded before it
+        // belong to the closed graph, so the recorded-additions lineage resets.
+        self.queries.revisioned.clear_lineage_additions();
+        // Record the closed state for a possible trusted-toolchain continuation
+        // (RUE-1112), but only when the canonical begin/frontier/publish
+        // protocol produced a current import-input revision — legacy embedders
+        // that bypass it get no continuation. The state retains everything the
+        // successor verification needs (predecessor snapshot, context, accepted
+        // reads, carried ledger) so the check is record-only, never filesystem.
+        //
+        // The closed state is deliberately NON-AUTHORIZING here (`attached_demands`
+        // is `None`): a close by itself mints no token and authorizes no successor.
+        // Only a subsequent rooted semantic park attaches its exact missing-demand
+        // set to this same state, so a later close whose attempt never parks can
+        // never inherit an earlier park's authority.
+        self.continuation = self
+            .queries
+            .revisioned
+            .current_import_revision()
+            .map(|revision| {
+                self.next_continuation_nonce += 1;
+                ContinuationState {
+                    nonce: self.next_continuation_nonce,
+                    revision,
+                    snapshot: artifact.snapshot().clone(),
+                    accepted_reads: artifact.accepted_read_manifest().clone(),
+                    ledger: artifact.ledger().clone(),
+                    attached_demands: None,
+                }
+            });
         Ok(artifact)
+    }
+
+    /// Mint the trusted-toolchain continuation token for the current successful
+    /// import-discovery close, if one is outstanding AND authorizing (RUE-1112).
+    /// A closed state becomes authorizing only once a rooted semantic park
+    /// has attached its exact missing-demand set; a close whose attempt is ready
+    /// (or never parked) mints no token. The token is opaque and single-use; the
+    /// host hands it back to [`Self::publish_trusted_toolchain_successor`].
+    pub(crate) fn closed_discovery_continuation(&self) -> Option<ClosedDiscoveryContinuation> {
+        self.continuation
+            .as_ref()
+            .filter(|state| state.attached_demands.is_some())
+            .map(|state| ClosedDiscoveryContinuation {
+                session: self.identity.clone(),
+                nonce: state.nonce,
+                revision: state.revision,
+            })
+    }
+
+    /// Publish exactly one strictly-additive trusted-toolchain successor on the
+    /// continuation's closed revision (RUE-1112).
+    ///
+    /// The host has already done all filesystem work through the B4-hardened
+    /// path — read each demanded module, checked containment/manifest/stable-read
+    /// provenance, assembled the successor snapshot and accepted-read records.
+    /// This verifies that work purely from records (no filesystem access) by
+    /// diffing the successor against the continuation's predecessor, then
+    /// publishes in the SAME request generation carrying the predecessor ledger
+    /// unchanged. The added leaves carry no observation in the predecessor
+    /// ledger yet; discovery of the `@import` edges they introduce (a trusted
+    /// leaf such as `strbuf.rue` imports `option.rue`/`arraybuf.rue`/`rawbuf.rue`)
+    /// is the driver's subsequent re-close, which roots its frontier only in
+    /// these new leaves.
+    ///
+    /// Returns the successor revision together with the exact set of module IDs
+    /// it appended (the verified `added == demanded` set). The re-close uses that
+    /// set as the sole discovery frontier roots, so the predecessor import
+    /// topology is never re-rooted or re-resolved.
+    pub(crate) fn publish_trusted_toolchain_successor(
+        &mut self,
+        token: ClosedDiscoveryContinuation,
+        issued_frontier: &crate::ImportDemandFrontier,
+        successor: &SourceSnapshot,
+        accepted_reads: crate::AcceptedReadManifest,
+    ) -> Result<TrustedSuccessorDelta, CompileErrors> {
+        let reject = |message: &str| {
+            CompileErrors::from(crate::CompileError::without_span(
+                rue_error::ErrorKind::InvalidCompilerInput(format!(
+                    "trusted-toolchain successor rejected: {message}"
+                )),
+            ))
+        };
+
+        // Same session.
+        if !Arc::ptr_eq(&token.session, &self.identity) {
+            return Err(reject("continuation token belongs to a different session"));
+        }
+        // Token current + unused. Peek without consuming so a rejected batch
+        // leaves the token valid for a corrected retry; only a successful publish
+        // consumes it (a reused token then finds no outstanding state).
+        let state = match self.continuation.as_ref() {
+            Some(state) if token.nonce == state.nonce && token.revision == state.revision => {
+                state.clone()
+            }
+            Some(_) => {
+                return Err(reject(
+                    "continuation token is stale (superseded by a newer close or request)",
+                ));
+            }
+            None => {
+                return Err(reject(
+                    "no outstanding closed-discovery continuation; the token was already used or invalidated",
+                ));
+            }
+        };
+
+        // The closure witness: the empty rooted frontier of the token's closed
+        // revision. Only a genuinely-closed predecessor may continue.
+        if issued_frontier.mode() != crate::ImportDemandMode::Rooted {
+            return Err(reject("the closure witness frontier must be rooted"));
+        }
+        if issued_frontier.revision() != state.revision {
+            return Err(reject(
+                "the closure witness frontier does not belong to the continuation's revision",
+            ));
+        }
+        if !issued_frontier.requests().is_empty() {
+            return Err(reject(
+                "the closure witness frontier is not empty; the predecessor did not close",
+            ));
+        }
+
+        // Same compilation root (the context/read policy is carried unchanged
+        // into the successor below).
+        if successor.source_revision().root() != state.snapshot.source_revision().root() {
+            return Err(reject("the successor changed the compilation root"));
+        }
+
+        // Strict additive source evolution: every predecessor module revision
+        // must appear byte-identical in the successor; the additions are exactly
+        // the new leaves.
+        let old_modules: std::collections::BTreeSet<&crate::ModuleRevision> =
+            state.snapshot.source_revision().modules().iter().collect();
+        let new_modules: std::collections::BTreeSet<&crate::ModuleRevision> =
+            successor.source_revision().modules().iter().collect();
+        if !old_modules.is_subset(&new_modules) {
+            return Err(reject(
+                "a predecessor module revision was mutated or removed (source evolution must be strictly additive)",
+            ));
+        }
+        let additions: Vec<&crate::ModuleRevision> =
+            new_modules.difference(&old_modules).copied().collect();
+        if additions.is_empty() {
+            return Err(reject(
+                "a trusted-toolchain successor must add at least one leaf",
+            ));
+        }
+
+        // Every predecessor accepted-read entry must appear byte-identical in the
+        // successor manifest (altered old provenance rejected).
+        let new_reads: std::collections::HashSet<&crate::AcceptedReadManifestEntry> =
+            accepted_reads.iter().collect();
+        for old in state.accepted_reads.iter() {
+            if !new_reads.contains(old) {
+                return Err(reject(
+                    "a predecessor accepted-read provenance entry was altered or removed",
+                ));
+            }
+        }
+
+        // Demand authority lives only in the attached park set. A close whose
+        // rooted attempt never parked is non-authorizing: it may not consume the
+        // token or admit any leaf, so a later ready close can never reuse an
+        // earlier park's demands.
+        let Some(attached_demands) = state.attached_demands.as_ref() else {
+            return Err(reject(
+                "the closed continuation is not authorizing; no rooted semantic park has attached a demanded-module set",
+            ));
+        };
+
+        // Every addition is a trusted standard-library leaf with well-formed
+        // accepted-read provenance in the successor manifest.
+        for addition in &additions {
+            if !addition.module.is_trusted_standard_library() {
+                return Err(reject(
+                    "an added leaf is not a trusted standard-library module",
+                ));
+            }
+            if !accepted_reads
+                .iter()
+                .any(|entry| entry.module() == &addition.module)
+            {
+                return Err(reject(
+                    "an added trusted leaf has no accepted-read provenance",
+                ));
+            }
+        }
+
+        // The successor's added module-ID set must EQUAL the park's demanded
+        // missing set — set equality, not per-member membership. This enforces
+        // the one-park/one-batched-successor contract in both directions: an
+        // arbitrary or uninvited module (added ⊄ demanded) is rejected, and a
+        // partial batch that omits a demanded member (demanded ⊄ added) is
+        // rejected WITHOUT consuming the single-use token (the peek above only
+        // consumes on the successful publish below).
+        let demanded: std::collections::BTreeSet<crate::ModuleId> = attached_demands
+            .iter()
+            .map(|demand| demand.trusted_module_id())
+            .collect::<Result<_, _>>()
+            .map_err(CompileErrors::from)?;
+        let added: std::collections::BTreeSet<crate::ModuleId> = additions
+            .iter()
+            .map(|addition| addition.module.clone())
+            .collect();
+        if added != demanded {
+            return Err(reject(
+                "the successor's added trusted modules must equal the rooted park's demanded missing set exactly (one park, one batched successor)",
+            ));
+        }
+
+        // Publish the strictly-additive successor in the SAME request generation
+        // as a sparse overlay over the predecessor view: the carried ledger and
+        // topology are inherited unchanged, only the verified added leaves'
+        // source/provenance leaves are published, and the overlay re-derives the
+        // additions from the published parent view (they must equal `added`).
+        let published = self
+            .queries
+            .revisioned
+            .publish_trusted_successor_view(
+                state.revision,
+                successor,
+                accepted_reads,
+                state.ledger.clone(),
+                &added,
+                state.revision.frontier_round + 1,
+            )
+            .map_err(CompileErrors::from)?;
+        // Consume the single-use continuation only on success.
+        self.continuation = None;
+        // Mint the opaque successor-delta authority from the VERIFIED `added`
+        // set (equal to the park's demanded missing set). `BTreeSet` iteration is
+        // sorted, so the appended roots are deterministic. The host receives only
+        // this opaque value; it cannot inspect or edit the module identities.
+        let appended: Arc<[crate::ModuleId]> = added.into_iter().collect::<Vec<_>>().into();
+        self.next_continuation_nonce += 1;
+        let nonce = self.next_continuation_nonce;
+        self.successor_delta_nonce = Some(nonce);
+        Ok(TrustedSuccessorDelta {
+            session: self.identity.clone(),
+            nonce,
+            revision: published,
+            appended,
+        })
     }
 
     fn publish_failed_import_attempt(
@@ -3451,13 +4476,14 @@ impl CompilerSession {
         open: ImportDiscoveryRevisionArtifact,
         plan: crate::ImportDiscoveryPlan,
         ledger: crate::ImportObservationLedger,
+        successor: Option<&(crate::ImportInputRevision, Arc<[crate::ModuleRevision]>)>,
         status: ImportDiscoveryRevisionStatus,
         graph: Option<Arc<CanonicalImportGraphOutput>>,
         errors: &CompileErrors,
     ) -> Arc<ImportDiscoveryRevisionArtifact> {
         debug_assert_ne!(status, ImportDiscoveryRevisionStatus::ClosedValid);
         let (closure_key, closure_dependencies, publish_closure) =
-            self.select_import_closure_query(&open, &plan, &ledger);
+            self.select_import_closure_query(&open, &plan, &ledger, successor);
         let diagnostic_snapshot = self.publish_import_diagnostics(
             &open.snapshot,
             Some(open.context.clone()),
@@ -3568,13 +4594,13 @@ impl CompilerSession {
                 .batch_diagnostic_order
                 .as_ref()
                 .map_or(DiagnosticAttemptProvenance::Canonical, |order| {
-                    DiagnosticAttemptProvenance::Presentation(order.clone().into())
+                    DiagnosticAttemptProvenance::Presentation(order.clone())
                 }),
             FrontendDiagnosticIdentity::Merge if errors.is_some() => self
                 .batch_diagnostic_order
                 .as_ref()
                 .map_or(DiagnosticAttemptProvenance::Canonical, |order| {
-                    DiagnosticAttemptProvenance::Presentation(order.clone().into())
+                    DiagnosticAttemptProvenance::Presentation(order.clone())
                 }),
             FrontendDiagnosticIdentity::Merge => DiagnosticAttemptProvenance::Canonical,
             FrontendDiagnosticIdentity::Import(_)
@@ -3619,7 +4645,7 @@ impl CompilerSession {
         context: Option<crate::ImportDiscoveryContext>,
         plan: Option<crate::ImportDiscoveryPlan>,
         ledger: crate::ImportObservationLedger,
-        accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
+        accepted_reads: crate::AcceptedReadManifest,
         errors: &CompileErrors,
     ) -> Arc<FrontendDiagnosticSnapshot> {
         let input = ImportDiagnosticInputDescriptor {
@@ -3716,6 +4742,12 @@ impl CompilerSession {
         {
             self.supplied_test_import_graph = None;
         }
+        // A source update supersedes the predecessor any outstanding
+        // trusted-toolchain continuation or successor-delta authority was
+        // issued against (RUE-1112): a stale capability can neither stage nor
+        // close over an artifact the update replaced.
+        self.continuation = None;
+        self.successor_delta_nonce = None;
         self.select_diagnostic_presentation(None);
         let provenance = self.syntax_diagnostic_provenance();
         self.run_parse_update(snapshot, provenance)
@@ -3734,12 +4766,18 @@ impl CompilerSession {
         {
             self.supplied_test_import_graph = None;
         }
-        self.select_diagnostic_presentation(Some(
+        // A presentation update replaces the retained parse artifact exactly
+        // like a source update, so it likewise supersedes any outstanding
+        // trusted-toolchain continuation or successor-delta authority
+        // (RUE-1112).
+        self.continuation = None;
+        self.successor_delta_nonce = None;
+        self.select_diagnostic_presentation(Some(crate::shared_segments::SharedList::flat(
             snapshot
                 .files()
                 .map(|source| snapshot.module_id(source.file_id).unwrap().clone())
                 .collect(),
-        ));
+        )));
         let provenance = self.syntax_diagnostic_provenance();
         self.run_parse_update(snapshot, provenance)
     }
@@ -3749,17 +4787,52 @@ impl CompilerSession {
         snapshot: &SourceSnapshot,
         _program: Arc<ParsedProgram>,
         _work: ParsedModulesWork,
+        successor: bool,
+        retained_successor_parse: Option<ParseQueryRecord>,
     ) -> CompilerSessionUpdate {
         #[cfg(test)]
         {
             self.supplied_test_import_graph = None;
         }
-        self.select_diagnostic_presentation(Some(
+        // A trusted-successor close adopts by RE-SELECTING the exact successor
+        // parse terminal its stage computed and retained on the open artifact
+        // — same key, same revision — never by re-deriving an extension
+        // against the now-selected successor state (which would mint a second
+        // empty-extension terminal). A missing retained terminal rejects the
+        // close.
+        if successor {
+            return match retained_successor_parse {
+                Some(record) => self.run_parse_update_successor(snapshot, record),
+                None => {
+                    let errors = CompileErrors::from(CompileError::without_span(
+                        ErrorKind::InvalidCompilerInput(
+                            "trusted-toolchain successor close rejected: the staged successor parse terminal is not retained".into(),
+                        ),
+                    ));
+                    let diagnostics = Arc::new(FrontendDiagnosticSnapshot {
+                        source: snapshot.clone(),
+                        stage: FrontendDiagnosticIdentity::Syntax,
+                        provenance: DiagnosticAttemptProvenance::Canonical,
+                        errors: errors.as_slice().to_vec().into(),
+                        warnings: Arc::from([]),
+                    });
+                    CompilerSessionUpdate {
+                        result: Err(errors),
+                        work: ParsedModulesWork::default(),
+                        #[cfg(test)]
+                        invalidation: ParseInvalidationSummary::default(),
+                        downstream_invalidated: false,
+                        diagnostics,
+                    }
+                }
+            };
+        }
+        self.select_diagnostic_presentation(Some(crate::shared_segments::SharedList::flat(
             snapshot
                 .files()
                 .map(|source| snapshot.module_id(source.file_id).unwrap().clone())
                 .collect(),
-        ));
+        )));
         let provenance = self.syntax_diagnostic_provenance();
         self.run_parse_update(snapshot, provenance)
     }
@@ -3782,11 +4855,14 @@ impl CompilerSession {
         self.batch_diagnostic_order
             .as_ref()
             .map_or(DiagnosticAttemptProvenance::Canonical, |order| {
-                DiagnosticAttemptProvenance::Presentation(order.clone().into())
+                DiagnosticAttemptProvenance::Presentation(order.clone())
             })
     }
 
-    fn select_diagnostic_presentation(&mut self, order: Option<Vec<crate::ModuleId>>) {
+    fn select_diagnostic_presentation(
+        &mut self,
+        order: Option<crate::shared_segments::SharedList<crate::ModuleId>>,
+    ) {
         self.batch_diagnostic_order = order;
     }
 
@@ -3803,7 +4879,12 @@ impl CompilerSession {
         ParseInvalidationSummary,
     ) {
         let source = ExactSourceInput::new(snapshot);
-        let key = ParseQueryKey {
+        // An ordinary key carries every file's exact content identity, so the
+        // typed store hashes and compares each of them.
+        self.parse_key_entries_compared = self
+            .parse_key_entries_compared
+            .saturating_add(snapshot.len() as u64);
+        let key = ParseQueryKey::Ordinary(Box::new(OrdinaryParseKey {
             source: source.clone(),
             file_order: snapshot
                 .files()
@@ -3811,7 +4892,7 @@ impl CompilerSession {
                 .collect::<Vec<_>>()
                 .into(),
             presentation: presentation.clone(),
-        };
+        }));
         let revision = self.queries.revisioned.source_revision(&source, snapshot);
         let demanded_modules = match &presentation {
             DiagnosticAttemptProvenance::Canonical => snapshot
@@ -3820,13 +4901,22 @@ impl CompilerSession {
                 .iter()
                 .map(|source| source.module.clone())
                 .collect::<Vec<_>>(),
-            DiagnosticAttemptProvenance::Presentation(order) => order.to_vec(),
+            DiagnosticAttemptProvenance::Presentation(order) => order.iter().cloned().collect(),
         };
+        self.parse_sources_materialized = self
+            .parse_sources_materialized
+            .saturating_add(demanded_modules.len() as u64);
+        self.parse_modules_dispatched = self
+            .parse_modules_dispatched
+            .saturating_add(demanded_modules.len() as u64);
         let (modular_result, modular_work) = self.queries.revisioned.parse_program(
             revision,
             snapshot.source_revision().root(),
             demanded_modules,
         );
+        self.parse_invalidation_entries_compared = self
+            .parse_invalidation_entries_compared
+            .saturating_add(snapshot.len() as u64);
         let prepared = self.queries.revisioned.parse.prepare(key.clone());
         let baseline = self.parse_baseline();
         let attempt = prepared.execute(revision, attempt_id, |context| {
@@ -3842,7 +4932,7 @@ impl CompilerSession {
             let diagnostics = Arc::new(FrontendDiagnosticSnapshot {
                 source: snapshot.clone(),
                 stage: FrontendDiagnosticIdentity::Syntax,
-                provenance: key.presentation.clone(),
+                provenance: presentation.clone(),
                 errors: result
                     .as_ref()
                     .err()
@@ -3898,27 +4988,330 @@ impl CompilerSession {
         (record, view, execution, work, invalidation)
     }
 
+    /// Reconcile one successor parse extension without side effects: the
+    /// retained parse artifact this stage extends (within one trusted re-close,
+    /// the committed predecessor for the first stage and the prior successor
+    /// stage after a frontier batch), its presentation order, and the appended
+    /// (module, file) pairs. The retained artifact must PROVE it is the
+    /// successor snapshot's structural ancestor — every one of its source
+    /// segments carried by `Arc` identity, same root, and its exact
+    /// presentation order — so a parse record from any other snapshot (an
+    /// intervening source or presentation update) can never be extended; the
+    /// capability is rejected instead. Everything here is O(appended); content
+    /// identity is pinned by the published revision, never re-hashed or
+    /// re-compared.
+    fn prepare_successor_parse(
+        &self,
+        snapshot: &SourceSnapshot,
+        delta: &Arc<[crate::ModuleRevision]>,
+    ) -> Result<PreparedSuccessorParse, CompileErrors> {
+        let reject = |message: &str| {
+            CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                format!("trusted-toolchain successor parse rejected: {message}"),
+            )))
+        };
+        let Some(terminal) = self.queries.revisioned.parse.last_good_terminal() else {
+            return Err(reject("no predecessor parse artifact is retained"));
+        };
+        let Ok(predecessor_terminal) = self
+            .queries
+            .revisioned
+            .parse
+            .family_handle()
+            .adoptable_terminal(terminal)
+        else {
+            return Err(reject(
+                "the retained predecessor parse terminal is not adoptable",
+            ));
+        };
+        let rue_query::QueryOutcome::Success(record) = predecessor_terminal.terminal().outcome()
+        else {
+            return Err(reject("the retained predecessor parse artifact failed"));
+        };
+        let Ok(predecessor_program) = record.result.as_ref().cloned() else {
+            return Err(reject("the retained predecessor parse artifact failed"));
+        };
+        let DiagnosticAttemptProvenance::Presentation(predecessor_order) =
+            &record.diagnostics.provenance
+        else {
+            return Err(reject(
+                "the retained parse artifact carries no staging presentation order",
+            ));
+        };
+        let predecessor_order = predecessor_order.clone();
+        let predecessor_revision = record.runtime_revision;
+        // STRUCTURAL ANCESTRY: the successor snapshot must carry every source
+        // segment of the retained artifact's snapshot by `Arc` identity, with
+        // the same root. An artifact retained by an intervening update over a
+        // different or reordered snapshot cannot share this lineage and is
+        // rejected here rather than silently extended.
+        let predecessor_snapshot = record.snapshot.clone();
+        {
+            let successor_segments = snapshot.source_revision().module_segments().segments();
+            let predecessor_segments = predecessor_snapshot
+                .source_revision()
+                .module_segments()
+                .segments();
+            let shared_prefix = successor_segments.len() >= predecessor_segments.len()
+                && successor_segments
+                    .iter()
+                    .zip(predecessor_segments.iter())
+                    .all(|(a, b)| Arc::ptr_eq(a, b));
+            if !shared_prefix
+                || snapshot.source_revision().root()
+                    != predecessor_snapshot.source_revision().root()
+            {
+                return Err(reject(
+                    "the retained parse artifact is not the successor snapshot's structural ancestor",
+                ));
+            }
+        }
+        let predecessor_len = predecessor_program.modules_len();
+        if predecessor_len != predecessor_snapshot.len()
+            || predecessor_order.len() != predecessor_len
+        {
+            return Err(reject(
+                "the retained parse artifact does not cover its own snapshot",
+            ));
+        }
+        // A re-stage whose snapshot appended nothing since the retained parse
+        // (a frontier round that only grew observations) extends with an empty
+        // delta and reuses every retained module.
+        if predecessor_len > snapshot.len() || snapshot.len() - predecessor_len > delta.len() {
+            return Err(reject(
+                "the successor snapshot does not extend the retained parse artifact by the authorized delta",
+            ));
+        }
+        // The appended sources extend the predecessor's dense file table, so
+        // the appended (module, file) pairs are exactly the tail file IDs.
+        let mut appended = Vec::with_capacity(snapshot.len() - predecessor_len);
+        for index in predecessor_len as u32 + 1..=snapshot.len() as u32 {
+            let file_id = crate::FileId::new(index);
+            let Some(module) = snapshot.module_id(file_id) else {
+                return Err(reject("an appended source has no logical module"));
+            };
+            appended.push((module.clone(), file_id));
+        }
+        // Every appended module must be one of the capability-verified delta
+        // modules (the delta is cumulative since the committed close, so a
+        // later stage of one re-close appends a suffix of it).
+        for (module, _) in &appended {
+            if delta
+                .binary_search_by(|revision| revision.module.cmp(module))
+                .is_err()
+            {
+                return Err(reject(
+                    "an appended module is outside the capability-verified delta",
+                ));
+            }
+        }
+        Ok(PreparedSuccessorParse {
+            predecessor_program,
+            predecessor_order,
+            predecessor_revision,
+            predecessor_terminal,
+            appended,
+        })
+    }
+
+    /// The successor parse projection (RUE-1112): keyed on the published
+    /// lineage identity plus the exact appended segment, parsing ONLY the
+    /// appended modules and structurally extending the retained predecessor
+    /// parsed program and presentation order.
+    #[allow(clippy::type_complexity)]
+    fn execute_parse_query_successor(
+        &mut self,
+        snapshot: &SourceSnapshot,
+        revision: crate::ImportInputRevision,
+        delta: &Arc<[crate::ModuleRevision]>,
+        prepared: PreparedSuccessorParse,
+        attempt_id: AttemptId,
+    ) -> (
+        ParseQueryRecord,
+        Arc<dyn AttemptView>,
+        QueryAttemptExecution,
+        ParsedModulesWork,
+        ParseInvalidationSummary,
+    ) {
+        let PreparedSuccessorParse {
+            predecessor_program,
+            predecessor_order,
+            predecessor_revision,
+            predecessor_terminal,
+            appended,
+        } = prepared;
+        let successor_order = crate::shared_segments::SharedList::extend(
+            &predecessor_order,
+            appended.iter().map(|(module, _)| module.clone()).collect(),
+        );
+        self.select_diagnostic_presentation(Some(successor_order.clone()));
+        let presentation = DiagnosticAttemptProvenance::Presentation(successor_order);
+
+        // A successor key embeds only the published lineage identity and its
+        // appended segment.
+        self.parse_key_entries_compared = self
+            .parse_key_entries_compared
+            .saturating_add(delta.len() as u64);
+        let key = ParseQueryKey::Successor {
+            revision,
+            delta: delta.clone(),
+            predecessor: predecessor_revision,
+        };
+        let runtime_revision =
+            rue_query::Revision::new(revision.revision_id, revision.request_generation);
+        self.parse_modules_dispatched = self
+            .parse_modules_dispatched
+            .saturating_add(appended.len() as u64);
+        let (modular_result, modular_work) = self.queries.revisioned.parse_program_extension(
+            runtime_revision,
+            &predecessor_program,
+            &appended,
+        );
+        self.parse_invalidation_entries_compared = self
+            .parse_invalidation_entries_compared
+            .saturating_add(appended.len() as u64);
+        let appended_modules: Vec<crate::ModuleId> =
+            appended.iter().map(|(module, _)| module.clone()).collect();
+        let parse_family = self.queries.revisioned.parse.family_handle();
+        let prepared = self.queries.revisioned.parse.prepare(key.clone());
+        let attempt = prepared.execute(runtime_revision, attempt_id, |context| {
+            // The record adopts the CAPTURED predecessor parse terminal as a
+            // runtime dependency — the exact terminal held by preparation,
+            // observed by node, incarnation, and stamp with no key hash or
+            // content comparison — so successor-after-predecessor is a real
+            // query edge: red/green validation and leases flow through it,
+            // and the node's endorsement at this revision carries the exact
+            // stamp to every compatible descendant. Adoption is sound here
+            // because parse keys are content-addressed: the key alone pins
+            // the terminal's value. A stale or evicted terminal aborts the
+            // attempt rather than being silently re-derived.
+            if parse_family
+                .observe_adopted_terminal(context, &predecessor_terminal)
+                .is_err()
+            {
+                return Err(rue_query::QueryAbort::Canceled);
+            }
+            // Plus exactly the appended modules' input leaves; the remaining
+            // predecessor content is pinned by the dependency above and the
+            // published lineage identity in the key.
+            for (module, _) in &appended {
+                context.input(
+                    crate::revisioned_query_database::RevisionedQueryDatabase::module_source_input(
+                        module,
+                    ),
+                )?;
+            }
+            let work = modular_work;
+            let invalidation =
+                crate::parsed_modules::classify_successor_invalidation(&appended_modules);
+            let result = modular_result;
+            // Freeze diagnostics privately with the query output. Session
+            // selection and metrics happen only after atomic publication.
+            let diagnostics = Arc::new(FrontendDiagnosticSnapshot {
+                source: snapshot.clone(),
+                stage: FrontendDiagnosticIdentity::Syntax,
+                provenance: presentation.clone(),
+                errors: result
+                    .as_ref()
+                    .err()
+                    .map_or_else(|| Arc::from([]), |errors| errors.as_slice().to_vec().into()),
+                warnings: Arc::from([]),
+            });
+            Ok(ParseQueryRecord {
+                key,
+                runtime_revision,
+                snapshot: snapshot.clone(),
+                result,
+                diagnostics,
+                work,
+                invalidation,
+            })
+        });
+        self.queries.revisioned.select_parse(&attempt);
+        let terminal = attempt
+            .terminal()
+            .unwrap_or_else(|| panic!("parse query aborted: {:?}", attempt.abort()));
+        let record = match terminal.outcome() {
+            rue_query::QueryOutcome::Success(record) => record.clone(),
+            rue_query::QueryOutcome::Failure(_) => unreachable!("parse retains typed records"),
+        };
+        let execution = match attempt.execution() {
+            rue_query::RequestExecution::Computed => {
+                self.metrics
+                    .diagnostic_publication(self.diagnostics.latest().is_some());
+                QueryAttemptExecution::Computed
+            }
+            rue_query::RequestExecution::Reused | rue_query::RequestExecution::Joined => {
+                self.reuse_diagnostics(record.diagnostics.clone());
+                QueryAttemptExecution::Reused
+            }
+            rue_query::RequestExecution::Aborted => unreachable!(),
+        };
+        let work = if execution == QueryAttemptExecution::Computed {
+            record.work
+        } else {
+            ParsedModulesWork::default()
+        };
+        // A successor record's classification is relative to the retained
+        // predecessor its key pins, so the reused branch reuses it verbatim.
+        let invalidation = record.invalidation.clone();
+        let view = self.queries.revisioned.parse.attempt_view(
+            attempt_id,
+            attempt,
+            QueryStructuralWork::Parse(work),
+        );
+        self.diagnostics.select(view.clone());
+        (record, view, execution, work, invalidation)
+    }
+
     fn parse_staging_snapshot(
         &mut self,
         snapshot: &SourceSnapshot,
-    ) -> (Result<Arc<ParsedProgram>, CompileErrors>, ParsedModulesWork) {
+        successor: Option<(crate::ImportInputRevision, &Arc<[crate::ModuleRevision]>)>,
+    ) -> (
+        Result<Arc<ParsedProgram>, CompileErrors>,
+        ParsedModulesWork,
+        Option<ParseQueryRecord>,
+    ) {
+        // A successor stage MUST extend its verified predecessor: a failed
+        // predecessor binding rejects the stage rather than silently falling
+        // back to a full content-keyed build under successor authority.
+        let prepared_successor = match successor {
+            Some((revision, delta)) => match self.prepare_successor_parse(snapshot, delta) {
+                Ok(prepared) => Some((revision, delta.clone(), prepared)),
+                Err(errors) => return (Err(errors), ParsedModulesWork::default(), None),
+            },
+            None => None,
+        };
+        let staged_successor = prepared_successor.is_some();
         let mut guard = self.metrics.begin_unprojected("parse");
-        let order = snapshot
-            .files()
-            .map(|source| snapshot.module_id(source.file_id).unwrap().clone())
-            .collect::<Vec<_>>();
-        self.select_diagnostic_presentation(Some(order.clone()));
-        let presentation = DiagnosticAttemptProvenance::Presentation(order.into());
         let attempt_id = guard.id;
-        let (record, view, execution, work, _invalidation) =
-            self.execute_parse_query(snapshot, presentation, attempt_id);
+        let (record, view, execution, work, _invalidation) = match prepared_successor {
+            Some((revision, delta, prepared)) => {
+                self.execute_parse_query_successor(snapshot, revision, &delta, prepared, attempt_id)
+            }
+            None => {
+                let order = snapshot
+                    .files()
+                    .map(|source| snapshot.module_id(source.file_id).unwrap().clone())
+                    .collect::<Vec<_>>();
+                self.parse_sources_materialized = self
+                    .parse_sources_materialized
+                    .saturating_add(order.len() as u64);
+                let order = crate::shared_segments::SharedList::flat(order.into());
+                self.select_diagnostic_presentation(Some(order.clone()));
+                let presentation = DiagnosticAttemptProvenance::Presentation(order);
+                self.execute_parse_query(snapshot, presentation, attempt_id)
+            }
+        };
         guard.started();
         let result = record.result.clone();
         guard.attach_diagnostics(record.diagnostics.clone());
         guard.bind(view);
         guard.finish(execution, None, &result, QueryStructuralWork::None);
         self.metrics.synchronize();
-        (result, work)
+        let retained = staged_successor.then(|| record.clone());
+        (result, work, retained)
     }
 
     fn select_import_plan_query(
@@ -3975,17 +5368,28 @@ impl CompilerSession {
         open: &ImportDiscoveryRevisionArtifact,
         plan: &crate::ImportDiscoveryPlan,
         ledger: &crate::ImportObservationLedger,
+        successor: Option<&(crate::ImportInputRevision, Arc<[crate::ModuleRevision]>)>,
     ) -> (
         ImportClosureQueryKey,
         Vec<crate::query_graph::ObservedDependency>,
         bool,
     ) {
-        let plan_key = ImportPlanQueryKey {
-            source: ExactSourceInput::new(&open.snapshot),
-            context: open.context.clone(),
-            policy_version: crate::IMPORT_DISCOVERY_POLICY_VERSION,
-            accepted_reads: open.accepted_reads.clone(),
-            carried_ledger: open.ledger.clone(),
+        // Reconstruct the exact key the stage published its plan terminal under:
+        // the successor identity key for a successor close, the content key
+        // otherwise.
+        let plan_key = match successor {
+            Some((revision, delta)) => ImportPlanQueryKey::Successor {
+                revision: *revision,
+                delta: delta.clone(),
+                policy_version: crate::IMPORT_DISCOVERY_POLICY_VERSION,
+            },
+            None => ImportPlanQueryKey::Ordinary(Box::new(OrdinaryImportPlanKey {
+                source: ExactSourceInput::new(&open.snapshot),
+                context: open.context.clone(),
+                policy_version: crate::IMPORT_DISCOVERY_POLICY_VERSION,
+                accepted_reads: open.accepted_reads.clone(),
+                carried_ledger: open.ledger.clone(),
+            })),
         };
         let plan_dependency = self
             .queries
@@ -3993,13 +5397,20 @@ impl CompilerSession {
             .handle(&plan_key)
             .expect("an open discovery revision retains its typed plan terminal")
             .observed();
-        let key = ImportClosureQueryKey {
-            source: plan_key.source,
-            context: open.context.clone(),
-            policy_version: crate::IMPORT_DISCOVERY_POLICY_VERSION,
-            accepted_reads: open.accepted_reads.clone(),
-            plan: plan.clone(),
-            ledger: ledger.clone(),
+        let key = match successor {
+            Some((revision, delta)) => ImportClosureQueryKey::Successor {
+                revision: *revision,
+                delta: delta.clone(),
+                policy_version: crate::IMPORT_DISCOVERY_POLICY_VERSION,
+            },
+            None => ImportClosureQueryKey::Ordinary(Box::new(OrdinaryImportClosureKey {
+                source: ExactSourceInput::new(&open.snapshot),
+                context: open.context.clone(),
+                policy_version: crate::IMPORT_DISCOVERY_POLICY_VERSION,
+                accepted_reads: open.accepted_reads.clone(),
+                plan: plan.clone(),
+                ledger: ledger.clone(),
+            })),
         };
         let input_dependency = self
             .queries
@@ -4107,6 +5518,114 @@ impl CompilerSession {
                         downstream_invalidated,
                         diagnostics,
                     }
+                }
+            }
+            Err(errors) => CompilerSessionUpdate {
+                result: Err(errors),
+                work: parse_work,
+                #[cfg(test)]
+                invalidation,
+                downstream_invalidated: false,
+                diagnostics,
+            },
+        }
+    }
+
+    /// The successor-close counterpart of [`Self::run_parse_update`]: adopts
+    /// the successor parse terminal for semantic queries with the same
+    /// publication bookkeeping, without re-running the whole-program
+    /// content-keyed projection (RUE-1112). The candidate extends the retained
+    /// predecessor by construction, so downstream invalidation follows from an
+    /// existing publication rather than a module-table comparison.
+    fn run_parse_update_successor(
+        &mut self,
+        snapshot: &SourceSnapshot,
+        retained: ParseQueryRecord,
+    ) -> CompilerSessionUpdate {
+        let mut guard = self.metrics.begin_unprojected("parse");
+        let attempt_id = guard.id;
+        // Re-request the exact staged terminal: same key, same revision. The
+        // stage's selection protects that terminal, so this reuses it without
+        // publishing anything new; the recompute body republishes the retained
+        // record verbatim only if the terminal were ever evicted.
+        if let ParseQueryKey::Successor { delta, .. } = &retained.key {
+            self.parse_key_entries_compared = self
+                .parse_key_entries_compared
+                .saturating_add(delta.len() as u64);
+        }
+        let key = retained.key.clone();
+        let runtime_revision = retained.runtime_revision;
+        let recompute = retained.clone();
+        let prepared = self.queries.revisioned.parse.prepare(key);
+        let attempt = prepared.execute(runtime_revision, attempt_id, |context| {
+            for module in &recompute.invalidation.added {
+                context.input(
+                    crate::revisioned_query_database::RevisionedQueryDatabase::module_source_input(
+                        module,
+                    ),
+                )?;
+            }
+            Ok(recompute.clone())
+        });
+        self.queries.revisioned.select_parse(&attempt);
+        let terminal = attempt
+            .terminal()
+            .unwrap_or_else(|| panic!("parse query aborted: {:?}", attempt.abort()));
+        let record = match terminal.outcome() {
+            rue_query::QueryOutcome::Success(record) => record.clone(),
+            rue_query::QueryOutcome::Failure(_) => unreachable!("parse retains typed records"),
+        };
+        let execution = match attempt.execution() {
+            rue_query::RequestExecution::Computed => QueryAttemptExecution::Computed,
+            rue_query::RequestExecution::Reused | rue_query::RequestExecution::Joined => {
+                self.reuse_diagnostics(record.diagnostics.clone());
+                QueryAttemptExecution::Reused
+            }
+            rue_query::RequestExecution::Aborted => unreachable!(),
+        };
+        // The stage already accounted this terminal's parse work; re-selecting
+        // it at close performs none.
+        let parse_work = ParsedModulesWork::default();
+        let invalidation = record.invalidation.clone();
+        let view = self.queries.revisioned.parse.attempt_view(
+            attempt_id,
+            attempt,
+            QueryStructuralWork::Parse(parse_work),
+        );
+        self.diagnostics.select(view.clone());
+        guard.started();
+        self.metrics.update(parse_work, invalidation.clone());
+        let result = record.result.clone();
+        let diagnostics = record.diagnostics.clone();
+        guard.attach_diagnostics(diagnostics.clone());
+        guard.bind(view);
+        guard.finish(execution, None, &result, QueryStructuralWork::None);
+        self.metrics.synchronize();
+        match result {
+            Ok(candidate) => {
+                if self.open_discovery.as_deref().is_some_and(|artifact| {
+                    artifact.source_revision != *candidate.source_revision()
+                }) {
+                    self.open_discovery = None;
+                }
+                let downstream_invalidated = self.published.is_some();
+                // The predecessor source leaf stays live: additive adoption
+                // must not disappear it and transitively invalidate every
+                // retained terminal that still correctly depends on it.
+                self.queries
+                    .publish_source_additive(ExactSourceInput::new(snapshot));
+                self.metrics
+                    .project_dependency_invalidations(&self.queries.graph, downstream_invalidated);
+                self.published = Some(candidate.clone());
+                self.published_snapshot = Some(snapshot.clone());
+                self.refresh_retention_metrics();
+                CompilerSessionUpdate {
+                    result: Ok(candidate),
+                    work: parse_work,
+                    #[cfg(test)]
+                    invalidation,
+                    downstream_invalidated,
+                    diagnostics,
                 }
             }
             Err(errors) => CompilerSessionUpdate {
@@ -4301,7 +5820,10 @@ impl CompilerSession {
                     .as_ref()
                     .expect("a published parsed program retains its exact source snapshot"),
             ),
-            presentation: self.batch_diagnostic_order.clone().map(Arc::from),
+            presentation: self
+                .batch_diagnostic_order
+                .as_ref()
+                .map(crate::shared_segments::SharedList::as_arc),
         };
         if let Some((entry, handle)) = self
             .queries
@@ -4389,13 +5911,17 @@ impl CompilerSession {
         guard.accrue(QueryStructuralWork::Merge(
             attempt_work.expect("merge prefix just installed"),
         ));
+        let batch_order = self
+            .batch_diagnostic_order
+            .as_ref()
+            .map(crate::shared_segments::SharedList::as_arc);
         let merged = projected_indexes
             .and_then(|indexes| {
                 merge_parsed_modules_reusing_indexes(
                     &parsed,
                     &indexes,
                     self.definition_shard_baseline.as_ref(),
-                    self.batch_diagnostic_order.as_deref(),
+                    batch_order.as_deref(),
                 )
             })
             .map(Arc::new);
@@ -4635,6 +6161,54 @@ impl CompilerSession {
         {
             Ok(output) => Ok(output),
             Err(SemanticRequestControl::Compile(errors)) => Err(errors),
+            // `canonical_semantic` is a stable no-filesystem entry: it cannot
+            // acquire trusted toolchain modules, so it converts an unsatisfied
+            // park to its own error result at this outer boundary (RUE-1112).
+            // The park-aware host driver uses `semantic_or_toolchain_park`, which
+            // surfaces the park distinctly and retries after acquisition.
+            Err(SemanticRequestControl::Parked(park)) => {
+                Err(unresolved_toolchain_park_errors(&park))
+            }
+            Err(SemanticRequestControl::Abort(abort)) => {
+                panic!("uncanceled semantic request aborted: {abort:?}")
+            }
+        }
+    }
+
+    /// Analyze the current revision, surfacing an unsatisfied trusted-toolchain
+    /// park distinctly instead of converting it to an error (RUE-1112). This
+    /// is the rooted, park-aware entry the host compile driver retries: on
+    /// [`SemanticParkOutcome::Parked`] it acquires exactly the demanded modules,
+    /// publishes a successor, and calls this again.
+    pub(crate) fn semantic_or_toolchain_park(
+        &mut self,
+        options: &CompileOptions,
+    ) -> SemanticParkOutcome {
+        match self
+            .canonical_semantic_with_cancellation(options, rue_query::CancellationToken::new())
+        {
+            Ok(owner) => {
+                let rir = self
+                    .selected_semantic_rir_owner()
+                    .expect("successful semantic query retains its exact RIR terminal");
+                SemanticParkOutcome::Ready(Arc::new(crate::SemanticView::new(owner, rir)))
+            }
+            Err(SemanticRequestControl::Compile(errors)) => SemanticParkOutcome::Errors(errors),
+            Err(SemanticRequestControl::Parked(park)) => {
+                // Atomically attach this rooted park's exact sorted missing-demand
+                // set to the outstanding closed continuation, making it authorizing
+                // (RUE-1112). Demand authority lives only here — bound to this
+                // closed revision and this park — so a later, non-parking close can
+                // never inherit it, and `publish_trusted_toolchain_successor` can
+                // require the successor's added set to EQUAL exactly this set.
+                if let Some(state) = self.continuation.as_mut() {
+                    let mut demands = park.demands().to_vec();
+                    demands.sort();
+                    demands.dedup();
+                    state.attached_demands = Some(Arc::from(demands));
+                }
+                SemanticParkOutcome::Parked(park)
+            }
             Err(SemanticRequestControl::Abort(abort)) => {
                 panic!("uncanceled semantic request aborted: {abort:?}")
             }
@@ -4666,7 +6240,16 @@ impl CompilerSession {
             Ok(result) => result,
             Err(payload) => self.resume_canceled_query(&mut guard, payload),
         };
-        if matches!(result, Err(SemanticRequestControl::Abort(_))) {
+        // A trusted-toolchain park exits the attempt before the body transaction
+        // publishes a terminal, leaving the semantic query in-flight. Clear that
+        // in-flight attempt exactly as an abort would, so the host driver's retry
+        // (after acquiring the demanded module and re-closing on a new revision)
+        // begins a fresh selection instead of colliding with a stale computing
+        // key (RUE-1112).
+        if matches!(
+            result,
+            Err(SemanticRequestControl::Abort(_)) | Err(SemanticRequestControl::Parked(_))
+        ) {
             guard.request_cancel();
         }
         let structural = attempt_record
@@ -5080,6 +6663,16 @@ impl CompilerSession {
                 target: options.target,
                 preview_features: StablePreviewFeatures::new(&options.preview_features),
             };
+            // Plan the trusted-std `Option(payload)` demands once for this
+            // semantic request (RUE-1112). The plan is empty — leaving the
+            // legacy AIR structural scan in force — unless the trusted `Option`
+            // module is present AND the program uses a fallible intrinsic. Each
+            // reached body roots these demands under its own lease below.
+            let well_known_demands = crate::well_known_option::plan_well_known_option_demands(
+                &merged,
+                &rir,
+                &configuration,
+            );
             let mut pending = std::collections::BTreeSet::new();
             for record in prepared_definitions.definitions().definitions() {
                 let stable = record.stable_key();
@@ -5271,6 +6864,25 @@ impl CompilerSession {
                 };
                 body_produced_anonymous.clear();
                 body_query_errors.clear();
+                // RUE-1112: the satisfied trusted-module catalogue for this
+                // revision — the trusted standard-library logical paths already
+                // present in the canonical program. The rooted attempt checks
+                // each reached body's projected toolchain-module demand against
+                // this set and parks the absent ones before running the body.
+                let present_trusted_modules: std::collections::BTreeSet<Arc<str>> = merged
+                    .ast()
+                    .modules()
+                    .iter()
+                    .map(|module| module.module_id())
+                    .filter(|module| module.is_trusted_standard_library())
+                    .map(|module| Arc::<str>::from(module.as_str()))
+                    .collect();
+                // Set when a reached body demands a trusted toolchain module
+                // absent from `present_trusted_modules`. The park is recorded here
+                // (the rooted attempt), carried out of band, and surfaced to the
+                // host driver after the worklist; the demanding body's transaction
+                // never runs on an unsatisfied prerequisite.
+                let mut parked_toolchain: Option<crate::ParkedToolchainModules> = None;
                 while let Some(instance) = priority_pending.pop().or_else(|| pending.pop_first()) {
                     let popped_depth = instance_depth.get(&instance).copied().unwrap_or(0);
                     // Producer-nominal identity is exact: a reached anonymous
@@ -5367,6 +6979,120 @@ impl CompilerSession {
                         instance: instance.clone(),
                         configuration: configuration.clone(),
                     };
+                    // RUE-1112: query THIS reached body's trusted-toolchain
+                    // demand projection (the registered `body-toolchain-demands`
+                    // node over its exact raw body) FIRST, and check the demanded
+                    // modules against the satisfied catalogue. If any demanded
+                    // module is absent from the current revision, record the park
+                    // out of band and stop WITHOUT entering the body transaction:
+                    // only a satisfied prerequisite permits the transaction to run.
+                    // The projection is pure and I/O-free, so this never itself
+                    // reads the filesystem; the host driver acquires the absent
+                    // modules and retries on a successor.
+                    match self.queries.revisioned.body_toolchain_demands(
+                        runtime_revision,
+                        key.clone(),
+                        cancellation.clone(),
+                    ) {
+                        Ok(terminal) => {
+                            let rue_query::QueryOutcome::Success(demand) = terminal.outcome()
+                            else {
+                                unreachable!("BodyToolchainDemands publishes typed values")
+                            };
+                            let mut batch_modules: std::collections::BTreeSet<
+                                crate::TrustedToolchainModuleDemand,
+                            > = demand
+                                .modules()
+                                .iter()
+                                .filter(|module| {
+                                    !present_trusted_modules.contains(module.logical_path())
+                                })
+                                .cloned()
+                                .collect();
+                            if !batch_modules.is_empty() {
+                                // RUE-1112 C2: batch EVERY already-reached body's
+                                // unsatisfied trusted-module demand into ONE park, so
+                                // a single successor acquisition satisfies all of
+                                // them (a parse body needing Option and a read_line
+                                // body needing StrBuf never produce two successors).
+                                // Project the remaining already-reached pending
+                                // bodies WITHOUT entering any transaction, in stable
+                                // order, and union absent modules + requester
+                                // anchors. Bodies not yet discoverable are naturally
+                                // outside this batch — a later park round (the
+                                // driver's retry loop) handles them.
+                                let mut batch_requesters: std::collections::BTreeSet<
+                                    crate::StableDefinitionKey,
+                                > = demand.requester().cloned().into_iter().collect();
+                                let mut remaining: std::collections::BTreeSet<
+                                    crate::FunctionInstanceKey,
+                                > = pending.iter().cloned().collect();
+                                remaining.extend(priority_pending.iter().cloned());
+                                for pending_instance in remaining {
+                                    if visited.contains(&pending_instance) {
+                                        continue;
+                                    }
+                                    let pending_key = crate::body_query::BodyQueryKey {
+                                        instance: pending_instance,
+                                        configuration: configuration.clone(),
+                                    };
+                                    match self.queries.revisioned.body_toolchain_demands(
+                                        runtime_revision,
+                                        pending_key,
+                                        cancellation.clone(),
+                                    ) {
+                                        Ok(pending_terminal) => {
+                                            let rue_query::QueryOutcome::Success(pending_demand) =
+                                                pending_terminal.outcome()
+                                            else {
+                                                unreachable!(
+                                                    "BodyToolchainDemands publishes typed values"
+                                                )
+                                            };
+                                            let mut any_absent = false;
+                                            for module in pending_demand.modules() {
+                                                if !present_trusted_modules
+                                                    .contains(module.logical_path())
+                                                {
+                                                    batch_modules.insert(module.clone());
+                                                    any_absent = true;
+                                                }
+                                            }
+                                            if any_absent
+                                                && let Some(anchor) = pending_demand.requester()
+                                            {
+                                                batch_requesters.insert(anchor.clone());
+                                            }
+                                        }
+                                        // A pending body whose projection cannot yet
+                                        // publish is left for a later park round.
+                                        Err(rue_query::QueryAbort::Canceled)
+                                            if !cancellation.is_canceled() => {}
+                                        Err(abort) => {
+                                            return Err(SemanticRequestControl::Abort(abort));
+                                        }
+                                    }
+                                }
+                                parked_toolchain = Some(crate::ParkedToolchainModules::new(
+                                    batch_modules,
+                                    batch_requesters,
+                                ));
+                                break;
+                            }
+                        }
+                        Err(rue_query::QueryAbort::Canceled) if !cancellation.is_canceled() => {
+                            body_query_errors.insert(
+                                instance.clone(),
+                                crate::CompileErrors::from(crate::CompileError::without_span(
+                                    rue_error::ErrorKind::InternalError(format!(
+                                        "reached body toolchain-demand projection {instance:?} did not publish a terminal"
+                                    )),
+                                )),
+                            );
+                            break;
+                        }
+                        Err(abort) => return Err(SemanticRequestControl::Abort(abort)),
+                    }
                     let producer_body_terminal_required = match &instance {
                         crate::FunctionInstanceKey::AnonymousMember { owner, .. } => {
                             if let crate::TypeInstanceKey::Nominal(
@@ -5394,8 +7120,9 @@ impl CompilerSession {
                         declaration_candidates.clone(),
                         declaration_modules.clone(),
                         producer_body_terminal_required,
+                        well_known_demands.clone(),
                         cancellation.clone(),
-                        |selected_anonymous| {
+                        |selected_anonymous, well_known| {
                             queried_body_work.bodies_attempted += 1;
                             // Every cold reached-body analysis re-prepares,
                             // re-projects, and re-installs the entire declaration
@@ -5441,6 +7168,7 @@ impl CompilerSession {
                                     "body traversal follows a successful declaration projection",
                                 ),
                                 &body_anonymous,
+                                &well_known,
                                 &key,
                                 cancellation,
                                 &mut stage_context,
@@ -5913,6 +7641,15 @@ impl CompilerSession {
                             }
                         }
                     }
+                }
+                // RUE-1112: a reached body demanded an absent trusted
+                // toolchain module. Surface the park to the rooted attempt's
+                // caller WITHOUT publishing a semantic terminal, so the host
+                // driver can acquire the modules and retry on a successor. This
+                // return precedes candidate assembly because the worklist broke
+                // early with an unsatisfied prerequisite.
+                if let Some(park) = parked_toolchain {
+                    return Err(SemanticRequestControl::Parked(Box::new(park)));
                 }
                 durable_body_candidates = queried_ordinary;
                 durable_specialized_body_candidates = queried_specialized;
@@ -8391,7 +10128,7 @@ fn programs_are_pointer_equivalent(left: &ParsedProgram, right: &ParsedProgram) 
 
 fn validate_accepted_read_manifest(
     snapshot: &SourceSnapshot,
-    accepted_reads: &[crate::AcceptedReadManifestEntry],
+    accepted_reads: &crate::AcceptedReadManifest,
 ) -> Result<(), CompileErrors> {
     if accepted_reads.len() != snapshot.len() {
         return Err(CompileErrors::from(CompileError::without_span(
@@ -8447,7 +10184,7 @@ fn continues_discovery_lifecycle(
     previous: &ImportDiscoveryRevisionArtifact,
     snapshot: &SourceSnapshot,
     context: &crate::ImportDiscoveryContext,
-    accepted_reads: &[crate::AcceptedReadManifestEntry],
+    accepted_reads: &crate::AcceptedReadManifest,
     carried_ledger: &crate::ImportObservationLedger,
 ) -> bool {
     if previous.status != ImportDiscoveryRevisionStatus::Open || previous.context != *context {
@@ -8457,7 +10194,7 @@ fn continues_discovery_lifecycle(
         return false;
     };
     if program.root() != snapshot.source_revision().root()
-        || !program.modules().iter().all(|module| {
+        || !program.modules_iter().all(|module| {
             let file_id = module.file_id();
             snapshot.module_id(file_id) == Some(module.module_id())
                 && snapshot.source_id(file_id) == Some(module.source_id())
@@ -8469,7 +10206,7 @@ fn continues_discovery_lifecycle(
     if !previous
         .accepted_reads
         .iter()
-        .all(|entry| accepted_reads.iter().any(|candidate| candidate == entry))
+        .all(|entry| accepted_reads.contains_entry(entry))
     {
         return false;
     }
@@ -8575,7 +10312,7 @@ mod tests {
             ),
             (
                 "ImportObservationLedger::default",
-                "derive(Debug, Clone, Default, PartialEq, Eq, Hash)",
+                "derive(Debug, Default)]\npub struct ImportObservationLedger",
             ),
             (
                 "ImportObservationLedger::record",
@@ -8653,6 +10390,991 @@ mod tests {
             ],
             7,
         )
+    }
+
+    #[test]
+    fn absent_trusted_option_parks_the_rooted_attempt_with_exact_demand_and_anchor() {
+        // RUE-1112: a freestanding program whose reached `main` body uses a
+        // fallible intrinsic while NO trusted std module is present. The
+        // rooted attempt must park with exactly the `option.rue` demand, anchored
+        // on the demanding body (`main`), and must NOT run or publish any body
+        // transaction — the unsatisfied prerequisite stops the worklist before it
+        // enters `body_transaction`.
+        let source = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn main() -> i32 { let _ = @parse_i64(\"1\"); 0 }",
+            )],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+
+        let park = match session.semantic_or_toolchain_park(&CompileOptions::default()) {
+            SemanticParkOutcome::Parked(park) => park,
+            SemanticParkOutcome::Ready(_) => {
+                panic!("expected a trusted-toolchain park, got successful analysis")
+            }
+            SemanticParkOutcome::Errors(errors) => {
+                panic!("expected a trusted-toolchain park, got errors: {errors:?}")
+            }
+        };
+
+        // Exact demand set: exactly the trusted std `Option` module.
+        let demands: Vec<&str> = park
+            .demands()
+            .iter()
+            .map(crate::TrustedToolchainModuleDemand::logical_path)
+            .collect();
+        assert_eq!(demands, vec![crate::OPTION_MODULE_LOGICAL_PATH]);
+
+        // Exact requester anchor: the demanding body's stable key (`main`).
+        assert_eq!(park.requesters().len(), 1);
+        let anchor = &park.requesters()[0];
+        assert_eq!(anchor.name(), "main");
+        assert_eq!(anchor.kind(), crate::StableDefinitionKind::Function);
+
+        // No body transaction ran or published a terminal.
+        assert!(
+            !session.queries.revisioned.any_body_transaction_terminal(),
+            "the park must precede any body transaction",
+        );
+    }
+
+    #[test]
+    fn already_reached_parks_batch_into_one_park_with_unioned_demands_and_anchors() {
+        // RUE-1112 C2: two reached helper bodies demand different trusted modules
+        // (a: parse -> Option; b: read_line -> Option+StrBuf) while no trusted std
+        // is present. `main` reaches both, then the first to park must batch the
+        // remaining already-reached body: ONE park carrying the UNION of absent
+        // modules ([Option, StrBuf]) and BOTH requester anchors, so a single
+        // successor acquisition satisfies everything.
+        let source = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn a() -> i32 { let _ = @parse_i64(\"1\"); 0 }\n\
+                 fn b() -> i32 { let _ = @read_line(); 0 }\n\
+                 fn main() -> i32 { a() + b() }",
+            )],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+
+        let park = match session.semantic_or_toolchain_park(&CompileOptions::default()) {
+            SemanticParkOutcome::Parked(park) => park,
+            SemanticParkOutcome::Ready(_) => panic!("expected a batched park, got ready analysis"),
+            SemanticParkOutcome::Errors(errors) => {
+                panic!("expected a batched park, got errors: {errors:?}")
+            }
+        };
+
+        // Union of absent modules across both already-reached bodies, sorted.
+        let demands: Vec<&str> = park
+            .demands()
+            .iter()
+            .map(crate::TrustedToolchainModuleDemand::logical_path)
+            .collect();
+        assert_eq!(
+            demands,
+            vec![
+                crate::OPTION_MODULE_LOGICAL_PATH,
+                crate::STRBUF_MODULE_LOGICAL_PATH
+            ]
+        );
+
+        // Both demanding bodies contribute a requester anchor. That both `a` and
+        // `b` appear proves neither transacted before the park — each was still
+        // pending and got projected into the one batch (`main`, which has no
+        // fallible intrinsic, does run its transaction first, as expected).
+        let anchors: std::collections::BTreeSet<&str> =
+            park.requesters().iter().map(|key| key.name()).collect();
+        assert_eq!(anchors, std::collections::BTreeSet::from(["a", "b"]));
+    }
+
+    // ---- RUE-1112: trusted-toolchain continuation + successor publication ----
+
+    fn continuation_std_context() -> crate::ImportDiscoveryContext {
+        crate::ImportDiscoveryContext::new(1, "/project", Some("/sdk"), "test-policy").unwrap()
+    }
+
+    fn continuation_metadata() -> crate::FileMetadataFingerprint {
+        crate::FileMetadataFingerprint::new(10, 20, 30)
+    }
+
+    /// Drive `root_source` to a canonical import-discovery close, then run the
+    /// rooted semantic attempt so its park atomically attaches the demanded-missing
+    /// set to the closed continuation. Returns the session (now holding an
+    /// AUTHORIZING continuation), its token, the empty closure-witness frontier, the
+    /// predecessor snapshot, its accepted reads, and the assembler ready to add
+    /// trusted leaves. Panics unless the attempt parked — the caller supplies a
+    /// reached-fallible-intrinsic root whose demand set is the acquisition batch.
+    ///
+    /// This exercises the real protocol (close → park → attach → mint): demand
+    /// authority is never seeded by direct field assignment, so a close whose
+    /// attempt never parks yields no token.
+    fn closed_continuation_for(
+        root_source: &str,
+    ) -> (
+        CompilerSession,
+        ClosedDiscoveryContinuation,
+        crate::ImportDemandFrontier,
+        SourceSnapshot,
+        crate::AcceptedReadManifest,
+        crate::DiscoverySourceAssembler,
+    ) {
+        let ctx = continuation_std_context();
+        let mut assembler = crate::DiscoverySourceAssembler::new(
+            ctx.clone(),
+            "/project/main.rue",
+            "/project/main.rue",
+            crate::PhysicalFileIdentity::new(1, 1),
+            continuation_metadata(),
+            Arc::new(root_source.to_owned()),
+        )
+        .unwrap();
+        let snapshot = assembler.snapshot().unwrap();
+        let reads = assembler.accepted_read_manifest();
+        let mut session = CompilerSession::new();
+        let revision = session
+            .begin_import_input_request(&snapshot, ctx.clone(), reads.clone())
+            .unwrap();
+        let plan = session
+            .stage_import_discovery(
+                &snapshot,
+                ctx.clone(),
+                reads.shared_slice(),
+                crate::ImportObservationLedger::default(),
+            )
+            .unwrap();
+        let roots = plan.demand_roots();
+        let frontier = session
+            .import_demand_frontier_for_roots(
+                revision,
+                &plan,
+                crate::ImportDemandMode::Rooted,
+                &roots,
+            )
+            .unwrap();
+        assert!(
+            frontier.requests().is_empty(),
+            "a freestanding root closes with an empty frontier",
+        );
+        let ledger = session.import_observation_ledger(revision).unwrap();
+        session.close_import_discovery(ledger).unwrap();
+        // A bare close is non-authorizing: no demand set has been attached yet.
+        assert!(
+            session.closed_discovery_continuation().is_none(),
+            "a close mints no token until a rooted park attaches a demanded set",
+        );
+        // The rooted attempt parks; the park attaches its exact demanded-missing
+        // set to this closed state, making the continuation authorizing.
+        match session.semantic_or_toolchain_park(&CompileOptions::default()) {
+            SemanticParkOutcome::Parked(_) => {}
+            SemanticParkOutcome::Ready(_) => {
+                panic!("expected the reached fallible intrinsic to park the rooted attempt")
+            }
+            SemanticParkOutcome::Errors(errors) => {
+                panic!("expected a trusted-toolchain park, got errors: {errors:?}")
+            }
+        }
+        let token = session
+            .closed_discovery_continuation()
+            .expect("an attached rooted park makes the closed continuation authorizing");
+        (session, token, frontier, snapshot, reads, assembler)
+    }
+
+    /// The common single-module case: a reached `@parse_i64` parks on exactly the
+    /// trusted std `Option` module.
+    fn closed_continuation() -> (
+        CompilerSession,
+        ClosedDiscoveryContinuation,
+        crate::ImportDemandFrontier,
+        SourceSnapshot,
+        crate::AcceptedReadManifest,
+        crate::DiscoverySourceAssembler,
+    ) {
+        closed_continuation_for("fn main() -> i32 { let _ = @parse_i64(\"1\"); 0 }")
+    }
+
+    fn add_trusted_option(assembler: &mut crate::DiscoverySourceAssembler) {
+        assembler
+            .add_explicit(
+                "/sdk/option.rue",
+                "/sdk/option.rue",
+                crate::PhysicalFileIdentity::new(2, 2),
+                continuation_metadata(),
+                Arc::new(
+                    "pub fn Option(comptime T: type) -> type { enum { Some(T), None } }".to_owned(),
+                ),
+            )
+            .unwrap();
+    }
+
+    fn add_trusted_strbuf(assembler: &mut crate::DiscoverySourceAssembler) {
+        assembler
+            .add_explicit(
+                "/sdk/strbuf.rue",
+                "/sdk/strbuf.rue",
+                crate::PhysicalFileIdentity::new(3, 3),
+                continuation_metadata(),
+                Arc::new("pub struct StrBuf { len: i64 }".to_owned()),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn trusted_successor_publishes_additive_leaf_in_same_generation() {
+        let (mut session, token, frontier, predecessor, _reads, mut assembler) =
+            closed_continuation();
+        let predecessor_modules = predecessor.source_revision().modules().to_vec();
+        add_trusted_option(&mut assembler);
+        let successor = assembler.snapshot().unwrap();
+        let successor_reads = assembler.accepted_read_manifest();
+
+        let delta = session
+            .publish_trusted_toolchain_successor(token, &frontier, &successor, successor_reads)
+            .expect("a strictly-additive trusted successor publishes");
+        // The publish mints an opaque delta authority bound to the appended set.
+        // Its module identities are private; the successor stage/close derive and
+        // verify them from the snapshot, so the host cannot edit them here.
+        let published = delta.revision();
+
+        // Same request generation as the predecessor close; the frontier round
+        // advances by one (a successor of that same observation epoch).
+        assert_eq!(
+            published.request_generation,
+            frontier.revision().request_generation
+        );
+        assert_eq!(
+            published.frontier_round,
+            frontier.revision().frontier_round + 1
+        );
+
+        // Every pre-existing module leaf is preserved byte-identical. Its exact
+        // ModuleRevision — and therefore its SourceId, the parse key — reappears in
+        // the successor, so no pre-existing module is re-read or reparsed across
+        // acquisition; only the trusted Option leaf is appended.
+        for old in &predecessor_modules {
+            assert!(
+                successor.source_revision().modules().contains(old),
+                "pre-existing module {old:?} must be preserved byte-identical",
+            );
+        }
+        assert_eq!(
+            successor.source_revision().modules().len(),
+            predecessor_modules.len() + 1,
+        );
+    }
+
+    #[test]
+    fn trusted_successor_reused_token_is_rejected() {
+        let (mut session, token, frontier, _pred, _reads, mut assembler) = closed_continuation();
+        add_trusted_option(&mut assembler);
+        let successor = assembler.snapshot().unwrap();
+        let reads = assembler.accepted_read_manifest();
+        // The first publish consumes the single-use token.
+        session
+            .publish_trusted_toolchain_successor(
+                token.clone(),
+                &frontier,
+                &successor,
+                reads.clone(),
+            )
+            .unwrap();
+        // Reusing it finds no outstanding continuation.
+        let err = session
+            .publish_trusted_toolchain_successor(token, &frontier, &successor, reads)
+            .unwrap_err();
+        assert!(
+            err.first().unwrap().to_string().contains("already used"),
+            "{err:?}",
+        );
+    }
+
+    #[test]
+    fn trusted_successor_stale_token_is_rejected() {
+        let (mut session, token, frontier, _pred, _reads, mut assembler) = closed_continuation();
+        // Simulate a newer close superseding this token: advance the outstanding
+        // state's nonce so the presented token no longer matches (stale).
+        session.next_continuation_nonce += 7;
+        session.continuation.as_mut().unwrap().nonce = session.next_continuation_nonce;
+        add_trusted_option(&mut assembler);
+        let successor = assembler.snapshot().unwrap();
+        let reads = assembler.accepted_read_manifest();
+        let err = session
+            .publish_trusted_toolchain_successor(token, &frontier, &successor, reads)
+            .unwrap_err();
+        assert!(
+            err.first().unwrap().to_string().contains("stale"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn trusted_successor_new_request_invalidates_the_token() {
+        let (mut session, token, frontier, predecessor, reads, mut assembler) =
+            closed_continuation();
+        // A fresh import-input request invalidates any outstanding continuation.
+        session
+            .begin_import_input_request(&predecessor, continuation_std_context(), reads)
+            .unwrap();
+        add_trusted_option(&mut assembler);
+        let successor = assembler.snapshot().unwrap();
+        let successor_reads = assembler.accepted_read_manifest();
+        let err = session
+            .publish_trusted_toolchain_successor(token, &frontier, &successor, successor_reads)
+            .unwrap_err();
+        assert!(
+            err.first().unwrap().to_string().contains("already used"),
+            "{err:?}",
+        );
+    }
+
+    #[test]
+    fn trusted_successor_mutated_predecessor_is_rejected() {
+        let (mut session, token, frontier, _pred, _reads, _assembler) = closed_continuation();
+        // A successor whose pre-existing root content differs is a mutated
+        // predecessor: source evolution must be strictly additive.
+        let ctx = continuation_std_context();
+        let mut other = crate::DiscoverySourceAssembler::new(
+            ctx,
+            "/project/main.rue",
+            "/project/main.rue",
+            crate::PhysicalFileIdentity::new(1, 1),
+            continuation_metadata(),
+            Arc::new("fn main() -> i32 { 1 }".to_owned()),
+        )
+        .unwrap();
+        add_trusted_option(&mut other);
+        let successor = other.snapshot().unwrap();
+        let reads = other.accepted_read_manifest();
+        let err = session
+            .publish_trusted_toolchain_successor(token, &frontier, &successor, reads)
+            .unwrap_err();
+        assert!(
+            err.first()
+                .unwrap()
+                .to_string()
+                .contains("strictly additive"),
+            "{err:?}",
+        );
+    }
+
+    #[test]
+    fn trusted_successor_arbitrary_module_is_rejected() {
+        let (mut session, token, frontier, _pred, _reads, mut assembler) = closed_continuation();
+        // StrBuf is a trusted module the park did NOT demand here (the reached
+        // `@parse_i64` parks on Option only), so the added set {StrBuf} does not
+        // equal the demanded set {Option} and may not ride in on this continuation.
+        add_trusted_strbuf(&mut assembler);
+        let successor = assembler.snapshot().unwrap();
+        let reads = assembler.accepted_read_manifest();
+        let err = session
+            .publish_trusted_toolchain_successor(token, &frontier, &successor, reads)
+            .unwrap_err();
+        assert!(
+            err.first()
+                .unwrap()
+                .to_string()
+                .contains("must equal the rooted park's demanded missing set"),
+            "{err:?}",
+        );
+    }
+
+    #[test]
+    fn trusted_successor_ready_close_is_non_authorizing() {
+        // A close whose rooted semantic attempt is READY (no fallible intrinsic,
+        // no park) attaches no demanded set, so the closed continuation mints no
+        // token. Demand authority lives only in an attached park, so a ready close
+        // can never inherit an earlier park's demand set and admit an uninvited
+        // trusted leaf.
+        let ctx = continuation_std_context();
+        let mut assembler = crate::DiscoverySourceAssembler::new(
+            ctx.clone(),
+            "/project/main.rue",
+            "/project/main.rue",
+            crate::PhysicalFileIdentity::new(1, 1),
+            continuation_metadata(),
+            Arc::new("fn main() -> i32 { 0 }".to_owned()),
+        )
+        .unwrap();
+        let snapshot = assembler.snapshot().unwrap();
+        let reads = assembler.accepted_read_manifest();
+        let mut session = CompilerSession::new();
+        let revision = session
+            .begin_import_input_request(&snapshot, ctx.clone(), reads.clone())
+            .unwrap();
+        let plan = session
+            .stage_import_discovery(
+                &snapshot,
+                ctx.clone(),
+                reads.shared_slice(),
+                crate::ImportObservationLedger::default(),
+            )
+            .unwrap();
+        let roots = plan.demand_roots();
+        let _frontier = session
+            .import_demand_frontier_for_roots(
+                revision,
+                &plan,
+                crate::ImportDemandMode::Rooted,
+                &roots,
+            )
+            .unwrap();
+        let ledger = session.import_observation_ledger(revision).unwrap();
+        session.close_import_discovery(ledger).unwrap();
+        // The rooted attempt is ready: no park, so no demanded set is attached.
+        assert!(matches!(
+            session.semantic_or_toolchain_park(&CompileOptions::default()),
+            SemanticParkOutcome::Ready(_)
+        ));
+        assert!(
+            session.closed_discovery_continuation().is_none(),
+            "a ready close is non-authorizing and mints no continuation token",
+        );
+    }
+
+    #[test]
+    fn trusted_successor_partial_batch_is_rejected_without_consuming_token() {
+        // A reached `@read_line` parks on BOTH Option and StrBuf. A successor that
+        // adds only Option is a partial batch — added {Option} does not equal the
+        // demanded {Option, StrBuf} — so it is rejected. A rejection never consumes
+        // the single-use token, so completing the batch and retrying with the same
+        // token then publishes.
+        let (mut session, token, frontier, _pred, _reads, mut assembler) =
+            closed_continuation_for("fn main() -> i32 { let _ = @read_line(); 0 }");
+        add_trusted_option(&mut assembler);
+        let partial = assembler.snapshot().unwrap();
+        let partial_reads = assembler.accepted_read_manifest();
+        let err = session
+            .publish_trusted_toolchain_successor(token.clone(), &frontier, &partial, partial_reads)
+            .unwrap_err();
+        assert!(
+            err.first()
+                .unwrap()
+                .to_string()
+                .contains("must equal the rooted park's demanded missing set"),
+            "{err:?}",
+        );
+        // The token survived the rejection; completing the two-module batch and
+        // retrying publishes with the SAME token.
+        add_trusted_strbuf(&mut assembler);
+        let full = assembler.snapshot().unwrap();
+        let full_reads = assembler.accepted_read_manifest();
+        session
+            .publish_trusted_toolchain_successor(token, &frontier, &full, full_reads)
+            .expect("the completed two-module batch publishes with the un-consumed token");
+    }
+
+    #[test]
+    fn trusted_successor_altered_predecessor_provenance_is_rejected() {
+        let (mut session, token, frontier, _pred, _reads, mut assembler) = closed_continuation();
+        add_trusted_option(&mut assembler);
+        let successor = assembler.snapshot().unwrap();
+        let full_reads = assembler.accepted_read_manifest();
+        // Drop the predecessor root's accepted-read provenance, keeping only the
+        // added leaf's: the old provenance is no longer byte-identical.
+        let tampered: Vec<_> = full_reads
+            .iter()
+            .filter(|entry| entry.module().is_trusted_standard_library())
+            .cloned()
+            .collect();
+        let err = session
+            .publish_trusted_toolchain_successor(
+                token,
+                &frontier,
+                &successor,
+                crate::AcceptedReadManifest::from_entries(tampered),
+            )
+            .unwrap_err();
+        assert!(
+            err.first()
+                .unwrap()
+                .to_string()
+                .contains("altered or removed"),
+            "{err:?}",
+        );
+    }
+
+    /// A successor-delta capability minted by one session cannot authorize a
+    /// successor stage on a different session: the delta is bound to its issuing
+    /// session, so a cross-session value is rejected without staging anything.
+    #[test]
+    fn successor_delta_from_another_session_is_rejected() {
+        let (mut issuer, token, frontier, _pred, _reads, mut assembler) = closed_continuation();
+        add_trusted_option(&mut assembler);
+        let successor = assembler.snapshot().unwrap();
+        let reads = assembler.accepted_read_manifest();
+        let delta = issuer
+            .publish_trusted_toolchain_successor(token, &frontier, &successor, reads.clone())
+            .expect("a strictly-additive successor publishes");
+
+        let mut other = CompilerSession::new();
+        let err = other.stage_import_discovery_successor(&delta).unwrap_err();
+        assert!(
+            err.first()
+                .unwrap()
+                .to_string()
+                .contains("different session"),
+            "{err:?}",
+        );
+    }
+
+    /// A successor-delta capability is single-generation: a new import-input
+    /// request invalidates it, so a stale delta can neither stage nor close.
+    #[test]
+    fn stale_successor_delta_cannot_stage() {
+        let (mut session, token, frontier, _pred, _reads, mut assembler) = closed_continuation();
+        add_trusted_option(&mut assembler);
+        let successor = assembler.snapshot().unwrap();
+        let reads = assembler.accepted_read_manifest();
+        let delta = session
+            .publish_trusted_toolchain_successor(token, &frontier, &successor, reads.clone())
+            .expect("a strictly-additive successor publishes");
+
+        // A fresh observation generation invalidates the outstanding delta.
+        session
+            .begin_import_input_request(&successor, continuation_std_context(), reads.clone())
+            .unwrap();
+        let err = session
+            .stage_import_discovery_successor(&delta)
+            .unwrap_err();
+        assert!(
+            err.first()
+                .unwrap()
+                .to_string()
+                .contains("no outstanding successor-delta authority"),
+            "{err:?}",
+        );
+    }
+
+    /// The successor parse terminal is a REAL runtime query dependent of the
+    /// exact predecessor parse terminal — the graph carries the
+    /// successor-after-predecessor edge — and the successor close re-selects
+    /// the staged terminal itself: same terminal identity, no second parse
+    /// dispatch, and no second empty-extension publication.
+    #[test]
+    fn successor_close_reuses_the_staged_terminal_with_a_predecessor_edge() {
+        let (mut session, token, frontier, _pred, _reads, mut assembler) = closed_continuation();
+        let predecessor_terminal = session
+            .selected_parse_terminal()
+            .expect("the committed close selects its staged parse terminal");
+        add_trusted_option(&mut assembler);
+        let successor = assembler.snapshot().unwrap();
+        let reads = assembler.accepted_read_manifest();
+        let delta = session
+            .publish_trusted_toolchain_successor(token, &frontier, &successor, reads)
+            .expect("a strictly-additive successor publishes");
+        session
+            .stage_import_discovery_successor(&delta)
+            .expect("the successor stages");
+        let staged_terminal = session
+            .selected_parse_terminal()
+            .expect("the successor stage selects its parse terminal");
+        assert!(
+            !Arc::ptr_eq(&predecessor_terminal, &staged_terminal),
+            "the successor stage computes its own terminal"
+        );
+        // (a) The successor terminal observes the exact predecessor parse
+        // terminal as a runtime query dependency — the FULL captured identity
+        // (node, incarnation, AND stamp), not an equivalent replacement under
+        // the same display node — so red/green validation and leases flow
+        // successor-after-predecessor through the graph.
+        let observation = staged_terminal
+            .dependencies()
+            .iter()
+            .find(|dependency| dependency.node == *predecessor_terminal.node())
+            .unwrap_or_else(|| {
+                panic!(
+                    "the successor terminal must depend on the exact predecessor parse terminal: {:?}",
+                    staged_terminal.dependencies(),
+                )
+            });
+        assert_eq!(
+            observation.incarnation,
+            predecessor_terminal.node_incarnation(),
+            "the dependency must carry the captured terminal's exact node incarnation"
+        );
+        assert_eq!(
+            observation.stamp,
+            predecessor_terminal.stamp(),
+            "the dependency must carry the captured terminal's exact stamp"
+        );
+        // That the adoption touched no predecessor content-key Hash/Eq is
+        // proven mechanically by the rue-query frozen-key regression
+        // (`adoption_never_hashes_or_compares_the_predecessor_key`).
+        // (b) The close re-selects the staged terminal itself: identical
+        // terminal identity, no parse dispatch, and no second publication.
+        let dispatched = session.parse_modules_dispatched();
+        let materialized = session.parse_sources_materialized();
+        session
+            .close_import_discovery_successor(&delta)
+            .expect("the successor closes");
+        let adopted_terminal = session
+            .selected_parse_terminal()
+            .expect("the successor close selects the staged parse terminal");
+        assert!(
+            Arc::ptr_eq(&staged_terminal, &adopted_terminal),
+            "the successor close must re-select the exact staged parse terminal"
+        );
+        assert_eq!(
+            session.parse_modules_dispatched(),
+            dispatched,
+            "the successor close dispatches no parse work"
+        );
+        assert_eq!(
+            session.parse_sources_materialized(),
+            materialized,
+            "the successor close materializes no whole-program projection"
+        );
+    }
+
+    /// A strictly-additive successor adoption must leave the predecessor's
+    /// immutable source leaf live: retained frontend terminals that correctly
+    /// depend on it (however many variants are prewarmed) stay valid, and the
+    /// acquisition contributes ZERO dependency-graph invalidation events —
+    /// the successor becomes current without walking or invalidating the
+    /// predecessor's retained downstream.
+    #[test]
+    fn successor_adoption_invalidates_no_retained_frontend_variants() {
+        let acquisition_invalidations = |prewarm_retained_downstream: bool| -> u64 {
+            let (mut session, token, frontier, _pred, _reads, mut assembler) =
+                closed_continuation();
+            if prewarm_retained_downstream {
+                // Retain additional terminals depending on the predecessor's
+                // source leaf. Semantic — and the definition/manifest variants
+                // that observe it — cannot complete on this predecessor (the
+                // reached fallible intrinsic parks semantic until
+                // acquisition), so the retained downstream of the leaf is the
+                // pre-semantic tier: merged RIR and canonical import
+                // diagnostics.
+                session
+                    .rir()
+                    .expect("pre-semantic RIR completes on the parked predecessor");
+                session
+                    .import_diagnostics()
+                    .expect("import diagnostics retain on the closed predecessor");
+            }
+            add_trusted_option(&mut assembler);
+            let successor = assembler.snapshot().unwrap();
+            let reads = assembler.accepted_read_manifest();
+            let delta = session
+                .publish_trusted_toolchain_successor(token, &frontier, &successor, reads)
+                .expect("a strictly-additive successor publishes");
+            let before = session.frontend_query_invalidations();
+            session
+                .stage_import_discovery_successor(&delta)
+                .expect("the successor stages");
+            session
+                .close_import_discovery_successor(&delta)
+                .expect("the successor closes");
+            session.frontend_query_invalidations() - before
+        };
+        let bare = acquisition_invalidations(false);
+        let prewarmed = acquisition_invalidations(true);
+        assert_eq!(
+            bare, 0,
+            "additive successor adoption must not invalidate retained frontend terminals"
+        );
+        assert_eq!(
+            prewarmed, 0,
+            "additive successor adoption must not invalidate retained frontend terminals regardless of how much retained downstream depends on the predecessor leaf"
+        );
+    }
+
+    /// A successor-delta capability outstanding across an intervening source or
+    /// presentation update is invalidated: the update replaced the retained
+    /// parse artifact the successor would extend, so the stale capability can
+    /// neither stage nor close — a mixed parsed program (foreign retained
+    /// modules under the successor's claimed source revision) is never
+    /// produced.
+    #[test]
+    fn intervening_presentation_update_invalidates_successor_delta() {
+        let (mut session, token, frontier, _pred, _reads, mut assembler) = closed_continuation();
+        add_trusted_option(&mut assembler);
+        let successor = assembler.snapshot().unwrap();
+        let reads = assembler.accepted_read_manifest();
+        let delta = session
+            .publish_trusted_toolchain_successor(token, &frontier, &successor, reads)
+            .expect("a strictly-additive successor publishes");
+
+        // An intervening presentation update installs a successful parse of a
+        // DIFFERENT snapshot (unrelated content and file order).
+        let foreign = snapshot(
+            &[
+                (2, "/q/aux.rue", "aux.rue", "pub fn v() -> i32 { 2 }"),
+                (1, "/q/main.rue", "main.rue", "fn main() -> i32 { 0 }"),
+            ],
+            1,
+        );
+        session
+            .update_for_presentation(&foreign)
+            .into_result()
+            .expect("the foreign presentation update parses");
+
+        let stage_err = session
+            .stage_import_discovery_successor(&delta)
+            .unwrap_err();
+        assert!(
+            stage_err
+                .first()
+                .unwrap()
+                .to_string()
+                .contains("no outstanding successor-delta authority"),
+            "{stage_err:?}",
+        );
+        let close_err = session
+            .close_import_discovery_successor(&delta)
+            .unwrap_err();
+        assert!(
+            close_err
+                .first()
+                .unwrap()
+                .to_string()
+                .contains("no outstanding successor-delta authority"),
+            "{close_err:?}",
+        );
+    }
+
+    /// Substituted snapshots, contexts, provenance manifests, and ledgers are
+    /// INEXPRESSIBLE at the successor stage/close: those APIs consume only the
+    /// compiler-published view and the opaque capability. The one remaining host
+    /// input surface on a same-generation lineage is the observation-batch
+    /// publication, so the tampering regressions below attack through it; the
+    /// overlay publication re-derives and justifies every addition, rejecting
+    /// each attack before anything is published.
+    ///
+    /// Run one tampered batch publication against a closed lineage whose rooted
+    /// frontier witness is empty, returning the rejection text.
+    fn tampered_batch_error(
+        build: impl FnOnce(&crate::ImportDiscoveryContext) -> crate::DiscoverySourceAssembler,
+    ) -> String {
+        let (mut session, _token, frontier, _pred, _reads, _assembler) = closed_continuation();
+        let ctx = continuation_std_context();
+        let mut tampered = build(&ctx);
+        let snapshot = tampered.snapshot().unwrap();
+        let reads = tampered.accepted_read_manifest();
+        session
+            .publish_import_observation_batch(&frontier, &snapshot, reads, Vec::new())
+            .unwrap_err()
+            .to_string()
+    }
+
+    /// A batch cannot INJECT a module: a snapshot carrying a module no accepted
+    /// observation of that batch resolves is rejected at publication, so an
+    /// unrelated module can never enter the published lineage (and therefore can
+    /// never reach a successor stage/close, which read only the published view).
+    #[test]
+    fn observation_batch_rejects_an_injected_module() {
+        let error = tampered_batch_error(|ctx| {
+            let mut assembler = crate::DiscoverySourceAssembler::new(
+                ctx.clone(),
+                "/project/main.rue",
+                "/project/main.rue",
+                crate::PhysicalFileIdentity::new(1, 1),
+                continuation_metadata(),
+                Arc::new("fn main() -> i32 { let _ = @parse_i64(\"1\"); 0 }".to_owned()),
+            )
+            .unwrap();
+            // An extra module with provenance but NO justifying observation.
+            add_trusted_option(&mut assembler);
+            assembler
+        });
+        assert!(
+            error.contains("must equal this step's authorized additions exactly"),
+            "{error}",
+        );
+    }
+
+    /// A batch cannot MUTATE a predecessor module under its ID: a snapshot whose
+    /// root module has the same identity but different content is rejected at
+    /// publication (the lineage is strictly additive at that boundary).
+    #[test]
+    fn observation_batch_rejects_a_mutated_predecessor_source() {
+        let error = tampered_batch_error(|ctx| {
+            crate::DiscoverySourceAssembler::new(
+                ctx.clone(),
+                "/project/main.rue",
+                "/project/main.rue",
+                crate::PhysicalFileIdentity::new(1, 1),
+                continuation_metadata(),
+                // Same root identity, DIFFERENT body.
+                Arc::new("fn main() -> i32 { let _ = @parse_i64(\"1\"); 42 }".to_owned()),
+            )
+            .unwrap()
+        });
+        assert!(
+            error.contains("mutates a predecessor module source"),
+            "{error}",
+        );
+    }
+
+    /// A batch cannot OMIT an accepted module: publishing the exact
+    /// compiler-issued accepted observation for a newly resolved module while
+    /// omitting that module from the successor snapshot is rejected — the
+    /// additions must EQUAL the batch's accepted resolutions in both
+    /// directions, so topology can never claim "resolved" without the module's
+    /// source leaf behind it.
+    #[test]
+    fn observation_batch_rejects_omitting_an_accepted_module() {
+        let ctx = continuation_std_context();
+        let root_source = "const a = @import(\"a.rue\"); fn main() -> i32 { 0 }";
+        let mut assembler = crate::DiscoverySourceAssembler::new(
+            ctx.clone(),
+            "/project/main.rue",
+            "/project/main.rue",
+            crate::PhysicalFileIdentity::new(1, 1),
+            continuation_metadata(),
+            Arc::new(root_source.to_owned()),
+        )
+        .unwrap();
+        let snapshot = assembler.snapshot().unwrap();
+        let reads = assembler.accepted_read_manifest();
+        let mut session = CompilerSession::new();
+        let revision = session
+            .begin_import_input_request(&snapshot, ctx.clone(), reads.clone())
+            .unwrap();
+        let plan = session
+            .stage_import_discovery(
+                &snapshot,
+                ctx.clone(),
+                reads.shared_slice(),
+                crate::ImportObservationLedger::default(),
+            )
+            .unwrap();
+        let roots = plan.demand_roots();
+        let frontier = session
+            .import_demand_frontier_for_roots(
+                revision,
+                &plan,
+                crate::ImportDemandMode::Rooted,
+                &roots,
+            )
+            .unwrap();
+        assert!(
+            !frontier.requests().is_empty(),
+            "an unresolved import demands host reads",
+        );
+
+        // Answer the frontier honestly for a.rue: the exact compiler-issued
+        // accepted observation, absent elsewhere.
+        let module_source = "pub fn value() -> i32 { 1 }";
+        let observations: Vec<crate::ImportObservation> = frontier
+            .requests()
+            .iter()
+            .map(|request| {
+                if request.requested_path() == "/project/a.rue" {
+                    crate::ImportObservation::accepted(
+                        request.clone(),
+                        crate::AcceptedImportSource::new(
+                            Arc::from("/project/a.rue"),
+                            Arc::from("/project/a.rue"),
+                            crate::PhysicalFileIdentity::new(5, 5),
+                            continuation_metadata(),
+                            Arc::new(module_source.to_owned()),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap()
+                } else {
+                    crate::ImportObservation::absent(request.clone())
+                }
+            })
+            .collect();
+
+        // A manifest carrying the resolved module's provenance, but a snapshot
+        // OMITTING the module itself.
+        let mut with_module = crate::DiscoverySourceAssembler::new(
+            ctx.clone(),
+            "/project/main.rue",
+            "/project/main.rue",
+            crate::PhysicalFileIdentity::new(1, 1),
+            continuation_metadata(),
+            Arc::new(root_source.to_owned()),
+        )
+        .unwrap();
+        with_module
+            .add_explicit(
+                "/project/a.rue",
+                "/project/a.rue",
+                crate::PhysicalFileIdentity::new(5, 5),
+                continuation_metadata(),
+                Arc::new(module_source.to_owned()),
+            )
+            .unwrap();
+        let reads_with_module = with_module.accepted_read_manifest();
+        let err = session
+            .publish_import_observation_batch(&frontier, &snapshot, reads_with_module, observations)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("must equal this step's authorized additions exactly"),
+            "{err}",
+        );
+    }
+
+    /// A batch cannot SUBSTITUTE predecessor provenance: an accepted-read entry
+    /// for an existing module with altered physical identity is rejected at
+    /// publication.
+    #[test]
+    fn observation_batch_rejects_substituted_provenance() {
+        let error = tampered_batch_error(|ctx| {
+            crate::DiscoverySourceAssembler::new(
+                ctx.clone(),
+                "/project/main.rue",
+                "/project/main.rue",
+                // Same content, DIFFERENT physical identity: the module revision
+                // matches but its provenance record does not.
+                crate::PhysicalFileIdentity::new(7, 7),
+                continuation_metadata(),
+                Arc::new("fn main() -> i32 { let _ = @parse_i64(\"1\"); 0 }".to_owned()),
+            )
+            .unwrap()
+        });
+        assert!(
+            error.contains("mutates a predecessor accepted-read provenance"),
+            "{error}",
+        );
+    }
+
+    #[test]
+    fn stable_no_filesystem_boundary_classifies_unsatisfied_toolchain_input_not_ice() {
+        // RUE-1112 C3: the stable no-filesystem `canonical_semantic` entry cannot
+        // acquire, so an unsatisfied trusted-toolchain demand for otherwise-valid
+        // source is a deterministic CONTRACT failure, never an ICE (E9000).
+        let source = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn main() -> i32 { let _ = @parse_i64(\"1\"); 0 }",
+            )],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let errors = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap_err();
+        let error = errors.first().expect("unsatisfied toolchain input error");
+        assert!(
+            matches!(
+                error.kind,
+                rue_error::ErrorKind::UnsatisfiedTrustedToolchainInput(_)
+            ),
+            "expected an unsatisfied-trusted-toolchain-input classification, got {:?}",
+            error.kind
+        );
+        assert_ne!(error.kind.code(), rue_error::ErrorCode::INTERNAL_ERROR);
+        assert_eq!(
+            error.kind.code(),
+            rue_error::ErrorCode::UNSATISFIED_TRUSTED_TOOLCHAIN_INPUT
+        );
     }
 
     #[test]
@@ -14743,8 +17465,9 @@ fn main() -> i32 { selected.value() }"#,
                 Arc::new(BTreeMap::new()),
                 Arc::from([]),
                 false,
+                Arc::from([]),
                 cancellation.clone(),
-                |_| panic!("semantic request must have materialized this body terminal"),
+                |_, _| panic!("semantic request must have materialized this body terminal"),
             )
             .unwrap();
         let body = session
@@ -14792,8 +17515,9 @@ fn main() -> i32 { selected.value() }"#,
                 Arc::new(BTreeMap::new()),
                 Arc::from([]),
                 false,
+                Arc::from([]),
                 rue_query::CancellationToken::new(),
-                |_| panic!("semantic request must have materialized this body terminal"),
+                |_, _| panic!("semantic request must have materialized this body terminal"),
             )
             .unwrap();
         let rue_query::QueryOutcome::Success(transaction) = terminal.outcome() else {
@@ -14820,14 +17544,169 @@ fn main() -> i32 { selected.value() }"#,
                 Arc::new(BTreeMap::new()),
                 Arc::from([]),
                 false,
+                Arc::from([]),
                 rue_query::CancellationToken::new(),
-                |_| panic!("semantic request must have materialized this body terminal"),
+                |_, _| panic!("semantic request must have materialized this body terminal"),
             )
             .unwrap()
             .dependencies()
             .iter()
             .map(|dependency| format!("{:?}", dependency.node))
             .collect()
+    }
+
+    /// A trusted-std `Option` snapshot for the well-known query-edge isolation
+    /// regression: the root is `root_source`, and the trusted std `Option` module
+    /// is provided at `\0rue-std/option.rue`, reached with
+    /// `@import("std/option.rue")` (physical-suffix match).
+    fn well_known_option_isolation_snapshot(root_source: &str) -> SourceSnapshot {
+        let root = FileId::new(1);
+        let option = FileId::new(2);
+        let metadata = SourceMetadata::new_with_trusted_standard_library(
+            root,
+            HashMap::from([
+                (root, "/project/main.rue".to_owned()),
+                (option, "/project/std/option.rue".to_owned()),
+            ]),
+            HashMap::from([
+                (root, "main.rue".to_owned()),
+                (option, "\0rue-std/option.rue".to_owned()),
+            ]),
+            HashSet::from([option]),
+        )
+        .unwrap();
+        SourceSnapshot::new(
+            metadata,
+            vec![
+                (root, Arc::new(root_source.to_owned())),
+                (
+                    option,
+                    Arc::new(
+                        "pub fn Option(comptime T: type) -> type { enum { Some(T), None } }"
+                            .to_owned(),
+                    ),
+                ),
+            ],
+        )
+        .unwrap()
+    }
+
+    /// Query-edge isolation. Two reached bodies demand DIFFERENT well-known
+    /// `Option` payloads: `left` uses `@parse_i32` (payload i32), `right` uses
+    /// `@parse_i64` (payload i64). Each body derives its OWN exact payload set from
+    /// its canonical raw body and roots only that payload's `Option`
+    /// specialization, so:
+    ///
+    /// 1. `left`'s dependency edges reach the i32 `Option` specialization and NOT
+    ///    the i64 one; `right`'s reach the i64 specialization and NOT the i32 one.
+    ///    A body therefore cannot inherit failure or cancellation from an
+    ///    unrelated body's specialization — it has no edge to it.
+    /// 2. Invalidating the i64 specialization's owning body (editing `right`)
+    ///    leaves `left`'s terminal identity (its published stamp) unchanged: with
+    ///    no edge to the churned specialization, `left` is reused, not recomputed.
+    #[test]
+    fn sibling_body_retains_no_edge_to_a_distinct_payload_specialization() {
+        let options = CompileOptions::default();
+
+        // Locate the ComptimeCall specialization edges by the payload spelled in
+        // the dependency node's Debug rendering. The two bodies demand distinct
+        // payloads, so distinct nodes carry the i32 and i64 type arguments.
+        let has_i32_option_edge = |nodes: &[String]| {
+            nodes.iter().any(|node| {
+                node.contains("comptime:") && node.contains("Option") && node.contains("I32)")
+            })
+        };
+        let has_i64_option_edge = |nodes: &[String]| {
+            nodes.iter().any(|node| {
+                node.contains("comptime:") && node.contains("Option") && node.contains("I64)")
+            })
+        };
+
+        let program_v1 = r#"
+const opt = @import("std/option.rue");
+fn left(s: str) -> opt.Option(i32) {
+    let O = opt.Option(i32);
+    O.Some(@parse_i32(s)?)
+}
+fn right(s: str) -> opt.Option(i64) {
+    let O = opt.Option(i64);
+    O.Some(@parse_i64(s)?)
+}
+fn main() -> i32 {
+    let OA = opt.Option(i32);
+    let OB = opt.Option(i64);
+    let a = match left("1") { OA.Some(v) => v, OA.None => 0 };
+    let b = match right("2") { OB.Some(v) => @intCast(v), OB.None => 0 };
+    a + b
+}
+"#;
+
+        let source_v1 = well_known_option_isolation_snapshot(program_v1);
+        let mut session = CompilerSession::new();
+        publish_with_test_imports(&mut session, &source_v1);
+        session.canonical_semantic(&options).unwrap();
+
+        let left_key = body_query_key(&mut session, &options, "left");
+        let right_key = body_query_key(&mut session, &options, "right");
+
+        let left_nodes = retained_body_dependency_nodes(&session, &left_key);
+        let right_nodes = retained_body_dependency_nodes(&session, &right_key);
+
+        assert!(
+            has_i32_option_edge(&left_nodes),
+            "left (i32) must have an edge to the Option(i32) specialization: {left_nodes:?}",
+        );
+        assert!(
+            !has_i64_option_edge(&left_nodes),
+            "left (i32) must have NO edge to the sibling's Option(i64) specialization: {left_nodes:?}",
+        );
+        assert!(
+            has_i64_option_edge(&right_nodes),
+            "right (i64) must have an edge to the Option(i64) specialization: {right_nodes:?}",
+        );
+        assert!(
+            !has_i32_option_edge(&right_nodes),
+            "right (i64) must have NO edge to the sibling's Option(i32) specialization: {right_nodes:?}",
+        );
+
+        // `left`'s terminal identity before the sibling churns.
+        let left_stamp_v1 = retained_body_transaction(&session, &left_key).0;
+
+        // Invalidate the i64 specialization's owning body: edit ONLY `right`,
+        // keeping its i64 payload demand. `left`'s raw body and its i32 demand are
+        // untouched, and it has no edge to the i64 specialization, so its terminal
+        // must be reused with an unchanged stamp.
+        let program_v2 = r#"
+const opt = @import("std/option.rue");
+fn left(s: str) -> opt.Option(i32) {
+    let O = opt.Option(i32);
+    O.Some(@parse_i32(s)?)
+}
+fn right(s: str) -> opt.Option(i64) {
+    let O = opt.Option(i64);
+    let _churn = 7 + 8;
+    O.Some(@parse_i64(s)?)
+}
+fn main() -> i32 {
+    let OA = opt.Option(i32);
+    let OB = opt.Option(i64);
+    let a = match left("1") { OA.Some(v) => v, OA.None => 0 };
+    let b = match right("2") { OB.Some(v) => @intCast(v), OB.None => 0 };
+    a + b
+}
+"#;
+        let source_v2 = well_known_option_isolation_snapshot(program_v2);
+        publish_with_test_imports(&mut session, &source_v2);
+        session.canonical_semantic(&options).unwrap();
+
+        let left_key_v2 = body_query_key(&mut session, &options, "left");
+        let left_stamp_v2 = retained_body_transaction(&session, &left_key_v2).0;
+
+        assert_eq!(
+            left_stamp_v1, left_stamp_v2,
+            "editing the i64-owning sibling must not disturb left's terminal identity: \
+             left has no edge to the i64 specialization",
+        );
     }
 
     fn projected_anonymous_nominals(
@@ -15370,8 +18249,9 @@ fn main() -> i32 { selected.value() }"#,
             Arc::new(BTreeMap::new()),
             Arc::from([]),
             false,
+            Arc::from([]),
             rue_query::CancellationToken::new(),
-            |_| {
+            |_, _| {
                 compute_called.set(true);
                 Err(rue_query::QueryAbort::Canceled)
             },

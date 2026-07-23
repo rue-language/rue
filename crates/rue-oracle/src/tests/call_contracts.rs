@@ -1094,10 +1094,144 @@ fn validated_cfg_rejects_out_of_bounds_field_pointer_projection_metadata() {
     ));
 }
 
+/// Compile `root` with the given trusted standard-library modules present,
+/// driving real import discovery so each std module is acquired at its physical
+/// path under the discovery std root and receives trusted-standard-library
+/// provenance. Each entry is `(file_index, canonical_physical_path, source)`;
+/// `root` reaches a module by importing that physical path (e.g.
+/// `@import("std/option.rue")`).
+///
+/// Trusted provenance is what a fallible intrinsic's result and `?` require:
+/// they bind the exact std `Option`/`Result`, so a fixture exercising them must
+/// name the real std producer rather than a same-shape local lookalike. The
+/// lightweight fixture-import graph used inside the compiler crate is
+/// `cfg(test)`-only and unavailable here, so the oracle drives the supported
+/// discovery loop end to end.
+fn query_cfg_state_with_trusted_std(
+    root: &str,
+    std_modules: &[(u32, &str, &str)],
+) -> Result<CompileState, CompileErrors> {
+    use rue_compiler::unstable::{
+        DiscoverySourceAssembler, ImportDemandMode, begin_import_input_request,
+        import_demand_frontier_for_roots, import_observation_ledger,
+        publish_import_observation_batch,
+    };
+    use rue_compiler::{
+        AcceptedImportSource, CompilerSession, FileMetadataFingerprint, ImportDiscoveryContext,
+        ImportObservation, PhysicalFileIdentity,
+    };
+    use std::sync::Arc;
+
+    let context =
+        ImportDiscoveryContext::new(1, "/project", Some("/project/std"), "oracle-trusted-std")
+            .expect("valid discovery context");
+    let root = Arc::new(root.to_owned());
+    let mut assembler = DiscoverySourceAssembler::new(
+        context.clone(),
+        "/project/main.rue",
+        "/project/main.rue",
+        PhysicalFileIdentity::new(1, 1),
+        FileMetadataFingerprint::new(root.len() as u64, 0, 0),
+        root,
+    )
+    .expect("root source assembler");
+    let std_sources = std_modules
+        .iter()
+        .map(|(index, path, source)| (*index as u64, *path, Arc::new(source.to_string())))
+        .collect::<Vec<_>>();
+
+    let mut session = CompilerSession::new();
+    let initial = assembler.snapshot().expect("trusted std root snapshot");
+    let mut revision = begin_import_input_request(
+        &mut session,
+        &initial,
+        context.clone(),
+        assembler.accepted_read_manifest(),
+    )
+    .expect("begin trusted std request");
+    loop {
+        let snapshot = assembler.snapshot().expect("trusted std snapshot");
+        let ledger = import_observation_ledger(&session, revision).expect("current std ledger");
+        let plan = session
+            .stage_import_discovery(
+                &snapshot,
+                context.clone(),
+                assembler.accepted_read_manifest().shared_slice(),
+                ledger.clone(),
+            )
+            .expect("valid trusted std discovery plan");
+        let frontier = import_demand_frontier_for_roots(
+            &mut session,
+            revision,
+            &plan,
+            ImportDemandMode::Rooted,
+            &plan.demand_roots(),
+        )
+        .expect("trusted std frontier");
+        if frontier.requests().is_empty() {
+            session
+                .close_import_discovery(ledger)
+                .expect("close valid import discovery revision");
+            break;
+        }
+        let observations = frontier
+            .requests()
+            .iter()
+            .cloned()
+            .map(|request| {
+                let requested = request.requested_path();
+                let (index, canonical, source) = std_sources
+                    .iter()
+                    .find(|(_, path, _)| *path == requested)
+                    .unwrap_or_else(|| panic!("unexpected import request {requested}"));
+                let accepted = AcceptedImportSource::new(
+                    requested,
+                    *canonical,
+                    PhysicalFileIdentity::new(1, *index),
+                    FileMetadataFingerprint::new(source.len() as u64, 0, 0),
+                    source.clone(),
+                )
+                .expect("accepted trusted standard-library source");
+                ImportObservation::accepted(request, accepted)
+                    .expect("observation matches discovery request")
+            })
+            .collect::<Vec<_>>();
+        let mut assembly_ledger = ledger;
+        for observation in observations.iter().cloned() {
+            assembly_ledger
+                .record(observation)
+                .expect("unique representative observation");
+        }
+        assembler
+            .add_plan_reads(&plan, &assembly_ledger)
+            .expect("assemble accepted std reads");
+        let successor = assembler.snapshot().expect("successor std snapshot");
+        revision = publish_import_observation_batch(
+            &mut session,
+            &frontier,
+            &successor,
+            assembler.accepted_read_manifest(),
+            observations,
+        )
+        .expect("publish std observation batch");
+    }
+    query_cfg_state_from_session(session, &CompileOptions::default())
+}
+
+/// The trusted standard-library `Option` producer source, provided verbatim at
+/// the `\0rue-std/option.rue` identity by `query_cfg_state_with_trusted_std`.
+const TRUSTED_OPTION_MODULE_SOURCE: &str =
+    "pub fn Option(comptime T: type) -> type { enum { Some(T), None } }";
+
 #[test]
 fn option_returning_intrinsics_require_the_exact_payload_type() {
-    let state = query_cfg_state(
-        r#"fn Option(comptime T: type) -> type { enum { Some(T), None } }
+    // A fallible intrinsic's result is the exact trusted std `Option(payload)`
+    // (RUE-1112), so the match arms must name the real std `Option`, imported
+    // from the trusted module — a same-shape local `fn Option` lookalike is a
+    // different producer and is rejected as the intrinsic annotation.
+    let state = query_cfg_state_with_trusted_std(
+        r#"const option = @import("std/option.rue");
+        const Option = option.Option;
         fn parse32() -> i32 {
             let O = Option(i32);
             match @parse_i32("1") { O.Some(n) => n, O.None => 0 }
@@ -1107,6 +1241,7 @@ fn option_returning_intrinsics_require_the_exact_payload_type() {
             match @parse_i64("2") { O.Some(n) => @intCast(n), O.None => 0 }
         }
         fn main() -> i32 { parse32() + parse64() }"#,
+        &[(2, "/project/std/option.rue", TRUSTED_OPTION_MODULE_SOURCE)],
     )
     .expect("Option intrinsic signature probe must compile");
     let interp = Interp {
@@ -1163,18 +1298,15 @@ fn option_returning_intrinsics_require_the_exact_payload_type() {
 
 #[test]
 fn read_line_requires_trusted_source_strbuf_payload_metadata() {
-    use rue_compiler::unstable::{
-        DiscoverySourceAssembler, ImportDemandMode, begin_import_input_request,
-        import_demand_frontier_for_roots, import_observation_ledger,
-        publish_import_observation_batch,
-    };
-    use rue_compiler::{
-        AcceptedImportSource, CompilerSession, FileMetadataFingerprint, ImportDiscoveryContext,
-        ImportObservation, PhysicalFileIdentity,
-    };
-    use std::sync::Arc;
-
-    let root = Arc::new(
+    let strbuf = r#"pub struct StrBuf {
+            buf: ptr mut u8,
+            len: u64,
+            cap: u64,
+            fn len(borrow self) -> u64 { self.len }
+            fn as_ptr(borrow self) -> ptr mut u8 { self.buf }
+        }
+        drop fn StrBuf(self) { }"#;
+    let state = query_cfg_state_with_trusted_std(
         r#"const strbuf = @import("std/strbuf.rue");
         const option = @import("std/option.rue");
         const StrBuf = strbuf.StrBuf;
@@ -1187,116 +1319,13 @@ fn read_line_requires_trusted_source_strbuf_payload_metadata() {
             let O = Option(i32);
             match @parse_i32("1") { O.Some(value) => value, O.None => 0 }
         }
-        fn main() -> i32 { line() + parse() }"#
-            .to_owned(),
-    );
-    let strbuf = Arc::new(
-        r#"pub struct StrBuf {
-            buf: ptr mut u8,
-            len: u64,
-            cap: u64,
-            fn len(borrow self) -> u64 { self.len }
-            fn as_ptr(borrow self) -> ptr mut u8 { self.buf }
-        }
-        drop fn StrBuf(self) { }"#
-            .to_owned(),
-    );
-    let option = Arc::new(
-        r#"pub fn Option(comptime T: type) -> type { enum { Some(T), None } }"#.to_owned(),
-    );
-    let context =
-        ImportDiscoveryContext::new(1, "/project", Some("/project/std"), "oracle-call-contract")
-            .expect("valid discovery context");
-    let mut assembler = DiscoverySourceAssembler::new(
-        context.clone(),
-        "/project/main.rue",
-        "/project/main.rue",
-        PhysicalFileIdentity::new(1, 1),
-        FileMetadataFingerprint::new(root.len() as u64, 0, 0),
-        root,
+        fn main() -> i32 { line() + parse() }"#,
+        &[
+            (2, "/project/std/strbuf.rue", strbuf),
+            (3, "/project/std/option.rue", TRUSTED_OPTION_MODULE_SOURCE),
+        ],
     )
-    .expect("root source assembler");
-    let standard_sources = [
-        (2, "/project/std/strbuf.rue", strbuf),
-        (3, "/project/std/option.rue", option),
-    ];
-    let mut session = CompilerSession::new();
-    let initial = assembler.snapshot().expect("trusted std root snapshot");
-    let mut revision = begin_import_input_request(
-        &mut session,
-        &initial,
-        context.clone(),
-        assembler.accepted_read_manifest(),
-    )
-    .expect("begin trusted std request");
-    loop {
-        let snapshot = assembler.snapshot().expect("trusted std snapshot");
-        let ledger = import_observation_ledger(&session, revision).expect("current std ledger");
-        let plan = session
-            .stage_import_discovery(
-                &snapshot,
-                context.clone(),
-                assembler.accepted_read_manifest(),
-                ledger.clone(),
-            )
-            .expect("valid trusted std discovery plan");
-        let frontier = import_demand_frontier_for_roots(
-            &mut session,
-            revision,
-            &plan,
-            ImportDemandMode::Rooted,
-            &plan.demand_roots(),
-        )
-        .expect("trusted std frontier");
-        if frontier.requests().is_empty() {
-            session
-                .close_import_discovery(ledger)
-                .expect("close valid import discovery revision");
-            break;
-        }
-        let observations = frontier
-            .requests()
-            .iter()
-            .cloned()
-            .map(|request| {
-                let requested = request.requested_path();
-                let (index, canonical, source) = standard_sources
-                    .iter()
-                    .find(|(_, path, _)| *path == requested)
-                    .unwrap_or_else(|| panic!("unexpected import request {requested}"));
-                let accepted = AcceptedImportSource::new(
-                    requested,
-                    *canonical,
-                    PhysicalFileIdentity::new(1, *index),
-                    FileMetadataFingerprint::new(source.len() as u64, 0, 0),
-                    source.clone(),
-                )
-                .expect("accepted trusted standard-library source");
-                ImportObservation::accepted(request, accepted)
-                    .expect("observation matches discovery request")
-            })
-            .collect::<Vec<_>>();
-        let mut assembly_ledger = ledger;
-        for observation in observations.iter().cloned() {
-            assembly_ledger
-                .record(observation)
-                .expect("unique representative observation");
-        }
-        assembler
-            .add_plan_reads(&plan, &assembly_ledger)
-            .expect("assemble accepted std reads");
-        let successor = assembler.snapshot().expect("successor std snapshot");
-        revision = publish_import_observation_batch(
-            &mut session,
-            &frontier,
-            &successor,
-            assembler.accepted_read_manifest(),
-            observations,
-        )
-        .expect("publish std observation batch");
-    }
-    let state = query_cfg_state_from_session(session, &CompileOptions::default())
-        .expect("trusted Option(StrBuf) @read_line probe must compile");
+    .expect("trusted Option(StrBuf) @read_line probe must compile");
     let interp = Interp {
         state: &state,
         stdout: String::new(),

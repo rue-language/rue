@@ -18,27 +18,90 @@ use crate::SourceView;
 
 /// Immutable, validated identities for every source in a compilation.
 ///
-/// The descriptor owns its path maps and keeps a separate ascending `FileId`
-/// index. Callers therefore retain constant-time lookup while deterministic
-/// iterators never depend on `HashMap` iteration order.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The descriptor is a persistent structure (RUE-1112): it holds one or more
+/// `Arc`-shared segments, each owning its path maps and ascending `FileId`
+/// index. A strictly-additive successor appends one validated segment and
+/// shares every predecessor segment by reference, so extending the descriptor
+/// never copies, re-normalizes, or re-validates a predecessor entry; the merged
+/// ascending id index is materialized lazily, off the extension path. Callers
+/// retain constant-time lookup while deterministic iterators never depend on
+/// `HashMap` iteration order.
+#[derive(Debug)]
 pub struct SourceMetadata {
     root_file_id: FileId,
+    segments: Vec<std::sync::Arc<MetadataSegment>>,
+    len: usize,
+    merged_ids: std::sync::OnceLock<Vec<FileId>>,
+}
+
+/// One validated, immutable slice of the descriptor. Segment ids are ascending
+/// and every later segment's ids are strictly greater than every earlier
+/// segment's, so chaining segments preserves ascending order.
+#[derive(Debug)]
+struct MetadataSegment {
     sorted_ids: Vec<FileId>,
     physical_paths: HashMap<FileId, String>,
     logical_paths: HashMap<FileId, String>,
     trusted_standard_library_files: HashSet<FileId>,
+    /// Normalized path identities, retained so an appended segment can check
+    /// cross-segment collisions without re-normalizing predecessor entries.
+    normalized_physical: HashSet<String>,
+    normalized_logical: HashSet<String>,
 }
+
+impl Clone for SourceMetadata {
+    fn clone(&self) -> Self {
+        Self {
+            root_file_id: self.root_file_id,
+            segments: self.segments.clone(),
+            len: self.len,
+            merged_ids: std::sync::OnceLock::new(),
+        }
+    }
+}
+
+impl PartialEq for SourceMetadata {
+    fn eq(&self, other: &Self) -> bool {
+        // Logical equality over the merged descriptor, so a flat value and a
+        // segmented value with identical content are indistinguishable.
+        if self.root_file_id != other.root_file_id || self.len != other.len {
+            return false;
+        }
+        // Fast path: identical segment lists by pointer.
+        if self.segments.len() == other.segments.len()
+            && self
+                .segments
+                .iter()
+                .zip(other.segments.iter())
+                .all(|(a, b)| std::sync::Arc::ptr_eq(a, b))
+        {
+            return true;
+        }
+        self.file_ids().zip(other.file_ids()).all(|(a, b)| {
+            a == b
+                && self.physical_path(a) == other.physical_path(b)
+                && self.logical_path(a) == other.logical_path(b)
+                && self.is_trusted_standard_library_file(a)
+                    == other.is_trusted_standard_library_file(b)
+        })
+    }
+}
+
+impl Eq for SourceMetadata {}
 
 impl std::hash::Hash for SourceMetadata {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         // This type owns unordered `HashMap`/`HashSet` fields, so `Hash` cannot
-        // be derived. Hashing the root plus the deterministic ascending id index
-        // is consistent with the structural `Eq`: equal metadata necessarily
-        // agree on both, and any collision between distinct metadata is resolved
-        // by exact `Eq` when the typed key indexes the memo map.
+        // be derived. Hashing the root plus the deterministic ascending id
+        // sequence is consistent with the logical `Eq`: equal metadata
+        // necessarily agree on both, and any collision between distinct
+        // metadata is resolved by exact `Eq` when the typed key indexes the
+        // memo map. The id sequence is representation-independent.
         std::hash::Hash::hash(&self.root_file_id, state);
-        std::hash::Hash::hash(&self.sorted_ids, state);
+        std::hash::Hash::hash(&self.len, state);
+        for file_id in self.file_ids() {
+            std::hash::Hash::hash(&file_id, state);
+        }
     }
 }
 
@@ -56,58 +119,20 @@ impl SourceMetadata {
         if physical_paths.is_empty() {
             return Err(invalid_input("source metadata contains no files"));
         }
-
-        let mut file_ids: Vec<_> = physical_paths.keys().copied().collect();
-        file_ids.sort_by_key(|file_id| file_id.index());
-
         if !physical_paths.contains_key(&root_file_id) {
             return Err(invalid_input(format!(
                 "root file ID {} is absent from source metadata",
                 display_file_id(root_file_id)
             )));
         }
-
-        let missing_logical_ids: Vec<_> = file_ids
-            .iter()
-            .copied()
-            .filter(|file_id| !logical_paths.contains_key(file_id))
-            .collect();
-        if !missing_logical_ids.is_empty() {
-            return Err(invalid_input(format!(
-                "logical path map is missing file IDs: {}",
-                display_file_ids(&missing_logical_ids)
-            )));
-        }
-
-        let mut unknown_logical_ids: Vec<_> = logical_paths
-            .keys()
-            .copied()
-            .filter(|file_id| !physical_paths.contains_key(file_id))
-            .collect();
-        unknown_logical_ids.sort_by_key(|file_id| file_id.index());
-        if !unknown_logical_ids.is_empty() {
-            return Err(invalid_input(format!(
-                "logical path map contains unknown file IDs: {}",
-                display_file_ids(&unknown_logical_ids)
-            )));
-        }
-
-        let logical_paths: HashMap<_, _> = logical_paths
-            .into_iter()
-            .map(|(file_id, path)| (file_id, normalize_module_path(&path)))
-            .collect();
-
-        validate_nonempty_paths("physical", &file_ids, &physical_paths)?;
-        validate_nonempty_paths("logical", &file_ids, &logical_paths)?;
-        validate_normalized_collisions("physical", &file_ids, &physical_paths)?;
-        validate_normalized_collisions("logical", &file_ids, &logical_paths)?;
-
+        let segment =
+            MetadataSegment::validated(physical_paths, logical_paths, HashSet::new(), None)?;
+        let len = segment.sorted_ids.len();
         Ok(Self {
             root_file_id,
-            sorted_ids: file_ids,
-            physical_paths,
-            logical_paths,
-            trusted_standard_library_files: HashSet::new(),
+            segments: vec![std::sync::Arc::new(segment)],
+            len,
+            merged_ids: std::sync::OnceLock::new(),
         })
     }
 
@@ -117,21 +142,105 @@ impl SourceMetadata {
         logical_paths: HashMap<FileId, String>,
         trusted_standard_library_files: HashSet<FileId>,
     ) -> CompileResult<Self> {
-        let mut metadata = Self::new(root_file_id, physical_paths, logical_paths)?;
-        for file_id in &trusted_standard_library_files {
-            let Some(path) = metadata.logical_path(*file_id) else {
-                return Err(invalid_input(
-                    "trusted standard-library file is absent from metadata",
-                ));
-            };
-            if !path.starts_with("\0rue-std/") {
-                return Err(invalid_input(
-                    "trusted standard-library file has a non-standard logical path",
-                ));
+        if physical_paths.is_empty() {
+            return Err(invalid_input("source metadata contains no files"));
+        }
+        if !physical_paths.contains_key(&root_file_id) {
+            return Err(invalid_input(format!(
+                "root file ID {} is absent from source metadata",
+                display_file_id(root_file_id)
+            )));
+        }
+        let segment = MetadataSegment::validated(
+            physical_paths,
+            logical_paths,
+            trusted_standard_library_files,
+            None,
+        )?;
+        let len = segment.sorted_ids.len();
+        Ok(Self {
+            root_file_id,
+            segments: vec![std::sync::Arc::new(segment)],
+            len,
+            merged_ids: std::sync::OnceLock::new(),
+        })
+    }
+
+    /// Build a strictly-additive successor descriptor that shares every segment
+    /// of `self` by reference and appends one validated segment (RUE-1112).
+    ///
+    /// Only the appended entries are normalized and validated — nonempty
+    /// identities, normalized-collision checks within the appended set and
+    /// against the shared base's retained normalized identities, id
+    /// disjointness, and the trusted-namespace invariant — exactly the
+    /// invariants full construction enforces, applied incrementally. Appended
+    /// ids must be strictly greater than every existing id so chained segments
+    /// stay ascending.
+    pub(crate) fn extend_with_appended(
+        &self,
+        physical_paths: HashMap<FileId, String>,
+        logical_paths: HashMap<FileId, String>,
+        trusted_standard_library_files: HashSet<FileId>,
+    ) -> CompileResult<Self> {
+        if physical_paths.is_empty() {
+            return Err(invalid_input("source metadata extension appends no files"));
+        }
+        let max_existing = self
+            .segments
+            .last()
+            .and_then(|segment| segment.sorted_ids.last())
+            .expect("validated descriptors are never empty")
+            .index();
+        for file_id in physical_paths.keys() {
+            if self.contains_file(*file_id) || file_id.index() <= max_existing {
+                return Err(invalid_input(format!(
+                    "source metadata extension re-uses file ID {}",
+                    display_file_id(*file_id)
+                )));
             }
         }
-        metadata.trusted_standard_library_files = trusted_standard_library_files;
-        Ok(metadata)
+        let segment = MetadataSegment::validated(
+            physical_paths,
+            logical_paths,
+            trusted_standard_library_files,
+            Some(&self.segments),
+        )?;
+        let len = self.len + segment.sorted_ids.len();
+        let mut segments = self.segments.clone();
+        segments.push(std::sync::Arc::new(segment));
+        Ok(Self {
+            root_file_id: self.root_file_id,
+            segments,
+            len,
+            merged_ids: std::sync::OnceLock::new(),
+        })
+    }
+
+    /// The merged ascending id index, materialized lazily off the extension
+    /// path; a single-segment descriptor borrows its segment directly.
+    fn ids(&self) -> &[FileId] {
+        if self.segments.len() == 1 {
+            return &self.segments[0].sorted_ids;
+        }
+        self.merged_ids.get_or_init(|| {
+            self.segments
+                .iter()
+                .flat_map(|segment| segment.sorted_ids.iter().copied())
+                .collect()
+        })
+    }
+
+    fn segment_for(&self, file_id: FileId) -> Option<&MetadataSegment> {
+        self.segments
+            .iter()
+            .map(std::sync::Arc::as_ref)
+            .find(|segment| segment.physical_paths.contains_key(&file_id))
+    }
+
+    pub(crate) fn is_trusted_standard_library_file(&self, file_id: FileId) -> bool {
+        self.segments
+            .iter()
+            .any(|segment| segment.trusted_standard_library_files.contains(&file_id))
     }
 
     #[cfg(test)]
@@ -201,7 +310,7 @@ impl SourceMetadata {
     /// Number of files described by this metadata.
     #[inline]
     pub fn len(&self) -> usize {
-        self.sorted_ids.len()
+        self.len
     }
 
     /// Whether this descriptor contains no files.
@@ -210,23 +319,26 @@ impl SourceMetadata {
     /// [`Self::len`] therefore always returns `false`.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.sorted_ids.is_empty()
+        self.len == 0
     }
 
     /// Whether this descriptor contains `file_id`.
     #[inline]
     pub fn contains_file(&self, file_id: FileId) -> bool {
-        self.physical_paths.contains_key(&file_id)
+        self.segment_for(file_id).is_some()
     }
 
     /// File IDs in ascending numeric order.
     pub fn file_ids(&self) -> impl DoubleEndedIterator<Item = FileId> + ExactSizeIterator + '_ {
-        self.sorted_ids.iter().copied()
+        self.ids().iter().copied()
     }
 
     /// The physical diagnostic/module path for `file_id`.
     pub fn physical_path(&self, file_id: FileId) -> Option<&str> {
-        self.physical_paths.get(&file_id).map(String::as_str)
+        self.segment_for(file_id)?
+            .physical_paths
+            .get(&file_id)
+            .map(String::as_str)
     }
 
     /// The canonical logical semantic identity for `file_id`.
@@ -236,13 +348,16 @@ impl SourceMetadata {
     /// contents, snapshots, or interner epochs and are not standalone cache
     /// keys.
     pub fn logical_path(&self, file_id: FileId) -> Option<&str> {
-        self.logical_paths.get(&file_id).map(String::as_str)
+        self.segment_for(file_id)?
+            .logical_paths
+            .get(&file_id)
+            .map(String::as_str)
     }
 
     /// Canonical logical module identity for a request-local file ID.
     pub fn module_id(&self, file_id: FileId) -> Option<ModuleId> {
         let path = self.logical_path(file_id)?;
-        Some(if self.trusted_standard_library_files.contains(&file_id) {
+        Some(if self.is_trusted_standard_library_file(file_id) {
             ModuleId::from_trusted_validated_canonical(path)
         } else {
             ModuleId::from_validated_canonical(path)
@@ -259,12 +374,11 @@ impl SourceMetadata {
     pub fn physical_paths(
         &self,
     ) -> impl DoubleEndedIterator<Item = (FileId, &str)> + ExactSizeIterator + '_ {
-        self.sorted_ids.iter().map(|&file_id| {
+        self.ids().iter().map(|&file_id| {
             let path = self
-                .physical_paths
-                .get(&file_id)
+                .physical_path(file_id)
                 .expect("validated physical path key");
-            (file_id, path.as_str())
+            (file_id, path)
         })
     }
 
@@ -272,29 +386,12 @@ impl SourceMetadata {
     pub fn logical_paths(
         &self,
     ) -> impl DoubleEndedIterator<Item = (FileId, &str)> + ExactSizeIterator + '_ {
-        self.sorted_ids.iter().map(|&file_id| {
+        self.ids().iter().map(|&file_id| {
             let path = self
-                .logical_paths
-                .get(&file_id)
+                .logical_path(file_id)
                 .expect("validated logical path key");
-            (file_id, path.as_str())
+            (file_id, path)
         })
-    }
-
-    /// The complete physical path map.
-    ///
-    /// The map is immutable but its iteration order is unspecified. Use
-    /// [`Self::physical_paths`] when deterministic iteration matters.
-    pub fn physical_path_map(&self) -> &HashMap<FileId, String> {
-        &self.physical_paths
-    }
-
-    /// The complete logical path map.
-    ///
-    /// The map is immutable but its iteration order is unspecified. Use
-    /// [`Self::logical_paths`] when deterministic iteration matters.
-    pub fn logical_path_map(&self) -> &HashMap<FileId, String> {
-        &self.logical_paths
     }
 
     #[cfg(test)]
@@ -365,6 +462,105 @@ impl SourceMetadata {
         }
 
         Ok(())
+    }
+}
+
+impl MetadataSegment {
+    /// Validate one segment's complete path maps: exactly the invariants full
+    /// construction has always enforced (key agreement, nonempty normalized
+    /// identities, normalized-collision freedom, trusted-namespace membership),
+    /// applied to this segment's entries alone — plus, for an appended segment,
+    /// collision freedom against the shared base's RETAINED normalized
+    /// identities (no base entry is re-normalized or re-walked).
+    fn validated(
+        physical_paths: HashMap<FileId, String>,
+        logical_paths: HashMap<FileId, String>,
+        trusted_standard_library_files: HashSet<FileId>,
+        base: Option<&[std::sync::Arc<MetadataSegment>]>,
+    ) -> CompileResult<Self> {
+        let mut file_ids: Vec<_> = physical_paths.keys().copied().collect();
+        file_ids.sort_by_key(|file_id| file_id.index());
+
+        let missing_logical_ids: Vec<_> = file_ids
+            .iter()
+            .copied()
+            .filter(|file_id| !logical_paths.contains_key(file_id))
+            .collect();
+        if !missing_logical_ids.is_empty() {
+            return Err(invalid_input(format!(
+                "logical path map is missing file IDs: {}",
+                display_file_ids(&missing_logical_ids)
+            )));
+        }
+
+        let mut unknown_logical_ids: Vec<_> = logical_paths
+            .keys()
+            .copied()
+            .filter(|file_id| !physical_paths.contains_key(file_id))
+            .collect();
+        unknown_logical_ids.sort_by_key(|file_id| file_id.index());
+        if !unknown_logical_ids.is_empty() {
+            return Err(invalid_input(format!(
+                "logical path map contains unknown file IDs: {}",
+                display_file_ids(&unknown_logical_ids)
+            )));
+        }
+
+        let logical_paths: HashMap<_, _> = logical_paths
+            .into_iter()
+            .map(|(file_id, path)| (file_id, normalize_module_path(&path)))
+            .collect();
+
+        validate_nonempty_paths("physical", &file_ids, &physical_paths)?;
+        validate_nonempty_paths("logical", &file_ids, &logical_paths)?;
+        validate_normalized_collisions("physical", &file_ids, &physical_paths)?;
+        validate_normalized_collisions("logical", &file_ids, &logical_paths)?;
+
+        for file_id in &trusted_standard_library_files {
+            let Some(path) = logical_paths.get(file_id) else {
+                return Err(invalid_input(
+                    "trusted standard-library file is absent from metadata",
+                ));
+            };
+            if !path.starts_with("\0rue-std/") {
+                return Err(invalid_input(
+                    "trusted standard-library file has a non-standard logical path",
+                ));
+            }
+        }
+
+        let normalized_physical: HashSet<String> = file_ids
+            .iter()
+            .map(|file_id| normalize_module_path(&physical_paths[file_id]))
+            .collect();
+        let normalized_logical: HashSet<String> = logical_paths.values().cloned().collect();
+        if let Some(base) = base {
+            for segment in base {
+                for path in &normalized_physical {
+                    if segment.normalized_physical.contains(path) {
+                        return Err(invalid_input(format!(
+                            "physical path {path:?} collides with an existing source identity"
+                        )));
+                    }
+                }
+                for path in &normalized_logical {
+                    if segment.normalized_logical.contains(path) {
+                        return Err(invalid_input(format!(
+                            "logical path {path:?} collides with an existing source identity"
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(Self {
+            sorted_ids: file_ids,
+            physical_paths,
+            logical_paths,
+            trusted_standard_library_files,
+            normalized_physical,
+            normalized_logical,
+        })
     }
 }
 
@@ -473,8 +669,8 @@ mod tests {
             Some("stable/util.rue")
         );
         assert_eq!(metadata.logical_path(FileId::new(20)), Some("src/root.rue"));
-        assert_eq!(metadata.physical_path_map().len(), 2);
-        assert_eq!(metadata.logical_path_map().len(), 2);
+        assert_eq!(metadata.physical_paths().len(), 2);
+        assert_eq!(metadata.logical_paths().len(), 2);
     }
 
     #[test]

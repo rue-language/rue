@@ -318,6 +318,12 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "expressions.try",
+        "try_parse_freestanding_no_imports",
+        intrinsic(UnsupportedIntrinsicKind::ParseI64),
+        &[],
+    ),
+    Entry::new(
+        "expressions.try",
         "try_parse_intrinsic_none_short_circuits",
         intrinsic(UnsupportedIntrinsicKind::ParseI64),
         &[],

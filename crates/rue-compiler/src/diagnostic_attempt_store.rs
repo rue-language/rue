@@ -62,7 +62,7 @@ pub(crate) struct ImportDiagnosticInputDescriptor {
     pub(crate) context: Option<ImportDiscoveryContext>,
     pub(crate) plan: Option<ImportDiscoveryPlan>,
     pub(crate) ledger: ImportObservationLedger,
-    pub(crate) accepted_reads: Arc<[crate::AcceptedReadManifestEntry]>,
+    pub(crate) accepted_reads: crate::AcceptedReadManifest,
 }
 
 impl ImportDiagnosticInputDescriptor {
@@ -82,7 +82,7 @@ impl ImportDiagnosticInputDescriptor {
         &self.ledger
     }
     #[cfg(test)]
-    pub(crate) fn accepted_read_manifest(&self) -> &[crate::AcceptedReadManifestEntry] {
+    pub(crate) fn accepted_read_manifest(&self) -> &crate::AcceptedReadManifest {
         &self.accepted_reads
     }
 }
@@ -102,7 +102,7 @@ pub struct FrontendDiagnosticSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum DiagnosticAttemptProvenance {
     Canonical,
-    Presentation(Arc<[ModuleId]>),
+    Presentation(crate::shared_segments::SharedList<ModuleId>),
 }
 
 impl FrontendDiagnosticSnapshot {
@@ -594,14 +594,18 @@ mod tests {
         .unwrap();
         let reverse =
             SourceSnapshot::new(metadata, vec![(other, other_text), (root, root_text)]).unwrap();
-        let forward_order: Arc<[ModuleId]> = forward
-            .files()
-            .map(|file| forward.module_id(file.file_id).unwrap().clone())
-            .collect();
-        let reverse_order: Arc<[ModuleId]> = reverse
-            .files()
-            .map(|file| reverse.module_id(file.file_id).unwrap().clone())
-            .collect();
+        let forward_order = crate::shared_segments::SharedList::flat(
+            forward
+                .files()
+                .map(|file| forward.module_id(file.file_id).unwrap().clone())
+                .collect(),
+        );
+        let reverse_order = crate::shared_segments::SharedList::flat(
+            reverse
+                .files()
+                .map(|file| reverse.module_id(file.file_id).unwrap().clone())
+                .collect(),
+        );
         let attempt = |source: &SourceSnapshot, provenance| {
             Arc::new(FrontendDiagnosticSnapshot {
                 source: source.clone(),

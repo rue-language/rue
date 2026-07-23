@@ -389,7 +389,7 @@ The `@read_line` intrinsic reads a line of text from standard input.
 
 {{ rule(id="4.13:35", cat="normative") }}
 
-The return type of `@read_line` is `Option(StrBuf)`, where `Option` is the ordinary comptime-generic library enum (`enum { Some(T), None }`, ADR-0038). The concrete `Option(StrBuf)` type is taken from the surrounding context — a `let` binding annotation, or the arms of a `match` on the result — so `Option` must be in scope (e.g. imported) at the call site. As a special case, when `@read_line()` is the operand of the `?` operator (§4.15), the context supplies no annotation, so the intrinsic instantiates its own `Option(StrBuf)` directly (see rule 4.15:9).
+The return type of `@read_line` is the trusted standard `Option` specialized at `StrBuf` — the producer-nominal enum declared by `std.option.Option` (`std/option.rue`, ADR-0038), instantiated as `Option(StrBuf)`. The intrinsic yields this exact standard specialization in every context: bare as the operand of the `?` operator (§4.15), as the initializer of an annotated `let`, as the scrutinee of a `match`, or as a freestanding expression. Surrounding context never *selects* which nominal the intrinsic produces; when an annotation or `match` is present it only *checks* that the intrinsic's standard `Option(StrBuf)` matches, and any other type — including a user-defined enum that repeats the `Some`/`None` shape under a different producer — is an ordinary type error (E0702). Because the standard `Option` is a toolchain guarantee, `@read_line` has this type even in a program that does not import `std` lexically; the compiler roots the trusted-module demand itself, and an absent standard library is a toolchain-integrity error rather than a language state.
 
 {{ rule(id="4.13:36", cat="dynamic-semantics") }}
 
@@ -459,13 +459,13 @@ The integer parsing intrinsics convert a string to an integer value.
 
 {{ rule(id="4.13:44", cat="normative") }}
 
-Each parsing intrinsic returns `Option(T)` for its target integer type `T`, where `Option` is the ordinary comptime-generic library enum (ADR-0038):
+Each parsing intrinsic returns the trusted standard `Option` specialized at its target integer type `T` — the producer-nominal enum declared by `std.option.Option` (`std/option.rue`, ADR-0038):
 - `@parse_i32` returns `Option(i32)`
 - `@parse_i64` returns `Option(i64)`
 - `@parse_u32` returns `Option(u32)`
 - `@parse_u64` returns `Option(u64)`
 
-The concrete `Option(T)` type is taken from the surrounding context (a `let` annotation, or the arms of a `match` on the result), so `Option` must be in scope at the call site. As a special case, when a parsing intrinsic is the operand of the `?` operator (§4.15), the intrinsic instantiates its own `Option(T)` directly (see rule 4.15:9).
+The intrinsic yields this exact standard specialization in every context — bare as the operand of the `?` operator (§4.15), as the initializer of an annotated `let`, as the scrutinee of a `match`, or as a freestanding expression. Surrounding context never *selects* the nominal; when present it only *checks* that the intrinsic's standard `Option(T)` matches, and any other type — including a user-defined `Some`/`None` lookalike under a different producer — is an ordinary type error (E0702). As with `@read_line` (rule 4.13:35), the compiler roots the trusted standard `Option` itself, so a parsing intrinsic has this type even without a lexical `std` import.
 
 {{ rule(id="4.13:45", cat="normative") }}
 

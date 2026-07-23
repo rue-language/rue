@@ -2,15 +2,19 @@
 #
 # Since RUE-6 (ADR-0038) these intrinsics are fallible-by-Option, not
 # trapping: @read_line returns Option(StrBuf) (None at EOF) and @parse_* return
-# Option(int) (None on bad input). The concrete Option is imported from a small
-# local module (no prelude yet) and threaded via a `let` annotation or the
-# match arms.
+# Option(int) (None on bad input).
+#
+# Fallible intrinsics yield the exact trusted std Option in every context.
+# Contextual annotations check that identity; user-defined Option lookalikes
+# are rejected as non-matching.
 
 [section]
 id = "cli.stdin"
 name = "Standard input interaction"
 description = "Piping input to compiled programs; recoverable Option-based read/parse."
 
+# Fallible intrinsics yield the exact trusted std Option; contextual type
+# checks validate this identity.
 [[case]]
 name = "read_and_echo_number"
 env = { RUE_STD_PATH = "${REAL_STD}" }
@@ -19,8 +23,8 @@ files = [
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let OptStr = @import("opt.rue").Option(StrBuf);
-    let OptInt = @import("opt.rue").Option(i32);
+    let OptStr = std.option.Option(StrBuf);
+    let OptInt = std.option.Option(i32);
     let line: OptStr = @read_line();
     match line {
         OptStr.Some(text) => {
@@ -34,13 +38,12 @@ fn main() -> i32 {
     0
 }
 """ },
-  { path = "opt.rue", source = """
-pub fn Option(comptime T: type) -> type { enum { Some(T), None } }
-""" },
 ]
 stdin = "42\n"
 stdout = "42\n"
 
+# Fallible intrinsics yield the exact trusted std Option; contextual type
+# checks validate this identity.
 [[case]]
 name = "guessing_loop_scripted"
 env = { RUE_STD_PATH = "${REAL_STD}" }
@@ -49,8 +52,8 @@ files = [
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let OptStr = @import("opt.rue").Option(StrBuf);
-    let OptInt = @import("opt.rue").Option(i32);
+    let OptStr = std.option.Option(StrBuf);
+    let OptInt = std.option.Option(i32);
     let secret = 73;
     loop {
         let line: OptStr = @read_line();
@@ -76,9 +79,6 @@ fn main() -> i32 {
     0
 }
 """ },
-  { path = "opt.rue", source = """
-pub fn Option(comptime T: type) -> type { enum { Some(T), None } }
-""" },
 ]
 stdin = "50\n90\n73\n"
 stdout = """
@@ -91,6 +91,8 @@ You got it!
 # two cases trapped with exit 101 ("parse error" / "unexpected end of input").
 # Now a bad parse is `None` and EOF is `None` — the program chooses what to do.
 
+# Fallible intrinsics yield the exact trusted std Option; contextual type
+# checks validate this identity.
 [[case]]
 name = "parse_error_yields_none"
 env = { RUE_STD_PATH = "${REAL_STD}" }
@@ -99,8 +101,8 @@ files = [
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let OptStr = @import("opt.rue").Option(StrBuf);
-    let OptInt = @import("opt.rue").Option(i32);
+    let OptStr = std.option.Option(StrBuf);
+    let OptInt = std.option.Option(i32);
     let line: OptStr = @read_line();
     match line {
         OptStr.Some(text) => {
@@ -113,13 +115,12 @@ fn main() -> i32 {
     }
 }
 """ },
-  { path = "opt.rue", source = """
-pub fn Option(comptime T: type) -> type { enum { Some(T), None } }
-""" },
 ]
 stdin = "banana\n"
 exit_code = 7
 
+# Fallible intrinsics yield the exact trusted std Option; contextual type
+# checks validate this identity.
 [[case]]
 name = "read_line_at_eof_yields_none"
 env = { RUE_STD_PATH = "${REAL_STD}" }
@@ -128,16 +129,13 @@ files = [
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
 fn main() -> i32 {
-    let OptStr = @import("opt.rue").Option(StrBuf);
+    let OptStr = std.option.Option(StrBuf);
     let line: OptStr = @read_line();
     match line {
         OptStr.Some(_text) => 1,
         OptStr.None => 0,
     }
 }
-""" },
-  { path = "opt.rue", source = """
-pub fn Option(comptime T: type) -> type { enum { Some(T), None } }
 """ },
 ]
 stdin = ""

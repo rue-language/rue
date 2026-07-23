@@ -2,34 +2,36 @@
 id = "diagnostics.result-try-errors"
 name = "`?` on Result: targeted diagnostics (RUE-591, ADR-0038)"
 description = """
-`?` now propagates Result (Ok/Err), not just Option. These pin the two Result-
+`?` propagates Result (Ok/Err), not just Option. These pin the two Result-
 specific error diagnostics: using `?` on a Result in a function that doesn't
 return a Result (E0505), and a Result whose error type doesn't match the
 function's error type (E0506) — Rue has no error conversion until traits exist.
-`?` recognizes Result by shape, so these use an inline `Result` (the UI harness
-provides no std). Functions are reached from main so the driver analyzes them.
+`?` recognizes Result by exact trusted-producer identity, not shape, so these
+use the trusted `std.result.Result` (a local Ok/Err lookalike would be E0504
+QuestionOnNonOption, not these diagnostics). Functions are reached from main so
+the driver analyzes them.
 """
 
 [[case]]
 name = "question_on_result_in_non_result_fn"
-description = "`?` on a Result inside an Option-returning fn is E0505, not the Option E0503."
+description = "`?` on a trusted std Result inside a std-Option-returning fn is E0505, not the Option E0503."
 source = """
-fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
-fn div(a: i32, b: i32) -> Result(i32, i32) {
-    let R = Result(i32, i32);
+const std = @import("std");
+fn div(a: i32, b: i32) -> std.result.Result(i32, i32) {
+    let R = std.result.Result(i32, i32);
     if b == 0 { R.Err(1) } else { R.Ok(a / b) }
 }
-fn f() -> Option(i32) {
-    let O = Option(i32);
+fn f() -> std.option.Option(i32) {
+    let O = std.option.Option(i32);
     let q = div(4, 2)?;
     O.Some(q)
 }
 fn main() -> i32 {
-    let O = Option(i32);
+    let O = std.option.Option(i32);
     match f() { O.Some(v) => v, O.None => 0 }
 }
 """
+real_std = true
 compile_fail = true
 error_contains = [
     "E0505",
@@ -38,23 +40,24 @@ error_contains = [
 
 [[case]]
 name = "question_result_err_type_mismatch"
-description = "`?` on Err(i32) in a fn returning Err(bool) is E0506 (no error conversion yet)."
+description = "`?` on a std Result Err(i32) in a fn returning std Result(i32, bool) is E0506 (no error conversion yet)."
 source = """
-fn Result(comptime T: type, comptime E: type) -> type { enum { Ok(T), Err(E) } }
-fn div(a: i32, b: i32) -> Result(i32, i32) {
-    let R = Result(i32, i32);
+const std = @import("std");
+fn div(a: i32, b: i32) -> std.result.Result(i32, i32) {
+    let R = std.result.Result(i32, i32);
     if b == 0 { R.Err(1) } else { R.Ok(a / b) }
 }
-fn f() -> Result(i32, bool) {
-    let R = Result(i32, bool);
+fn f() -> std.result.Result(i32, bool) {
+    let R = std.result.Result(i32, bool);
     let q = div(4, 2)?;
     R.Ok(q)
 }
 fn main() -> i32 {
-    let R = Result(i32, bool);
+    let R = std.result.Result(i32, bool);
     match f() { R.Ok(v) => v, R.Err(e) => 0 }
 }
 """
+real_std = true
 compile_fail = true
 error_contains = [
     "E0506",

@@ -12,7 +12,7 @@ use rue_compiler::unstable::{
     prepare_stable_definitions, query_merge, semantic_parity_snapshot,
 };
 use rue_compiler::{
-    AcceptedReadManifestEntry, CompileOptions, CompilerSession, FileMetadataFingerprint,
+    AcceptedReadManifest, CompileOptions, CompilerSession, FileMetadataFingerprint,
     FrontendDiagnosticSnapshot, ImportDiscoveryContext, ImportObservationLedger, OptLevel,
     PhysicalFileIdentity, SemanticView, SourceMetadata, SourceSnapshot,
 };
@@ -309,14 +309,10 @@ fn single_root_snapshot(source: String) -> SourceSnapshot {
 
 fn completion_discovery(
     source: Arc<String>,
-) -> (
-    SourceSnapshot,
-    ImportDiscoveryContext,
-    Arc<[AcceptedReadManifestEntry]>,
-) {
+) -> (SourceSnapshot, ImportDiscoveryContext, AcceptedReadManifest) {
     let context = ImportDiscoveryContext::new(1, "/bench", None, "rue-888-benchmark").unwrap();
     let source_len = source.len() as u64;
-    let assembler = DiscoverySourceAssembler::new(
+    let mut assembler = DiscoverySourceAssembler::new(
         context.clone(),
         "/bench/main.rue",
         "/bench/main.rue",
@@ -341,7 +337,7 @@ fn close_completion_discovery(session: &mut CompilerSession, source: &SourceSnap
         .stage_import_discovery(
             &discovered,
             context,
-            accepted_reads,
+            accepted_reads.shared_slice(),
             ImportObservationLedger::default(),
         )
         .unwrap();
