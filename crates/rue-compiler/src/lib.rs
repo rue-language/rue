@@ -41,6 +41,7 @@ mod canonical_lower;
 mod canonical_merge;
 mod canonical_semantic;
 mod declaration_candidate;
+mod declaration_recipe;
 mod definition_snapshot;
 mod dependency_envelope;
 mod diagnostic;
