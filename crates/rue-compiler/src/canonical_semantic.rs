@@ -1511,8 +1511,7 @@ pub(crate) fn project_function_instance_key(
 
 fn project_produced_anonymous_nominals(
     values: &[rue_air::SemanticProducedAnonymousNominal],
-    merged: &CanonicalMergedProgram,
-    definitions: &BoundDefinitionSet,
+    resolver: &dyn BodyOutcomeResolver,
 ) -> Result<
     crate::body_query::BodyProducedAnonymousNominals,
     rue_air::SemanticStableResolutionFailure,
@@ -1528,12 +1527,8 @@ fn project_produced_anonymous_nominals(
         rue_air::SemanticModuleToken,
     >| {
         let ty = ty.try_map_identities(
-            &|token| definitions.key_for_semantic_token(*token).cloned(),
-            &|token| {
-                definitions
-                    .module_for_semantic_token(merged, *token)
-                    .cloned()
-            },
+            &|token| resolver.key_for_semantic_token(*token),
+            &|token| resolver.module_for_semantic_token(*token),
         )?;
         crate::revisioned_query_database::durable_type_from_instance_key(&ty)
             .ok_or(rue_air::SemanticStableResolutionFailure::WrongKind)
@@ -1543,12 +1538,8 @@ fn project_produced_anonymous_nominals(
         rue_air::SemanticModuleToken,
     >| {
         let value = value.try_map_identities(
-            &|token| definitions.key_for_semantic_token(*token).cloned(),
-            &|token| {
-                definitions
-                    .module_for_semantic_token(merged, *token)
-                    .cloned()
-            },
+            &|token| resolver.key_for_semantic_token(*token),
+            &|token| resolver.module_for_semantic_token(*token),
         )?;
         crate::revisioned_query_database::durable_value_from_argument(&value)
             .ok_or(rue_air::SemanticStableResolutionFailure::WrongKind)
@@ -1563,12 +1554,8 @@ fn project_produced_anonymous_nominals(
         .iter()
         .map(|value| {
             let identity = value.identity.try_map_identities(
-                &|token| definitions.key_for_semantic_token(*token).cloned(),
-                &|token| {
-                    definitions
-                        .module_for_semantic_token(merged, *token)
-                        .cloned()
-                },
+                &|token| resolver.key_for_semantic_token(*token),
+                &|token| resolver.module_for_semantic_token(*token),
             )?;
             let method_type = |ty: &rue_air::SemanticProducedAnonymousMethodType| {
                 Ok(match ty {
@@ -1676,8 +1663,7 @@ pub(crate) fn analyze_body_query(
     // any stage and never charges installation for a body that never installed.
     work: &mut PerBodyDeclarationContextWork,
 ) -> Result<crate::body_query::BodyTransaction, rue_query::QueryAbort> {
-    use crate::body_query::{BodyReference, BodyReferences, BodyTransaction, CanonicalBody};
-    use rue_air::{OneBodyCanonicalArtifact as Artifact, OneBodyDependency as Dependency};
+    use crate::body_query::{BodyReference, BodyReferences, BodyTransaction};
 
     if cancellation.is_canceled() {
         return Err(rue_query::QueryAbort::Canceled);
@@ -1911,6 +1897,97 @@ pub(crate) fn analyze_body_query(
     if cancellation.is_canceled() {
         return Err(rue_query::QueryAbort::Canceled);
     }
+    let _export_span = info_span!("body_export").entered();
+    // Publication converts the request-scoped overlay/epoch outcome back to the
+    // durable body artifact through a resolver over the current issuer's stable
+    // token space. The conversion is factored so the production `BoundDefinitionSet`
+    // path and the body-local overlay path (RUE-1091 ADR-0066 §4) publish through
+    // the identical code, guaranteeing byte-identical references, produced
+    // nominals, and stable diagnostic ordering regardless of which token space
+    // issued the compact IDs.
+    let resolver = BoundOutcomeResolver {
+        definitions: &definitions,
+        merged,
+    };
+    publish_one_body_outcome(outcome, &resolver, &deterministic_failure)
+}
+
+/// The stable-identity back-projection publication needs to convert one
+/// `OneBodyTransactionOutcome` (carrying issuer-scoped compact tokens) into the
+/// durable `BodyTransaction`. It abstracts over which token space issued the
+/// tokens: the production path resolves against the whole-epoch
+/// `BoundDefinitionSet`; the body-local overlay resolves against its own
+/// task-owned minted token space. Compact overlay IDs never cross this boundary.
+pub(crate) trait BodyOutcomeResolver {
+    fn key_for_semantic_token(
+        &self,
+        token: rue_air::SemanticDefinitionToken,
+    ) -> Result<crate::StableDefinitionKey, rue_air::SemanticStableResolutionFailure>;
+    fn module_for_semantic_token(
+        &self,
+        token: rue_air::SemanticModuleToken,
+    ) -> Result<crate::ModuleId, rue_air::SemanticStableResolutionFailure>;
+    /// Resolve the ordinary body owner. The error carries the pre-formatted
+    /// deterministic-failure detail so publication renders an identical
+    /// diagnostic regardless of resolver.
+    fn definition_key_for_body_token(
+        &self,
+        token: rue_air::BodyOwnerToken,
+    ) -> Result<crate::StableDefinitionKey, String>;
+}
+
+/// Production resolver: the whole-epoch bound definition universe plus its
+/// canonical module ordering.
+struct BoundOutcomeResolver<'a> {
+    definitions: &'a BoundDefinitionSet,
+    merged: &'a CanonicalMergedProgram,
+}
+
+impl BodyOutcomeResolver for BoundOutcomeResolver<'_> {
+    fn key_for_semantic_token(
+        &self,
+        token: rue_air::SemanticDefinitionToken,
+    ) -> Result<crate::StableDefinitionKey, rue_air::SemanticStableResolutionFailure> {
+        self.definitions.key_for_semantic_token(token).cloned()
+    }
+
+    fn module_for_semantic_token(
+        &self,
+        token: rue_air::SemanticModuleToken,
+    ) -> Result<crate::ModuleId, rue_air::SemanticStableResolutionFailure> {
+        self.definitions
+            .module_for_semantic_token(self.merged, token)
+            .cloned()
+    }
+
+    fn definition_key_for_body_token(
+        &self,
+        token: rue_air::BodyOwnerToken,
+    ) -> Result<crate::StableDefinitionKey, String> {
+        self.definitions
+            .definition_for_body_token(token)
+            .map(|record| record.stable_key().clone())
+            .map_err(|failure| format!("{failure:?}"))
+    }
+}
+
+/// Convert one analyzed body outcome to its durable `BodyTransaction`.
+///
+/// A `Success` maps every reference, body key, produced-anonymous identity, and
+/// ordinary body owner back across the stable bridge, then folds field-place
+/// nominal references into the reference set. A `DeterministicFailure` carries
+/// its authoritative, already stably-ordered diagnostics through unchanged —
+/// publication never permutes them, so task schedule, provider observation
+/// order, compact-ID allocation order, cache hits, and warm reuse cannot change
+/// observable diagnostic order. A `NonTerminal` outcome publishes nothing.
+pub(crate) fn publish_one_body_outcome(
+    outcome: rue_air::OneBodyTransactionOutcome,
+    resolver: &dyn BodyOutcomeResolver,
+    deterministic_failure: &dyn Fn(&str, String) -> crate::body_query::BodyTransaction,
+) -> Result<crate::body_query::BodyTransaction, rue_query::QueryAbort> {
+    use crate::body_query::{BodyReference, BodyReferences, BodyTransaction, CanonicalBody};
+    use rue_air::{OneBodyCanonicalArtifact as Artifact, OneBodyDependency as Dependency};
+
     let map_references = |references: Arc<[Dependency]>| {
         references
             .iter()
@@ -1918,31 +1995,22 @@ pub(crate) fn analyze_body_query(
                 Ok(match reference {
                     Dependency::Callable(value) => {
                         BodyReference::Callable(value.try_map_identities(
-                            &|token| definitions.key_for_semantic_token(*token).cloned(),
-                            &|token| {
-                                definitions
-                                    .module_for_semantic_token(merged, *token)
-                                    .cloned()
-                            },
+                            &|token| resolver.key_for_semantic_token(*token),
+                            &|token| resolver.module_for_semantic_token(*token),
                         )?)
                     }
-                    Dependency::Definition(token) => BodyReference::Definition(
-                        definitions.key_for_semantic_token(*token)?.clone(),
-                    ),
+                    Dependency::Definition(token) => {
+                        BodyReference::Definition(resolver.key_for_semantic_token(*token)?)
+                    }
                     Dependency::Type(value) => BodyReference::Type(value.try_map_identities(
-                        &|token| definitions.key_for_semantic_token(*token).cloned(),
-                        &|token| {
-                            definitions
-                                .module_for_semantic_token(merged, *token)
-                                .cloned()
-                        },
+                        &|token| resolver.key_for_semantic_token(*token),
+                        &|token| resolver.module_for_semantic_token(*token),
                     )?),
                 })
             })
             .collect::<Result<Vec<_>, rue_air::SemanticStableResolutionFailure>>()
             .map(|values| BodyReferences(values.into()))
     };
-    let _export_span = info_span!("body_export").entered();
     match outcome {
         rue_air::OneBodyTransactionOutcome::Success {
             artifact,
@@ -1960,8 +2028,7 @@ pub(crate) fn analyze_body_query(
             };
             let produced_anonymous_nominals = match project_produced_anonymous_nominals(
                 &produced_anonymous_nominals,
-                merged,
-                &definitions,
+                resolver,
             ) {
                 Ok(produced_anonymous_nominals) => produced_anonymous_nominals,
                 Err(failure) => {
@@ -1973,25 +2040,15 @@ pub(crate) fn analyze_body_query(
             };
             let body = match artifact {
                 Artifact::Ordinary(export) => {
-                    let owner = match definitions
-                        .definition_for_body_token(export.owner)
-                        .map(|record| record.stable_key().clone())
-                    {
+                    let owner = match resolver.definition_key_for_body_token(export.owner) {
                         Ok(owner) => owner,
-                        Err(failure) => {
-                            return Ok(deterministic_failure(
-                                "resolve_ordinary_body_owner",
-                                format!("{failure:?}"),
-                            ));
+                        Err(detail) => {
+                            return Ok(deterministic_failure("resolve_ordinary_body_owner", detail));
                         }
                     };
                     let body = match export.body.try_map_keys(
-                        &|token| definitions.key_for_semantic_token(*token).cloned(),
-                        &|token| {
-                            definitions
-                                .module_for_semantic_token(merged, *token)
-                                .cloned()
-                        },
+                        &|token| resolver.key_for_semantic_token(*token),
+                        &|token| resolver.module_for_semantic_token(*token),
                     ) {
                         Ok(body) => body,
                         Err(failure) => {
@@ -2005,12 +2062,8 @@ pub(crate) fn analyze_body_query(
                 }
                 Artifact::Anonymous(export) => {
                     let identity = match export.identity.try_map_identities(
-                        &|token| definitions.key_for_semantic_token(*token).cloned(),
-                        &|token| {
-                            definitions
-                                .module_for_semantic_token(merged, *token)
-                                .cloned()
-                        },
+                        &|token| resolver.key_for_semantic_token(*token),
+                        &|token| resolver.module_for_semantic_token(*token),
                     ) {
                         Ok(identity) => identity,
                         Err(failure) => {
@@ -2021,12 +2074,8 @@ pub(crate) fn analyze_body_query(
                         }
                     };
                     let body = match export.body.try_map_keys(
-                        &|token| definitions.key_for_semantic_token(*token).cloned(),
-                        &|token| {
-                            definitions
-                                .module_for_semantic_token(merged, *token)
-                                .cloned()
-                        },
+                        &|token| resolver.key_for_semantic_token(*token),
+                        &|token| resolver.module_for_semantic_token(*token),
                     ) {
                         Ok(body) => body,
                         Err(failure) => {
@@ -2040,12 +2089,8 @@ pub(crate) fn analyze_body_query(
                 }
                 Artifact::Specialization(export) => {
                     let identity = match export.identity.try_map_keys(
-                        &|token| definitions.key_for_semantic_token(*token).cloned(),
-                        &|token| {
-                            definitions
-                                .module_for_semantic_token(merged, *token)
-                                .cloned()
-                        },
+                        &|token| resolver.key_for_semantic_token(*token),
+                        &|token| resolver.module_for_semantic_token(*token),
                     ) {
                         Ok(identity) => identity,
                         Err(failure) => {
@@ -2056,12 +2101,8 @@ pub(crate) fn analyze_body_query(
                         }
                     };
                     let body = match export.body.try_map_keys(
-                        &|token| definitions.key_for_semantic_token(*token).cloned(),
-                        &|token| {
-                            definitions
-                                .module_for_semantic_token(merged, *token)
-                                .cloned()
-                        },
+                        &|token| resolver.key_for_semantic_token(*token),
+                        &|token| resolver.module_for_semantic_token(*token),
                     ) {
                         Ok(body) => body,
                         Err(failure) => {
@@ -2074,7 +2115,7 @@ pub(crate) fn analyze_body_query(
                     let dependencies = match export
                         .dependencies
                         .iter()
-                        .map(|token| definitions.key_for_semantic_token(*token).cloned())
+                        .map(|token| resolver.key_for_semantic_token(*token))
                         .collect::<Result<Vec<_>, _>>()
                     {
                         Ok(dependencies) => dependencies.into(),
@@ -2134,6 +2175,224 @@ pub(crate) fn analyze_body_query(
             Err(rue_query::QueryAbort::Canceled)
         }
     }
+}
+
+/// Test-only overlay driver (RUE-1091 slice 2b). It analyzes exactly one body
+/// through a task-owned `BodySemanticOverlay` instead of the whole-epoch
+/// `BoundDefinitionSet` token space, then publishes through the shared
+/// `publish_one_body_outcome`. The declaration prepare/project/install prefix is
+/// unchanged; only the stable-identity endpoints are re-issued under the
+/// overlay's own issuer, so the analyzed body mints and resolves overlay-local
+/// compact IDs end to end. This is not a production path — `analyze_body_query`
+/// is the one production path and remains inert to overlays.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn analyze_body_via_overlay(
+    merged: &CanonicalMergedProgram,
+    rir: &CanonicalRirOutput,
+    options: &CompileOptions,
+    imports: &CanonicalImportGraph,
+    query_shells: &[rue_air::SemanticDeclarationShell],
+    query_declarations: &[DurableDeclarationSemantic],
+    query_anonymous_nominals: &[crate::durable_semantics::DurableAnonymousNominal],
+    well_known: &crate::body_query::WellKnownOptionResolution,
+    key: &crate::body_query::BodyQueryKey,
+    cancellation: &rue_query::CancellationToken,
+    overlay: &mut crate::body_overlay::BodySemanticOverlay,
+) -> Result<crate::body_query::BodyTransaction, rue_query::QueryAbort> {
+    use crate::body_query::{BodyReference, BodyReferences, BodyTransaction};
+    use rue_air::{BodyOwnerToken, SemanticDefinitionToken, SemanticModuleToken};
+
+    if cancellation.is_canceled() {
+        return Err(rue_query::QueryAbort::Canceled);
+    }
+    let deterministic_failure = |stage: &str, detail: String| -> BodyTransaction {
+        BodyTransaction::DeterministicFailure {
+            errors: crate::CompileErrors::from(crate::CompileError::without_span(
+                rue_error::ErrorKind::InternalError(format!(
+                    "overlay body query stage `{stage}` failed for body instance {:?}: {detail}",
+                    key.instance,
+                )),
+            )),
+            references: BodyReferences(Arc::from(Vec::<BodyReference>::new())),
+        }
+    };
+
+    let prepared =
+        match prepare_query_declaration_shells(merged, rir, options, imports, query_shells) {
+            Ok(prepared) => prepared,
+            Err(failure) => {
+                return Ok(deterministic_failure(
+                    "prepare_query_declaration_shells",
+                    format!("{} ({:?})", failure.errors, failure.failure),
+                ));
+            }
+        };
+    let CanonicalPreparedDeclarations {
+        shells,
+        definitions: provisional,
+        ..
+    } = prepared;
+    let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
+    let (projected, _) = match crate::project_durable_declaration_semantics(
+        merged,
+        &provisional,
+        &shell_records,
+        query_declarations,
+    ) {
+        Ok(projected) => projected,
+        Err(failure) => {
+            return Ok(deterministic_failure(
+                "project_durable_declaration_semantics",
+                format!("{failure:?}"),
+            ));
+        }
+    };
+    let projected_anonymous = match crate::durable_semantics::project_durable_anonymous_nominals(
+        merged,
+        &provisional,
+        query_anonymous_nominals,
+    ) {
+        Ok(projected_anonymous) => projected_anonymous,
+        Err(failure) => {
+            return Ok(deterministic_failure(
+                "project_durable_anonymous_nominals",
+                format!("{failure:?}"),
+            ));
+        }
+    };
+    let bound = match shells
+        .install_declaration_semantics_with_anonymous(&projected, &projected_anonymous)
+    {
+        Ok(bound) => bound,
+        Err(failure) => {
+            return Ok(deterministic_failure(
+                "install_declaration_semantics_with_anonymous",
+                format!("{failure:?}"),
+            ));
+        }
+    };
+    let manifest = bound.binding_manifest();
+    let definitions = match issue_bound_definitions(
+        merged,
+        rir.source_revision(),
+        manifest.bindings(),
+        manifest.work(),
+    ) {
+        Ok(definitions) => definitions,
+        Err(failure) => {
+            return Ok(deterministic_failure(
+                "issue_bound_definitions",
+                format!("{failure:?}"),
+            ));
+        }
+    };
+
+    // Seed the overlay's local token space in the bound universe's sorted order
+    // so an overlay definition slot mirrors its whole-epoch counterpart. This is
+    // the recipe-materialization mint: every definition/module fact the body can
+    // reach gets a fresh overlay-local token recorded against its stable identity.
+    for record in definitions.definitions() {
+        overlay.intern_definition(record.stable_key());
+    }
+    for module in merged.ast().modules() {
+        overlay.intern_module(module.module_id());
+    }
+
+    // Re-issue the endpoints under the overlay's own issuer. Text, file, kind,
+    // and owner provenance are unchanged (installation still validates them);
+    // only the issuer-scoped token differs, so the analyzed body observes and
+    // publishes overlay-local compact IDs rather than the whole-epoch ones.
+    let issuer = overlay.issuer();
+    let body_owner_endpoints = definitions
+        .body_owner_endpoints()
+        .into_iter()
+        .map(|mut endpoint| {
+            endpoint.token = BodyOwnerToken::new(issuer, endpoint.token.slot());
+            endpoint
+        })
+        .collect::<Vec<_>>();
+    let bound = match bound.install_body_owner_tokens(&body_owner_endpoints) {
+        Ok(bound) => bound,
+        Err(failure) => {
+            return Ok(deterministic_failure(
+                "install_body_owner_tokens",
+                format!("{failure:?}"),
+            ));
+        }
+    };
+    let semantic_definition_endpoints = definitions
+        .semantic_definition_endpoints()
+        .into_iter()
+        .map(|mut endpoint| {
+            endpoint.token = SemanticDefinitionToken::new(issuer, endpoint.token.slot());
+            endpoint
+        })
+        .collect::<Vec<_>>();
+    let semantic_module_endpoints = definitions
+        .semantic_module_endpoints(merged)
+        .into_iter()
+        .map(|mut endpoint| {
+            endpoint.token = SemanticModuleToken::new(issuer, endpoint.token.slot());
+            endpoint
+        })
+        .collect::<Vec<_>>();
+    let bound = match bound
+        .install_stable_identity_endpoints(&semantic_definition_endpoints, &semantic_module_endpoints)
+    {
+        Ok(bound) => bound,
+        Err(failure) => {
+            return Ok(deterministic_failure(
+                "install_stable_identity_endpoints",
+                format!("{failure:?}"),
+            ));
+        }
+    };
+    // Well-known `Option(payload)` materialization is internal to the epoch and
+    // independent of the endpoint issuer, so its projection reuses the definition
+    // universe. A body that demands nothing installs nothing.
+    let bound = if well_known.is_empty() {
+        bound
+    } else {
+        let (well_known_nominals, well_known_option_by_payload) =
+            match crate::durable_semantics::project_durable_option_registry(
+                merged,
+                &definitions,
+                well_known,
+            ) {
+                Ok(projected) => projected,
+                Err(failure) => {
+                    return Ok(deterministic_failure(
+                        "project_durable_option_registry",
+                        format!("{failure:?}"),
+                    ));
+                }
+            };
+        match bound
+            .install_well_known_option_types(&well_known_nominals, &well_known_option_by_payload)
+        {
+            Ok(bound) => bound,
+            Err(failure) => {
+                return Ok(deterministic_failure(
+                    "install_well_known_option_types",
+                    format!("{failure:?}"),
+                ));
+            }
+        }
+    };
+
+    let outcome = bound.analyze_one_body_instance(
+        &key.instance,
+        |definition| overlay.semantic_token_for_key(definition),
+        |module| overlay.module_token_for(module),
+        cancellation
+            .is_canceled()
+            .then_some(rue_air::OneBodyInterruption::Canceled),
+    );
+    if cancellation.is_canceled() {
+        return Err(rue_query::QueryAbort::Canceled);
+    }
+    publish_one_body_outcome(outcome, &*overlay, &deterministic_failure)
 }
 
 struct CanonicalBodyCompositionFailure {

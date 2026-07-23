@@ -35,6 +35,7 @@
 
 mod artifact_views;
 mod backend;
+mod body_overlay;
 mod body_query;
 mod bound_definitions;
 mod canonical_lower;
