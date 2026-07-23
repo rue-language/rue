@@ -9,6 +9,7 @@
 const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("artifact_views", include_str!("artifact_views.rs")),
     ("backend", include_str!("backend.rs")),
+    ("body_overlay", include_str!("body_overlay.rs")),
     ("body_query", include_str!("body_query.rs")),
     ("bound_definitions", include_str!("bound_definitions.rs")),
     ("canonical_lower", include_str!("canonical_lower.rs")),

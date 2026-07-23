@@ -82,7 +82,10 @@ impl BodySemanticOverlay {
     /// key. Interning in the caller's order assigns dense slots; seeding in the
     /// bound definition universe's sorted order therefore yields slots that
     /// mirror the whole-epoch token space, so publication resolves identically.
-    pub(crate) fn intern_definition(&mut self, key: &StableDefinitionKey) -> SemanticDefinitionToken {
+    pub(crate) fn intern_definition(
+        &mut self,
+        key: &StableDefinitionKey,
+    ) -> SemanticDefinitionToken {
         if let Some(&slot) = self.definition_slots.get(key) {
             return SemanticDefinitionToken::new(self.issuer, slot);
         }
@@ -236,8 +239,8 @@ mod tests {
         DurableDeclarationPayload, DurableDeclarationSemantic, DurableType,
     };
     use crate::{
-        CompileOptions, StableDefinitionKind, StableDefinitionNamespace, StablePreviewFeatures,
-        SourceMetadata, SourceSnapshot,
+        CompileOptions, SourceMetadata, SourceSnapshot, StableDefinitionKind,
+        StableDefinitionNamespace, StablePreviewFeatures,
     };
     use rue_span::FileId;
 
@@ -296,9 +299,15 @@ mod tests {
         );
         // The body-local cache makes a repeated import a constant-time read that
         // returns the same token and mints no second slot.
-        assert_eq!(first.import_recipe(&recipe), LocalToken::Definition(first_token));
+        assert_eq!(
+            first.import_recipe(&recipe),
+            LocalToken::Definition(first_token)
+        );
         assert_eq!(first.definition_slot_count(), 1);
-        assert_eq!(first.imported_local_token(&logical), Some(LocalToken::Definition(first_token)));
+        assert_eq!(
+            first.imported_local_token(&logical),
+            Some(LocalToken::Definition(first_token))
+        );
     }
 
     // Two overlays for different bodies share no local ID, slot pool, or recorded
@@ -321,7 +330,11 @@ mod tests {
         first.import_recipe(&private);
 
         assert_eq!(first.definition_slot_count(), 2);
-        assert_eq!(second.definition_slot_count(), 1, "second overlay is untouched");
+        assert_eq!(
+            second.definition_slot_count(),
+            1,
+            "second overlay is untouched"
+        );
         assert!(second.imported_local_token(&private_logical).is_none());
 
         // Distinct token spaces: the first overlay's shared token is a foreign
@@ -378,18 +391,17 @@ mod tests {
                     options.target,
                 )
                 .unwrap();
-            let query_shells =
-                crate::canonical_semantic::query_owned_declaration_shells_for_test(
-                    &merged,
-                    &rir,
-                    options.preview_features.clone(),
-                    options.target,
-                    &imports,
-                )
-                .unwrap()
-                .declaration_shells()
-                .cloned()
-                .collect::<Vec<_>>();
+            let query_shells = crate::canonical_semantic::query_owned_declaration_shells_for_test(
+                &merged,
+                &rir,
+                options.preview_features.clone(),
+                options.target,
+                &imports,
+            )
+            .unwrap()
+            .declaration_shells()
+            .cloned()
+            .collect::<Vec<_>>();
             Self {
                 merged,
                 rir,
@@ -401,7 +413,11 @@ mod tests {
             }
         }
 
-        fn body_key(&self, kind: StableDefinitionKind, name: &str) -> crate::body_query::BodyQueryKey {
+        fn body_key(
+            &self,
+            kind: StableDefinitionKind,
+            name: &str,
+        ) -> crate::body_query::BodyQueryKey {
             let definition = self
                 .definitions
                 .definitions()
