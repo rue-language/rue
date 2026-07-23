@@ -23,13 +23,13 @@ ADR-0063. Those ADRs remain accepted or implemented as recorded.
 Steve and Dorian have approved the producer-nominal language decision, and
 RUE-1089 is authorized to implement and land that decision before this broader
 ADR is accepted. This is an explicit implementation-before-ADR-acceptance
-exception. ADR-0066 remains a proposal until both RUE-1090's measurement gate
-and RUE-1092's prototype/adversarial review complete; RUE-1093 acceptance is
-blocked by both. If RUE-1090 activates RUE-1091, that repair also blocks
-acceptance and must include a rerun of the relevant RUE-1090 measurements plus
-RUE-1092 sign-off on the repaired result; pre-repair evidence cannot satisfy the
-final gate. Otherwise RUE-1091 is cancelled. The live specification and
-executable cases still land atomically with RUE-1089, never with this draft.
+exception. ADR-0066 remains a proposal until RUE-1090's measurement gate,
+RUE-1091's activated repair, and RUE-1092's prototype/adversarial review
+complete; RUE-1093 acceptance is blocked by them. The repair must include a
+rerun of the relevant RUE-1090 measurements plus RUE-1092 sign-off on the
+repaired result; pre-repair evidence cannot satisfy the final gate. The live
+specification and executable cases still land atomically with RUE-1089, never
+with this draft.
 
 ## Summary
 
@@ -184,6 +184,237 @@ that machine-readable record at
 install/project/endpoint share (the figure the gate reads) from the distinct
 ~85% total per-body setup share, so the two are attributed rather than
 conflated.
+
+### 4. Activated per-body context repair
+
+RUE-1090 observed the predicted non-flat structural term after the
+producer-nominal and trusted-standard-library cuts. With a fixed body count,
+per-body declaration projection, installation, and endpoint work still grows
+with unrelated declarations. RUE-1091 is therefore required; wall-time changes
+cannot cancel it.
+
+The current source has two independent causes which the repair must remove:
+
+1. A cold `BodyTransaction` calls `analyze_body_query`, which creates a fresh
+   semantic epoch, prepares every declaration shell, projects and installs every
+   durable declaration, issues the complete definition/token universe, and
+   installs every endpoint before analyzing one body.
+2. Each body observes aggregate module declaration sets and accepted import
+   topology. Those edges preserve correctness for negative and qualified
+   lookups, but they invalidate unrelated bodies whenever any declaration in an
+   observed module or the aggregate topology changes.
+
+Fixing only the first cause improves cold work but leaves broad incremental
+invalidation. Fixing only the second leaves the cold
+`O(declarations × bodies)` reconstruction. RUE-1091 completes only when both
+are gone.
+
+#### Authoritative facts and body-local state
+
+The existing semantic-nucleus and exact lookup query terminals are the
+authoritative immutable base. RUE-1091 may put a private, data-only recipe cache
+in front of those terminals, but it does not introduce a whole-program semantic
+epoch or another source of truth.
+
+A declaration recipe contains only owned, stable values: stable definition and
+module identities, durable types and comptime values, declaration shape,
+visibility, language-item metadata, and other typed facts already suitable for
+a query result. It contains no `Sema`, `BoundSema`, `DeclarationShells`, live or
+borrowed RIR, `Spur`, compact AIR type or nominal IDs, spans, file-local IDs,
+mutable namespace or endpoint tables, or whole-revision stamp.
+
+Definition, module, body-owner, and endpoint recipes carry stable semantic
+identities and owned payloads only. Issuer-scoped tokens are never shared:
+materializing a recipe mints the consuming overlay's local token and records its
+stable-to-local mapping. This prevents a cached endpoint from carrying an ID
+issued by a different body epoch.
+
+The recipe cache is a physical optimization, not a dependency authority. An
+entry is selected only after the requesting body observes the exact current
+query terminal for that fact. Cache identity includes the query family, logical
+key, and exact terminal incarnation/stamp. An entry cannot make a stale terminal
+valid, and a body never records an edge to a complete cache/base fingerprint.
+Entries inherit the lifetime of their query terminal or are independently
+evictable; they do not create unleased retained roots.
+
+The cache container is created once in constant work and fills on exact demand;
+it does not enumerate the declaration universe at construction. Concurrent
+misses for one exact recipe claim or join one construction, while unrelated
+recipe keys may build concurrently. No cache shard lock spans recipe
+construction or a nested query request.
+
+Each body evaluation creates one task-owned `BodySemanticOverlay`. The overlay
+owns all compact type/nominal/parameter IDs, inference variables, generated and
+anonymous types, local strings, errors, dependency events, well-known
+`Option(payload)` materializations, and mutable AIR construction state. It
+imports an exact recipe lazily when the body first consumes that fact and keeps
+a body-local stable-fact-to-local-ID map so repeated reads within the body are
+constant-time. No local ID, mutable pool, or inferred state is shared between
+two bodies or retained in a recipe.
+
+Successful body publication converts the overlay result back to the existing
+durable body artifact. Compact overlay IDs do not cross the query boundary.
+Producer-owned anonymous nominals continue to arrive through their exact
+producer terminals and are materialized in the consuming overlay. A
+body-specific trusted-standard-library demand likewise remains local to the
+demanding overlay.
+
+This representation makes future parallelism a property of ownership rather
+than locking: query terminals and recipes are immutable and shareable; overlays
+are disjoint; no global interner or type pool is mutated by body analysis; and
+no cache or query-runtime lock is held while a body or nested dependency query
+executes.
+
+#### Exact provider boundary
+
+AIR body analysis receives a narrow provider interface instead of a complete
+declaration slice or prepared semantic epoch. The compiler implementation of
+that interface runs inside the `BodyTransaction` query context. Every provider
+read both returns the value used by analysis and records the corresponding
+query edge before the body terminal can publish.
+
+The provider exposes typed operations for:
+
+- exact unqualified and qualified name lookup, including empty and ambiguous
+  results;
+- exact declaration identity, signature, constant/comptime result, nominal
+  well-formedness, and anonymous-nominal facts;
+- exact module-binding or import resolution for only the paths consulted by the
+  lookup; and
+- exact producer-body and trusted-toolchain facts already required by the body.
+
+Name lookup is keyed by the consulted module, namespace, and name. Its canonical
+result includes all candidates needed to distinguish success, absence,
+ambiguity, visibility, and kind. Adding another name to the same module may
+recompute the lookup query during red/green validation, but equal lookup output
+preserves its stamp and therefore leaves the body green. Adding a candidate for
+the queried name changes the lookup result, including the negative-to-positive
+case, and invalidates exactly its consumers.
+
+The aggregate `module_declaration_sets` loop and aggregate accepted-topology
+input are removed from `BodyTransaction` once the exact provider is complete.
+Positive semantic references continue to observe their exact semantic-nucleus
+terminals. Exact negative, ambiguous, qualified, and import-path observations
+are recorded during resolution rather than reconstructed from only the
+successful body artifact.
+
+Post-hoc dependency replay is not an accepted provider boundary: analysis may
+not read an untracked complete namespace and attach narrower edges afterward.
+Likewise, a lexical pre-scan of a body is not proof of semantic dependency
+completeness because imports, comptime evaluation, generics, and type-directed
+resolution may add or reject lookups. The typed provider call that supplies the
+semantic fact is the dependency observation.
+
+A body does not adopt a complete per-revision recipe-base terminal. Even an
+exact-terminal adoption capability would make that aggregate terminal a real
+body dependency, so a declaration-set change would still invalidate every
+adopter. Exact-terminal adoption remains suitable for one immutable artifact
+which a successor extends, such as the parse predecessor; it is not a substitute
+for exact fact edges when consumers observe different declaration subsets.
+
+#### Query and invalidation invariants
+
+`BodyQueryKey` remains the stable function instance plus explicit semantic
+configuration. It does not contain a source revision, complete declaration-set
+fingerprint, recipe-cache generation, or dependency stamp. Dependency stamps
+remain observed graph edges.
+
+For a body terminal to publish or validate green, it observes:
+
+- its exact raw body and body-level configuration;
+- every exact name/import lookup result used by the attempt, including failures;
+- every exact declaration/comptime/anonymous/producer fact materialized by its
+  overlay; and
+- no whole-program declaration or import-topology substitute.
+
+Consequently:
+
+- adding an unrelated declaration recomputes zero previously green bodies;
+- changing a declaration signature or value invalidates exactly the bodies
+  whose observed facts changed, followed by their ordinary dependent cone;
+- editing one body invalidates only that body transaction; later artifacts
+  recompute only when their exact published body input changes, and unrelated
+  body-semantic terminals remain green; and
+- a negative lookup becoming positive, or a positive lookup becoming ambiguous
+  or absent, invalidates every and only consumer of that exact lookup.
+
+Removal, rename, and arbitrary source edits are not forced through the
+strictly-additive trusted-toolchain successor-overlay protocol. They publish an
+ordinary immutable input revision/generation with the changed exact module
+source leaf. The logical lookup keys survive that generation boundary: each
+affected lookup terminal validates or recomputes against the replacement module
+index, preserves its stamp when its exact result is equal, and changes its stamp
+when the named candidate set changes. Body terminals then validate against
+those exact stamps. No additive declaration overlay and no adopted whole-base
+terminal is required to reuse bodies across a removal or rename.
+
+Deterministic failure terminals retain the same exact observations as successful
+ones. A failed revision therefore does not discard unrelated body terminals or
+turn the next successful revision into a cold compile. Cancellation publishes
+no partial overlay or dependency set. Eviction and recomputation preserve the
+warm-versus-fresh artifact, diagnostic, reference, and producer-identity oracle.
+
+#### Structural accounting and acceptance
+
+RUE-1121 lands the acceptance rows before the mechanism. Existing
+`PerBodyDeclarationContextWork` fields keep their meanings; work is not renamed
+from install/project/endpoint into “base” work to make the ratio appear flat.
+The repair adds separate counters for:
+
+- recipe entries built, reused, represented, and evicted;
+- recipe-cache/base containers created and reused;
+- overlays created;
+- exact provider facts observed and overlay facts materialized;
+- body-local type/parameter/endpoint units created; and
+- any clone-from-template probe, including copied units, allocations, and peak
+  memory.
+
+Every counter is incremented at the operation it measures. A zero-valued
+predecessor-work counter needs a mechanical test which makes predecessor
+iteration, hashing, comparison, or cloning fail if attempted; an
+always-zero field alone is not evidence.
+
+The normal and 10,000-declaration RUE-1090 matrices must report exact-flat
+per-body prepare/shell/project/install/endpoint work as unrelated declarations
+grow. Cold total work must be
+`O(declarations represented once + Σ body-local facts)`. The edit rows assert
+the exact recomputed body set and require warm work to be strictly below an
+equivalent fresh analysis. Timing, allocation counting, and peak-memory runs
+remain separate.
+
+The harness's tracked envelopes deliberately reject intermediate values between
+their known-bad witness and repaired target. A mergeable migration slice must
+therefore either preserve the current witnessed behavior for a row or complete
+the linked counter and invalidation repair needed to reach its target. A
+partially narrowed production path cannot weaken, skip, or silently retune the
+envelope merely to land.
+
+#### Migration and deletion sequence
+
+The production cut proceeds in dependency order:
+
+1. Land the mechanism-independent RUE-1121 acceptance rows.
+2. Introduce owned declaration recipes and the body-local overlay with focused
+   conversion, failure, cancellation, and two-overlay isolation tests.
+3. Route name, import, declaration, comptime, anonymous, and trusted-toolchain
+   reads through the exact provider while retaining warm/fresh differential
+   comparison.
+4. Make `analyze_body_query` consume only the body key, exact provider, selected
+   producer facts, and body-local configuration. Remove its complete merged
+   program, declaration-shell, durable-declaration, and endpoint-universe
+   inputs.
+5. Delete the per-body
+   prepare/project/install/issue-all-definitions/install-all-endpoints path and
+   the aggregate module/topology observations. A source guard prevents either
+   path from returning as a fallback.
+6. Rerun both RUE-1090 matrices, the RUE-1121 invalidation rows, differential
+   oracles, forced eviction/cancellation tests, schedule permutations, and the
+   Caldera budget before RUE-1092 sign-off.
+
+A test-only differential adapter may evaluate the old and new implementations
+during the cut, but it cannot ship as a second production body-analysis path.
+Each mergeable implementation slice either preserves the one production path or
+deletes the replaced path in the same slice.
 
 ## Staged specification amendment
 
@@ -458,20 +689,20 @@ first benchmark implementation before the 45 ms target is evaluated.
    and executable-case update, and deletion of structural
    equivalence/representative/restart machinery.
 6. RUE-1090: measurement against the recorded prediction.
-7. RUE-1091: conditional shared-base or narrow-epoch repair if RUE-1090's
-   decision rule fires, including a rerun of the relevant RUE-1090 structural
-   measurements and RUE-1092 prototype/adversarial sign-off on the repaired
-   result; otherwise cancel it.
+7. RUE-1091: activated data-only recipe-base and body-local-overlay repair,
+   including exact body lookup dependencies, a rerun of the relevant RUE-1090
+   structural measurements, and RUE-1092 prototype/adversarial sign-off on the
+   repaired result.
 8. RUE-1092: vertical prototype and adversarial review.
-9. RUE-1093: accept ADR-0066 only after RUE-1090 and RUE-1092, and RUE-1091
-   when activated, complete; then resume the remaining RUE-1028 work.
+9. RUE-1093: accept ADR-0066 only after RUE-1090, RUE-1091, and RUE-1092
+   complete; then resume the remaining RUE-1028 work.
 
 The specification amendment may be drafted and reviewed in parallel with
 RUE-1085 through RUE-1087, but live specification and executable-case edits
 land atomically with RUE-1089. RUE-1092 may run in parallel with RUE-1090 after
 RUE-1089; acceptance awaits both required gates.
-If RUE-1091 activates, its post-repair measurement and review evidence replaces
-the corresponding pre-repair evidence for acceptance.
+RUE-1091's post-repair measurement and review evidence replaces the
+corresponding pre-repair evidence for acceptance.
 
 ## Consequences
 
