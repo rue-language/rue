@@ -57,6 +57,7 @@ mod linking;
 mod parsed_modules;
 mod queries;
 mod query_graph;
+mod recipe_cache;
 mod revisioned_query_database;
 mod semantic_identity;
 mod semantic_query_nucleus;

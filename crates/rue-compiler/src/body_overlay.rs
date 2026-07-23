@@ -146,6 +146,28 @@ impl BodySemanticOverlay {
         token
     }
 
+    /// Fill this overlay's local token for a fact through the recipe cache as an
+    /// optional lazy-import source. The cache builds-or-reuses the owned recipe
+    /// keyed to the exact terminal, then the overlay mints its own local token
+    /// from it. The cache stores recipes, never tokens, so two overlays that fill
+    /// from one cached recipe still mint distinct local tokens (RUE-1091,
+    /// ADR-0066 §4). Propagates [`RecipeBuildCycle`] if a build on this thread
+    /// reentrantly requests a key it is already building. Inert to production:
+    /// only the test-only overlay path calls it.
+    pub(crate) fn import_via_cache<F>(
+        &mut self,
+        cache: &crate::recipe_cache::RecipeCache,
+        key: RecipeLogicalKey,
+        terminal: crate::recipe_cache::TerminalStamp,
+        build: F,
+    ) -> Result<LocalToken, crate::recipe_cache::RecipeBuildCycle>
+    where
+        F: FnOnce() -> DeclarationRecipe,
+    {
+        let recipe = cache.get_or_build(key, terminal, build)?;
+        Ok(self.import_recipe(recipe.as_ref()))
+    }
+
     /// The overlay-local definition token previously minted for a stable key, or
     /// `Missing` if the body never imported that fact. Used to drive analysis.
     pub(crate) fn semantic_token_for_key(
