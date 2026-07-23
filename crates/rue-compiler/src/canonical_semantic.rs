@@ -1526,10 +1526,10 @@ fn project_produced_anonymous_nominals(
         rue_air::SemanticDefinitionToken,
         rue_air::SemanticModuleToken,
     >| {
-        let ty = ty.try_map_identities(
-            &|token| resolver.key_for_semantic_token(*token),
-            &|token| resolver.module_for_semantic_token(*token),
-        )?;
+        let ty = ty
+            .try_map_identities(&|token| resolver.key_for_semantic_token(*token), &|token| {
+                resolver.module_for_semantic_token(*token)
+            })?;
         crate::revisioned_query_database::durable_type_from_instance_key(&ty)
             .ok_or(rue_air::SemanticStableResolutionFailure::WrongKind)
     };
@@ -1537,10 +1537,10 @@ fn project_produced_anonymous_nominals(
         rue_air::SemanticDefinitionToken,
         rue_air::SemanticModuleToken,
     >| {
-        let value = value.try_map_identities(
-            &|token| resolver.key_for_semantic_token(*token),
-            &|token| resolver.module_for_semantic_token(*token),
-        )?;
+        let value = value
+            .try_map_identities(&|token| resolver.key_for_semantic_token(*token), &|token| {
+                resolver.module_for_semantic_token(*token)
+            })?;
         crate::revisioned_query_database::durable_value_from_argument(&value)
             .ok_or(rue_air::SemanticStableResolutionFailure::WrongKind)
     };
@@ -1553,10 +1553,11 @@ fn project_produced_anonymous_nominals(
     values
         .iter()
         .map(|value| {
-            let identity = value.identity.try_map_identities(
-                &|token| resolver.key_for_semantic_token(*token),
-                &|token| resolver.module_for_semantic_token(*token),
-            )?;
+            let identity = value
+                .identity
+                .try_map_identities(&|token| resolver.key_for_semantic_token(*token), &|token| {
+                    resolver.module_for_semantic_token(*token)
+                })?;
             let method_type = |ty: &rue_air::SemanticProducedAnonymousMethodType| {
                 Ok(match ty {
                     rue_air::SemanticProducedAnonymousMethodType::SelfType => MethodType::SelfType,
@@ -2026,114 +2027,116 @@ pub(crate) fn publish_one_body_outcome(
                     ));
                 }
             };
-            let produced_anonymous_nominals = match project_produced_anonymous_nominals(
-                &produced_anonymous_nominals,
-                resolver,
-            ) {
-                Ok(produced_anonymous_nominals) => produced_anonymous_nominals,
-                Err(failure) => {
-                    return Ok(deterministic_failure(
-                        "project_produced_anonymous_nominals",
-                        format!("{failure:?}"),
-                    ));
-                }
-            };
-            let body = match artifact {
-                Artifact::Ordinary(export) => {
-                    let owner = match resolver.definition_key_for_body_token(export.owner) {
-                        Ok(owner) => owner,
-                        Err(detail) => {
-                            return Ok(deterministic_failure("resolve_ordinary_body_owner", detail));
-                        }
-                    };
-                    let body = match export.body.try_map_keys(
-                        &|token| resolver.key_for_semantic_token(*token),
-                        &|token| resolver.module_for_semantic_token(*token),
-                    ) {
-                        Ok(body) => body,
-                        Err(failure) => {
-                            return Ok(deterministic_failure(
-                                "map_ordinary_body_keys",
-                                format!("{failure:?}"),
-                            ));
-                        }
-                    };
-                    CanonicalBody::Ordinary { owner, body }
-                }
-                Artifact::Anonymous(export) => {
-                    let identity = match export.identity.try_map_identities(
-                        &|token| resolver.key_for_semantic_token(*token),
-                        &|token| resolver.module_for_semantic_token(*token),
-                    ) {
-                        Ok(identity) => identity,
-                        Err(failure) => {
-                            return Ok(deterministic_failure(
-                                "map_anonymous_body_identity",
-                                format!("{failure:?}"),
-                            ));
-                        }
-                    };
-                    let body = match export.body.try_map_keys(
-                        &|token| resolver.key_for_semantic_token(*token),
-                        &|token| resolver.module_for_semantic_token(*token),
-                    ) {
-                        Ok(body) => body,
-                        Err(failure) => {
-                            return Ok(deterministic_failure(
-                                "map_anonymous_body_keys",
-                                format!("{failure:?}"),
-                            ));
-                        }
-                    };
-                    CanonicalBody::Anonymous { identity, body }
-                }
-                Artifact::Specialization(export) => {
-                    let identity = match export.identity.try_map_keys(
-                        &|token| resolver.key_for_semantic_token(*token),
-                        &|token| resolver.module_for_semantic_token(*token),
-                    ) {
-                        Ok(identity) => identity,
-                        Err(failure) => {
-                            return Ok(deterministic_failure(
-                                "map_specialization_body_identity",
-                                format!("{failure:?}"),
-                            ));
-                        }
-                    };
-                    let body = match export.body.try_map_keys(
-                        &|token| resolver.key_for_semantic_token(*token),
-                        &|token| resolver.module_for_semantic_token(*token),
-                    ) {
-                        Ok(body) => body,
-                        Err(failure) => {
-                            return Ok(deterministic_failure(
-                                "map_specialization_body_keys",
-                                format!("{failure:?}"),
-                            ));
-                        }
-                    };
-                    let dependencies = match export
-                        .dependencies
-                        .iter()
-                        .map(|token| resolver.key_for_semantic_token(*token))
-                        .collect::<Result<Vec<_>, _>>()
-                    {
-                        Ok(dependencies) => dependencies.into(),
-                        Err(failure) => {
-                            return Ok(deterministic_failure(
-                                "map_specialization_dependencies",
-                                format!("{failure:?}"),
-                            ));
-                        }
-                    };
-                    CanonicalBody::Specialization {
-                        identity,
-                        body,
-                        dependencies,
-                        dependency_boundary_complete: export.dependency_boundary_complete,
+            let produced_anonymous_nominals =
+                match project_produced_anonymous_nominals(&produced_anonymous_nominals, resolver) {
+                    Ok(produced_anonymous_nominals) => produced_anonymous_nominals,
+                    Err(failure) => {
+                        return Ok(deterministic_failure(
+                            "project_produced_anonymous_nominals",
+                            format!("{failure:?}"),
+                        ));
                     }
-                }
-            };
+                };
+            let body =
+                match artifact {
+                    Artifact::Ordinary(export) => {
+                        let owner = match resolver.definition_key_for_body_token(export.owner) {
+                            Ok(owner) => owner,
+                            Err(detail) => {
+                                return Ok(deterministic_failure(
+                                    "resolve_ordinary_body_owner",
+                                    detail,
+                                ));
+                            }
+                        };
+                        let body = match export.body.try_map_keys(
+                            &|token| resolver.key_for_semantic_token(*token),
+                            &|token| resolver.module_for_semantic_token(*token),
+                        ) {
+                            Ok(body) => body,
+                            Err(failure) => {
+                                return Ok(deterministic_failure(
+                                    "map_ordinary_body_keys",
+                                    format!("{failure:?}"),
+                                ));
+                            }
+                        };
+                        CanonicalBody::Ordinary { owner, body }
+                    }
+                    Artifact::Anonymous(export) => {
+                        let identity = match export.identity.try_map_identities(
+                            &|token| resolver.key_for_semantic_token(*token),
+                            &|token| resolver.module_for_semantic_token(*token),
+                        ) {
+                            Ok(identity) => identity,
+                            Err(failure) => {
+                                return Ok(deterministic_failure(
+                                    "map_anonymous_body_identity",
+                                    format!("{failure:?}"),
+                                ));
+                            }
+                        };
+                        let body = match export.body.try_map_keys(
+                            &|token| resolver.key_for_semantic_token(*token),
+                            &|token| resolver.module_for_semantic_token(*token),
+                        ) {
+                            Ok(body) => body,
+                            Err(failure) => {
+                                return Ok(deterministic_failure(
+                                    "map_anonymous_body_keys",
+                                    format!("{failure:?}"),
+                                ));
+                            }
+                        };
+                        CanonicalBody::Anonymous { identity, body }
+                    }
+                    Artifact::Specialization(export) => {
+                        let identity = match export.identity.try_map_keys(
+                            &|token| resolver.key_for_semantic_token(*token),
+                            &|token| resolver.module_for_semantic_token(*token),
+                        ) {
+                            Ok(identity) => identity,
+                            Err(failure) => {
+                                return Ok(deterministic_failure(
+                                    "map_specialization_body_identity",
+                                    format!("{failure:?}"),
+                                ));
+                            }
+                        };
+                        let body = match export.body.try_map_keys(
+                            &|token| resolver.key_for_semantic_token(*token),
+                            &|token| resolver.module_for_semantic_token(*token),
+                        ) {
+                            Ok(body) => body,
+                            Err(failure) => {
+                                return Ok(deterministic_failure(
+                                    "map_specialization_body_keys",
+                                    format!("{failure:?}"),
+                                ));
+                            }
+                        };
+                        let dependencies = match export
+                            .dependencies
+                            .iter()
+                            .map(|token| resolver.key_for_semantic_token(*token))
+                            .collect::<Result<Vec<_>, _>>()
+                        {
+                            Ok(dependencies) => dependencies.into(),
+                            Err(failure) => {
+                                return Ok(deterministic_failure(
+                                    "map_specialization_dependencies",
+                                    format!("{failure:?}"),
+                                ));
+                            }
+                        };
+                        CanonicalBody::Specialization {
+                            identity,
+                            body,
+                            dependencies,
+                            dependency_boundary_complete: export.dependency_boundary_complete,
+                        }
+                    }
+                };
             let semantic_body = match &body {
                 CanonicalBody::Ordinary { body, .. }
                 | CanonicalBody::Anonymous { body, .. }
@@ -2337,9 +2340,10 @@ pub(crate) fn analyze_body_via_overlay(
             endpoint
         })
         .collect::<Vec<_>>();
-    let bound = match bound
-        .install_stable_identity_endpoints(&semantic_definition_endpoints, &semantic_module_endpoints)
-    {
+    let bound = match bound.install_stable_identity_endpoints(
+        &semantic_definition_endpoints,
+        &semantic_module_endpoints,
+    ) {
         Ok(bound) => bound,
         Err(failure) => {
             return Ok(deterministic_failure(
