@@ -10344,6 +10344,9 @@ impl CompilerSession {
 
 #[cfg(test)]
 mod tests {
+    #[path = "rfinal_harness.rs"]
+    mod rfinal_harness;
+
     use std::{
         collections::{HashMap, HashSet},
         sync::Arc,
