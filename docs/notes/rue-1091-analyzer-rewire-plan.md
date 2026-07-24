@@ -236,13 +236,31 @@ target (RISK R2), not a new edge.
   eager for now (EpochFacts fills it) — demand-population is r-inference. **No `#[cfg(test)]`, no new
   path: the epoch reads simply move behind a trait method.**
 - **Files**: `sema/provider.rs` (traits alongside `BodyFactProvider`), new
-  `sema/call_resolution.rs` (generic logic, mirror of `semantic_type_resolution.rs`), `calls.rs`,
-  `analysis.rs`, `aggregates.rs`, `builtin_ops.rs`, `ownership.rs`, `visibility.rs`, `one_body.rs`,
-  `typeck.rs`.
+  `sema/call_resolution.rs` (generic logic, mirror of the template module
+  `crates/rue-air/src/semantic_type_resolution.rs` — note it lives at the crate `src/` root, NOT
+  under `src/sema/`), `calls.rs`, `analysis.rs`, `aggregates.rs`, `builtin_ops.rs`, `ownership.rs`,
+  `visibility.rs`, `one_body.rs`, `typeck.rs`.
 - **Tests**: full corpus + generated-oracle (byte-identical AIR + diagnostics); `scripts/rue spec`,
   `ui`, `cli`; the existing overlay-equals-production tests (`body_overlay.rs:530,572`) stay green.
 - **Size**: **L** (broad but purely mechanical; the risk is missed reads — mitigate with a guard
   that no target file reads the epoch tables outside an EpochFacts impl).
+
+#### r1 packaging: landed as three independently gauntlet-proven sub-slices (r1a/r1b/r1c)
+r1 preserves every design decision above (same traits, same §1 inventory, same seam, same
+byte-identical bar); only its packaging is split, mirroring how the type-syntax family landed one
+resolution family at a time. Each sub-slice is a self-contained, byte-identical refactor proven on
+the full corpus + oracle before the next begins:
+- **r1a** — `BodyEndpointProvider` + concrete `EpochFacts`, covering family **1A**
+  (endpoint/definition selection) in `sema/one_body.rs`: the endpoint/nominal/module resolution
+  behind `resolve_semantic_type_syntax`'s value-world analog. `build_inference_context` stays eager
+  (r5 owns demand-population).
+- **r1b** — `SemanticCallResolutionProvider` + `EpochFacts`, covering family **1C**
+  (free-function/method/operator/module-member calls) in `calls.rs`/`analysis.rs`/`builtin_ops.rs`/
+  `ownership.rs`. This is where the candidate-set-vs-winner selection (R1) moves into generic logic.
+- **r1c** — aggregate/field/variant + `visibility.rs` enum-through-module, covering family **1D**,
+  reusing r1b's `SemanticCallResolutionProvider`.
+The `SignatureFacts` seam and the `call_resolution.rs` generic-logic module named above are
+introduced with r1b/r1c; r1a introduces only the endpoint seam (`sema/body_endpoint.rs`).
 
 ### r2 — ProviderFacts: type-syntax / nominal
 - **Scope**: second impl of `SemanticTypeSyntaxProvider`/`SemanticModulePathProvider` backed by
