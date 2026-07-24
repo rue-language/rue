@@ -25,7 +25,10 @@ const UNDERSCORE: u64 = 95;
 const MANIFEST_PATH: &str = "crates/rue-frontend-diff/src/corpus_manifest.rs";
 // RUE-1083: temporary cold-Linux headroom while query-cutover compile-time
 // regressions are repaired. The frontend differential remains fully real.
-const PROCESS_TIMEOUT: Duration = Duration::from_secs(60);
+// The ruelex compile crept past the previous 60 s ceiling under loaded CI
+// runners on the pre-flip epoch path; the RUE-1083 closure checklist removes
+// this budget with the other temporary ones after the provider flip.
+const PROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
 const SYNTAX_PROBES: &[(&str, &str)] = &[
     (
