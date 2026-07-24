@@ -2302,13 +2302,12 @@ impl TypeInternPool {
     /// (`P.__drop`), and drop glue (`__rue_drop_P`) — RUE-571.
     ///
     /// Same-named nominal types across files are legal (RUE-558), but these
-    /// symbols are program-wide identities: when this struct's source name is
-    /// registered by more than one struct or enum, the name is qualified with
-    /// the defining file (`P$left_2fmodel_2erue`). `$` cannot appear in a source
-    /// identifier, so a qualified name can never collide with a real type;
-    /// unambiguous names (the common case) are returned bare, keeping symbols
-    /// and `--emit` output unchanged. Builtins are never qualified (their
-    /// symbols pair with runtime-provided definitions).
+    /// symbols are program-wide identities. Every named user nominal is
+    /// unconditionally qualified with the defining file
+    /// (`P$left_2fmodel_2erue`) (ADR-0066, RUE-1089). `$` cannot appear in a
+    /// source identifier, so a qualified name can never collide with a real
+    /// type. Builtins remain bare so their symbols pair with runtime-provided
+    /// definitions.
     ///
     /// Every layer that names a function after a type — sema (definition and
     /// call sites), the drop-glue generator in `rue-compiler`, and both
@@ -2320,8 +2319,9 @@ impl TypeInternPool {
     }
 
     /// The symbol-name component for an enum's drop glue (`__rue_drop_E`),
-    /// file-qualified when another struct or enum has the same source name.
-    /// See [`Self::struct_symbol_name`] (RUE-571) — same rule, same reason.
+    /// unconditionally file-qualified for named user enums (ADR-0066,
+    /// RUE-1089), while builtins remain bare. See
+    /// [`Self::struct_symbol_name`] — same rule, same reason.
     pub fn enum_symbol_name(&self, enum_id: EnumId) -> String {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         inner.enum_symbol_name(enum_id)

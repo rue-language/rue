@@ -1835,10 +1835,11 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     }
 
     /// Symbol for a method (`Type.method`) or associated function
-    /// (`Type::method`) of `struct_id`, file-qualified when the type name is
-    /// ambiguous (RUE-571). Definition sites (function-body analysis) and
-    /// call sites (method / assoc-fn call analysis) must both build the name
-    /// through this helper so they meet in AIR/codegen.
+    /// (`Type::method`) of `struct_id`. Named user types are unconditionally
+    /// file-qualified (ADR-0066, RUE-1089), while builtins remain bare.
+    /// Definition sites (function-body analysis) and call sites (method /
+    /// assoc-fn call analysis) must both build the name through this helper so
+    /// they meet in AIR/codegen.
     pub(crate) fn method_symbol(
         &self,
         struct_id: StructId,
@@ -1853,8 +1854,9 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         }
     }
 
-    /// Symbol for the destructor of `struct_id` (`Type.__drop`),
-    /// file-qualified when the type name is ambiguous (RUE-571).
+    /// Symbol for the destructor of `struct_id` (`Type.__drop`). Named user
+    /// types are unconditionally file-qualified (ADR-0066, RUE-1089), while
+    /// builtins remain bare.
     pub(crate) fn destructor_symbol(&self, struct_id: StructId) -> String {
         format!("{}.__drop", self.symbol_type_name(struct_id))
     }
