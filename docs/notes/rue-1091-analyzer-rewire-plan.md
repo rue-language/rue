@@ -296,6 +296,13 @@ target (RISK R2), not a new edge.
 - **Files**: differential adapter, oracle harness.
 - **Tests**: whole-body `transaction_equal` across schedule permutations; edge-completeness (no
   epoch namespace/table read remains — capability guard); forced-eviction + cancellation.
+- **Carried from r0** (recorded per the r0 acceptance criteria): the full structural locality
+  assertion — adding a same-named constant in an unrelated module does not change a body's
+  recorded dependency-edge set. r0 could pin it only at the resolution-function level (the
+  spooky-action unit test) and the counter level
+  (`identity_per_body_lookup_invariant_to_unrelated_declarations`); the recorded-edge-set
+  differential needs this slice's provider harness. The E0481 candidate-hint scan must also be
+  shown to record no dependency edges (it is error-path diagnostic material, not resolution).
 - **Size**: **M**. After this, ProviderFacts is proven equal for every corpus shape and the flip is
   a pure delete.
 
@@ -430,7 +437,16 @@ lands first, alone, with the full semantics-change discipline:
   migrate each (qualification or import). Cases asserting the old ambiguity
   failure mode flip to the scoped diagnostic.
 - Diagnostic quality: the not-in-scope error names the candidates that exist in
-  other modules to guide the import.
+  other modules to guide the import. Discipline (review caution, adopted): the
+  candidate set is computed when the diagnostic is materialized during
+  analysis — never during rendering — with deterministic ordering, and it is
+  error-path-only. An exhaustive cross-module candidate search is a global
+  reverse-name dependency for failed lookups; that is tolerable pre-flip
+  (bounded to erroring bodies under the eager epoch), but at the provider flip
+  the hint must be served by a keyed (name, kind) suggestion index whose edge
+  is recorded at diagnostic construction, or degrade to a generic suggestion.
+  An erroring body may not retain a whole-universe dependency past the flip;
+  rFinal's edge-completeness check covers this case explicitly.
 
 Design review (2026-07-23) confirmed the direction with no blockers and
 strengthened the acceptance criteria below; r0 is not done until all of them

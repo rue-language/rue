@@ -1,0 +1,236 @@
+# Bare const names in array-length and type-alias-head positions resolve by
+# ordinary scoped resolution — the same by-file keying every other name uses
+# (RUE-1091 slice r0). The pre-module whole-program uniqueness fallback is
+# retired: a constant in another module does not participate in a bare-name
+# lookup merely because it is globally unique; it is reached qualified, or bound
+# into the current file with a file-level `const`. These cases pin locality (a
+# distant same-named const cannot change local resolution), visibility, the
+# grammar boundary for qualified paths, and the migration path the diagnostic
+# points at.
+
+[section]
+id = "cli.bare_const_scope"
+name = "Bare const scope"
+description = "Bare const names in array-length and alias-head positions follow scoped (by-file) resolution; the global-uniqueness fallback is retired (RUE-1091)."
+
+[[case]]
+name = "local_array_length_const_ignores_unrelated_imported_sibling"
+description = "A local `const K` sizes `[i32; K]` even though an imported (but unused) sibling module also declares `pub const K`: bare resolution is by-file, so the distant const cannot bleed in (RUE-1091 locality)."
+files = [
+    { path = "main.rue", source = """
+const other = @import("other.rue");
+const K: i32 = 4;
+fn main() -> i32 {
+    let a: [i32; K] = [10, 20, 30, 40];
+    a[0] + a[3]
+}
+""" },
+    { path = "other.rue", source = """
+pub const K: i32 = 99;
+""" },
+]
+exit_code = 50
+
+[[case]]
+name = "pure_unrelated_sibling_const_does_not_participate"
+description = "A same-named `pub const K` in a sibling file that is never imported cannot change the local `K` resolution — adding a distant constant does not perturb a body that never references it (RUE-1091 locality; the spooky-action-at-a-distance case)."
+files = [
+    { path = "main.rue", source = """
+const K: i32 = 4;
+fn main() -> i32 {
+    let a: [i32; K] = [10, 20, 30, 40];
+    a[0] + a[3]
+}
+""" },
+    { path = "other.rue", source = """
+pub const K: i32 = 99;
+""" },
+]
+exit_code = 50
+
+[[case]]
+name = "bare_cross_module_const_in_array_length_is_out_of_scope"
+description = "A bare array-length name resolving to a `pub const` in another module is out of scope: the diagnostic is an ordinary resolution error that names the module and suggests binding a file-level `const` (RUE-1091 scoped resolution + candidate hint)."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn main() -> i32 {
+    let a: [i32; K] = [1, 2, 3];
+    a[0]
+}
+""" },
+    { path = "lib.rue", source = """
+pub const K: i32 = 3;
+""" },
+]
+compile_fail = true
+error_contains = [
+    "E0481",
+    "not a compile-time constant",
+    "declared in lib.rue",
+    "file-level `const`",
+]
+
+[[case]]
+name = "importing_a_module_does_not_put_its_members_in_bare_scope"
+description = "`const m = @import(...)` binds the module, not its members: a `pub const N` inside `m` is reached as `m.N`, never as a bare `N`, so a bare `N` in array-length position is still out of scope (RUE-1091: import binding does not widen bare scope)."
+files = [
+    { path = "main.rue", source = """
+const m = @import("m.rue");
+fn main() -> i32 {
+    let a: [i32; N] = [1, 2];
+    a[0]
+}
+""" },
+    { path = "m.rue", source = """
+pub const N: i32 = 2;
+""" },
+]
+compile_fail = true
+error_contains = ["E0481", "not a compile-time constant", "declared in m.rue"]
+
+[[case]]
+name = "qualified_path_is_not_valid_in_array_length_position"
+description = "Array-length grammar admits an identifier or a comptime call, not a member-access path: `[i32; lib.K]` is a syntax error. The migration for a cross-module length constant is a file-level `const` alias, not qualification in place (RUE-1091: pins the grammar boundary)."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn main() -> i32 {
+    let a: [i32; lib.K] = [1, 2, 3];
+    a[0]
+}
+""" },
+    { path = "lib.rue", source = """
+pub const K: i32 = 3;
+""" },
+]
+compile_fail = true
+error_contains = ["E0100"]
+
+[[case]]
+name = "private_imported_const_is_not_visible_bare"
+description = "A non-`pub` constant in an imported module is not in bare scope and is not offered as a candidate (only visible constants are actionable import targets): the length name is an ordinary out-of-scope error (RUE-1091 visibility)."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn main() -> i32 {
+    let a: [i32; K] = [1];
+    a[0]
+}
+""" },
+    { path = "lib.rue", source = """
+const K: i32 = 3;
+pub fn touch() -> i32 { K }
+""" },
+]
+compile_fail = true
+error_contains = ["E0481", "not a compile-time constant"]
+# The only candidate is private, so the actionable-import hint must be absent
+# entirely — a private name must never be offered (or leaked) as a candidate.
+compile_stderr_not_contains = ["declared in"]
+
+[[case]]
+# Inference resolves a callee signature's `[T; K]` at the CALL SITE's file
+# (best-effort; K is out of the caller's scope so inference drops the length
+# constraint) — sema resolves K in the callee's own file and stays
+# authoritative. This is the one scenario that would regress if sema ever
+# stopped re-checking: the mismatch below must still be rejected.
+name = "cross_file_generic_signature_size_mismatch_still_rejected"
+description = "A generic callee signature `[T; K]` with K a callee-file const: a caller passing the wrong array size is still rejected (E0206) because sema resolves K in the callee's file scope, even though caller-file inference no longer resolves K (RUE-1091: sema authority over best-effort inference)."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn main() -> i32 {
+    let xs = [10, 20];
+    lib.firstof(i32, xs)
+}
+""" },
+    { path = "lib.rue", source = """
+pub const K: i32 = 3;
+pub fn firstof(comptime T: type, a: [T; K]) -> T { a[0] }
+""" },
+]
+compile_fail = true
+error_contains = ["E0206"]
+
+[[case]]
+name = "cross_file_generic_signature_size_match_accepted"
+description = "The matching-size companion: a caller passing the right array size to a generic `[T; K]` callee signature compiles and runs even though K is a callee-file const the caller never names (RUE-1091: cross-file signatures keep working without the global fallback)."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn main() -> i32 {
+    let xs = [10, 20, 30];
+    lib.firstof(i32, xs)
+}
+""" },
+    { path = "lib.rue", source = """
+pub const K: i32 = 3;
+pub fn firstof(comptime T: type, a: [T; K]) -> T { a[0] }
+""" },
+]
+exit_code = 10
+
+[[case]]
+name = "cross_module_array_length_migrates_via_file_level_const_alias"
+description = "The migration the out-of-scope diagnostic suggests: bind the other module's constant into this file with a file-level `const`, after which the bare name sizes the array (RUE-1091; a[0]+a[2] = 1+3)."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+const K: i32 = lib.K;
+fn main() -> i32 {
+    let a: [i32; K] = [1, 2, 3];
+    a[0] + a[2]
+}
+""" },
+    { path = "lib.rue", source = """
+pub const K: i32 = 3;
+""" },
+]
+exit_code = 4
+
+[[case]]
+name = "bare_alias_head_resolves_in_same_file_scope"
+description = "A bare type-alias head (`const Ints = ...; -> Ints`) resolves against its own file's scope in the alias-head position that the retired fallback used to serve (RUE-1091 alias-head scoped resolution)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+const Ints = std.arraybuf.ArrayBuf(i64);
+fn make() -> Ints {
+    let mut b = Ints.new();
+    b.push(0 - 1);
+    b
+}
+fn main() -> i32 {
+    let b = make();
+    let neg: i64 = 0 - 1;
+    if b.get_or(0, 0) == neg { 42 } else { 1 }
+}
+""" },
+]
+exit_code = 42
+
+[[case]]
+name = "bare_alias_head_from_another_module_is_out_of_scope"
+description = "A `pub const` type alias declared in another module is not a bare type in the importing file — it is reached qualified (`lib.MyBuf`). A bare reference is an ordinary unknown-type error (RUE-1091 alias-head locality)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+fn make() -> MyBuf {
+    MyBuf.new()
+}
+fn main() -> i32 {
+    let b = make();
+    let _ = b;
+    0
+}
+""" },
+    { path = "lib.rue", source = """
+const std = @import("std");
+pub const MyBuf = std.arraybuf.ArrayBuf(i64);
+""" },
+]
+compile_fail = true
+error_contains = ["E0204", "unknown type 'MyBuf'"]

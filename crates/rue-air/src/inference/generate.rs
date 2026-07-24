@@ -668,12 +668,12 @@ impl<'a> ConstraintGenerator<'a> {
     /// against file-level integer constants (`[i32; K]`). Names that don't
     /// resolve here (e.g. a `comptime` value parameter, only known at
     /// specialization) yield `None`; sema resolves and diagnoses them (RUE-16).
-    fn resolve_infer_array_length(&self, len: &ArrayLen) -> Option<u64> {
+    fn resolve_infer_array_length(&self, len: &ArrayLen, file_id: FileId) -> Option<u64> {
         match len {
             ArrayLen::Literal(n) => Some(*n),
             ArrayLen::Named(name) => {
                 let sym = self.interner.get(name)?;
-                let value = self.unique_const_value(&sym)?;
+                let value = self.scoped_const_value(sym, file_id)?;
                 u64::try_from(value).ok()
             }
         }
@@ -691,51 +691,42 @@ impl<'a> ConstraintGenerator<'a> {
         &self,
         len: &ArrayLen,
         values: &HashMap<Spur, i128>,
+        file_id: FileId,
     ) -> Option<u64> {
         match len {
             ArrayLen::Literal(n) => Some(*n),
             ArrayLen::Named(name) => {
                 let sym = self.interner.get(name)?;
+                // A comptime value parameter captured at the call site takes
+                // precedence over a file-level `const` of the same name (RUE-252).
                 let value = values
                     .get(&sym)
                     .copied()
-                    .or_else(|| self.unique_const_value(&sym))?;
+                    .or_else(|| self.scoped_const_value(sym, file_id))?;
                 u64::try_from(value).ok()
             }
         }
     }
 
-    /// Bare-name integer-const lookup for the name-string type-resolution
-    /// helpers, which carry no reference file. Returns the value only when
-    /// the name denotes exactly one constant program-wide, so same-named
-    /// constants in sibling files can never bleed into each other (RUE-638);
-    /// an ambiguous name defers to sema's by-file resolution.
-    fn unique_const_value(&self, sym: &Spur) -> Option<i128> {
-        let mut found = None;
-        for ((_, name), value) in self.const_values?.iter() {
-            if name == sym {
-                if found.is_some() {
-                    return None;
-                }
-                found = Some(*value);
-            }
-        }
-        found
+    /// Resolve a bare integer-const name in array-length position against the
+    /// referencing file's scope. A bare name denotes the same-module `const`
+    /// (`const_values` is keyed by declaring file); a constant in another
+    /// module is reached qualified and does not participate here merely because
+    /// it is globally unique. Matches sema's authoritative by-file resolution
+    /// (`resolve_const_info_in_file`) so inference and checking agree, and a
+    /// same-named constant in an unrelated module cannot perturb a local length.
+    fn scoped_const_value(&self, sym: Spur, file_id: FileId) -> Option<i128> {
+        self.const_values
+            .and_then(|values| values.get(&(file_id, sym)).copied())
     }
 
-    /// Bare-name type-alias lookup with the same unique-name guard as
-    /// [`Self::unique_const_value`] (RUE-638).
-    fn unique_const_type_alias(&self, sym: &Spur) -> Option<Type> {
-        let mut found = None;
-        for ((_, name), ty) in self.const_type_aliases?.iter() {
-            if name == sym {
-                if found.is_some() {
-                    return None;
-                }
-                found = Some(*ty);
-            }
-        }
-        found
+    /// Resolve a bare type-alias name in alias-head position against the
+    /// referencing file's scope, with the same by-file discipline as
+    /// [`Self::scoped_const_value`]: a `const T = SomeType(...)` in the current
+    /// module resolves; a same-named alias elsewhere is qualified, not bare.
+    fn scoped_const_type_alias(&self, sym: Spur, file_id: FileId) -> Option<Type> {
+        self.const_type_aliases
+            .and_then(|aliases| aliases.get(&(file_id, sym)).copied())
     }
 
     /// Get the type variables allocated for integer literals.
@@ -3814,6 +3805,15 @@ impl<'a> ConstraintGenerator<'a> {
     /// parameters (e.g. `T` with `T=i32` resolves `[T; 3]` to `[i32; 3]`).
     /// Returns `None` when a mentioned type parameter isn't in `subst` (the
     /// check then happens in sema / after specialization).
+    /// `file_id` is deliberately the REFERENCE site's file (`span.file_id`),
+    /// not the declaring file of whatever signature the symbol came from. For
+    /// callee signatures re-resolved at a cross-file call site, a callee-file
+    /// const array length therefore resolves to `None` here — inference is
+    /// best-effort in that position and sema, which resolves the length in the
+    /// callee's own file scope, stays authoritative (it still rejects size
+    /// mismatches; see `cross_file_generic_signature_*` in
+    /// bare_const_scope.toml). Do not widen this lookup beyond the reference
+    /// file: a program-wide search is the retired RUE-638 fallback.
     fn resolve_type_sym_with_subst(
         &self,
         sym: Spur,
@@ -3844,7 +3844,7 @@ impl<'a> ConstraintGenerator<'a> {
         if let Some((element_type_str, len)) = parse_array_type_syntax(name) {
             let element_ty =
                 self.resolve_type_name_with_subst(&element_type_str, subst, values, file_id)?;
-            let length = self.resolve_infer_array_length_with_values(&len, values)?;
+            let length = self.resolve_infer_array_length_with_values(&len, values, file_id)?;
             return Some(InferType::Array {
                 element: Box::new(element_ty),
                 length,
@@ -3880,7 +3880,7 @@ impl<'a> ConstraintGenerator<'a> {
         if let Some((element_type_str, len)) = parse_array_type_syntax(name) {
             // Recursively resolve the element type
             let element_ty = self.resolve_type_name(&element_type_str, file_id)?;
-            let length = self.resolve_infer_array_length(&len)?;
+            let length = self.resolve_infer_array_length(&len, file_id)?;
             return Some(InferType::Array {
                 element: Box::new(element_ty),
                 length,
@@ -3938,7 +3938,7 @@ impl<'a> ConstraintGenerator<'a> {
             if let Some(&enum_ty) = self.builtin_enums.get(&name_spur) {
                 return Some(InferType::Concrete(enum_ty));
             }
-            if let Some(alias_ty) = self.unique_const_type_alias(&name_spur) {
+            if let Some(alias_ty) = self.scoped_const_type_alias(name_spur, file_id) {
                 return Some(InferType::Concrete(alias_ty));
             }
         }
@@ -4778,5 +4778,211 @@ mod tests {
                 _ => panic!("Expected Equal constraint in match"),
             }
         }
+    }
+
+    // --- Scoped resolution of bare const names in array-length and
+    // --- type-alias-head positions (RUE-1091 slice r0).
+    //
+    // A bare name resolves by ordinary scoped resolution — the same by-file
+    // keying sema uses (`resolve_const_info_in_file`). A constant in another
+    // module does not participate merely because it is globally unique; it is
+    // reached qualified. These tests pin that rule and the invariants the
+    // maintainer ruling requires: locality (no spooky action), the
+    // comptime-value precedence, and the value-vs-type distinction.
+
+    fn cgen_fixture() -> (rue_rir::RirEditor, ThreadedRodeo, TypeInternPool) {
+        make_test_rir_interner_and_type_pool()
+    }
+
+    #[test]
+    fn array_length_bare_const_resolves_in_declaring_file_scope() {
+        let (rir, interner, type_pool) = cgen_fixture();
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let file_a = FileId::new(0);
+        let k = interner.get_or_intern("K");
+        let mut const_values: HashMap<(FileId, Spur), i128> = HashMap::new();
+        const_values.insert((file_a, k), 4);
+
+        let cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        )
+        .with_const_values(&const_values);
+
+        // In-scope, same module: resolves to the declared value.
+        assert_eq!(
+            cgen.resolve_infer_array_length(&ArrayLen::Named("K".to_string()), file_a),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn array_length_bare_const_out_of_scope_does_not_resolve() {
+        let (rir, interner, type_pool) = cgen_fixture();
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let file_a = FileId::new(0);
+        let file_b = FileId::new(1);
+        let k = interner.get_or_intern("K");
+        // The only `K` lives in file_b; referencing it bare from file_a is out
+        // of scope even though `K` is globally unique.
+        let mut const_values: HashMap<(FileId, Spur), i128> = HashMap::new();
+        const_values.insert((file_b, k), 4);
+
+        let cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        )
+        .with_const_values(&const_values);
+
+        assert_eq!(
+            cgen.resolve_infer_array_length(&ArrayLen::Named("K".to_string()), file_a),
+            None
+        );
+    }
+
+    /// Named regression for the retired whole-program uniqueness fallback: a
+    /// same-named constant added in an unrelated module must NOT change a
+    /// body's local resolution. Under the old scan two `N`s were "ambiguous"
+    /// and a valid local `N` stopped resolving (spooky action at a distance);
+    /// scoped resolution keeps file_a's `N` resolving to its own value.
+    #[test]
+    fn array_length_distant_same_named_const_cannot_perturb_local_resolution() {
+        let (rir, interner, type_pool) = cgen_fixture();
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let file_a = FileId::new(0);
+        let file_b = FileId::new(1);
+        let n = interner.get_or_intern("N");
+        let mut const_values: HashMap<(FileId, Spur), i128> = HashMap::new();
+        const_values.insert((file_a, n), 3);
+        // An unrelated distant const of the same name.
+        const_values.insert((file_b, n), 99);
+
+        let cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        )
+        .with_const_values(&const_values);
+
+        // file_a resolves its own N (no ambiguity, no bleed from file_b)...
+        assert_eq!(
+            cgen.resolve_infer_array_length(&ArrayLen::Named("N".to_string()), file_a),
+            Some(3)
+        );
+        // ...and file_b resolves its own, independently.
+        assert_eq!(
+            cgen.resolve_infer_array_length(&ArrayLen::Named("N".to_string()), file_b),
+            Some(99)
+        );
+    }
+
+    /// A comptime value parameter captured at the call site takes precedence
+    /// over a file-level `const` of the same name (RUE-252). Preserving this
+    /// ordering is required by the maintainer ruling.
+    #[test]
+    fn array_length_comptime_value_param_precedes_file_const() {
+        let (rir, interner, type_pool) = cgen_fixture();
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let file_a = FileId::new(0);
+        let n = interner.get_or_intern("N");
+        let mut const_values: HashMap<(FileId, Spur), i128> = HashMap::new();
+        const_values.insert((file_a, n), 9);
+
+        let cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        )
+        .with_const_values(&const_values);
+
+        // With a comptime value binding N=5, the value parameter wins over the
+        // file-level const N=9.
+        let mut values: HashMap<Spur, i128> = HashMap::new();
+        values.insert(n, 5);
+        assert_eq!(
+            cgen.resolve_infer_array_length_with_values(
+                &ArrayLen::Named("N".to_string()),
+                &values,
+                file_a
+            ),
+            Some(5)
+        );
+        // With no value binding, the same-file const supplies the length.
+        let empty: HashMap<Spur, i128> = HashMap::new();
+        assert_eq!(
+            cgen.resolve_infer_array_length_with_values(
+                &ArrayLen::Named("N".to_string()),
+                &empty,
+                file_a
+            ),
+            Some(9)
+        );
+    }
+
+    #[test]
+    fn alias_head_bare_name_resolves_in_declaring_file_scope_only() {
+        let (rir, interner, type_pool) = cgen_fixture();
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let file_a = FileId::new(0);
+        let file_b = FileId::new(1);
+        let alias = interner.get_or_intern("MyAlias");
+        let mut const_type_aliases: HashMap<(FileId, Spur), Type> = HashMap::new();
+        const_type_aliases.insert((file_a, alias), Type::I32);
+
+        let cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        )
+        .with_const_type_aliases(&const_type_aliases);
+
+        // Same module: the alias head resolves to its aliased type.
+        assert_eq!(
+            cgen.resolve_type_name("MyAlias", file_a),
+            Some(InferType::Concrete(Type::I32))
+        );
+        // Another module: out of scope, does not resolve bare.
+        assert_eq!(cgen.resolve_type_name("MyAlias", file_b), None);
+    }
+
+    /// Array lengths need an integer value; alias heads need a type. The two
+    /// scoped lookups consult separate typed maps and must not collapse into a
+    /// fuzzy "a const named X exists" match: a type-alias name never satisfies
+    /// an array length, and an integer const never satisfies an alias head.
+    #[test]
+    fn scoped_lookups_keep_value_and_type_kinds_distinct() {
+        let (rir, interner, type_pool) = cgen_fixture();
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let file_a = FileId::new(0);
+        let value_name = interner.get_or_intern("K");
+        let type_name = interner.get_or_intern("T");
+        let mut const_values: HashMap<(FileId, Spur), i128> = HashMap::new();
+        const_values.insert((file_a, value_name), 4);
+        let mut const_type_aliases: HashMap<(FileId, Spur), Type> = HashMap::new();
+        const_type_aliases.insert((file_a, type_name), Type::I32);
+
+        let cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        )
+        .with_const_values(&const_values)
+        .with_const_type_aliases(&const_type_aliases);
+
+        // A type-alias name in array-length position is not an integer value.
+        assert_eq!(
+            cgen.resolve_infer_array_length(&ArrayLen::Named("T".to_string()), file_a),
+            None
+        );
+        // An integer const name in alias-head position is not a type alias.
+        assert_eq!(cgen.resolve_type_name("K", file_a), None);
     }
 }
