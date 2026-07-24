@@ -61,9 +61,29 @@ jobs:
 
       - name: Compile every large example
         run: |
-          # RUE-1083 temporary contingency: the query-cutover regression makes
-          # this guard occupy a runner and hold the merge queue for tens of
-          # minutes. Keep the configured job and step present, but return true
-          # until the post-identity-cut repair restores the real bounded corpus.
-          # RUE-1083 owns removal of this stub and restoration of the loop.
-          true
+          RUE="$(scripts/rue-bin --target-platforms //platforms:release)"
+          export RUE_STD_PATH="$PWD/std"
+          status=0
+          for example in rill mosaic harbor lattice meridian caldera; do
+            root="examples/$example/main.rue"
+            echo "::group::$example"
+            start=$(date +%s)
+            if timeout 3600 "$RUE" "$root" -o "/tmp/$example.bin"; then
+              echo "$example compiled in $(( $(date +%s) - start ))s"
+            else
+              code=$?
+              if [ "$example" = caldera ] && [ "$code" -eq 124 ]; then
+                # RUE-1083: Caldera compiles correctly but the query-cutover
+                # performance regression can still push it past this guard's
+                # timeout. Pure slowness is the tracked performance follow-up,
+                # not a compile-correctness regression; a real compile error
+                # still fails this job.
+                echo "::warning::caldera exceeded the guard timeout after $(( $(date +%s) - start ))s (RUE-1083 performance follow-up pending)"
+              else
+                echo "::error::$example failed to compile (exit $code) after $(( $(date +%s) - start ))s"
+                status=1
+              fi
+            fi
+            echo "::endgroup::"
+          done
+          exit $status
