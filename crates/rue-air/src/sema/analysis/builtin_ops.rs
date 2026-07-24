@@ -3,6 +3,7 @@
 //! This category owns builtin operations within the canonical semantic-analysis
 //! implementation.
 
+use super::super::call_resolution::{CallResolutionFacts, call_facts};
 use super::*;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -98,7 +99,7 @@ impl<'a> BodySema<'a> {
             span,
         )?;
         let method = self.interner.get_or_intern("concat_borrowed");
-        if self.method_info((struct_id, method)).is_none() {
+        if call_facts(self).method_info(struct_id, method).is_none() {
             return Err(CompileError::new(
                 ErrorKind::InternalError("canonical StrBuf is missing concat_borrowed".to_string()),
                 span,

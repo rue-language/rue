@@ -7,6 +7,7 @@
 //! `analysis::ownership`.
 
 use super::*;
+use crate::sema::call_resolution::{CallResolutionFacts, call_facts};
 use crate::sema::{FunctionInfo, NamedConstDependencyTargetEvent};
 
 /// Validate membership and visibility for a module-member function call.
@@ -223,7 +224,7 @@ impl<'a> BodySema<'a> {
         let source_name = name;
         let mut name = name;
         let mut resolved_alias = false;
-        if let Some(const_info) = self.resolve_const_info_in_file(name, span.file_id).cloned()
+        if let Some(const_info) = call_facts(self).resolve_const_info_in_file(name, span.file_id)
             && let Some(callee) = const_info.value.as_function()
         {
             let alias_name = self.interner.resolve(&name).to_string();
@@ -243,7 +244,7 @@ impl<'a> BodySema<'a> {
         }
 
         let local_name = (!resolved_alias)
-            .then(|| self.resolve_function_name_local(name, span.file_id))
+            .then(|| call_facts(self).resolve_function_name_local(name, span.file_id))
             .flatten();
         if let Some(local_name) = local_name {
             name = local_name;
@@ -270,13 +271,11 @@ impl<'a> BodySema<'a> {
         }
 
         // Look up the function
-        let source_name = self.source_function_name(name);
+        let source_name = call_facts(self).source_function_name(name);
         let fn_name_str = self.interner.resolve(&source_name).to_string();
-        let fn_info = self
-            .functions
-            .get(&name)
+        let fn_info = call_facts(self)
+            .function_info(name)
             .ok_or_compile_error(ErrorKind::UndefinedFunction(fn_name_str.clone()), span)?;
-        let fn_info = fn_info.clone();
 
         self.analyze_resolved_function_call(air, name, fn_info, args_range, span, ctx, true)
     }
@@ -302,7 +301,7 @@ impl<'a> BodySema<'a> {
         ctx: &mut AnalysisContext,
         check_unqualified_visibility: bool,
     ) -> CompileResult<AnalysisResult> {
-        let source_name = self.source_function_name(name);
+        let source_name = call_facts(self).source_function_name(name);
         let fn_name_str = self.interner.resolve(&source_name).to_string();
 
         // Visibility (E0460, RUE-37/RUE-180): an unqualified call must not
@@ -813,7 +812,7 @@ impl<'a> BodySema<'a> {
                 let ty = self.peek_place_type(receiver, ctx)?;
                 let struct_id = ty.as_struct()?;
 
-                let info = self.method_info((struct_id, method))?;
+                let info = call_facts(self).method_info(struct_id, method)?;
                 matches!(info.self_mode, RirParamMode::Inout | RirParamMode::Borrow).then_some(root)
             })
         };
@@ -906,13 +905,15 @@ impl<'a> BodySema<'a> {
 
         // Look up the method using StructId directly
         let method_key = (struct_id, method);
-        let method_info = self.method_info(method_key).copied().ok_or_compile_error(
-            ErrorKind::UndefinedMethod {
-                type_name: struct_name_str.clone(),
-                method_name: method_name_str.clone(),
-            },
-            span,
-        )?;
+        let method_info = call_facts(self)
+            .method_info(struct_id, method)
+            .ok_or_compile_error(
+                ErrorKind::UndefinedMethod {
+                    type_name: struct_name_str.clone(),
+                    method_name: method_name_str.clone(),
+                },
+                span,
+            )?;
 
         // Track this method as referenced (for lazy analysis). Anonymous
         // struct methods are often registered while reducing a comptime type
@@ -1126,10 +1127,11 @@ impl<'a> BodySema<'a> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         let fn_name_str = self.interner.resolve(&function_name).to_string();
-        let module_def = self.module_registry.get_def(module_id);
+        let module_def = call_facts(self).module_def(module_id);
         let module_file_id = Some(module_def.file_id);
-        let mut function_key = module_file_id
-            .and_then(|file_id| self.resolve_function_name_local(function_name, file_id));
+        let mut function_key = module_file_id.and_then(|file_id| {
+            call_facts(self).resolve_function_name_local(function_name, file_id)
+        });
 
         // Fallback: a re-exported function member — `pub const f = @import("x").f;`
         // in the facade binds `f` to a function value (ADR-0026, RUE-592). It is
@@ -1142,12 +1144,12 @@ impl<'a> BodySema<'a> {
         if function_key.is_none()
             && let Some(mfile) = module_file_id
         {
-            let reexport =
-                self.value_const(&(mfile, function_name))
-                    .and_then(|info| match info.value {
-                        ConstValue::Function(fkey) => Some((fkey, info.is_pub)),
-                        _ => None,
-                    });
+            let reexport = call_facts(self)
+                .value_const(mfile, function_name)
+                .and_then(|info| match info.value {
+                    ConstValue::Function(fkey) => Some((fkey, info.is_pub)),
+                    _ => None,
+                });
             if let Some((fkey, is_pub)) = reexport {
                 if !self.is_accessible(span.file_id, mfile, is_pub) {
                     return Err(CompileError::new(
@@ -1177,17 +1179,15 @@ impl<'a> BodySema<'a> {
                 span,
             )
         })?;
-        let fn_info = self
-            .functions
-            .get(&function_key)
+        let fn_info = call_facts(self)
+            .function_info(function_key)
             .ok_or_compile_error(
                 ErrorKind::UnknownModuleMember {
                     module_name: module_def.import_path.clone(),
                     member_name: fn_name_str.clone(),
                 },
                 span,
-            )?
-            .clone();
+            )?;
 
         // Track this function as referenced (for lazy analysis)
         ctx.referenced_functions.insert(function_key);
@@ -1289,7 +1289,7 @@ impl<'a> BodySema<'a> {
                     ));
                 }
             }
-        } else if let Some(info) = self.value_const(&(ctx.current_file_id, type_name))
+        } else if let Some(info) = call_facts(self).value_const(ctx.current_file_id, type_name)
             && let ConstValue::Type(ty) = info.value
         {
             // Module-level `const C = Counter(i32); C.zero()` (RUE-595): the
@@ -1339,13 +1339,15 @@ impl<'a> BodySema<'a> {
 
         // Look up the function using StructId
         let method_key = (struct_id, function);
-        let method_info = self.method_info(method_key).copied().ok_or_compile_error(
-            ErrorKind::UndefinedAssocFn {
-                type_name: type_name_str.clone(),
-                function_name: function_name_str.clone(),
-            },
-            span,
-        )?;
+        let method_info = call_facts(self)
+            .method_info(struct_id, function)
+            .ok_or_compile_error(
+                ErrorKind::UndefinedAssocFn {
+                    type_name: type_name_str.clone(),
+                    function_name: function_name_str.clone(),
+                },
+                span,
+            )?;
 
         // Track this associated function/method as referenced (for lazy analysis)
         ctx.referenced_methods.insert(method_key);

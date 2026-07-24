@@ -21,6 +21,10 @@ use rue_rir::{InstData, InstRef, Rir, RirArgMode, RirCallArg, RirParamMode};
 use rue_span::{FileId, Span};
 use rue_target::{Arch, DataModel, Os};
 
+use super::call_resolution::{
+    CallResolutionFacts, StaticCallReference, call_facts, classify_static_call,
+    resolve_static_call_reference,
+};
 use super::context::{AnalysisContext, AnalysisResult, CallLoanKind, ConstValue, ParamInfo};
 use super::{AnalyzedFunction, BodySema, InferenceContext, MethodInfo, ParamSlotModes, SemaOutput};
 use crate::inference::{
@@ -334,7 +338,9 @@ fn composed_callable_metadata(
                 .interner
                 .get(member.name.as_ref())
                 .ok_or_else(missing)?;
-            let info = sema.method_info((struct_id, method)).ok_or_else(missing)?;
+            let info = call_facts(sema)
+                .method_info(struct_id, method)
+                .ok_or_else(missing)?;
             Ok((
                 sema.method_symbol(struct_id, member.name.as_ref(), info.has_self),
                 if member.kind == crate::AnonymousMemberKind::Destructor {
@@ -785,8 +791,8 @@ pub(crate) fn import_staged_body(
             .get(&(FileId::new(identity.file), owner))
             .copied()
             .ok_or(BF::Semantic(F::MissingFunction))?;
-        let info = sema
-            .method_info((struct_id, name))
+        let info = call_facts(sema)
+            .method_info(struct_id, name)
             .ok_or(BF::Semantic(F::MissingFunction))?;
         let expected = match identity.kind {
             DK::Method => info.has_self && identity.name.as_ref() != "__drop",
@@ -829,8 +835,8 @@ pub(crate) fn import_staged_body(
                     .interner
                     .get(member.name.as_ref())
                     .ok_or(BF::Semantic(F::MissingFunction))?;
-                let info = sema
-                    .method_info((struct_id, name))
+                let info = call_facts(sema)
+                    .method_info(struct_id, name)
                     .ok_or(BF::Semantic(F::MissingFunction))?;
                 let expected = match member.kind {
                     crate::AnonymousMemberKind::Method => {
@@ -940,12 +946,14 @@ pub(crate) fn imported_body_references(
         let AirInstData::Call { name, .. } = instruction.data else {
             continue;
         };
-        if sema.functions.contains_key(&name) {
-            functions.insert(name);
-            continue;
-        }
-        if let Some((struct_id, method, _)) = sema.named_method_by_callable_symbol(name) {
-            methods.insert((struct_id, method));
+        match classify_static_call(&call_facts(sema), name) {
+            Some(StaticCallReference::Free(name)) => {
+                functions.insert(name);
+            }
+            Some(StaticCallReference::Method(struct_id, method)) => {
+                methods.insert((struct_id, method));
+            }
+            None => {}
         }
     }
     (functions, methods)
@@ -1334,23 +1342,11 @@ fn collect_static_function_references(sema: &BodySema<'_>) -> HashSet<Spur> {
     let mut referenced = HashSet::new();
 
     for (_, inst) in sema.rir.iter() {
-        if let InstData::Call { name, .. } = &inst.data {
-            let mut target = *name;
-            let mut resolved_alias = false;
-            if let Some(const_info) = sema.resolve_const_info_in_file(target, inst.span.file_id)
-                && let Some(callee) = const_info.value.as_function()
-            {
-                target = callee;
-                resolved_alias = true;
-            }
-
-            if resolved_alias && sema.functions.contains_key(&target) {
-                referenced.insert(target);
-            } else if let Some(function_key) =
-                sema.resolve_function_name_local(target, inst.span.file_id)
-            {
-                referenced.insert(function_key);
-            }
+        if let InstData::Call { name, .. } = &inst.data
+            && let Some(function_key) =
+                resolve_static_call_reference(&call_facts(sema), *name, inst.span.file_id)
+        {
+            referenced.insert(function_key);
         }
     }
 
@@ -1363,7 +1359,7 @@ fn collect_static_function_references(sema: &BodySema<'_>) -> HashSet<Spur> {
             continue;
         };
         if let Some(function) =
-            sema.resolve_function_name_local(name, FileId::new(event.callable_file))
+            call_facts(sema).resolve_function_name_local(name, FileId::new(event.callable_file))
         {
             referenced.insert(function);
         }
@@ -1414,9 +1410,8 @@ fn named_method_dependency_events(
     referenced_functions: &HashSet<Spur>,
     referenced_methods: &HashSet<(StructId, Spur)>,
 ) -> CompileResult<Vec<super::NamedMethodDependencyEvent>> {
-    let caller_info = sema
-        .methods
-        .get(&(caller_struct, caller_method))
+    let caller_info = call_facts(sema)
+        .named_method_info(caller_struct, caller_method)
         .ok_or_else(|| {
             CompileError::new(
                 ErrorKind::InvalidCompilerInput(
@@ -1429,7 +1424,7 @@ fn named_method_dependency_events(
     let caller_method_name = sema.interner.resolve(&caller_method).to_string();
     let mut events = Vec::new();
     for callee in referenced_functions {
-        let info = sema.functions.get(callee).ok_or_else(|| {
+        let info = call_facts(sema).function_info(*callee).ok_or_else(|| {
             CompileError::new(
                 ErrorKind::InvalidCompilerInput(
                     "named method references a free function absent from semantic declarations"
@@ -1456,7 +1451,7 @@ fn named_method_dependency_events(
                 file: info.file_id.index(),
                 name: sema
                     .interner
-                    .resolve(&sema.source_function_name(*callee))
+                    .resolve(&call_facts(sema).source_function_name(*callee))
                     .to_string(),
             },
         });
@@ -1466,9 +1461,8 @@ fn named_method_dependency_events(
         if owner_name.starts_with("__anon_struct_") {
             continue;
         }
-        let info = sema
-            .methods
-            .get(&(*callee_struct, *callee_method))
+        let info = call_facts(sema)
+            .named_method_info(*callee_struct, *callee_method)
             .ok_or_else(|| {
                 CompileError::new(
                     ErrorKind::InvalidCompilerInput(
@@ -1512,7 +1506,7 @@ fn named_destructor_dependency_events(
     let caller_owner_name = sema.type_pool.struct_def(caller_struct).name.clone();
     let mut events = Vec::new();
     for callee in referenced_functions {
-        let info = sema.functions.get(callee).ok_or_else(|| {
+        let info = call_facts(sema).function_info(*callee).ok_or_else(|| {
             CompileError::new(
                 ErrorKind::InvalidCompilerInput(
                     "named destructor references an absent free function".into(),
@@ -1533,7 +1527,7 @@ fn named_destructor_dependency_events(
                 file: info.file_id.index(),
                 name: sema
                     .interner
-                    .resolve(&sema.source_function_name(*callee))
+                    .resolve(&call_facts(sema).source_function_name(*callee))
                     .to_string(),
             },
         });
@@ -1543,9 +1537,8 @@ fn named_destructor_dependency_events(
         if owner_name.starts_with("__anon_struct_") {
             continue;
         }
-        let info = sema
-            .methods
-            .get(&(*callee_struct, *callee_method))
+        let info = call_facts(sema)
+            .named_method_info(*callee_struct, *callee_method)
             .ok_or_else(|| {
                 CompileError::new(
                     ErrorKind::InvalidCompilerInput(
@@ -1691,7 +1684,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
 
     // Find main() - the reference root for executable body analysis.
     let main_sym = match sema.interner.get("main") {
-        Some(sym) if sema.functions.contains_key(&sym) => sym,
+        Some(sym) if call_facts(sema).function_contains(sym) => sym,
         _ => {
             // No main function found - this is an error
             return Err(CompileErrors::from(CompileError::without_span(
@@ -1838,8 +1831,8 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                 analyzed_functions.insert(fn_name);
 
                 // Look up the function info
-                let fn_info = match sema.functions.get(&fn_name) {
-                    Some(info) => *info,
+                let fn_info = match call_facts(sema).function_info(fn_name) {
+                    Some(info) => info,
                     None => continue, // Should not happen, but be defensive
                 };
                 let function_identity = match sema.function_identity(fn_name) {
@@ -1966,7 +1959,9 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                             },
                         );
                         for callee in &ordered_referenced_fns {
-                            let callee_info = sema.functions[callee];
+                            let callee_info = call_facts(sema)
+                                .function_info(*callee)
+                                .expect("referenced free function is present in declarations");
                             sema.ordinary_free_function_dependencies.push(
                                 super::OrdinaryFreeFunctionDependencyEvent {
                                     caller_token: ordinary_owner,
@@ -1975,7 +1970,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                     callee_file: callee_info.file_id.index(),
                                     callee_name: sema
                                         .interner
-                                        .resolve(&sema.source_function_name(*callee))
+                                        .resolve(&call_facts(sema).source_function_name(*callee))
                                         .to_string(),
                                 },
                             );
@@ -2121,7 +2116,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                 name: sema.interner.resolve(&source_name).to_string(),
                             });
                         for callee in &referenced_fns {
-                            if let Some(callee_info) = sema.functions.get(callee) {
+                            if let Some(callee_info) = call_facts(sema).function_info(*callee) {
                                 sema.ordinary_free_function_dependencies.push(
                                     super::OrdinaryFreeFunctionDependencyEvent {
                                         caller_token: sema.body_owner_token(
@@ -2138,7 +2133,9 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                         callee_file: callee_info.file_id.index(),
                                         callee_name: sema
                                             .interner
-                                            .resolve(&sema.source_function_name(*callee))
+                                            .resolve(
+                                                &call_facts(sema).source_function_name(*callee),
+                                            )
                                             .to_string(),
                                     },
                                 );
@@ -2175,8 +2172,8 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                 analyzed_methods.insert((struct_id, method_name));
 
                 // Look up the method info
-                let method_info = match sema.method_info((struct_id, method_name)) {
-                    Some(info) => info.clone(),
+                let method_info = match call_facts(sema).method_info(struct_id, method_name) {
+                    Some(info) => info,
                     None => continue,
                 };
 
@@ -2367,9 +2364,8 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                 }
 
                 sema.body_analysis_work.named_method_record_lookups += 1;
-                let Some(&method_ref) = sema
-                    .named_method_declarations
-                    .get(&(struct_id, method_name))
+                let Some(method_ref) =
+                    call_facts(sema).named_method_declaration(struct_id, method_name)
                 else {
                     debug_assert!(
                         false,
