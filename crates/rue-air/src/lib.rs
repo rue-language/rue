@@ -66,7 +66,7 @@ pub use intern_pool::{
 pub use layout::{Layout, LayoutKind, PaddingRange, SLOT_BYTES};
 pub use module_registry::ModuleRegistry;
 pub use param_arena::{ParamArena, ParamRange};
-pub use path_norm::normalize_module_path;
+pub use path_norm::{mangle_symbol_component, normalize_module_path, unmangle_symbol_component};
 pub use runtime_call::{
     OptionVariant, RuntimeAirArgument, RuntimeAirType, RuntimeCallActivation, RuntimeCallKind,
     RuntimeOperandOrigin,
