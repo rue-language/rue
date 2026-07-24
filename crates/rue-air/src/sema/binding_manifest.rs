@@ -2512,6 +2512,54 @@ impl<'a> BoundSema<'a> {
             .collect()
     }
 
+    /// RUE-1091 slice r6c flip-era surface: the anonymous nominal [`Type`]s of
+    /// the identities recorded in the epoch's `well_known_option_identities` —
+    /// the well-known `Option` enums the registry install
+    /// ([`Self::install_well_known_option_types`]) materialized and marked for
+    /// the export-as-produced ruling. `analyze_one_body` subtracts exactly this
+    /// set from its initial anonymous baseline, so the single export funnel
+    /// (`semantic_body_export.rs` via `produced_anonymous_nominals`) publishes
+    /// these identities as PRODUCED anonymous nominals of the analyzed body,
+    /// never as pre-existing imports. Exposed so the rue-compiler differential
+    /// proves the provider-side pool records the identical ruling for
+    /// byte-identical identities. Deterministic order: the identity set is a
+    /// `BTreeSet`.
+    pub fn epoch_well_known_option_types(&self) -> Vec<crate::types::Type> {
+        self.sema
+            .well_known_option_identities
+            .iter()
+            .filter_map(|identity| {
+                self.sema
+                    .anon_enum_identities
+                    .get(identity)
+                    .map(|id| crate::types::Type::new_enum(*id))
+                    .or_else(|| {
+                        self.sema
+                            .anon_struct_identities
+                            .get(identity)
+                            .map(|id| crate::types::Type::new_struct(*id))
+                    })
+            })
+            .collect()
+    }
+
+    /// RUE-1091 slice r6c flip-era surface: the epoch's per-body well-known
+    /// `Option` demand registry — each `(payload, option)` [`Type`] pair the
+    /// install recorded into `well_known_option_by_payload`, the map
+    /// fallible-intrinsic resolution (`resolve_option_result_type`) consults.
+    /// Exposed so the rue-compiler differential compares the pool-side registry
+    /// against the LIVE epoch's. Iteration order is map-internal; a caller
+    /// sorts by an index-independent render before comparing.
+    pub fn epoch_well_known_option_registry(
+        &self,
+    ) -> Vec<(crate::types::Type, crate::types::Type)> {
+        self.sema
+            .well_known_option_by_payload
+            .iter()
+            .map(|(payload, option)| (*payload, *option))
+            .collect()
+    }
+
     /// RUE-1091 slice r4b-3 flip-era surface: the epoch's `MethodInfo` for a
     /// `(file, type_name, method)` named method, exposed so the rue-compiler
     /// differential compares the provider-driven `ProviderCallFacts` method
