@@ -20,6 +20,26 @@ compiler-reproducibility job is the deliberate exception: its two independently
 materialized compiler builds stay local and cache-free, while the ordinary
 linux-x64 test lane may use BuildBuddy.
 
+Required release coverage is intentionally focused (RUE-1129). The
+`release (linux-x64)` job analyzes Buck's configured `rustc_cfg` actions and
+fails unless `//platforms:release` supplies `-Copt-level=3 -Clto=thin` while
+`//platforms:debug` supplies neither. It then runs `//:release-smoke`, the 24
+representative differential-opt cases, through a release-built Rue compiler.
+It does not build every crate target or run the exhaustive suite.
+
+`.github/workflows/release.yml` runs the complete release-configured `//...`
+suite nightly and on manual dispatch. Its `rue_cli_shard` exclusion is
+intentional: the monolithic `//:cli-tests` target owns the full CLI corpus, so
+also running the four CI-only hash shards would execute that corpus twice.
+
+Production `debug_assert*` use is governed by
+`scripts/validate-debug-assert-policy.py`, run by required formatting CI and
+`scripts/rue quick`. Every surviving call has an exact per-file allowance and
+rationale; changing the count requires reviewing the ledger. CFG optimization,
+code generation, and linking have no allowances: an invariant whose violation
+could change emitted code must be an always-on assertion or a real compiler
+diagnostic.
+
 The platform test lanes all retain broad target discovery. Every platform
 (linux-x64, linux-arm64, macOS) defers its three heaviest corpora —
 `//:cli-tests`, `//:cli-tests-caldera`, and `//:spec-tests` — to explicit

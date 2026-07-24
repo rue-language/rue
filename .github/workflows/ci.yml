@@ -33,6 +33,9 @@ jobs:
         # rustfmt target's platform-specific runtime environment.
         run: ./buck2 test //:fmt-check
 
+      - name: Check production debug assertions
+        run: scripts/validate-debug-assert-policy.py
+
   clippy:
     runs-on: ubuntu-latest
     steps:
@@ -506,14 +509,13 @@ jobs:
         if: steps.sel.outputs.run == 'true'
         run: scripts/ci-timed "${{ matrix.check_name }} corpus" -- scripts/ci-heavy-suite "${{ matrix.target }}"
 
-  # Release-mode build + test (RUE-45). Every other job builds the compiler in
-  # debug, so release-only miscompiles — the ones previously masked by a
-  # `debug_assert!` that vanishes when `cfg(debug_assertions)` is off (RUE-24 is
-  # the precedent) — never ran anywhere. This job builds the whole workspace
-  # optimized via `//platforms:release` (RUE-277 made that a genuinely
-  # optimized, byte-distinct build) and runs the full suite against it, so
-  # release codegen is exercised. Bounded to linux-x64 to keep CI time in check;
-  # the debug matrix above still covers arm64/macOS.
+  # Focused release-mode coverage (RUE-1129). Correctness-critical compiler
+  # invariants are enforced independently by validate-debug-assert-policy.py;
+  # this job proves Buck selects the real optimization flags and runs a bounded
+  # end-to-end corpus through the release-built compiler. The scheduled
+  # release.yml workflow retains exhaustive release //... coverage without
+  # putting every optimized target and ThinLTO link on the required critical
+  # path. Debug CI above still covers arm64/macOS.
   release:
     runs-on: ubuntu-latest
     name: release (linux-x64)
@@ -536,11 +538,7 @@ jobs:
             dotslash-linux-x64-
 
       # BuildBuddy remote action cache (RUE-316/RUE-1006); see the clippy job
-      # for the secret-availability contract. This job is the workflow's
-      # critical path (~16 min cold, dominated by the full release build), so
-      # it benefits the most. The RUE-277 debug-vs-release assertion below is
-      # a byte comparison of two separately keyed configurations and is
-      # unaffected by where the artifacts were produced.
+      # for the secret-availability contract.
       - name: Provision remote build cache
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
@@ -552,30 +550,14 @@ jobs:
           scripts/provision-build-cache install
           scripts/provision-build-cache apply
 
-      # Build every crate optimized (catches build breaks that only surface with
-      # optimizations on). Do this before the debug comparison: on cache-miss
-      # changes it gives the parallel sanitizer job time to publish the Linux
-      # debug compiler instead of racing two cold builds of the same graph.
-      - name: Build all targets (release)
-        run: scripts/ci-timed "release build" -- ./buck2 build //crates/... --target-platforms //platforms:release
+      # Direct RUE-277 guard: inspect Buck's analyzed rustc_cfg actions instead
+      # of inferring optimization from complete binary bytes. This performs no
+      # compilation and also pins the release callers to the target platform.
+      - name: Validate release configuration
+        run: scripts/ci-timed "release configuration" -- scripts/validate-release-configuration.py
 
-      # Regression guard for RUE-277: `//platforms:release` must produce a
-      # genuinely-optimized binary that differs from the debug build. The
-      # release artifact is already materialized above; the debug artifact may
-      # now be served by the shared cache after another required job uploads it.
-      - name: Assert release build is distinct from debug
-        run: |
-          debug_bin="$(./scripts/rue-bin --target-platforms //platforms:debug)"
-          release_bin="$(./scripts/rue-bin --target-platforms //platforms:release)"
-          if cmp -s "$debug_bin" "$release_bin"; then
-            echo "::error::release build is byte-identical to debug — //platforms:release opt-level is a no-op (RUE-277 regression)"
-            exit 1
-          fi
-          echo "release build differs from debug build (optimized) — OK"
-
-      # Run the full suite — including the spec/UI/CLI sh_tests, which spawn
-      # the release-configured rue binary — so cfg(debug_assertions)-off and
-      # ThinLTO miscompiles remain required coverage.
-
-      - name: Run tests (release)
-        run: scripts/ci-timed "release tests" -- ./buck2 test //... --target-platforms //platforms:release
+      # Builds only the Rue driver and CLI harness under the release platform,
+      # then runs the 24 representative differential-opt cases (96 produced
+      # programs across -O0/-O1/-O2/-O3) through the release-built compiler.
+      - name: Run focused release smoke
+        run: scripts/ci-timed "release smoke" -- ./buck2 test //:release-smoke --target-platforms //platforms:release

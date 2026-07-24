@@ -355,7 +355,11 @@ fn merge_chains(cfg: &mut Cfg, stats: &mut Stats) -> Result<(), crate::CfgEditEr
             // Record param -> arg substitutions for the edge being erased.
             let args: Vec<CfgValue> = cfg.goto_args(args).to_vec();
             let params = std::mem::take(&mut cfg.get_block_mut(target).params);
-            debug_assert_eq!(params.len(), args.len(), "verified edge arity");
+            assert_eq!(
+                params.len(),
+                args.len(),
+                "edge arity must remain valid while merging blocks"
+            );
             for ((param, _ty), arg) in params.into_iter().zip(args) {
                 subst[param.as_u32() as usize] = Some(arg);
             }

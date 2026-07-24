@@ -1080,7 +1080,10 @@ impl<'a> CfgLower<'a> {
         }
         // The dedicated indirect-result register x8 holds the sret pointer.
         if let Some(p) = sret_ptr {
-            debug_assert!(abi.sret_pointer_in_dedicated_register());
+            assert!(
+                abi.sret_pointer_in_dedicated_register(),
+                "AAPCS64 must pass the sret pointer in dedicated register x8"
+            );
             self.mir.push(Aarch64Inst::MovRR {
                 dst: Operand::Physical(Reg::X8),
                 src: Operand::Virtual(p),

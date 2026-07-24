@@ -170,8 +170,10 @@ scripts/rue test
 ```
 
 CI additionally runs Clippy, workflow linting, rust-project.json validation,
-debug tests on Linux x86-64, Linux AArch64, and macOS, plus a release-mode Linux
-suite. Fuzz, sanitizer, website, and benchmark workflows run separately.
+debug tests on Linux x86-64, Linux AArch64, and macOS, plus a focused
+release-mode Linux smoke. The exhaustive release suite runs nightly and can be
+dispatched manually. Fuzz, sanitizer, website, and benchmark workflows run
+separately.
 
 ## Editor / IDE support
 

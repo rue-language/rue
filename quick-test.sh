@@ -12,6 +12,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+echo "Checking production debug-assertion policy..."
+scripts/validate-debug-assert-policy.py
+
 echo "Running unit tests (quick mode)..."
 # Run every crate's unit tests; //... avoids a hand-maintained list that
 # silently goes stale as crates are added; scoping to //crates/ keeps vendored

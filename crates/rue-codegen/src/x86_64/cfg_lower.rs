@@ -1189,7 +1189,10 @@ impl<'a> CfgLower<'a> {
         let mut int_ops: Vec<VReg> = Vec::new();
         let mut stack_ops: Vec<VReg> = Vec::new();
         if let Some(p) = sret_ptr {
-            debug_assert!(!abi.sret_pointer_in_dedicated_register());
+            assert!(
+                !abi.sret_pointer_in_dedicated_register(),
+                "x86-64 SysV must pass the sret pointer as the first integer argument"
+            );
             int_ops.push(p);
         }
 

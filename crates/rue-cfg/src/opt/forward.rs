@@ -209,9 +209,8 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
     // `last_store` table.
     // ------------------------------------------------------------------
     let mut subst: Vec<Option<CfgValue>> = vec![None; cfg.value_count()];
-    // (single-write block, forwarded load block) pairs for the debug dominance
-    // check.
-    #[cfg(debug_assertions)]
+    // (single-write block, forwarded load block) pairs for the dominance
+    // correctness check.
     let mut rule1_dominance_checks: Vec<(BlockId, BlockId)> = Vec::new();
     // Rule 2 last whole-slot store per local, reset per block.
     let mut last_store: Vec<Option<CfgValue>> = vec![None; num_locals];
@@ -247,9 +246,7 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
                         // Rule 1: global single-write forwarding.
                         subst[value.as_u32() as usize] = Some(write_value);
                         stats.loads_forwarded_single_write += 1;
-                        #[cfg(debug_assertions)]
                         rule1_dominance_checks.push((write_block, block_id));
-                        let _ = write_block;
                     } else if !cfg.is_address_taken(slot) {
                         // Rule 2: block-local forwarding for multi-write slots.
                         if let Some(&Some(stored)) = last_store.get(slot as usize) {
@@ -310,20 +307,17 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
         return Ok(stats);
     }
 
-    // Turn the definite-initialization argument for Rule 1 into a checked
-    // invariant: the single write's block must dominate every load it feeds.
-    // Only computed when debug assertions are on and Rule 1 actually fired.
-    #[cfg(debug_assertions)]
-    {
-        if !rule1_dominance_checks.is_empty() {
-            let dom = crate::dominators::DominatorTree::compute(cfg);
-            for (write_block, load_block) in &rule1_dominance_checks {
-                debug_assert!(
-                    dom.dominates(*write_block, *load_block),
-                    "Rule 1 forwarded a load in {load_block} whose single write \
-                     block {write_block} does not dominate it",
-                );
-            }
+    // Turn the definite-initialization argument for Rule 1 into an always-on
+    // invariant: violating it would make the substitution below silently use a
+    // value before its definition in release builds.
+    if !rule1_dominance_checks.is_empty() {
+        let dom = crate::dominators::DominatorTree::compute(cfg);
+        for (write_block, load_block) in &rule1_dominance_checks {
+            assert!(
+                dom.dominates(*write_block, *load_block),
+                "Rule 1 forwarded a load in {load_block} whose single write \
+                 block {write_block} does not dominate it",
+            );
         }
     }
 
