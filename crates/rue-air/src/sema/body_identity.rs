@@ -101,7 +101,7 @@ use crate::{
 /// durable field of `DurableDeclarationPayload::Struct`); the pool does not
 /// finalize the transitive linearity join.
 #[derive(Debug, Clone)]
-pub(in crate::sema) enum DurableNominalBody<K, M> {
+pub enum DurableNominalBody<K, M> {
     Struct {
         /// Fields in declaration order: source name and durable field type.
         fields: Vec<(Arc<str>, SemanticImportType<K, M>)>,
@@ -118,7 +118,7 @@ pub(in crate::sema) enum DurableNominalBody<K, M> {
 /// byte-equivalent pool entry: everything the epoch's `StructDef`/`EnumDef`
 /// registration needs for the 2a consumers.
 #[derive(Debug, Clone)]
-pub(in crate::sema) struct DurableNominal<K, M> {
+pub struct DurableNominal<K, M> {
     pub name: Arc<str>,
     /// The nominal's defining module logical path. Assigned a body-local
     /// [`FileId`] and published to the pool's symbol paths so nominal symbol
@@ -137,7 +137,13 @@ pub(in crate::sema) struct DurableNominal<K, M> {
 /// The durable nominal vocabulary the pool consults to mint a named nominal.
 /// Implemented by the r4b provider side (over r2's stable-keyed metadata) and by
 /// the 2a unit tests.
-pub(in crate::sema) trait DurableNominalSource<K, M> {
+///
+/// RUE-1091 flip-era surface: `pub` so the rue-compiler-side provider adapter
+/// (the `#[cfg(test)]` differential today, production at the flip) can supply
+/// durable metadata to the body-scoped identity pool the provider-driven
+/// analyzer mints from. The trait body carries no logic; every consult is the
+/// implementation's own point query.
+pub trait DurableNominalSource<K, M> {
     /// The durable metadata for a nominal key, or `None` if the key names no
     /// nominal in the durable universe.
     fn nominal(&self, key: &K) -> Option<DurableNominal<K, M>>;
@@ -610,7 +616,7 @@ where
 /// (r5a) so the pool assembles a `ParamRange` whose names match the epoch's
 /// without re-consulting a declaration shell.
 #[derive(Debug, Clone)]
-pub(in crate::sema) struct DurableSignatureParameter<K, M> {
+pub struct DurableSignatureParameter<K, M> {
     pub name: Arc<str>,
     pub ty: SemanticImportType<K, M>,
     pub mode: SemanticParameterMode,
@@ -623,7 +629,7 @@ pub(in crate::sema) struct DurableSignatureParameter<K, M> {
 /// invariant the epoch enforces between its shell and RIR
 /// (`binding_manifest.rs`: `shell.is_generic == params.any(is_comptime)`).
 #[derive(Debug, Clone)]
-pub(in crate::sema) struct DurableFunction<K, M> {
+pub struct DurableFunction<K, M> {
     pub parameters: Vec<DurableSignatureParameter<K, M>>,
     pub result: SemanticImportType<K, M>,
     pub is_public: bool,
@@ -635,7 +641,7 @@ pub(in crate::sema) struct DurableFunction<K, M> {
 /// no `Self` substitution is needed here) resolved through the same 2a nominal
 /// machinery as the parameters.
 #[derive(Debug, Clone)]
-pub(in crate::sema) struct DurableMethod<K, M> {
+pub struct DurableMethod<K, M> {
     pub receiver: SemanticImportType<K, M>,
     pub parameters: Vec<DurableSignatureParameter<K, M>>,
     pub result: SemanticImportType<K, M>,
@@ -647,7 +653,7 @@ pub(in crate::sema) struct DurableMethod<K, M> {
 /// metadata) and by the 2b unit tests. Keys are namespace-disjoint from nominal
 /// keys in the durable universe (`StableDefinitionKey` encodes namespace+kind),
 /// so a key names at most one of a nominal, a function, or a method.
-pub(in crate::sema) trait DurableCallableSource<K, M> {
+pub trait DurableCallableSource<K, M> {
     /// The durable signature for a free-function key, or `None` if the key names
     /// no function in the durable universe.
     fn function(&self, key: &K) -> Option<DurableFunction<K, M>>;

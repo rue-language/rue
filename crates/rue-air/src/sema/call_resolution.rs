@@ -31,12 +31,19 @@
 //! callable-symbol single-candidate check) stays inside that point query,
 //! matching the `body_endpoint` convention.
 
-use lasso::Spur;
-use rue_rir::InstRef;
+use std::hash::Hash;
+
+use lasso::{Spur, ThreadedRodeo};
+use rue_rir::{InstData, InstRef, Rir};
 use rue_span::FileId;
 
 use super::BodySema;
+use super::body_identity::{
+    BodyIdentityPool, BodyRirIndex, DurableCallableSource, DurableNominalSource,
+    FunctionIdentityHandle, MethodIdentityHandle,
+};
 use super::info::{ConstInfo, FunctionInfo, MethodInfo};
+use super::provider::BodyFactProvider;
 use crate::types::{ModuleDef, ModuleId, StructId};
 
 /// The exact call/method/operator-resolution fact boundary consumed by the
@@ -216,5 +223,285 @@ pub(in crate::sema) fn resolve_static_call_reference<P: CallResolutionFacts>(
         Some(target)
     } else {
         facts.resolve_function_name_local(target, file)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `ProviderCallFacts` — the call-resolution ProviderFacts (RUE-1091 slice r4b-1).
+//
+// The first provider-driven realization of the family-1C call/method/operator
+// facts: where [`EpochFacts`] answers each op from the semantic epoch's
+// `Sema` tables, this driver answers them from the exact body-fact provider
+// boundary ([`BodyFactProvider`], realized in production by rue-compiler's
+// `CompilerBodyFactProvider`) plus the body-scoped identity pool (slices
+// 2a/2b/2c). It is the value/call analog of r2's `ProviderTypeFacts`: the fact
+// SOURCE differs, the assembled answers (`FunctionInfo`/`MethodInfo`/…) are the
+// already-published identity types a differential compares against the epoch.
+//
+// RUE-1091 flip-era surface: `pub` because rFinal's whole-body differential and
+// the step-4 flip both drive the provider path from rue-compiler, where the
+// pool's durable source is built from concrete nucleus signatures (an opaque
+// `BodyFactProvider` associated type rue-air cannot destructure). The sole
+// pre-flip caller is the rue-compiler differential; the flip promotes it to the
+// production analyzer. Every method here is a thin composition — pool consult
+// (P), provider point query (C/B), or RIR-index handle fill — with no resolution
+// LOGIC of its own (selection stays in [`classify_static_call`] /
+// [`resolve_static_call_reference`], the provider-generic free functions above).
+//
+// Feasibility (r4a design-checkpoint table): P = answered-by-pool, C =
+// composed-from-existing-ops, B = boundary-op.
+//   - function_info / method_info / named_method_info                 → P
+//   - named_method_declaration                                        → P (BodyRirIndex)
+//   - named_method_by_callable_symbol                                 → B (callable_symbol_method)
+//   - function_contains / resolve_function_name_local                 → C (lookup)
+// Deferred here, each with its unblocking slice named (reported, never silently
+// answered wrong):
+//   - method_info / named_method_info → r4b-3 (the endpoint seam that owns
+//     receiver→pool identity; the durable method key's receiver preimage is the
+//     owner nominal, threaded there).
+//   - value_const / module_binding / resolve_const_info_in_file → r4b-3: a
+//     `ConstInfo` carries a declaration `span` the position-free provider
+//     boundary omits, needing a const-declaration RIR handle (the const twin of
+//     the function/method handles).
+//   - module_def → r4b-3 / the flip: it answers a rue-air-internal `ModuleId`
+//     registry index the provider has no durable preimage for.
+//   - source_function_name under specialization → r5 (the specialization name
+//     map); identity otherwise.
+// ---------------------------------------------------------------------------
+
+/// The call-resolution ProviderFacts driver: answers the family-1C facts from a
+/// [`BodyFactProvider`] + the body-scoped identity pool, instead of the epoch
+/// `Sema` tables [`EpochFacts`] reads.
+///
+/// Generic over the provider `P`, the pool durable source `S`, and the pool's
+/// durable nominal/callable key `K` and module `M` (rue-compiler binds
+/// `K = StableDefinitionKey`, `M = ModuleId`). The RIR index and interner are
+/// body-query inputs (the shared whole-program `Rir`), never durable state — the
+/// request/RIR-carried remainder of each identity (spans, `@allow` flags,
+/// `is_extern`) is filled from them exactly as production's `binding_manifest`
+/// fills it, so the pool's durable-signature subset and the RIR handle compose
+/// to a byte-equivalent `FunctionInfo`/`MethodInfo` (the 2c capstone contract).
+pub struct ProviderCallFacts<'a, P, S, K, M> {
+    provider: &'a P,
+    pool: BodyIdentityPool<K, M, S>,
+    rir_index: BodyRirIndex,
+    rir: &'a Rir,
+    /// The whole-program RIR interner. Input names arrive already interned here
+    /// (the provider path resolves them to `&str` and re-interns into the pool's
+    /// own interner); the RIR index is keyed on this interner's [`Spur`]s.
+    rir_interner: &'a ThreadedRodeo,
+}
+
+impl<'a, P, S, K, M> ProviderCallFacts<'a, P, S, K, M>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M> + DurableCallableSource<K, M>,
+    K: Clone + Eq + Hash,
+    M: Eq + Hash,
+{
+    /// Construct the driver over a provider, a durable source, and the shared
+    /// whole-program `Rir` + interner. The pool and RIR index are built here;
+    /// nominals and callables are minted lazily on first consult.
+    pub fn new(provider: &'a P, source: S, rir: &'a Rir, rir_interner: &'a ThreadedRodeo) -> Self {
+        Self {
+            provider,
+            pool: BodyIdentityPool::new(source),
+            rir_index: BodyRirIndex::new(rir),
+            rir,
+            rir_interner,
+        }
+    }
+
+    /// The body-local minted type pool, so a differential reads its metadata for
+    /// the index-independent render/copyability comparison (the pool mints its
+    /// own ids; parity is asserted through displays, never a pool-relative index
+    /// — the 2a/2b contract).
+    pub fn type_pool(&self) -> &crate::TypeInternPool {
+        self.pool.type_pool()
+    }
+
+    /// The body-local parameter arena backing every minted [`FunctionInfo`] /
+    /// [`MethodInfo`] `params` range.
+    pub fn param_arena(&self) -> &crate::ParamArena {
+        self.pool.param_arena()
+    }
+
+    /// Resolve a pool-interner [`Spur`] (e.g. a minted `params` name symbol) to
+    /// its source string; the pool's symbols are interner-relative, so name
+    /// parity is asserted through resolved strings.
+    pub fn resolve_symbol(&self, symbol: Spur) -> &str {
+        self.pool.resolve_symbol(symbol)
+    }
+
+    /// (P) Assemble a [`FunctionInfo`] for a durable free-function key, composing
+    /// the pool's durable-signature subset (2b, whose nominal parameter types
+    /// resolve through 2a) with the request/RIR handle located by the RIR index
+    /// (2c). `source_name`/`file` locate the declaration in the shared `Rir`.
+    /// The r4a-2c span contract holds by construction: the handle sources
+    /// `span`/`file_id` from the located `FnDecl` inst, the same inst production
+    /// sources them from — a differential asserts, never assumes, the equality.
+    pub fn function_info(
+        &mut self,
+        key: &K,
+        source_name: &str,
+        file: FileId,
+    ) -> Option<FunctionInfo> {
+        let source_sym = self.rir_interner.get(source_name)?;
+        let declaration = self.rir_index.first_free_function(source_sym, file)?;
+        let handle = self.function_handle(declaration)?;
+        self.pool.resolve_function(key, handle).ok()
+    }
+
+    /// (P) Assemble a [`MethodInfo`] for a durable method key, composing the
+    /// pool's durable method subset (2b, receiver through 2a) with the RIR
+    /// handle the RIR index locates for `(owner_file, owner_type_name, method)`.
+    pub fn method_info(
+        &mut self,
+        key: &K,
+        owner_file: FileId,
+        owner_type_name: &str,
+        method: &str,
+    ) -> Option<MethodInfo> {
+        let declaration = self.named_method_declaration(owner_file, owner_type_name, method)?;
+        let handle = self.method_handle(declaration)?;
+        self.pool.resolve_method(key, handle).ok()
+    }
+
+    /// (P) The *named* method info for `(owner, method)`. Anonymous-owner methods
+    /// are a deferred pool arm (r6 anonymous minting), so over the named-method
+    /// differential scope this coincides with [`Self::method_info`], mirroring
+    /// the epoch's `methods.get` (named-only, no anonymous fallback).
+    pub fn named_method_info(
+        &mut self,
+        key: &K,
+        owner_file: FileId,
+        owner_type_name: &str,
+        method: &str,
+    ) -> Option<MethodInfo> {
+        self.method_info(key, owner_file, owner_type_name, method)
+    }
+
+    /// (P) The named-method RIR declaration for `(owner_file, owner_type_name,
+    /// method)` — the durable-available preimage of the epoch's `(StructId,
+    /// method)` key, answered by [`BodyRirIndex`]. Equal to the epoch's
+    /// `named_method_declarations.get` under the `struct_by_file_name`
+    /// bijection.
+    ///
+    /// This driver keys the op by the preimage DIRECTLY (provider-natural), which
+    /// IS the r4a-2c "prefer rethreading" resolution: it never mints or consults a
+    /// pool `StructId`, so the endpoint seam's production trait signature stays
+    /// untouched. The `StructId`-keyed `CallResolutionFacts::named_method_
+    /// declaration(StructId, name)` trait impl — which must map its incoming
+    /// `StructId` back to this preimage — is the endpoint-seam slice r4b-3's
+    /// concern (it owns receiver→pool identity); r4b-1 exposes the preimage-keyed
+    /// answer the flip will drive.
+    pub fn named_method_declaration(
+        &self,
+        owner_file: FileId,
+        owner_type_name: &str,
+        method: &str,
+    ) -> Option<InstRef> {
+        let owner_sym = self.rir_interner.get(owner_type_name)?;
+        let method_sym = self.rir_interner.get(method)?;
+        self.rir_index
+            .named_method_declaration(owner_file, owner_sym, method_sym)
+    }
+
+    /// (B) Reverse a rendered callable symbol to its `(receiver, method)` via the
+    /// r4a-1 boundary op. Answers `None` for a bare (unqualified, `$`-less)
+    /// symbol — a builtin / language-item / anonymous owner whose defining module
+    /// the boundary cannot recover — exactly as the epoch's callable index
+    /// answers `Some` for such a symbol. That intentional epoch=`Some` /
+    /// provider=`None` divergence is the r6-tied bare-owner known-divergence the
+    /// differential pins.
+    pub fn callable_symbol_receiver(
+        &self,
+        symbol: &str,
+    ) -> Option<(P::ReceiverType, std::sync::Arc<str>)> {
+        self.provider.callable_symbol_method(symbol)
+    }
+
+    /// (C) Whether a source name resolves to a declared free function in `module`
+    /// — the provider `lookup_unqualified` (ModuleItem, Function kind) analog of
+    /// the epoch's `functions.contains_key`. Selection (kind filter) stays here
+    /// against the returned candidate set, honoring the boundary's
+    /// candidate-sets-not-winners contract.
+    pub fn function_contains_in_module(&self, module: &P::ModuleRef, source_name: &str) -> bool {
+        use super::provider::{NameResolution, ProviderDefinitionKind, ProviderNamespace};
+        let resolution =
+            self.provider
+                .lookup_unqualified(module, ProviderNamespace::ModuleItem, source_name);
+        matches!(
+            resolution.of_kind(ProviderDefinitionKind::Function),
+            NameResolution::Unique(_) | NameResolution::Ambiguous(_)
+        )
+    }
+
+    /// Fill a [`FunctionIdentityHandle`] from the located `FnDecl` inst — the
+    /// verbatim request/RIR reads production performs (`binding_manifest.rs`):
+    /// `body`, the pre-resolution return symbol, the RIR-only
+    /// `is_extern`/`is_c_export`, and the `@allow` directive flags.
+    fn function_handle(&self, declaration: InstRef) -> Option<FunctionIdentityHandle> {
+        let inst = self.rir.get(declaration);
+        let InstData::FnDecl {
+            body,
+            return_type,
+            is_extern,
+            is_c_export,
+            directives,
+            ..
+        } = &inst.data
+        else {
+            return None;
+        };
+        let dirs = self.rir.directives(directives);
+        Some(FunctionIdentityHandle {
+            body: *body,
+            declaration,
+            span: inst.span,
+            return_type_sym: *return_type,
+            is_extern: *is_extern,
+            is_c_export: *is_c_export,
+            allow_unused_function: self.has_allow(dirs.iter(), "unused_function"),
+            allow_unused_variable: self.has_allow(dirs.iter(), "unused_variable"),
+            allow_unreachable_code: self.has_allow(dirs.iter(), "unreachable_code"),
+            file_id: inst.span.file_id,
+        })
+    }
+
+    /// Fill a [`MethodIdentityHandle`] from the located method `FnDecl` inst.
+    fn method_handle(&self, declaration: InstRef) -> Option<MethodIdentityHandle> {
+        let inst = self.rir.get(declaration);
+        let InstData::FnDecl {
+            body,
+            self_mode,
+            self_is_mut,
+            ..
+        } = &inst.data
+        else {
+            return None;
+        };
+        Some(MethodIdentityHandle {
+            body: *body,
+            span: inst.span,
+            self_mode: *self_mode,
+            self_is_mut: *self_is_mut,
+        })
+    }
+
+    /// The `@allow(<warning>)` check over a directive view, replicated from
+    /// `Sema::has_allow_directive` against the RIR interner (the driver holds no
+    /// `Sema`).
+    fn has_allow<'r>(
+        &self,
+        mut directives: impl Iterator<Item = rue_rir::RirDirectiveView<'r>>,
+        warning_name: &str,
+    ) -> bool {
+        let allow_sym = self.rir_interner.get("allow");
+        let warning_sym = self.rir_interner.get(warning_name);
+        directives.any(|directive| {
+            Some(directive.name) == allow_sym
+                && directive.args.iter().any(|arg| Some(*arg) == warning_sym)
+        })
     }
 }
