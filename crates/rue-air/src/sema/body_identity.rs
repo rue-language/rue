@@ -339,6 +339,17 @@ where
         self.interner.resolve(&symbol)
     }
 
+    /// Intern a source name into the pool's own interner, returning its
+    /// pool-relative [`Spur`]. The provider-driven endpoint driver
+    /// ([`super::body_endpoint::ProviderEndpointFacts`]) interns each consulted
+    /// name here — the `interner.get_or_intern` analog of the epoch's
+    /// `interner.get` — so the symbol it then reverses through
+    /// [`Self::resolve_symbol`] and keys the overlay on stays in this pool's own
+    /// symbol space, never the shared whole-program interner's.
+    pub(in crate::sema) fn intern_name(&self, name: &str) -> Spur {
+        self.interner.get_or_intern(name)
+    }
+
     /// Record the concrete [`Type`] an anonymous nominal was issued, so a later
     /// consult of its key resolves by lookup. Mirrors the epoch's
     /// `anon_struct_identities` / `anon_enum_identities` maps that

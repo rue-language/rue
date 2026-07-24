@@ -2446,6 +2446,41 @@ impl<'a> BoundSema<'a> {
             .collect()
     }
 
+    /// RUE-1091 slice r4b-2 flip-era surface: the epoch's resolved nominal
+    /// [`Type`] for a `(file, name)` nominal, exposed so the rue-compiler
+    /// differential compares the provider-driven `ProviderEndpointFacts` pool
+    /// resolution against the LIVE endpoint answer (not a durable re-terminal).
+    /// Trivial delegation to the frozen `BodySema`'s endpoint facts — the exact
+    /// `struct_by_file_name` / `enum_by_file_name` lookup the `Named`-nominal arm
+    /// of [`super::body_endpoint::resolve_instance_type`] performs, wrapped into
+    /// a `Type`. The returned id is epoch-pool-relative, so a caller compares its
+    /// index-independent render / metadata (via [`Self::with_type_pool`]), never
+    /// the raw id.
+    pub fn epoch_nominal_type(&self, file: FileId, name: Spur) -> Option<crate::types::Type> {
+        use super::body_endpoint::{BodyEndpointProvider, endpoint_facts};
+        let facts = endpoint_facts(&self.sema);
+        facts
+            .struct_by_file_name(file, name)
+            .map(crate::types::Type::new_struct)
+            .or_else(|| {
+                facts
+                    .enum_by_file_name(file, name)
+                    .map(crate::types::Type::new_enum)
+            })
+    }
+
+    /// RUE-1091 slice r4b-2 flip-era surface: read the epoch's populated
+    /// [`TypeInternPool`](crate::intern_pool::TypeInternPool) under a closure, so
+    /// the differential renders an [`Self::epoch_nominal_type`] result with the
+    /// same index-independent logic it renders the provider-pool side with. The
+    /// sole pre-flip caller is that differential.
+    pub fn with_type_pool<R>(
+        &self,
+        read: impl FnOnce(&crate::intern_pool::TypeInternPool) -> R,
+    ) -> R {
+        read(&self.sema.type_pool)
+    }
+
     /// Materialize the owned manifest on demand. Ordinary body analysis does
     /// not pay for this additional RIR traversal.
     pub fn binding_manifest(&self) -> &SemanticBindingManifest {

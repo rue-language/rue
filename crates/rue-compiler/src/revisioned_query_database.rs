@@ -21013,6 +21013,547 @@ mod tests {
         );
     }
 
+    // ---- RUE-1091 r4b-2: endpoint ProviderFacts differentials ----------------
+    //
+    // These prove `rue_air::ProviderEndpointFacts` (the provider-driven
+    // realization of the family-1A `BodyEndpointProvider` seam) resolves every
+    // `TypeInstanceKey` arm the body identity pool supports, matching the epoch.
+    // The driver REUSES the same provider-generic `resolve_instance_type` logic
+    // production runs (`body_endpoint.rs`), driven over the pool + an overlay
+    // token space in place of the epoch's `structs_by_file_name` /
+    // `stable_definition_endpoints` tables; only the fact SOURCE differs, so the
+    // agreement is a real cross-path proof. The durable source (`DurableDeclSource`,
+    // shared with the r4b-1 block) is built from the independently produced
+    // durable declaration set, and the comparison target is the LIVE epoch's own
+    // resolved nominal `Type` (`BoundSema::epoch_nominal_type`), rendered
+    // index-independently — never a pool-relative index, never a literal.
+    //
+    // Scope landed here: `resolve_instance_type` over primitives, named
+    // struct/enum (the by-file-name lookup + endpoint token space), builtin `str`
+    // (builtin classification), and the structural array / `ptr const` / `ptr
+    // mut` wrappers (P); the three RIR ops (R, thin `BodyRirIndex` delegation);
+    // the provider-boundary nominal-presence check (C). Deferred with cause
+    // (pinned, never silently answered wrong): module identity → r4b-3 / the
+    // flip; generic parameter → r5/r6 substitution; anonymous mint-from-digest
+    // and well-known `Option` → r6; builtin / slice names beyond the pool's
+    // pre-registered `BUILTIN_ENUMS` + `str` set → r6; the `(StructId, name)`
+    // endpoint-trait seam → r4b-3.
+
+    /// The index-independent render of a nominal pool [`rue_air::Type`]: the
+    /// display, copyability, visibility, mangled symbol, and member vocabulary a
+    /// differential compares across two independently-minted pools (the pool
+    /// mints its own ids; parity is a display/metadata property).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct EndpointNominalRender {
+        display: String,
+        is_copy: bool,
+        is_pub: bool,
+        symbol: String,
+        members: Vec<(String, String)>,
+    }
+
+    /// Render any pool [`rue_air::Type`] to its display, recursing through pool
+    /// indices so it is index-independent and safe to compare across two pools.
+    fn endpoint_display(pool: &rue_air::TypeInternPool, ty: rue_air::Type) -> String {
+        use rue_air::TypeKind;
+        match ty.kind() {
+            TypeKind::I8 => "i8".into(),
+            TypeKind::I16 => "i16".into(),
+            TypeKind::I32 => "i32".into(),
+            TypeKind::I64 => "i64".into(),
+            TypeKind::U8 => "u8".into(),
+            TypeKind::U16 => "u16".into(),
+            TypeKind::U32 => "u32".into(),
+            TypeKind::U64 => "u64".into(),
+            TypeKind::Bool => "bool".into(),
+            TypeKind::Unit => "()".into(),
+            TypeKind::Never => "!".into(),
+            TypeKind::ComptimeType => "type".into(),
+            TypeKind::Struct(id) => pool.struct_def(id).name,
+            TypeKind::Enum(id) => pool.enum_def(id).name,
+            TypeKind::Array(id) => {
+                let (element, len) = pool.array_def(id);
+                format!("[{}; {}]", endpoint_display(pool, element), len)
+            }
+            TypeKind::PtrConst(id) => {
+                format!(
+                    "ptr const {}",
+                    endpoint_display(pool, pool.ptr_const_def(id))
+                )
+            }
+            TypeKind::PtrMut(id) => {
+                format!("ptr mut {}", endpoint_display(pool, pool.ptr_mut_def(id)))
+            }
+            other => format!("{other:?}"),
+        }
+    }
+
+    /// Index-independent copyability, mirroring `Sema::is_type_copy`.
+    fn endpoint_is_copy(pool: &rue_air::TypeInternPool, ty: rue_air::Type) -> bool {
+        use rue_air::TypeKind;
+        match ty.kind() {
+            TypeKind::Struct(id) => pool.struct_def(id).is_copy,
+            TypeKind::Enum(id) => pool
+                .enum_def(id)
+                .variant_payloads
+                .iter()
+                .flatten()
+                .all(|&ty| endpoint_is_copy(pool, ty)),
+            TypeKind::Array(id) => endpoint_is_copy(pool, pool.array_def(id).0),
+            _ => true,
+        }
+    }
+
+    /// Render a nominal (struct or enum) pool [`rue_air::Type`] to its
+    /// index-independent metadata.
+    fn endpoint_nominal_render(
+        pool: &rue_air::TypeInternPool,
+        ty: rue_air::Type,
+    ) -> EndpointNominalRender {
+        use rue_air::TypeKind;
+        match ty.kind() {
+            TypeKind::Struct(id) => {
+                let def = pool.struct_def(id);
+                EndpointNominalRender {
+                    display: def.name.clone(),
+                    is_copy: def.is_copy,
+                    is_pub: def.is_pub,
+                    symbol: pool.struct_symbol_name(id),
+                    members: def
+                        .fields
+                        .iter()
+                        .map(|field| (field.name.clone(), endpoint_display(pool, field.ty)))
+                        .collect(),
+                }
+            }
+            TypeKind::Enum(id) => {
+                let def = pool.enum_def(id);
+                EndpointNominalRender {
+                    display: def.name.clone(),
+                    is_copy: endpoint_is_copy(pool, ty),
+                    is_pub: def.is_pub,
+                    symbol: pool.enum_symbol_name(id),
+                    members: def
+                        .variants
+                        .iter()
+                        .map(|variant| (variant.clone(), String::new()))
+                        .collect(),
+                }
+            }
+            other => panic!("endpoint_nominal_render expects a nominal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn provider_endpoint_facts_resolve_instance_type_matches_epoch() {
+        use crate::StableDefinitionKind as Kind;
+        use rue_air::{
+            NominalInstanceKey as N, SemanticDefinitionToken as DTok, SemanticModuleToken as MTok,
+            TypeInstanceKey as T,
+        };
+        // The full nominal / structural surface: `Point` is a non-copy nominal
+        // (its fields resolve through the pool's 2a machinery); `Holder` embeds a
+        // nominal field plus the array / `ptr const` / `ptr mut` structural arms;
+        // `Color` is a named enum. Each is minted by the provider path and
+        // compared to the LIVE epoch's own resolution.
+        let source = "pub struct Point { x: i64, y: i64 }\n\
+                      pub enum Color { Red, Green }\n\
+                      pub struct Holder { p: Point, arr: [i64; 3], pc: ptr const Point, pm: ptr mut i64 }\n\
+                      fn main() -> i32 { 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let file = FileId::new(1);
+        let decls = production_declarations(&snapshot);
+        let point_key = durable_decl(&decls, Kind::Struct, "Point").key.clone();
+        let holder_key = durable_decl(&decls, Kind::Struct, "Holder").key.clone();
+        let color_key = durable_decl(&decls, Kind::Enum, "Color").key.clone();
+
+        // The LIVE epoch, bound through the production declaration path — the
+        // INDEPENDENT side the provider assembly is compared against.
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
+        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
+            &merged,
+            &rir,
+            crate::PreviewFeatures::default(),
+            rue_target::Target::X86_64Linux,
+            &imports,
+        )
+        .expect("declarations bind");
+        let interner = rir.semantic_symbols().interner();
+        let point_sym = interner.get("Point").expect("Point interned");
+        let holder_sym = interner.get("Holder").expect("Holder interned");
+        let color_sym = interner.get("Color").expect("Color interned");
+
+        let epoch_point = bound
+            .epoch_nominal_type(file, point_sym)
+            .expect("epoch resolves Point");
+        let epoch_holder = bound
+            .epoch_nominal_type(file, holder_sym)
+            .expect("epoch resolves Holder");
+        let epoch_color = bound
+            .epoch_nominal_type(file, color_sym)
+            .expect("epoch resolves Color");
+        let epoch_point_render =
+            bound.with_type_pool(|pool| endpoint_nominal_render(pool, epoch_point));
+        let epoch_holder_render =
+            bound.with_type_pool(|pool| endpoint_nominal_render(pool, epoch_holder));
+        let epoch_color_render =
+            bound.with_type_pool(|pool| endpoint_nominal_render(pool, epoch_color));
+        // Holder's field displays are the LIVE epoch reference for the top-level
+        // structural / primitive arms (the same structural type, resolved as a
+        // field), and Point.x for the primitive-arm reference.
+        let epoch_holder_fields: HashMap<String, String> =
+            epoch_holder_render.members.iter().cloned().collect();
+        let epoch_point_fields: HashMap<String, String> =
+            epoch_point_render.members.iter().cloned().collect();
+
+        let rir_ref = rir.rir();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let adapter = DurableDeclSource::from_declarations(&decls);
+
+        let outcome = database.probe_body_facts(
+            revision,
+            semantic_configuration(),
+            "endpoint-resolve",
+            move |provider| {
+                let facts =
+                    rue_air::ProviderEndpointFacts::new(provider, adapter, rir_ref, interner);
+                let named = |token: DTok| -> T<DTok, MTok> { T::Nominal(N::Named(token)) };
+                let point_token =
+                    facts.register_named_nominal(point_key.clone(), 1, "Point", Kind::Struct);
+                let holder_token =
+                    facts.register_named_nominal(holder_key.clone(), 1, "Holder", Kind::Struct);
+                let color_token =
+                    facts.register_named_nominal(color_key.clone(), 1, "Color", Kind::Enum);
+
+                let point_ty = facts
+                    .resolve_instance_type(&named(point_token))
+                    .expect("Point resolves through the provider path");
+                // Double consult: the pool dedups, resolution is stable.
+                let point_again = facts
+                    .resolve_instance_type(&named(point_token))
+                    .expect("repeat consult resolves");
+                assert_eq!(
+                    point_ty, point_again,
+                    "repeat consult re-minted the nominal"
+                );
+                let holder_ty = facts
+                    .resolve_instance_type(&named(holder_token))
+                    .expect("Holder resolves (nominal field + structural fields)");
+                let color_ty = facts
+                    .resolve_instance_type(&named(color_token))
+                    .expect("Color resolves through the provider path");
+
+                // Top-level structural / primitive arms of the SHARED
+                // `resolve_instance_type` walk.
+                let array_ty = facts
+                    .resolve_instance_type(&T::Array {
+                        element: Box::new(T::I64),
+                        len: 3,
+                    })
+                    .expect("array arm resolves");
+                let ptr_const_ty = facts
+                    .resolve_instance_type(&T::PtrConst(Box::new(named(point_token))))
+                    .expect("ptr const arm resolves over a nominal");
+                let ptr_mut_ty = facts
+                    .resolve_instance_type(&T::PtrMut(Box::new(T::I64)))
+                    .expect("ptr mut arm resolves");
+                let i64_ty = facts
+                    .resolve_instance_type(&T::I64)
+                    .expect("primitive arm resolves");
+                let str_ty = facts
+                    .resolve_instance_type(&T::BuiltinNominal {
+                        kind: rue_air::AnonymousNominalKind::Struct,
+                        name: std::sync::Arc::from("str"),
+                    })
+                    .expect("builtin str resolves through the pool's pre-registered set");
+
+                // A `Module` token constructed here is irrelevant — the arm
+                // fails closed before any lookup.
+                let _ = MTok::new(0, 0);
+
+                facts.with_type_pool(|pool| {
+                    (
+                        endpoint_nominal_render(pool, point_ty),
+                        endpoint_nominal_render(pool, holder_ty),
+                        endpoint_nominal_render(pool, color_ty),
+                        endpoint_display(pool, array_ty),
+                        endpoint_display(pool, ptr_const_ty),
+                        endpoint_display(pool, ptr_mut_ty),
+                        endpoint_display(pool, i64_ty),
+                        endpoint_display(pool, str_ty),
+                    )
+                })
+            },
+        );
+        let (point_r, holder_r, color_r, array_d, ptr_const_d, ptr_mut_d, i64_d, str_d) =
+            outcome.result;
+
+        // Named-nominal arm (struct): full metadata parity against the LIVE epoch.
+        assert_eq!(
+            point_r, epoch_point_render,
+            "Point resolution matches the epoch"
+        );
+        assert_eq!(
+            holder_r, epoch_holder_render,
+            "Holder (nominal + structural fields) matches the epoch"
+        );
+        // Named-nominal arm (enum).
+        assert_eq!(color_r, epoch_color_render, "Color enum matches the epoch");
+
+        // Structural / primitive arms: each equals the SAME type resolved as a
+        // live epoch field (never a literal).
+        assert_eq!(
+            Some(&array_d),
+            epoch_holder_fields.get("arr"),
+            "array arm equals the epoch's `arr` field"
+        );
+        assert_eq!(
+            Some(&ptr_const_d),
+            epoch_holder_fields.get("pc"),
+            "ptr const arm equals the epoch's `pc` field"
+        );
+        assert_eq!(
+            Some(&ptr_mut_d),
+            epoch_holder_fields.get("pm"),
+            "ptr mut arm equals the epoch's `pm` field"
+        );
+        assert_eq!(
+            Some(&i64_d),
+            epoch_point_fields.get("x"),
+            "primitive arm equals the epoch's `x: i64` field"
+        );
+        // Builtin arm: `str` is pre-registered identically to the epoch's fresh
+        // import program, so it renders identically.
+        assert_eq!(
+            str_d, "str",
+            "builtin str renders as the pre-registered nominal"
+        );
+
+        // The P-op path consults the pool (durable source) + overlay, not the
+        // live provider terminals, so it records no provider query edge — edge
+        // honesty is a C-op property (pinned by the presence differential below).
+        assert!(
+            outcome.dependencies.is_empty(),
+            "a pool-answered resolution records no provider edge: {:?}",
+            outcome.dependencies
+        );
+    }
+
+    #[test]
+    fn provider_endpoint_facts_deferred_arms_are_pinned_gaps() {
+        use crate::StableDefinitionKind as Kind;
+        use rue_air::{
+            AnonymousNominalKey, AnonymousNominalKind, CanonicalArguments, NominalInstanceKey as N,
+            SemanticModuleToken as MTok, StableProducerId, TypeInstanceKey as T,
+        };
+        // A one-nominal program so the anonymous producer has a real definition
+        // token to name; every arm below is a documented pool deferral that must
+        // fail closed (never resolve wrong).
+        let source = "pub struct Point { x: i64 }\n\
+                      fn main() -> i32 { 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let file = FileId::new(1);
+        let decls = production_declarations(&snapshot);
+        let point_key = durable_decl(&decls, Kind::Struct, "Point").key.clone();
+        let (rir_out, _semantic, _) = crate::test_support::test_frontend_snapshot(
+            &snapshot,
+            &crate::CompileOptions::default(),
+        )
+        .expect("frontend compiles");
+        let rir = rir_out.rir();
+        let interner = rir_out.semantic_symbols().interner();
+
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let adapter = DurableDeclSource::from_declarations(&decls);
+
+        let outcome = database.probe_body_facts(
+            revision,
+            semantic_configuration(),
+            "endpoint-deferred",
+            move |provider| {
+                let facts = rue_air::ProviderEndpointFacts::new(provider, adapter, rir, interner);
+                let point_token = facts.register_named_nominal(
+                    point_key.clone(),
+                    file.index(),
+                    "Point",
+                    Kind::Struct,
+                );
+
+                // Module identity — r4b-3 / the flip (pool-refused arm).
+                let module = facts.resolve_instance_type(&T::Module(MTok::new(0, 0)));
+                // Generic parameter — r5/r6 substitution.
+                let generic = facts.resolve_instance_type(&T::GenericParameter(0));
+                // Slice generated-struct name beyond the pre-registered set — r6.
+                let slice = facts.resolve_instance_type(&T::Slice {
+                    element: Box::new(T::I64),
+                    name: std::sync::Arc::from("[]i64"),
+                });
+                // Builtin name beyond BUILTIN_ENUMS + str — r6 builtin facts.
+                let unknown_builtin = facts.resolve_instance_type(&T::BuiltinNominal {
+                    kind: AnonymousNominalKind::Struct,
+                    name: std::sync::Arc::from("NotABuiltin"),
+                });
+                // Anonymous mint-from-digest (issued-anonymous lookup only) — r6.
+                let anonymous =
+                    facts.resolve_instance_type(&T::Nominal(N::Anonymous(AnonymousNominalKey {
+                        kind: AnonymousNominalKind::Struct,
+                        producer: StableProducerId::Definition(point_token),
+                        anchor: rue_rir::RirStructuralAnchor::new(Vec::new()),
+                        arguments: CanonicalArguments::default(),
+                    })));
+                (
+                    module.is_err(),
+                    generic.is_err(),
+                    slice.is_err(),
+                    unknown_builtin.is_err(),
+                    anonymous.is_err(),
+                )
+            },
+        );
+        let (module, generic, slice, unknown_builtin, anonymous) = outcome.result;
+        assert!(module, "module identity fails closed (r4b-3 / flip)");
+        assert!(generic, "generic parameter fails closed (r5/r6)");
+        assert!(slice, "slice generated-struct name fails closed (r6)");
+        assert!(unknown_builtin, "unknown builtin name fails closed (r6)");
+        assert!(anonymous, "anonymous mint fails closed (r6)");
+    }
+
+    #[test]
+    fn provider_endpoint_facts_rir_ops_and_nominal_presence() {
+        // Two structs sharing a method name, a destructor, and a free function:
+        // the three RIR ops must disambiguate by the owner preimage, and the
+        // provider-boundary presence check must kind-filter nominals from
+        // functions.
+        let source = "struct Widget { id: u32, \
+             fn bump(self) -> u32 { self.id } \
+             fn reset() -> u32 { 0 } }\n\
+             struct Gadget { n: i32, \
+             fn bump(self) -> i32 { self.n } }\n\
+             drop fn Widget(self) {}\n\
+             fn helper() -> i32 { 0 }\n\
+             fn main() -> i32 { 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let file = FileId::new(1);
+        let m = ModuleId::from_logical_path("m.rue").unwrap();
+        let decls = production_declarations(&snapshot);
+        let (rir_out, _semantic, _) = crate::test_support::test_frontend_snapshot(
+            &snapshot,
+            &crate::CompileOptions::default(),
+        )
+        .expect("frontend compiles");
+        let rir = rir_out.rir();
+        let interner = rir_out.semantic_symbols().interner();
+
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let adapter = DurableDeclSource::from_declarations(&decls);
+
+        let outcome = database.probe_body_facts(
+            revision,
+            semantic_configuration(),
+            "endpoint-rir-ops",
+            move |provider| {
+                let facts = rue_air::ProviderEndpointFacts::new(provider, adapter, rir, interner);
+
+                // (R) first_free_function: a free function resolves; a method
+                // name and an absent name do not.
+                let helper = facts.first_free_function("helper", file);
+                let bump_free = facts.first_free_function("bump", file);
+                let absent_free = facts.first_free_function("nonexistent", file);
+
+                // (R) named_method_declaration: same-named methods on distinct
+                // owners stay distinct; an absent method fails closed.
+                let widget_bump = facts.named_method_declaration(file, "Widget", "bump");
+                let gadget_bump = facts.named_method_declaration(file, "Gadget", "bump");
+                let widget_reset = facts.named_method_declaration(file, "Widget", "reset");
+                let widget_absent = facts.named_method_declaration(file, "Widget", "nonexistent");
+
+                // (R) destructor: present for Widget, absent for Gadget.
+                let widget_drop = facts.destructor(file, "Widget");
+                let gadget_drop = facts.destructor(file, "Gadget");
+
+                // (C) nominal presence via the provider boundary (records the
+                // lookup-name edge): a struct is present, a function is not (kind
+                // filter), an absent name is not.
+                let widget_present = facts.nominal_contains_in_module(
+                    &m,
+                    "Widget",
+                    rue_air::AnonymousNominalKind::Struct,
+                );
+                let helper_as_struct = facts.nominal_contains_in_module(
+                    &m,
+                    "helper",
+                    rue_air::AnonymousNominalKind::Struct,
+                );
+                let missing_present = facts.nominal_contains_in_module(
+                    &m,
+                    "Missing",
+                    rue_air::AnonymousNominalKind::Struct,
+                );
+
+                (
+                    helper.is_some(),
+                    bump_free.is_none(),
+                    absent_free.is_none(),
+                    widget_bump,
+                    gadget_bump,
+                    widget_reset.is_some(),
+                    widget_absent.is_none(),
+                    widget_drop.is_some(),
+                    gadget_drop.is_none(),
+                    widget_present,
+                    helper_as_struct,
+                    missing_present,
+                )
+            },
+        );
+        let (
+            helper,
+            bump_not_free,
+            absent_free,
+            widget_bump,
+            gadget_bump,
+            widget_reset,
+            widget_absent,
+            widget_drop,
+            gadget_no_drop,
+            widget_present,
+            helper_as_struct,
+            missing_present,
+        ) = outcome.result;
+        assert!(helper, "helper is a free function");
+        assert!(bump_not_free, "bump is a method, not a free function");
+        assert!(absent_free, "an absent free function fails closed");
+        assert!(widget_bump.is_some() && gadget_bump.is_some());
+        assert_ne!(
+            widget_bump, gadget_bump,
+            "same-named methods on distinct owners stay distinct declarations"
+        );
+        assert!(widget_reset, "Widget.reset resolves");
+        assert!(widget_absent, "an absent method fails closed");
+        assert!(widget_drop, "Widget has a destructor");
+        assert!(gadget_no_drop, "Gadget has no destructor");
+        assert!(widget_present, "Widget is a declared struct");
+        assert!(!helper_as_struct, "a free function is not a struct");
+        assert!(!missing_present, "an absent name is not a struct");
+
+        // The presence check observes the provider's name-lookup terminal — the
+        // post-flip edge truth the epoch's table lookup masks.
+        assert!(
+            outcome
+                .dependencies
+                .iter()
+                .any(|node| node.family() == "compiler.lookup-name"),
+            "nominal presence observes the name-lookup terminal: {:?}",
+            outcome.dependencies
+        );
+    }
+
     #[test]
     fn provider_member_candidates_span_methods_and_assoc_fns_with_signature_handles() {
         use crate::declaration_candidate::DeclarationCandidateCategory as Cat;
