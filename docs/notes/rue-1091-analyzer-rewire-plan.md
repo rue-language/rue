@@ -507,23 +507,45 @@ Every public `register_*` entry point on a provider-era overlay has one source:
   body-local presentation input as RIR spans. It is deliberately not claimed as declaration-level
   durable truth. `provider_aggregate_facts_is_accessible_matches_epoch` registers the identical
   physical paths on both sides and pins every visibility row.
+- `ProviderCallFacts::register_value_const` and
+  `ProviderAggregateFacts::register_value_const`: fill only from
+  `ProviderEndpointFacts::const_info`, which joins the durable const identity to the exact current
+  RIR declaration span in the shared `ProviderIdentityContext`. The direct const differential
+  renders the complete `ConstInfo` (type, value, visibility, and span) after each overlay install
+  and compares it with the LIVE epoch.
+- `ProviderCallFacts::register_module_binding` and
+  `ProviderAggregateFacts::register_module_binding`: fill only from
+  `ProviderEndpointFacts::module_binding_info`, after the target durable module has been admitted
+  to the same shared registry. The module-binding row in the direct const differential pins the
+  complete installed payload against the LIVE epoch.
 
 ### Honest STOPs
 
-The registry residue is closed, but neighboring aggregate/call paths still have deliberately
-unwired compositions that must not be inferred from registry data:
+The registry and const-overlay residue is closed. One neighboring aggregate input remains
+deliberately request-local:
 
-- The durable const identity and exact declaration RIR handle now exist, but
-  `value_const` / `module_binding` are not yet registered into the aggregate/call drivers. The
-  aggregate const-arm differential continues to pin provider `Absent` versus epoch `Const`.
-  Module bindings require the flip to compose that const materialization with the now-real module
-  registry; neither fact substitutes for the missing composition.
 - aggregate `source_path(span)` is request/RIR presentation state, not declaration truth. It remains
   a flip-time body-local input; no durable provider fact is claimed for it.
 
 This residue is inert before the flip: production still uses the epoch implementations. No new
-public `Type`-named surface was introduced; the shared registry seam is
-`pub(in crate::sema)`.
+production path is selected. `ProviderIdentityContext` is the public body-owned identity handle;
+its inner pool and registry remain private.
+
+### Shared identity lifecycle and producer-instance coupling
+
+All three drivers share one identity context. `with_type_pool` clones the pool's stable `Rc`
+handle before invoking its read closure, so the closure does not retain an outer `RefCell` borrow
+and may consult another shared driver. `finalize_containment_metadata` freezes the whole context,
+not one driver: every later mint attempt through endpoint, call, or aggregate facts fails closed,
+while reads of already-minted ownership metadata remain available. The rFinal freeze-hook test
+pins both cross-driver reentrancy and post-freeze refusal.
+
+Anonymous identity dedup remains canonical-keyed: pool entry collapses an empty specialization to
+its definition producer before hashing. Producer-body observation is instance-keyed, however;
+rFinal records each exact `FunctionInstanceKey` it checks and only reconstructs the one empty
+specialization wrapper required by the canonical-key representation. This coupling is intentional:
+multiple non-empty argument sets are distinct producer-body observations even when anonymous
+identity canonicalization later deduplicates equivalent durable keys.
 
 ---
 
@@ -611,11 +633,10 @@ plus `ProviderEndpointFacts`' real RIR registration path, then compares them wit
 independently bound records. The pool/RIR machinery remains pre-flip only: no production analyzer
 call site consumes it, and the existing crate-level dead-code discipline remains in force.
 
-**(d) Honest STOPs and the r6b hard boundary.** Module bindings remain refused: their durable target
-module and the provider drivers' body-local module registry are real, but const-payload
-materialization is not yet composed with that registry to mint the epoch's `Type::Module`; the
-differential pins LIVE-epoch success versus pool `None`. A missing declaration-level durable const
-record likewise returns `MissingConst`, never an inferred value.
+**(d) Honest STOPs and the r6b hard boundary.** Module-binding composition is now closed:
+`ProviderEndpointFacts::module_binding_info` joins the exact RIR span to the shared registry's
+`Type::Module`, and the call/aggregate overlays retain that complete payload. A missing
+declaration-level durable const record still returns `MissingConst`, never an inferred value.
 Const payload materialization uses `BodyIdentityPool::resolve`, whose anonymous arm is lookup-only;
 it never calls `find_or_create_anon`. Therefore a producer rooted at an uninstalled const candidate
 whose epoch digest relocation contains session-local `d\u{1}{issuer}\u{1}{slot}` /

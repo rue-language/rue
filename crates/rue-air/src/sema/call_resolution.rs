@@ -32,6 +32,7 @@
 //! matching the `body_endpoint` convention.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::hash::Hash;
 
 use lasso::{Spur, ThreadedRodeo};
@@ -40,12 +41,11 @@ use rue_span::FileId;
 
 use super::BodySema;
 use super::body_identity::{
-    BodyIdentityPool, BodyRirIndex, DurableCallableSource, DurableNominalSource,
-    FunctionIdentityHandle, MethodIdentityHandle,
+    BodyRirIndex, DurableCallableSource, DurableNominalSource, FunctionIdentityHandle,
+    MethodIdentityHandle, ProviderIdentityContext,
 };
 use super::info::{ConstInfo, FunctionInfo, MethodInfo};
 use super::provider::BodyFactProvider;
-use super::provider_module_registry::ProviderModuleRegistry;
 use crate::types::{ModuleDef, ModuleId, StructId};
 
 /// The exact call/method/operator-resolution fact boundary consumed by the
@@ -278,11 +278,9 @@ pub(in crate::sema) fn resolve_static_call_reference<P: CallResolutionFacts>(
 //     through 2a) with the RIR handle the RIR index locates for the preimage. The
 //     rue-compiler differential recovers the receiver by joining the method key's
 //     `owner()` back to the owner nominal's durable key.
-//   - value_const / module_binding / resolve_const_info_in_file → the flip. The
-//     pool's const-minting arm and exact RIR declaration handle now exist
-//     (`body_identity.rs`, flip-prep), but this call driver deliberately remains
-//     unwired pre-flip. Module bindings additionally require composing that const
-//     identity with this driver's now-real module registry.
+//   - value_const / module_binding / resolve_const_info_in_file → LANDED
+//     (flip-prep): exact `ConstInfo` values materialized through the shared
+//     endpoint/pool registry install into this driver's body-local overlay.
 //   - module_def → LANDED (flip-prep): `ProviderModuleRegistry` mints the
 //     body-local compact id from the durable module handle and stores its
 //     current request file/path/import-path facts; this driver exposes the
@@ -309,14 +307,15 @@ pub(in crate::sema) fn resolve_static_call_reference<P: CallResolutionFacts>(
 /// to a byte-equivalent `FunctionInfo`/`MethodInfo` (the 2c capstone contract).
 pub struct ProviderCallFacts<'a, P, S, K, M> {
     provider: &'a P,
-    pool: BodyIdentityPool<K, M, S>,
-    modules: RefCell<ProviderModuleRegistry<M>>,
+    identity: ProviderIdentityContext<K, M, S>,
     rir_index: BodyRirIndex,
     rir: &'a Rir,
     /// The whole-program RIR interner. Input names arrive already interned here
     /// (the provider path resolves them to `&str` and re-interns into the pool's
     /// own interner); the RIR index is keyed on this interner's [`Spur`]s.
     rir_interner: &'a ThreadedRodeo,
+    value_consts: RefCell<HashMap<(u32, Spur), ConstInfo>>,
+    module_bindings: RefCell<HashMap<(u32, Spur), ConstInfo>>,
 }
 
 impl<'a, P, S, K, M> ProviderCallFacts<'a, P, S, K, M>
@@ -330,13 +329,29 @@ where
     /// whole-program `Rir` + interner. The pool and RIR index are built here;
     /// nominals and callables are minted lazily on first consult.
     pub fn new(provider: &'a P, source: S, rir: &'a Rir, rir_interner: &'a ThreadedRodeo) -> Self {
+        Self::with_identity(
+            provider,
+            ProviderIdentityContext::new(source),
+            rir,
+            rir_interner,
+        )
+    }
+
+    /// Construct the driver inside an existing per-body identity universe.
+    pub fn with_identity(
+        provider: &'a P,
+        identity: ProviderIdentityContext<K, M, S>,
+        rir: &'a Rir,
+        rir_interner: &'a ThreadedRodeo,
+    ) -> Self {
         Self {
             provider,
-            pool: BodyIdentityPool::new(source),
-            modules: RefCell::new(ProviderModuleRegistry::default()),
+            identity,
             rir_index: BodyRirIndex::new(rir),
             rir,
             rir_interner,
+            value_consts: RefCell::new(HashMap::new()),
+            module_bindings: RefCell::new(HashMap::new()),
         }
     }
 
@@ -344,21 +359,55 @@ where
     /// the index-independent render/copyability comparison (the pool mints its
     /// own ids; parity is asserted through displays, never a pool-relative index
     /// — the 2a/2b contract).
-    pub fn type_pool(&self) -> &crate::TypeInternPool {
-        self.pool.type_pool()
+    pub fn with_type_pool<R>(&self, read: impl FnOnce(&crate::TypeInternPool) -> R) -> R {
+        let pool = self.identity.type_pool();
+        read(&pool)
     }
 
     /// The body-local parameter arena backing every minted [`FunctionInfo`] /
     /// [`MethodInfo`] `params` range.
-    pub fn param_arena(&self) -> &crate::ParamArena {
-        self.pool.param_arena()
+    pub fn with_param_arena<R>(&self, read: impl FnOnce(&crate::ParamArena) -> R) -> R {
+        read(self.identity.pool().param_arena())
     }
 
     /// Resolve a pool-interner [`Spur`] (e.g. a minted `params` name symbol) to
     /// its source string; the pool's symbols are interner-relative, so name
     /// parity is asserted through resolved strings.
-    pub fn resolve_symbol(&self, symbol: Spur) -> &str {
-        self.pool.resolve_symbol(symbol)
+    pub fn resolve_symbol(&self, symbol: Spur) -> String {
+        self.identity.pool().resolve_symbol(symbol).to_owned()
+    }
+
+    /// Install an already materialized value constant into the call family's
+    /// body-local overlay. The `ConstInfo` type belongs to this driver's shared
+    /// identity universe.
+    pub fn register_value_const(&self, file: FileId, name: &str, info: ConstInfo) {
+        let name = self.identity.pool().intern_name(name);
+        self.value_consts
+            .borrow_mut()
+            .insert((file.index(), name), info);
+    }
+
+    pub fn value_const(&self, file: FileId, name: &str) -> Option<ConstInfo> {
+        let name = self.identity.pool().intern_name(name);
+        self.value_consts
+            .borrow()
+            .get(&(file.index(), name))
+            .cloned()
+    }
+
+    pub fn register_module_binding(&self, file: FileId, name: &str, info: ConstInfo) {
+        let name = self.identity.pool().intern_name(name);
+        self.module_bindings
+            .borrow_mut()
+            .insert((file.index(), name), info);
+    }
+
+    pub fn module_binding(&self, file: FileId, name: &str) -> Option<ConstInfo> {
+        let name = self.identity.pool().intern_name(name);
+        self.module_bindings
+            .borrow()
+            .get(&(file.index(), name))
+            .cloned()
     }
 
     /// Register one durable module and its current request/presentation facts.
@@ -373,14 +422,14 @@ where
         import_path: &str,
         durable_id: &str,
     ) -> Option<ModuleId> {
-        self.modules
-            .borrow_mut()
+        self.identity
+            .modules_mut()
             .register(module, file, file_path, import_path, durable_id)
     }
 
     /// The registered provider-era module definition for a compact id.
     pub fn module_def(&self, module: ModuleId) -> Option<ModuleDef> {
-        self.modules.borrow().get(module)
+        self.identity.modules().get(module)
     }
 
     /// (P) Assemble a [`FunctionInfo`] for a durable free-function key, composing
@@ -390,23 +439,18 @@ where
     /// The r4a-2c span contract holds by construction: the handle sources
     /// `span`/`file_id` from the located `FnDecl` inst, the same inst production
     /// sources them from — a differential asserts, never assumes, the equality.
-    pub fn function_info(
-        &mut self,
-        key: &K,
-        source_name: &str,
-        file: FileId,
-    ) -> Option<FunctionInfo> {
+    pub fn function_info(&self, key: &K, source_name: &str, file: FileId) -> Option<FunctionInfo> {
         let source_sym = self.rir_interner.get(source_name)?;
         let declaration = self.rir_index.first_free_function(source_sym, file)?;
         let handle = self.function_handle(declaration)?;
-        self.pool.resolve_function(key, handle).ok()
+        self.identity.pool_mut()?.resolve_function(key, handle).ok()
     }
 
     /// (P) Assemble a [`MethodInfo`] for a durable method key, composing the
     /// pool's durable method subset (2b, receiver through 2a) with the RIR
     /// handle the RIR index locates for `(owner_file, owner_type_name, method)`.
     pub fn method_info(
-        &mut self,
+        &self,
         key: &K,
         owner_file: FileId,
         owner_type_name: &str,
@@ -414,7 +458,7 @@ where
     ) -> Option<MethodInfo> {
         let declaration = self.named_method_declaration(owner_file, owner_type_name, method)?;
         let handle = self.method_handle(declaration)?;
-        self.pool.resolve_method(key, handle).ok()
+        self.identity.pool_mut()?.resolve_method(key, handle).ok()
     }
 
     /// (P) The *named* method info for `(owner, method)`. Anonymous-owner methods
@@ -422,7 +466,7 @@ where
     /// differential scope this coincides with [`Self::method_info`], mirroring
     /// the epoch's `methods.get` (named-only, no anonymous fallback).
     pub fn named_method_info(
-        &mut self,
+        &self,
         key: &K,
         owner_file: FileId,
         owner_type_name: &str,

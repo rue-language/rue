@@ -11,9 +11,8 @@ use lasso::Spur;
 use rue_rir::{InstData, InstRef, Rir};
 use rue_span::FileId;
 
-use super::body_identity::{BodyIdentityPool, DurableNominalSource};
+use super::body_identity::{DurableNominalSource, ProviderIdentityContext};
 use super::context::{ConstValue, LocalVar};
-use super::provider_module_registry::ProviderModuleRegistry;
 use super::{ConstInfo, DeclarationPhase, Sema};
 use crate::intern_pool::TypeInternPool;
 use crate::types::{EnumId, ModuleId, StructId, Type};
@@ -325,28 +324,21 @@ pub(crate) fn is_accessible<P: AggregateFacts>(
 //   - struct_in_file / enum_in_file (via the `(file, name)` overlay reverse) → P
 //   - builtin_struct / builtin_enum                                         → P
 //   - file_path (is_accessible)                                             → O
-// Deferred here, each with its unblocking slice named (reported, never silently
-// answered wrong):
-//   - value_const / module_binding / resolve_const_info_in_file → the flip. The
-//     pool's const-minting arm and exact RIR declaration handle now exist
-//     (`body_identity.rs`, flip-prep), but this aggregate driver deliberately
-//     remains unwired pre-flip. The const fall-through of every `select_*` above
-//     therefore answers `Absent` where the epoch answers `Const`; the
-//     differential pins this const-arm divergence.
+//   - value_const / module_binding / resolve_const_info_in_file → LANDED
+//     (flip-prep): exact `ConstInfo` values materialized through the shared
+//     endpoint/pool registry install into this driver's body-local overlay.
 //   - module (module_def) → LANDED (flip-prep): `ProviderModuleRegistry` mints
 //     the body-local compact id from the durable module handle and stores the
 //     current request file/path/import-path facts. The module spines
 //     ([`resolve_aggregate_module_ref`] / [`resolve_visibility_module_ref`])
-//     remain gated behind `module_binding` (deferred), but their registry answer
-//     is ready.
+//     consume the installed module binding and registry answer.
 //   - source_path → the flip: consumed only by inline `aggregates.rs` diagnostic
 //     paths, never by the provider-generic selection logic this driver drives.
 // ---------------------------------------------------------------------------
 
 /// The winner [`select_module_type_member`] selects, projected to a pool
-/// [`Type`] a differential renders index-independently. `Const` is the pinned
-/// deferred arm (the const identity machinery is inert until this driver is
-/// wired at the flip), never a resolved value.
+/// [`Type`] a differential renders index-independently. `Const` reports the
+/// installed value-constant or module-binding arm.
 pub enum ProviderModuleMember {
     Struct(Type),
     Enum(Type),
@@ -384,8 +376,7 @@ pub enum ProviderStructHead {
 /// conflicts. The `(file, name)` reverse and file paths are plain maps populated
 /// by a caller through `&mut self` registration before any consult.
 pub struct ProviderAggregateFacts<K, M, S> {
-    pool: RefCell<BodyIdentityPool<K, M, S>>,
-    modules: RefCell<ProviderModuleRegistry<M>>,
+    identity: ProviderIdentityContext<K, M, S>,
     /// The provider-side analog of the epoch's `structs_by_file_name` /
     /// `enums_by_file_name` key maps: `(file, pool-interned name) → durable key`,
     /// populated on demand as a caller registers a nominal. The `Spur` is the
@@ -398,6 +389,8 @@ pub struct ProviderAggregateFacts<K, M, S> {
     /// the same physical path the epoch's `get_file_path` returns, so
     /// [`is_accessible`]'s visibility-domain computation matches byte-for-byte.
     file_paths: HashMap<FileId, String>,
+    value_consts: RefCell<HashMap<(u32, Spur), ConstInfo>>,
+    module_bindings: RefCell<HashMap<(u32, Spur), ConstInfo>>,
 }
 
 impl<K, M, S> ProviderAggregateFacts<K, M, S>
@@ -410,11 +403,18 @@ where
     /// (builtin enums + `str` pre-registered); named nominals are minted lazily on
     /// first consult and the overlay maps start empty.
     pub fn new(source: S) -> Self {
+        Self::with_identity(ProviderIdentityContext::new(source))
+    }
+
+    /// Construct the driver over the shared identity context used by every
+    /// provider fact family for one body.
+    pub fn with_identity(identity: ProviderIdentityContext<K, M, S>) -> Self {
         Self {
-            pool: RefCell::new(BodyIdentityPool::new(source)),
-            modules: RefCell::new(ProviderModuleRegistry::default()),
+            identity,
             by_file_name: HashMap::new(),
             file_paths: HashMap::new(),
+            value_consts: RefCell::new(HashMap::new()),
+            module_bindings: RefCell::new(HashMap::new()),
         }
     }
 
@@ -432,7 +432,7 @@ where
     /// flip slice must state which and assert the resulting edge story; an
     /// unspecified fill source is not an option.
     pub fn register_named_nominal(&mut self, key: K, file: FileId, name: &str) {
-        let symbol = self.pool.borrow().intern_name(name);
+        let symbol = self.identity.pool().intern_name(name);
         self.by_file_name.insert((file.index(), symbol), key);
     }
 
@@ -440,6 +440,38 @@ where
     /// [`Self::is_accessible`] reproduces the epoch's visibility domain exactly.
     pub fn register_file_path(&mut self, file: FileId, path: &str) {
         self.file_paths.insert(file, path.to_owned());
+    }
+
+    pub fn register_value_const(&self, file: FileId, name: &str, info: ConstInfo) {
+        let name = self.identity.pool().intern_name(name);
+        self.value_consts
+            .borrow_mut()
+            .insert((file.index(), name), info);
+    }
+
+    /// Recover an installed value constant with its complete assembled payload.
+    pub fn value_const(&self, file: FileId, name: &str) -> Option<ConstInfo> {
+        let name = self.identity.pool().intern_name(name);
+        self.value_consts
+            .borrow()
+            .get(&(file.index(), name))
+            .cloned()
+    }
+
+    pub fn register_module_binding(&self, file: FileId, name: &str, info: ConstInfo) {
+        let name = self.identity.pool().intern_name(name);
+        self.module_bindings
+            .borrow_mut()
+            .insert((file.index(), name), info);
+    }
+
+    /// Recover an installed module binding with its complete assembled payload.
+    pub fn module_binding(&self, file: FileId, name: &str) -> Option<ConstInfo> {
+        let name = self.identity.pool().intern_name(name);
+        self.module_bindings
+            .borrow()
+            .get(&(file.index(), name))
+            .cloned()
     }
 
     /// Register one durable module and its request-local presentation facts in
@@ -454,14 +486,14 @@ where
         import_path: &str,
         durable_id: &str,
     ) -> Option<ModuleId> {
-        self.modules
-            .borrow_mut()
+        self.identity
+            .modules_mut()
             .register(module, file, file_path, import_path, durable_id)
     }
 
     /// Owned, index-independent module facts for a registered compact id.
     pub fn module_fact(&self, module: ModuleId) -> Option<(FileId, String, String)> {
-        self.modules.borrow().get(module).map(|definition| {
+        self.identity.modules().get(module).map(|definition| {
             (
                 definition.file_id,
                 definition.file_path,
@@ -474,13 +506,13 @@ where
     /// nominal machinery, as a pool [`Type`]. Equal to the epoch's
     /// `structs_by_file_name` lookup under the durable-key bijection.
     pub fn struct_in_file(&self, file: FileId, name: &str) -> Option<Type> {
-        let symbol = self.pool.borrow().intern_name(name);
+        let symbol = self.identity.pool().intern_name(name);
         AggregateFacts::struct_in_file(self, file, symbol).map(Type::new_struct)
     }
 
     /// (P) The enum declared as `(file, name)`, as a pool [`Type`].
     pub fn enum_in_file(&self, file: FileId, name: &str) -> Option<Type> {
-        let symbol = self.pool.borrow().intern_name(name);
+        let symbol = self.identity.pool().intern_name(name);
         AggregateFacts::enum_in_file(self, file, symbol).map(Type::new_enum)
     }
 
@@ -488,22 +520,22 @@ where
     /// as a pool [`Type`]. Names beyond the pre-registered builtin set fail closed
     /// (r6 builtin facts).
     pub fn builtin_struct(&self, name: &str) -> Option<Type> {
-        let symbol = self.pool.borrow().intern_name(name);
+        let symbol = self.identity.pool().intern_name(name);
         AggregateFacts::builtin_struct(self, symbol).map(Type::new_struct)
     }
 
     /// (P) The builtin enum for a bare name (one of `BUILTIN_ENUMS`), as a pool
     /// [`Type`].
     pub fn builtin_enum(&self, name: &str) -> Option<Type> {
-        let symbol = self.pool.borrow().intern_name(name);
+        let symbol = self.identity.pool().intern_name(name);
         AggregateFacts::builtin_enum(self, symbol).map(Type::new_enum)
     }
 
     /// Run the provider-generic [`select_module_type_member`] over this driver:
     /// the r1c struct→enum→const short-circuit, driven from the pool. The const
-    /// fall-through is the pinned deferred arm.
+    /// fall-through consults the installed body-local const overlay.
     pub fn select_module_type_member(&self, file: FileId, name: &str) -> ProviderModuleMember {
-        let symbol = self.pool.borrow().intern_name(name);
+        let symbol = self.identity.pool().intern_name(name);
         match select_module_type_member(self, file, symbol) {
             ModuleTypeMember::Struct(id) => ProviderModuleMember::Struct(Type::new_struct(id)),
             ModuleTypeMember::Enum(id) => ProviderModuleMember::Enum(Type::new_enum(id)),
@@ -515,7 +547,7 @@ where
     /// Run the provider-generic [`select_qualified_type`] over this driver: the
     /// r1c enum→struct order.
     pub fn select_qualified_type(&self, file: FileId, name: &str) -> ProviderQualifiedType {
-        let symbol = self.pool.borrow().intern_name(name);
+        let symbol = self.identity.pool().intern_name(name);
         match select_qualified_type(self, file, symbol) {
             QualifiedType::Enum(id) => ProviderQualifiedType::Enum(Type::new_enum(id)),
             QualifiedType::Struct(id) => ProviderQualifiedType::Struct(Type::new_struct(id)),
@@ -525,15 +557,15 @@ where
 
     /// Run the provider-generic [`select_qualified_enum`] over this driver.
     pub fn select_qualified_enum(&self, file: FileId, name: &str) -> Option<Type> {
-        let symbol = self.pool.borrow().intern_name(name);
+        let symbol = self.identity.pool().intern_name(name);
         select_qualified_enum(self, file, symbol).map(Type::new_enum)
     }
 
     /// Run the provider-generic [`select_struct_literal_head`] over this driver
     /// for an unqualified head (`local_type = None`): the const→struct→builtin
-    /// order. The const arm is the pinned deferred arm.
+    /// order, including an installed const arm.
     pub fn select_struct_literal_head(&self, file: FileId, name: &str) -> ProviderStructHead {
-        let symbol = self.pool.borrow().intern_name(name);
+        let symbol = self.identity.pool().intern_name(name);
         match select_struct_literal_head(self, None, file, symbol) {
             StructLiteralHead::Bound(ty) => ProviderStructHead::Bound(ty),
             StructLiteralHead::Named(id) => ProviderStructHead::Named(Type::new_struct(id)),
@@ -553,7 +585,8 @@ where
     /// mints its own ids; parity is asserted through displays / metadata, never a
     /// pool-relative index — the 2a contract).
     pub fn with_type_pool<R>(&self, read: impl FnOnce(&TypeInternPool) -> R) -> R {
-        read(self.pool.borrow().type_pool())
+        let pool = self.identity.type_pool();
+        read(&pool)
     }
 }
 
@@ -563,23 +596,24 @@ where
     M: Eq + Hash,
     S: DurableNominalSource<K, M>,
 {
-    fn value_const(&self, _file: FileId, _name: Spur) -> Option<ConstInfo> {
-        // Deferred to the flip: the pool const arm + RIR handle are landed but
-        // intentionally not installed under this production-shaped seam yet.
-        // The const fall-through of the `select_*` logic answers `Absent`; pinned.
-        None
+    fn value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
+        self.value_consts
+            .borrow()
+            .get(&(file.index(), name))
+            .cloned()
     }
 
-    fn module_binding(&self, _file: FileId, _name: Spur) -> Option<ConstInfo> {
-        // Deferred to the flip (same const RIR handle). Also gates the module
-        // spines, which therefore never reach `module`.
-        None
+    fn module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
+        self.module_bindings
+            .borrow()
+            .get(&(file.index(), name))
+            .cloned()
     }
 
     fn struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId> {
         let key = self.by_file_name.get(&(file.index(), name)).cloned()?;
-        self.pool
-            .borrow_mut()
+        self.identity
+            .pool_mut()?
             .resolve(&SemanticImportType::Nominal(key))
             .ok()?
             .as_struct()
@@ -587,17 +621,17 @@ where
 
     fn enum_in_file(&self, file: FileId, name: Spur) -> Option<EnumId> {
         let key = self.by_file_name.get(&(file.index(), name)).cloned()?;
-        self.pool
-            .borrow_mut()
+        self.identity
+            .pool_mut()?
             .resolve(&SemanticImportType::Nominal(key))
             .ok()?
             .as_enum()
     }
 
     fn builtin_struct(&self, name: Spur) -> Option<StructId> {
-        let name = self.pool.borrow().resolve_symbol(name).to_owned();
-        self.pool
-            .borrow_mut()
+        let name = self.identity.pool().resolve_symbol(name).to_owned();
+        self.identity
+            .pool_mut()?
             .resolve(&SemanticImportType::BuiltinNominal {
                 name: std::sync::Arc::from(name.as_str()),
                 kind: SemanticImportNominalKind::Struct,
@@ -607,9 +641,9 @@ where
     }
 
     fn builtin_enum(&self, name: Spur) -> Option<EnumId> {
-        let name = self.pool.borrow().resolve_symbol(name).to_owned();
-        self.pool
-            .borrow_mut()
+        let name = self.identity.pool().resolve_symbol(name).to_owned();
+        self.identity
+            .pool_mut()?
             .resolve(&SemanticImportType::BuiltinNominal {
                 name: std::sync::Arc::from(name.as_str()),
                 kind: SemanticImportNominalKind::Enum,
@@ -620,8 +654,8 @@ where
 
     fn module(&self, module: ModuleId) -> AggregateModuleFact {
         let definition = self
-            .modules
-            .borrow()
+            .identity
+            .modules()
             .get(module)
             .expect("provider module id must be registered before aggregate resolution");
         AggregateModuleFact {

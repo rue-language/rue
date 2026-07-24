@@ -416,30 +416,15 @@ const REVIEW_CARRY_FORWARDS: &[NamedCoverage] = &[
     },
     NamedCoverage {
         name: "const_candidate_facts",
-        status: CoverageStatus::Gap(
-            "ConstInfo assembly needs the flip's const-declaration RIR handle (r4b-3 \
-             re-deferral); const-candidate-rooted producers stay outside the pool's minting \
-             scope (r6b rider c)",
-        ),
+        status: CoverageStatus::Constructed,
     },
     NamedCoverage {
         name: "pool_drop_metadata_parity",
-        status: CoverageStatus::Gap(
-            "the pool mints destructor: None (r4a-2a scope); destructor-symbol/needs-drop \
-             parity is flip work — the freeze hook itself is live \
-             (side_b_finalize_containment_metadata_freeze_hook)",
-        ),
+        status: CoverageStatus::Constructed,
     },
     NamedCoverage {
         name: "instance_keyed_producer_body_facts",
-        status: CoverageStatus::Gap(
-            "the producer-facts boundary op is definition-keyed, but the underlying \
-             body-produced-anonymous family keys producer identities in the WRAPPER instance \
-             form (the declaration-signature projection retains the empty-argument \
-             specialization wrapper, r6b rider b), so a cold database answers no \
-             definition-keyed producer; the flip owns the instance-keyed op and side B seeds \
-             shapes from the durable oracle until then",
-        ),
+        status: CoverageStatus::Constructed,
     },
 ];
 
@@ -461,6 +446,18 @@ const CLOSED_GAP_LIVE_TESTS: &[(&str, &str)] = &[
     (
         "forced_eviction_and_cancellation",
         "side_b_forced_eviction_and_cancellation_leave_no_partial_state",
+    ),
+    (
+        "pool_drop_metadata_parity",
+        "provider_named_destructor_metadata_matches_live_epoch",
+    ),
+    (
+        "const_candidate_facts",
+        "side_b_provider_drivers_supply_previously_stubbed_facts",
+    ),
+    (
+        "instance_keyed_producer_body_facts",
+        "side_b_provider_drivers_supply_previously_stubbed_facts",
     ),
 ];
 
@@ -485,26 +482,8 @@ const SIDE_B_FACT_EXCEPTIONS: &[SideBFactException] = &[
                  is a body-level durable value with no declaration-level cross-path truth",
     },
     SideBFactException {
-        name: "instance_keyed_producer_body_facts",
-        reason: "the definition-keyed producer-facts op cannot answer wrapper/specialized \
-                 producer instances (the underlying family keys them in the wrapper form); \
-                 nominal shapes come from the durable oracle until the flip's instance-keyed \
-                 op",
-    },
-    SideBFactException {
-        name: "associated_function_pool_identity",
-        reason: "the boundary supplies the assoc-fn candidate + signature; member FunctionInfo \
-                 pool assembly is flip work (the durable callable source classifies \
-                 has_self=false members as free functions)",
-    },
-    SideBFactException {
         name: "drop_glue_overlay_method_installation",
         reason: "drop-glue instance keys belong to the flip's overlay method installation",
-    },
-    SideBFactException {
-        name: "pool_drop_metadata_parity",
-        reason: "the pool mints destructor: None; the freeze hook is live but destructor \
-                 parity for destructor-bearing nominals is flip work",
     },
 ];
 
@@ -570,21 +549,6 @@ const EDGE_FAMILY_EXCEPTIONS: &[EdgeFamilyException] = &[
         reason: "for bodies whose side-B facts are all pool-answered (r4b-1 P-ops record no \
                  boundary edge), the production transaction still roots the nucleus terminals \
                  of its declaration prefix; the flip re-points that prefix at the drivers",
-    },
-    EdgeFamilyException {
-        family: "compiler.declaration-shell",
-        side: EdgeExceptionSide::ProviderOnly,
-        reason: "the definition-keyed producer-facts op consults the producer's declaration \
-                 shell to reconstruct its comptime call; the epoch transaction reads shells \
-                 through its declaration prefix without a per-body edge",
-    },
-    EdgeFamilyException {
-        family: "compiler.body-produced-anonymous",
-        side: EdgeExceptionSide::EpochOnly,
-        reason: "the production transaction roots the WRAPPER-instance producer terminal; \
-                 the definition-keyed boundary op defers on a cold database \
-                 (instance_keyed_producer_body_facts), so side B seeds shapes from the \
-                 durable oracle — the flip's instance-keyed op restores this edge on side B",
     },
 ];
 
@@ -1348,17 +1312,34 @@ struct ReplayCtx<'a, 'db, 'r> {
         crate::StableDefinitionKey,
         ModuleId,
     >,
+    aggregate:
+        rue_air::ProviderAggregateFacts<crate::StableDefinitionKey, ModuleId, DurableDeclSource>,
     overlay: crate::body_overlay::BodySemanticOverlay,
     decls: &'r [crate::durable_semantics::DurableDeclarationSemantic],
     module_files: &'r BTreeMap<ModuleId, FileId>,
     tokens: BTreeMap<crate::StableDefinitionKey, rue_air::SemanticDefinitionToken>,
     replayed_nominals: BTreeSet<crate::StableDefinitionKey>,
     replayed_functions: BTreeSet<crate::StableDefinitionKey>,
-    checked_producers: BTreeSet<crate::StableDefinitionKey>,
-    minted: Vec<(String, rue_air::Type)>,
+    checked_producers: BTreeSet<crate::FunctionInstanceKey>,
+    producer_instances: BTreeMap<crate::AnonymousNominalKey, crate::FunctionInstanceKey>,
+    minted: Vec<(String, rue_air::Type, Option<crate::StableDefinitionKey>)>,
     agg_seed: Vec<(crate::StableDefinitionKey, String)>,
     facts: Vec<String>,
     exceptions: BTreeSet<&'static str>,
+}
+
+fn durable_nominal_has_destructor(
+    decls: &[crate::durable_semantics::DurableDeclarationSemantic],
+    nominal: &crate::StableDefinitionKey,
+) -> bool {
+    decls.iter().any(|decl| {
+        decl.key.kind() == crate::StableDefinitionKind::Destructor
+            && decl.key.owner().is_some_and(|owner| {
+                owner.module() == nominal.module()
+                    && owner.kind() == nominal.kind()
+                    && owner.name() == nominal.name()
+            })
+    })
 }
 
 impl<'a, 'db, 'r> ReplayCtx<'a, 'db, 'r> {
@@ -1442,22 +1423,23 @@ impl<'a, 'db, 'r> ReplayCtx<'a, 'db, 'r> {
             .with_type_pool(|pool| endpoint_nominal_render(pool, minted));
         self.facts
             .push(format!("endpoint nominal {} => {render:?}", key.name()));
-        self.minted.push((key.name().to_owned(), minted));
+        self.minted
+            .push((key.name().to_owned(), minted, Some(key.clone())));
         self.agg_seed.push((key.clone(), key.name().to_owned()));
-
-        // If the durable set carries a destructor for this nominal, the pool's
-        // drop metadata (destructor: None) cannot match production yet — the
-        // named parity gap, recorded per hit.
-        let has_destructor = self.decls.iter().any(|decl| {
-            decl.key.kind() == crate::StableDefinitionKind::Destructor
-                && decl
-                    .key
-                    .owner()
-                    .is_some_and(|owner| owner.name() == key.name())
-        });
-        if has_destructor {
-            self.exceptions.insert("pool_drop_metadata_parity");
-        }
+        let file = self.file_of(key.module());
+        self.aggregate
+            .register_named_nominal(key.clone(), file, key.name());
+        let aggregate_ty = match self.aggregate.select_qualified_type(file, key.name()) {
+            rue_air::ProviderQualifiedType::Struct(ty)
+            | rue_air::ProviderQualifiedType::Enum(ty) => ty,
+            rue_air::ProviderQualifiedType::Absent => {
+                panic!("aggregate driver omitted `{}`", key.name())
+            }
+        };
+        assert_eq!(
+            aggregate_ty, minted,
+            "all provider drivers must share one body-local type identity"
+        );
     }
 
     fn replay_reference(&mut self, reference: &BodyReference) {
@@ -1516,19 +1498,24 @@ impl<'a, 'db, 'r> ReplayCtx<'a, 'db, 'r> {
                         )
                     });
                 let mut params = Vec::new();
-                {
-                    let arena = self.calls.param_arena();
-                    let names = arena.names(info.params).to_vec();
-                    let types = arena.types(info.params).to_vec();
+                let (names, types) = self.calls.with_param_arena(|arena| {
+                    (
+                        arena.names(info.params).to_vec(),
+                        arena.types(info.params).to_vec(),
+                    )
+                });
+                self.calls.with_type_pool(|pool| {
                     for (name, ty) in names.iter().zip(types.iter()) {
                         params.push(format!(
                             "{}: {}",
                             self.calls.resolve_symbol(*name).to_owned(),
-                            endpoint_display(self.calls.type_pool(), *ty)
+                            endpoint_display(pool, *ty)
                         ));
                     }
-                }
-                let ret = endpoint_display(self.calls.type_pool(), info.return_type);
+                });
+                let ret = self
+                    .calls
+                    .with_type_pool(|pool| endpoint_display(pool, info.return_type));
                 self.facts.push(format!(
                     "call-facts fn `{}`({}) -> {} generic={} pub={}",
                     key.name(),
@@ -1574,32 +1561,32 @@ impl<'a, 'db, 'r> ReplayCtx<'a, 'db, 'r> {
                     member.has_self_receiver,
                     member.is_public,
                 ));
-                if key.kind() == K::Method {
-                    let owner_file = self.file_of(key.module());
-                    let info = self
-                        .calls
-                        .method_info(&key.clone(), owner_file, owner.name(), key.name())
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "ProviderCallFacts must assemble MethodInfo for `{}.{}`",
-                                owner.name(),
-                                key.name()
-                            )
-                        });
-                    let receiver_display =
-                        endpoint_display(self.calls.type_pool(), info.struct_type);
-                    let return_display = endpoint_display(self.calls.type_pool(), info.return_type);
-                    self.facts.push(format!(
-                        "call-facts method `{}.{}` receiver={} -> {} self_mode={:?}",
-                        owner.name(),
-                        key.name(),
-                        receiver_display,
-                        return_display,
-                        info.self_mode,
-                    ));
-                } else {
-                    self.exceptions.insert("associated_function_pool_identity");
-                }
+                let owner_file = self.file_of(key.module());
+                let info = self
+                    .calls
+                    .method_info(&key.clone(), owner_file, owner.name(), key.name())
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "ProviderCallFacts must assemble MethodInfo for `{}.{}`",
+                            owner.name(),
+                            key.name()
+                        )
+                    });
+                let (receiver_display, return_display) = self.calls.with_type_pool(|pool| {
+                    (
+                        endpoint_display(pool, info.struct_type),
+                        endpoint_display(pool, info.return_type),
+                    )
+                });
+                self.facts.push(format!(
+                    "call-facts member `{}.{}` receiver={} -> {} has_self={} self_mode={:?}",
+                    owner.name(),
+                    key.name(),
+                    receiver_display,
+                    return_display,
+                    info.has_self,
+                    info.self_mode,
+                ));
             }
             K::Destructor => {
                 let owner = key.owner().expect("destructor keys carry their owner");
@@ -1645,49 +1632,91 @@ impl<'a, 'db, 'r> ReplayCtx<'a, 'db, 'r> {
                     "the lookup boundary classifies const candidate `{}`",
                     key.name()
                 );
+                let file = self.file_of(key.module());
+                let durable = self
+                    .decls
+                    .iter()
+                    .find(|declaration| declaration.key == *key)
+                    .expect("const candidate has durable declaration");
+                let info = match &durable.payload {
+                    crate::durable_semantics::DurableDeclarationPayload::Const { .. } => self
+                        .endpoint
+                        .const_info(key, file, key.name())
+                        .expect("value const materializes through the shared pool"),
+                    crate::durable_semantics::DurableDeclarationPayload::ModuleBinding {
+                        target,
+                    } => self
+                        .endpoint
+                        .module_binding_info(file, key.name(), target, durable.is_public)
+                        .expect("module binding joins the shared module registry"),
+                    _ => unreachable!("const kind has const payload"),
+                };
+                if key.kind() == K::ValueConst {
+                    self.calls
+                        .register_value_const(file, key.name(), info.clone());
+                    self.aggregate
+                        .register_value_const(file, key.name(), info.clone());
+                    assert!(self.calls.value_const(file, key.name()).is_some());
+                } else {
+                    self.calls
+                        .register_module_binding(file, key.name(), info.clone());
+                    self.aggregate
+                        .register_module_binding(file, key.name(), info.clone());
+                    assert!(self.calls.module_binding(file, key.name()).is_some());
+                }
+                assert!(matches!(
+                    self.aggregate.select_module_type_member(file, key.name()),
+                    rue_air::ProviderModuleMember::Const
+                ));
                 self.facts.push(format!(
-                    "const-candidate `{}` present (ConstInfo assembly deferred)",
+                    "const-candidate `{}` materialized into call + aggregate facts",
                     key.name()
                 ));
-                self.exceptions.insert("const_candidate_facts");
             }
             K::Struct | K::Enum => self.replay_named_nominal(key),
         }
     }
 
-    /// Cross-check an anonymous producer through the boundary's producer-facts
-    /// op. The op is definition-keyed while the underlying family keys producer
-    /// identities in the WRAPPER instance form (the declaration-signature
-    /// projection retains the empty-argument specialization wrapper — the r6b
-    /// rider (b) form), so on a cold database it answers `None` for every
-    /// producer: the recorded `instance_keyed_producer_body_facts` exception.
-    /// If it ever answers `Some`, the identities must cover the consumed one.
+    /// Cross-check an anonymous producer through the exact instance-keyed
+    /// producer-facts operation. Wrapper/specialization identity is preserved.
     fn replay_producer(&mut self, anon: &crate::AnonymousNominalKey) {
         use crate::FunctionInstanceKey as F;
         use rue_air::StableProducerId as P;
         let canonical = anon.with_canonical_producer().into_owned();
-        let producer_key = match &canonical.producer {
-            P::Definition(definition) => Some(definition.clone()),
-            P::Function(function) => match &**function {
-                F::Definition(definition) => Some(definition.clone()),
-                _ => None,
+        let mut producer_instance = self
+            .producer_instances
+            .get(&canonical)
+            .cloned()
+            .unwrap_or_else(|| match &anon.producer {
+                P::Definition(definition) => F::Specialization {
+                    base: Box::new(F::Definition(definition.clone())),
+                    arguments: crate::CanonicalArguments::default(),
+                },
+                P::Function(function) => (**function).clone(),
+            });
+        if let F::Definition(definition) = &producer_instance {
+            producer_instance = F::Specialization {
+                base: Box::new(F::Definition(definition.clone())),
+                arguments: crate::CanonicalArguments::default(),
+            };
+        }
+        let producer_key = match &producer_instance {
+            F::Definition(definition) => definition,
+            F::Specialization { base, .. } => match base.as_ref() {
+                F::Definition(definition) => definition,
+                _ => return,
             },
-        };
-        let Some(producer_key) = producer_key else {
-            self.exceptions.insert("instance_keyed_producer_body_facts");
-            return;
+            _ => return,
         };
         if producer_key.kind() != crate::StableDefinitionKind::Function
-            || !self.checked_producers.insert(producer_key.clone())
+            || !self.checked_producers.insert(producer_instance.clone())
         {
-            if producer_key.kind() != crate::StableDefinitionKind::Function {
-                self.exceptions.insert("instance_keyed_producer_body_facts");
-            }
             return;
         }
-        use rue_air::BodyFactProvider;
-        let candidate = candidate_for(&producer_key).expect("function candidates are derivable");
-        match self.provider.producer_body_facts(&candidate) {
+        match self
+            .provider
+            .producer_instance_body_facts(&producer_instance)
+        {
             Some(crate::body_query::ProducedAnonymous::Produced(produced)) => {
                 let boundary: BTreeSet<_> = produced
                     .0
@@ -1708,14 +1737,10 @@ impl<'a, 'db, 'r> ReplayCtx<'a, 'db, 'r> {
             Some(crate::body_query::ProducedAnonymous::ProducerFailed(failure)) => {
                 panic!("producer `{}` failed: {failure:?}", producer_key.name())
             }
-            None => {
-                self.facts.push(format!(
-                    "producer-facts `{}` deferred by the definition-keyed op; shape supplied \
-                     by the durable oracle",
-                    producer_key.name()
-                ));
-                self.exceptions.insert("instance_keyed_producer_body_facts");
-            }
+            None => panic!(
+                "instance-keyed producer facts unavailable for `{}`",
+                producer_key.name()
+            ),
         }
     }
 
@@ -1770,8 +1795,8 @@ impl<'a, 'db, 'r> ReplayCtx<'a, 'db, 'r> {
             }
         }
         for anon in &anonymous {
-            // The boundary supplies the producer's published nominals for
-            // definition-keyed producers (specialized: recorded exception).
+            // The boundary supplies the producer's published nominals under
+            // its exact function-instance identity.
             self.replay_producer(anon);
             // r5a wiring: the constructor head + argument + reduction arms run
             // through SignatureFacts; a reduction to an anonymous nominal is
@@ -1826,7 +1851,7 @@ impl<'a, 'db, 'r> ReplayCtx<'a, 'db, 'r> {
                 .endpoint
                 .with_type_pool(|pool| endpoint_nominal_render(pool, minted));
             self.facts.push(format!("endpoint anonymous => {render:?}"));
-            self.minted.push((format!("{render:?}"), minted));
+            self.minted.push((format!("{render:?}"), minted, None));
         }
 
         if has_generic || has_module {
@@ -1877,7 +1902,7 @@ impl<'a, 'db, 'r> ReplayCtx<'a, 'db, 'r> {
             .with_type_pool(|pool| endpoint_display(pool, resolved));
         self.facts
             .push(format!("endpoint type {instance:?} => {display}"));
-        self.minted.push((display, resolved));
+        self.minted.push((display, resolved, None));
     }
 
     fn any_module(&self) -> ModuleId {
@@ -1892,7 +1917,7 @@ impl<'a, 'db, 'r> ReplayCtx<'a, 'db, 'r> {
     /// un-finalized until the pool-side freeze runs at the same point
     /// production freezes; afterwards every minted type answers.
     fn exercise_finalize_seam(&mut self) {
-        if let Some((display, ty)) = self.minted.first().cloned() {
+        if let Some((display, ty, _)) = self.minted.first().cloned() {
             assert_eq!(
                 self.endpoint.type_needs_drop(ty),
                 None,
@@ -1904,7 +1929,7 @@ impl<'a, 'db, 'r> ReplayCtx<'a, 'db, 'r> {
             .finalize_containment_metadata()
             .expect("the minted universe has no containment cycle");
         let mut lines = Vec::new();
-        for (display, ty) in &self.minted {
+        for (display, ty, key) in &self.minted {
             let needs_drop = self
                 .endpoint
                 .type_needs_drop(*ty)
@@ -1913,6 +1938,15 @@ impl<'a, 'db, 'r> ReplayCtx<'a, 'db, 'r> {
                 .endpoint
                 .type_carries_linear(*ty)
                 .expect("finalized pool answers linearity");
+            let has_destructor = key
+                .as_ref()
+                .is_some_and(|key| durable_nominal_has_destructor(self.decls, key));
+            if has_destructor {
+                assert!(
+                    needs_drop,
+                    "a provider-minted nominal with `__drop` must need drop"
+                );
+            }
             lines.push(format!(
                 "containment {display}: needs_drop={needs_drop} carries_linear={carries_linear}"
             ));
@@ -1942,22 +1976,36 @@ fn run_body_replay(
     Vec<(crate::StableDefinitionKey, String)>,
 ) {
     use rue_air::BodyFactProvider;
-    let endpoint = rue_air::ProviderEndpointFacts::new(
-        provider,
+    let identity = rue_air::ProviderIdentityContext::new(
         DurableDeclSource::from_declarations(decls).with_anonymous_nominals(produced_union),
-        rir,
-        rir_interner,
     );
-    let calls = rue_air::ProviderCallFacts::new(
+    let endpoint = rue_air::ProviderEndpointFacts::with_identity(
         provider,
-        DurableDeclSource::from_declarations(decls),
+        identity.clone(),
         rir,
         rir_interner,
     );
+    let calls =
+        rue_air::ProviderCallFacts::with_identity(provider, identity.clone(), rir, rir_interner);
+    let aggregate = rue_air::ProviderAggregateFacts::with_identity(identity);
+    for (module, file) in module_files {
+        let path = module.logical_path();
+        endpoint
+            .register_module(module.clone(), *file, path, path, path)
+            .expect("the body-local module registry accepts each canonical module");
+    }
+    let mut producer_instances = BTreeMap::new();
+    for nominal in produced_union {
+        let canonical = nominal.identity.with_canonical_producer().into_owned();
+        if let rue_air::StableProducerId::Function(instance) = &nominal.identity.producer {
+            producer_instances.insert(canonical, instance.as_ref().clone());
+        }
+    }
     let mut ctx = ReplayCtx {
         provider,
         endpoint,
         calls,
+        aggregate,
         overlay: crate::body_overlay::BodySemanticOverlay::new(),
         decls,
         module_files,
@@ -1965,6 +2013,7 @@ fn run_body_replay(
         replayed_nominals: BTreeSet::new(),
         replayed_functions: BTreeSet::new(),
         checked_producers: BTreeSet::new(),
+        producer_instances,
         minted: Vec::new(),
         agg_seed: Vec::new(),
         facts: Vec::new(),
@@ -2247,12 +2296,7 @@ fn side_a_is_self_equal_across_full_shape_corpus_and_schedule_permutations() {
 // `drop_glue_overlay_method_installation` is deliberately absent: this corpus
 // publishes no drop-glue/anonymous-member instance reference, so the row is a
 // documented reserve for the arm that would hit it, not an expected hit.
-const EXPECTED_FACT_EXCEPTION_HITS: &[&str] = &[
-    "associated_function_pool_identity",
-    "comptime_call_reduces_to_anonymous_nominal",
-    "instance_keyed_producer_body_facts",
-    "pool_drop_metadata_parity",
-];
+const EXPECTED_FACT_EXCEPTION_HITS: &[&str] = &["comptime_call_reduces_to_anonymous_nominal"];
 
 #[test]
 fn side_b_provider_drivers_supply_previously_stubbed_facts() {
@@ -2770,12 +2814,15 @@ fn side_b_finalize_containment_metadata_freeze_hook() {
         side_b_configuration(),
         "side-b:freeze-hook",
         move |provider| {
-            let endpoint = rue_air::ProviderEndpointFacts::new(
+            let identity =
+                rue_air::ProviderIdentityContext::new(DurableDeclSource::from_declarations(&decls));
+            let endpoint = rue_air::ProviderEndpointFacts::with_identity(
                 provider,
-                DurableDeclSource::from_declarations(&decls),
+                identity.clone(),
                 rir,
                 interner,
             );
+            let mut aggregate = rue_air::ProviderAggregateFacts::with_identity(identity);
             let token = endpoint.register_named_nominal(
                 counter.clone(),
                 file.index(),
@@ -2787,6 +2834,13 @@ fn side_b_finalize_containment_metadata_freeze_hook() {
                     rue_air::NominalInstanceKey::Named(token),
                 ))
                 .expect("Counter mints");
+            endpoint.with_type_pool(|pool| {
+                assert_eq!(endpoint_display(pool, ty), "Counter");
+                assert!(
+                    aggregate.builtin_enum("Arch").is_some(),
+                    "a shared driver may consult the identity context inside a type-pool read"
+                );
+            });
             let before = endpoint.type_needs_drop(ty);
             endpoint
                 .finalize_containment_metadata()
@@ -2797,13 +2851,19 @@ fn side_b_finalize_containment_metadata_freeze_hook() {
             endpoint
                 .finalize_containment_metadata()
                 .expect("repeat freeze");
-            (before, after_drop, after_linear)
+            aggregate.register_named_nominal(counter, file, "Counter");
+            let post_freeze_mint = aggregate.struct_in_file(file, "Counter");
+            (before, after_drop, after_linear, post_freeze_mint)
         },
     );
-    let (before, after_drop, after_linear) = outcome.result;
+    let (before, after_drop, after_linear, post_freeze_mint) = outcome.result;
     assert_eq!(before, None, "un-finalized before the freeze hook");
     assert_eq!(after_drop, Some(false), "Counter needs no drop");
     assert_eq!(after_linear, Some(false), "Counter carries no linear");
+    assert_eq!(
+        post_freeze_mint, None,
+        "every driver sharing the context refuses mints after freeze"
+    );
 }
 
 #[test]
