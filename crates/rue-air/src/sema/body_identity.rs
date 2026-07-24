@@ -22,11 +22,40 @@
 //!
 //! Scope of r4a-2a is the nominal / type-identity family: the arms
 //! `resolve_instance_type` needs for its primitive, builtin-nominal, named
-//! nominal, anonymous, and structural (array / ptr / slice) shapes. Deliberately
-//! out of this slice:
+//! nominal, anonymous, and structural (array / ptr / slice) shapes.
 //!
-//! - `FunctionInfo`/`MethodInfo`/`ParamRange` callable-identity assembly (2b);
-//! - the RIR-index answers the endpoint seam consumes (2c);
+//! Slice r4a-2b extends this with the **callable-identity family**: the pool
+//! assembles the signature-derived subset of `FunctionInfo`/`MethodInfo` and
+//! the `ParamRange`s they carry from the durable signature vocabulary
+//! (`DurableFunction`/`DurableMethod` over `DurableSignatureParameter`), minting
+//! its parameters into a pool-owned [`ParamArena`] (the analog of
+//! `Sema::param_arena`, which lives *beside* the type pool, not inside it) and
+//! resolving every parameter/return/receiver type through the same 2a `resolve`
+//! machinery. The request/RIR-carried remainder of each info struct is *not*
+//! minted: it is supplied by a caller-provided handle
+//! ([`FunctionIdentityHandle`]/[`MethodIdentityHandle`]) — the honest 2b/2c
+//! boundary. Every info field is therefore either purely durable-signature-
+//! derived (minted here) or purely request/RIR-carried (handle), never both:
+//!
+//! - **durable (2b):** parameters (name/type/mode/comptime), return type,
+//!   `is_generic` (derived: any comptime param), `is_pub`, `is_unchecked`,
+//!   `has_self`, and a method's `struct_type` (the 2a-resolved receiver);
+//! - **request/RIR (handle):** `body`/`declaration` (RIR `InstRef`s), `span`,
+//!   `return_type_sym` (pre-resolution RIR symbol), `is_extern`, `is_c_export`
+//!   (an epoch RIR read, not a durable-shell fact), the three `@allow` flags
+//!   (RIR directives), `file_id`, and a method's `self_mode`/`self_is_mut`.
+//!
+//! Deliberately still out of the pool:
+//!
+//! - the RIR-index answers the endpoint seam consumes (2c): the pool takes the
+//!   `body`/`declaration` handles as caller-provided inputs and does not itself
+//!   reverse `first_free_function`/`destructors`/`named_method_declarations`;
+//! - callables whose parameter/return/receiver types are themselves a *deferred*
+//!   2a arm (generic-parameter substitution, module identity) — these are
+//!   refused (poisoning the callable key), never approximated, exactly as the
+//!   underlying `resolve` refuses them. A comptime-*value* parameter (concrete
+//!   type, `is_comptime = true`) resolves fully and marks `is_generic`; only a
+//!   comptime-*type* parameter referencing a generic parameter refuses;
 //! - **anonymous nominal minting** — an issued anonymous nominal is resolved by
 //!   lookup here (exactly as `resolve_instance_type`'s anonymous arm looks up an
 //!   already-issued id via `anon_struct`/`anon_enum`); the id-minting from a
@@ -51,11 +80,16 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 
-use lasso::ThreadedRodeo;
-use rue_span::FileId;
+use lasso::{Spur, ThreadedRodeo};
+use rue_rir::{InstRef, RirParamMode};
+use rue_span::{FileId, Span};
 
+use super::info::{FunctionInfo, MethodInfo};
 use crate::types::{EnumDef, EnumId, LangItem, StructDef, StructField, StructId, Type};
-use crate::{AnonymousNominalKey, SemanticImportNominalKind, SemanticImportType, TypeInternPool};
+use crate::{
+    AnonymousNominalKey, ParamArena, ParamRange, SemanticImportNominalKind, SemanticImportType,
+    SemanticParameterMode, TypeInternPool,
+};
 
 /// The durable body of a named nominal: its field / variant vocabulary plus the
 /// declaration-time metadata the pool registration consumes.
@@ -114,6 +148,8 @@ pub(in crate::sema) trait DurableNominalSource<K, M> {
 pub(in crate::sema) enum IdentityMintError {
     /// A named nominal key resolves to no durable metadata.
     MissingNominal,
+    /// A callable (function / method) key resolves to no durable signature.
+    MissingCallable,
     /// An anonymous nominal key was consulted before its issued id was
     /// registered with the pool.
     MissingAnonymous,
@@ -152,6 +188,48 @@ pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
     anon_nominals: HashMap<AnonymousNominalKey<K, M>, Type>,
     builtins: HashMap<(Arc<str>, SemanticImportNominalKind), PoolNominal>,
     module_files: HashMap<Arc<str>, FileId>,
+    /// The pool's own parameter arena, the analog of `Sema::param_arena` (which
+    /// lives *beside* the type pool, not inside it). Callable identities intern
+    /// their durable parameter vocabulary here on first consult, returning a
+    /// `ParamRange` that indexes this arena — never the epoch's.
+    param_arena: ParamArena,
+    /// Minted function signatures, deduplicated by durable callable key: the
+    /// arena is append-only, so a repeat consult must return the cached
+    /// `ParamRange` rather than re-interning the same parameters.
+    function_sigs: HashMap<K, CallableSignature>,
+    /// Minted method signatures, deduplicated by durable callable key.
+    method_sigs: HashMap<K, MethodSignature>,
+    /// Callable keys whose signature mint failed. A repeat consult re-errors
+    /// rather than re-running the partial mint (whose parameters may already sit
+    /// orphaned in the append-only arena) — the callable analog of `poisoned`.
+    callable_poisoned: HashMap<K, IdentityMintError>,
+}
+
+/// The durable-signature-derived subset of a [`FunctionInfo`], minted once and
+/// cached by callable key. Every field here is recoverable from the durable
+/// signature facts alone; the request/RIR-carried remainder (`body`,
+/// `declaration`, `span`, `return_type_sym`, `is_extern`, `is_c_export`, the
+/// `@allow` flags, `file_id`) is supplied by a [`FunctionIdentityHandle`] — the
+/// 2c / request-local seam.
+#[derive(Clone, Copy)]
+struct CallableSignature {
+    params: ParamRange,
+    return_type: Type,
+    is_generic: bool,
+    is_pub: bool,
+    is_unchecked: bool,
+}
+
+/// The durable-signature-derived subset of a [`MethodInfo`], minted once and
+/// cached by callable key. `struct_type`, `has_self`, `params`, and
+/// `return_type` are durable; `self_mode`, `self_is_mut`, `body`, and `span`
+/// are request/RIR-carried and arrive on a [`MethodIdentityHandle`].
+#[derive(Clone, Copy)]
+struct MethodSignature {
+    receiver: Type,
+    has_self: bool,
+    params: ParamRange,
+    return_type: Type,
 }
 
 impl<K, M, S> BodyIdentityPool<K, M, S>
@@ -227,6 +305,10 @@ where
             anon_nominals: HashMap::new(),
             builtins,
             module_files: HashMap::new(),
+            param_arena: ParamArena::new(),
+            function_sigs: HashMap::new(),
+            method_sigs: HashMap::new(),
+            callable_poisoned: HashMap::new(),
         }
     }
 
@@ -235,6 +317,19 @@ where
     /// as the analyzer reads `sema.type_pool`.
     pub(in crate::sema) fn type_pool(&self) -> &TypeInternPool {
         &self.type_pool
+    }
+
+    /// The body-local parameter arena. Callable identities' [`ParamRange`]s index
+    /// this arena, read exactly as the analyzer reads `sema.param_arena`.
+    pub(in crate::sema) fn param_arena(&self) -> &ParamArena {
+        &self.param_arena
+    }
+
+    /// Resolve an interned parameter/name symbol to its source string. The
+    /// pool's [`Spur`]s are pool-interner-relative (like its pool indices), so
+    /// name parity is asserted through resolved strings, never raw symbols.
+    pub(in crate::sema) fn resolve_symbol(&self, symbol: Spur) -> &str {
+        self.interner.resolve(&symbol)
     }
 
     /// Record the concrete [`Type`] an anonymous nominal was issued, so a later
@@ -508,6 +603,262 @@ where
     }
 }
 
+/// One durable parameter of a callable signature: the r5a durable parameter
+/// vocabulary (`DurableSemanticParameter { name, ty, mode, is_comptime }`)
+/// projected into rue-air's durable type algebra. `name` is carried durably
+/// (r5a) so the pool assembles a `ParamRange` whose names match the epoch's
+/// without re-consulting a declaration shell.
+#[derive(Debug, Clone)]
+pub(in crate::sema) struct DurableSignatureParameter<K, M> {
+    pub name: Arc<str>,
+    pub ty: SemanticImportType<K, M>,
+    pub mode: SemanticParameterMode,
+    pub is_comptime: bool,
+}
+
+/// The durable signature of a free function, sufficient to assemble the
+/// signature-derived subset of a [`FunctionInfo`]. `is_generic` is *not* a field
+/// — it is the derived predicate "any parameter is comptime", exactly the
+/// invariant the epoch enforces between its shell and RIR
+/// (`binding_manifest.rs`: `shell.is_generic == params.any(is_comptime)`).
+#[derive(Debug, Clone)]
+pub(in crate::sema) struct DurableFunction<K, M> {
+    pub parameters: Vec<DurableSignatureParameter<K, M>>,
+    pub result: SemanticImportType<K, M>,
+    pub is_public: bool,
+    pub is_unchecked: bool,
+}
+
+/// The durable signature of a method. The `receiver` is a durable type (the
+/// concrete owning nominal — the epoch's `Self` is pre-resolved at export, so
+/// no `Self` substitution is needed here) resolved through the same 2a nominal
+/// machinery as the parameters.
+#[derive(Debug, Clone)]
+pub(in crate::sema) struct DurableMethod<K, M> {
+    pub receiver: SemanticImportType<K, M>,
+    pub parameters: Vec<DurableSignatureParameter<K, M>>,
+    pub result: SemanticImportType<K, M>,
+    pub has_self: bool,
+}
+
+/// The durable callable vocabulary the pool consults to mint callable
+/// identities. Implemented by the r4b provider side (over r2's stable-keyed
+/// metadata) and by the 2b unit tests. Keys are namespace-disjoint from nominal
+/// keys in the durable universe (`StableDefinitionKey` encodes namespace+kind),
+/// so a key names at most one of a nominal, a function, or a method.
+pub(in crate::sema) trait DurableCallableSource<K, M> {
+    /// The durable signature for a free-function key, or `None` if the key names
+    /// no function in the durable universe.
+    fn function(&self, key: &K) -> Option<DurableFunction<K, M>>;
+    /// The durable signature for a method key, or `None` if the key names no
+    /// method in the durable universe.
+    fn method(&self, key: &K) -> Option<DurableMethod<K, M>>;
+}
+
+/// The request/RIR-carried facts a caller supplies to assemble a
+/// [`FunctionInfo`]: everything the durable signature does *not* carry.
+///
+/// These are the 2c / request-local seam. The durable facts stop at the
+/// signature (spans and RIR handles belong to an exact semantic request —
+/// `semantic_import.rs`); `is_c_export` is read from the current RIR by the
+/// epoch itself (`binding_manifest.rs`), never threaded through the durable
+/// shell; `return_type_sym` is a pre-resolution RIR symbol consumed only by
+/// generic specialization / export; the `@allow` flags come from RIR
+/// directives. Supplying them here (rather than fabricating them) is the honest
+/// boundary — the pool refuses to invent a fact the durable universe lacks.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::sema) struct FunctionIdentityHandle {
+    pub body: InstRef,
+    pub declaration: InstRef,
+    pub span: Span,
+    pub return_type_sym: Spur,
+    pub is_extern: bool,
+    pub is_c_export: bool,
+    pub allow_unused_function: bool,
+    pub allow_unused_variable: bool,
+    pub allow_unreachable_code: bool,
+    pub file_id: FileId,
+}
+
+/// The request/RIR-carried facts a caller supplies to assemble a [`MethodInfo`].
+/// `self_mode` / `self_is_mut` are RIR `FnDecl` facts the durable `Callable`
+/// payload omits (it carries only `has_self`); `self_is_mut` is additionally
+/// body-local (call sites ignore it). `body` and `span` are request-carried.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::sema) struct MethodIdentityHandle {
+    pub body: InstRef,
+    pub span: Span,
+    pub self_mode: RirParamMode,
+    pub self_is_mut: bool,
+}
+
+impl<K, M, S> BodyIdentityPool<K, M, S>
+where
+    K: Clone + Eq + Hash,
+    M: Eq + Hash,
+    S: DurableNominalSource<K, M> + DurableCallableSource<K, M>,
+{
+    /// Assemble a [`FunctionInfo`] for a durable function key, combining the
+    /// minted signature-derived subset with the caller-provided request/RIR
+    /// facts. Mints the signature on first consult; deduplicates thereafter.
+    pub(in crate::sema) fn resolve_function(
+        &mut self,
+        key: &K,
+        handle: FunctionIdentityHandle,
+    ) -> Result<FunctionInfo, IdentityMintError> {
+        let signature = self.function_signature(key)?;
+        Ok(FunctionInfo {
+            params: signature.params,
+            return_type: signature.return_type,
+            return_type_sym: handle.return_type_sym,
+            body: handle.body,
+            declaration: handle.declaration,
+            span: handle.span,
+            is_generic: signature.is_generic,
+            is_pub: signature.is_pub,
+            is_unchecked: signature.is_unchecked,
+            is_extern: handle.is_extern,
+            is_c_export: handle.is_c_export,
+            allow_unused_function: handle.allow_unused_function,
+            allow_unused_variable: handle.allow_unused_variable,
+            allow_unreachable_code: handle.allow_unreachable_code,
+            file_id: handle.file_id,
+        })
+    }
+
+    /// Assemble a [`MethodInfo`] for a durable method key, combining the minted
+    /// signature-derived subset with the caller-provided request/RIR facts.
+    pub(in crate::sema) fn resolve_method(
+        &mut self,
+        key: &K,
+        handle: MethodIdentityHandle,
+    ) -> Result<MethodInfo, IdentityMintError> {
+        let signature = self.method_signature(key)?;
+        Ok(MethodInfo {
+            struct_type: signature.receiver,
+            has_self: signature.has_self,
+            self_mode: handle.self_mode,
+            self_is_mut: handle.self_is_mut,
+            params: signature.params,
+            return_type: signature.return_type,
+            body: handle.body,
+            span: handle.span,
+        })
+    }
+
+    /// Mint (once) or dedup the signature-derived subset of a function.
+    fn function_signature(&mut self, key: &K) -> Result<CallableSignature, IdentityMintError> {
+        if let Some(err) = self.callable_poisoned.get(key) {
+            return Err(err.clone());
+        }
+        if let Some(&signature) = self.function_sigs.get(key) {
+            return Ok(signature);
+        }
+
+        let DurableFunction {
+            parameters,
+            result,
+            is_public,
+            is_unchecked,
+        } = self
+            .source
+            .function(key)
+            .ok_or(IdentityMintError::MissingCallable)?;
+
+        let is_generic = parameters.iter().any(|parameter| parameter.is_comptime);
+        // Parameters intern first (mirroring the epoch, which allocs the arena
+        // before resolving the return type); a failure at either step poisons
+        // the key so the append-only arena's orphaned parameters stay
+        // unreachable and the repeat consult re-errors.
+        let params = self.intern_params(key, &parameters)?;
+        let return_type = self.resolve_callable_type(key, &result)?;
+
+        let signature = CallableSignature {
+            params,
+            return_type,
+            is_generic,
+            is_pub: is_public,
+            is_unchecked,
+        };
+        self.function_sigs.insert(key.clone(), signature);
+        Ok(signature)
+    }
+
+    /// Mint (once) or dedup the signature-derived subset of a method.
+    fn method_signature(&mut self, key: &K) -> Result<MethodSignature, IdentityMintError> {
+        if let Some(err) = self.callable_poisoned.get(key) {
+            return Err(err.clone());
+        }
+        if let Some(&signature) = self.method_sigs.get(key) {
+            return Ok(signature);
+        }
+
+        let DurableMethod {
+            receiver,
+            parameters,
+            result,
+            has_self,
+        } = self
+            .source
+            .method(key)
+            .ok_or(IdentityMintError::MissingCallable)?;
+
+        let receiver = self.resolve_callable_type(key, &receiver)?;
+        let params = self.intern_params(key, &parameters)?;
+        let return_type = self.resolve_callable_type(key, &result)?;
+
+        let signature = MethodSignature {
+            receiver,
+            has_self,
+            params,
+            return_type,
+        };
+        self.method_sigs.insert(key.clone(), signature);
+        Ok(signature)
+    }
+
+    /// Resolve one durable type inside a callable signature, poisoning the
+    /// callable key on failure (so a partial mint never re-runs).
+    fn resolve_callable_type(
+        &mut self,
+        key: &K,
+        value: &SemanticImportType<K, M>,
+    ) -> Result<Type, IdentityMintError> {
+        self.resolve(value).inspect_err(|err| {
+            self.callable_poisoned.insert(key.clone(), (*err).clone());
+        })
+    }
+
+    /// Intern a durable parameter vocabulary into the pool's own arena, returning
+    /// an internally-consistent [`ParamRange`]. Types resolve through the 2a
+    /// nominal machinery (`resolve`); names intern into the pool's interner;
+    /// modes map to the RIR mode the arena stores; comptime flags copy through.
+    fn intern_params(
+        &mut self,
+        key: &K,
+        parameters: &[DurableSignatureParameter<K, M>],
+    ) -> Result<ParamRange, IdentityMintError> {
+        let mut names = Vec::with_capacity(parameters.len());
+        let mut types = Vec::with_capacity(parameters.len());
+        let mut modes = Vec::with_capacity(parameters.len());
+        let mut comptime = Vec::with_capacity(parameters.len());
+        for parameter in parameters {
+            // Resolve the type first: on failure the arena is untouched (alloc is
+            // the final step), so only the callable key is poisoned.
+            let ty = self.resolve_callable_type(key, &parameter.ty)?;
+            names.push(self.interner.get_or_intern(parameter.name.as_ref()));
+            types.push(ty);
+            modes.push(match parameter.mode {
+                SemanticParameterMode::Value => RirParamMode::Normal,
+                SemanticParameterMode::Borrow => RirParamMode::Borrow,
+                SemanticParameterMode::Inout => RirParamMode::Inout,
+            });
+            comptime.push(parameter.is_comptime);
+        }
+        Ok(self.param_arena.alloc(names, types, modes, comptime))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,24 +868,169 @@ mod tests {
     type Module = Arc<str>;
     type DType = SemanticImportType<Key, Module>;
 
-    /// A durable nominal source backed by a fixed map, standing in for r4b's
-    /// stable-keyed provider.
-    struct MapSource(HashMap<Key, DurableNominal<Key, Module>>);
+    /// A durable nominal + callable source backed by fixed maps, standing in for
+    /// r4b's stable-keyed provider.
+    struct MapSource {
+        nominals: HashMap<Key, DurableNominal<Key, Module>>,
+        functions: HashMap<Key, DurableFunction<Key, Module>>,
+        methods: HashMap<Key, DurableMethod<Key, Module>>,
+    }
 
     impl DurableNominalSource<Key, Module> for MapSource {
         fn nominal(&self, key: &Key) -> Option<DurableNominal<Key, Module>> {
-            self.0.get(key).cloned()
+            self.nominals.get(key).cloned()
+        }
+    }
+
+    impl DurableCallableSource<Key, Module> for MapSource {
+        fn function(&self, key: &Key) -> Option<DurableFunction<Key, Module>> {
+            self.functions.get(key).cloned()
+        }
+
+        fn method(&self, key: &Key) -> Option<DurableMethod<Key, Module>> {
+            self.methods.get(key).cloned()
         }
     }
 
     fn source(nominals: impl IntoIterator<Item = (Key, DurableNominal<Key, Module>)>) -> MapSource {
-        MapSource(nominals.into_iter().collect())
+        MapSource {
+            nominals: nominals.into_iter().collect(),
+            functions: HashMap::new(),
+            methods: HashMap::new(),
+        }
     }
 
     fn pool(
         nominals: impl IntoIterator<Item = (Key, DurableNominal<Key, Module>)>,
     ) -> BodyIdentityPool<Key, Module, MapSource> {
         BodyIdentityPool::new(source(nominals))
+    }
+
+    /// A pool seeded with nominals, functions, and methods for the callable
+    /// (2b) tests.
+    fn callable_pool(
+        nominals: impl IntoIterator<Item = (Key, DurableNominal<Key, Module>)>,
+        functions: impl IntoIterator<Item = (Key, DurableFunction<Key, Module>)>,
+        methods: impl IntoIterator<Item = (Key, DurableMethod<Key, Module>)>,
+    ) -> BodyIdentityPool<Key, Module, MapSource> {
+        BodyIdentityPool::new(MapSource {
+            nominals: nominals.into_iter().collect(),
+            functions: functions.into_iter().collect(),
+            methods: methods.into_iter().collect(),
+        })
+    }
+
+    fn param(
+        name: &str,
+        ty: DType,
+        mode: SemanticParameterMode,
+        is_comptime: bool,
+    ) -> DurableSignatureParameter<Key, Module> {
+        DurableSignatureParameter {
+            name: Arc::from(name),
+            ty,
+            mode,
+            is_comptime,
+        }
+    }
+
+    fn durable_function(
+        parameters: Vec<DurableSignatureParameter<Key, Module>>,
+        result: DType,
+        is_public: bool,
+        is_unchecked: bool,
+    ) -> DurableFunction<Key, Module> {
+        DurableFunction {
+            parameters,
+            result,
+            is_public,
+            is_unchecked,
+        }
+    }
+
+    fn durable_method(
+        receiver: DType,
+        parameters: Vec<DurableSignatureParameter<Key, Module>>,
+        result: DType,
+        has_self: bool,
+    ) -> DurableMethod<Key, Module> {
+        DurableMethod {
+            receiver,
+            parameters,
+            result,
+            has_self,
+        }
+    }
+
+    /// A caller-provided function handle carrying deterministic request/RIR
+    /// facts. `resolve_function` must reproduce every field verbatim.
+    fn fn_handle(return_type_sym: Spur) -> FunctionIdentityHandle {
+        FunctionIdentityHandle {
+            body: InstRef::from_raw(101),
+            declaration: InstRef::from_raw(102),
+            span: Span::with_file(FileId::new(7), 3, 9),
+            return_type_sym,
+            // Alternate true/false so a hardcoded passthrough of either
+            // polarity fails the verbatim-handle assertions.
+            is_extern: true,
+            is_c_export: false,
+            allow_unused_function: true,
+            allow_unused_variable: false,
+            allow_unreachable_code: true,
+            file_id: FileId::new(7),
+        }
+    }
+
+    fn method_handle() -> MethodIdentityHandle {
+        MethodIdentityHandle {
+            body: InstRef::from_raw(201),
+            span: Span::with_file(FileId::new(3), 1, 4),
+            self_mode: RirParamMode::Borrow,
+            self_is_mut: true,
+        }
+    }
+
+    /// Compare a pool `ParamRange` against an epoch-twin one field-column by
+    /// field-column, through the same reads the analyzer performs. Names compare
+    /// as resolved strings and types via the index-independent `render`/`is_copy`
+    /// mirrors, so it is safe across two independently-interned arenas.
+    fn assert_param_range_equal(
+        pool: &BodyIdentityPool<Key, Module, MapSource>,
+        pool_range: ParamRange,
+        twin_arena: &ParamArena,
+        twin_interner: &ThreadedRodeo,
+        twin_range: ParamRange,
+        twin_pool: &TypeInternPool,
+    ) {
+        let arena = pool.param_arena();
+        assert_eq!(pool_range.len(), twin_range.len(), "param count");
+        for index in 0..pool_range.len() {
+            assert_eq!(
+                pool.resolve_symbol(arena.names(pool_range)[index]),
+                twin_interner.resolve(&twin_arena.names(twin_range)[index]),
+                "param name"
+            );
+            assert_eq!(
+                render(pool.type_pool(), arena.types(pool_range)[index]),
+                render(twin_pool, twin_arena.types(twin_range)[index]),
+                "param type display"
+            );
+            assert_eq!(
+                is_copy(pool.type_pool(), arena.types(pool_range)[index]),
+                is_copy(twin_pool, twin_arena.types(twin_range)[index]),
+                "param type copyability"
+            );
+            assert_eq!(
+                arena.modes(pool_range)[index],
+                twin_arena.modes(twin_range)[index],
+                "param mode"
+            );
+            assert_eq!(
+                arena.comptime(pool_range)[index],
+                twin_arena.comptime(twin_range)[index],
+                "param comptime"
+            );
+        }
     }
 
     fn struct_body(
@@ -1410,6 +1906,374 @@ mod tests {
             second,
             Err(IdentityMintError::Deferred("generic parameter")),
             "poisoned key re-errors"
+        );
+    }
+
+    // ----- Callable identity family (r4a-2b) ---------------------------------
+
+    #[test]
+    fn function_signature_matches_epoch_twin() {
+        // A three-parameter function (by-value, borrow, comptime-value) with an
+        // i64 return, built through the pool and through the epoch primitives.
+        let aux = ThreadedRodeo::new();
+        let handle = fn_handle(aux.get_or_intern("i64"));
+
+        let mut pool = callable_pool(
+            [],
+            [(
+                0,
+                durable_function(
+                    vec![
+                        param("a", DType::I32, SemanticParameterMode::Value, false),
+                        param("b", DType::Bool, SemanticParameterMode::Borrow, false),
+                        param("n", DType::U64, SemanticParameterMode::Value, true),
+                    ],
+                    DType::I64,
+                    true,
+                    false,
+                ),
+            )],
+            [],
+        );
+        let info = pool.resolve_function(&0, handle).unwrap();
+
+        // Epoch twin: the same params allocated through `ParamArena::alloc`.
+        let twin_pool = TypeInternPool::new();
+        let twin_interner = ThreadedRodeo::new();
+        let mut twin_arena = ParamArena::new();
+        let twin_range = twin_arena.alloc(
+            [
+                twin_interner.get_or_intern("a"),
+                twin_interner.get_or_intern("b"),
+                twin_interner.get_or_intern("n"),
+            ],
+            [Type::I32, Type::BOOL, Type::U64],
+            [
+                RirParamMode::Normal,
+                RirParamMode::Borrow,
+                RirParamMode::Normal,
+            ],
+            [false, false, true],
+        );
+
+        // Durable-derived fields.
+        assert_param_range_equal(
+            &pool,
+            info.params,
+            &twin_arena,
+            &twin_interner,
+            twin_range,
+            &twin_pool,
+        );
+        assert_eq!(
+            render(pool.type_pool(), info.return_type),
+            render(&twin_pool, Type::I64)
+        );
+        assert!(
+            info.is_generic,
+            "a comptime-value param marks the fn generic"
+        );
+        assert!(info.is_pub);
+        assert!(!info.is_unchecked);
+
+        // Request/RIR passthrough: exactly the handle, nothing fabricated.
+        assert_eq!(info.body, handle.body);
+        assert_eq!(info.declaration, handle.declaration);
+        assert_eq!(info.span, handle.span);
+        assert_eq!(info.return_type_sym, handle.return_type_sym);
+        assert_eq!(info.is_extern, handle.is_extern);
+        assert_eq!(info.is_c_export, handle.is_c_export);
+        assert_eq!(info.allow_unused_function, handle.allow_unused_function);
+        assert_eq!(info.allow_unused_variable, handle.allow_unused_variable);
+        assert_eq!(info.allow_unreachable_code, handle.allow_unreachable_code);
+        assert_eq!(info.file_id, handle.file_id);
+    }
+
+    #[test]
+    fn function_signature_mints_params_once_and_dedups() {
+        let aux = ThreadedRodeo::new();
+        let handle = fn_handle(aux.get_or_intern("unit"));
+        let mut pool = callable_pool(
+            [],
+            [(
+                0,
+                durable_function(
+                    vec![param("x", DType::I32, SemanticParameterMode::Value, false)],
+                    DType::Unit,
+                    false,
+                    false,
+                ),
+            )],
+            [],
+        );
+
+        let before = pool.param_arena().total_params();
+        let first = pool.resolve_function(&0, handle).unwrap();
+        let after_first = pool.param_arena().total_params();
+        let second = pool.resolve_function(&0, handle).unwrap();
+        assert_eq!(
+            first.params, second.params,
+            "repeat consult returns the same ParamRange"
+        );
+        assert_eq!(
+            pool.param_arena().total_params(),
+            after_first,
+            "repeat consult interns no new params"
+        );
+        assert!(after_first > before, "first consult interned params");
+    }
+
+    #[test]
+    fn method_signature_matches_epoch_twin() {
+        // `fn (self, delta: i32) -> bool` on `Widget`.
+        let mut pool = callable_pool(
+            [(
+                1,
+                named(
+                    "Widget",
+                    "pkg/ui.rue",
+                    true,
+                    struct_body(vec![("id", DType::U32)], false, false),
+                ),
+            )],
+            [],
+            [(
+                0,
+                durable_method(
+                    DType::Nominal(1),
+                    vec![param(
+                        "delta",
+                        DType::I32,
+                        SemanticParameterMode::Value,
+                        false,
+                    )],
+                    DType::Bool,
+                    true,
+                ),
+            )],
+        );
+        let handle = method_handle();
+        let info = pool.resolve_method(&0, handle).unwrap();
+
+        // Twin: the same nominal + params through the epoch primitives.
+        let (twin, twin_interner) = twin_pool("pkg/ui.rue");
+        let twin_id = twin_declare_struct(
+            &twin,
+            &twin_interner,
+            "Widget",
+            false,
+            false,
+            true,
+            vec![("id", Type::U32)],
+            None,
+        );
+        let mut twin_arena = ParamArena::new();
+        let twin_range = twin_arena.alloc(
+            [twin_interner.get_or_intern("delta")],
+            [Type::I32],
+            [RirParamMode::Normal],
+            [false],
+        );
+
+        // Durable-derived: receiver, has_self, return type, params.
+        assert_eq!(
+            render(pool.type_pool(), info.struct_type),
+            render(&twin, Type::new_struct(twin_id))
+        );
+        assert_eq!(
+            pool.type_pool()
+                .struct_symbol_name(info.struct_type.as_struct().unwrap()),
+            twin.struct_symbol_name(twin_id),
+            "receiver symbol name parity"
+        );
+        assert!(info.has_self);
+        assert_eq!(
+            render(pool.type_pool(), info.return_type),
+            render(&twin, Type::BOOL)
+        );
+        assert_param_range_equal(
+            &pool,
+            info.params,
+            &twin_arena,
+            &twin_interner,
+            twin_range,
+            &twin,
+        );
+
+        // Request/RIR passthrough.
+        assert_eq!(info.body, handle.body);
+        assert_eq!(info.span, handle.span);
+        assert_eq!(info.self_mode, handle.self_mode);
+        assert_eq!(info.self_is_mut, handle.self_is_mut);
+    }
+
+    #[test]
+    fn parameter_modes_map_to_rir_modes() {
+        let aux = ThreadedRodeo::new();
+        let handle = fn_handle(aux.get_or_intern("unit"));
+        let mut pool = callable_pool(
+            [],
+            [(
+                0,
+                durable_function(
+                    vec![
+                        param("v", DType::I32, SemanticParameterMode::Value, false),
+                        param("b", DType::I32, SemanticParameterMode::Borrow, false),
+                        param("i", DType::I32, SemanticParameterMode::Inout, false),
+                    ],
+                    DType::Unit,
+                    false,
+                    false,
+                ),
+            )],
+            [],
+        );
+        let info = pool.resolve_function(&0, handle).unwrap();
+        assert_eq!(
+            pool.param_arena().modes(info.params),
+            &[
+                RirParamMode::Normal,
+                RirParamMode::Borrow,
+                RirParamMode::Inout
+            ]
+        );
+        assert!(!info.is_generic, "no comptime param means non-generic");
+    }
+
+    #[test]
+    fn parameter_nominal_type_resolves_and_dedups_through_pool() {
+        // A parameter typed by a named nominal resolves through the same 2a
+        // machinery and reuses an already-minted id (compose, don't duplicate).
+        let aux = ThreadedRodeo::new();
+        let handle = fn_handle(aux.get_or_intern("unit"));
+        let mut pool = callable_pool(
+            [(
+                5,
+                named(
+                    "Cell",
+                    "pkg/c.rue",
+                    true,
+                    struct_body(vec![("v", DType::I32)], true, false),
+                ),
+            )],
+            [(
+                0,
+                durable_function(
+                    vec![param(
+                        "cell",
+                        DType::Nominal(5),
+                        SemanticParameterMode::Value,
+                        false,
+                    )],
+                    DType::Unit,
+                    true,
+                    false,
+                ),
+            )],
+            [],
+        );
+        // Mint the nominal directly, then assert the param reuses its id.
+        let direct = pool.resolve(&DType::Nominal(5)).unwrap();
+        let len_after_nominal = pool.type_pool().len();
+        let info = pool.resolve_function(&0, handle).unwrap();
+        let param_ty = pool.param_arena().types(info.params)[0];
+        assert_eq!(param_ty, direct, "param nominal reuses the minted id");
+        assert_eq!(
+            pool.type_pool().len(),
+            len_after_nominal,
+            "param resolution mints no new nominal"
+        );
+        assert_eq!(render(pool.type_pool(), param_ty), "Cell");
+    }
+
+    #[test]
+    fn generic_parameter_type_refuses_and_poisons_callable() {
+        // A parameter typed by a generic parameter is a deferred 2a arm: the
+        // callable refuses (never approximates) and the key is poisoned.
+        let aux = ThreadedRodeo::new();
+        let handle = fn_handle(aux.get_or_intern("unit"));
+        let mut pool = callable_pool(
+            [],
+            [(
+                0,
+                durable_function(
+                    vec![param(
+                        "x",
+                        DType::GenericParameter(0),
+                        SemanticParameterMode::Value,
+                        false,
+                    )],
+                    DType::Unit,
+                    false,
+                    false,
+                ),
+            )],
+            [],
+        );
+        assert_eq!(
+            pool.resolve_function(&0, handle).unwrap_err(),
+            IdentityMintError::Deferred("generic parameter")
+        );
+        assert_eq!(
+            pool.resolve_function(&0, handle).unwrap_err(),
+            IdentityMintError::Deferred("generic parameter"),
+            "poisoned callable re-errors"
+        );
+    }
+
+    #[test]
+    fn return_type_refusal_poisons_after_params_interned() {
+        // Params resolve (and intern into the arena), but the return type is a
+        // deferred arm. The key poisons, and the repeat consult short-circuits
+        // without re-interning the orphaned params — poison-on-partial-failure.
+        let aux = ThreadedRodeo::new();
+        let handle = fn_handle(aux.get_or_intern("t"));
+        let mut pool = callable_pool(
+            [],
+            [(
+                0,
+                durable_function(
+                    vec![param("x", DType::I32, SemanticParameterMode::Value, false)],
+                    DType::GenericParameter(0),
+                    false,
+                    false,
+                ),
+            )],
+            [],
+        );
+        assert_eq!(
+            pool.resolve_function(&0, handle).unwrap_err(),
+            IdentityMintError::Deferred("generic parameter")
+        );
+        let total_after_first = pool.param_arena().total_params();
+        assert_eq!(
+            total_after_first, 1,
+            "the param interned before the return-type failure"
+        );
+        assert_eq!(
+            pool.resolve_function(&0, handle).unwrap_err(),
+            IdentityMintError::Deferred("generic parameter"),
+            "poisoned callable re-errors"
+        );
+        assert_eq!(
+            pool.param_arena().total_params(),
+            total_after_first,
+            "poison short-circuits: no re-interning of orphaned params"
+        );
+    }
+
+    #[test]
+    fn missing_callable_key_fails_closed() {
+        let aux = ThreadedRodeo::new();
+        let handle = fn_handle(aux.get_or_intern("unit"));
+        let mut pool = callable_pool([], [], []);
+        assert_eq!(
+            pool.resolve_function(&9, handle).unwrap_err(),
+            IdentityMintError::MissingCallable
+        );
+        assert_eq!(
+            pool.resolve_method(&9, method_handle()).unwrap_err(),
+            IdentityMintError::MissingCallable
         );
     }
 }
