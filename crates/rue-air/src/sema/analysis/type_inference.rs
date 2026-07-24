@@ -4,6 +4,7 @@
 //! analysis and records resolved expression types.
 
 use super::*;
+use crate::inference::LazyInferenceFacts;
 
 impl<'a> BodySema<'a> {
     fn inference_function_is_selected(
@@ -299,152 +300,25 @@ impl<'a> BodySema<'a> {
         let inline_ctor_head_types =
             self.precompute_inline_ctor_head_types(type_subst, value_subst, &comptime_local_types);
 
-        // Anonymous-struct methods are registered lazily (during comptime
-        // evaluation, including the pre-pass above), after the shared
-        // `InferenceContext` was built — so collect the signatures it doesn't
-        // know about. Without these, a method call on an anonymous-struct
-        // receiver inferred to `<error>` and poisoned sibling constraints
-        // (RUE-164).
-        let extra_method_sigs: HashMap<(StructId, Spur), crate::inference::MethodSig> = self
-            .anonymous_methods
-            .iter()
-            .filter(|(key, _)| !infer_ctx.method_sigs.contains_key(*key))
-            .map(|(key, info)| {
-                (
-                    *key,
-                    crate::inference::MethodSig {
-                        struct_type: info.struct_type,
-                        has_self: info.has_self,
-                        param_types: self
-                            .param_arena
-                            .types(info.params)
-                            .iter()
-                            .map(|t| self.type_to_infer_type(*t))
-                            .collect(),
-                        param_modes: self.param_arena.modes(info.params).to_vec(),
-                        return_type: self.type_to_infer_type(info.return_type),
-                    },
-                )
-            })
-            .collect();
-
-        // Create constraint generator using pre-computed inference context
-        let mut cgen = ConstraintGenerator::with_type_subst(
-            self.rir,
-            self.interner,
-            &infer_ctx.func_sigs,
-            &infer_ctx.builtin_struct_types,
-            &infer_ctx.builtin_enum_types,
-            &infer_ctx.method_sigs,
-            &self.type_pool,
-            type_subst,
-        );
-        cgen = cgen.with_strbuf_type(self.strbuf_type());
-        let str_name = self
-            .interner
-            .get("str")
-            .expect("stable string default was registered before inference");
-        let str_ty = infer_ctx
-            .builtin_struct_types
-            .get(&str_name)
-            .copied()
-            .expect("canonical str type is present in the inference context");
-        cgen = cgen.with_string_literal_default(str_ty);
-        let mut cgen = cgen
-            .with_const_types(&infer_ctx.const_types)
-            .with_const_type_aliases(&infer_ctx.const_type_aliases)
-            .with_const_values(&infer_ctx.const_values)
-            .with_const_function_aliases(&infer_ctx.const_function_aliases)
-            .with_structs_by_file_name(&infer_ctx.struct_types_by_file_name)
-            .with_enums_by_file_name(&infer_ctx.enum_types_by_file_name)
-            .with_module_binding_types(&infer_ctx.module_binding_types)
-            .with_module_file_ids(&infer_ctx.module_file_ids)
-            .with_functions_by_file_name(&infer_ctx.functions_by_file_name)
-            .with_comptime_local_bindings(&comptime_local_bindings)
-            .with_inline_ctor_head_types(&inline_ctor_head_types)
-            .with_comptime_values(value_subst)
-            .with_extra_method_sigs(&extra_method_sigs);
-
-        // Build parameter map for constraint context.
-        // Convert Type to InferType so arrays are represented structurally.
-        let mut param_vars: HashMap<Spur, ParamVarInfo> = params
-            .iter()
-            .map(|(name, ty, mode, _is_comptime)| {
-                (
-                    *name,
-                    ParamVarInfo {
-                        ty: self.type_to_infer_type(*ty),
-                        is_inout: *mode == RirParamMode::Inout,
-                    },
-                )
-            })
-            .collect();
-
-        // Add comptime value variables as if they were parameters
-        // This allows constraint generation to see captured comptime values
-        // (anonymous-struct methods capturing `comptime N` from the enclosing
-        // function). Real parameters keep their declared type: in a
-        // value-specialized body (RUE-166) the comptime value parameter is
-        // also a runtime parameter with a precise type (e.g. `comptime n:
-        // i64`), inserted into `param_vars` above, which the gap-filling
-        // `or_insert` here must not clobber.
+        // Demand-population provider for the inference-context families
+        // (RUE-1091 slice r5b). It materializes each consulted function/method
+        // signature and struct/enum/const on first lookup from the frozen
+        // declaration state, reading the live method tables — so a method call
+        // on an anonymous-struct receiver whose signature was registered lazily
+        // (during comptime evaluation, including the pre-pass above) resolves to
+        // its declared type on first consult, subsuming the old per-body
+        // `extra_method_sigs` reconciliation (RUE-164) with no behavior change.
         //
-        // A *captured* integer value carries only its magnitude — its declared
-        // width is not threaded through the capture — so it is typed as a
-        // fresh integer-literal variable and takes its width from use (a
-        // `comptime N: u8` read where u8 is expected unifies to u8), exactly
-        // like the literal it stands in for. Emission then reads that resolved
-        // width back out of `resolved_types` instead of hard-coding i32
-        // (RUE-216).
-        if let Some(values) = value_subst {
-            for (name, const_val) in values {
-                let ty = match const_val {
-                    ConstValue::Integer(_) => {
-                        param_vars.entry(*name).or_insert(ParamVarInfo {
-                            ty: InferType::Var(cgen.fresh_int_literal_var()),
-                            is_inout: false,
-                        });
-                        continue;
-                    }
-                    ConstValue::Bool(_) => Type::BOOL,
-                    ConstValue::Type(t) => *t,
-                    ConstValue::Function(_) => Type::COMPTIME_TYPE,
-                    // No comptime parameter has a string type, so a captured
-                    // string value never occurs (RUE-957); skip rather than
-                    // fabricate a type for it.
-                    ConstValue::String(_) => continue,
-                    ConstValue::Unit => Type::UNIT,
-                };
-                param_vars.entry(*name).or_insert(ParamVarInfo {
-                    ty: self.type_to_infer_type(ty),
-                    is_inout: false,
-                });
-            }
-        }
-
-        // Create constraint context
-        let mut cgen_ctx = ConstraintContext::new(&param_vars, return_type);
-
-        // Phase 1: Generate constraints
-        let body_info = cgen.generate(body, &mut cgen_ctx);
-
-        let inference_body_dependencies = cgen.body_dependencies().to_vec();
-
-        // The function body's type must match the return type.
-        // This handles implicit returns like `fn foo() -> i8 { 42 }`.
-        // For arrays, we need to convert Type to InferType structurally.
-        //
-        // String literals use marked inference variables whose allowed nominal
-        // targets include `str` and `Str(N)`, so this constraint retains the
-        // implicit literal coercion while rejecting every other mismatched
-        // tail before AIR/CFG construction (RUE-1652).
-        cgen.add_constraint(Constraint::equal(
-            body_info.ty,
-            self.type_to_infer_type(return_type),
-            body_info.span,
-        ));
-
-        // Consume the constraint generator to release borrows
+        // The provider holds an immutable borrow of `self`; it is dropped right
+        // after Phase-1 constraint generation completes, before any `&mut self`
+        // access resumes. This is the detached-context wiring: the shared
+        // `InferenceContext` cache carries no `Sema` borrow (it outlives every
+        // body's `&mut self`), while the fill source is threaded here per body,
+        // sound because constraint generation reads `Sema` only immutably.
+        // Phase 1 runs in its own scope so the provider's immutable borrow of
+        // `self` ends before Phase 2 resumes `&mut self` access (RUE-1091 slice
+        // r5b): the shared `InferenceContext` cache holds no `Sema` borrow, and
+        // the fill source is threaded here per body.
         let (
             constraints,
             int_literal_vars,
@@ -452,7 +326,130 @@ impl<'a> BodySema<'a> {
             string_literal_default,
             expr_types,
             type_var_count,
-        ) = cgen.into_parts();
+            inference_body_dependencies,
+        ) = {
+            let facts = crate::sema::SemaInferenceFacts::new(infer_ctx, self);
+
+            // Create constraint generator driven by the demand-population provider.
+            let mut cgen = ConstraintGenerator::with_lazy_facts(
+                self.rir,
+                self.interner,
+                &self.type_pool,
+                type_subst,
+                &facts,
+            );
+            cgen = cgen.with_strbuf_type(self.strbuf_type());
+            let str_name = self
+                .interner
+                .get("str")
+                .expect("stable string default was registered before inference");
+            let str_ty = facts
+                .builtin_struct_type(str_name)
+                .expect("canonical str type is present in the inference context");
+            cgen = cgen.with_string_literal_default(str_ty);
+            let mut cgen = cgen
+                .with_comptime_local_bindings(&comptime_local_bindings)
+                .with_inline_ctor_head_types(&inline_ctor_head_types)
+                .with_comptime_values(value_subst);
+
+            // Build parameter map for constraint context.
+            // Convert Type to InferType so arrays are represented structurally.
+            let mut param_vars: HashMap<Spur, ParamVarInfo> = params
+                .iter()
+                .map(|(name, ty, mode, _is_comptime)| {
+                    (
+                        *name,
+                        ParamVarInfo {
+                            ty: self.type_to_infer_type(*ty),
+                            is_inout: *mode == RirParamMode::Inout,
+                        },
+                    )
+                })
+                .collect();
+
+            // Add comptime value variables as if they were parameters
+            // This allows constraint generation to see captured comptime values
+            // (anonymous-struct methods capturing `comptime N` from the enclosing
+            // function). Real parameters keep their declared type: in a
+            // value-specialized body (RUE-166) the comptime value parameter is
+            // also a runtime parameter with a precise type (e.g. `comptime n:
+            // i64`), inserted into `param_vars` above, which the gap-filling
+            // `or_insert` here must not clobber.
+            //
+            // A *captured* integer value carries only its magnitude — its declared
+            // width is not threaded through the capture — so it is typed as a
+            // fresh integer-literal variable and takes its width from use (a
+            // `comptime N: u8` read where u8 is expected unifies to u8), exactly
+            // like the literal it stands in for. Emission then reads that resolved
+            // width back out of `resolved_types` instead of hard-coding i32
+            // (RUE-216).
+            if let Some(values) = value_subst {
+                for (name, const_val) in values {
+                    let ty = match const_val {
+                        ConstValue::Integer(_) => {
+                            param_vars.entry(*name).or_insert(ParamVarInfo {
+                                ty: InferType::Var(cgen.fresh_int_literal_var()),
+                                is_inout: false,
+                            });
+                            continue;
+                        }
+                        ConstValue::Bool(_) => Type::BOOL,
+                        ConstValue::Type(t) => *t,
+                        ConstValue::Function(_) => Type::COMPTIME_TYPE,
+                        // No comptime parameter has a string type, so a captured
+                        // string value never occurs (RUE-957); skip rather than
+                        // fabricate a type for it.
+                        ConstValue::String(_) => continue,
+                        ConstValue::Unit => Type::UNIT,
+                    };
+                    param_vars.entry(*name).or_insert(ParamVarInfo {
+                        ty: self.type_to_infer_type(ty),
+                        is_inout: false,
+                    });
+                }
+            }
+
+            // Create constraint context
+            let mut cgen_ctx = ConstraintContext::new(&param_vars, return_type);
+
+            // Phase 1: Generate constraints
+            let body_info = cgen.generate(body, &mut cgen_ctx);
+
+            let inference_body_dependencies = cgen.body_dependencies().to_vec();
+
+            // The function body's type must match the return type.
+            // This handles implicit returns like `fn foo() -> i8 { 42 }`.
+            // For arrays, we need to convert Type to InferType structurally.
+            //
+            // String literals use marked inference variables whose allowed nominal
+            // targets include `str` and `Str(N)`, so this constraint retains the
+            // implicit literal coercion while rejecting every other mismatched
+            // tail before AIR/CFG construction (RUE-1652).
+            cgen.add_constraint(Constraint::equal(
+                body_info.ty,
+                self.type_to_infer_type(return_type),
+                body_info.span,
+            ));
+
+            // Consume the constraint generator to release borrows
+            let (
+                constraints,
+                int_literal_vars,
+                string_literal_vars,
+                string_literal_default,
+                expr_types,
+                type_var_count,
+            ) = cgen.into_parts();
+            (
+                constraints,
+                int_literal_vars,
+                string_literal_vars,
+                string_literal_default,
+                expr_types,
+                type_var_count,
+                inference_body_dependencies,
+            )
+        };
 
         // Phase 2: Solve constraints via unification
         // Pre-size the substitution for better performance on large functions

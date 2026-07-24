@@ -54,6 +54,6 @@ pub use generate::{
     ConstraintContext, ConstraintGenerator, ExprInfo, FunctionSig, LocalVarInfo, MethodSig,
     ParamVarInfo,
 };
-pub(crate) use generate::{InferenceBodyDependency, InferenceCallRoute};
+pub(crate) use generate::{InferenceBodyDependency, InferenceCallRoute, LazyInferenceFacts};
 pub use types::{InferType, TypeVarAllocator, TypeVarId};
 pub use unify::{UnificationError, Unifier, UnifyResult};
