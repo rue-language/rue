@@ -621,8 +621,9 @@ impl<D: DeclarationPhase> SemaTypeSyntaxProvider<'_, '_, '_, D> {
                 );
                 value
             } else {
+                let hint = self.out_of_scope_const_hint(symbol, root_file);
                 return Err(self.invalid_array_length(format!(
-                    "'{name}' is not a compile-time constant; array lengths must be an integer literal, a `const`, or a `comptime` value parameter"
+                    "'{name}' is not a compile-time constant; array lengths must be an integer literal, a `const`, or a `comptime` value parameter{hint}"
                 )));
             }
         } else {
@@ -723,6 +724,40 @@ impl<D: DeclarationPhase> SemaTypeSyntaxProvider<'_, '_, '_, D> {
 
     fn invalid_array_length(&self, reason: String) -> CompileError {
         CompileError::new(ErrorKind::InvalidArrayLength { reason }, self.span)
+    }
+
+    /// Error-path-only candidate hint for a bare array-length name that is not
+    /// in the referencing file's scope. Bare names resolve by ordinary scoped
+    /// resolution (same module + visibility); a same-named constant in another
+    /// module does not resolve merely because it is globally unique. When such
+    /// constants exist elsewhere, name the modules that declare a visible
+    /// (`pub`) integer constant of that name so the diagnostic can steer the
+    /// author to an import + file-level `const` alias. The bounded scan runs
+    /// only after the keyed lookup has already missed, so the happy path stays
+    /// a single by-file lookup.
+    fn out_of_scope_const_hint(&self, symbol: Spur, exclude: FileId) -> String {
+        let mut modules: Vec<&str> = self
+            .sema
+            .value_consts()
+            .filter(|((file, name), info)| {
+                *file != exclude
+                    && *name == symbol
+                    && info.is_pub
+                    && info.value.as_int_value().is_some()
+            })
+            .filter_map(|((file, _), _)| self.sema.file_paths.get(file).map(String::as_str))
+            .collect();
+        modules.sort_unstable();
+        modules.dedup();
+        match modules.as_slice() {
+            [] => String::new(),
+            _ => format!(
+                "; an integer constant of that name is declared in {} — import that module and bind a file-level `const` (for example `const {}: i32 = <module>.{};`) to use it as an array length here",
+                modules.join(", "),
+                self.sema.interner.resolve(&symbol),
+                self.sema.interner.resolve(&symbol),
+            ),
+        }
     }
 
     fn observe_materialized_type_fact(&mut self, ty: Type) {

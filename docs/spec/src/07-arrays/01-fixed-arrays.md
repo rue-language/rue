@@ -169,13 +169,23 @@ comptime-evaluable function (rule 7.1:41).
 
 An array length **MAY** be an identifier naming a compile-time constant in
 addition to an integer literal. A file-level `const` of an integer type and a
-`comptime` value parameter both qualify.
+`comptime` value parameter both qualify. The identifier is resolved by ordinary
+scoped resolution (rule 10.3:8): a bare name in these positions is resolved in
+the declaration or body scope in which the length appears — a `const` of that
+same file, or a `comptime` value parameter in scope there — and a `comptime`
+value parameter takes precedence over a same-named file-level `const`.
+Declarations outside that scope do not participate merely because they are
+globally unique: a constant declared only in another module is reached by
+binding it into this file with a file-level `const`, and adding a same-named
+constant in an unrelated module never changes which length a bare name
+resolves to.
 
 {{ rule(id="7.1:33", cat="legality-rule") }}
 
 A named array length **MUST** resolve to a non-negative integer compile-time
-constant. A runtime variable, a negative value, or an undefined name in
-length position is a compile-time error.
+constant. A runtime variable, a negative value, or a name that does not resolve
+in scope — including a name that names a constant only in another module (rule
+10.3:8) — in length position is a compile-time error.
 
 {{ rule(id="7.1:34", cat="normative") }}
 
