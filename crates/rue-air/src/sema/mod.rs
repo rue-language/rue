@@ -34,6 +34,7 @@ mod analyze_ops;
 mod anon_structs;
 mod binding_manifest;
 mod body_endpoint;
+mod body_identity;
 mod builtins;
 mod call_resolution;
 mod comptime_eval;
