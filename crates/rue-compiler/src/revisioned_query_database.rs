@@ -20531,6 +20531,488 @@ mod tests {
         assert_eq!(dup_result, None);
     }
 
+    // ---- RUE-1091 r4b-1: call-resolution ProviderFacts differentials --------
+    //
+    // These prove `rue_air::ProviderCallFacts` (the provider-driven realization
+    // of the r1b `CallResolutionFacts` seam) assembles the family-1C identities
+    // from the exact body-fact provider (`CompilerBodyFactProvider`) + the body
+    // identity pool, matching the epoch. The durable source the pool consults is
+    // built from the independently produced durable declaration set
+    // (`bind_canonical_declaration_semantics`, r2's stable-keyed metadata), so
+    // agreement is a real cross-path proof, not the same provider terminal.
+    //
+    // Scope landed here: the free-function `function_info` pool composition (P,
+    // params through 2a), the `function_contains` lookup selection (C), and the
+    // callable-symbol reversal (B) including the bare-owner known-divergence.
+    // Deferred with cause (reported, never silently answered wrong): full
+    // `method_info` pool assembly needs the receiver→pool identity the endpoint
+    // seam owns (r4b-3); the `ConstInfo`-bearing const arms need a
+    // const-declaration RIR handle the position-free boundary omits; `module_def`
+    // answers an epoch-internal registry index with no provider preimage.
+
+    /// The durable declaration set projected into the body identity pool's
+    /// durable source vocabulary. Reads r2's stable-keyed metadata by key — the
+    /// pool consults it on demand (dedup / poison), the O(consumed) shape.
+    struct DurableDeclSource {
+        by_key: HashMap<StableDefinitionKey, crate::durable_semantics::DurableDeclarationSemantic>,
+    }
+
+    impl DurableDeclSource {
+        fn from_declarations(
+            decls: &[crate::durable_semantics::DurableDeclarationSemantic],
+        ) -> Self {
+            Self {
+                by_key: decls.iter().map(|d| (d.key.clone(), d.clone())).collect(),
+            }
+        }
+    }
+
+    fn provider_durable_param(
+        parameter: &crate::durable_semantics::DurableSemanticParameter,
+    ) -> rue_air::DurableSignatureParameter<StableDefinitionKey, ModuleId> {
+        use crate::durable_semantics::DurableParameterMode as Mode;
+        rue_air::DurableSignatureParameter {
+            name: parameter.name.clone(),
+            ty: parameter.ty.clone(),
+            mode: match parameter.mode {
+                Mode::Value => rue_air::SemanticParameterMode::Value,
+                Mode::Borrow => rue_air::SemanticParameterMode::Borrow,
+                Mode::Inout => rue_air::SemanticParameterMode::Inout,
+            },
+            is_comptime: parameter.is_comptime,
+        }
+    }
+
+    impl rue_air::DurableNominalSource<StableDefinitionKey, ModuleId> for DurableDeclSource {
+        fn nominal(
+            &self,
+            key: &StableDefinitionKey,
+        ) -> Option<rue_air::DurableNominal<StableDefinitionKey, ModuleId>> {
+            use crate::durable_semantics::DurableDeclarationPayload as Payload;
+            let decl = self.by_key.get(key)?;
+            let body = match &decl.payload {
+                Payload::Struct {
+                    fields,
+                    is_copy,
+                    is_linear,
+                } => rue_air::DurableNominalBody::Struct {
+                    fields: fields.iter().map(|(n, t)| (n.clone(), t.clone())).collect(),
+                    is_copy: *is_copy,
+                    is_linear: *is_linear,
+                },
+                Payload::Enum { variants } => rue_air::DurableNominalBody::Enum {
+                    variants: variants
+                        .iter()
+                        .map(|(n, payload)| (n.clone(), payload.to_vec()))
+                        .collect(),
+                },
+                _ => return None,
+            };
+            Some(rue_air::DurableNominal {
+                name: Arc::from(decl.key.name()),
+                module_path: Arc::from(decl.key.module().logical_path()),
+                is_public: decl.is_public,
+                // A user nominal in the durable set: builtin/lang-item/`@repr(c)`
+                // are trusted-provenance / declaration side facts the durable
+                // payload does not carry, so this differential's user corpora
+                // leave them at their non-set defaults.
+                is_builtin: false,
+                lang_item: None,
+                is_repr_c: false,
+                body,
+            })
+        }
+    }
+
+    impl rue_air::DurableCallableSource<StableDefinitionKey, ModuleId> for DurableDeclSource {
+        fn function(
+            &self,
+            key: &StableDefinitionKey,
+        ) -> Option<rue_air::DurableFunction<StableDefinitionKey, ModuleId>> {
+            use crate::durable_semantics::DurableDeclarationPayload as Payload;
+            let decl = self.by_key.get(key)?;
+            let Payload::Callable {
+                parameters,
+                result,
+                has_self,
+                is_unchecked,
+            } = &decl.payload
+            else {
+                return None;
+            };
+            // A `self`-taking callable is a method, not a free function.
+            if *has_self {
+                return None;
+            }
+            Some(rue_air::DurableFunction {
+                parameters: parameters.iter().map(provider_durable_param).collect(),
+                result: result.clone(),
+                is_public: decl.is_public,
+                is_unchecked: *is_unchecked,
+            })
+        }
+
+        fn method(
+            &self,
+            _key: &StableDefinitionKey,
+        ) -> Option<rue_air::DurableMethod<StableDefinitionKey, ModuleId>> {
+            // Deferred to r4b-3: the durable method key's receiver preimage is the
+            // owner nominal, threaded through the endpoint seam that owns
+            // receiver→pool identity. r4b-1 lands the free-function subset.
+            None
+        }
+    }
+
+    /// Render a pool `Type` to a comparable display through the minted pool, the
+    /// index-independent parity the 2a/2b contract asserts (never a pool-relative
+    /// index).
+    fn render_pool_type(pool: &rue_air::TypeInternPool, ty: rue_air::Type) -> String {
+        use rue_air::TypeKind;
+        match ty.kind() {
+            TypeKind::I8 => "i8".into(),
+            TypeKind::I16 => "i16".into(),
+            TypeKind::I32 => "i32".into(),
+            TypeKind::I64 => "i64".into(),
+            TypeKind::U8 => "u8".into(),
+            TypeKind::U16 => "u16".into(),
+            TypeKind::U32 => "u32".into(),
+            TypeKind::U64 => "u64".into(),
+            TypeKind::Bool => "bool".into(),
+            TypeKind::Unit => "()".into(),
+            TypeKind::Never => "!".into(),
+            TypeKind::Struct(id) => pool.struct_def(id).name,
+            TypeKind::Enum(id) => pool.enum_def(id).name,
+            other => format!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn provider_call_facts_function_info_matches_epoch() {
+        use crate::StableDefinitionKind as Kind;
+        // A free function whose first parameter is a NOMINAL (`Point`): its type
+        // resolves through the pool's 2a nominal machinery, its `n`/return through
+        // the primitive arms — the full 2a+2b+2c compose behind the seam.
+        let source = "pub struct Point { x: i64, y: i64 }\n\
+                      @allow(unused_function)\n\
+                      pub fn make(p: Point, n: i32) -> i64 { 0 }\n\
+                      fn main() -> i32 { 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let file = FileId::new(1);
+        let decls = production_declarations(&snapshot);
+        let make = durable_decl(&decls, Kind::Function, "make");
+        let make_key = make.key.clone();
+
+        // The live epoch, bound through the production declaration path (the same
+        // recipe `body_overlay`'s parity tests use) — the INDEPENDENT side the
+        // provider assembly is compared against, not the same durable terminal.
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
+        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
+            &merged,
+            &rir,
+            crate::PreviewFeatures::default(),
+            rue_target::Target::X86_64Linux,
+            &imports,
+        )
+        .expect("declarations bind");
+        // The RIR + its interner are body-query inputs the driver fills the
+        // request/RIR handle from; the BoundSema is bound from the same `rir`, so
+        // its `Spur`s and the driver's line up.
+        let interner = rir.semantic_symbols().interner();
+        let make_sym = interner.get("make").expect("make interned");
+        let prod = bound
+            .function_info(make_sym)
+            .expect("the epoch has make's FunctionInfo");
+
+        let rir_ref = rir.rir();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let source_adapter = DurableDeclSource::from_declarations(&decls);
+
+        let outcome = database.probe_body_facts(
+            revision,
+            semantic_configuration(),
+            "call-fn-info",
+            move |provider| {
+                let mut facts =
+                    rue_air::ProviderCallFacts::new(provider, source_adapter, rir_ref, interner);
+                let info = facts
+                    .function_info(&make_key, "make", file)
+                    .expect("make resolves through the provider path");
+                // Double consult: idempotent, the pool mints nothing new.
+                let second = facts
+                    .function_info(&make_key, "make", file)
+                    .expect("repeat consult resolves");
+                // `FunctionInfo` is not `PartialEq`; compare the load-bearing
+                // identity fields to prove the repeat consult is stable.
+                assert_eq!(second.declaration, info.declaration);
+                assert_eq!(second.body, info.body);
+                assert_eq!(
+                    second.params, info.params,
+                    "repeat consult re-minted params"
+                );
+
+                // Parameter vocabulary (2b), types resolved through 2a — asserted
+                // through the index-independent render/name reads (the pool mints
+                // its own ids; parity is a display property, not a raw index).
+                let arena = facts.param_arena();
+                let names = arena.names(info.params);
+                let types = arena.types(info.params);
+                let modes = arena.modes(info.params);
+                assert_eq!(info.params.len(), 2, "two explicit params");
+                assert_eq!(facts.resolve_symbol(names[0]), "p");
+                assert_eq!(facts.resolve_symbol(names[1]), "n");
+                assert_eq!(
+                    render_pool_type(facts.type_pool(), types[0]),
+                    "Point",
+                    "the nominal param minted through 2a"
+                );
+                assert_eq!(render_pool_type(facts.type_pool(), types[1]), "i32");
+                assert_eq!(modes[0], rue_rir::RirParamMode::Normal);
+                assert_eq!(render_pool_type(facts.type_pool(), info.return_type), "i64");
+                info
+            },
+        );
+        let info = outcome.result;
+
+        // Cross-path against the LIVE production `FunctionInfo` (not hardcoded
+        // literals): span/flags/file/return-symbol all equal the epoch's. This
+        // makes the r4a-2c span contract a real comparison — production's own
+        // `FunctionInfo.span` (sourced from `shell.declaration_span`) equals the
+        // provider-assembled handle span — not a re-read of the same inst.
+        assert_eq!(info.span, prod.span, "assembled span equals production's");
+        assert_eq!(info.file_id, prod.file_id);
+        assert_eq!(info.is_pub, prod.is_pub);
+        assert_eq!(info.is_generic, prod.is_generic);
+        assert_eq!(info.is_unchecked, prod.is_unchecked);
+        assert_eq!(
+            info.return_type_sym, prod.return_type_sym,
+            "pre-resolution return symbol matches production"
+        );
+
+        // The P-op path consults the pool (durable source) + the RIR handle, not
+        // the live provider terminals, so it records no provider query edge — the
+        // pool is answered-by-metadata, and edge honesty is a C/B-op property
+        // (pinned by the callable-symbol and name-lookup differentials).
+        assert!(
+            outcome.dependencies.is_empty(),
+            "a pool-answered function_info records no provider edge: {:?}",
+            outcome.dependencies
+        );
+    }
+
+    #[test]
+    fn provider_call_facts_function_contains_selects_from_the_candidate_set() {
+        let source = "pub struct Point { x: i32 }\n\
+                      pub fn helper() -> i32 { 0 }\n\
+                      fn main() -> i32 { 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let m = ModuleId::from_logical_path("m.rue").unwrap();
+        let decls = production_declarations(&snapshot);
+        let (rir_out, _semantic, _) = crate::test_support::test_frontend_snapshot(
+            &snapshot,
+            &crate::CompileOptions::default(),
+        )
+        .expect("frontend compiles");
+        let rir = rir_out.rir();
+        let interner = rir_out.semantic_symbols().interner();
+
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let source_adapter = DurableDeclSource::from_declarations(&decls);
+
+        let outcome = database.probe_body_facts(
+            revision,
+            semantic_configuration(),
+            "call-fn-contains",
+            move |provider| {
+                let facts =
+                    rue_air::ProviderCallFacts::new(provider, source_adapter, rir, interner);
+                (
+                    // A declared free function is present.
+                    facts.function_contains_in_module(&m, "helper"),
+                    // A struct name is NOT a free function (kind-filtered out of
+                    // the candidate set — the candidate-sets-not-winners contract).
+                    facts.function_contains_in_module(&m, "Point"),
+                    // An absent name.
+                    facts.function_contains_in_module(&m, "missing"),
+                )
+            },
+        );
+        let (helper, point, missing) = outcome.result;
+        assert!(helper, "helper is a declared free function");
+        assert!(!point, "a struct is not a free function");
+        assert!(!missing, "an absent name is not a free function");
+        // The lookups are observed through the provider's exact name terminal.
+        assert!(
+            outcome
+                .dependencies
+                .iter()
+                .any(|node| node.family() == "compiler.lookup-name"),
+            "function_contains observes the name-lookup terminal: {:?}",
+            outcome.dependencies
+        );
+    }
+
+    #[test]
+    fn provider_call_facts_bare_owner_reversal_is_a_known_r6_divergence() {
+        // The bare-owner divergence (r4a-1 carry-forward, tied to r6), exhibited
+        // against the LIVE epoch, not documented: a trusted-std `StrBuf` carries a
+        // method, so the real declaration-bind path assigns its language item and
+        // renders its method symbol BARE (RUE-1089 exemption). A USER `Box` method
+        // renders file-qualified. Both land in the epoch's `named_method_by_
+        // callable_symbol` index; the provider path reverses the qualified one and
+        // REFUSES the bare one (no recoverable module). We assert epoch=Some AND
+        // provider=None on the SAME bare symbol, side by side — un-masking the gap
+        // the earlier `i32.get`-style probes (bare symbols the epoch ALSO refuses)
+        // left open.
+        let root_src = "struct Box { value: i32, \
+             fn get(borrow self) -> i32 { self.value } }\n\
+             fn main() -> i32 { 0 }\n";
+        // A trusted std `StrBuf` WITH a method: the bind path assigns its language
+        // item, so `length` renders under the bare `StrBuf` owner symbol.
+        let strbuf_src = "pub struct StrBuf { buf: ptr mut u8, len: u64, cap: u64, \
+             fn length(borrow self) -> u64 { self.len } }\n";
+        let root_file = FileId::new(1);
+        let strbuf_file = FileId::new(2);
+        let metadata = SourceMetadata::new_with_trusted_standard_library(
+            root_file,
+            HashMap::from([
+                (root_file, "/project/main.rue".to_owned()),
+                (strbuf_file, "/project/std/strbuf.rue".to_owned()),
+            ]),
+            HashMap::from([
+                (root_file, "main.rue".to_owned()),
+                (strbuf_file, "\0rue-std/strbuf.rue".to_owned()),
+            ]),
+            std::collections::HashSet::from([strbuf_file]),
+        )
+        .expect("trusted-std metadata is valid");
+        let snapshot = SourceSnapshot::new(
+            metadata,
+            vec![
+                (root_file, Arc::new(root_src.to_owned())),
+                (strbuf_file, Arc::new(strbuf_src.to_owned())),
+            ],
+        )
+        .expect("trusted-strbuf snapshot is valid");
+
+        // The live epoch, through the production declaration-bind path.
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
+        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
+            &merged,
+            &rir,
+            crate::PreviewFeatures::default(),
+            rue_target::Target::X86_64Linux,
+            &imports,
+        )
+        .expect("declarations bind");
+        let interner = rir.semantic_symbols().interner();
+
+        // Locate the two callable-index keys the epoch produced: the BARE
+        // language-item method (no `$`) and the file-qualified user method.
+        let keys = bound.named_callable_symbol_keys();
+        let bare_key = keys
+            .iter()
+            .find(|k| !k.contains('$'))
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!(
+                    "the trusted-std StrBuf method must render a BARE callable key; got {keys:?}"
+                )
+            });
+        let qualified_key = keys
+            .iter()
+            .find(|k| k.contains('$') && k.contains("get"))
+            .cloned()
+            .expect("the user Box.get method renders a file-qualified callable key");
+
+        // epoch=Some on the bare symbol — the un-masking witness, queried through
+        // the epoch's own reversal accessor.
+        let bare_sym = interner.get_or_intern(&bare_key);
+        assert!(
+            bound.named_method_by_callable_symbol(bare_sym).is_some(),
+            "the epoch answers the bare language-item method symbol: {bare_key}"
+        );
+        // (positive control) the epoch also answers the qualified user symbol.
+        let qualified_sym = interner.get_or_intern(&qualified_key);
+        assert!(
+            bound
+                .named_method_by_callable_symbol(qualified_sym)
+                .is_some()
+        );
+
+        let rir_ref = rir.rir();
+        let decls = production_declarations(&snapshot);
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+
+        // Probe A — the BARE symbol: provider=None, and the refusal fails at
+        // symbol parse (the missing `$`) BEFORE any receiver lookup, so it records
+        // NO query edge (contrast the success footprint below).
+        let bare_outcome =
+            database.probe_body_facts(revision, semantic_configuration(), "call-bare-refuse", {
+                let bare = bare_key.clone();
+                let adapter = DurableDeclSource::from_declarations(&decls);
+                move |provider| {
+                    let facts =
+                        rue_air::ProviderCallFacts::new(provider, adapter, rir_ref, interner);
+                    facts.callable_symbol_receiver(&bare).is_some()
+                }
+            });
+        assert!(
+            !bare_outcome.result,
+            "the provider path refuses the bare language-item owner symbol the \
+             epoch answers — the r6-tied known divergence, exhibited"
+        );
+        assert!(
+            bare_outcome.dependencies.is_empty(),
+            "the bare refusal fails at symbol parse (no `$`) before any lookup, so \
+             it records no query edge: {:?}",
+            bare_outcome.dependencies
+        );
+
+        // Probe B — the QUALIFIED symbol: provider=Some, and the success records
+        // exactly the r4a-1 footprint (the receiver name lookup + the member
+        // semantic-nucleus facts), nothing else.
+        let ok_outcome =
+            database.probe_body_facts(revision, semantic_configuration(), "call-qual-success", {
+                let qualified = qualified_key.clone();
+                let adapter = DurableDeclSource::from_declarations(&decls);
+                move |provider| {
+                    let facts =
+                        rue_air::ProviderCallFacts::new(provider, adapter, rir_ref, interner);
+                    facts.callable_symbol_receiver(&qualified).is_some()
+                }
+            });
+        assert!(
+            ok_outcome.result,
+            "the provider reverses the file-qualified user method symbol"
+        );
+        let families: std::collections::BTreeSet<&str> = ok_outcome
+            .dependencies
+            .iter()
+            .map(|node| node.family())
+            .collect();
+        assert!(
+            families.contains("compiler.lookup-name"),
+            "the success path observes the receiver name lookup: {families:?}"
+        );
+        assert!(
+            families
+                .iter()
+                .all(|family| *family == "compiler.lookup-name"
+                    || *family == "compiler.semantic-nucleus"),
+            "the callable-symbol success footprint is lookup-name + semantic-nucleus \
+             only (r4a-1): {families:?}"
+        );
+    }
+
     #[test]
     fn provider_member_candidates_span_methods_and_assoc_fns_with_signature_handles() {
         use crate::declaration_candidate::DeclarationCandidateCategory as Cat;

@@ -2411,6 +2411,41 @@ impl<'a> BoundSema<'a> {
         &self.sema
     }
 
+    /// RUE-1091 slice r4b-1 flip-era surface: the epoch's answer for a free
+    /// function's identity, exposed so the rue-compiler differential can compare
+    /// the provider-driven `ProviderCallFacts` assembly against the epoch it must
+    /// match. Trivial delegation to the frozen `BodySema`; the sole pre-flip
+    /// caller is that differential (the flip promotes this comparison to rFinal).
+    pub fn function_info(&self, name: lasso::Spur) -> Option<super::info::FunctionInfo> {
+        self.sema.function_info(name).copied()
+    }
+
+    /// RUE-1091 slice r4b-1 flip-era surface: the epoch's callable-symbol
+    /// reversal, exposed for the same differential. Delegates to the epoch's
+    /// `named_callable_methods_by_symbol` index. The epoch answers BARE
+    /// (language-item / builtin) owner symbols here — the class the provider path
+    /// refuses (the r6-tied divergence the differential pins).
+    pub fn named_method_by_callable_symbol(
+        &self,
+        symbol: lasso::Spur,
+    ) -> Option<(crate::types::StructId, lasso::Spur, super::info::MethodInfo)> {
+        self.sema
+            .named_method_by_callable_symbol(symbol)
+            .map(|(struct_id, method, info)| (struct_id, method, *info))
+    }
+
+    /// RUE-1091 slice r4b-1 flip-era surface: the rendered symbol keys of the
+    /// epoch's named-method callable index, so the differential can locate the
+    /// bare (file-qualification-exempt) key a language-item owner produces and
+    /// witness the epoch answering it.
+    pub fn named_callable_symbol_keys(&self) -> Vec<String> {
+        self.sema
+            .named_callable_methods_by_symbol
+            .keys()
+            .cloned()
+            .collect()
+    }
+
     /// Materialize the owned manifest on demand. Ordinary body analysis does
     /// not pay for this additional RIR traversal.
     pub fn binding_manifest(&self) -> &SemanticBindingManifest {

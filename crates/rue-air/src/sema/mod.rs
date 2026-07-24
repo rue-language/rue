@@ -97,6 +97,14 @@ pub use provider::{
     NameCandidate, NameResolution, NominalWellFormedness, OperatorMemberCandidate, OperatorName,
     ProviderDefinitionKind, ProviderNamespace,
 };
+// RUE-1091 slice r4b-1 flip-era surface: the durable source vocabulary the
+// rue-compiler provider adapter supplies to the body identity pool, and the
+// call-resolution ProviderFacts driver that composes pool + provider answers.
+pub use body_identity::{
+    DurableCallableSource, DurableFunction, DurableMethod, DurableNominal, DurableNominalBody,
+    DurableNominalSource, DurableSignatureParameter,
+};
+pub use call_resolution::ProviderCallFacts;
 
 use std::collections::{HashMap, HashSet};
 
