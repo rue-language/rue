@@ -94,6 +94,17 @@ pub(crate) struct BodySemanticOverlay {
     module_ids: Vec<ModuleId>,
     module_slots: HashMap<ModuleId, u32>,
     recipe_tokens: HashMap<RecipeLogicalKey, LocalToken>,
+    /// Body-local type materialization (RUE-1091 slice r2). Each consulted
+    /// nominal a provider-driven type-syntax resolution reaches is recorded here
+    /// by its stable identity, carrying the exact durable metadata (fields /
+    /// variants / `@copy`) the epoch would install into `type_pool`. This is the
+    /// type-world analog of the definition/module token space: it lets the
+    /// overlay own the nominal metadata a body later renders, materialized on
+    /// demand through the exact body-fact provider instead of read from the
+    /// whole-epoch `type_pool`. Only the test-only `ProviderTypeFacts` path
+    /// fills it; production never does.
+    #[cfg(test)]
+    materialized_nominals: HashMap<StableDefinitionKey, crate::DurableDeclarationPayload>,
     counters: Arc<OverlayMaterializationCounters>,
 }
 
@@ -119,8 +130,49 @@ impl BodySemanticOverlay {
             module_ids: Vec::new(),
             module_slots: HashMap::new(),
             recipe_tokens: HashMap::new(),
+            #[cfg(test)]
+            materialized_nominals: HashMap::new(),
             counters,
         }
+    }
+
+    /// Materialize a consulted nominal into the overlay's body-local type space
+    /// (RUE-1091 slice r2). Records the nominal's durable payload keyed by its
+    /// stable identity, minted once per body: a repeated consultation of the
+    /// same nominal is a constant-time cache hit that records no second copy.
+    /// This is the type-syntax family's analog of `intern_definition` — the
+    /// point at which a provider-driven type resolution turns a consulted name
+    /// into materialized nominal metadata. The dependency edge for the fact is
+    /// recorded by the body-fact provider op that supplied `payload`, not here:
+    /// materialization is where metadata lands, the provider call is where the
+    /// edge lands, and the two happen together (never at render).
+    #[cfg(test)]
+    pub(crate) fn materialize_nominal(
+        &mut self,
+        key: &StableDefinitionKey,
+        payload: &crate::DurableDeclarationPayload,
+    ) {
+        self.materialized_nominals
+            .entry(key.clone())
+            .or_insert_with(|| payload.clone());
+    }
+
+    /// The durable metadata previously materialized for a nominal, if the body
+    /// consulted it. Two overlays that materialized the same nominal record
+    /// byte-identical payloads but own them independently.
+    #[cfg(test)]
+    pub(crate) fn materialized_nominal(
+        &self,
+        key: &StableDefinitionKey,
+    ) -> Option<&crate::DurableDeclarationPayload> {
+        self.materialized_nominals.get(key)
+    }
+
+    /// The number of distinct nominals materialized into this overlay's
+    /// body-local type space.
+    #[cfg(test)]
+    pub(crate) fn materialized_nominal_count(&self) -> usize {
+        self.materialized_nominals.len()
     }
 
     /// An owned snapshot of this overlay's materialization meter (RUE-1091 slice

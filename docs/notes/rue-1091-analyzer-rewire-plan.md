@@ -326,6 +326,40 @@ introduced with r1b/r1c; r1a introduces only the endpoint seam (`sema/body_endpo
 
 ---
 
+## Review carry-forwards (from r1a/r1b review; ratified while landing r2)
+
+Recorded here so a later slice does not silently re-derive or drop them:
+
+1. **Interner reads stay inline for now.** The ~12 `interner` reads in `one_body.rs` are NOT hoisted
+   behind `BodyEndpointProvider`/EpochFacts yet; they remain inline pending an explicit decision
+   before the "no epoch read outside EpochFacts" guard (§5 #4) lands. The guard must not fail on
+   them until that decision is made.
+2. **The guard must whitelist the outer-driver universe enumerations.** When the "no epoch read
+   outside EpochFacts" guard lands, it must explicitly allow the whole-universe enumerations that
+   belong to the outer driver, not to per-body analysis: `intern_named_callable_symbols`, the
+   unused-function warning scan, the anonymous-destructor enqueue, and the universe-cardinality
+   counters. These are driver-level passes, not body reads, and are out of scope for the
+   provider-driven analyzer.
+3. **rFinal differential enumerates variants explicitly.** The rFinal whole-body differential must
+   enumerate every `TypeInstanceKey` arm and every `CanonicalArgumentValue` variant explicitly
+   (module-typed comptime values, function-valued comptime args, anonymous nominals,
+   destructor-bearing bodies included) — never rely on incidental corpus coverage, or an arm can be
+   vacuously green.
+
+**ProviderFacts landing order.** The ProviderFacts slices (r2..r6) land in the plan's own
+**dependency order (r2→r6)**, NOT the r1a/r1b/r1c seam landing order. The endpoint-seam ProviderFacts
+is **r4**, and it consumes r2's type materialization and r5's `SignatureFacts`
+demand-population: `resolve_instance_type` and the `function_info`/`method_info` endpoint answers are
+expressed in materialized-identity terms (`StructId`/`Type`/`FunctionInfo`), which the
+`BodyEndpointProvider` seam cannot obtain from `BodyFactProvider` + overlay until r2/r5 exist. r2 is
+therefore the type-syntax/nominal ProviderFacts (this slice), not the endpoint seam.
+Scope honesty for r4's sizing: r2 supplies materialized durable nominal METADATA keyed by stable
+identity (`materialized_nominals`), deliberately pool-free — it does NOT build an overlay-owned
+id-minting `type_pool`. r4 still owns the full cost of the pool that mints epoch-compatible
+`StructId`/`Type`/`FunctionInfo` identities on top of r2's metadata and r5's signatures.
+
+---
+
 ## 4. RISKS (top 5 for this rewire)
 
 | # | Risk | Mitigation |
