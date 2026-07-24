@@ -27,6 +27,7 @@
 //! - [`BoundSema::analyze_one_body_instance`] - Analyze one exact query-owned body
 //! - [`BoundSema::compose_queried_bodies`] - Import queried bodies into final output
 
+mod aggregate_resolution;
 mod aggregates;
 pub(crate) mod analysis;
 mod analyze_ops;
