@@ -32,6 +32,7 @@ pub(crate) mod analysis;
 mod analyze_ops;
 mod anon_structs;
 mod binding_manifest;
+mod body_endpoint;
 mod builtins;
 mod comptime_eval;
 mod context;

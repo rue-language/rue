@@ -16,6 +16,7 @@ use rue_error::{CompileError, CompileErrors, ErrorKind};
 use rue_rir::InstData;
 use rue_span::{FileId, Span};
 
+use super::body_endpoint::{BodyEndpointProvider, endpoint_facts};
 use super::{AnalyzedBodyOwnerEvent, AnalyzedFunction, BodyOwnerKind, BodySema};
 use crate::{
     FunctionInstanceKey, NominalInstanceKey, SemanticBodyExport, SemanticDefinitionToken,
@@ -243,11 +244,10 @@ fn target_dependency(
         }
         T::NamedType { file, name, kind } => {
             if let Some(symbol) = sema.interner.get(name.as_str()) {
-                let builtin_kind = if sema.builtin_enums.contains_key(&symbol) {
+                let facts = endpoint_facts(sema);
+                let builtin_kind = if facts.is_builtin_enum(symbol) {
                     Some(crate::AnonymousNominalKind::Enum)
-                } else if sema.builtin_structs.contains_key(&symbol)
-                    || sema.generated_structs.contains_key(&symbol)
-                {
+                } else if facts.is_builtin_or_generated_struct(symbol) {
                     Some(crate::AnonymousNominalKind::Struct)
                 } else {
                     None
@@ -597,7 +597,7 @@ fn body_references(
         references.insert(OneBodyDependency::Callable(identity));
     }
     for (structure, method) in referenced_methods {
-        let Some(info) = sema.method_info((*structure, *method)) else {
+        let Some(info) = endpoint_facts(sema).method_info(*structure, *method) else {
             return Err(ReferenceProjectionFailure::EngineAbort);
         };
         let symbol = sema.method_symbol(*structure, sema.interner.resolve(method), info.has_self);
@@ -643,9 +643,8 @@ fn body_references(
             continue;
         }
         if sema.interner.get(&event.target_name).is_some_and(|symbol| {
-            sema.builtin_structs.contains_key(&symbol)
-                || sema.generated_structs.contains_key(&symbol)
-                || sema.builtin_enums.contains_key(&symbol)
+            let facts = endpoint_facts(sema);
+            facts.is_builtin_or_generated_struct(symbol) || facts.is_builtin_enum(symbol)
         }) {
             continue;
         }
@@ -867,7 +866,7 @@ pub(super) fn analyze_one_body(
             type_arguments,
             value_arguments,
         } => {
-            let Some(endpoint) = sema.stable_definition_endpoints.get(&base) else {
+            let Some(endpoint) = endpoint_facts(&sema).definition_endpoint(base) else {
                 return fail(
                     &sema,
                     None,
@@ -885,9 +884,8 @@ pub(super) fn analyze_one_body(
                     )),
                 );
             };
-            let Some(&base_name) = sema
-                .functions_by_file_name
-                .get(&(FileId::new(endpoint.file), source_name))
+            let Some(base_name) = endpoint_facts(&sema)
+                .function_by_file_name(FileId::new(endpoint.file), source_name)
             else {
                 return fail(
                     &sema,
@@ -903,7 +901,7 @@ pub(super) fn analyze_one_body(
                 value_args: value_arguments,
             };
             let base_name = key.base_name;
-            let base_info = sema.function_info(base_name).cloned();
+            let base_info = endpoint_facts(&sema).function_info(base_name);
             let owner = base_info.as_ref().map(|info| {
                 sema.body_owner_token(
                     info.file_id,
@@ -1180,7 +1178,7 @@ fn analyze_anonymous_member(
             CompileError::without_span(ErrorKind::UndefinedFunction(member.name.to_string())),
         );
     };
-    let Some(method_info) = sema.method_info((struct_id, method_name)).cloned() else {
+    let Some(method_info) = endpoint_facts(&sema).method_info(struct_id, method_name) else {
         return fail(
             &sema,
             None,
@@ -1354,26 +1352,18 @@ pub(in crate::sema) fn materialize_argument_value(
     value: &crate::CanonicalArgumentValue<SemanticDefinitionToken, SemanticModuleToken>,
 ) -> Result<super::ConstValue, crate::SemanticBodyExportFailure> {
     use crate::CanonicalArgumentValue as V;
+    let facts = super::body_endpoint::endpoint_facts(sema);
     Ok(match value {
         V::Integer(value) => super::ConstValue::Integer(*value),
         V::Bool(value) => super::ConstValue::Bool(*value),
-        V::Type(value) => super::ConstValue::Type(materialize_instance_type(sema, value)?),
+        V::Type(value) => {
+            super::ConstValue::Type(super::body_endpoint::resolve_instance_type(&facts, value)?)
+        }
         V::Function(value) => {
             let FunctionInstanceKey::Definition(token) = value.as_ref() else {
                 return Err(crate::SemanticBodyExportFailure::MissingStableIdentity);
             };
-            let endpoint = sema
-                .stable_definition_endpoints
-                .get(token)
-                .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
-            let symbol = sema
-                .interner
-                .get(endpoint.name.as_ref())
-                .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
-            let symbol = sema
-                .functions_by_file_name
-                .get(&(FileId::new(endpoint.file), symbol))
-                .copied()
+            let symbol = super::body_endpoint::resolve_free_function_symbol(&facts, *token)
                 .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
             super::ConstValue::Function(symbol)
         }
@@ -1386,130 +1376,7 @@ pub(in crate::sema) fn materialize_instance_type(
     sema: &BodySema<'_>,
     value: &TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
 ) -> Result<Type, crate::SemanticBodyExportFailure> {
-    use crate::{AnonymousNominalKind as AK, NominalInstanceKey as N, TypeInstanceKey as T};
-    let missing = || crate::SemanticBodyExportFailure::MissingStableIdentity;
-    Ok(match value {
-        T::I8 => Type::I8,
-        T::I16 => Type::I16,
-        T::I32 => Type::I32,
-        T::I64 => Type::I64,
-        T::U8 => Type::U8,
-        T::U16 => Type::U16,
-        T::U32 => Type::U32,
-        T::U64 => Type::U64,
-        T::Bool => Type::BOOL,
-        T::Unit => Type::UNIT,
-        T::Never => Type::NEVER,
-        T::ComptimeType => Type::COMPTIME_TYPE,
-        T::BuiltinNominal { kind, name } => {
-            let symbol = sema.interner.get(name.as_ref()).ok_or_else(missing)?;
-            match kind {
-                AK::Struct => Type::new_struct(
-                    sema.builtin_structs
-                        .get(&symbol)
-                        .or_else(|| sema.generated_structs.get(&symbol))
-                        .copied()
-                        .ok_or_else(missing)?,
-                ),
-                AK::Enum => Type::new_enum(
-                    sema.builtin_enums
-                        .get(&symbol)
-                        .copied()
-                        .ok_or_else(missing)?,
-                ),
-            }
-        }
-        T::Nominal(N::Builtin { kind, name }) => {
-            let symbol = sema.interner.get(name.as_ref()).ok_or_else(missing)?;
-            match kind {
-                AK::Struct => Type::new_struct(
-                    sema.builtin_structs
-                        .get(&symbol)
-                        .or_else(|| sema.generated_structs.get(&symbol))
-                        .copied()
-                        .ok_or_else(missing)?,
-                ),
-                AK::Enum => Type::new_enum(
-                    sema.builtin_enums
-                        .get(&symbol)
-                        .copied()
-                        .ok_or_else(missing)?,
-                ),
-            }
-        }
-        T::Nominal(N::Named(token)) => {
-            let endpoint = sema
-                .stable_definition_endpoints
-                .get(token)
-                .ok_or_else(missing)?;
-            let symbol = sema
-                .interner
-                .get(endpoint.name.as_ref())
-                .ok_or_else(missing)?;
-            match endpoint.kind {
-                StableDefinitionKind::Struct => Type::new_struct(
-                    sema.structs_by_file_name
-                        .get(&(FileId::new(endpoint.file), symbol))
-                        .copied()
-                        .ok_or_else(missing)?,
-                ),
-                StableDefinitionKind::Enum => Type::new_enum(
-                    sema.enums_by_file_name
-                        .get(&(FileId::new(endpoint.file), symbol))
-                        .copied()
-                        .ok_or_else(missing)?,
-                ),
-                _ => return Err(missing()),
-            }
-        }
-        T::Nominal(N::Anonymous(identity)) => match identity.kind {
-            AK::Struct => Type::new_struct(
-                sema.anon_struct_identities
-                    .get(identity)
-                    .copied()
-                    .ok_or_else(missing)?,
-            ),
-            AK::Enum => Type::new_enum(
-                sema.anon_enum_identities
-                    .get(identity)
-                    .copied()
-                    .ok_or_else(missing)?,
-            ),
-        },
-        T::Array { element, len } => sema
-            .type_pool
-            .try_intern_array(materialize_instance_type(sema, element)?, *len)
-            .map_err(|_| missing())?,
-        T::Slice { name, .. } => {
-            let symbol = sema.interner.get(name.as_ref()).ok_or_else(missing)?;
-            Type::new_struct(
-                sema.generated_structs
-                    .get(&symbol)
-                    .copied()
-                    .ok_or_else(missing)?,
-            )
-        }
-        T::PtrConst(value) => sema
-            .type_pool
-            .try_intern_ptr_const(materialize_instance_type(sema, value)?)
-            .map_err(|_| missing())?,
-        T::PtrMut(value) => sema
-            .type_pool
-            .try_intern_ptr_mut(materialize_instance_type(sema, value)?)
-            .map_err(|_| missing())?,
-        T::Module(token) => {
-            let endpoint = sema
-                .stable_module_endpoints
-                .get(token)
-                .ok_or_else(missing)?;
-            let id = (0..sema.module_registry.len())
-                .map(|index| crate::types::ModuleId::new(index as u32))
-                .find(|id| sema.module_registry.get_def(*id).file_id.index() == endpoint.file)
-                .ok_or_else(missing)?;
-            Type::new_module(id)
-        }
-        T::GenericParameter(_) => return Err(missing()),
-    })
+    super::body_endpoint::resolve_instance_type(&super::body_endpoint::endpoint_facts(sema), value)
 }
 
 fn analyze_definition(
@@ -1518,7 +1385,7 @@ fn analyze_definition(
     token: SemanticDefinitionToken,
     interruption: Option<OneBodyInterruption>,
 ) -> OneBodyTransactionOutcome {
-    let Some(endpoint) = sema.stable_definition_endpoints.get(&token).cloned() else {
+    let Some(endpoint) = endpoint_facts(sema).definition_endpoint(token) else {
         return fail(
             sema,
             None,
@@ -1538,9 +1405,8 @@ fn analyze_definition(
                     )),
                 );
             };
-            let Some(&name) = sema
-                .functions_by_file_name
-                .get(&(FileId::new(endpoint.file), source_name))
+            let Some(name) =
+                endpoint_facts(sema).function_by_file_name(FileId::new(endpoint.file), source_name)
             else {
                 return fail(
                     sema,
@@ -1550,7 +1416,9 @@ fn analyze_definition(
                     )),
                 );
             };
-            let info = sema.functions[&name];
+            let info = endpoint_facts(sema)
+                .function_info(name)
+                .expect("functions_by_file_name resolved to a registered function");
             if info.is_generic || info.is_extern {
                 return OneBodyTransactionOutcome::NonTerminal {
                     reason: OneBodyNonTerminalReason::TypedIncomplete(
@@ -1558,10 +1426,8 @@ fn analyze_definition(
                     ),
                 };
             }
-            let source = sema.source_function_name(name);
-            let Some(declaration) = sema
-                .declaration_index
-                .first_free_function(source, Some(info.file_id))
+            let source = endpoint_facts(sema).source_function_name(name);
+            let Some(declaration) = endpoint_facts(sema).first_free_function(source, info.file_id)
             else {
                 return fail(
                     sema,
@@ -1670,9 +1536,8 @@ fn analyze_named_method(
             )),
         );
     };
-    let Some(&struct_id) = sema
-        .structs_by_file_name
-        .get(&(FileId::new(endpoint.file), owner_symbol))
+    let Some(struct_id) =
+        endpoint_facts(sema).struct_by_file_name(FileId::new(endpoint.file), owner_symbol)
     else {
         return fail(
             sema,
@@ -1689,16 +1554,14 @@ fn analyze_named_method(
             CompileError::without_span(ErrorKind::UndefinedFunction(endpoint.name.to_string())),
         );
     };
-    let Some(info) = sema.method_info((struct_id, method_name)).cloned() else {
+    let Some(info) = endpoint_facts(sema).method_info(struct_id, method_name) else {
         return fail(
             sema,
             None,
             CompileError::without_span(ErrorKind::UndefinedFunction(endpoint.name.to_string())),
         );
     };
-    let Some(&declaration) = sema
-        .named_method_declarations
-        .get(&(struct_id, method_name))
+    let Some(declaration) = endpoint_facts(sema).named_method_declaration(struct_id, method_name)
     else {
         return fail(
             sema,
@@ -1811,9 +1674,8 @@ fn analyze_named_destructor(
             )),
         );
     };
-    let Some(&struct_id) = sema
-        .structs_by_file_name
-        .get(&(FileId::new(endpoint.file), owner_symbol))
+    let Some(struct_id) =
+        endpoint_facts(sema).struct_by_file_name(FileId::new(endpoint.file), owner_symbol)
     else {
         return fail(
             sema,
@@ -1823,15 +1685,7 @@ fn analyze_named_destructor(
             )),
         );
     };
-    let Some(record) = sema
-        .declaration_index
-        .destructors()
-        .iter()
-        .find(|record| {
-            record.span.file_id.index() == endpoint.file && record.type_name == owner_symbol
-        })
-        .cloned()
-    else {
+    let Some(record) = endpoint_facts(sema).destructor(endpoint.file, owner_symbol) else {
         return fail(
             sema,
             None,
