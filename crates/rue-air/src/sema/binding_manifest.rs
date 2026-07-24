@@ -125,6 +125,7 @@ pub enum SemanticParameterMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemanticExportParameter {
+    pub name: Arc<str>,
     pub ty: SemanticExportType,
     pub mode: SemanticParameterMode,
     pub is_comptime: bool,
@@ -3066,8 +3067,9 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
             .iter()
             .zip(self.param_arena.modes(range))
             .zip(self.param_arena.comptime(range))
+            .zip(self.param_arena.names(range))
             .zip(&rir_params)
-            .map(|(((&ty, &mode), &is_comptime), rir)| {
+            .map(|((((&ty, &mode), &is_comptime), &name), rir)| {
                 use rue_rir::RirParamMode;
                 let mode = match mode {
                     RirParamMode::Normal => SemanticParameterMode::Value,
@@ -3075,6 +3077,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                     RirParamMode::Inout => SemanticParameterMode::Inout,
                 };
                 Ok(SemanticExportParameter {
+                    name: Arc::from(self.interner.resolve(&name)),
                     ty: convert(ty, rir.ty)?,
                     mode,
                     is_comptime,

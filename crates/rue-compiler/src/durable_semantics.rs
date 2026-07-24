@@ -336,6 +336,11 @@ pub enum DurableParameterMode {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DurableSemanticParameter {
+    /// The parameter's source name. Carried on the durable declaration so a
+    /// consumer that reconstructs a comptime type-constructor head from the
+    /// signature alone (the provider-driven analyzer's `SignatureFacts`) can
+    /// bind arguments by name without re-consulting the declaration shell.
+    pub name: Arc<str>,
     pub ty: DurableType,
     pub mode: DurableParameterMode,
     pub is_comptime: bool,
@@ -922,6 +927,7 @@ fn project_payload(
                 .iter()
                 .map(|parameter| {
                     Ok(rue_air::SemanticExportParameter {
+                        name: parameter.name.clone(),
                         ty: project_type(&parameter.ty, definitions, module_files)?,
                         mode: match parameter.mode {
                             DurableParameterMode::Value => SemanticParameterMode::Value,
@@ -1222,6 +1228,7 @@ pub(crate) fn convert_declaration_semantics(
                     .iter()
                     .map(|p| {
                         Ok(DurableSemanticParameter {
+                            name: p.name.clone(),
                             ty: ty(&p.ty, merged, definitions)?,
                             mode: match p.mode {
                                 SemanticParameterMode::Value => DurableParameterMode::Value,
@@ -1457,16 +1464,19 @@ mod tests {
                 payload: DurableDeclarationPayload::Callable {
                     parameters: Arc::from([
                         DurableSemanticParameter {
+                            name: Arc::from("T"),
                             ty: DurableType::ComptimeType,
                             mode: DurableParameterMode::Value,
                             is_comptime: true,
                         },
                         DurableSemanticParameter {
+                            name: Arc::from("value"),
                             ty: DurableType::GenericParameter(0),
                             mode: DurableParameterMode::Value,
                             is_comptime: false,
                         },
                         DurableSemanticParameter {
+                            name: Arc::from("dep"),
                             ty: DurableType::Module(dependency.clone()),
                             mode: DurableParameterMode::Value,
                             is_comptime: false,
@@ -1595,6 +1605,7 @@ mod tests {
     #[test]
     fn callable_parameter_order_is_semantic() {
         let parameter = |ty| DurableSemanticParameter {
+            name: Arc::from("p"),
             ty,
             mode: DurableParameterMode::Value,
             is_comptime: false,
@@ -1660,11 +1671,13 @@ mod tests {
             payload: DurableDeclarationPayload::Callable {
                 parameters: Arc::from([
                     DurableSemanticParameter {
+                        name: Arc::from("T"),
                         ty: DurableType::ComptimeType,
                         mode: DurableParameterMode::Value,
                         is_comptime: true,
                     },
                     DurableSemanticParameter {
+                        name: Arc::from("value"),
                         ty: DurableType::GenericParameter(1),
                         mode: DurableParameterMode::Value,
                         is_comptime: false,

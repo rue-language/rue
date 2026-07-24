@@ -316,6 +316,17 @@ pub trait BodyFactProvider {
     type Signature;
     /// The implementation's owned constant/comptime-result fact.
     type ConstComptime;
+    /// The implementation's owned comptime type/value argument (the durable type
+    /// and value algebra a comptime call binds). Named as associated types so
+    /// rue-air stays independent of the compiler's durable representation while a
+    /// consumer still passes owned arguments into
+    /// [`BodyFactProvider::reduce_comptime_call`].
+    type ComptimeType;
+    /// The implementation's owned comptime value argument.
+    type ComptimeValue;
+    /// The implementation's owned comptime-call reduction fact (the resolved
+    /// type-or-value a reduced constructor call yields).
+    type ComptimeCall;
     /// The implementation's owned anonymous-nominal fact.
     type AnonymousFacts;
     /// The implementation's owned producer-body fact.
@@ -374,6 +385,25 @@ pub trait BodyFactProvider {
 
     /// Exact constant/comptime result for the consulted declaration.
     fn const_comptime(&self, decl: &Self::DeclarationRef) -> Option<Self::ConstComptime>;
+
+    /// Reduce a comptime type-constructor call at the boundary: given the
+    /// resolved constructor declaration and its argument bindings (already
+    /// resolved to owned comptime types and values, keyed by the constructor's
+    /// own parameter names), answer the reduced type-or-value fact, or `None`
+    /// when the declaration does not resolve or does not reduce.
+    ///
+    /// This is the argument-parameterized analog of [`Self::const_comptime`]:
+    /// where `const_comptime` reduces a *nullary* declaration-time constant, this
+    /// reduces a call with bound type/value arguments. The reduction itself stays
+    /// in the implementation's query machinery; the caller supplies only the
+    /// selected head declaration and the bound arguments, so the boundary never
+    /// re-derives the argument list from syntax.
+    fn reduce_comptime_call(
+        &self,
+        decl: &Self::DeclarationRef,
+        type_arguments: &[(Arc<str>, Self::ComptimeType)],
+        value_arguments: &[(Arc<str>, Self::ComptimeValue)],
+    ) -> Option<Self::ComptimeCall>;
 
     /// Exact nominal well-formedness for the consulted declaration, or `None`
     /// when it is not a nominal.

@@ -331,6 +331,7 @@ fn every_declaration_payload_and_parameter_mode_imports_in_one_bounded_epoch() {
     ]
     .into_iter()
     .map(|(mode, is_comptime)| DurableSemanticParameter {
+        name: Arc::from("param"),
         ty: T::PtrConst(Box::new(T::Nominal(structure.clone()))),
         mode,
         is_comptime,
