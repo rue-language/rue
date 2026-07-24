@@ -12131,6 +12131,84 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
         }
     }
 
+    fn callable_symbol_method(&self, symbol: &str) -> Option<(ReceiverTypeIdentity, Arc<str>)> {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Cat;
+        // Split the rendered symbol into its `Type`-symbol prefix, the member
+        // name, and the receiver form. An associated function renders `Type::m`,
+        // a `self`-taking method `Type.m`; neither the file-qualified prefix nor
+        // an identifier contains a raw `:` or `.` (they mangle to `_3a` / `_2e`),
+        // so the separator is unambiguous and unique.
+        let (prefix, method, has_self) = if let Some((prefix, method)) = symbol.rsplit_once("::") {
+            (prefix, method, false)
+        } else if let Some((prefix, method)) = symbol.rsplit_once('.') {
+            (prefix, method, true)
+        } else {
+            return None;
+        };
+        if method.is_empty() {
+            return None;
+        }
+        // The prefix is `Type$file`; a bare prefix (no `$`) is a builtin /
+        // language-item / anonymous owner whose defining module is not recoverable
+        // from the symbol alone — deferred to r6 with the well-known facts.
+        let (type_name, file_component) = prefix.split_once('$')?;
+        if type_name.is_empty() || file_component.is_empty() {
+            return None;
+        }
+        let module_path = rue_air::unmangle_symbol_component(file_component)?;
+        let module = ModuleId::from_logical_path(&module_path).ok()?;
+
+        // Resolve the receiver nominal by its unqualified name in the recovered
+        // module (records the lookup-name edge, metered as a name lookup). The
+        // receiver is unique or the query fails closed: an absent name, an
+        // unavailable index, or an ambiguous nominal (a struct and enum sharing
+        // the name) all yield `None`, mirroring the epoch bucket that retains
+        // collisions so ambiguity never depends on iteration order.
+        let resolution =
+            self.lookup_unqualified(&module, rue_air::ProviderNamespace::ModuleItem, type_name);
+        let mut nominals = resolution.candidates().iter().filter(|candidate| {
+            matches!(
+                candidate.kind,
+                rue_air::ProviderDefinitionKind::Struct | rue_air::ProviderDefinitionKind::Enum
+            )
+        });
+        let nominal = nominals.next()?;
+        if nominals.next().is_some() {
+            return None;
+        }
+        let category = match nominal.kind {
+            rue_air::ProviderDefinitionKind::Struct => Cat::Struct,
+            rue_air::ProviderDefinitionKind::Enum => Cat::Enum,
+            _ => return None,
+        };
+        let receiver = ReceiverTypeIdentity::new(module.clone(), type_name, category);
+
+        // Select the unique member of that receiver name whose `self`-receiver
+        // classification (sourced from its signature) matches the symbol's form
+        // (records the member edges, metered as a method-candidate lookup).
+        let candidates = self.method_candidates(&receiver, method);
+        let mut matching = candidates
+            .iter()
+            .filter(|candidate| candidate.has_self_receiver == has_self);
+        let member = matching.next()?;
+        if matching.next().is_some() {
+            return None;
+        }
+
+        // Reproduce the epoch's `method_symbol` rendering (file-qualified via the
+        // same `mangle(normalize(path))` composition the type pool's
+        // `struct_symbol_name` uses) and require a byte-exact match, so a symbol
+        // the epoch could never have produced fails closed.
+        let file_component =
+            rue_air::mangle_symbol_component(&rue_air::normalize_module_path(module.as_str()));
+        let separator = if has_self { "." } else { "::" };
+        let rendered = format!("{type_name}${file_component}{separator}{method}");
+        if rendered != symbol {
+            return None;
+        }
+        Some((receiver, member.name.clone()))
+    }
+
     fn producer_body_facts(
         &self,
         decl: &crate::declaration_candidate::DeclarationCandidateKey,
@@ -20271,6 +20349,186 @@ mod tests {
                     || *family == "compiler.body-toolchain-demands"),
             "declaration facts observe only their exact backing terminals: {families:?}"
         );
+    }
+
+    #[test]
+    fn provider_callable_symbol_reverses_named_methods_match_epoch() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Cat;
+        use rue_air::BodyFactProvider;
+        // A self-taking method (`get`) and an associated function (`make`) on the
+        // same struct. Their AIR/codegen symbols are `Box$<file>.get` and
+        // `Box$<file>::make`; the op reverses each back to its `(receiver, method)`.
+        let source = "struct Box { value: i32, \
+             fn get(borrow self) -> i32 { self.value } \
+             fn make(start: i32) -> Box { Box { value: start } } }\n\
+             fn main() -> i32 { 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let m = ModuleId::from_logical_path("m.rue").unwrap();
+
+        // Independent epoch truth: the production frontend renders `Box`'s symbol
+        // through the type pool's own `struct_symbol_name` (a wholly separate path
+        // from the provider), so the symbols the op must reverse are authoritative,
+        // not self-produced.
+        let (_, semantic, _) = crate::test_support::test_frontend_snapshot(
+            &snapshot,
+            &crate::CompileOptions::default(),
+        )
+        .expect("frontend compiles");
+        let pool = semantic.type_pool();
+        let box_id = pool
+            .all_struct_ids()
+            .find(|id| pool.struct_def(*id).name == "Box")
+            .expect("Box struct exists");
+        let box_symbol = pool.struct_symbol_name(box_id);
+        // File-qualified, not bare: this is the rendering the op must reproduce.
+        assert!(
+            box_symbol.contains('$'),
+            "user nominal is file-qualified: {box_symbol}"
+        );
+        let get_symbol = format!("{box_symbol}.get");
+        let make_symbol = format!("{box_symbol}::make");
+
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+
+        let probes = {
+            let get = get_symbol.clone();
+            let make = make_symbol.clone();
+            let box_sym = box_symbol.clone();
+            move |provider: &CompilerBodyFactProvider<'_>| {
+                (
+                    // Unique self-method and unique associated function.
+                    provider.callable_symbol_method(&get),
+                    provider.callable_symbol_method(&make),
+                    // Absent: an unknown method name and an unknown receiver type.
+                    provider.callable_symbol_method(&format!("{box_sym}.absent")),
+                    provider.callable_symbol_method("Ghost$m_2erue.get"),
+                    // Wrong receiver form: `get` is a method, not an associated fn,
+                    // and `make` is an associated fn, not a method — each fails the
+                    // signature-sourced `has_self` check, never a guessed winner.
+                    provider.callable_symbol_method(&format!("{box_sym}::get")),
+                    provider.callable_symbol_method(&format!("{box_sym}.make")),
+                    // A bare (unqualified) symbol has no recoverable module.
+                    provider.callable_symbol_method("i32.get"),
+                )
+            }
+        };
+        let outcome =
+            database.probe_body_facts(revision, semantic_configuration(), "callable", probes);
+        let (get, make, absent_method, absent_type, get_as_assoc, make_as_method, bare) =
+            outcome.result;
+
+        let box_receiver = ReceiverTypeIdentity::new(m.clone(), "Box", Cat::Struct);
+        assert_eq!(get, Some((box_receiver.clone(), Arc::from("get"))));
+        assert_eq!(make, Some((box_receiver, Arc::from("make"))));
+        assert_eq!(absent_method, None);
+        assert_eq!(absent_type, None);
+        assert_eq!(get_as_assoc, None);
+        assert_eq!(make_as_method, None);
+        assert_eq!(bare, None);
+
+        // Edge-recording proof: the reversal observes only its exact backing
+        // terminals — the receiver name lookup and the member semantic-nucleus
+        // facts — recorded at materialization, exactly as the sibling ops do.
+        let families: std::collections::BTreeSet<&str> = outcome
+            .dependencies
+            .iter()
+            .map(|node| node.family())
+            .collect();
+        assert!(
+            families.contains("compiler.lookup-name"),
+            "the receiver lookup is observed: {families:?}"
+        );
+        assert!(
+            families
+                .iter()
+                .all(|family| *family == "compiler.lookup-name"
+                    || *family == "compiler.semantic-nucleus"),
+            "callable-symbol reversal observes only its backing terminals: {families:?}"
+        );
+    }
+
+    #[test]
+    fn provider_callable_symbol_file_qualification_distinguishes_siblings_and_fails_ambiguity() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Cat;
+        use rue_air::BodyFactProvider;
+        // Two same-named `Payload` types in different files each carry a `score`
+        // method. Their symbols differ ONLY in the file-qualified component, so a
+        // correct reversal recovers a different defining module for each — the
+        // property file-qualification exists to guarantee. A third module makes a
+        // name genuinely ambiguous (a struct and an enum share it), so that symbol
+        // reverses to nothing: the fail-closed multi-candidate path.
+        let payload = "pub struct Payload { value: i32, \
+             fn score(borrow self) -> i32 { self.value } }\n";
+        let snapshot = source_snapshot(
+            &[
+                (1, "/left.rue", "left.rue", payload),
+                (2, "/right.rue", "right.rue", payload),
+                (
+                    3,
+                    "/dup.rue",
+                    "dup.rue",
+                    "struct Dup { a: i32 }\nenum Dup { X }\n",
+                ),
+            ],
+            1,
+        );
+        let left = ModuleId::from_logical_path("left.rue").unwrap();
+        let right = ModuleId::from_logical_path("right.rue").unwrap();
+
+        // Build each sibling's symbol from the shared rendering primitive; the
+        // primitive itself is pinned against the epoch's own renderer by
+        // `provider_callable_symbol_reverses_named_methods_match_epoch`, so reusing
+        // it here isolates the property under test — that distinct file components
+        // recover distinct receivers.
+        let file_component = |module: &ModuleId| {
+            rue_air::mangle_symbol_component(&rue_air::normalize_module_path(module.as_str()))
+        };
+        let left_symbol = format!("Payload${}.score", file_component(&left));
+        let right_symbol = format!("Payload${}.score", file_component(&right));
+        let dup_symbol = format!(
+            "Dup${}.whatever",
+            file_component(&ModuleId::from_logical_path("dup.rue").unwrap())
+        );
+
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+
+        let probes = {
+            let left_symbol = left_symbol.clone();
+            let right_symbol = right_symbol.clone();
+            let dup_symbol = dup_symbol.clone();
+            move |provider: &CompilerBodyFactProvider<'_>| {
+                (
+                    provider.callable_symbol_method(&left_symbol),
+                    provider.callable_symbol_method(&right_symbol),
+                    provider.callable_symbol_method(&dup_symbol),
+                )
+            }
+        };
+        let outcome =
+            database.probe_body_facts(revision, semantic_configuration(), "siblings", probes);
+        let (left_result, right_result, dup_result) = outcome.result;
+
+        assert_eq!(
+            left_result,
+            Some((
+                ReceiverTypeIdentity::new(left.clone(), "Payload", Cat::Struct),
+                Arc::from("score"),
+            )),
+        );
+        assert_eq!(
+            right_result,
+            Some((
+                ReceiverTypeIdentity::new(right.clone(), "Payload", Cat::Struct),
+                Arc::from("score"),
+            )),
+        );
+        // The two symbols reverse to genuinely distinct receivers (distinct
+        // modules), never one collapsed answer.
+        assert_ne!(left_result, right_result);
+        // A name owned by two nominals is a multi-candidate: fail closed.
+        assert_eq!(dup_result, None);
     }
 
     #[test]

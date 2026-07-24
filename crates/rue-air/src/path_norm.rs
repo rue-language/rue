@@ -55,7 +55,8 @@ pub fn normalize_module_path(path: &str) -> String {
 ///
 /// Rue identifiers contain only ASCII alphanumerics and `_`; encoding every
 /// other byte (including `_` itself) as `_xx` keeps the result unambiguous.
-pub(crate) fn mangle_symbol_component(component: &str) -> String {
+/// Paired with [`unmangle_symbol_component`], its exact inverse.
+pub fn mangle_symbol_component(component: &str) -> String {
     let mut mangled = String::new();
     for byte in component.bytes() {
         match byte {
@@ -67,6 +68,43 @@ pub(crate) fn mangle_symbol_component(component: &str) -> String {
         }
     }
     mangled
+}
+
+/// Decode a machine-symbol component produced by [`mangle_symbol_component`]
+/// back to its original bytes, or `None` when `component` is not a well-formed
+/// mangling.
+///
+/// The encoding is injective: an alphanumeric byte stands for itself and every
+/// other byte is `_` followed by exactly two lowercase hex digits (including
+/// `_` itself, `_5f`). Decoding is therefore exact — a bare `_` not followed by
+/// two hex digits, or bytes that do not form valid UTF-8, could never have been
+/// emitted by the encoder, so they fail closed with `None`. Used by the
+/// callable-symbol reversal to recover a nominal's defining module path from the
+/// file-qualified component of its symbol without re-consulting the type pool.
+pub fn unmangle_symbol_component(component: &str) -> Option<String> {
+    let bytes = component.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            byte @ (b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z') => {
+                out.push(byte);
+                index += 1;
+            }
+            b'_' => {
+                let hex = component.get(index + 1..index + 3)?;
+                out.push(u8::from_str_radix(hex, 16).ok().filter(|_| {
+                    // Reject upper-case or `+`/`-`-prefixed hex the encoder never
+                    // emits, so the round trip is byte-exact in both directions.
+                    hex.bytes()
+                        .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+                })?);
+                index += 3;
+            }
+            _ => return None,
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 #[cfg(test)]
@@ -107,5 +145,31 @@ mod tests {
         assert_eq!(m("left/shared.rue"), "left_2fshared_2erue");
         assert_eq!(m("a_b"), "a_5fb");
         assert_ne!(m("a/b"), m("a_2fb"));
+    }
+
+    #[test]
+    fn unmangle_is_the_exact_inverse_of_mangle() {
+        use super::unmangle_symbol_component as um;
+        for path in [
+            "left/shared.rue",
+            "a_b",
+            "a/b",
+            "m.rue",
+            "pkg/nested/main.rue",
+            "../std/opt.rue",
+        ] {
+            assert_eq!(um(&m(path)).as_deref(), Some(path), "round trip of {path}");
+        }
+    }
+
+    #[test]
+    fn unmangle_rejects_malformed_components() {
+        use super::unmangle_symbol_component as um;
+        // A bare `_` with no hex pair, a truncated pair, and an upper-case pair
+        // the encoder never emits all fail closed rather than decode wrongly.
+        assert_eq!(um("a_"), None);
+        assert_eq!(um("a_2"), None);
+        assert_eq!(um("a_2E"), None);
+        assert_eq!(um("a_zz"), None);
     }
 }

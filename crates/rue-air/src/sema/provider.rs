@@ -429,6 +429,30 @@ pub trait BodyFactProvider {
     /// including absent, rejected, and ambiguous results.
     fn resolve_import(&self, module: &Self::ModuleRef, specifier: &str) -> ImportResolution;
 
+    /// Reverse a rendered callable symbol to the unique named method it names,
+    /// or `None`.
+    ///
+    /// This is the receiver-keyed inverse of the AIR/codegen symbol a named
+    /// method is rendered under (`Type.method` for a `self`-taking method,
+    /// `Type::method` for an associated function, file-qualified per the epoch's
+    /// `method_symbol` rules). It is the exact-provider analog of the epoch's
+    /// `named_method_by_callable_symbol` accessor: the sole consumer is import
+    /// reversal (`classify_static_call`), which turns a call symbol discovered in
+    /// reused/imported AIR back into the `(receiver, method)` dependency the body
+    /// took.
+    ///
+    /// **Fail-closed single-candidate contract**, observationally equivalent to
+    /// the epoch accessor on valid corpora (the epoch buckets by full symbol,
+    /// this query guards at receiver-name granularity; the inputs that would
+    /// separate them are rejected as duplicate definitions before analysis):
+    /// the answer is `Some` only when the symbol reverses to one named
+    /// method whose forward rendering reproduces the symbol byte for byte. An
+    /// absent name, an ambiguous receiver nominal (a symbol whose type name
+    /// resolves to more than one nominal), an ambiguous or absent method, and a
+    /// symbol whose forward re-render does not match are all `None` — the query
+    /// never guesses a winner. Winner-picking stays inside this point query.
+    fn callable_symbol_method(&self, symbol: &str) -> Option<(Self::ReceiverType, Arc<str>)>;
+
     /// Exact producer-body facts already required by the body.
     fn producer_body_facts(&self, decl: &Self::DeclarationRef) -> Option<Self::ProducerBodyFacts>;
 

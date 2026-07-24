@@ -360,6 +360,86 @@ id-minting `type_pool`. r4 still owns the full cost of the pool that mints epoch
 
 ---
 
+## Rider: r3→r4 fold, r4 sub-slice map, and the pool keystone (recorded landing r4a-1)
+
+**(a) The r3→r4 fold.** r3 (endpoint-seam call/method/operator/module-member ProviderFacts) and r4
+(aggregates/patterns/endpoints ProviderFacts) are folded into one **r4** effort. Rationale: r1b's
+`SemanticCallResolutionProvider` seam is **epoch-concrete**, not provider-generic like the
+type-syntax seam — it drives the non-generic value/endpoint analyzer whose answers are expressed in
+materialized-identity terms (`StructId`/`Type`/`FunctionInfo`). A call ProviderFacts has no
+pool-free generic domain to resolve into the way `resolve_semantic_type_syntax` resolves into
+`DurableType`: the call facts are inseparable from the id-minting pool that r2's pool-free metadata
+deliberately withholds. Splitting "call resolution" from "endpoint/pool assembly" would draw a seam
+through the middle of one indivisible act, so r3 and r4 land together as r4.
+
+**(b) r4 sub-slice map.** r4 lands as byte-identical re-points (each proven on corpus + oracle
+before the next), NOT one envelope:
+- **r4a-1** (this slice): the `callable_symbol_method` boundary op — the keyed reverse of the epoch's
+  `named_method_by_callable_symbol`, the sole missing symbol→method surface. Ships independent of the
+  pool.
+- **r4a-2a**: nominal / type-identity pool — the overlay-owned id-minting `type_pool` r2 withheld,
+  minting `StructId`/`Type` from r2's durable metadata.
+- **r4a-2b**: callable identities / `ParamRange` assembly (`FunctionInfo`/`MethodInfo`-equivalent)
+  on top of r5's signatures.
+- **r4a-2c**: the RIR-index answers (`first_free_function`/`destructors`/`named_method_declarations`
+  → body key) the endpoint seam consumes.
+- **r4b-1/2/3**: the ProviderFacts impls per family (calls, aggregates/patterns, endpoints) driven by
+  r4a's pool, each a differential re-point of one family.
+
+**(c) The pool keystone.** Published artifacts are durable-keyed **at export**
+(`semantic_body_export.rs` is the single funnel), so the r4a pool may mint **internally-consistent**
+ids with correct durable metadata — it need NOT reproduce epoch `StructId`/`Type` NUMBERING. Byte
+identity is a property of the exported durable keys, not of the transient pool indices, so the
+differential compares durable structure and materialized metadata (as r2 already does), never a
+pool-relative index. r4a-1 is the first concrete instance: its answer is a durable-keyed
+`(ReceiverType, method)` — a `ReceiverTypeIdentity` (module + type name + category) plus the owned
+method name — never a `StructId`, exactly because the pool that would mint one is r4a-2a's job.
+
+**(d) Builtin / slice name facts deferred to r6.** r4a-1's reverse covers **user named methods**: a
+file-qualified symbol `Type$file.method` / `Type$file::method` whose defining module is recoverable
+from the mangled component. A **bare** symbol (builtin / language-item / anonymous owner — no `$`)
+carries no recoverable module and is returned `None`, deferred to r6 with the well-known `Option`
+facts (the same slice that ports `install_well_known_option_types`). This matches the epoch: for an
+import-free, string-free corpus the epoch's `named_callable_methods_by_symbol` contains exactly the
+user methods, so the keyed reversal is complete over its differential scope.
+
+**(e) Open Steve-level question (does not block r4a-1).** Whether import reversal is ultimately
+**retired** in favor of recording the `(receiver, method)` dependency **at resolution** (so no
+symbol ever needs reversing), or **kept** as a keyed op, is an open design question. r4a-1 ships the
+keyed op **either way**: it is the honest provider analog of the epoch accessor the current consumer
+(`classify_static_call`) needs, and it costs nothing if the record-at-resolution direction later
+subsumes it — the op simply loses its caller, exactly like an EpochFacts impl at the flip.
+
+**Rendering-parity note (source-verified while landing r4a-1).** The op reproduces
+`TypeInternPool::struct_symbol_name` exactly, which under ADR-0066 / RUE-1089 is now **unconditional**
+file-qualification for user nominals (`{name}${mangle(normalize(module_path))}`), not the older
+RUE-571 "qualify only on ambiguity" the §1 tables paraphrase — the exemptions (builtin / language
+item / `__anon_*`) keep their bare names. The reversal recovers the module by inverting the mangling
+(`unmangle_symbol_component`, the exact inverse now paired with `mangle_symbol_component`, both public
+in rue-air) and **re-renders forward** to require a byte-exact match before answering, so a symbol the
+epoch could never have produced fails closed. Because the boundary is keyed and exposes no
+program-wide method enumeration, the op is realized as a per-symbol keyed reversal (recover receiver
+from the symbol → confirm the nominal and member via the existing `lookup_unqualified` /
+`method_candidates` point queries, recording their edges) rather than a materialized whole-program
+index; that is the boundary-honest form of "a reverse index built from the durable declaration set,"
+and it fails closed on absent, ambiguous-receiver, wrong-`self`-form, and non-matching-render inputs.
+
+**r4a-1 review carry-forwards (recorded obligations, not defects).**
+- **Bare-owner reversal divergence → r4b differential xfail.** The epoch's callable index contains
+  BARE symbols for builtin / lang-item / anonymous owners (`struct_symbol_name` exempts them from
+  file-qualification), and imported bodies calling e.g. `StrBuf` methods reverse through them; the
+  r4a-1 op refuses bare symbols by design pending r6's well-known/builtin-name facts. r4b's
+  differential MUST record this class as an explicit known-divergence (xfail) tied to the r6 port,
+  and pin at least one case where the epoch genuinely answers a bare symbol the op refuses — the
+  current tests only exercise bare symbols the epoch also refuses, which masks the gap.
+- **Provider edges are the post-flip truth.** The epoch's index lookup records no body edges; the
+  op records the lookup-name and semantic-nucleus edges it genuinely consults. rFinal's
+  edge-differential must treat the RICHER provider-era edge set as the new truth after the flip
+  (the finer dependencies are the more-correct incremental behavior), not force the op to suppress
+  edges to match the epoch's index-masked footprint.
+
+---
+
 ## 4. RISKS (top 5 for this rewire)
 
 | # | Risk | Mitigation |
