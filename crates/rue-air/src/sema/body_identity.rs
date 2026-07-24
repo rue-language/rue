@@ -492,6 +492,39 @@ where
         &self.param_arena
     }
 
+    /// Freeze the pool's containment metadata — the pool-side `freeze()`
+    /// hook the module docs defer to the slice that wires the pool under body
+    /// analysis (RUE-1091 rFinal). Called at the same point production freezes
+    /// (`Sema::finalize_containment_metadata` at the end of declaration
+    /// registration, before drop/ownership reads), after every nominal the body
+    /// consumes has been minted. `None` on a containment cycle (fail-closed,
+    /// exactly as production surfaces the cycle as an error). Until this is
+    /// called, [`Self::type_needs_drop`] / [`Self::type_carries_linear`] answer
+    /// `None` — the un-finalized state production's shell/completion pair also
+    /// leaves before its freeze.
+    pub(in crate::sema) fn finalize_containment_metadata(&self) -> Option<()> {
+        self.type_pool
+            .finalize_containment_metadata()
+            .ok()
+            .map(|_| ())
+    }
+
+    /// Whether a minted type transitively needs drop, or `None` before
+    /// [`Self::finalize_containment_metadata`] froze the containment graph.
+    /// NOTE: the pool registers every nominal with `destructor: None` (drop
+    /// metadata is deliberately out of the pool's minting scope — module docs),
+    /// so this answers the containment join over the pool's own registrations;
+    /// destructor-symbol parity is flip work.
+    pub(in crate::sema) fn type_needs_drop(&self, ty: Type) -> Option<bool> {
+        self.type_pool.try_type_needs_drop(ty)
+    }
+
+    /// Whether a minted type transitively carries a linear component, or `None`
+    /// before [`Self::finalize_containment_metadata`].
+    pub(in crate::sema) fn type_carries_linear(&self, ty: Type) -> Option<bool> {
+        self.type_pool.try_type_carries_linear(ty)
+    }
+
     /// Resolve an interned parameter/name symbol to its source string. The
     /// pool's [`Spur`]s are pool-interner-relative (like its pool indices), so
     /// name parity is asserted through resolved strings, never raw symbols.
@@ -2357,6 +2390,37 @@ mod tests {
         );
         assert!(after_first > before, "first consult minted an identity");
         assert_eq!(render(pool.type_pool(), first), "Point");
+    }
+
+    #[test]
+    fn containment_freeze_hook_gates_drop_and_linearity_reads() {
+        // The rFinal seam hook (r4a-2a rider): drop/linearity reads answer
+        // `None` until the pool-side freeze runs, then answer the containment
+        // join over the pool's own registrations. Destructor metadata stays out
+        // of the pool's minting scope, so the join sees `destructor: None`.
+        let mut pool = pool([(
+            0,
+            named(
+                "Point",
+                "pkg/geom.rue",
+                true,
+                struct_body(vec![("x", DType::I64), ("y", DType::I64)], false, false),
+            ),
+        )]);
+        let ty = pool.resolve(&DType::Nominal(0)).unwrap();
+        assert_eq!(
+            pool.type_needs_drop(ty),
+            None,
+            "un-finalized before the freeze, as production leaves it"
+        );
+        assert_eq!(pool.type_carries_linear(ty), None);
+        pool.finalize_containment_metadata()
+            .expect("no containment cycle");
+        assert_eq!(pool.type_needs_drop(ty), Some(false));
+        assert_eq!(pool.type_carries_linear(ty), Some(false));
+        // Repeat freeze is a pure re-finalization, not an error.
+        pool.finalize_containment_metadata()
+            .expect("repeat freeze is fine");
     }
 
     #[test]
