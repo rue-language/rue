@@ -272,8 +272,9 @@ use them instead of a plain reference.
 All issue tracking lives in Linear under team Rue (`RUE-NN`). Do not create a
 parallel Markdown backlog.
 
-- `Todo`: actionable without a maintainer design decision. Autonomous work may
-  claim unblocked Todo issues.
+- `Todo`: approved and actionable without a maintainer design decision. A Todo
+  issue may still wait on an explicit blocker; autonomous work may claim only
+  unblocked Todo issues.
 - `Backlog`: requires design or discussion. Analyze when asked, but do not make
   the decision or begin implementation autonomously.
 - Read issue comments before acting; maintainers often refine scope there.
