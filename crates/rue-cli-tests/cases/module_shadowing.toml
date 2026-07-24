@@ -1,0 +1,92 @@
+[section]
+id = "cli.module_shadowing"
+name = "Local binding shadowing a same-named module binding in a module-qualified position"
+description = """
+A file-level module binding `const helper = @import("helper.rue");` and a
+function-local `let helper = 5;` share the name `helper`. When the local is in
+scope, a module-qualified use of that name — a member call `helper.value()` or a
+struct-literal head `helper.Foo { .. }` — resolves against the LOCAL, not the
+module binding: the local wins and the module-qualified read fails against the
+local's (non-module) type. Removing the local restores ordinary module-member
+resolution.
+
+This pins today's production behavior exactly (RUE-1091 slice r1b; promised in
+the r1c review). It exists so the aggregate-path receiver fall-through
+(`resolve_aggregate_module_ref`, introduced by the parallel r1c aggregate slice
+and NOT present in this tree) can never be silently re-unified with the call /
+visibility flavor: any future change that makes the shadowed module binding win
+in either position must update these assertions consciously rather than drift.
+
+NOTE (flagged for reconciliation with the r1c reviewer): the r1b coordinator's
+brief described current production as "the non-module local falls through and the
+MODULE binding resolves". In this tree that is NOT what happens for either the
+call form or the struct-literal form — the local shadows and the module-qualified
+read is a type error (recorded below). The control case shows the module binding
+resolving only when no local shadows it.
+"""
+
+# The module-qualified CALL form (family 1C, call/method resolution). With a
+# local `helper: i32` in scope, `helper.value()` is a method call on i32, not a
+# module-member call; the module function `value` is not reached.
+[[case]]
+name = "module_qualified_call_resolves_to_shadowing_local"
+description = "`helper.value()` under `let helper = 5;` is a call on the local i32, not a module member."
+compile_fail = true
+error_contains = ["E0413", "no method named 'value'", "i32"]
+files = [
+    { path = "main.rue", source = """
+const helper = @import("helper.rue");
+
+fn main() -> i32 {
+    let helper = 5;
+    return helper.value();
+}
+""" },
+    { path = "helper.rue", source = """
+pub fn value() -> i32 { 7 }
+""" },
+]
+
+# The module-qualified STRUCT-LITERAL head form (aggregate path). With a local
+# `helper: i32` in scope, `helper.Foo { .. }` treats `helper` as the local value,
+# so the aggregate head sees `i32` where it expected a module.
+[[case]]
+name = "module_qualified_struct_literal_head_resolves_to_shadowing_local"
+description = "`helper.Foo { .. }` under `let helper = 5;` reads the local i32, not the module type."
+compile_fail = true
+error_contains = ["E0206", "expected module", "i32"]
+files = [
+    { path = "main.rue", source = """
+const helper = @import("helper.rue");
+
+fn main() -> i32 {
+    let helper = 5;
+    let f = helper.Foo { v: 9 };
+    return f.v;
+}
+""" },
+    { path = "helper.rue", source = """
+pub struct Foo {
+    v: i32,
+}
+""" },
+]
+
+# Control: with no local shadow, the module-member call resolves normally and the
+# program returns the module function's result.
+[[case]]
+name = "module_qualified_call_resolves_to_module_without_shadow"
+description = "Without the local, `helper.value()` resolves to the imported module function."
+files = [
+    { path = "main.rue", source = """
+const helper = @import("helper.rue");
+
+fn main() -> i32 {
+    return helper.value();
+}
+""" },
+    { path = "helper.rue", source = """
+pub fn value() -> i32 { 7 }
+""" },
+]
+exit_code = 7

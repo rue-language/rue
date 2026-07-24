@@ -35,6 +35,7 @@ mod anon_structs;
 mod binding_manifest;
 mod body_endpoint;
 mod builtins;
+mod call_resolution;
 mod comptime_eval;
 mod context;
 mod control_flow;
