@@ -12,6 +12,12 @@ filegroup(
     visibility = ["PUBLIC"],
 )
 
+filegroup(
+    name = "body-analysis-capability-inventory-sources",
+    srcs = glob(["src/**/*.rs"]),
+    visibility = ["PUBLIC"],
+)
+
 # Per-target runtime staticlibs are mapped into src/ so the compiler can embed
 # all supported runtimes and select the matching archive at link time.
 _RUNTIME_MAPPED_SRCS = {

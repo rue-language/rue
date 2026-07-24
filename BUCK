@@ -477,6 +477,24 @@ sh_test(
     },
 )
 
+sh_test(
+    name = "body-analysis-capability-inventory-validation",
+    test = "scripts/validate-body-analysis-capabilities.py",
+    args = [
+        "--source", "rue-air=$(location //crates/rue-air:body-analysis-capability-inventory-sources)",
+        "--source", "rue-compiler=$(location //crates/rue-compiler:body-analysis-capability-inventory-sources)",
+    ],
+)
+
+sh_test(
+    name = "body-analysis-capability-inventory-tool-tests",
+    test = "scripts/test-body-analysis-capabilities.py",
+    resources = ["scripts/validate-body-analysis-capabilities.py"],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
 test_suite(
     name = "payload-ownership-compile-fail-tests",
     tests = ["//crates/rue-rir:rue-rir[doc]"],
