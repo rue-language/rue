@@ -486,11 +486,10 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     /// fallback namespace.
     fn stable_definition_symbol_component(&self, token: &crate::SemanticDefinitionToken) -> String {
         match self.stable_definition_endpoints.get(token) {
-            Some(endpoint) => format!(
-                "D\u{1}{}\u{1}{}\u{1}{}\u{1}{}",
+            Some(endpoint) => crate::stable_digest::stable_definition_component(
                 self.stable_logical_module_component(endpoint.file),
-                endpoint.name,
-                endpoint.owner.as_deref().unwrap_or(""),
+                &endpoint.name,
+                endpoint.owner.as_deref(),
                 endpoint.kind as u8,
             ),
             None => format!("d\u{1}{}\u{1}{}", token.issuer(), token.slot()),
@@ -502,9 +501,8 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     /// `stable_definition_symbol_component`.
     fn stable_module_symbol_component(&self, token: &crate::SemanticModuleToken) -> String {
         match self.stable_module_endpoints.get(token) {
-            Some(endpoint) => format!(
-                "M\u{1}{}",
-                self.stable_logical_module_component(endpoint.file)
+            Some(endpoint) => crate::stable_digest::stable_module_component(
+                self.stable_logical_module_component(endpoint.file),
             ),
             None => format!("m\u{1}{}\u{1}{}", token.issuer(), token.slot()),
         }

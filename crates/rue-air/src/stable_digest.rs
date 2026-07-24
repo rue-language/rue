@@ -47,6 +47,38 @@ impl Hasher for StableFnv1a128 {
     }
 }
 
+/// The stable-content string of one INSTALLED definition endpoint:
+/// `D\u{1}{module_path}\u{1}{name}\u{1}{owner}\u{1}{kind}`, with an absent
+/// owner rendered as the empty string.
+///
+/// This is the single assembly of the definition-component format both
+/// relocation paths feed into [`stable_anonymous_identity_digest`]: the
+/// semantic epoch's `stable_definition_symbol_component` (`anon_structs.rs`,
+/// installed-endpoint arm) and the flip-era durable adapter that formats the
+/// same four parts from a durable definition key. Every byte here is
+/// digest-critical — two paths spelling the same producer must hash the same
+/// content. The epoch's session-local `d\u{1}…` fallback is a separate,
+/// deliberately non-durable namespace and is not assembled here.
+pub fn stable_definition_component(
+    module_path: &str,
+    name: &str,
+    owner: Option<&str>,
+    kind: u8,
+) -> String {
+    format!(
+        "D\u{1}{module_path}\u{1}{name}\u{1}{}\u{1}{kind}",
+        owner.unwrap_or("")
+    )
+}
+
+/// The stable-content string of one INSTALLED module endpoint:
+/// `M\u{1}{module_path}`. The module analog of
+/// [`stable_definition_component`], shared by the same two relocation paths;
+/// the epoch's session-local `m\u{1}…` fallback is not assembled here.
+pub fn stable_module_component(module_path: &str) -> String {
+    format!("M\u{1}{module_path}")
+}
+
 /// Computes the canonical digest of a stable-content anonymous nominal key.
 ///
 /// Callers must first relocate any session-local definition and module tokens
@@ -65,7 +97,9 @@ mod tests {
 
     use rue_rir::{RirStructuralAnchor, RirStructuralPathSegment};
 
-    use super::stable_anonymous_identity_digest;
+    use super::{
+        stable_anonymous_identity_digest, stable_definition_component, stable_module_component,
+    };
     use crate::{
         AnonymousNominalKey, AnonymousNominalKind, CanonicalArgumentValue, CanonicalArguments,
         StableProducerId,
@@ -94,5 +128,25 @@ mod tests {
             stable_anonymous_identity_digest(&identity),
             0xdf10_a209_9a1d_9f9b_e7ee_009c_9e2d_4bfd
         );
+    }
+
+    /// The installed-endpoint component encodings, pinned byte-for-byte: the
+    /// `D`/`M` formats are digest inputs shared by the epoch and the durable
+    /// adapter, so any byte change here is an identity break, not a refactor.
+    #[test]
+    fn stable_symbol_component_encodings_are_pinned() {
+        // Owner-absent definition: the owner slot renders as the empty string
+        // between its two separators.
+        assert_eq!(
+            stable_definition_component("pkg/m.rue", "make", None, 3),
+            "D\u{1}pkg/m.rue\u{1}make\u{1}\u{1}3"
+        );
+        // Owner-present definition (an owned method / associated definition).
+        assert_eq!(
+            stable_definition_component("pkg/m.rue", "get", Some("Holder"), 4),
+            "D\u{1}pkg/m.rue\u{1}get\u{1}Holder\u{1}4"
+        );
+        // Module component.
+        assert_eq!(stable_module_component("pkg/m.rue"), "M\u{1}pkg/m.rue");
     }
 }

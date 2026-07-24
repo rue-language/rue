@@ -12970,16 +12970,18 @@ impl<'p, 'o, 'db>
     > {
         // r5a tripwire flip: reduction runs through the argument-parameterized
         // comptime-call boundary op (part 2). A reduction whose result is (or
-        // structurally contains) an anonymous nominal stays deferred — the overlay
-        // cannot yet mint that identity (r4/r6) — so the differential records it as
-        // an honest gap rather than a silent divergence.
+        // structurally contains) an anonymous nominal stays deferred in the
+        // type-syntax path (RUE-1091 r6b: the endpoint pool mints the identity, but
+        // the anonymous reduction result is a body-level durable value with no
+        // declaration-level cross-path truth), so the differential records it as an
+        // honest gap rather than a silent divergence.
         match SignatureFacts::new(self.provider).reduce_fact(head, type_arguments, value_arguments)
         {
             SignatureReduceOutcome::Reduced(result) => Ok(Some(result)),
             SignatureReduceOutcome::DidNotReduce => Ok(None),
             SignatureReduceOutcome::DeferredAnonymous => Err(
                 rue_air::SemanticProviderError::Failure(ProviderTypeFactsFailure::Deferred(
-                    "comptime call reducing to an anonymous nominal (r4/r6)",
+                    "comptime call reducing to an anonymous nominal (body-level durable value)",
                 )),
             ),
         }
@@ -13021,9 +13023,11 @@ pub(crate) struct SignatureFacts<'p, 'db> {
     provider: &'p CompilerBodyFactProvider<'db>,
 }
 
-/// Whether a durable type is, or structurally contains, an anonymous nominal —
-/// the identity the overlay cannot yet mint (RUE-1091 r4/r6). A comptime call
-/// reducing to such a type is an honest r5a deferral, not a divergence.
+/// Whether a durable type is, or structurally contains, an anonymous nominal.
+/// A comptime call reducing to such a type is deferred in the TYPE-SYNTAX path
+/// (the anonymous reduction result is a body-level durable value production's
+/// declaration binder rejects exporting); the endpoint pool mints the identity
+/// itself (RUE-1091 r6b).
 #[cfg(test)]
 fn durable_type_uses_anonymous_nominal(ty: &crate::DurableType) -> bool {
     use crate::DurableType as T;
@@ -13038,8 +13042,8 @@ fn durable_type_uses_anonymous_nominal(ty: &crate::DurableType) -> bool {
 }
 
 /// The outcome of a boundary comptime-call reduction: a reduced non-anonymous
-/// type or value, an anonymous-nominal result deferred to r4/r6, or a head that
-/// did not reduce.
+/// type or value, an anonymous-nominal result deferred in the type-syntax path,
+/// or a head that did not reduce.
 #[cfg(test)]
 enum SignatureReduceOutcome {
     Reduced(rue_air::SemanticComptimeCallResult<crate::DurableType, crate::DurableConstValue>),
@@ -13217,6 +13221,17 @@ impl<'p, 'db> SignatureFacts<'p, 'db> {
             .reduce_comptime_call(&head.key, type_arguments, value_arguments)
         {
             None => SignatureReduceOutcome::DidNotReduce,
+            // A reduction whose result is (or structurally contains) an anonymous
+            // nominal stays deferred in the TYPE-SYNTAX path. RUE-1091 r6b: the
+            // endpoint pool DOES mint the anonymous identity
+            // (`BodyIdentityPool::find_or_create_anon`, proven cross-path in
+            // `provider_endpoint_facts_anonymous_arm_mints_after_registration`),
+            // but the anonymous reduction result is a BODY-level durable value —
+            // the production DECLARATION binder rejects exporting it
+            // (`AnonymousNominalType`), so the type-syntax resolution has no
+            // declaration-level cross-path truth to validate against and stays a
+            // documented gap here (owner: the body-level anonymous type-syntax
+            // resolution follow-up).
             Some(P::Type(ty)) if durable_type_uses_anonymous_nominal(&ty) => {
                 SignatureReduceOutcome::DeferredAnonymous
             }
@@ -20045,16 +20060,25 @@ mod tests {
     // later slice that adds the fact flips the arm deliberately.
     //   - BuiltinNominal `Str(N)`: a generated fixed-capacity struct whose durable
     //     identity is a generated-struct classification (`export_type_local`
-    //     rejects it as a `ForeignLocalType`), so it lands with the generated /
-    //     anonymous family → r6b, not the pure name facts r6a flips.
+    //     rejects it as a `ForeignLocalType`). RUE-1091 r6b MINTS it in the pool
+    //     (`BodyIdentityPool::get_or_create_str_fixed`), but the TYPE-SYNTAX
+    //     resolution to that durable identity still needs the generated-struct
+    //     classification — deferred here (owner: Str(N) type-syntax classification).
     //   - AnonymousNominal: produced by a body / a comptime call reducing to an
-    //     anonymous struct (`Pair()` below), materialized in r6b.
+    //     anonymous struct (`Pair()` below). RUE-1091 r6b MINTS it in the pool
+    //     (`find_or_create_anon`, proven cross-path in
+    //     `provider_endpoint_facts_anonymous_arm_mints_after_registration`), but the
+    //     anonymous reduction result is a body-level durable value the production
+    //     declaration binder rejects exporting (`AnonymousNominalType`), so the
+    //     type-syntax resolution stays deferred here (owner: body-level anonymous
+    //     type-syntax resolution).
     //   - Module / GenericParameter: not reachable as a resolved type-syntax leaf.
     // `str` and slice `[T]` are NO LONGER gaps — r6a flipped them (see
     // `provider_type_facts_builtin_str_and_slice_names_match_epoch`).
     // The comptime type-call arm itself is NO LONGER a gap — r5a flipped it (see
     // `provider_type_facts_comptime_calls_match_epoch`); only the anonymous-nominal
-    // RESULT of such a call is still deferred, and that deferral is pinned here.
+    // RESULT of such a call is still deferred at the type-syntax boundary (the pool
+    // mints the identity), and that deferral is pinned here.
     #[test]
     fn provider_type_facts_deferred_shapes_are_documented_gaps() {
         let source = "pub struct Point { x: i32 }\n\
@@ -20065,17 +20089,30 @@ mod tests {
         let mut database = RevisionedQueryDatabase::default();
         let revision = revision_for(&mut database, &snapshot);
 
-        // `Str(8)`: a generated fixed-capacity struct, deferred to r6b (see above).
-        // `Pair()`: the comptime-call op reduces it (r5a), but its result is an
-        // ANONYMOUS nominal the overlay cannot yet mint, so `reduce_fact` returns
-        // `DeferredAnonymous` and the resolution stays `None` — an honest r6b gap,
-        // not the "no comptime-call op" gap r2 recorded.
+        // Two type-syntax resolutions the POOL keystone mints but whose
+        // declaration-level type-syntax resolution stays deferred in this slice:
+        //  - `Str(8)`: a generated fixed-capacity string struct whose durable
+        //    identity is a generated-struct classification (`export_type_local`
+        //    rejects it as a `ForeignLocalType`). The pool mints it
+        //    (`BodyIdentityPool::get_or_create_str_fixed`, r6b); the type-syntax
+        //    resolution to that durable identity needs the generated-struct
+        //    classification the r6a report deferred (owner: the Str(N) type-syntax
+        //    classification follow-up).
+        //  - `Pair()`: reduces to an ANONYMOUS nominal. The pool mints that
+        //    identity (`find_or_create_anon`, proven cross-path in
+        //    `provider_endpoint_facts_anonymous_arm_mints_after_registration`), but
+        //    the anonymous reduction result is a BODY-level durable value the
+        //    production declaration binder rejects exporting (`AnonymousNominalType`),
+        //    so the type-syntax resolution has no declaration-level cross-path
+        //    truth and stays deferred here (owner: body-level anonymous type-syntax
+        //    resolution follow-up).
         for deferred in ["Pair()", "Str(8)"] {
             let (resolved, _m, _d) =
                 resolve_type_via_provider(&database, revision, &scope, deferred, None);
             assert_eq!(
                 resolved, None,
-                "`{deferred}` is a documented deferral and must not resolve yet"
+                "`{deferred}` type-syntax resolution is a documented deferral (the pool mints it; \
+                 the type-syntax resolution stays deferred)"
             );
         }
 
@@ -20682,6 +20719,8 @@ mod tests {
     /// pool consults it on demand (dedup / poison), the O(consumed) shape.
     struct DurableDeclSource {
         by_key: HashMap<StableDefinitionKey, crate::durable_semantics::DurableDeclarationSemantic>,
+        anon_by_identity:
+            HashMap<crate::AnonymousNominalKey, crate::durable_semantics::DurableAnonymousNominal>,
     }
 
     impl DurableDeclSource {
@@ -20690,7 +20729,89 @@ mod tests {
         ) -> Self {
             Self {
                 by_key: decls.iter().map(|d| (d.key.clone(), d.clone())).collect(),
+                anon_by_identity: HashMap::new(),
             }
+        }
+
+        /// Seed the durable anonymous nominals the pool mints from (RUE-1091 r6b).
+        /// The durable anonymous universe is keyed by the CANONICAL producer form
+        /// (the `DurableAnonymousSource` contract — the pool collapses its
+        /// incoming key on entry and consults shapes under that form), so the
+        /// adapter indexes each nominal by the shared collapse rather than its
+        /// as-projected identity: the declaration-SIGNATURE projection retains an
+        /// empty-argument specialization wrapper production body-export does not.
+        fn with_anonymous_nominals(
+            mut self,
+            anonymous: &[crate::durable_semantics::DurableAnonymousNominal],
+        ) -> Self {
+            self.anon_by_identity = anonymous
+                .iter()
+                .map(|nominal| {
+                    (
+                        nominal.identity.with_canonical_producer().into_owned(),
+                        nominal.clone(),
+                    )
+                })
+                .collect();
+            self
+        }
+    }
+
+    /// Relocate a durable `StableDefinitionKey` to the exact stable-symbol content
+    /// the epoch's `stable_definition_symbol_component` (rue-air `anon_structs.rs`)
+    /// emits for its installed endpoint, so the pool and the epoch spell the same
+    /// `__anon_*_{digest}` name (RUE-1091 r6b). The durable key carries the module
+    /// logical path, name, owner NAME, and kind — the same four parts the epoch's
+    /// endpoint carries — fed to the ONE shared format assembly
+    /// (`rue_air::stable_digest::stable_definition_component`) the epoch also
+    /// renders through.
+    fn durable_definition_symbol_component(key: &StableDefinitionKey) -> String {
+        rue_air::stable_digest::stable_definition_component(
+            key.module().logical_path(),
+            key.name(),
+            key.owner().map(|owner| owner.name()),
+            key.kind() as u8,
+        )
+    }
+
+    fn durable_module_symbol_component(module: &ModuleId) -> String {
+        rue_air::stable_digest::stable_module_component(module.logical_path())
+    }
+
+    fn durable_anonymous_shape(
+        shape: &crate::durable_semantics::DurableAnonymousNominalShape,
+    ) -> rue_air::DurableAnonymousShape<StableDefinitionKey, ModuleId> {
+        use crate::durable_semantics::DurableAnonymousNominalShape as S;
+        match shape {
+            S::Struct { fields, methods } => rue_air::DurableAnonymousShape::Struct {
+                fields: fields.iter().map(|(n, t)| (n.clone(), t.clone())).collect(),
+                struct_method_names: methods.iter().map(|m| m.name.clone()).collect(),
+            },
+            S::Enum { variants } => rue_air::DurableAnonymousShape::Enum {
+                variants: variants
+                    .iter()
+                    .map(|(n, payload)| (n.clone(), payload.to_vec()))
+                    .collect(),
+            },
+        }
+    }
+
+    impl rue_air::DurableAnonymousSource<StableDefinitionKey, ModuleId> for DurableDeclSource {
+        fn anonymous_shape(
+            &self,
+            key: &crate::AnonymousNominalKey,
+        ) -> Option<rue_air::DurableAnonymousShape<StableDefinitionKey, ModuleId>> {
+            self.anon_by_identity
+                .get(key)
+                .map(|nominal| durable_anonymous_shape(&nominal.shape))
+        }
+
+        fn definition_symbol_component(&self, key: &StableDefinitionKey) -> String {
+            durable_definition_symbol_component(key)
+        }
+
+        fn module_symbol_component(&self, module: &ModuleId) -> String {
+            durable_module_symbol_component(module)
         }
     }
 
@@ -21719,7 +21840,12 @@ mod tests {
                     kind: AnonymousNominalKind::Struct,
                     name: std::sync::Arc::from("NotABuiltin"),
                 });
-                // Anonymous mint-from-digest (issued-anonymous lookup only) — r6b.
+                // An UNSEEDED anonymous key fails closed: the r6b arm mints only
+                // for a durable identity seeded by `register_anonymous_nominal`
+                // (the positive differential is
+                // `provider_endpoint_facts_anonymous_arm_mints_after_registration`),
+                // exactly as the unseeded `Slice` arm above fails closed. The pool
+                // never invents an anonymous identity.
                 let anonymous =
                     facts.resolve_instance_type(&T::Nominal(N::Anonymous(AnonymousNominalKey {
                         kind: AnonymousNominalKind::Struct,
@@ -21747,7 +21873,289 @@ mod tests {
             unknown_builtin,
             "a non-builtin name fails closed (permanent)"
         );
-        assert!(anonymous, "anonymous mint fails closed (r6b)");
+        assert!(
+            anonymous,
+            "an unseeded anonymous key fails closed (the seeded mint is the r6b positive differential)"
+        );
+    }
+
+    // RUE-1091 r6b: the anonymous arm mints once a caller seeds the durable
+    // identity, minting the producer-nominal anonymous struct byte-identically to
+    // the LIVE epoch's own `find_or_create_anon_struct` — the positive half of the
+    // deferral this slice flips (the r4b-2 anonymous-arm pin).
+    //
+    // Cross-path, no self-comparison: the epoch side is the LIVE bind's own
+    // anonymous materialization (`epoch_anonymous_types`, populated by the epoch's
+    // `find_or_create_anon_struct` during declaration binding), NOT the shared
+    // digest fn. The pool independently relocates the durable producer key to its
+    // stable content and spells the `__anon_struct_{digest}` name through the same
+    // shared computation; the digest name matching on both sides — plus the full
+    // metadata / display / member render — is the byte-equal-relocation proof.
+    #[test]
+    fn provider_endpoint_facts_anonymous_arm_mints_after_registration() {
+        use rue_air::{
+            AnonymousNominalKey, AnonymousNominalKind, CanonicalArguments, NominalInstanceKey as N,
+            SemanticDefinitionToken as DTok, StableProducerId, TypeInstanceKey as T,
+        };
+        // `Holder`'s field `p: Pair()` forces the epoch to instantiate the
+        // comptime type function `Pair` at declaration bind, minting the anonymous
+        // `struct { a: i32 }` whose producer roots at the INSTALLED function `Pair`
+        // (an installed-endpoint producer — the pool's byte-equal minting scope).
+        let source = "fn Pair() -> type { struct { a: i32 } }\n\
+                      struct Holder { p: Pair() }\n\
+                      fn main() -> i32 { 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+
+        // Independently produce the durable declaration set + the durable
+        // anonymous nominal (the pool's inputs) through the nucleus projection.
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
+        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        let mut proj_db = RevisionedQueryDatabase::default();
+        let proj_revision = revision_for(&mut proj_db, &snapshot);
+        let projection = proj_db
+            .projected_declaration_semantics(
+                proj_revision,
+                merged.ast(),
+                rue_target::Target::X86_64Linux,
+                &crate::PreviewFeatures::default(),
+                CancellationToken::new(),
+            )
+            .expect("declaration semantics project");
+        assert_eq!(
+            projection.anonymous_nominals.len(),
+            1,
+            "the program mints exactly one anonymous nominal"
+        );
+        // The durable identity is fed to the pool RAW: the declaration-SIGNATURE
+        // projection retains the empty-argument specialization wrapper
+        // (`Function(Specialization { base, args: [] })`) that production
+        // body-export and the LIVE epoch collapse to `Function(base)`
+        // (`canonical_function_producer`). The pool canonicalizes ON ENTRY
+        // (`find_or_create_anon` collapses via `with_canonical_producer`, and the
+        // adapter keys shapes canonically), so handing the non-collapsed form
+        // must dedup onto — and spell the digest of — the collapsed form. This is
+        // the entry-canonicalization proof, not a de-quirked input.
+        let durable_identity = projection.anonymous_nominals[0].identity.clone();
+
+        // The LIVE epoch, bound through the production declaration path — the
+        // INDEPENDENT comparison side. Its anonymous materialization is the epoch's
+        // own `find_or_create_anon_struct`, populated during the same bind.
+        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
+            &merged,
+            &rir,
+            crate::PreviewFeatures::default(),
+            rue_target::Target::X86_64Linux,
+            &imports,
+        )
+        .expect("declarations bind");
+        let epoch_anon = bound.epoch_anonymous_types();
+        assert_eq!(
+            epoch_anon.len(),
+            1,
+            "the epoch minted one anonymous nominal"
+        );
+        let epoch_render =
+            bound.with_type_pool(|pool| endpoint_nominal_render(pool, epoch_anon[0]));
+        assert!(
+            epoch_render.display.starts_with("__anon_struct_"),
+            "the epoch spells the digest name: {}",
+            epoch_render.display
+        );
+
+        let rir_ref = rir.rir();
+        let interner = rir.semantic_symbols().interner();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let adapter = DurableDeclSource::from_declarations(&projection.declarations)
+            .with_anonymous_nominals(&projection.anonymous_nominals);
+        let identity_for_probe = durable_identity.clone();
+
+        let outcome = database.probe_body_facts(
+            revision,
+            semantic_configuration(),
+            "endpoint-anon-mint",
+            move |provider| {
+                let facts =
+                    rue_air::ProviderEndpointFacts::new(provider, adapter, rir_ref, interner);
+                // Direct pool mint (the keystone): mint the anonymous nominal from
+                // its durable identity + shape.
+                let minted = facts
+                    .mint_anonymous(&identity_for_probe)
+                    .expect("the pool mints the anonymous nominal");
+                // Idempotency: a repeat consult re-mints nothing.
+                let again = facts
+                    .mint_anonymous(&identity_for_probe)
+                    .expect("repeat consult re-resolves");
+                assert_eq!(minted, again, "the pool re-minted the anonymous nominal");
+
+                // The resolve_instance_type anonymous arm: seed the issued→durable
+                // map, then resolve an issued-domain anonymous key — the r4b-2
+                // anonymous-arm flip. The issued key is an arbitrary lookup handle;
+                // the durable key drives the mint / digest.
+                let issued = AnonymousNominalKey {
+                    kind: AnonymousNominalKind::Struct,
+                    producer: StableProducerId::Definition(DTok::new(0x5b, 1)),
+                    anchor: rue_rir::RirStructuralAnchor::new(Vec::new()),
+                    arguments: CanonicalArguments::default(),
+                };
+                facts.register_anonymous_nominal(issued.clone(), identity_for_probe.clone());
+                let via_arm = facts
+                    .resolve_instance_type(&T::Nominal(N::Anonymous(issued)))
+                    .expect("the seeded anonymous arm resolves");
+                assert_eq!(via_arm, minted, "the arm and direct mint agree");
+
+                facts.with_type_pool(|pool| endpoint_nominal_render(pool, minted))
+            },
+        );
+        let pool_render = outcome.result;
+
+        // The full materialization matches the LIVE epoch: the `__anon_struct_
+        // {digest}` name (byte-equal relocation), copyability, visibility, mangled
+        // symbol, and field vocabulary.
+        assert_eq!(
+            pool_render, epoch_render,
+            "the pool's anonymous mint diverged from the LIVE epoch"
+        );
+    }
+
+    // RUE-1091 r6b: the ENUM analog of the anonymous cross-path differential. The
+    // epoch mints through `find_or_create_anon_enum` (spelling the
+    // `__anon_enum_{digest} { Variant(T), … }` payload-rendering name), the pool
+    // through `mint_anon_enum` from the durable shape — two independent
+    // materialization paths over the shared digest, compared through the full
+    // index-independent render. The pool is likewise fed the RAW projected
+    // identity (empty-argument specialization wrapper retained), so the enum path
+    // exercises entry canonicalization too.
+    #[test]
+    fn provider_endpoint_facts_anonymous_enum_mints_match_epoch() {
+        use rue_air::{
+            AnonymousNominalKey, AnonymousNominalKind, CanonicalArguments, NominalInstanceKey as N,
+            SemanticDefinitionToken as DTok, StableProducerId, TypeInstanceKey as T,
+        };
+        // `Holder`'s field `o: Wrap()` forces the epoch to instantiate the
+        // comptime type function `Wrap` at declaration bind, minting the anonymous
+        // `enum { Some(i32), None }` whose producer roots at the INSTALLED
+        // function `Wrap`.
+        let source = "fn Wrap() -> type { enum { Some(i32), None } }\n\
+                      struct Holder { o: Wrap() }\n\
+                      fn main() -> i32 { 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+
+        // Independently produce the durable declaration set + the durable
+        // anonymous nominal (the pool's inputs) through the nucleus projection.
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
+        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        let mut proj_db = RevisionedQueryDatabase::default();
+        let proj_revision = revision_for(&mut proj_db, &snapshot);
+        let projection = proj_db
+            .projected_declaration_semantics(
+                proj_revision,
+                merged.ast(),
+                rue_target::Target::X86_64Linux,
+                &crate::PreviewFeatures::default(),
+                CancellationToken::new(),
+            )
+            .expect("declaration semantics project");
+        assert_eq!(
+            projection.anonymous_nominals.len(),
+            1,
+            "the program mints exactly one anonymous nominal"
+        );
+        assert!(
+            matches!(
+                projection.anonymous_nominals[0].shape,
+                crate::durable_semantics::DurableAnonymousNominalShape::Enum { .. }
+            ),
+            "the projected anonymous nominal is an enum"
+        );
+        // RAW identity — the wrapper collapse is the pool's entry obligation.
+        let durable_identity = projection.anonymous_nominals[0].identity.clone();
+
+        // The LIVE epoch, bound through the production declaration path — the
+        // INDEPENDENT comparison side. Its anonymous materialization is the
+        // epoch's own `find_or_create_anon_enum`, populated during the same bind.
+        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
+            &merged,
+            &rir,
+            crate::PreviewFeatures::default(),
+            rue_target::Target::X86_64Linux,
+            &imports,
+        )
+        .expect("declarations bind");
+        let epoch_anon = bound.epoch_anonymous_types();
+        assert_eq!(
+            epoch_anon.len(),
+            1,
+            "the epoch minted one anonymous nominal"
+        );
+        let epoch_render =
+            bound.with_type_pool(|pool| endpoint_nominal_render(pool, epoch_anon[0]));
+        assert!(
+            epoch_render.display.starts_with("__anon_enum_"),
+            "the epoch spells the enum digest name: {}",
+            epoch_render.display
+        );
+        assert!(
+            epoch_render.display.ends_with(" { Some(i32), None }"),
+            "the epoch renders variant payloads into the name: {}",
+            epoch_render.display
+        );
+
+        let rir_ref = rir.rir();
+        let interner = rir.semantic_symbols().interner();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let adapter = DurableDeclSource::from_declarations(&projection.declarations)
+            .with_anonymous_nominals(&projection.anonymous_nominals);
+        let identity_for_probe = durable_identity.clone();
+
+        let outcome = database.probe_body_facts(
+            revision,
+            semantic_configuration(),
+            "endpoint-anon-enum-mint",
+            move |provider| {
+                let facts =
+                    rue_air::ProviderEndpointFacts::new(provider, adapter, rir_ref, interner);
+                // Direct pool mint from the RAW durable identity + shape.
+                let minted = facts
+                    .mint_anonymous(&identity_for_probe)
+                    .expect("the pool mints the anonymous enum");
+                // Idempotency: a repeat consult re-mints nothing.
+                let again = facts
+                    .mint_anonymous(&identity_for_probe)
+                    .expect("repeat consult re-resolves");
+                assert_eq!(minted, again, "the pool re-minted the anonymous enum");
+
+                // The resolve_instance_type anonymous arm over an issued ENUM key.
+                let issued = AnonymousNominalKey {
+                    kind: AnonymousNominalKind::Enum,
+                    producer: StableProducerId::Definition(DTok::new(0x5b, 1)),
+                    anchor: rue_rir::RirStructuralAnchor::new(Vec::new()),
+                    arguments: CanonicalArguments::default(),
+                };
+                facts.register_anonymous_nominal(issued.clone(), identity_for_probe.clone());
+                let via_arm = facts
+                    .resolve_instance_type(&T::Nominal(N::Anonymous(issued)))
+                    .expect("the seeded anonymous enum arm resolves");
+                assert_eq!(via_arm, minted, "the arm and direct mint agree");
+
+                facts.with_type_pool(|pool| endpoint_nominal_render(pool, minted))
+            },
+        );
+        let pool_render = outcome.result;
+
+        // The full materialization matches the LIVE epoch: the payload-rendering
+        // `__anon_enum_{digest} { … }` name (byte-equal relocation through the
+        // shared digest), copyability, visibility, mangled symbol, and variant
+        // vocabulary.
+        assert_eq!(
+            pool_render, epoch_render,
+            "the pool's anonymous enum mint diverged from the LIVE epoch"
+        );
     }
 
     // RUE-1091 r6a: the `Slice` arm resolves once a caller seeds the generated

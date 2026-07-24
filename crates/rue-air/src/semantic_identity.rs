@@ -210,6 +210,69 @@ impl<D, M> AnonymousNominalKey<D, M> {
     }
 }
 
+impl<D: Clone, M: Clone> AnonymousNominalKey<D, M> {
+    /// The canonical producer form of this key: every empty-argument function
+    /// `Specialization` wrapper on the producer's base spine collapsed to its
+    /// base (see [`FunctionInstanceKey::with_collapsed_empty_specializations`]).
+    ///
+    /// This is the form the semantic epoch's `canonical_function_producer`
+    /// always mints under and the form production body-export carries (the
+    /// warm==cold digest invariant requires it), so every identity consumer
+    /// that digests or dedups producer-nominal keys must compare keys in this
+    /// form. Returns `Cow::Borrowed` when the key is already canonical — the
+    /// collapse is a pure normalization, never a change of identity.
+    pub fn with_canonical_producer(&self) -> std::borrow::Cow<'_, Self> {
+        match &self.producer {
+            StableProducerId::Definition(_) => std::borrow::Cow::Borrowed(self),
+            StableProducerId::Function(function) => {
+                match function.with_collapsed_empty_specializations() {
+                    std::borrow::Cow::Borrowed(_) => std::borrow::Cow::Borrowed(self),
+                    std::borrow::Cow::Owned(collapsed) => std::borrow::Cow::Owned(Self {
+                        kind: self.kind,
+                        producer: StableProducerId::Function(Box::new(collapsed)),
+                        anchor: self.anchor.clone(),
+                        arguments: self.arguments.clone(),
+                    }),
+                }
+            }
+        }
+    }
+}
+
+impl<D: Clone, M: Clone> FunctionInstanceKey<D, M> {
+    /// Collapse every `Specialization` wrapper carrying no arguments to its
+    /// base, recursively along the base spine — the canonical producer form
+    /// the epoch's `canonical_function_producer` emits
+    /// (`Function(Specialization { base, args: [] })` ≡ `Function(base)`).
+    ///
+    /// The collapse covers the function-producer spine only: an
+    /// `AnonymousMember` owner or `DropGlue` pointee is a type instance the
+    /// epoch never spells through `canonical_function_producer`, so it is
+    /// carried verbatim. Returns `Cow::Borrowed` when the spine is already
+    /// collapsed.
+    pub fn with_collapsed_empty_specializations(&self) -> std::borrow::Cow<'_, Self> {
+        match self {
+            Self::Specialization { base, arguments }
+                if arguments.types.is_empty() && arguments.values.is_empty() =>
+            {
+                std::borrow::Cow::Owned(base.with_collapsed_empty_specializations().into_owned())
+            }
+            Self::Specialization { base, arguments } => {
+                match base.with_collapsed_empty_specializations() {
+                    std::borrow::Cow::Borrowed(_) => std::borrow::Cow::Borrowed(self),
+                    std::borrow::Cow::Owned(base) => {
+                        std::borrow::Cow::Owned(Self::Specialization {
+                            base: Box::new(base),
+                            arguments: arguments.clone(),
+                        })
+                    }
+                }
+            }
+            _ => std::borrow::Cow::Borrowed(self),
+        }
+    }
+}
+
 impl<D, M> TypeInstanceKey<D, M> {
     pub fn try_map_identities<D2, M2, E>(
         &self,

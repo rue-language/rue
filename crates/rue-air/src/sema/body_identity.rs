@@ -149,6 +149,85 @@ pub trait DurableNominalSource<K, M> {
     fn nominal(&self, key: &K) -> Option<DurableNominal<K, M>>;
 }
 
+/// The durable body of an anonymous nominal: its field / variant vocabulary. The
+/// pool analog of the epoch's `SemanticAnonymousNominalShape` — the shape half of
+/// producer-nominal identity (ADR-0066), separate from the identity half (the
+/// `AnonymousNominalKey`) so a recursive or shape-equal reference joins on the
+/// key alone.
+///
+/// Method BODIES are deliberately absent: registering an anonymous struct's
+/// methods needs the request-local whole-program `Rir`
+/// (`register_projected_anon_struct_methods`, `binding_manifest.rs`), which the
+/// body-scoped pool does not hold. `struct_method_names` carries only the source
+/// method-name vocabulary the epoch's [`find_or_create_anon_struct`] reads to
+/// decide copyability and the destructor symbol — the reserved `__drop` name
+/// forces the struct non-Copy and names its destructor. Method DISPATCH
+/// registration is left to the flip's overlay method installation.
+#[derive(Debug, Clone)]
+pub enum DurableAnonymousShape<K, M> {
+    Struct {
+        /// Fields in declaration order: source name and durable field type.
+        fields: Vec<(Arc<str>, SemanticImportType<K, M>)>,
+        /// Source method names in declaration order (bodies excluded). Only the
+        /// presence of the reserved `__drop` destructor name is consumed, to
+        /// mirror the epoch's copyability / destructor metadata.
+        struct_method_names: Vec<Arc<str>>,
+    },
+    Enum {
+        /// Variants in declaration order: source name and durable payload types.
+        variants: Vec<(Arc<str>, Vec<SemanticImportType<K, M>>)>,
+    },
+}
+
+/// The durable anonymous vocabulary the pool consults to mint an anonymous
+/// producer-nominal on first sight. Implemented by the r4b/flip provider side and
+/// by the r6b unit tests.
+///
+/// The two `*_symbol_component` methods are the durable→stable-content
+/// **relocation** the shared digest computation
+/// ([`crate::stable_digest::stable_anonymous_identity_digest`]) hashes. They must
+/// reproduce, BYTE-FOR-BYTE, the string the semantic epoch's
+/// `stable_definition_symbol_component` / `stable_module_symbol_component`
+/// (`anon_structs.rs`) emit for the SAME producer, so the pool and the epoch spell
+/// the same `__anon_*_{digest:032x}` name. For a producer rooting at an installed
+/// definition / module endpoint (every producer this pool mints) the epoch's
+/// content is `D\u{1}{module_path}\u{1}{name}\u{1}{owner}\u{1}{kind as u8}` and
+/// `M\u{1}{module_path}`; the durable key carries exactly those parts (module
+/// logical path, name, owner name, kind), so the adapter formats them verbatim.
+/// The epoch's session-local `d`/`m` FNV fallback (used only where a producer was
+/// routed through a const-candidate token with no installed endpoint) embeds a
+/// session-local issuer and is NOT reproducible from durable state alone; such
+/// producers are out of the pool's minting scope.
+///
+/// # Canonical producer form
+///
+/// The durable anonymous universe is keyed by the CANONICAL producer form: an
+/// empty-argument function specialization collapsed to its base
+/// ([`AnonymousNominalKey::with_canonical_producer`]) — the form the epoch's
+/// `canonical_function_producer` mints under and production body-export
+/// carries. [`BodyIdentityPool::find_or_create_anon`] collapses its incoming
+/// key on entry and consults [`Self::anonymous_shape`] with the canonical
+/// form, so an implementation must index its shapes by that form (relocating
+/// a non-canonical projection key through the same collapse before keying).
+pub trait DurableAnonymousSource<K, M> {
+    /// The durable shape for an anonymous nominal key, or `None` if the key names
+    /// no anonymous nominal in the durable universe. Consulted with the
+    /// canonical-producer form of the key (see the trait docs).
+    fn anonymous_shape(
+        &self,
+        key: &AnonymousNominalKey<K, M>,
+    ) -> Option<DurableAnonymousShape<K, M>>;
+
+    /// Relocate a durable definition key to the exact stable-symbol content the
+    /// epoch's `stable_definition_symbol_component` emits for its installed
+    /// endpoint (see the trait docs for the byte-exact format).
+    fn definition_symbol_component(&self, key: &K) -> String;
+
+    /// Relocate a durable module key to the exact stable-symbol content the
+    /// epoch's `stable_module_symbol_component` emits for its installed endpoint.
+    fn module_symbol_component(&self, module: &M) -> String;
+}
+
 /// Why the pool could not mint an identity for a durable type. Every arm is a
 /// closed refusal — the pool never approximates an identity it cannot mint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,6 +245,17 @@ pub(in crate::sema) enum IdentityMintError {
     BuiltinNominalKindMismatch,
     /// A structural wrap (array / pointer) failed pool validation.
     InvalidStructuralType,
+    /// An anonymous nominal key was consulted for minting but no durable shape
+    /// (fields / variants) was supplied for it.
+    MissingAnonymousShape,
+    /// Two distinct anonymous producer keys hashed to one presentation digest.
+    /// The pool analog of the epoch's fail-closed
+    /// [`Sema::guard_anonymous_digest_collision`] (RUE-1089, Theme 4b): the
+    /// 128-bit digest spells presentation names only and must never collapse two
+    /// producer-distinct types onto one id, so the second colliding key is
+    /// refused and neither its nominal nor its symbol is published. Carries the
+    /// digest both keys hash to.
+    AnonymousDigestCollision(u128),
     /// An arm outside slice r4a-2a's scope (module identity, generic parameter).
     Deferred(&'static str),
 }
@@ -193,6 +283,11 @@ pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
     /// re-error rather than exposing the incomplete shell (see `mint_named`).
     poisoned: HashMap<K, IdentityMintError>,
     anon_nominals: HashMap<AnonymousNominalKey<K, M>, Type>,
+    /// Fail-closed anonymous-digest ownership registry, the pool analog of the
+    /// epoch's `anonymous_digest_owners` (RUE-1089, Theme 4b). Records the exact
+    /// producer key that owns each presentation digest so a SECOND distinct key
+    /// hashing to an owned digest is refused before any id or symbol is minted.
+    anonymous_digest_owners: HashMap<u128, AnonymousNominalKey<K, M>>,
     builtins: HashMap<(Arc<str>, SemanticImportNominalKind), PoolNominal>,
     module_files: HashMap<Arc<str>, FileId>,
     /// The pool's own parameter arena, the analog of `Sema::param_arena` (which
@@ -310,6 +405,7 @@ where
             enum_ids: HashMap::new(),
             poisoned: HashMap::new(),
             anon_nominals: HashMap::new(),
+            anonymous_digest_owners: HashMap::new(),
             builtins,
             module_files: HashMap::new(),
             param_arena: ParamArena::new(),
@@ -360,6 +456,49 @@ where
         ty: Type,
     ) {
         self.anon_nominals.insert(key, ty);
+    }
+
+    /// Mint (on first consult) or dedup the generated fixed-capacity string
+    /// struct `Str(N)` for a LITERAL capacity `N` (ADR-0043 Phase 5, RUE-326).
+    ///
+    /// The pool analog of the epoch's `get_or_create_str_fixed_struct`
+    /// (`typeck.rs`): a generated builtin struct named `Str(N)` reusing the `str`
+    /// fat-pointer shape `{ ptr: ptr const u8, len: u64 }`, copyable and builtin,
+    /// registered under its canonical name so every reference to the same
+    /// capacity shares one id. Deduped by name via `register_struct`.
+    ///
+    /// Scope (r6b): literal `N` only. A `Str(N)` whose capacity is a comptime
+    /// array-length expression needs the r5 array-length machinery to reduce `N`
+    /// to a literal first; that reduction is the caller's job (the type-syntax
+    /// resolver), so the pool takes an already-reduced `u64` and never re-derives
+    /// a non-literal capacity.
+    pub(in crate::sema) fn get_or_create_str_fixed(&mut self, capacity: u64) -> Type {
+        let name = format!("Str({capacity})");
+        let symbol = self.interner.get_or_intern(&name);
+        let ptr_id = self.type_pool.intern_ptr_const_from_type(Type::U8);
+        let (id, _) = self.type_pool.register_struct(
+            symbol,
+            StructDef {
+                name,
+                fields: vec![
+                    StructField {
+                        name: "ptr".to_owned(),
+                        ty: Type::new_ptr_const(ptr_id),
+                    },
+                    StructField {
+                        name: "len".to_owned(),
+                        ty: Type::U64,
+                    },
+                ],
+                is_copy: true,
+                is_linear: false,
+                destructor: None,
+                is_builtin: true,
+                is_pub: true,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        Type::new_struct(id)
     }
 
     /// Mint (on first consult) or dedup a concrete [`Type`] for a durable type.
@@ -618,6 +757,237 @@ where
                 .collect(),
         );
         file
+    }
+}
+
+/// The reserved method name whose presence gives an anonymous struct a user
+/// destructor (RUE-312); mirrored from the epoch's `find_or_create_anon_struct`.
+const ANON_DROP_METHOD: &str = "__drop";
+
+impl<K, M, S> BodyIdentityPool<K, M, S>
+where
+    K: Clone + Eq + Hash,
+    M: Clone + Eq + Hash,
+    S: DurableNominalSource<K, M> + DurableAnonymousSource<K, M>,
+{
+    /// Mint (on first consult) or dedup the producer-nominal anonymous
+    /// struct / enum for a durable anonymous identity key.
+    ///
+    /// The provider-driven analog of the epoch's
+    /// [`Sema::find_or_create_anon_struct`] / [`Sema::find_or_create_anon_enum`]
+    /// (`anon_structs.rs`). Identity is producer-nominal (ADR-0066): the
+    /// `AnonymousNominalKey` alone owns the entity — there is no structural search
+    /// across producers. The synthetic name is spelled from the SAME stable
+    /// digest the epoch uses (the shared
+    /// [`crate::stable_digest::stable_anonymous_identity_digest`]), fed the
+    /// durable→stable-content relocation the [`DurableAnonymousSource`] supplies,
+    /// so the pool and the epoch mint byte-identical `__anon_*_{digest:032x}`
+    /// names. The digest is a presentation name only; a distinct key colliding on
+    /// it is refused BEFORE any id or symbol is minted (the collision guard),
+    /// exactly as the epoch's fail-closed registry rejects it.
+    ///
+    /// # Canonical producer form, enforced on entry
+    ///
+    /// The epoch only ever mints under the canonical producer form: its
+    /// `canonical_function_producer` collapses an empty-argument function
+    /// specialization to its base before any digest is taken, and production
+    /// body-export carries that collapsed form (the warm==cold digest
+    /// invariant). The pool enforces the same invariant HERE, by collapsing the
+    /// incoming key ([`AnonymousNominalKey::with_canonical_producer`]) before
+    /// dedup, digest, and shape consult — so a flip-era caller handing the
+    /// non-collapsed form (e.g. the declaration-signature projection's
+    /// `Specialization { base, args: [] }` wrapper) dedups onto, and spells the
+    /// same digest as, the collapsed form rather than silently minting a
+    /// divergent identity.
+    pub(in crate::sema) fn find_or_create_anon(
+        &mut self,
+        key: &AnonymousNominalKey<K, M>,
+    ) -> Result<Type, IdentityMintError> {
+        // Entry canonicalization: every read below (dedup map, digest, shape
+        // consult, registration) sees the canonical producer form.
+        let key = key.with_canonical_producer();
+        let key = key.as_ref();
+        // Producer-nominal dedup: a key already minted resolves by lookup, so a
+        // repeat consult re-mints nothing (the epoch's `anon_*_identities.get`).
+        if let Some(&ty) = self.anon_nominals.get(key) {
+            return Ok(ty);
+        }
+
+        let shape = self
+            .source
+            .anonymous_shape(key)
+            .ok_or(IdentityMintError::MissingAnonymousShape)?;
+
+        // The presentation digest is a pure function of the producer identity,
+        // relocated to its request-independent stable content by the adapter. It
+        // is spelled into the name only; guard a distinct key colliding on it
+        // BEFORE reserving or registering, so no colliding entity or symbol is
+        // ever published (RUE-1089, Theme 4b).
+        let digest = self.anonymous_identity_digest(key);
+        self.guard_anonymous_digest_collision(digest, key)?;
+
+        let ty = match shape {
+            DurableAnonymousShape::Struct {
+                fields,
+                struct_method_names,
+            } => self.mint_anon_struct(digest, &fields, &struct_method_names)?,
+            DurableAnonymousShape::Enum { variants } => self.mint_anon_enum(digest, &variants)?,
+        };
+        self.anon_nominals.insert(key.clone(), ty);
+        Ok(ty)
+    }
+
+    /// The stable presentation digest of an anonymous producer identity: relocate
+    /// every embedded definition / module key to its request-independent stable
+    /// content through the [`DurableAnonymousSource`] adapter, then hash through
+    /// the ONE shared computation the epoch also uses (the ratified single
+    /// digest path, RUE-1089 / RUE-1091).
+    fn anonymous_identity_digest(&self, key: &AnonymousNominalKey<K, M>) -> u128 {
+        let relocated: AnonymousNominalKey<String, String> = key
+            .try_map_identities::<String, String, std::convert::Infallible>(
+                &|definition| Ok(self.source.definition_symbol_component(definition)),
+                &|module| Ok(self.source.module_symbol_component(module)),
+            )
+            .expect("anonymous identity relocation to stable content is infallible");
+        crate::stable_digest::stable_anonymous_identity_digest(&relocated)
+    }
+
+    /// Fail-closed digest-collision gate, the pool analog of the epoch's
+    /// [`Sema::guard_anonymous_digest_collision`]. Re-presenting the SAME key is
+    /// legitimate reuse; a SECOND distinct key hashing to an owned digest is
+    /// refused so a name-keyed pool dedup can never collapse two producer-distinct
+    /// types onto one id.
+    fn guard_anonymous_digest_collision(
+        &mut self,
+        digest: u128,
+        key: &AnonymousNominalKey<K, M>,
+    ) -> Result<(), IdentityMintError> {
+        match self.anonymous_digest_owners.get(&digest) {
+            Some(existing) if existing == key => Ok(()),
+            Some(_) => Err(IdentityMintError::AnonymousDigestCollision(digest)),
+            None => {
+                self.anonymous_digest_owners.insert(digest, key.clone());
+                Ok(())
+            }
+        }
+    }
+
+    /// Mint the producer-nominal anonymous struct. Byte-mirror of the epoch's
+    /// `find_or_create_anon_struct` naming / metadata: `__anon_struct_{digest}`,
+    /// private, source-file-less, copyable iff every field is copyable and no
+    /// `__drop` destructor is declared. Method BODIES are not registered here
+    /// (they need request-local RIR); only the destructor-derived metadata is
+    /// mirrored.
+    fn mint_anon_struct(
+        &mut self,
+        digest: u128,
+        fields: &[(Arc<str>, SemanticImportType<K, M>)],
+        method_names: &[Arc<str>],
+    ) -> Result<Type, IdentityMintError> {
+        let name = format!("__anon_struct_{digest:032x}");
+        let symbol = self.interner.get_or_intern(&name);
+        let has_destructor = method_names
+            .iter()
+            .any(|method| method.as_ref() == ANON_DROP_METHOD);
+        let destructor = has_destructor.then(|| format!("{name}.__drop"));
+
+        // Declare the shell before resolving fields so a field that points back
+        // at this nominal resolves the recursive reference to the shell id — the
+        // epoch's declare-then-complete discipline.
+        let (id, _) = self.type_pool.declare_struct(
+            symbol,
+            StructDef {
+                name: name.clone(),
+                fields: Vec::new(),
+                is_copy: false,
+                is_linear: false,
+                destructor: destructor.clone(),
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+
+        let mut resolved = Vec::with_capacity(fields.len());
+        for (field_name, field_ty) in fields {
+            let ty = self.resolve(field_ty)?;
+            resolved.push(StructField {
+                name: field_name.to_string(),
+                ty,
+            });
+        }
+        let is_copy = !has_destructor
+            && resolved
+                .iter()
+                .all(|field| field.ty.is_copy_in_pool(&self.type_pool));
+        self.type_pool.complete_declared_struct(
+            id,
+            StructDef {
+                name,
+                fields: resolved,
+                is_copy,
+                is_linear: false,
+                destructor,
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        Ok(Type::new_struct(id))
+    }
+
+    /// Mint the producer-nominal anonymous enum. Byte-mirror of the epoch's
+    /// `find_or_create_anon_enum` naming: `__anon_enum_{digest} { A(T), B }` where
+    /// the payload types render through the same `safe_name_with_pool` the epoch
+    /// spells them with, and the name never decides identity.
+    fn mint_anon_enum(
+        &mut self,
+        digest: u128,
+        variants: &[(Arc<str>, Vec<SemanticImportType<K, M>>)],
+    ) -> Result<Type, IdentityMintError> {
+        let variant_names: Vec<String> =
+            variants.iter().map(|(name, _)| name.to_string()).collect();
+        let mut variant_payloads = Vec::with_capacity(variants.len());
+        for (_, payload) in variants {
+            let mut resolved = Vec::with_capacity(payload.len());
+            for ty in payload {
+                resolved.push(self.resolve(ty)?);
+            }
+            variant_payloads.push(resolved);
+        }
+
+        let mut name = format!("__anon_enum_{digest:032x} {{ ");
+        for (i, vname) in variant_names.iter().enumerate() {
+            if i > 0 {
+                name.push_str(", ");
+            }
+            name.push_str(vname);
+            let payload = &variant_payloads[i];
+            if !payload.is_empty() {
+                name.push('(');
+                for (j, ty) in payload.iter().enumerate() {
+                    if j > 0 {
+                        name.push_str(", ");
+                    }
+                    name.push_str(&ty.safe_name_with_pool(Some(&self.type_pool)));
+                }
+                name.push(')');
+            }
+        }
+        name.push_str(" }");
+
+        let symbol = self.interner.get_or_intern(&name);
+        let (id, _) = self.type_pool.register_enum(
+            symbol,
+            EnumDef {
+                name,
+                variants: variant_names,
+                variant_payloads,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        Ok(Type::new_enum(id))
     }
 }
 
@@ -1012,12 +1382,20 @@ mod tests {
     type Module = Arc<str>;
     type DType = SemanticImportType<Key, Module>;
 
+    type AnonKey = AnonymousNominalKey<Key, Module>;
+
     /// A durable nominal + callable source backed by fixed maps, standing in for
     /// r4b's stable-keyed provider.
     struct MapSource {
         nominals: HashMap<Key, DurableNominal<Key, Module>>,
         functions: HashMap<Key, DurableFunction<Key, Module>>,
         methods: HashMap<Key, DurableMethod<Key, Module>>,
+        anonymous_shapes: HashMap<AnonKey, DurableAnonymousShape<Key, Module>>,
+        /// Force a chosen definition relocation for a producer key, so a test can
+        /// point two DISTINCT producer keys at one stable-content string (and thus
+        /// one digest) and exercise the collision guard without a real 128-bit
+        /// hash collision.
+        def_component_overrides: HashMap<Key, String>,
     }
 
     impl DurableNominalSource<Key, Module> for MapSource {
@@ -1036,11 +1414,30 @@ mod tests {
         }
     }
 
+    impl DurableAnonymousSource<Key, Module> for MapSource {
+        fn anonymous_shape(&self, key: &AnonKey) -> Option<DurableAnonymousShape<Key, Module>> {
+            self.anonymous_shapes.get(key).cloned()
+        }
+
+        fn definition_symbol_component(&self, key: &Key) -> String {
+            self.def_component_overrides
+                .get(key)
+                .cloned()
+                .unwrap_or_else(|| format!("D\u{1}{key}"))
+        }
+
+        fn module_symbol_component(&self, module: &Module) -> String {
+            format!("M\u{1}{module}")
+        }
+    }
+
     fn source(nominals: impl IntoIterator<Item = (Key, DurableNominal<Key, Module>)>) -> MapSource {
         MapSource {
             nominals: nominals.into_iter().collect(),
             functions: HashMap::new(),
             methods: HashMap::new(),
+            anonymous_shapes: HashMap::new(),
+            def_component_overrides: HashMap::new(),
         }
     }
 
@@ -1061,7 +1458,38 @@ mod tests {
             nominals: nominals.into_iter().collect(),
             functions: functions.into_iter().collect(),
             methods: methods.into_iter().collect(),
+            anonymous_shapes: HashMap::new(),
+            def_component_overrides: HashMap::new(),
         })
+    }
+
+    /// A pool seeded with nominals plus anonymous shapes (and optional forced
+    /// definition relocations) for the r6b anonymous-mint tests.
+    fn anon_pool(
+        nominals: impl IntoIterator<Item = (Key, DurableNominal<Key, Module>)>,
+        anonymous_shapes: impl IntoIterator<Item = (AnonKey, DurableAnonymousShape<Key, Module>)>,
+        def_component_overrides: impl IntoIterator<Item = (Key, String)>,
+    ) -> BodyIdentityPool<Key, Module, MapSource> {
+        BodyIdentityPool::new(MapSource {
+            nominals: nominals.into_iter().collect(),
+            functions: HashMap::new(),
+            methods: HashMap::new(),
+            anonymous_shapes: anonymous_shapes.into_iter().collect(),
+            def_component_overrides: def_component_overrides.into_iter().collect(),
+        })
+    }
+
+    /// An anonymous producer key rooting at definition `producer` with anchor
+    /// occurrence `anchor_seg`.
+    fn anon_key(kind: AnonymousNominalKind, producer: Key, anchor_seg: u32) -> AnonKey {
+        AnonymousNominalKey {
+            kind,
+            producer: StableProducerId::Definition(producer),
+            anchor: rue_rir::RirStructuralAnchor::new(vec![
+                rue_rir::RirStructuralPathSegment::AnonymousType(anchor_seg),
+            ]),
+            arguments: CanonicalArguments::default(),
+        }
     }
 
     fn param(
@@ -1895,6 +2323,268 @@ mod tests {
         assert_eq!(
             pool.resolve(&DType::AnonymousNominal(anon_key)).unwrap(),
             cell
+        );
+    }
+
+    /// The pool spells the anonymous name from the ONE shared digest computation
+    /// (`stable_digest`), fed the adapter's durable→content relocation — the same
+    /// function and inputs the epoch uses. Proves the pool did not re-derive a
+    /// second digest path.
+    #[test]
+    fn find_or_create_anon_uses_the_shared_digest() {
+        let key = anon_key(AnonymousNominalKind::Struct, 3, 0);
+        let shape = DurableAnonymousShape::Struct {
+            fields: vec![(Arc::from("v"), DType::I32)],
+            struct_method_names: Vec::new(),
+        };
+        let mut pool = anon_pool([], [(key.clone(), shape)], []);
+        let ty = pool.find_or_create_anon(&key).unwrap();
+
+        // Independently relocate and hash through the shared computation.
+        let relocated = key
+            .try_map_identities::<String, String, std::convert::Infallible>(
+                &|k| Ok(format!("D\u{1}{k}")),
+                &|m: &Module| Ok(format!("M\u{1}{m}")),
+            )
+            .unwrap();
+        let digest = crate::stable_digest::stable_anonymous_identity_digest(&relocated);
+        assert_eq!(
+            render(pool.type_pool(), ty),
+            format!("__anon_struct_{digest:032x}"),
+        );
+    }
+
+    /// A field-only anonymous struct mints byte-identically to the epoch's
+    /// `find_or_create_anon_struct`: the `__anon_struct_{digest}` name, private,
+    /// copyable iff every field is. Dedups by producer key on repeat, and a later
+    /// `resolve(AnonymousNominal)` finds it by lookup.
+    #[test]
+    fn find_or_create_anon_struct_mints_and_dedups() {
+        let key = anon_key(AnonymousNominalKind::Struct, 0, 1);
+        let shape = DurableAnonymousShape::Struct {
+            fields: vec![(Arc::from("a"), DType::I32), (Arc::from("b"), DType::Bool)],
+            struct_method_names: Vec::new(),
+        };
+        let mut pool = anon_pool([], [(key.clone(), shape)], []);
+
+        let ty = pool.find_or_create_anon(&key).unwrap();
+        let id = ty.as_struct().unwrap();
+        let def = pool.type_pool().struct_def(id);
+        assert!(def.name.starts_with("__anon_struct_"));
+        assert_eq!(def.name.len(), "__anon_struct_".len() + 32);
+        assert!(!def.is_pub, "anonymous structs are private");
+        assert!(!def.is_builtin);
+        assert!(def.is_copy, "all-copy fields, no destructor");
+        assert_eq!(def.destructor, None);
+        assert_eq!(def.fields.len(), 2);
+        assert_eq!(def.fields[0].name, "a");
+
+        // Producer-nominal dedup: a repeat consult re-mints nothing.
+        let again = pool.find_or_create_anon(&key).unwrap();
+        assert_eq!(ty, again);
+        // And the `resolve` anonymous arm now finds it by the lookup the mint
+        // populated.
+        assert_eq!(
+            pool.resolve(&DType::AnonymousNominal(key)).unwrap(),
+            ty,
+            "the mint records the issued id for the lookup arm",
+        );
+    }
+
+    /// A `__drop` method forces the anonymous struct non-Copy and names its
+    /// destructor `{name}.__drop`, mirroring the epoch's destructor metadata.
+    #[test]
+    fn find_or_create_anon_struct_with_drop_is_non_copy() {
+        let key = anon_key(AnonymousNominalKind::Struct, 0, 2);
+        let shape = DurableAnonymousShape::Struct {
+            fields: vec![(Arc::from("v"), DType::I32)],
+            struct_method_names: vec![Arc::from("__drop"), Arc::from("len")],
+        };
+        let mut pool = anon_pool([], [(key.clone(), shape)], []);
+        let ty = pool.find_or_create_anon(&key).unwrap();
+        let def = pool.type_pool().struct_def(ty.as_struct().unwrap());
+        assert!(!def.is_copy, "a type with a destructor cannot be copy");
+        assert_eq!(def.destructor, Some(format!("{}.__drop", def.name)));
+    }
+
+    /// An anonymous enum mints the `__anon_enum_{digest} { A(i32), B }` name whose
+    /// payloads render through `safe_name_with_pool`, exactly as the epoch spells
+    /// them.
+    #[test]
+    fn find_or_create_anon_enum_mints_with_payload_names() {
+        let key = anon_key(AnonymousNominalKind::Enum, 5, 0);
+        let shape = DurableAnonymousShape::Enum {
+            variants: vec![
+                (Arc::from("Some"), vec![DType::I32]),
+                (Arc::from("None"), vec![]),
+            ],
+        };
+        let mut pool = anon_pool([], [(key.clone(), shape)], []);
+        let ty = pool.find_or_create_anon(&key).unwrap();
+        let def = pool.type_pool().enum_def(ty.as_enum().unwrap());
+        assert!(def.name.starts_with("__anon_enum_"));
+        assert!(
+            def.name.ends_with(" { Some(i32), None }"),
+            "enum name renders payloads: {}",
+            def.name
+        );
+        assert!(!def.is_pub);
+        assert_eq!(def.variants, vec!["Some".to_string(), "None".to_string()]);
+    }
+
+    /// Distinct producer keys forced onto one digest fail closed: the second is
+    /// refused with `AnonymousDigestCollision`, and neither its nominal nor its
+    /// symbol is published — the pool analog of the epoch's Theme-4b registry.
+    #[test]
+    fn anonymous_digest_collision_fails_closed() {
+        // Two DISTINCT producer keys (different producer definitions) whose
+        // definition relocation is forced to one string, so they hash identically
+        // without a real hash collision.
+        let first = anon_key(AnonymousNominalKind::Struct, 10, 0);
+        let second = anon_key(AnonymousNominalKind::Struct, 11, 0);
+        assert_ne!(first, second);
+        let shape = |()| DurableAnonymousShape::Struct {
+            fields: vec![(Arc::from("v"), DType::I32)],
+            struct_method_names: Vec::new(),
+        };
+        let mut pool = anon_pool(
+            [],
+            [(first.clone(), shape(())), (second.clone(), shape(()))],
+            [
+                (10u32, "D\u{1}collide".to_string()),
+                (11u32, "D\u{1}collide".to_string()),
+            ],
+        );
+
+        let minted = pool.find_or_create_anon(&first).unwrap();
+        let digest = match pool.find_or_create_anon(&second) {
+            Err(IdentityMintError::AnonymousDigestCollision(digest)) => digest,
+            other => panic!("expected a fail-closed collision, got {other:?}"),
+        };
+        // Zero publication for the colliding key: it is absent from the lookup
+        // cache, so no symbol was minted for it either.
+        assert_eq!(
+            pool.resolve(&DType::AnonymousNominal(second)),
+            Err(IdentityMintError::MissingAnonymous),
+            "the colliding key published no id"
+        );
+        // The winning key still resolves, and the digest names the collision.
+        assert_eq!(
+            pool.resolve(&DType::AnonymousNominal(first)).unwrap(),
+            minted
+        );
+        assert_ne!(digest, 0);
+    }
+
+    /// Same producer key re-presented is legitimate reuse (the guard never trips
+    /// on it), before and after an unrelated distinct key mints.
+    #[test]
+    fn anonymous_same_key_reuses() {
+        let key = anon_key(AnonymousNominalKind::Struct, 20, 0);
+        let other = anon_key(AnonymousNominalKind::Struct, 21, 0);
+        let shape = || DurableAnonymousShape::Struct {
+            fields: vec![(Arc::from("v"), DType::I32)],
+            struct_method_names: Vec::new(),
+        };
+        let mut pool = anon_pool([], [(key.clone(), shape()), (other.clone(), shape())], []);
+        let minted = pool.find_or_create_anon(&key).unwrap();
+        assert_eq!(pool.find_or_create_anon(&key).unwrap(), minted);
+        pool.find_or_create_anon(&other).unwrap();
+        assert_eq!(pool.find_or_create_anon(&key).unwrap(), minted);
+    }
+
+    /// Collapsed and non-collapsed spellings of ONE producer mint ONE identity:
+    /// the pool canonicalizes on entry (`with_canonical_producer`), so a caller
+    /// handing an empty-argument `Specialization` wrapper (the
+    /// declaration-signature projection's quirk) dedups onto the collapsed
+    /// form's mint and spells the collapsed form's digest — dedup, not the
+    /// `AnonymousDigestCollision` a second distinct-keyed mint hashing the same
+    /// digest would be refused with.
+    #[test]
+    fn anonymous_producer_collapse_dedups_on_entry() {
+        use crate::semantic_identity::FunctionInstanceKey;
+        let collapsed = AnonymousNominalKey {
+            kind: AnonymousNominalKind::Struct,
+            producer: StableProducerId::Function(Box::new(FunctionInstanceKey::Definition(7u32))),
+            anchor: rue_rir::RirStructuralAnchor::new(vec![
+                rue_rir::RirStructuralPathSegment::AnonymousType(0),
+            ]),
+            arguments: CanonicalArguments::default(),
+        };
+        let wrapped = AnonymousNominalKey {
+            producer: StableProducerId::Function(Box::new(FunctionInstanceKey::Specialization {
+                base: Box::new(FunctionInstanceKey::Definition(7u32)),
+                arguments: CanonicalArguments::default(),
+            })),
+            ..collapsed.clone()
+        };
+        assert_ne!(collapsed, wrapped, "the raw spellings are distinct keys");
+
+        // The durable universe keys shapes by the CANONICAL form (the
+        // `DurableAnonymousSource` contract).
+        let shape = DurableAnonymousShape::Struct {
+            fields: vec![(Arc::from("v"), DType::I32)],
+            struct_method_names: Vec::new(),
+        };
+        let mut pool = anon_pool([], [(collapsed.clone(), shape)], []);
+
+        // The WRAPPED form mints first: its shape consult and digest already run
+        // under the collapsed key, proving entry canonicalization (a raw-keyed
+        // consult would fail closed with `MissingAnonymousShape`).
+        let via_wrapped = pool.find_or_create_anon(&wrapped).unwrap();
+        let via_collapsed = pool.find_or_create_anon(&collapsed).unwrap();
+        assert_eq!(via_wrapped, via_collapsed, "one producer, one identity");
+
+        // The spelled name is the collapsed form's shared-digest name.
+        let relocated = collapsed
+            .try_map_identities::<String, String, std::convert::Infallible>(
+                &|k| Ok(format!("D\u{1}{k}")),
+                &|m: &Module| Ok(format!("M\u{1}{m}")),
+            )
+            .unwrap();
+        let digest = crate::stable_digest::stable_anonymous_identity_digest(&relocated);
+        assert_eq!(
+            render(pool.type_pool(), via_wrapped),
+            format!("__anon_struct_{digest:032x}"),
+        );
+    }
+
+    /// A key with no durable shape fails closed rather than minting an empty
+    /// nominal.
+    #[test]
+    fn find_or_create_anon_missing_shape_fails_closed() {
+        let key = anon_key(AnonymousNominalKind::Struct, 0, 0);
+        let mut pool = anon_pool([], [], []);
+        assert_eq!(
+            pool.find_or_create_anon(&key),
+            Err(IdentityMintError::MissingAnonymousShape)
+        );
+    }
+
+    /// `Str(N)` for a literal capacity mints the generated fixed-capacity string
+    /// struct byte-identically to the epoch's `get_or_create_str_fixed_struct`,
+    /// and dedups by name on repeat.
+    #[test]
+    fn str_fixed_arm_mints_and_dedups() {
+        let mut pool = pool([]);
+        let str8 = pool.get_or_create_str_fixed(8);
+        let id = str8.as_struct().unwrap();
+        let def = pool.type_pool().struct_def(id);
+        assert_eq!(def.name, "Str(8)");
+        assert!(def.is_copy);
+        assert!(def.is_builtin);
+        assert!(def.is_pub);
+        assert_eq!(def.fields.len(), 2);
+        assert_eq!(def.fields[0].name, "ptr");
+        assert_eq!(def.fields[1].name, "len");
+        assert_eq!(def.fields[1].ty, Type::U64);
+        // Same capacity dedups; a different capacity mints a distinct struct.
+        assert_eq!(pool.get_or_create_str_fixed(8), str8, "repeat dedups");
+        let str16 = pool.get_or_create_str_fixed(16);
+        assert_ne!(str16, str8);
+        assert_eq!(
+            pool.type_pool().struct_def(str16.as_struct().unwrap()).name,
+            "Str(16)"
         );
     }
 

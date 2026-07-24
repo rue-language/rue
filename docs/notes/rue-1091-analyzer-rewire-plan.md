@@ -460,6 +460,70 @@ and it fails closed on absent, ambiguous-receiver, wrong-`self`-form, and non-ma
 
 ---
 
+## Rider: the anonymous-mint keystone and the digest-locus ruling (recorded landing r6b)
+
+**(a) The digest-locus ruling (ratified; now landed).** The 128-bit anonymous-symbol digest is
+computed by exactly ONE shared function — `rue_air::stable_digest::stable_anonymous_identity_digest`,
+which hashes an `AnonymousNominalKey<String, String>` (a fixed-seed FNV-1a-128 over the
+request-independent stable content). Both the semantic epoch (`Sema::stable_anonymous_identity_digest`
+in `sema/anon_structs.rs`) and the provider-era identity pool
+(`BodyIdentityPool::find_or_create_anon` in `sema/body_identity.rs`) call it; neither owns a second
+computation. Each side supplies the durable→`(String, String)` **relocation** of the embedded
+definition and module keys: the epoch relocates its issuer-scoped tokens via
+`stable_definition_symbol_component` / `stable_module_symbol_component` (installed-endpoint form
+`D\u{1}{module_path}\u{1}{name}\u{1}{owner}\u{1}{kind as u8}` and `M\u{1}{module_path}`); the pool
+relocates the durable `StableDefinitionKey` / `ModuleId` through the `DurableAnonymousSource`
+adapter. The installed-endpoint `D`/`M` format is itself assembled by exactly ONE shared
+computation — `rue_air::stable_digest::stable_definition_component` /
+`stable_module_component` — which both the epoch's installed-endpoint arms and the durable
+adapter call; neither side owns a second format string (the encodings are additionally pinned
+byte-for-byte by `stable_symbol_component_encodings_are_pinned`). Only the epoch's session-local
+`d`/`m` fallback spells its own (deliberately non-durable) format. Byte-equality remains a
+cross-path differential target for BOTH nominal kinds
+(`provider_endpoint_facts_anonymous_arm_mints_after_registration` for the struct mint,
+`provider_endpoint_facts_anonymous_enum_mints_match_epoch` for the enum mint): the pool and the
+LIVE epoch mint the same anonymous nominal and their full materialization — the
+`__anon_*_{digest:032x}` name, copyability, visibility, mangled symbol, and members — is asserted
+equal.
+
+**(b) The canonical producer form is enforced at pool entry.** The epoch only ever mints under the
+canonical producer form — `canonical_function_producer` collapses an empty-argument function
+specialization to its base before any digest is taken, and production body-export carries that
+collapsed form (required by the warm==cold digest invariant). The pool now enforces the same
+invariant IN CODE rather than by precondition prose: `BodyIdentityPool::find_or_create_anon`
+collapses its incoming key on entry (`AnonymousNominalKey::with_canonical_producer`, the shared
+pure collapse in `semantic_identity.rs`) before dedup, digest, and shape consult, so a flip-era
+caller handing the non-collapsed form dedups onto — and spells the digest of — the collapsed form
+(unit-pinned by `anonymous_producer_collapse_dedups_on_entry`). Correspondingly, the durable
+anonymous universe is keyed by the canonical form (the documented `DurableAnonymousSource`
+contract; the compiler-side adapter indexes shapes through the same shared collapse), and the r6b
+differentials feed the RAW declaration-SIGNATURE projection identity (which retains the empty-arg
+wrapper) straight into the pool — proving entry canonicalization instead of de-quirking the input
+test-side.
+
+**(c) The const-candidate fallback is out of the pool's minting scope.** The epoch's session-local
+`d\u{1}{issuer}\u{1}{slot}` / `m\u{1}{issuer}\u{1}{slot}` relocation fallback (used only when a
+producer was routed through a const-candidate token with no installed endpoint) embeds a
+session-local issuer and is NOT reproducible from durable state alone. Anonymous producers rooting at
+a const-candidate (a `ValueConst`/`ModuleBinding` with no installed endpoint) are therefore outside
+the pool's byte-equal minting scope; every producer rooting at an installed definition / function
+endpoint (the differential's cases and the common case) is in scope.
+
+**(d) Str(N) scope.** The pool mints the fixed-capacity string struct `Str(N)` for a LITERAL `N`
+(`BodyIdentityPool::get_or_create_str_fixed`, a byte-mirror of the epoch's
+`get_or_create_str_fixed_struct`). A non-literal `N` (a comptime array-length expression) needs the
+r5 array-length machinery to reduce `N` to a literal first — the caller (the type-syntax resolver)
+owns that reduction; the pool takes an already-reduced `u64`. The TYPE-SYNTAX resolution of `Str(N)`
+to its durable identity stays deferred (the generated-struct / `ForeignLocalType` classification the
+r6a report deferred). Likewise, the type-syntax resolution of an anonymous comptime-call result
+(`Pair()`) stays deferred: the anonymous reduction result is a body-level durable value the
+production declaration binder rejects exporting (`AnonymousNominalType`), so it has no
+declaration-level cross-path truth. Both are pinned in
+`provider_type_facts_deferred_shapes_are_documented_gaps`; the pool minting of both is the delivered
+keystone.
+
+---
+
 ## 4. RISKS (top 5 for this rewire)
 
 | # | Risk | Mitigation |

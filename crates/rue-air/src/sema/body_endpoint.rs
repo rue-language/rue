@@ -27,7 +27,9 @@ use rue_span::FileId;
 
 use super::BodySema;
 use super::anon_structs::IssuedAnonymousNominalKey;
-use super::body_identity::{BodyIdentityPool, BodyRirIndex, DurableNominalSource};
+use super::body_identity::{
+    BodyIdentityPool, BodyRirIndex, DurableAnonymousSource, DurableNominalSource,
+};
 use super::declaration_index::RirDestructorDeclaration;
 use super::info::{FunctionInfo, MethodInfo};
 use super::provider::BodyFactProvider;
@@ -493,14 +495,21 @@ pub struct ProviderEndpointFacts<'a, P, S, K, M> {
     /// from the pool's own interner the nominal ops key on.
     rir_interner: &'a ThreadedRodeo,
     overlay: RefCell<EndpointOverlay<K>>,
+    /// The issued→durable anonymous seam (RUE-1091 r6b): the anonymous producer
+    /// key `resolve_instance_type` carries is in the issued-token domain, so a
+    /// caller seeds the durable key it stands for with
+    /// [`Self::register_anonymous_nominal`], exactly as it seeds a named nominal
+    /// with [`Self::register_named_nominal`]. The `anon_struct`/`anon_enum` arms
+    /// then mint through the pool's [`BodyIdentityPool::find_or_create_anon`].
+    anon_by_issued: RefCell<HashMap<IssuedAnonymousNominalKey, crate::AnonymousNominalKey<K, M>>>,
 }
 
 impl<'a, P, S, K, M> ProviderEndpointFacts<'a, P, S, K, M>
 where
     P: BodyFactProvider,
-    S: DurableNominalSource<K, M>,
+    S: DurableNominalSource<K, M> + DurableAnonymousSource<K, M>,
     K: Clone + Eq + Hash,
-    M: Eq + Hash,
+    M: Clone + Eq + Hash,
 {
     /// Construct the driver over a provider, a durable nominal source, and the
     /// shared whole-program `Rir` + interner. The pool and RIR index are built
@@ -514,7 +523,32 @@ where
             rir_index: BodyRirIndex::new(rir),
             rir_interner,
             overlay: RefCell::new(EndpointOverlay::default()),
+            anon_by_issued: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// Seed the durable anonymous producer key an issued-token anonymous key
+    /// stands for, so the `anon_struct` / `anon_enum` arms of
+    /// [`resolve_instance_type`] mint it through the pool (RUE-1091 r6b). The
+    /// caller supplies the same durable identity the epoch's
+    /// `import_anonymous_identity` reverses the issued key to; the pool then
+    /// spells the byte-identical `__anon_*_{digest}` name from that durable key's
+    /// stable relocation.
+    pub fn register_anonymous_nominal(
+        &self,
+        issued: IssuedAnonymousNominalKey,
+        durable: crate::AnonymousNominalKey<K, M>,
+    ) {
+        self.anon_by_issued.borrow_mut().insert(issued, durable);
+    }
+
+    /// Mint (or dedup) the anonymous nominal for a durable identity key directly,
+    /// the inherent form the differential compares against the LIVE epoch's
+    /// `find_or_create_anon_struct`/`_enum`. Returns the minted pool [`Type`], or
+    /// `None` if the durable key names no anonymous shape / a digest collision
+    /// refuses it (fail-closed).
+    pub fn mint_anonymous(&self, durable: &crate::AnonymousNominalKey<K, M>) -> Option<Type> {
+        self.pool.borrow_mut().find_or_create_anon(durable).ok()
     }
 
     /// Mint an overlay [`SemanticDefinitionToken`] standing for a durable nominal
@@ -674,9 +708,9 @@ where
 impl<P, S, K, M> BodyEndpointProvider for ProviderEndpointFacts<'_, P, S, K, M>
 where
     P: BodyFactProvider,
-    S: DurableNominalSource<K, M>,
+    S: DurableNominalSource<K, M> + DurableAnonymousSource<K, M>,
     K: Clone + Eq + Hash,
-    M: Eq + Hash,
+    M: Clone + Eq + Hash,
 {
     fn name_symbol(&self, name: &str) -> Option<Spur> {
         Some(self.pool.borrow().intern_name(name))
@@ -773,14 +807,26 @@ where
             .as_enum()
     }
 
-    fn anon_struct(&self, _identity: &IssuedAnonymousNominalKey) -> Option<StructId> {
-        // Anonymous mint-from-digest is r6; the pool resolves an issued
-        // anonymous by lookup only, which this differential does not seed.
-        None
+    fn anon_struct(&self, identity: &IssuedAnonymousNominalKey) -> Option<StructId> {
+        // RUE-1091 r6b: mint the anonymous struct through the pool for a durable
+        // key seeded by `register_anonymous_nominal`. An unseeded issued key fails
+        // closed (the pool never invents an identity), mirroring the epoch's
+        // `anon_struct_identities.get` miss.
+        let durable = self.anon_by_issued.borrow().get(identity).cloned()?;
+        self.pool
+            .borrow_mut()
+            .find_or_create_anon(&durable)
+            .ok()?
+            .as_struct()
     }
 
-    fn anon_enum(&self, _identity: &IssuedAnonymousNominalKey) -> Option<EnumId> {
-        None
+    fn anon_enum(&self, identity: &IssuedAnonymousNominalKey) -> Option<EnumId> {
+        let durable = self.anon_by_issued.borrow().get(identity).cloned()?;
+        self.pool
+            .borrow_mut()
+            .find_or_create_anon(&durable)
+            .ok()?
+            .as_enum()
     }
 
     fn is_builtin_or_generated_struct(&self, name: Spur) -> bool {
