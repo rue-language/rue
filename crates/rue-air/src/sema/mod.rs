@@ -100,6 +100,9 @@ pub use provider::{
 // RUE-1091 slice r4b-1 flip-era surface: the durable source vocabulary the
 // rue-compiler provider adapter supplies to the body identity pool, and the
 // call-resolution ProviderFacts driver that composes pool + provider answers.
+pub use aggregate_resolution::{
+    ProviderAggregateFacts, ProviderModuleMember, ProviderQualifiedType, ProviderStructHead,
+};
 pub use body_endpoint::ProviderEndpointFacts;
 pub use body_identity::{
     DurableCallableSource, DurableFunction, DurableMethod, DurableNominal, DurableNominalBody,

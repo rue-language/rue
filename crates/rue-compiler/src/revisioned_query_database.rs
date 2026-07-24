@@ -20654,12 +20654,47 @@ mod tests {
 
         fn method(
             &self,
-            _key: &StableDefinitionKey,
+            key: &StableDefinitionKey,
         ) -> Option<rue_air::DurableMethod<StableDefinitionKey, ModuleId>> {
-            // Deferred to r4b-3: the durable method key's receiver preimage is the
-            // owner nominal, threaded through the endpoint seam that owns
-            // receiver→pool identity. r4b-1 lands the free-function subset.
-            None
+            // r4b-3: the durable method key's receiver preimage is its owner
+            // nominal. The `Callable` payload carries the explicit parameters and
+            // result (self is separate, tracked by `has_self`); the receiver type
+            // is the owner nominal, recovered by joining the method key's
+            // `owner()` (module + kind + name) back to the owner nominal's own
+            // durable key in this set, so the pool resolves it through the same 2a
+            // nominal machinery as any parameter type.
+            use crate::durable_semantics::DurableDeclarationPayload as Payload;
+            let decl = self.by_key.get(key)?;
+            let Payload::Callable {
+                parameters,
+                result,
+                has_self,
+                ..
+            } = &decl.payload
+            else {
+                return None;
+            };
+            // A free function (no self) is not a method.
+            if !*has_self {
+                return None;
+            }
+            let owner = key.owner()?;
+            let owner_key = self
+                .by_key
+                .keys()
+                .find(|candidate| {
+                    candidate.owner().is_none()
+                        && candidate.module() == owner.module()
+                        && candidate.kind() == owner.kind()
+                        && candidate.name() == owner.name()
+                })?
+                .clone();
+            Some(rue_air::DurableMethod {
+                receiver: rue_air::SemanticImportType::Nominal(owner_key),
+                parameters: parameters.iter().map(provider_durable_param).collect(),
+                result: result.clone(),
+                has_self: *has_self,
+            })
         }
     }
 
@@ -21010,6 +21045,125 @@ mod tests {
                     || *family == "compiler.semantic-nucleus"),
             "the callable-symbol success footprint is lookup-name + semantic-nucleus \
              only (r4a-1): {families:?}"
+        );
+    }
+
+    #[test]
+    fn provider_call_facts_method_info_matches_epoch() {
+        use crate::StableDefinitionKind as Kind;
+        // A named method whose receiver (`Widget`), one explicit param (`Point`),
+        // and return (`i64`) all resolve through the pool's 2a nominal machinery
+        // — the r4b-3 backlog item: the receiver preimage `(owner_file,
+        // owner_type_name)` threads through the durable method key, recovered by
+        // joining the method key's `owner()` back to the owner nominal's durable
+        // key (the `DurableDeclSource::method` receiver join).
+        let source = "pub struct Point { x: i64, y: i64 }\n\
+                      pub struct Widget { id: i64, \
+                        fn shift(borrow self, p: Point, n: i32) -> i64 { self.id } }\n\
+                      fn main() -> i32 { 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let file = FileId::new(1);
+        let decls = production_declarations(&snapshot);
+        let shift = durable_decl(&decls, Kind::Method, "shift");
+        let shift_key = shift.key.clone();
+
+        // The LIVE epoch, bound through the production declaration path — the
+        // INDEPENDENT side the provider assembly is compared against.
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
+        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
+            &merged,
+            &rir,
+            crate::PreviewFeatures::default(),
+            rue_target::Target::X86_64Linux,
+            &imports,
+        )
+        .expect("declarations bind");
+        let interner = rir.semantic_symbols().interner();
+        let widget_sym = interner.get("Widget").expect("Widget interned");
+        let shift_sym = interner.get("shift").expect("shift interned");
+        let prod = bound
+            .epoch_method_info(file, widget_sym, shift_sym)
+            .expect("the epoch has Widget.shift's MethodInfo");
+        let prod_receiver = bound.with_type_pool(|pool| render_pool_type(pool, prod.struct_type));
+        let prod_return = bound.with_type_pool(|pool| render_pool_type(pool, prod.return_type));
+
+        let rir_ref = rir.rir();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let source_adapter = DurableDeclSource::from_declarations(&decls);
+
+        let outcome = database.probe_body_facts(
+            revision,
+            semantic_configuration(),
+            "call-method-info",
+            move |provider| {
+                let mut facts =
+                    rue_air::ProviderCallFacts::new(provider, source_adapter, rir_ref, interner);
+                let info = facts
+                    .method_info(&shift_key, file, "Widget", "shift")
+                    .expect("Widget.shift resolves through the provider path");
+                // `named_method_info` coincides over the named differential scope
+                // (no anonymous fallback), mirroring the epoch's `methods.get`.
+                let named = facts
+                    .named_method_info(&shift_key, file, "Widget", "shift")
+                    .expect("named_method_info resolves");
+                assert_eq!(named.body, info.body, "named_method_info agrees on body");
+                // Double consult: idempotent, the pool re-mints nothing.
+                let second = facts
+                    .method_info(&shift_key, file, "Widget", "shift")
+                    .expect("repeat consult resolves");
+                assert_eq!(second.body, info.body);
+                assert_eq!(
+                    second.params, info.params,
+                    "repeat consult re-minted params"
+                );
+
+                // Explicit params (self excluded): one nominal (`Point` through
+                // 2a) and one primitive, asserted through the index-independent
+                // render / resolved-name reads.
+                let arena = facts.param_arena();
+                let names = arena.names(info.params);
+                let types = arena.types(info.params);
+                let modes = arena.modes(info.params);
+                assert_eq!(info.params.len(), 2, "self is excluded from params");
+                assert_eq!(facts.resolve_symbol(names[0]), "p");
+                assert_eq!(facts.resolve_symbol(names[1]), "n");
+                assert_eq!(render_pool_type(facts.type_pool(), types[0]), "Point");
+                assert_eq!(render_pool_type(facts.type_pool(), types[1]), "i32");
+                assert_eq!(modes[0], rue_rir::RirParamMode::Normal);
+
+                let receiver = render_pool_type(facts.type_pool(), info.struct_type);
+                let ret = render_pool_type(facts.type_pool(), info.return_type);
+                (info, receiver, ret)
+            },
+        );
+        let (info, receiver, ret) = outcome.result;
+
+        // Cross-path against the LIVE epoch `MethodInfo` (not literals):
+        // pool-independent fields directly, pool-relative types by render.
+        assert_eq!(receiver, prod_receiver, "receiver equals the epoch's");
+        assert_eq!(receiver, "Widget", "receiver is the owning nominal");
+        assert_eq!(ret, prod_return, "return equals the epoch's");
+        assert_eq!(info.has_self, prod.has_self, "has_self matches");
+        assert!(info.has_self, "shift takes self");
+        assert_eq!(info.self_mode, prod.self_mode, "self_mode matches");
+        assert_eq!(info.self_mode, rue_rir::RirParamMode::Borrow);
+        assert_eq!(info.self_is_mut, prod.self_is_mut, "self_is_mut matches");
+        assert_eq!(
+            info.body, prod.body,
+            "method body InstRef matches the epoch"
+        );
+        assert_eq!(info.span, prod.span, "method span matches the epoch");
+
+        // The P-op path consults the pool + the RIR handle, not the live provider
+        // terminals, so it records no provider edge (pool answered-by-metadata).
+        assert!(
+            outcome.dependencies.is_empty(),
+            "a pool-answered method_info records no provider edge: {:?}",
+            outcome.dependencies
         );
     }
 
@@ -21551,6 +21705,370 @@ mod tests {
                 .any(|node| node.family() == "compiler.lookup-name"),
             "nominal presence observes the name-lookup terminal: {:?}",
             outcome.dependencies
+        );
+    }
+
+    // ---- RUE-1091 r4b-3: aggregate ProviderFacts differentials ----------------
+    //
+    // These prove `rue_air::ProviderAggregateFacts` (the provider-driven
+    // realization of the family-1D `AggregateFacts` seam) selects the same
+    // aggregate/field/variant winner the epoch does. The selection ORDER lives in
+    // the provider-generic free functions the driver merely supplies facts to
+    // (`select_module_type_member`'s struct→enum→const short-circuit,
+    // `select_qualified_type`'s enum→struct, `select_struct_literal_head`'s
+    // const→struct→builtin) — so the driver and the epoch replay the exact r1c
+    // candidate order. The driver reuses the shared `DurableDeclSource` (the r4b-1
+    // durable set) for its 2a pool; the comparison target is the LIVE epoch's own
+    // selection (`BoundSema::epoch_module_type_member` / `_qualified_type` /
+    // `_struct_literal_head` / `_is_accessible`), rendered index-independently.
+    //
+    // Scope landed here: struct/enum-by-file-name (P, pool mint via the overlay
+    // reverse), the builtins (P, pool pre-registered set), and `is_accessible`
+    // (O, request-local file paths). Deferred with cause (pinned, never silently
+    // answered wrong): the const fall-through (`value_const` / `module_binding`) →
+    // the flip's const-declaration RIR handle, so a const member selects `Absent`
+    // where the epoch selects `Const`; `module_def` + the module spines → the
+    // flip; `source_path` → the flip.
+
+    /// The tag + index-independent display of a [`rue_air::ProviderModuleMember`],
+    /// rendered through the pool that minted its type.
+    fn describe_member(
+        member: &rue_air::ProviderModuleMember,
+        pool: &rue_air::TypeInternPool,
+    ) -> (&'static str, Option<String>) {
+        match member {
+            rue_air::ProviderModuleMember::Struct(ty) => {
+                ("struct", Some(endpoint_display(pool, *ty)))
+            }
+            rue_air::ProviderModuleMember::Enum(ty) => ("enum", Some(endpoint_display(pool, *ty))),
+            rue_air::ProviderModuleMember::Const => ("const", None),
+            rue_air::ProviderModuleMember::Absent => ("absent", None),
+        }
+    }
+
+    /// The tag + display of a [`rue_air::ProviderQualifiedType`].
+    fn describe_qualified(
+        qualified: &rue_air::ProviderQualifiedType,
+        pool: &rue_air::TypeInternPool,
+    ) -> (&'static str, Option<String>) {
+        match qualified {
+            rue_air::ProviderQualifiedType::Enum(ty) => ("enum", Some(endpoint_display(pool, *ty))),
+            rue_air::ProviderQualifiedType::Struct(ty) => {
+                ("struct", Some(endpoint_display(pool, *ty)))
+            }
+            rue_air::ProviderQualifiedType::Absent => ("absent", None),
+        }
+    }
+
+    #[test]
+    fn provider_aggregate_facts_nominal_and_builtin_match_epoch() {
+        use crate::StableDefinitionKind as Kind;
+        // A user struct and enum (minted through the pool's 2a machinery via the
+        // `(file, name)` overlay reverse) plus the pool's pre-registered builtins.
+        let source = "pub struct Point { x: i64, y: i64 }\n\
+                      pub enum Color { Red, Green }\n\
+                      fn main() -> i32 { 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let file = FileId::new(1);
+        let decls = production_declarations(&snapshot);
+        let point_key = durable_decl(&decls, Kind::Struct, "Point").key.clone();
+        let color_key = durable_decl(&decls, Kind::Enum, "Color").key.clone();
+
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
+        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
+            &merged,
+            &rir,
+            crate::PreviewFeatures::default(),
+            rue_target::Target::X86_64Linux,
+            &imports,
+        )
+        .expect("declarations bind");
+        let interner = rir.semantic_symbols().interner();
+        let point_sym = interner.get("Point").expect("Point interned");
+        let color_sym = interner.get("Color").expect("Color interned");
+        let epoch_point = bound.with_type_pool(|pool| {
+            endpoint_display(pool, bound.epoch_nominal_type(file, point_sym).unwrap())
+        });
+        let epoch_color = bound.with_type_pool(|pool| {
+            endpoint_display(pool, bound.epoch_nominal_type(file, color_sym).unwrap())
+        });
+
+        let mut facts =
+            rue_air::ProviderAggregateFacts::new(DurableDeclSource::from_declarations(&decls));
+        facts.register_named_nominal(point_key, file, "Point");
+        facts.register_named_nominal(color_key, file, "Color");
+
+        let point = facts.struct_in_file(file, "Point").expect("Point resolves");
+        let point_again = facts
+            .struct_in_file(file, "Point")
+            .expect("repeat resolves");
+        assert_eq!(point, point_again, "repeat consult dedups the nominal");
+        let color = facts.enum_in_file(file, "Color").expect("Color resolves");
+        let str_ty = facts.builtin_struct("str").expect("builtin str resolves");
+        let arch_ty = facts
+            .builtin_enum("Arch")
+            .expect("builtin Arch enum resolves");
+
+        // A struct is not an enum and vice versa (kind-filtered by the id kind).
+        assert!(
+            facts.enum_in_file(file, "Point").is_none(),
+            "Point is not an enum"
+        );
+        assert!(
+            facts.struct_in_file(file, "Color").is_none(),
+            "Color is not a struct"
+        );
+        assert!(
+            facts.struct_in_file(file, "Absent").is_none(),
+            "absent fails closed"
+        );
+        assert!(
+            facts.builtin_struct("NotABuiltin").is_none(),
+            "unknown builtin fails closed"
+        );
+
+        facts.with_type_pool(|pool| {
+            assert_eq!(
+                endpoint_display(pool, point),
+                epoch_point,
+                "Point matches the epoch"
+            );
+            assert_eq!(endpoint_display(pool, point), "Point");
+            assert_eq!(
+                endpoint_display(pool, color),
+                epoch_color,
+                "Color matches the epoch"
+            );
+            assert_eq!(endpoint_display(pool, color), "Color");
+            // Builtins are pre-registered identically to a fresh import epoch.
+            assert_eq!(endpoint_display(pool, str_ty), "str");
+            assert_eq!(endpoint_display(pool, arch_ty), "Arch");
+        });
+    }
+
+    #[test]
+    fn provider_aggregate_facts_selection_order_matches_epoch() {
+        use crate::StableDefinitionKind as Kind;
+        // A struct, an enum, and a value constant sharing one module: the
+        // struct→enum→const short-circuit is exercised, and the const arm is the
+        // pinned deferred divergence.
+        let source = "pub struct Point { x: i64 }\n\
+                      pub enum Color { Red, Green }\n\
+                      pub const LIMIT: i64 = 7;\n\
+                      fn main() -> i32 { 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let file = FileId::new(1);
+        let decls = production_declarations(&snapshot);
+        let point_key = durable_decl(&decls, Kind::Struct, "Point").key.clone();
+        let color_key = durable_decl(&decls, Kind::Enum, "Color").key.clone();
+
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
+        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
+            &merged,
+            &rir,
+            crate::PreviewFeatures::default(),
+            rue_target::Target::X86_64Linux,
+            &imports,
+        )
+        .expect("declarations bind");
+        let interner = rir.semantic_symbols().interner();
+        let point_sym = interner.get("Point").expect("Point interned");
+        let color_sym = interner.get("Color").expect("Color interned");
+        let limit_sym = interner.get("LIMIT").expect("LIMIT interned");
+
+        let mut facts =
+            rue_air::ProviderAggregateFacts::new(DurableDeclSource::from_declarations(&decls));
+        facts.register_named_nominal(point_key, file, "Point");
+        facts.register_named_nominal(color_key, file, "Color");
+
+        // select_module_type_member: struct wins first, enum second, const arm is
+        // deferred (Absent where the epoch answers Const), absent last.
+        let member_point = facts.select_module_type_member(file, "Point");
+        let member_color = facts.select_module_type_member(file, "Color");
+        let member_limit = facts.select_module_type_member(file, "LIMIT");
+        let member_absent = facts.select_module_type_member(file, "Ghost");
+        // select_qualified_type: enum→struct order.
+        let qualified_color = facts.select_qualified_type(file, "Color");
+        let qualified_point = facts.select_qualified_type(file, "Point");
+        // select_qualified_enum: enum only.
+        let qenum_color = facts.select_qualified_enum(file, "Color");
+        let qenum_point = facts.select_qualified_enum(file, "Point");
+        // select_struct_literal_head: unqualified head → Named for a struct.
+        let head_point = facts.select_struct_literal_head(file, "Point");
+
+        let (mp_tag, mp_disp) = facts.with_type_pool(|pool| describe_member(&member_point, pool));
+        let (mc_tag, mc_disp) = facts.with_type_pool(|pool| describe_member(&member_color, pool));
+        let (ml_tag, _) = facts.with_type_pool(|pool| describe_member(&member_limit, pool));
+        let (ma_tag, _) = facts.with_type_pool(|pool| describe_member(&member_absent, pool));
+        let (qc_tag, qc_disp) =
+            facts.with_type_pool(|pool| describe_qualified(&qualified_color, pool));
+        let (qp_tag, qp_disp) =
+            facts.with_type_pool(|pool| describe_qualified(&qualified_point, pool));
+
+        // Epoch winners for the same members.
+        let epoch_point = bound.epoch_module_type_member(file, point_sym);
+        let epoch_color = bound.epoch_module_type_member(file, color_sym);
+        let epoch_limit = bound.epoch_module_type_member(file, limit_sym);
+        let (ep_tag, ep_disp) = bound.with_type_pool(|pool| describe_member(&epoch_point, pool));
+        let (ec_tag, ec_disp) = bound.with_type_pool(|pool| describe_member(&epoch_color, pool));
+        let (el_tag, _) = bound.with_type_pool(|pool| describe_member(&epoch_limit, pool));
+
+        // Struct arm: provider == epoch.
+        assert_eq!(
+            (mp_tag, &mp_disp),
+            (ep_tag, &ep_disp),
+            "struct member matches epoch"
+        );
+        assert_eq!(mp_tag, "struct");
+        assert_eq!(mp_disp.as_deref(), Some("Point"));
+        // Enum arm: provider == epoch.
+        assert_eq!(
+            (mc_tag, &mc_disp),
+            (ec_tag, &ec_disp),
+            "enum member matches epoch"
+        );
+        assert_eq!(mc_tag, "enum");
+        assert_eq!(mc_disp.as_deref(), Some("Color"));
+        // Const arm: the pinned divergence — epoch selects Const, provider Absent.
+        assert_eq!(el_tag, "const", "the epoch selects the const member");
+        assert_eq!(
+            ml_tag, "absent",
+            "the provider defers the const arm (flip const RIR handle)"
+        );
+        // Absent: both agree there is no member.
+        assert_eq!(ma_tag, "absent");
+
+        // Qualified selection: enum→struct order, matching the epoch's discriminant.
+        let epoch_q_color = bound.epoch_qualified_type(file, color_sym);
+        let epoch_q_point = bound.epoch_qualified_type(file, point_sym);
+        let (eqc_tag, eqc_disp) =
+            bound.with_type_pool(|pool| describe_qualified(&epoch_q_color, pool));
+        let (eqp_tag, eqp_disp) =
+            bound.with_type_pool(|pool| describe_qualified(&epoch_q_point, pool));
+        assert_eq!(
+            (qc_tag, &qc_disp),
+            (eqc_tag, &eqc_disp),
+            "qualified enum matches epoch"
+        );
+        assert_eq!(qc_tag, "enum");
+        assert_eq!(
+            (qp_tag, &qp_disp),
+            (eqp_tag, &eqp_disp),
+            "qualified struct matches epoch"
+        );
+        assert_eq!(qp_tag, "struct");
+
+        // select_qualified_enum: enum resolves, struct does not.
+        assert!(qenum_color.is_some(), "Color qualified-enum resolves");
+        assert!(qenum_point.is_none(), "Point is not a qualified enum");
+
+        // select_struct_literal_head: unqualified struct head → Named.
+        match head_point {
+            rue_air::ProviderStructHead::Named(ty) => {
+                assert_eq!(
+                    facts.with_type_pool(|pool| endpoint_display(pool, ty)),
+                    "Point"
+                );
+            }
+            _ => panic!("Point struct head should be Named"),
+        }
+        // The epoch's head agrees.
+        match bound.epoch_struct_literal_head(file, point_sym) {
+            rue_air::ProviderStructHead::Named(_) => {}
+            _ => panic!("epoch Point head should be Named"),
+        }
+    }
+
+    #[test]
+    fn provider_aggregate_facts_is_accessible_matches_epoch() {
+        // Two files in DISTINCT directories: the visibility domain is the parent
+        // directory, so a private item is visible within its own file but not
+        // across directories; a public item is visible either way. The driver
+        // reproduces the epoch's decision from the SAME registered physical paths
+        // (a request-local body-query input, not a durable fact — no
+        // seam-signature change), proving the visibility short-circuit.
+        let root_src = "pub struct A { x: i32 }\n\
+             fn main() -> i32 { 0 }\n";
+        let leaf_src = "pub struct B { y: i32 }\n";
+        let root_file = FileId::new(1);
+        let leaf_file = FileId::new(2);
+        let metadata = SourceMetadata::new_with_trusted_standard_library(
+            root_file,
+            HashMap::from([
+                (root_file, "/project/main.rue".to_owned()),
+                (leaf_file, "/project/std/leaf.rue".to_owned()),
+            ]),
+            HashMap::from([
+                (root_file, "main.rue".to_owned()),
+                (leaf_file, "\0rue-std/leaf.rue".to_owned()),
+            ]),
+            std::collections::HashSet::from([leaf_file]),
+        )
+        .expect("trusted-std metadata is valid");
+        let snapshot = SourceSnapshot::new(
+            metadata,
+            vec![
+                (root_file, Arc::new(root_src.to_owned())),
+                (leaf_file, Arc::new(leaf_src.to_owned())),
+            ],
+        )
+        .expect("two-file snapshot is valid");
+
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
+        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
+            &merged,
+            &rir,
+            crate::PreviewFeatures::default(),
+            rue_target::Target::X86_64Linux,
+            &imports,
+        )
+        .expect("declarations bind");
+        let decls = production_declarations(&snapshot);
+
+        // No K-typed argument pins the pool key here (is_accessible is path-only),
+        // so name the durable key / module explicitly.
+        let mut facts = rue_air::ProviderAggregateFacts::<StableDefinitionKey, ModuleId, _>::new(
+            DurableDeclSource::from_declarations(&decls),
+        );
+        // Register the SAME physical paths the epoch's `get_file_path` returns.
+        facts.register_file_path(root_file, &bound.epoch_file_path(root_file).unwrap());
+        facts.register_file_path(leaf_file, &bound.epoch_file_path(leaf_file).unwrap());
+
+        // Every combination of (accessing, defining, is_public) must match the
+        // epoch's decision from the same paths.
+        for &accessing in &[root_file, leaf_file] {
+            for &defining in &[root_file, leaf_file] {
+                for &is_public in &[false, true] {
+                    assert_eq!(
+                        facts.is_accessible(accessing, defining, is_public),
+                        bound.epoch_is_accessible(accessing, defining, is_public),
+                        "is_accessible parity for accessing={accessing:?} defining={defining:?} pub={is_public}"
+                    );
+                }
+            }
+        }
+        // Spot the load-bearing rows: same file sees private; cross-directory
+        // private is hidden; public crosses.
+        assert!(
+            facts.is_accessible(root_file, root_file, false),
+            "same file sees private"
+        );
+        assert!(
+            !facts.is_accessible(root_file, leaf_file, false),
+            "cross-dir private hidden"
+        );
+        assert!(
+            facts.is_accessible(root_file, leaf_file, true),
+            "public crosses directories"
         );
     }
 

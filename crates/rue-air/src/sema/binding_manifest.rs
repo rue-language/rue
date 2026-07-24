@@ -2469,6 +2469,113 @@ impl<'a> BoundSema<'a> {
             })
     }
 
+    /// RUE-1091 slice r4b-3 flip-era surface: the epoch's `MethodInfo` for a
+    /// `(file, type_name, method)` named method, exposed so the rue-compiler
+    /// differential compares the provider-driven `ProviderCallFacts` method
+    /// assembly against the LIVE epoch answer (not a durable re-terminal). The
+    /// receiver preimage `(file, type_name)` is resolved to the epoch's
+    /// pool-minted `StructId` through the endpoint facts — the exact
+    /// `struct_by_file_name` → `method_info((struct_id, method))` path the epoch
+    /// analyzer performs. The returned info's ids are epoch-pool-relative, so a
+    /// caller compares its index-independent render / metadata, never a raw id.
+    pub fn epoch_method_info(
+        &self,
+        file: FileId,
+        type_name: Spur,
+        method: Spur,
+    ) -> Option<super::info::MethodInfo> {
+        use super::body_endpoint::{BodyEndpointProvider, endpoint_facts};
+        let facts = endpoint_facts(&self.sema);
+        let struct_id = facts.struct_by_file_name(file, type_name)?;
+        facts.method_info(struct_id, method)
+    }
+
+    /// RUE-1091 slice r4b-3 flip-era surface: the epoch's
+    /// [`select_module_type_member`](super::aggregate_resolution::select_module_type_member)
+    /// winner for `(file, name)`, projected to the shared
+    /// [`ProviderModuleMember`](crate::ProviderModuleMember) so the differential
+    /// compares the provider-driven `ProviderAggregateFacts` selection against the
+    /// LIVE epoch's — proving the r1c struct→enum→const short-circuit is replayed
+    /// byte-for-byte. Runs the same provider-generic free function the analyzer
+    /// runs, driven over the epoch `AggregateFacts`.
+    pub fn epoch_module_type_member(
+        &self,
+        file: FileId,
+        name: Spur,
+    ) -> crate::ProviderModuleMember {
+        use super::aggregate_resolution::{
+            EpochFacts, ModuleTypeMember, select_module_type_member,
+        };
+        let facts = EpochFacts::new(&self.sema);
+        match select_module_type_member(&facts, file, name) {
+            ModuleTypeMember::Struct(id) => {
+                crate::ProviderModuleMember::Struct(crate::types::Type::new_struct(id))
+            }
+            ModuleTypeMember::Enum(id) => {
+                crate::ProviderModuleMember::Enum(crate::types::Type::new_enum(id))
+            }
+            ModuleTypeMember::Const(_) => crate::ProviderModuleMember::Const,
+            ModuleTypeMember::Absent => crate::ProviderModuleMember::Absent,
+        }
+    }
+
+    /// RUE-1091 slice r4b-3 flip-era surface: the epoch's
+    /// [`select_qualified_type`](super::aggregate_resolution::select_qualified_type)
+    /// winner (enum→struct order) for `(file, name)`.
+    pub fn epoch_qualified_type(&self, file: FileId, name: Spur) -> crate::ProviderQualifiedType {
+        use super::aggregate_resolution::{EpochFacts, QualifiedType, select_qualified_type};
+        let facts = EpochFacts::new(&self.sema);
+        match select_qualified_type(&facts, file, name) {
+            QualifiedType::Enum(id) => {
+                crate::ProviderQualifiedType::Enum(crate::types::Type::new_enum(id))
+            }
+            QualifiedType::Struct(id) => {
+                crate::ProviderQualifiedType::Struct(crate::types::Type::new_struct(id))
+            }
+            QualifiedType::Absent => crate::ProviderQualifiedType::Absent,
+        }
+    }
+
+    /// RUE-1091 slice r4b-3 flip-era surface: the epoch's
+    /// [`select_struct_literal_head`](super::aggregate_resolution::select_struct_literal_head)
+    /// winner for an unqualified head `(file, name)` (no local type).
+    pub fn epoch_struct_literal_head(&self, file: FileId, name: Spur) -> crate::ProviderStructHead {
+        use super::aggregate_resolution::{
+            EpochFacts, StructLiteralHead, select_struct_literal_head,
+        };
+        let facts = EpochFacts::new(&self.sema);
+        match select_struct_literal_head(&facts, None, file, name) {
+            StructLiteralHead::Bound(ty) => crate::ProviderStructHead::Bound(ty),
+            StructLiteralHead::Named(id) => {
+                crate::ProviderStructHead::Named(crate::types::Type::new_struct(id))
+            }
+            StructLiteralHead::Absent => crate::ProviderStructHead::Absent,
+        }
+    }
+
+    /// RUE-1091 slice r4b-3 flip-era surface: the epoch's
+    /// [`is_accessible`](super::aggregate_resolution::is_accessible) visibility
+    /// decision for `(accessing_file, defining_file, is_public)`, so the
+    /// differential proves the provider driver's registered-path visibility domain
+    /// matches the epoch's `get_file_path`-derived one.
+    pub fn epoch_is_accessible(
+        &self,
+        accessing_file: FileId,
+        defining_file: FileId,
+        is_public: bool,
+    ) -> bool {
+        use super::aggregate_resolution::{EpochFacts, is_accessible};
+        let facts = EpochFacts::new(&self.sema);
+        is_accessible(&facts, accessing_file, defining_file, is_public)
+    }
+
+    /// RUE-1091 slice r4b-3 flip-era surface: the epoch's physical file path for
+    /// `file`, so the differential registers the same path into the provider
+    /// driver's request-local path overlay that `is_accessible` consults.
+    pub fn epoch_file_path(&self, file: FileId) -> Option<String> {
+        self.sema.get_file_path(file).map(str::to_owned)
+    }
+
     /// RUE-1091 slice r4b-2 flip-era surface: read the epoch's populated
     /// [`TypeInternPool`](crate::intern_pool::TypeInternPool) under a closure, so
     /// the differential renders an [`Self::epoch_nominal_type`] result with the
