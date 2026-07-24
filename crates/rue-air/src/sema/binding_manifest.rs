@@ -2469,6 +2469,24 @@ impl<'a> BoundSema<'a> {
             })
     }
 
+    /// RUE-1091 slice r6a flip-era surface: the epoch's resolved generated
+    /// slice-struct [`Type`] for a generated-struct name, exposed so the
+    /// rue-compiler differential compares the provider-driven
+    /// `ProviderEndpointFacts` slice minting against the LIVE epoch's generated
+    /// slice struct. Delegates to the same `generated_struct` endpoint op the
+    /// `Slice` arm of [`super::body_endpoint::resolve_instance_type`] consults,
+    /// reading the epoch's `generated_structs` map (populated when the program
+    /// materializes the slice). The returned id is epoch-pool-relative, so a
+    /// caller compares its index-independent render / metadata via
+    /// [`Self::with_type_pool`], never the raw id.
+    pub fn epoch_generated_struct_type(&self, name: Spur) -> Option<crate::types::Type> {
+        use super::body_endpoint::{BodyEndpointProvider, endpoint_facts};
+        let facts = endpoint_facts(&self.sema);
+        facts
+            .generated_struct(name)
+            .map(crate::types::Type::new_struct)
+    }
+
     /// RUE-1091 slice r4b-3 flip-era surface: the epoch's `MethodInfo` for a
     /// `(file, type_name, method)` named method, exposed so the rue-compiler
     /// differential compares the provider-driven `ProviderCallFacts` method

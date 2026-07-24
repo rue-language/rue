@@ -11484,6 +11484,25 @@ impl ReceiverTypeIdentity {
     }
 }
 
+/// The language-item registry for the bare-owner callable-symbol reversal
+/// (RUE-1091 r6a). A language-item nominal renders its owner symbol BARE (the
+/// RUE-1089 file-qualification exemption), so its defining module is not
+/// recoverable from the symbol; it is recovered here from the canonical
+/// trusted-standard-library path each language item is defined at. Today the
+/// sole language item is `StrBuf` (`\0rue-std/strbuf.rue`). A bare name that is
+/// not a known language item (an anonymous owner) yields `None` and stays
+/// refused — the residual owned by r6b / the flip.
+#[cfg(test)]
+fn bare_language_item_owner(type_name: &str) -> Option<(ModuleId, rue_air::LangItem)> {
+    match type_name {
+        "StrBuf" => Some((
+            ModuleId::from_trusted_standard_library_path("\0rue-std/strbuf.rue").ok()?,
+            rue_air::LangItem::StrBuf,
+        )),
+        _ => None,
+    }
+}
+
 /// Key for the test-only provider-observation probe task. One task hosts a
 /// batch of provider ops so the driven body's recorded query edges are
 /// inspectable through the terminal's `dependencies()`.
@@ -12148,24 +12167,61 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
         if method.is_empty() {
             return None;
         }
-        // The prefix is `Type$file`; a bare prefix (no `$`) is a builtin /
-        // language-item / anonymous owner whose defining module is not recoverable
-        // from the symbol alone — deferred to r6 with the well-known facts.
-        let (type_name, file_component) = prefix.split_once('$')?;
-        if type_name.is_empty() || file_component.is_empty() {
-            return None;
-        }
-        let module_path = rue_air::unmangle_symbol_component(file_component)?;
-        let module = ModuleId::from_logical_path(&module_path).ok()?;
+
+        // Recover the receiver nominal's `(module, type_name)` and the prefix its
+        // forward render must reproduce byte for byte. A `Type$file` prefix names
+        // a user nominal whose module is recovered by un-mangling the file
+        // component. A BARE prefix (no `$`) is a builtin / language-item /
+        // anonymous owner: RUE-1091 r6a LIFTS the language-item class by
+        // recovering its canonical module from the language-item registry (the
+        // module a language item is defined at is not in the symbol, since a
+        // language item renders its owner BARE per the RUE-1089 file-qualification
+        // exemption). A bare owner that is NOT a known language item (an anonymous
+        // owner) stays refused — the residual r6b / the flip owns.
+        let (module, type_name, rendered_prefix, require_lang_item) = match prefix.split_once('$') {
+            Some((type_name, file_component)) => {
+                if type_name.is_empty() || file_component.is_empty() {
+                    return None;
+                }
+                let module_path = rue_air::unmangle_symbol_component(file_component)?;
+                let module = ModuleId::from_logical_path(&module_path).ok()?;
+                // Reproduce the epoch's file-qualified `method_symbol` prefix (the
+                // same `mangle(normalize(path))` composition `struct_symbol_name`
+                // uses).
+                let file = rue_air::mangle_symbol_component(&rue_air::normalize_module_path(
+                    module.as_str(),
+                ));
+                (
+                    module,
+                    type_name.to_owned(),
+                    format!("{type_name}${file}"),
+                    None,
+                )
+            }
+            None => {
+                let (module, lang_item) = bare_language_item_owner(prefix)?;
+                // A language item keeps its BARE owner name, so the rendered prefix
+                // is the bare type name.
+                (
+                    module,
+                    prefix.to_owned(),
+                    prefix.to_owned(),
+                    Some(lang_item),
+                )
+            }
+        };
 
         // Resolve the receiver nominal by its unqualified name in the recovered
         // module (records the lookup-name edge, metered as a name lookup). The
         // receiver is unique or the query fails closed: an absent name, an
         // unavailable index, or an ambiguous nominal (a struct and enum sharing
         // the name) all yield `None`, mirroring the epoch bucket that retains
-        // collisions so ambiguity never depends on iteration order.
+        // collisions so ambiguity never depends on iteration order. For a bare
+        // language-item owner the resolved nominal must additionally carry the
+        // expected language item, so a same-named user nominal or a program
+        // without the trusted nominal fails closed.
         let resolution =
-            self.lookup_unqualified(&module, rue_air::ProviderNamespace::ModuleItem, type_name);
+            self.lookup_unqualified(&module, rue_air::ProviderNamespace::ModuleItem, &type_name);
         let mut nominals = resolution.candidates().iter().filter(|candidate| {
             matches!(
                 candidate.kind,
@@ -12176,12 +12232,17 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
         if nominals.next().is_some() {
             return None;
         }
+        if let Some(expected) = require_lang_item
+            && nominal.language_item != Some(expected)
+        {
+            return None;
+        }
         let category = match nominal.kind {
             rue_air::ProviderDefinitionKind::Struct => Cat::Struct,
             rue_air::ProviderDefinitionKind::Enum => Cat::Enum,
             _ => return None,
         };
-        let receiver = ReceiverTypeIdentity::new(module.clone(), type_name, category);
+        let receiver = ReceiverTypeIdentity::new(module.clone(), type_name.as_str(), category);
 
         // Select the unique member of that receiver name whose `self`-receiver
         // classification (sourced from its signature) matches the symbol's form
@@ -12195,14 +12256,10 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
             return None;
         }
 
-        // Reproduce the epoch's `method_symbol` rendering (file-qualified via the
-        // same `mangle(normalize(path))` composition the type pool's
-        // `struct_symbol_name` uses) and require a byte-exact match, so a symbol
-        // the epoch could never have produced fails closed.
-        let file_component =
-            rue_air::mangle_symbol_component(&rue_air::normalize_module_path(module.as_str()));
+        // Reproduce the epoch's `method_symbol` rendering and require a byte-exact
+        // match, so a symbol the epoch could never have produced fails closed.
         let separator = if has_self { "." } else { "::" };
-        let rendered = format!("{type_name}${file_component}{separator}{method}");
+        let rendered = format!("{rendered_prefix}{separator}{method}");
         if rendered != symbol {
             return None;
         }
@@ -12291,9 +12348,10 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
 // mut`. Deferred with cause (differential documents each): comptime type-ctor
 // calls and their value arguments (the boundary exposes no argument-parameterized
 // comptime-call op, and `DurableSemanticParameter` carries no parameter name —
-// r5); builtin `str`/`Str(...)` and slice generated-struct names (no builtin/slice
-// name fact on the boundary — later slices); anonymous producer nominals (r4) and
-// well-known `Option` (r6). Every operation is `#[cfg(test)]`: this is a
+// r5); builtin `str` and slice generated-struct names are ANSWERED as of r6a
+// (pure durable name facts); `Str(N)` (a generated fixed-capacity struct) →
+// r6b with the generated-struct/anonymous family; anonymous producer nominals
+// (r4) and well-known `Option` (r6b). Every operation is `#[cfg(test)]`: this is a
 // differential adapter behind the same gate as `CompilerBodyFactProvider`, never
 // a selectable production path.
 // ---------------------------------------------------------------------------
@@ -12571,13 +12629,21 @@ impl<'p, 'o, 'db>
     fn builtin_type(
         &mut self,
         _scope: &ModuleId,
-        _name: &str,
+        name: &str,
     ) -> rue_air::SemanticProviderResult<Option<crate::DurableType>, Self::Abort, Self::Failure>
     {
-        // `str` is a builtin nominal the epoch materializes into `type_pool`; the
-        // body-fact boundary exposes no builtin-nominal identity fact yet, so this
-        // shape is deferred (a later slice adds the builtin/well-known fact).
-        Ok(None)
+        // `str` is the sole builtin nominal reachable as bare type-syntax (the
+        // production `builtin_type` answers only `str`; the builtin enums resolve
+        // as root nominals). Its durable identity IS the `BuiltinNominal`
+        // name+kind — a pure durable fact needing no boundary op: the overlay/pool
+        // resolves it to the pre-registered `str` identity exactly as a fresh
+        // import epoch does, and `export_type_local` reproduces the same
+        // `BuiltinNominal { Struct, "str" }` for the epoch's `str` struct
+        // (RUE-1091 r6a — builtin name facts).
+        Ok((name == "str").then(|| crate::DurableType::BuiltinNominal {
+            kind: rue_air::SemanticImportNominalKind::Struct,
+            name: Arc::from("str"),
+        }))
     }
 
     fn root_struct_type(
@@ -12786,15 +12852,19 @@ impl<'p, 'o, 'db>
     fn slice_type(
         &mut self,
         _scope: &ModuleId,
-        _syntax: &str,
-        _element: crate::DurableType,
+        syntax: &str,
+        element: crate::DurableType,
     ) -> rue_air::SemanticProviderResult<crate::DurableType, Self::Abort, Self::Failure> {
-        // The slice's durable form carries the generated slice-struct name, a fact
-        // the epoch mints during materialization and the body-fact boundary does
-        // not expose; deferred to a later slice.
-        Err(rue_air::SemanticProviderError::Failure(
-            ProviderTypeFactsFailure::Deferred("slice generated-struct name"),
-        ))
+        // The generated slice-struct name IS the slice syntax: the epoch's
+        // `get_or_create_slice_struct_from_element` keys the fat-pointer struct by
+        // `syntax`, and `export_type_local` reproduces it as
+        // `Slice { element, name: syntax }`. So the durable form is a pure durable
+        // fact needing no boundary op — the overlay/pool mints the same
+        // fat-pointer struct on materialization (RUE-1091 r6a — slice name facts).
+        Ok(crate::DurableType::Slice {
+            element: Box::new(element),
+            name: Arc::from(syntax),
+        })
     }
 
     fn builtin_type_call(
@@ -19915,16 +19985,73 @@ mod tests {
         assert_eq!(resolved, None, "a function name does not resolve as a type");
     }
 
+    // The builtin `str` and slice `[T]` name facts — RUE-1091 r6a flips these two
+    // arms from documented gaps to positive differentials: their durable identity
+    // is a pure durable fact (a `BuiltinNominal` name+kind for `str`, a
+    // `Slice { element, name: syntax }` for a slice) needing no new boundary op,
+    // matching what `export_type_local` reproduces for the epoch's materialized
+    // `str`/slice struct.
+    #[test]
+    fn provider_type_facts_builtin_str_and_slice_names_match_epoch() {
+        use crate::DurableType as T;
+        let source = "pub struct Point { x: i32 }\n\
+                      fn main() -> i32 { 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let scope = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+
+        // `str` resolves to the durable builtin-nominal identity — the exact form
+        // `export_type_local` reproduces for the epoch's `str` struct.
+        let (resolved, _m, deps) =
+            resolve_type_via_provider(&database, revision, &scope, "str", None);
+        assert_eq!(
+            resolved,
+            Some(T::BuiltinNominal {
+                kind: rue_air::SemanticImportNominalKind::Struct,
+                name: Arc::from("str"),
+            }),
+            "`str` resolves to the builtin-nominal durable identity"
+        );
+        // A pool/overlay-answered name fact records no provider query edge (edge
+        // honesty — the builtin identity is not a boundary lookup).
+        assert!(
+            deps.is_empty(),
+            "resolving `str` records no provider edge: {deps:?}"
+        );
+
+        // `[i32]` resolves to the durable slice identity whose name IS the slice
+        // syntax and whose element is the resolved element type.
+        let (resolved, _m, deps) =
+            resolve_type_via_provider(&database, revision, &scope, "[i32]", None);
+        assert_eq!(
+            resolved,
+            Some(T::Slice {
+                element: Box::new(T::I32),
+                name: Arc::from("[i32]"),
+            }),
+            "`[i32]` resolves to the slice durable identity keyed by the slice syntax"
+        );
+        assert!(
+            deps.is_empty(),
+            "resolving `[i32]` records no provider edge: {deps:?}"
+        );
+    }
+
     // Explicit enumeration of the `SemanticImportType` arms this family does NOT
     // yet cover, each with the boundary fact it waits on. Documented as
     // not-yet-resolvable (never silently green): a deferred shape resolves to
     // `None` through ProviderTypeFacts today, and the differential pins that so a
     // later slice that adds the fact flips the arm deliberately.
-    //   - BuiltinNominal (`str`, `Str(N)`): no builtin-nominal identity fact.
-    //   - Slice (`[T]`): no generated slice-struct name fact.
+    //   - BuiltinNominal `Str(N)`: a generated fixed-capacity struct whose durable
+    //     identity is a generated-struct classification (`export_type_local`
+    //     rejects it as a `ForeignLocalType`), so it lands with the generated /
+    //     anonymous family → r6b, not the pure name facts r6a flips.
     //   - AnonymousNominal: produced by a body / a comptime call reducing to an
-    //     anonymous struct (`Pair()` below), materialized in r4/r6.
+    //     anonymous struct (`Pair()` below), materialized in r6b.
     //   - Module / GenericParameter: not reachable as a resolved type-syntax leaf.
+    // `str` and slice `[T]` are NO LONGER gaps — r6a flipped them (see
+    // `provider_type_facts_builtin_str_and_slice_names_match_epoch`).
     // The comptime type-call arm itself is NO LONGER a gap — r5a flipped it (see
     // `provider_type_facts_comptime_calls_match_epoch`); only the anonymous-nominal
     // RESULT of such a call is still deferred, and that deferral is pinned here.
@@ -19938,12 +20065,12 @@ mod tests {
         let mut database = RevisionedQueryDatabase::default();
         let revision = revision_for(&mut database, &snapshot);
 
-        // `str`/`[i32]`/`Str(8)`: boundary facts still absent. `Pair()`: the
-        // comptime-call op reduces it (r5a), but its result is an ANONYMOUS
-        // nominal the overlay cannot yet mint, so `reduce_fact` returns
-        // `DeferredAnonymous` and the resolution stays `None` — an honest r4/r6
-        // gap, not the "no comptime-call op" gap r2 recorded.
-        for deferred in ["str", "[i32]", "Pair()", "Str(8)"] {
+        // `Str(8)`: a generated fixed-capacity struct, deferred to r6b (see above).
+        // `Pair()`: the comptime-call op reduces it (r5a), but its result is an
+        // ANONYMOUS nominal the overlay cannot yet mint, so `reduce_fact` returns
+        // `DeferredAnonymous` and the resolution stays `None` — an honest r6b gap,
+        // not the "no comptime-call op" gap r2 recorded.
+        for deferred in ["Pair()", "Str(8)"] {
             let (resolved, _m, _d) =
                 resolve_type_via_provider(&database, revision, &scope, deferred, None);
             assert_eq!(
@@ -20892,17 +21019,17 @@ mod tests {
     }
 
     #[test]
-    fn provider_call_facts_bare_owner_reversal_is_a_known_r6_divergence() {
-        // The bare-owner divergence (r4a-1 carry-forward, tied to r6), exhibited
-        // against the LIVE epoch, not documented: a trusted-std `StrBuf` carries a
-        // method, so the real declaration-bind path assigns its language item and
-        // renders its method symbol BARE (RUE-1089 exemption). A USER `Box` method
-        // renders file-qualified. Both land in the epoch's `named_method_by_
-        // callable_symbol` index; the provider path reverses the qualified one and
-        // REFUSES the bare one (no recoverable module). We assert epoch=Some AND
-        // provider=None on the SAME bare symbol, side by side — un-masking the gap
-        // the earlier `i32.get`-style probes (bare symbols the epoch ALSO refuses)
-        // left open.
+    fn provider_call_facts_lifts_bare_language_item_owner() {
+        // The bare-owner contract, r6a: a trusted-std `StrBuf` carries a method, so
+        // the real declaration-bind path assigns its language item and renders its
+        // method symbol BARE (RUE-1089 exemption). A USER `Box` method renders
+        // file-qualified. Both land in the epoch's `named_method_by_callable_symbol`
+        // index. r6a LIFTS the bare language-item class: the provider recovers the
+        // StrBuf receiver from the language-item registry, confirms the language
+        // item + member, re-renders the bare symbol byte for byte, and answers Some
+        // — matching the epoch on the SAME bare symbol. A bare owner that is NOT a
+        // known language item (an anonymous owner) stays refused — the residual
+        // owned by r6b / the flip (Probe C).
         let root_src = "struct Box { value: i32, \
              fn get(borrow self) -> i32 { self.value } }\n\
              fn main() -> i32 { 0 }\n";
@@ -20987,11 +21114,15 @@ mod tests {
         let mut database = RevisionedQueryDatabase::default();
         let revision = revision_for(&mut database, &snapshot);
 
-        // Probe A — the BARE symbol: provider=None, and the refusal fails at
-        // symbol parse (the missing `$`) BEFORE any receiver lookup, so it records
-        // NO query edge (contrast the success footprint below).
+        // Probe A — the BARE language-item symbol: r6a LIFTS it. The provider
+        // recovers the StrBuf receiver from the language-item registry, confirms
+        // the language item + member, re-renders the bare symbol byte for byte,
+        // and answers Some — matching the epoch. The success now records query
+        // edges (the receiver name lookup + the member semantic-nucleus facts) —
+        // the richer provider-era footprint that is the post-flip truth (r4a-1
+        // carry-forward: the finer dependencies are the more-correct behavior).
         let bare_outcome =
-            database.probe_body_facts(revision, semantic_configuration(), "call-bare-refuse", {
+            database.probe_body_facts(revision, semantic_configuration(), "call-bare-lift", {
                 let bare = bare_key.clone();
                 let adapter = DurableDeclSource::from_declarations(&decls);
                 move |provider| {
@@ -21001,15 +21132,47 @@ mod tests {
                 }
             });
         assert!(
-            !bare_outcome.result,
-            "the provider path refuses the bare language-item owner symbol the \
-             epoch answers — the r6-tied known divergence, exhibited"
+            bare_outcome.result,
+            "r6a lifts the bare language-item owner symbol the epoch answers: {bare_key}"
+        );
+        let bare_families: std::collections::BTreeSet<&str> = bare_outcome
+            .dependencies
+            .iter()
+            .map(|node| node.family())
+            .collect();
+        assert!(
+            bare_families.contains("compiler.lookup-name"),
+            "the bare lift observes the receiver name lookup: {bare_families:?}"
         );
         assert!(
-            bare_outcome.dependencies.is_empty(),
-            "the bare refusal fails at symbol parse (no `$`) before any lookup, so \
-             it records no query edge: {:?}",
-            bare_outcome.dependencies
+            bare_families
+                .iter()
+                .all(|family| *family == "compiler.lookup-name"
+                    || *family == "compiler.semantic-nucleus"),
+            "the bare-lift footprint is lookup-name + semantic-nucleus only: {bare_families:?}"
+        );
+
+        // Probe C — a bare owner that is NOT a known language item (an anonymous
+        // owner) stays refused: `bare_language_item_owner` returns None, so the
+        // reversal fails closed before any lookup — the residual r6b / the flip
+        // owns.
+        let residual_outcome =
+            database.probe_body_facts(revision, semantic_configuration(), "call-bare-residual", {
+                let adapter = DurableDeclSource::from_declarations(&decls);
+                move |provider| {
+                    let facts =
+                        rue_air::ProviderCallFacts::new(provider, adapter, rir_ref, interner);
+                    facts.callable_symbol_receiver("Mystery.foo").is_some()
+                }
+            });
+        assert!(
+            !residual_outcome.result,
+            "a bare non-language-item owner stays refused (the anonymous-owner residual)"
+        );
+        assert!(
+            residual_outcome.dependencies.is_empty(),
+            "the residual refusal fails before any lookup: {:?}",
+            residual_outcome.dependencies
         );
 
         // Probe B — the QUALIFIED symbol: provider=Some, and the success records
@@ -21540,19 +21703,23 @@ mod tests {
 
                 // Module identity — r4b-3 / the flip (pool-refused arm).
                 let module = facts.resolve_instance_type(&T::Module(MTok::new(0, 0)));
-                // Generic parameter — r5/r6 substitution.
+                // Generic parameter — r5 substitution.
                 let generic = facts.resolve_instance_type(&T::GenericParameter(0));
-                // Slice generated-struct name beyond the pre-registered set — r6.
+                // A slice whose generated struct was NOT seeded still fails closed:
+                // the r6a `Slice` arm resolves only AFTER `register_generated_slice`
+                // (positive differential in
+                // `provider_endpoint_facts_slice_arm_resolves_after_registration`).
                 let slice = facts.resolve_instance_type(&T::Slice {
                     element: Box::new(T::I64),
                     name: std::sync::Arc::from("[]i64"),
                 });
-                // Builtin name beyond BUILTIN_ENUMS + str — r6 builtin facts.
+                // A genuine non-builtin name (not any builtin under any regime)
+                // fails closed — a permanent gap, not an r6 deferral.
                 let unknown_builtin = facts.resolve_instance_type(&T::BuiltinNominal {
                     kind: AnonymousNominalKind::Struct,
                     name: std::sync::Arc::from("NotABuiltin"),
                 });
-                // Anonymous mint-from-digest (issued-anonymous lookup only) — r6.
+                // Anonymous mint-from-digest (issued-anonymous lookup only) — r6b.
                 let anonymous =
                     facts.resolve_instance_type(&T::Nominal(N::Anonymous(AnonymousNominalKey {
                         kind: AnonymousNominalKind::Struct,
@@ -21571,10 +21738,100 @@ mod tests {
         );
         let (module, generic, slice, unknown_builtin, anonymous) = outcome.result;
         assert!(module, "module identity fails closed (r4b-3 / flip)");
-        assert!(generic, "generic parameter fails closed (r5/r6)");
-        assert!(slice, "slice generated-struct name fails closed (r6)");
-        assert!(unknown_builtin, "unknown builtin name fails closed (r6)");
-        assert!(anonymous, "anonymous mint fails closed (r6)");
+        assert!(generic, "generic parameter fails closed (r5)");
+        assert!(
+            slice,
+            "an unseeded slice generated-struct name fails closed"
+        );
+        assert!(
+            unknown_builtin,
+            "a non-builtin name fails closed (permanent)"
+        );
+        assert!(anonymous, "anonymous mint fails closed (r6b)");
+    }
+
+    // RUE-1091 r6a: the `Slice` arm resolves once a caller seeds the generated
+    // slice struct with `register_generated_slice`, minting the fat-pointer
+    // struct byte-identically to the LIVE epoch's generated slice — the positive
+    // half of the deferral this slice flips.
+    #[test]
+    fn provider_endpoint_facts_slice_arm_resolves_after_registration() {
+        use rue_air::{SemanticImportType as D, TypeInstanceKey as T};
+        // The signature slice `[i64]` makes the epoch materialize its generated
+        // slice struct at declaration bind (slices are preview-gated, ADR-0043),
+        // so it is the LIVE comparison target.
+        let source = "fn take(s: [i64]) -> i64 { 0 }\n\
+                      fn main() -> i32 { 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let slices = crate::PreviewFeatures::from_iter([crate::PreviewFeature::Slices]);
+
+        // The LIVE epoch, bound through the production declaration path with the
+        // slices preview enabled.
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
+        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
+            &merged,
+            &rir,
+            slices.clone(),
+            rue_target::Target::X86_64Linux,
+            &imports,
+        )
+        .expect("declarations bind");
+        let interner = rir.semantic_symbols().interner();
+        let slice_sym = interner
+            .get("[i64]")
+            .expect("the epoch materialized the `[i64]` slice struct at bind");
+        let epoch_slice = bound
+            .epoch_generated_struct_type(slice_sym)
+            .expect("the epoch resolves the generated `[i64]` slice struct");
+        let epoch_render = bound.with_type_pool(|pool| endpoint_nominal_render(pool, epoch_slice));
+
+        let rir_ref = rir.rir();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        // The slice mint needs no durable nominals (its element is a primitive),
+        // so an empty durable source suffices.
+        let adapter = DurableDeclSource::from_declarations(&[]);
+
+        let outcome = database.probe_body_facts(
+            revision,
+            semantic_configuration(),
+            "endpoint-slice",
+            move |provider| {
+                let facts =
+                    rue_air::ProviderEndpointFacts::new(provider, adapter, rir_ref, interner);
+                // Seed the generated slice, then resolve the `Slice` arm.
+                facts
+                    .register_generated_slice(&D::I64, "[i64]")
+                    .expect("register mints the slice struct");
+                let key = T::Slice {
+                    element: Box::new(T::I64),
+                    name: std::sync::Arc::from("[i64]"),
+                };
+                let first = facts.resolve_instance_type(&key).expect("slice resolves");
+                // Idempotency: a repeat consult returns the same id.
+                let second = facts
+                    .resolve_instance_type(&key)
+                    .expect("slice re-resolves");
+                assert_eq!(first, second, "repeat slice resolution diverged");
+                facts.with_type_pool(|pool| endpoint_nominal_render(pool, first))
+            },
+        );
+        // The provider-minted slice renders identically to the LIVE epoch's
+        // generated slice struct (name, copyability, visibility, symbol, fields).
+        assert_eq!(
+            outcome.result, epoch_render,
+            "the provider slice renders identically to the epoch generated slice"
+        );
+        // A pool-answered materialization records no provider query edge (edge
+        // honesty — the slice identity is minted, not a boundary lookup).
+        assert!(
+            outcome.dependencies.is_empty(),
+            "the seeded slice resolution records no provider edge: {:?}",
+            outcome.dependencies
+        );
     }
 
     #[test]
