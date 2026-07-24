@@ -137,7 +137,7 @@ pub struct ParamArena {
     /// All parameter types, indexed by position in the arena.
     types: Vec<Type>,
 
-    /// All parameter modes (Normal, Inout, Borrow, Comptime).
+    /// All parameter modes (Normal, Inout, Borrow).
     modes: Vec<RirParamMode>,
 
     /// Whether each parameter is a comptime parameter.
