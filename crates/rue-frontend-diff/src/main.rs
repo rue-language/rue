@@ -36,6 +36,10 @@ const SYNTAX_PROBES: &[(&str, &str)] = &[
         "slice-types.rue",
         "fn f(borrow bytes: [u8]) -> u64 { @size_of([u8]) }",
     ),
+    (
+        "wildcard-payload-pattern.rue",
+        "enum Maybe { None, Some(u64) } fn f(value: Maybe) -> u64 { match value { Maybe.Some(_) => 1, Maybe.None => 0 } }",
+    ),
 ];
 
 fn node(kind: &str, meta: &str, a: String, b: String, c: String, d: String) -> String {
