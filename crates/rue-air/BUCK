@@ -18,6 +18,12 @@ filegroup(
     visibility = ["PUBLIC"],
 )
 
+filegroup(
+    name = "body-analysis-capability-inventory-sources",
+    srcs = glob(["src/**/*.rs"]),
+    visibility = ["PUBLIC"],
+)
+
 rue_crate(
     name = "rue-air",
     deps = [
