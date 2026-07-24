@@ -28,13 +28,12 @@ use rue_span::FileId;
 use super::BodySema;
 use super::anon_structs::IssuedAnonymousNominalKey;
 use super::body_identity::{
-    BodyIdentityPool, BodyRirIndex, ConstIdentityHandle, DurableAnonymousSource,
-    DurableConstSource, DurableNominalSource,
+    BodyRirIndex, ConstIdentityHandle, DurableAnonymousSource, DurableConstSource,
+    DurableNominalSource, ProviderIdentityContext,
 };
 use super::declaration_index::RirDestructorDeclaration;
 use super::info::{ConstInfo, FunctionInfo, MethodInfo};
 use super::provider::BodyFactProvider;
-use super::provider_module_registry::ProviderModuleRegistry;
 use crate::intern_pool::TypeInternPool;
 use crate::types::{EnumId, ModuleId, StructId, Type};
 use crate::{
@@ -495,7 +494,7 @@ impl<K> Default for EndpointOverlay<K> {
 /// never held across a re-entrant consult, so it never conflicts.
 pub struct ProviderEndpointFacts<'a, P, S, K, M> {
     provider: &'a P,
-    pool: RefCell<BodyIdentityPool<K, M, S>>,
+    identity: ProviderIdentityContext<K, M, S>,
     rir: &'a Rir,
     rir_index: BodyRirIndex,
     /// The whole-program RIR interner. The RIR-index ops resolve their `&str`
@@ -503,7 +502,6 @@ pub struct ProviderEndpointFacts<'a, P, S, K, M> {
     /// from the pool's own interner the nominal ops key on.
     rir_interner: &'a ThreadedRodeo,
     overlay: RefCell<EndpointOverlay<K>>,
-    module_registry: RefCell<ProviderModuleRegistry<M>>,
     /// The issued→durable anonymous seam (RUE-1091 r6b): the anonymous producer
     /// key `resolve_instance_type` carries is in the issued-token domain, so a
     /// caller seeds the durable key it stands for with
@@ -526,14 +524,28 @@ where
     /// space starts empty (a caller mints a token per nominal with
     /// [`Self::register_named_nominal`]).
     pub fn new(provider: &'a P, source: S, rir: &'a Rir, rir_interner: &'a ThreadedRodeo) -> Self {
+        Self::with_identity(
+            provider,
+            ProviderIdentityContext::new(source),
+            rir,
+            rir_interner,
+        )
+    }
+
+    /// Construct the driver inside an existing per-body identity universe.
+    pub fn with_identity(
+        provider: &'a P,
+        identity: ProviderIdentityContext<K, M, S>,
+        rir: &'a Rir,
+        rir_interner: &'a ThreadedRodeo,
+    ) -> Self {
         Self {
             provider,
-            pool: RefCell::new(BodyIdentityPool::new(source)),
+            identity,
             rir,
             rir_index: BodyRirIndex::new(rir),
             rir_interner,
             overlay: RefCell::new(EndpointOverlay::default()),
-            module_registry: RefCell::new(ProviderModuleRegistry::default()),
             anon_by_issued: RefCell::new(HashMap::new()),
         }
     }
@@ -559,7 +571,7 @@ where
     /// `None` if the durable key names no anonymous shape / a digest collision
     /// refuses it (fail-closed).
     pub fn mint_anonymous(&self, durable: &crate::AnonymousNominalKey<K, M>) -> Option<Type> {
-        self.pool.borrow_mut().find_or_create_anon(durable).ok()
+        self.identity.pool_mut()?.find_or_create_anon(durable).ok()
     }
 
     /// Install the per-body well-known `Option(payload)` registry (RUE-1112)
@@ -591,8 +603,8 @@ where
         K: Ord,
         M: Ord,
     {
-        self.pool
-            .borrow_mut()
+        self.identity
+            .pool_mut()?
             .install_well_known_option_types(nominals, option_by_payload)
             .ok()
     }
@@ -606,13 +618,13 @@ where
         K: Ord,
         M: Ord,
     {
-        self.pool.borrow().is_well_known_option_identity(durable)
+        self.identity.pool().is_well_known_option_identity(durable)
     }
 
     /// The number of well-known `Option` identities installed on this driver's
     /// pool.
     pub fn well_known_option_identity_count(&self) -> usize {
-        self.pool.borrow().well_known_option_identity_count()
+        self.identity.pool().well_known_option_identity_count()
     }
 
     /// The trusted std `Option` enum minted for a demanded payload type, or
@@ -620,7 +632,7 @@ where
     /// the epoch's `well_known_option_by_payload` consult
     /// (`resolve_option_result_type`).
     pub fn well_known_option_for_payload(&self, payload: Type) -> Option<Type> {
-        self.pool.borrow().well_known_option_for_payload(payload)
+        self.identity.pool().well_known_option_for_payload(payload)
     }
 
     /// Mint an overlay [`SemanticDefinitionToken`] standing for a durable nominal
@@ -636,7 +648,7 @@ where
         name: &str,
         kind: StableDefinitionKind,
     ) -> SemanticDefinitionToken {
-        let symbol = self.pool.borrow().intern_name(name);
+        let symbol = self.identity.pool().intern_name(name);
         let mut overlay = self.overlay.borrow_mut();
         let slot = overlay.next_slot;
         overlay.next_slot += 1;
@@ -672,7 +684,7 @@ where
         import_path: &str,
         durable_id: &str,
     ) -> Option<SemanticModuleToken> {
-        let id = self.module_registry.borrow_mut().register(
+        let id = self.identity.modules_mut().register(
             module,
             file,
             file_path,
@@ -696,8 +708,8 @@ where
     /// compare index-independent module identity.
     pub fn module_file(&self, ty: Type) -> Option<FileId> {
         let id = ty.as_module()?;
-        self.module_registry
-            .borrow()
+        self.identity
+            .modules()
             .get(id)
             .map(|definition| definition.file_id)
     }
@@ -720,10 +732,10 @@ where
     where
         M: Clone,
     {
-        let symbol = self.pool.borrow().intern_name(name);
+        let symbol = self.identity.pool().intern_name(name);
         let id = self
-            .pool
-            .borrow_mut()
+            .identity
+            .pool_mut()?
             .resolve(&SemanticImportType::Slice {
                 element: Box::new(element.clone()),
                 name: Arc::from(name),
@@ -822,33 +834,33 @@ where
     /// never a pool-relative index — the 2a/2b contract). Closure-scoped because
     /// the pool lives behind a [`RefCell`].
     pub fn with_type_pool<R>(&self, read: impl FnOnce(&TypeInternPool) -> R) -> R {
-        read(self.pool.borrow().type_pool())
+        let pool = self.identity.type_pool();
+        read(&pool)
     }
 
     /// Freeze the pool's containment metadata — the pool-side `freeze()` seam
     /// hook the r4a-2a rider defers to the slice that wires the pool under body
     /// analysis (RUE-1091 rFinal). A caller invokes this at the same point
     /// production calls `finalize_containment_metadata` (after every nominal
-    /// the body consumes has been minted, before any drop/ownership read);
+    /// the body consumes has been minted, before any drop/ownership read).
+    /// Freezing is shared by all drivers in this identity context: later mint
+    /// attempts fail closed instead of invalidating the finalized metadata.
     /// `None` on a containment cycle (fail-closed). Before the freeze,
     /// [`Self::type_needs_drop`] / [`Self::type_carries_linear`] answer `None`.
     pub fn finalize_containment_metadata(&self) -> Option<()> {
-        self.pool.borrow().finalize_containment_metadata()
+        self.identity.finalize_containment_metadata()
     }
 
     /// Whether a minted type transitively needs drop, or `None` before the
-    /// [`Self::finalize_containment_metadata`] freeze. The pool mints every
-    /// nominal with `destructor: None` (drop metadata is out of the pool's
-    /// minting scope), so destructor-symbol parity remains flip work — the
-    /// harness records that as a named gap, never a silent divergence.
+    /// [`Self::finalize_containment_metadata`] freeze.
     pub fn type_needs_drop(&self, ty: Type) -> Option<bool> {
-        self.pool.borrow().type_needs_drop(ty)
+        self.identity.pool().type_needs_drop(ty)
     }
 
     /// Whether a minted type transitively carries a linear component, or `None`
     /// before the freeze.
     pub fn type_carries_linear(&self, ty: Type) -> Option<bool> {
-        self.pool.borrow().type_carries_linear(ty)
+        self.identity.pool().type_carries_linear(ty)
     }
 }
 
@@ -873,8 +885,8 @@ where
     ) -> Option<ConstInfo> {
         let name = self.rir_interner.get(source_name)?;
         let declaration = self.rir_index.const_declaration(declaring_file, name)?;
-        self.pool
-            .borrow_mut()
+        self.identity
+            .pool_mut()?
             .resolve_const(
                 key,
                 ConstIdentityHandle {
@@ -884,10 +896,31 @@ where
             .ok()
     }
 
+    /// Assemble a module-valued constant from the exact declaration span and a
+    /// module identity already admitted to this body's shared registry.
+    pub fn module_binding_info(
+        &self,
+        declaring_file: FileId,
+        source_name: &str,
+        target: &M,
+        is_public: bool,
+    ) -> Option<ConstInfo> {
+        let name = self.rir_interner.get(source_name)?;
+        let declaration = self.rir_index.const_declaration(declaring_file, name)?;
+        let module = self.identity.modules().id_for_durable(target)?;
+        let ty = Type::new_module(module);
+        Some(ConstInfo {
+            is_pub: is_public,
+            ty,
+            value: super::ConstValue::Type(ty),
+            span: self.rir.get(declaration).span,
+        })
+    }
+
     /// Resolve a pool-owned const symbol for index-independent differential
     /// comparison. Function and string values use the pool's own interner.
     pub fn resolve_const_symbol(&self, symbol: Spur) -> String {
-        self.pool.borrow().resolve_symbol(symbol).to_owned()
+        self.identity.pool().resolve_symbol(symbol).to_owned()
     }
 }
 
@@ -899,7 +932,7 @@ where
     M: Clone + Eq + Hash,
 {
     fn name_symbol(&self, name: &str) -> Option<Spur> {
-        Some(self.pool.borrow().intern_name(name))
+        Some(self.identity.pool().intern_name(name))
     }
 
     fn definition_endpoint(
@@ -935,8 +968,8 @@ where
             .by_file_name
             .get(&(file.index(), name))
             .cloned()?;
-        self.pool
-            .borrow_mut()
+        self.identity
+            .pool_mut()?
             .resolve(&SemanticImportType::Nominal(key))
             .ok()?
             .as_struct()
@@ -949,17 +982,17 @@ where
             .by_file_name
             .get(&(file.index(), name))
             .cloned()?;
-        self.pool
-            .borrow_mut()
+        self.identity
+            .pool_mut()?
             .resolve(&SemanticImportType::Nominal(key))
             .ok()?
             .as_enum()
     }
 
     fn builtin_or_generated_struct(&self, name: Spur) -> Option<StructId> {
-        let owned = self.pool.borrow().resolve_symbol(name).to_owned();
-        self.pool
-            .borrow_mut()
+        let owned = self.identity.pool().resolve_symbol(name).to_owned();
+        self.identity
+            .pool_mut()?
             .resolve(&SemanticImportType::BuiltinNominal {
                 name: Arc::from(owned.as_str()),
                 kind: SemanticImportNominalKind::Struct,
@@ -980,9 +1013,9 @@ where
     }
 
     fn builtin_enum(&self, name: Spur) -> Option<EnumId> {
-        let name = self.pool.borrow().resolve_symbol(name).to_owned();
-        self.pool
-            .borrow_mut()
+        let name = self.identity.pool().resolve_symbol(name).to_owned();
+        self.identity
+            .pool_mut()?
             .resolve(&SemanticImportType::BuiltinNominal {
                 name: Arc::from(name.as_str()),
                 kind: SemanticImportNominalKind::Enum,
@@ -997,8 +1030,8 @@ where
         // closed (the pool never invents an identity), mirroring the epoch's
         // `anon_struct_identities.get` miss.
         let durable = self.anon_by_issued.borrow().get(identity).cloned()?;
-        self.pool
-            .borrow_mut()
+        self.identity
+            .pool_mut()?
             .find_or_create_anon(&durable)
             .ok()?
             .as_struct()
@@ -1006,8 +1039,8 @@ where
 
     fn anon_enum(&self, identity: &IssuedAnonymousNominalKey) -> Option<EnumId> {
         let durable = self.anon_by_issued.borrow().get(identity).cloned()?;
-        self.pool
-            .borrow_mut()
+        self.identity
+            .pool_mut()?
             .find_or_create_anon(&durable)
             .ok()?
             .as_enum()
@@ -1059,28 +1092,28 @@ where
     }
 
     fn module_id_for_file(&self, file: u32) -> Option<ModuleId> {
-        self.module_registry.borrow().id_for_file(FileId::new(file))
+        self.identity.modules().id_for_file(FileId::new(file))
     }
 
     fn intern_array(&self, element: Type, len: u64) -> Option<Type> {
-        self.pool
-            .borrow()
+        self.identity
+            .pool()
             .type_pool()
             .try_intern_array(element, len)
             .ok()
     }
 
     fn intern_ptr_const(&self, pointee: Type) -> Option<Type> {
-        self.pool
-            .borrow()
+        self.identity
+            .pool()
             .type_pool()
             .try_intern_ptr_const(pointee)
             .ok()
     }
 
     fn intern_ptr_mut(&self, pointee: Type) -> Option<Type> {
-        self.pool
-            .borrow()
+        self.identity
+            .pool()
             .type_pool()
             .try_intern_ptr_mut(pointee)
             .ok()

@@ -71,4 +71,8 @@ impl<M: Eq + Hash> ProviderModuleRegistry<M> {
     pub(in crate::sema) fn id_for_file(&self, file: FileId) -> Option<ModuleId> {
         self.by_file.get(&file).copied()
     }
+
+    pub(in crate::sema) fn id_for_durable(&self, durable: &M) -> Option<ModuleId> {
+        self.by_durable.get(durable).copied()
+    }
 }

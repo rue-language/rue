@@ -67,21 +67,17 @@
 //!   resolves by lookup only ([`BodyIdentityPool::register_issued_anonymous`]);
 //! - **module identity** and generic-parameter substitution (endpoint /
 //!   inference families) — these arms are *refused*, never approximated;
-//! - **drop metadata** — the destructor symbol and the transitive
-//!   linearity / needs-drop finalization. The 2a consumers (display,
-//!   copyability, field lookup) never read it, so the pool registers each
-//!   nominal with `destructor: None` and leaves the declaration-time
-//!   linearity flag un-finalized, exactly as the epoch's shell/completion pair
-//!   leaves it before `finalize_containment_metadata`. A consumer needing
-//!   finalized needs-drop / transitive linearity (the drop/ownership family)
-//!   requires a pool-side `freeze()`-equivalent hook — that seam belongs to
-//!   the slice that wires the pool under body analysis (r4b), which must call
+//! - **drop metadata** — durable named and anonymous nominals carry destructor
+//!   presence into the pool, which derives the canonical destructor symbol.
+//!   Transitive linearity / needs-drop stays unavailable until the caller runs
 //!   `finalize_containment_metadata` at the same point production freezes.
 
 #![cfg_attr(not(test), allow(dead_code))]
 
+use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use lasso::{Spur, ThreadedRodeo};
@@ -91,6 +87,7 @@ use rue_span::{FileId, Span};
 use super::ConstValue;
 use super::declaration_index::{RirDeclarationIndex, RirDestructorDeclaration};
 use super::info::{ConstInfo, FunctionInfo, MethodInfo};
+use super::provider_module_registry::ProviderModuleRegistry;
 use crate::types::{EnumDef, EnumId, LangItem, StructDef, StructField, StructId, Type};
 use crate::{
     AnonymousNominalKey, ParamArena, ParamRange, SemanticImportConstValue,
@@ -136,6 +133,10 @@ pub struct DurableNominal<K, M> {
     /// (`set_struct_repr_c`). Carried so the pool registers it rather than
     /// silently dropping a declaration fact; struct-only (ignored for enums).
     pub is_repr_c: bool,
+    /// Whether the nominal declares the reserved `__drop` member. The pool
+    /// derives the final, file-qualified destructor symbol from the minted
+    /// nominal identity.
+    pub has_destructor: bool,
     pub body: DurableNominalBody<K, M>,
 }
 
@@ -290,7 +291,7 @@ enum PoolNominal {
 /// Named nominals are minted on first [`resolve`](Self::resolve) and
 /// deduplicated by durable key thereafter.
 pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
-    type_pool: TypeInternPool,
+    type_pool: Rc<TypeInternPool>,
     interner: ThreadedRodeo,
     source: S,
     struct_ids: HashMap<K, StructId>,
@@ -366,6 +367,78 @@ pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
     const_poisoned: HashMap<K, IdentityMintError>,
 }
 
+/// One task-owned identity universe shared by every provider fact driver used
+/// for a body analysis.
+///
+/// Pool-relative `Type`, `StructId`, `EnumId`, `ParamRange`, and `ModuleId`
+/// handles are meaningful only inside the pool/registry that minted them. The
+/// call, endpoint, and aggregate drivers therefore clone this lightweight
+/// handle rather than constructing peer pools. This is the provider-side
+/// equivalent of every epoch adapter borrowing the same `BodySema`.
+pub struct ProviderIdentityContext<K, M, S> {
+    pool: Rc<RefCell<BodyIdentityPool<K, M, S>>>,
+    modules: Rc<RefCell<ProviderModuleRegistry<M>>>,
+    frozen: Rc<Cell<bool>>,
+}
+
+impl<K, M, S> Clone for ProviderIdentityContext<K, M, S> {
+    fn clone(&self) -> Self {
+        Self {
+            pool: Rc::clone(&self.pool),
+            modules: Rc::clone(&self.modules),
+            frozen: Rc::clone(&self.frozen),
+        }
+    }
+}
+
+impl<K, M, S> ProviderIdentityContext<K, M, S>
+where
+    K: Clone + Eq + Hash,
+    M: Eq + Hash,
+    S: DurableNominalSource<K, M>,
+{
+    /// Create the single identity universe for one provider-driven body.
+    pub fn new(source: S) -> Self {
+        Self {
+            pool: Rc::new(RefCell::new(BodyIdentityPool::new(source))),
+            modules: Rc::new(RefCell::new(ProviderModuleRegistry::default())),
+            frozen: Rc::new(Cell::new(false)),
+        }
+    }
+
+    pub(in crate::sema) fn pool(&self) -> Ref<'_, BodyIdentityPool<K, M, S>> {
+        self.pool.borrow()
+    }
+
+    pub(in crate::sema) fn pool_mut(&self) -> Option<RefMut<'_, BodyIdentityPool<K, M, S>>> {
+        (!self.frozen.get()).then(|| self.pool.borrow_mut())
+    }
+
+    /// Clone the pool's stable type-universe handle while holding the outer
+    /// `RefCell` borrow only briefly. The returned pool uses its own locks, so a
+    /// read closure may safely consult another driver sharing this context.
+    pub(in crate::sema) fn type_pool(&self) -> Rc<TypeInternPool> {
+        Rc::clone(&self.pool.borrow().type_pool)
+    }
+
+    pub(in crate::sema) fn finalize_containment_metadata(&self) -> Option<()> {
+        if self.frozen.get() {
+            return Some(());
+        }
+        self.pool.borrow().finalize_containment_metadata()?;
+        self.frozen.set(true);
+        Some(())
+    }
+
+    pub(in crate::sema) fn modules(&self) -> Ref<'_, ProviderModuleRegistry<M>> {
+        self.modules.borrow()
+    }
+
+    pub(in crate::sema) fn modules_mut(&self) -> RefMut<'_, ProviderModuleRegistry<M>> {
+        self.modules.borrow_mut()
+    }
+}
+
 /// The durable-signature-derived subset of a [`FunctionInfo`], minted once and
 /// cached by callable key. Every field here is recoverable from the durable
 /// signature facts alone; the request/RIR-carried remainder (`body`,
@@ -402,7 +475,7 @@ where
     /// Create an empty pool with the builtin enums and the core `str` identity
     /// pre-registered, mirroring a fresh import epoch.
     pub(in crate::sema) fn new(source: S) -> Self {
-        let type_pool = TypeInternPool::new();
+        let type_pool = Rc::new(TypeInternPool::new());
         let interner = ThreadedRodeo::new();
         let mut builtins = HashMap::new();
 
@@ -511,10 +584,7 @@ where
 
     /// Whether a minted type transitively needs drop, or `None` before
     /// [`Self::finalize_containment_metadata`] froze the containment graph.
-    /// NOTE: the pool registers every nominal with `destructor: None` (drop
-    /// metadata is deliberately out of the pool's minting scope — module docs),
-    /// so this answers the containment join over the pool's own registrations;
-    /// destructor-symbol parity is flip work.
+    /// Named and anonymous destructor metadata is installed before this join.
     pub(in crate::sema) fn type_needs_drop(&self, ty: Type) -> Option<bool> {
         self.type_pool.try_type_needs_drop(ty)
     }
@@ -725,6 +795,7 @@ where
             is_builtin,
             lang_item,
             is_repr_c,
+            has_destructor,
             body,
         } = self
             .source
@@ -746,7 +817,7 @@ where
                     StructDef {
                         name: name.clone(),
                         fields: Vec::new(),
-                        is_copy,
+                        is_copy: is_copy && !has_destructor,
                         is_linear,
                         destructor: None,
                         is_builtin,
@@ -781,7 +852,7 @@ where
                     StructDef {
                         name,
                         fields: resolved,
-                        is_copy,
+                        is_copy: is_copy && !has_destructor,
                         is_linear,
                         destructor: None,
                         is_builtin,
@@ -789,6 +860,10 @@ where
                         file_id,
                     },
                 );
+                if has_destructor {
+                    let destructor = format!("{}.__drop", self.type_pool.struct_symbol_name(id));
+                    self.type_pool.set_struct_destructor(id, destructor);
+                }
                 Ok(Type::new_struct(id))
             }
             DurableNominalBody::Enum { variants } => {
@@ -2152,6 +2227,7 @@ mod tests {
             is_builtin: false,
             lang_item: None,
             is_repr_c: false,
+            has_destructor: false,
             body,
         }
     }
@@ -2737,6 +2813,7 @@ mod tests {
                     is_builtin: false,
                     lang_item: Some(LangItem::StrBuf),
                     is_repr_c: false,
+                    has_destructor: false,
                     body: struct_body(vec![("len", DType::U64)], false, false),
                 },
             ),

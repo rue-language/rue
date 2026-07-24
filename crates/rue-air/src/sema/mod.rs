@@ -108,7 +108,7 @@ pub use body_endpoint::ProviderEndpointFacts;
 pub use body_identity::{
     DurableAnonymousShape, DurableAnonymousSource, DurableCallableSource, DurableConst,
     DurableConstSource, DurableFunction, DurableMethod, DurableNominal, DurableNominalBody,
-    DurableNominalSource, DurableSignatureParameter,
+    DurableNominalSource, DurableSignatureParameter, ProviderIdentityContext,
 };
 pub use call_resolution::ProviderCallFacts;
 

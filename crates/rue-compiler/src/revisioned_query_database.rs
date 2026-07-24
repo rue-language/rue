@@ -11693,6 +11693,35 @@ impl<'a> CompilerBodyFactProvider<'a> {
         &self.database.provider_observation_meter
     }
 
+    /// Observe producer facts under the producer's exact function-instance
+    /// identity. This preserves specialization wrappers carried by the
+    /// declaration projection instead of lossy definition-key reconstruction.
+    pub(crate) fn producer_instance_body_facts(
+        &self,
+        instance: &crate::FunctionInstanceKey,
+    ) -> Option<crate::body_query::ProducedAnonymous> {
+        self.meter()
+            .producer_facts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let body_key = crate::body_query::BodyQueryKey {
+            instance: instance.clone(),
+            configuration: self.configuration.clone(),
+        };
+        match self
+            .context
+            .query_registered(&self.database.body_produced_anonymous, body_key)
+        {
+            Ok(terminal) => match terminal.outcome() {
+                rue_query::QueryOutcome::Success(value) => Some(value.clone()),
+                _ => None,
+            },
+            Err(abort) => {
+                self.observe_abort(abort);
+                None
+            }
+        }
+    }
+
     /// Observe the exact `LookupName` terminal for a consulted key, recording
     /// its edge and classifying the candidate set.
     fn name_resolution(
@@ -13566,6 +13595,14 @@ pub(crate) mod test_support {
                 is_builtin: false,
                 lang_item: None,
                 is_repr_c: false,
+                has_destructor: self.by_key.keys().any(|member| {
+                    member.kind() == crate::StableDefinitionKind::Destructor
+                        && member.owner().is_some_and(|owner| {
+                            owner.module() == decl.key.module()
+                                && owner.kind() == decl.key.kind()
+                                && owner.name() == decl.key.name()
+                        })
+                }),
                 body,
             })
         }
@@ -13581,14 +13618,16 @@ pub(crate) mod test_support {
             let Payload::Callable {
                 parameters,
                 result,
-                has_self,
+                has_self: _,
                 is_unchecked,
             } = &decl.payload
             else {
                 return None;
             };
-            // A `self`-taking callable is a method, not a free function.
-            if *has_self {
+            // Namespace ownership, not `has_self`, separates free functions
+            // from nominal members. Associated functions have no receiver but
+            // still live in the owner's method namespace.
+            if key.kind().requires_owner() {
                 return None;
             }
             Some(rue_air::DurableFunction {
@@ -13621,10 +13660,8 @@ pub(crate) mod test_support {
             else {
                 return None;
             };
-            // A free function (no self) is not a method.
-            if !*has_self {
-                return None;
-            }
+            // Nominal ownership admits both receiver-taking methods and
+            // associated functions. A genuinely free function has no owner.
             let owner = key.owner()?;
             let owner_key = self
                 .by_key
@@ -21084,14 +21121,10 @@ mod tests {
     // (`bind_canonical_declaration_semantics`, r2's stable-keyed metadata), so
     // agreement is a real cross-path proof, not the same provider terminal.
     //
-    // Scope landed here: the free-function `function_info` pool composition (P,
-    // params through 2a), the `function_contains` lookup selection (C), and the
-    // callable-symbol reversal (B) including the bare-owner known-divergence.
-    // Deferred with cause (reported, never silently answered wrong): full
-    // `method_info` pool assembly needs the receiver→pool identity the endpoint
-    // seam owns (r4b-3); the `ConstInfo` pool + RIR handle have since landed as
-    // inert flip-prep but are not wired under this call driver; `module_def`
-    // answers an epoch-internal registry index with no provider preimage.
+    // Scope landed here: free-function and nominal-member info composition
+    // (including associated functions), lookup selection, callable-symbol
+    // reversal, const overlays, and the body-local module registry. The
+    // production cutover owns assembling and registering those body-local facts.
 
     /// Render a pool `Type` to a comparable display through the minted pool, the
     /// index-independent parity the 2a/2b contract asserts (never a pool-relative
@@ -21166,7 +21199,7 @@ mod tests {
             semantic_configuration(),
             "call-fn-info",
             move |provider| {
-                let mut facts =
+                let facts =
                     rue_air::ProviderCallFacts::new(provider, source_adapter, rir_ref, interner);
                 let info = facts
                     .function_info(&make_key, "make", file)
@@ -21187,21 +21220,26 @@ mod tests {
                 // Parameter vocabulary (2b), types resolved through 2a — asserted
                 // through the index-independent render/name reads (the pool mints
                 // its own ids; parity is a display property, not a raw index).
-                let arena = facts.param_arena();
-                let names = arena.names(info.params);
-                let types = arena.types(info.params);
-                let modes = arena.modes(info.params);
+                let (names, types, modes) = facts.with_param_arena(|arena| {
+                    (
+                        arena.names(info.params).to_vec(),
+                        arena.types(info.params).to_vec(),
+                        arena.modes(info.params).to_vec(),
+                    )
+                });
                 assert_eq!(info.params.len(), 2, "two explicit params");
                 assert_eq!(facts.resolve_symbol(names[0]), "p");
                 assert_eq!(facts.resolve_symbol(names[1]), "n");
-                assert_eq!(
-                    render_pool_type(facts.type_pool(), types[0]),
-                    "Point",
-                    "the nominal param minted through 2a"
-                );
-                assert_eq!(render_pool_type(facts.type_pool(), types[1]), "i32");
+                facts.with_type_pool(|pool| {
+                    assert_eq!(
+                        render_pool_type(pool, types[0]),
+                        "Point",
+                        "the nominal param minted through 2a"
+                    );
+                    assert_eq!(render_pool_type(pool, types[1]), "i32");
+                    assert_eq!(render_pool_type(pool, info.return_type), "i64");
+                });
                 assert_eq!(modes[0], rue_rir::RirParamMode::Normal);
-                assert_eq!(render_pool_type(facts.type_pool(), info.return_type), "i64");
                 info
             },
         );
@@ -21531,7 +21569,7 @@ mod tests {
             semantic_configuration(),
             "call-method-info",
             move |provider| {
-                let mut facts =
+                let facts =
                     rue_air::ProviderCallFacts::new(provider, source_adapter, rir_ref, interner);
                 let info = facts
                     .method_info(&shift_key, file, "Widget", "shift")
@@ -21555,19 +21593,26 @@ mod tests {
                 // Explicit params (self excluded): one nominal (`Point` through
                 // 2a) and one primitive, asserted through the index-independent
                 // render / resolved-name reads.
-                let arena = facts.param_arena();
-                let names = arena.names(info.params);
-                let types = arena.types(info.params);
-                let modes = arena.modes(info.params);
+                let (names, types, modes) = facts.with_param_arena(|arena| {
+                    (
+                        arena.names(info.params).to_vec(),
+                        arena.types(info.params).to_vec(),
+                        arena.modes(info.params).to_vec(),
+                    )
+                });
                 assert_eq!(info.params.len(), 2, "self is excluded from params");
                 assert_eq!(facts.resolve_symbol(names[0]), "p");
                 assert_eq!(facts.resolve_symbol(names[1]), "n");
-                assert_eq!(render_pool_type(facts.type_pool(), types[0]), "Point");
-                assert_eq!(render_pool_type(facts.type_pool(), types[1]), "i32");
+                let (receiver, ret) = facts.with_type_pool(|pool| {
+                    assert_eq!(render_pool_type(pool, types[0]), "Point");
+                    assert_eq!(render_pool_type(pool, types[1]), "i32");
+                    (
+                        render_pool_type(pool, info.struct_type),
+                        render_pool_type(pool, info.return_type),
+                    )
+                });
                 assert_eq!(modes[0], rue_rir::RirParamMode::Normal);
 
-                let receiver = render_pool_type(facts.type_pool(), info.struct_type);
-                let ret = render_pool_type(facts.type_pool(), info.return_type);
                 (info, receiver, ret)
             },
         );
@@ -21595,6 +21640,166 @@ mod tests {
             outcome.dependencies.is_empty(),
             "a pool-answered method_info records no provider edge: {:?}",
             outcome.dependencies
+        );
+    }
+
+    #[test]
+    fn provider_call_facts_associated_function_matches_live_epoch() {
+        use crate::StableDefinitionKind as Kind;
+
+        let source = "pub struct Counter { value: i32, \
+                        fn make(value: i32) -> Counter { Counter { value: value } } }\n\
+                      fn main() -> i32 { 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let file = FileId::new(1);
+        let decls = production_declarations(&snapshot);
+        let make_key = durable_decl(&decls, Kind::AssociatedFunction, "make")
+            .key
+            .clone();
+
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
+        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
+            &merged,
+            &rir,
+            crate::PreviewFeatures::default(),
+            rue_target::Target::X86_64Linux,
+            &imports,
+        )
+        .expect("declarations bind");
+        let interner = rir.semantic_symbols().interner();
+        let counter = interner.get("Counter").expect("Counter interned");
+        let make = interner.get("make").expect("make interned");
+        let epoch = bound
+            .epoch_method_info(file, counter, make)
+            .expect("the LIVE epoch has Counter.make");
+        let epoch_types = bound.with_type_pool(|pool| {
+            (
+                render_pool_type(pool, epoch.struct_type),
+                render_pool_type(pool, epoch.return_type),
+            )
+        });
+
+        let rir_ref = rir.rir();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let outcome = database.probe_body_facts(
+            revision,
+            semantic_configuration(),
+            "call-associated-info",
+            move |provider| {
+                let facts = rue_air::ProviderCallFacts::new(
+                    provider,
+                    DurableDeclSource::from_declarations(&decls),
+                    rir_ref,
+                    interner,
+                );
+                let info = facts
+                    .method_info(&make_key, file, "Counter", "make")
+                    .expect("associated function resolves through the method namespace");
+                let types = facts.with_type_pool(|pool| {
+                    (
+                        render_pool_type(pool, info.struct_type),
+                        render_pool_type(pool, info.return_type),
+                    )
+                });
+                (info, types)
+            },
+        );
+        let (provider, provider_types) = outcome.result;
+
+        assert_eq!(provider_types, epoch_types);
+        assert_eq!(provider.has_self, epoch.has_self);
+        assert!(!provider.has_self, "Counter.make is an associated function");
+        assert_eq!(provider.params.len(), epoch.params.len());
+        assert_eq!(provider.body, epoch.body);
+        assert_eq!(provider.span, epoch.span);
+        assert!(
+            outcome.dependencies.is_empty(),
+            "associated assembly uses durable metadata + RIR only: {:?}",
+            outcome.dependencies
+        );
+    }
+
+    #[test]
+    fn provider_named_destructor_metadata_matches_live_epoch() {
+        use crate::StableDefinitionKind as Kind;
+        use rue_air::{
+            NominalInstanceKey, SemanticDefinitionToken, SemanticModuleToken, TypeInstanceKey,
+        };
+
+        let source = "pub struct Box { value: i32 }\n\
+                      drop fn Box(self) {}\n\
+                      fn main() -> i32 { 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let file = FileId::new(1);
+        let decls = production_declarations(&snapshot);
+        let box_key = durable_decl(&decls, Kind::Struct, "Box").key.clone();
+
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
+        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
+            &merged,
+            &rir,
+            crate::PreviewFeatures::default(),
+            rue_target::Target::X86_64Linux,
+            &imports,
+        )
+        .expect("declarations bind");
+        let interner = rir.semantic_symbols().interner();
+        let box_symbol = interner.get("Box").expect("Box interned");
+        let epoch_box = bound
+            .epoch_nominal_type(file, box_symbol)
+            .expect("the LIVE epoch resolves Box");
+        let epoch_destructor = bound.with_type_pool(|pool| {
+            pool.struct_def(epoch_box.as_struct().expect("Box is a struct"))
+                .destructor
+                .clone()
+        });
+
+        let rir_ref = rir.rir();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let outcome = database.probe_body_facts(
+            revision,
+            semantic_configuration(),
+            "endpoint-destructor-metadata",
+            move |provider| {
+                let facts = rue_air::ProviderEndpointFacts::new(
+                    provider,
+                    DurableDeclSource::from_declarations(&decls),
+                    rir_ref,
+                    interner,
+                );
+                let token =
+                    facts.register_named_nominal(box_key, file.index(), "Box", Kind::Struct);
+                let ty = facts
+                    .resolve_instance_type(&TypeInstanceKey::<
+                        SemanticDefinitionToken,
+                        SemanticModuleToken,
+                    >::Nominal(
+                        NominalInstanceKey::Named(token)
+                    ))
+                    .expect("provider pool mints Box");
+                facts.with_type_pool(|pool| {
+                    pool.struct_def(ty.as_struct().expect("Box is a struct"))
+                        .destructor
+                        .clone()
+                })
+            },
+        );
+
+        assert_eq!(
+            outcome.result, epoch_destructor,
+            "provider destructor metadata diverged from the independently bound LIVE epoch"
+        );
+        assert!(
+            outcome.result.is_some(),
+            "the destructor-bearing nominal must retain a destructor symbol"
         );
     }
 
@@ -22881,9 +23086,8 @@ mod tests {
         use crate::StableDefinitionKind as Kind;
 
         // Exercise scalar, nominal type-valued, function-valued, and string
-        // constants. `dep` is the refusal pin: the LIVE epoch has a module
-        // binding, but the pool has no body-local module registry identity and
-        // therefore must STOP rather than approximate a value const.
+        // constants plus a module binding joined through the shared provider
+        // module registry.
         let root = "pub struct Point { x: i32 }\n\
                     fn helper() -> i32 { 1 }\n\
                     pub const LIMIT: i64 = 7;\n\
@@ -22908,7 +23112,12 @@ mod tests {
                 durable_decl(&decls, Kind::ValueConst, name).key.clone(),
             )
         });
-        let module_key = durable_decl(&decls, Kind::ModuleBinding, "dep").key.clone();
+        let module_target = match &durable_decl(&decls, Kind::ModuleBinding, "dep").payload {
+            crate::durable_semantics::DurableDeclarationPayload::ModuleBinding { target } => {
+                target.clone()
+            }
+            _ => unreachable!(),
+        };
 
         // LIVE epoch side: production parsing/lowering/import registration and
         // declaration binding, independent of the pool's durable adapter.
@@ -22939,10 +23148,14 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let dep_symbol = interner.get("dep").expect("module binding interned");
-        assert!(
-            bound.epoch_module_binding_info(file, dep_symbol).is_some(),
-            "the LIVE epoch resolves the module binding"
-        );
+        let epoch_module = bound
+            .epoch_module_binding_info(file, dep_symbol)
+            .expect("the LIVE epoch resolves the module binding");
+        let epoch_module = bound.with_type_pool(|pool| {
+            render_const_info(&epoch_module, pool, |symbol| {
+                interner.resolve(&symbol).to_owned()
+            })
+        });
 
         // Pool side: the production durable declaration adapter plus the real
         // ProviderEndpointFacts registration primitive, which composes the
@@ -22956,8 +23169,20 @@ mod tests {
             semantic_configuration(),
             "endpoint-const-info",
             move |provider| {
-                let facts =
-                    rue_air::ProviderEndpointFacts::new(provider, adapter, rir_ref, interner);
+                let identity = rue_air::ProviderIdentityContext::new(adapter);
+                let facts = rue_air::ProviderEndpointFacts::with_identity(
+                    provider,
+                    identity.clone(),
+                    rir_ref,
+                    interner,
+                );
+                let calls = rue_air::ProviderCallFacts::with_identity(
+                    provider,
+                    identity.clone(),
+                    rir_ref,
+                    interner,
+                );
+                let aggregate = rue_air::ProviderAggregateFacts::with_identity(identity);
                 let mut rendered = Vec::new();
                 for (name, key) in value_keys {
                     let info = facts
@@ -22973,20 +23198,70 @@ mod tests {
                         render_const_info(&again, pool, |symbol| facts.resolve_const_symbol(symbol))
                     });
                     assert_eq!(first, second, "repeat consult re-minted {name}");
+                    calls.register_value_const(file, name, info.clone());
+                    aggregate.register_value_const(file, name, info);
+                    assert!(calls.value_const(file, name).is_some());
+                    assert!(matches!(
+                        aggregate.select_module_type_member(file, name),
+                        rue_air::ProviderModuleMember::Const
+                    ));
+                    let aggregate_info = aggregate
+                        .value_const(file, name)
+                        .expect("aggregate preserves the assembled const");
+                    let aggregate_render = aggregate.with_type_pool(|pool| {
+                        render_const_info(&aggregate_info, pool, |symbol| {
+                            facts.resolve_const_symbol(symbol)
+                        })
+                    });
+                    assert_eq!(
+                        aggregate_render, first,
+                        "aggregate overlay changed the provider-assembled ConstInfo"
+                    );
                     rendered.push((name, first));
                 }
 
-                assert!(
-                    facts.const_info(&module_key, file, "dep").is_none(),
-                    "module binding STOP: no body-local module identity is approximated"
+                facts
+                    .register_module(
+                        module_target.clone(),
+                        FileId::new(2),
+                        "/project/dep.rue",
+                        module_target.logical_path(),
+                        module_target.logical_path(),
+                    )
+                    .expect("target module registers in the shared identity context");
+                let module = facts
+                    .module_binding_info(file, "dep", &module_target, false)
+                    .expect("module binding joins its durable target to the registry");
+                calls.register_module_binding(file, "dep", module.clone());
+                aggregate.register_module_binding(file, "dep", module.clone());
+                assert!(calls.module_binding(file, "dep").is_some());
+                assert!(matches!(
+                    aggregate.select_module_type_member(file, "dep"),
+                    rue_air::ProviderModuleMember::Const
+                ));
+                let aggregate_module = aggregate
+                    .module_binding(file, "dep")
+                    .expect("aggregate preserves the assembled module binding");
+                let module = facts.with_type_pool(|pool| {
+                    render_const_info(&module, pool, |symbol| facts.resolve_const_symbol(symbol))
+                });
+                let aggregate_module = aggregate.with_type_pool(|pool| {
+                    render_const_info(&aggregate_module, pool, |symbol| {
+                        facts.resolve_const_symbol(symbol)
+                    })
+                });
+                assert_eq!(
+                    aggregate_module, module,
+                    "aggregate overlay changed the provider-assembled module ConstInfo"
                 );
-                rendered
+                (rendered, module)
             },
         );
         assert_eq!(
-            outcome.result, epoch,
+            outcome.result.0, epoch,
             "pool-assembled ConstInfo diverged from the LIVE epoch"
         );
+        assert_eq!(outcome.result.1, epoch_module);
         assert!(
             outcome.dependencies.is_empty(),
             "const assembly uses durable metadata + RIR only: {:?}",
@@ -23009,12 +23284,10 @@ mod tests {
     // `_struct_literal_head` / `_is_accessible`), rendered index-independently.
     //
     // Scope landed here: struct/enum-by-file-name (P, pool mint via the overlay
-    // reverse), the builtins (P, pool pre-registered set), and `is_accessible`
-    // (O, request-local file paths). Deferred with cause (pinned, never silently
-    // answered wrong): the const pool + RIR handle now exist (flip-prep above)
-    // but remain intentionally unwired under this aggregate driver, so a const
-    // member selects `Absent` where the epoch selects `Const`; `module_def` + the
-    // module spines → the flip; `source_path` → the flip.
+    // reverse), builtins (P, pool pre-registered set), `is_accessible` (O,
+    // request-local file paths), const overlays, and the body-local module
+    // registry. The production cutover owns assembling and registering those
+    // request-local facts.
 
     /// The tag + index-independent display of a [`rue_air::ProviderModuleMember`],
     /// rendered through the pool that minted its type.
@@ -23138,9 +23411,8 @@ mod tests {
     #[test]
     fn provider_aggregate_facts_selection_order_matches_epoch() {
         use crate::StableDefinitionKind as Kind;
-        // A struct, an enum, and a value constant sharing one module: the
-        // struct→enum→const short-circuit is exercised, and the const arm is the
-        // pinned deferred divergence.
+        // A struct, an enum, and a value constant sharing one module exercise
+        // the struct→enum→const short-circuit.
         let source = "pub struct Point { x: i64 }\n\
                       pub enum Color { Red, Green }\n\
                       pub const LIMIT: i64 = 7;\n\
@@ -23150,6 +23422,9 @@ mod tests {
         let decls = production_declarations(&snapshot);
         let point_key = durable_decl(&decls, Kind::Struct, "Point").key.clone();
         let color_key = durable_decl(&decls, Kind::Enum, "Color").key.clone();
+        let limit_key = durable_decl(&decls, Kind::ValueConst, "LIMIT")
+            .key
+            .clone();
 
         let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
         let merged = crate::merge_parsed_modules(&parsed).unwrap();
@@ -23167,35 +23442,105 @@ mod tests {
         let point_sym = interner.get("Point").expect("Point interned");
         let color_sym = interner.get("Color").expect("Color interned");
         let limit_sym = interner.get("LIMIT").expect("LIMIT interned");
+        let epoch_limit_info = bound
+            .epoch_const_info(file, limit_sym)
+            .expect("the LIVE epoch resolves LIMIT");
+        let epoch_limit_render = bound.with_type_pool(|pool| {
+            render_const_info(&epoch_limit_info, pool, |symbol| {
+                interner.resolve(&symbol).to_owned()
+            })
+        });
 
-        let mut facts =
-            rue_air::ProviderAggregateFacts::new(DurableDeclSource::from_declarations(&decls));
-        facts.register_named_nominal(point_key, file, "Point");
-        facts.register_named_nominal(color_key, file, "Color");
+        let rir_ref = rir.rir();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let outcome = database.probe_body_facts(
+            revision,
+            semantic_configuration(),
+            "aggregate-selection-order",
+            move |provider| {
+                let identity = rue_air::ProviderIdentityContext::new(
+                    DurableDeclSource::from_declarations(&decls),
+                );
+                let endpoint = rue_air::ProviderEndpointFacts::with_identity(
+                    provider,
+                    identity.clone(),
+                    rir_ref,
+                    interner,
+                );
+                let mut facts = rue_air::ProviderAggregateFacts::with_identity(identity);
+                facts.register_named_nominal(point_key, file, "Point");
+                facts.register_named_nominal(color_key, file, "Color");
+                let limit_info = endpoint
+                    .const_info(&limit_key, file, "LIMIT")
+                    .expect("endpoint assembles LIMIT from durable truth + exact RIR span");
+                let endpoint_limit_render = endpoint.with_type_pool(|pool| {
+                    render_const_info(&limit_info, pool, |symbol| {
+                        endpoint.resolve_const_symbol(symbol)
+                    })
+                });
+                facts.register_value_const(file, "LIMIT", limit_info);
+                let aggregate_limit_info = facts
+                    .value_const(file, "LIMIT")
+                    .expect("aggregate retains LIMIT's complete ConstInfo");
+                let aggregate_limit_render = facts.with_type_pool(|pool| {
+                    render_const_info(&aggregate_limit_info, pool, |symbol| {
+                        endpoint.resolve_const_symbol(symbol)
+                    })
+                });
 
-        // select_module_type_member: struct wins first, enum second, const arm is
-        // deferred (Absent where the epoch answers Const), absent last.
-        let member_point = facts.select_module_type_member(file, "Point");
-        let member_color = facts.select_module_type_member(file, "Color");
-        let member_limit = facts.select_module_type_member(file, "LIMIT");
-        let member_absent = facts.select_module_type_member(file, "Ghost");
-        // select_qualified_type: enum→struct order.
-        let qualified_color = facts.select_qualified_type(file, "Color");
-        let qualified_point = facts.select_qualified_type(file, "Point");
-        // select_qualified_enum: enum only.
-        let qenum_color = facts.select_qualified_enum(file, "Color");
-        let qenum_point = facts.select_qualified_enum(file, "Point");
-        // select_struct_literal_head: unqualified head → Named for a struct.
-        let head_point = facts.select_struct_literal_head(file, "Point");
+                // select_module_type_member: struct wins first, enum second,
+                // const third, absent last.
+                let member_point = facts.select_module_type_member(file, "Point");
+                let member_color = facts.select_module_type_member(file, "Color");
+                let member_limit = facts.select_module_type_member(file, "LIMIT");
+                let member_absent = facts.select_module_type_member(file, "Ghost");
+                let qualified_color = facts.select_qualified_type(file, "Color");
+                let qualified_point = facts.select_qualified_type(file, "Point");
+                let qenum_color = facts.select_qualified_enum(file, "Color");
+                let qenum_point = facts.select_qualified_enum(file, "Point");
+                let head_point = facts.select_struct_literal_head(file, "Point");
 
-        let (mp_tag, mp_disp) = facts.with_type_pool(|pool| describe_member(&member_point, pool));
-        let (mc_tag, mc_disp) = facts.with_type_pool(|pool| describe_member(&member_color, pool));
-        let (ml_tag, _) = facts.with_type_pool(|pool| describe_member(&member_limit, pool));
-        let (ma_tag, _) = facts.with_type_pool(|pool| describe_member(&member_absent, pool));
-        let (qc_tag, qc_disp) =
-            facts.with_type_pool(|pool| describe_qualified(&qualified_color, pool));
-        let (qp_tag, qp_disp) =
-            facts.with_type_pool(|pool| describe_qualified(&qualified_point, pool));
+                facts.with_type_pool(|pool| {
+                    (
+                        describe_member(&member_point, pool),
+                        describe_member(&member_color, pool),
+                        describe_member(&member_limit, pool).0,
+                        describe_member(&member_absent, pool).0,
+                        describe_qualified(&qualified_color, pool),
+                        describe_qualified(&qualified_point, pool),
+                        qenum_color.is_some(),
+                        qenum_point.is_some(),
+                        match head_point {
+                            rue_air::ProviderStructHead::Named(ty) => {
+                                Some(endpoint_display(pool, ty))
+                            }
+                            _ => None,
+                        },
+                        endpoint_limit_render,
+                        aggregate_limit_render,
+                    )
+                })
+            },
+        );
+        let (
+            (mp_tag, mp_disp),
+            (mc_tag, mc_disp),
+            ml_tag,
+            ma_tag,
+            (qc_tag, qc_disp),
+            (qp_tag, qp_disp),
+            qenum_color,
+            qenum_point,
+            head_point,
+            endpoint_limit_render,
+            aggregate_limit_render,
+        ) = outcome.result;
+        assert_eq!(endpoint_limit_render, epoch_limit_render);
+        assert_eq!(
+            aggregate_limit_render, endpoint_limit_render,
+            "aggregate const overlay preserves provider-assembled type, value, visibility, and span"
+        );
 
         // Epoch winners for the same members.
         let epoch_point = bound.epoch_module_type_member(file, point_sym);
@@ -23221,12 +23566,9 @@ mod tests {
         );
         assert_eq!(mc_tag, "enum");
         assert_eq!(mc_disp.as_deref(), Some("Color"));
-        // Const arm: the pinned divergence — epoch selects Const, provider Absent.
+        // Const arm: both select the installed const.
         assert_eq!(el_tag, "const", "the epoch selects the const member");
-        assert_eq!(
-            ml_tag, "absent",
-            "the provider defers the const arm (flip const RIR handle)"
-        );
+        assert_eq!(ml_tag, el_tag, "the provider selects the const member");
         // Absent: both agree there is no member.
         assert_eq!(ma_tag, "absent");
 
@@ -23251,19 +23593,11 @@ mod tests {
         assert_eq!(qp_tag, "struct");
 
         // select_qualified_enum: enum resolves, struct does not.
-        assert!(qenum_color.is_some(), "Color qualified-enum resolves");
-        assert!(qenum_point.is_none(), "Point is not a qualified enum");
+        assert!(qenum_color, "Color qualified-enum resolves");
+        assert!(!qenum_point, "Point is not a qualified enum");
 
         // select_struct_literal_head: unqualified struct head → Named.
-        match head_point {
-            rue_air::ProviderStructHead::Named(ty) => {
-                assert_eq!(
-                    facts.with_type_pool(|pool| endpoint_display(pool, ty)),
-                    "Point"
-                );
-            }
-            _ => panic!("Point struct head should be Named"),
-        }
+        assert_eq!(head_point.as_deref(), Some("Point"));
         // The epoch's head agrees.
         match bound.epoch_struct_literal_head(file, point_sym) {
             rue_air::ProviderStructHead::Named(_) => {}
