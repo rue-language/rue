@@ -11,6 +11,12 @@ use rue_rir::{InstData, InstRef, RirParamMode};
 use rue_span::Span;
 
 use super::BodySema;
+use super::aggregate_resolution::{
+    AggregateFacts, EpochFacts, ModuleTypeMember, QualifiedType, StructLiteralHead,
+    resolve_aggregate_module_ref, resolve_enum_type_name, resolve_struct_type_name,
+    select_module_type_member, select_qualified_enum, select_qualified_type,
+    select_struct_literal_head,
+};
 use super::analysis::FirstClassStrSite;
 use super::context::{AnalysisContext, AnalysisResult, ConstValue};
 use crate::inst::{Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirRef};
@@ -30,19 +36,13 @@ impl<'a> BodySema<'a> {
         type_name: Spur,
         ctx: &AnalysisContext,
     ) -> Option<(crate::types::EnumId, bool)> {
-        if let Some(&ty) = ctx.comptime_type_vars.get(&type_name) {
-            return ty.as_enum().map(|id| (id, true));
-        }
-        if let Some(info) = self.value_const(&(ctx.current_file_id, type_name))
-            && let ConstValue::Type(ty) = info.value
-        {
-            return ty.as_enum().map(|id| (id, true));
-        }
-        self.enums_by_file_name
-            .get(&(ctx.current_file_id, type_name))
-            .copied()
-            .or_else(|| self.resolve_builtin_enum_name(type_name))
-            .map(|id| (id, false))
+        let facts = EpochFacts::new(self);
+        resolve_enum_type_name(
+            &facts,
+            ctx.comptime_type_vars.get(&type_name).copied(),
+            ctx.current_file_id,
+            type_name,
+        )
     }
 
     /// Resolve a `Type.assoc()` / `Type { .. }` struct type name that may be a
@@ -62,19 +62,13 @@ impl<'a> BodySema<'a> {
         type_name: Spur,
         ctx: &AnalysisContext,
     ) -> Option<(crate::types::StructId, bool)> {
-        if let Some(&ty) = ctx.comptime_type_vars.get(&type_name) {
-            return ty.as_struct().map(|id| (id, true));
-        }
-        if let Some(info) = self.value_const(&(ctx.current_file_id, type_name))
-            && let ConstValue::Type(ty) = info.value
-        {
-            return ty.as_struct().map(|id| (id, true));
-        }
-        self.structs_by_file_name
-            .get(&(ctx.current_file_id, type_name))
-            .copied()
-            .or_else(|| self.resolve_builtin_struct_name(type_name))
-            .map(|id| (id, false))
+        let facts = EpochFacts::new(self);
+        resolve_struct_type_name(
+            &facts,
+            ctx.comptime_type_vars.get(&type_name).copied(),
+            ctx.current_file_id,
+            type_name,
+        )
     }
 
     /// Analyze construction of an enum tuple variant with a payload
@@ -362,15 +356,11 @@ impl<'a> BodySema<'a> {
                     span,
                 ));
             };
-            let module_def = self.module_registry.get_def(module_id);
-            let module_file_id = Some(module_def.file_id);
-            let struct_id = module_file_id
-                .and_then(|file_id| {
-                    self.structs_by_file_name
-                        .get(&(file_id, type_name))
-                        .copied()
-                })
-                .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.to_string()), span)?;
+            let struct_id = {
+                let facts = EpochFacts::new(self);
+                facts.struct_in_file(facts.module(module_id).file, type_name)
+            }
+            .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.to_string()), span)?;
             // Module-qualified visibility is E0706 (RUE-525), uniform with
             // enum members and associated-function calls through a module;
             // E0460 is the diagnostic for unqualified naming forms.
@@ -385,63 +375,47 @@ impl<'a> BodySema<'a> {
                 ));
             }
             struct_id
-        } else if let Some(&ty) = ctx.comptime_type_vars.get(&type_name) {
-            // Extract struct ID from the comptime type
-            match ty.kind() {
-                TypeKind::Struct(id) => id,
-                _ => {
-                    return Err(CompileError::new(
-                        ErrorKind::TypeMismatch {
-                            expected: "struct type".to_string(),
-                            found: ty.safe_name_with_pool(Some(&self.type_pool)),
-                        },
-                        span,
-                    ));
-                }
-            }
-        } else if let Some(info) = self.value_const(&(span.file_id, type_name))
-            && let ConstValue::Type(ty) = info.value
-        {
-            // Module-level `const P = Point(i32); P { .. }` (RUE-595): the
-            // specialization arrived through a `const` binding, mirroring the
-            // comptime-type-variable branch above — privacy-exempt for the same
-            // reason (the type value came from a binding, not by naming the
-            // struct). Without this arm the literal head was `UnknownType`
-            // (E0204) even though the annotation form (`fn f() -> P`) resolved.
-            match ty.kind() {
-                TypeKind::Struct(id) => id,
-                _ => {
-                    return Err(CompileError::new(
-                        ErrorKind::TypeMismatch {
-                            expected: "struct type".to_string(),
-                            found: ty.safe_name_with_pool(Some(&self.type_pool)),
-                        },
-                        span,
-                    ));
-                }
-            }
         } else {
-            let struct_id = self
-                .structs_by_file_name
-                .get(&(span.file_id, type_name))
-                .copied()
-                .or_else(|| self.resolve_builtin_struct_name(type_name))
-                .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.to_string()), span)?;
-            // Privacy (E0460, RUE-183): a struct literal names the type
-            // unqualified, so a private struct from another directory is not
-            // constructible here — privacy is uniform across item kinds
-            // (spec 10.3:1, 10.3:7). The comptime-type-variable branch above
-            // is exempt: the type value arrived through a binding (e.g. a
-            // `pub` comptime function's return), not by naming the struct.
-            let def = self.type_pool.struct_def(struct_id);
-            self.check_unqualified_visibility(
-                "struct",
-                type_name_str,
-                def.file_id,
-                def.is_pub,
-                span,
-            )?;
-            struct_id
+            let head = {
+                let facts = EpochFacts::new(self);
+                select_struct_literal_head(
+                    &facts,
+                    ctx.comptime_type_vars.get(&type_name).copied(),
+                    span.file_id,
+                    type_name,
+                )
+            };
+            match head {
+                StructLiteralHead::Bound(ty) => match ty.kind() {
+                    TypeKind::Struct(id) => id,
+                    _ => {
+                        return Err(CompileError::new(
+                            ErrorKind::TypeMismatch {
+                                expected: "struct type".to_string(),
+                                found: ty.safe_name_with_pool(Some(&self.type_pool)),
+                            },
+                            span,
+                        ));
+                    }
+                },
+                StructLiteralHead::Named(struct_id) => {
+                    let def = self.type_pool.struct_def(struct_id);
+                    self.check_unqualified_visibility(
+                        "struct",
+                        type_name_str,
+                        def.file_id,
+                        def.is_pub,
+                        span,
+                    )?;
+                    struct_id
+                }
+                StructLiteralHead::Absent => {
+                    return Err(CompileError::new(
+                        ErrorKind::UnknownType(type_name_str.to_string()),
+                        span,
+                    ));
+                }
+            }
         };
 
         // Get struct def (returns owned copy from pool)
@@ -632,24 +606,28 @@ impl<'a> BodySema<'a> {
         // `./helper.rue`) refer to the same module (spec 10.2:4, RUE-240).
         // `module_file_path` is then that file's stored path, used for the
         // directory-based visibility checks below.
-        let module_def = self.module_registry.get_def(module_id);
-        let module_file_id = Some(module_def.file_id);
-        let module_file_path = module_file_id
-            .and_then(|id| self.get_file_path(id))
-            .map(str::to_string)
-            .unwrap_or_else(|| module_def.file_path.clone());
+        let (module_fact, module_file_path) = {
+            let facts = EpochFacts::new(self);
+            let module = facts.module(module_id);
+            let module_file_path = facts
+                .file_path(module.file)
+                .map(str::to_string)
+                .unwrap_or_else(|| module.file_path().to_string());
+            (module, module_file_path)
+        };
 
         // Get the accessing file's directory for visibility check
-        let accessing_file_path = self.get_source_path(span).map(|s| s.to_string());
+        let accessing_file_path = EpochFacts::new(self).source_path(span).map(str::to_string);
+        let member = {
+            let facts = EpochFacts::new(self);
+            select_module_type_member(&facts, module_fact.file, member_name)
+        };
 
         // First, try to find a struct with this name defined by the module's
         // file. Same-named structs in sibling modules are distinct nominal
         // types (RUE-454).
-        if let Some(struct_id) = module_file_id.and_then(|file_id| {
-            self.structs_by_file_name
-                .get(&(file_id, member_name))
-                .copied()
-        }) {
+        if let ModuleTypeMember::Struct(struct_id) = &member {
+            let struct_id = *struct_id;
             let struct_def = self.type_pool.struct_def(struct_id);
 
             // Check visibility: pub structs are visible to all, private only to same directory
@@ -686,11 +664,8 @@ impl<'a> BodySema<'a> {
         }
 
         // Next, try to find an enum with this name defined by the module's file.
-        if let Some(enum_id) = module_file_id.and_then(|file_id| {
-            self.enums_by_file_name
-                .get(&(file_id, member_name))
-                .copied()
-        }) {
+        if let ModuleTypeMember::Enum(enum_id) = &member {
+            let enum_id = *enum_id;
             let enum_def = self.type_pool.enum_def(enum_id);
 
             // Check visibility: pub enums are visible to all, private only to same directory
@@ -733,12 +708,7 @@ impl<'a> BodySema<'a> {
         // member-by-member (RUE-136). Module bindings live in the per-file
         // tagged module-binding variant keyed by the facade's FileId (RUE-113);
         // value consts are found by defining file and member name.
-        let member_const = module_file_id
-            .and_then(|file_id| self.module_binding(&(file_id, member_name)))
-            .or_else(|| {
-                module_file_id.and_then(|file_id| self.value_const(&(file_id, member_name)))
-            });
-        if let Some(const_info) = member_const.cloned() {
+        if let ModuleTypeMember::Const(const_info) = member {
             if !const_info.is_pub {
                 let same_dir = match &accessing_file_path {
                     Some(accessing) => {
@@ -808,7 +778,7 @@ impl<'a> BodySema<'a> {
         // Member not found in the module
         Err(CompileError::new(
             ErrorKind::UnknownModuleMember {
-                module_name: module_def.import_path.clone(),
+                module_name: module_fact.import_path().to_string(),
                 member_name: member_name_str,
             },
             span,
@@ -911,28 +881,8 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &AnalysisContext,
     ) -> Option<crate::types::ModuleId> {
-        match self.rir.get(inst_ref).data {
-            InstData::VarRef { name, .. } => {
-                if let Some(local) = ctx.locals.get(&name) {
-                    if let Some(module_id) = local.ty.as_module() {
-                        return Some(module_id);
-                    }
-                }
-                self.module_binding(&(span.file_id, name))
-                    .and_then(|binding| binding.ty.as_module())
-            }
-            // Nested submodule: `parent.sub` where `parent` is a module and `sub`
-            // is a module re-exported from `parent`'s file (`pub const sub =
-            // @import(...)`).
-            InstData::FieldGet { base, field } => {
-                let parent_id = self.try_module_id_of(base, span, ctx)?;
-                let parent_def = self.module_registry.get_def(parent_id);
-                let parent_file = parent_def.file_id;
-                self.module_binding(&(parent_file, field))
-                    .and_then(|binding| binding.ty.as_module())
-            }
-            _ => None,
-        }
+        let facts = EpochFacts::new(self);
+        resolve_aggregate_module_ref(&facts, self.rir, inst_ref, span.file_id, &ctx.locals)
     }
 
     /// Try to analyze a module-qualified type-member call:
@@ -958,13 +908,16 @@ impl<'a> BodySema<'a> {
         let Some(module_id) = self.try_module_id_of(module_ref, span, ctx) else {
             return Ok(None);
         };
-        let module_def = self.module_registry.get_def(module_id);
-        let file_id = module_def.file_id;
+        let selected = {
+            let facts = EpochFacts::new(self);
+            let file = facts.module(module_id).file;
+            select_qualified_type(&facts, file, type_name)
+        };
 
         // Enum member: `module.Enum.Variant(payload)` is tuple-variant
         // construction. Resolve the enum in the receiver module's defining
         // file and apply module-qualified visibility (E0706).
-        if let Some(enum_id) = self.enums_by_file_name.get(&(file_id, type_name)).copied() {
+        if let QualifiedType::Enum(enum_id) = selected {
             let enum_def = self.type_pool.enum_def(enum_id);
             if !self.is_accessible(span.file_id, enum_def.file_id, enum_def.is_pub) {
                 return Err(CompileError::new(
@@ -1004,11 +957,7 @@ impl<'a> BodySema<'a> {
         // pass it through (RUE-525): dispatching on the bare name would
         // re-resolve in the caller's file (module-local rules) and miss.
         // Module-qualified visibility is E0706, mirroring the enum branch.
-        if let Some(struct_id) = self
-            .structs_by_file_name
-            .get(&(file_id, type_name))
-            .copied()
-        {
+        if let QualifiedType::Struct(struct_id) = selected {
             let struct_def = self.type_pool.struct_def(struct_id);
             if !self.is_accessible(span.file_id, struct_def.file_id, struct_def.is_pub) {
                 return Err(CompileError::new(
@@ -1055,11 +1004,11 @@ impl<'a> BodySema<'a> {
         let Some(module_id) = self.try_module_id_of(module_ref, span, ctx) else {
             return Ok(None);
         };
-        let module_def = self.module_registry.get_def(module_id);
-        let module_file_id = Some(module_def.file_id);
-        let Some(enum_id) = module_file_id
-            .and_then(|file_id| self.enums_by_file_name.get(&(file_id, type_name)).copied())
-        else {
+        let Some(enum_id) = ({
+            let facts = EpochFacts::new(self);
+            let file = facts.module(module_id).file;
+            select_qualified_enum(&facts, file, type_name)
+        }) else {
             // `type_name` is not an enum in this module: this is const/field
             // access through the module, not a variant path. Fall through.
             return Ok(None);

@@ -7,10 +7,11 @@
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_span::FileId;
 
-use crate::types::EnumId;
-use rue_rir::InstData;
-
+use super::aggregate_resolution::{
+    AggregateFacts, EpochFacts, is_accessible, resolve_visibility_module_ref, select_qualified_enum,
+};
 use super::{DeclarationPhase, Sema, context::AnalysisContext};
+use crate::types::EnumId;
 
 impl<D: DeclarationPhase> Sema<'_, D> {
     /// Check if the accessing file can see a private item from the target file.
@@ -30,11 +31,8 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         target_file_id: FileId,
         is_pub: bool,
     ) -> bool {
-        let accessing =
-            crate::SemanticVisibilityDomain::from_file_path(self.get_file_path(accessing_file_id));
-        let defining =
-            crate::SemanticVisibilityDomain::from_file_path(self.get_file_path(target_file_id));
-        defining.is_visible_from(&accessing, is_pub)
+        let facts = EpochFacts::new(self);
+        is_accessible(&facts, accessing_file_id, target_file_id, is_pub)
     }
 
     /// Check that an *unqualified* reference may reach the item (RUE-37,
@@ -68,8 +66,8 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         // `is_accessible` is permissive when either file path is unknown
         // (single-file mode, synthetic items), so the item's path is
         // always known here.
-        let defining_file = self
-            .get_file_path(defining_file_id)
+        let defining_file = EpochFacts::new(self)
+            .file_path(defining_file_id)
             .unwrap_or("<unknown>")
             .to_string();
 
@@ -112,7 +110,11 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         // defining file. If the receiver has no module identity, it is not a
         // valid qualified type path.
         let enum_id = module_file_id
-            .and_then(|file_id| self.enums_by_file_name.get(&(file_id, type_name)).copied())
+            .and_then(|module_id| {
+                let facts = EpochFacts::new(self);
+                let file = facts.module(module_id).file;
+                select_qualified_enum(&facts, file, type_name)
+            })
             .ok_or_else(|| {
                 CompileError::new(ErrorKind::UnknownEnumType(type_name_str.to_string()), span)
             })?;
@@ -139,24 +141,8 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         &self,
         module_ref: rue_rir::InstRef,
         ctx: &AnalysisContext,
-    ) -> Option<FileId> {
-        let inst = self.rir.get(module_ref);
-        let module_ty = match inst.data {
-            InstData::VarRef { name, .. } => {
-                ctx.locals.get(&name).map(|local| local.ty).or_else(|| {
-                    self.module_binding(&(inst.span.file_id, name))
-                        .map(|binding| binding.ty)
-                })
-            }
-            InstData::FieldGet { base, field } => {
-                let parent_file = self.module_file_for_ref(base, ctx)?;
-                self.module_binding(&(parent_file, field))
-                    .map(|binding| binding.ty)
-            }
-            _ => None,
-        }?;
-        let module_id = module_ty.as_module()?;
-        let module_def = self.module_registry.get_def(module_id);
-        Some(module_def.file_id)
+    ) -> Option<crate::types::ModuleId> {
+        let facts = EpochFacts::new(self);
+        resolve_visibility_module_ref(&facts, self.rir, module_ref, &ctx.locals)
     }
 }
