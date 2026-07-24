@@ -88,12 +88,13 @@ use lasso::{Spur, ThreadedRodeo};
 use rue_rir::{InstData, InstRef, Rir, RirParamMode};
 use rue_span::{FileId, Span};
 
+use super::ConstValue;
 use super::declaration_index::{RirDeclarationIndex, RirDestructorDeclaration};
-use super::info::{FunctionInfo, MethodInfo};
+use super::info::{ConstInfo, FunctionInfo, MethodInfo};
 use crate::types::{EnumDef, EnumId, LangItem, StructDef, StructField, StructId, Type};
 use crate::{
-    AnonymousNominalKey, ParamArena, ParamRange, SemanticImportNominalKind, SemanticImportType,
-    SemanticParameterMode, TypeInternPool,
+    AnonymousNominalKey, ParamArena, ParamRange, SemanticImportConstValue,
+    SemanticImportNominalKind, SemanticImportType, SemanticParameterMode, TypeInternPool,
 };
 
 /// The durable body of a named nominal: its field / variant vocabulary plus the
@@ -240,6 +241,10 @@ pub(in crate::sema) enum IdentityMintError {
     MissingNominal,
     /// A callable (function / method) key resolves to no durable signature.
     MissingCallable,
+    /// A constant key resolves to no declaration-level durable value record.
+    MissingConst,
+    /// A function-valued constant names no durable callable source name.
+    MissingConstCallable,
     /// An anonymous nominal key was consulted before its issued id was
     /// registered with the pool.
     MissingAnonymous,
@@ -351,6 +356,14 @@ pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
     /// [`Self::well_known_option_for_payload`]) answers as if nothing was
     /// installed — no observable partial success either way.
     well_known_poisoned: Option<IdentityMintError>,
+    // ---- RUE-1091 flip-prep: const identity family -------------------------
+    /// Minted declaration-level const payloads, deduplicated by durable key.
+    /// The request-local declaration span is supplied separately by the RIR
+    /// handle and therefore is not cached here.
+    const_values: HashMap<K, ConstIdentity>,
+    /// Const keys whose assembly failed after a nested type/value mint began.
+    /// Repeat consults re-error instead of exposing or re-running partial state.
+    const_poisoned: HashMap<K, IdentityMintError>,
 }
 
 /// The durable-signature-derived subset of a [`FunctionInfo`], minted once and
@@ -461,6 +474,8 @@ where
             well_known_option_by_payload: HashMap::new(),
             well_known_option_identities: std::collections::BTreeSet::new(),
             well_known_poisoned: None,
+            const_values: HashMap::new(),
+            const_poisoned: HashMap::new(),
         }
     }
 
@@ -1506,10 +1521,151 @@ where
     }
 }
 
+// ----- RUE-1091 flip-prep: const identity family ----------------------------
+//
+// Kept as one delimited section because r6c is expected to touch the anonymous /
+// well-known portion of this file. The only edits outside this section are the
+// pool's cache fields/initialization and the adjacent BodyRirIndex point map.
+
+/// Declaration-level durable facts for one value constant.
+///
+/// The record deliberately excludes its [`Span`]: that is a request-local RIR
+/// locator supplied by [`ConstIdentityHandle`], just as callable bodies and
+/// declaration handles are supplied separately from durable signatures.
+/// Module bindings are not represented here. Although their durable record
+/// carries a target module key, minting the epoch-local module [`Type`] needs the
+/// module-registry arm the pool still refuses; a source must return `None`
+/// instead of approximating one as a value const.
+#[derive(Debug, Clone)]
+pub struct DurableConst<K, M> {
+    pub is_public: bool,
+    pub ty: SemanticImportType<K, M>,
+    pub value: SemanticImportConstValue<K, M>,
+}
+
+/// The durable const vocabulary consulted by the body identity pool.
+///
+/// `constant` exposes only constants with declaration-level durable type/value
+/// truth. `function_name` relocates a function-valued const's durable callable
+/// key to its source name; the pool interns that name in its own symbol space,
+/// exactly as it interns durable parameter names. A missing `constant` is an
+/// honest, retryable `MissingConst` refusal (matching `MissingCallable`); a
+/// missing `function_name` occurs after const assembly has begun and poisons
+/// that const mint as `MissingConstCallable`.
+pub trait DurableConstSource<K, M> {
+    fn constant(&self, key: &K) -> Option<DurableConst<K, M>>;
+    fn function_name(&self, key: &K) -> Option<Arc<str>>;
+}
+
+/// The durable-derived subset of [`ConstInfo`], cached by const key.
+#[derive(Clone, Copy)]
+struct ConstIdentity {
+    is_pub: bool,
+    ty: Type,
+    value: ConstValue,
+}
+
+/// The request/RIR-carried portion of a [`ConstInfo`].
+#[derive(Debug, Clone, Copy)]
+pub(in crate::sema) struct ConstIdentityHandle {
+    pub span: Span,
+}
+
+impl<K, M, S> BodyIdentityPool<K, M, S>
+where
+    K: Clone + Eq + Hash,
+    M: Eq + Hash,
+    S: DurableNominalSource<K, M> + DurableConstSource<K, M>,
+{
+    /// Assemble a [`ConstInfo`] from a durable value-const record and the exact
+    /// current-RIR declaration handle. The durable subset is minted once and
+    /// deduplicated; the request-local span is applied on every assembly.
+    pub(in crate::sema) fn resolve_const(
+        &mut self,
+        key: &K,
+        handle: ConstIdentityHandle,
+    ) -> Result<ConstInfo, IdentityMintError> {
+        let identity = self.const_identity(key)?;
+        Ok(ConstInfo {
+            is_pub: identity.is_pub,
+            ty: identity.ty,
+            value: identity.value,
+            span: handle.span,
+        })
+    }
+
+    fn const_identity(&mut self, key: &K) -> Result<ConstIdentity, IdentityMintError> {
+        if let Some(err) = self.const_poisoned.get(key) {
+            return Err(err.clone());
+        }
+        if let Some(&identity) = self.const_values.get(key) {
+            return Ok(identity);
+        }
+
+        let DurableConst {
+            is_public,
+            ty,
+            value,
+        } = self
+            .source
+            .constant(key)
+            .ok_or(IdentityMintError::MissingConst)?;
+
+        // Resolve the declared type before the value, matching declaration
+        // assembly. Recursive nominal graphs still use `resolve`'s
+        // declare-then-complete path; a const itself needs no predeclared shell
+        // because its durable value is already fully evaluated.
+        let ty = self.resolve_const_type(key, &ty)?;
+        let value = self.resolve_const_value(key, &value)?;
+        let identity = ConstIdentity {
+            is_pub: is_public,
+            ty,
+            value,
+        };
+        self.const_values.insert(key.clone(), identity);
+        Ok(identity)
+    }
+
+    fn resolve_const_type(
+        &mut self,
+        key: &K,
+        value: &SemanticImportType<K, M>,
+    ) -> Result<Type, IdentityMintError> {
+        self.resolve(value).inspect_err(|err| {
+            self.const_poisoned.insert(key.clone(), (*err).clone());
+        })
+    }
+
+    fn resolve_const_value(
+        &mut self,
+        key: &K,
+        value: &SemanticImportConstValue<K, M>,
+    ) -> Result<ConstValue, IdentityMintError> {
+        use SemanticImportConstValue as V;
+        Ok(match value {
+            V::Integer(value) => ConstValue::Integer(*value),
+            V::Bool(value) => ConstValue::Bool(*value),
+            V::Type(value) => ConstValue::Type(self.resolve_const_type(key, value)?),
+            V::Function(function) => {
+                let Some(name) = self.source.function_name(function) else {
+                    let err = IdentityMintError::MissingConstCallable;
+                    self.const_poisoned.insert(key.clone(), err.clone());
+                    return Err(err);
+                };
+                ConstValue::Function(self.interner.get_or_intern(name.as_ref()))
+            }
+            V::Unit => ConstValue::Unit,
+            V::String(value) => ConstValue::String(self.interner.get_or_intern(value.as_ref())),
+        })
+    }
+}
+
 /// The body-scoped RIR answer surface for the endpoint seam (slice r4a-2c): the
 /// provider-side equivalent of the three endpoint ops `one_body.rs` consumes
 /// through [`super::body_endpoint::EpochFacts`] — `first_free_function`,
-/// `named_method_declaration`, and `destructor`.
+/// `named_method_declaration`, and `destructor`. It additionally owns the
+/// pool-side flip-prep const declaration handle; there is no epoch const op or
+/// pre-flip analyzer consumer.
 ///
 /// # The shared-`Rir` input, not durable state
 ///
@@ -1544,6 +1700,12 @@ where
 /// point map — the sole additive surface. No keying input is pool-minted; every
 /// key is RIR-derivable from the shared `Rir`.
 ///
+/// The const map indexes every arena `ConstDecl`, while the epoch's semantic
+/// authority is its shell-bound candidate set. Those sets coincide today. If a
+/// future synthetic arena contains a stray declaration, its handle remains
+/// inert: it contributes only a span and cannot assemble a [`ConstInfo`] without
+/// the independent durable-record join succeeding.
+///
 /// Inert per the pool arc: `#![cfg_attr(not(test), allow(dead_code))]` on this
 /// module. There are zero production callers; the flip slice (r4b) wires it
 /// under body analysis.
@@ -1555,6 +1717,9 @@ pub(in crate::sema) struct BodyRirIndex {
     /// durable-available `(owner_file, owner_type_name, method_name)` preimage
     /// of the epoch's `(StructId, method_name)` key.
     named_methods_by_owner: HashMap<(FileId, Spur, Spur), InstRef>,
+    /// Const declarations keyed by the exact storage preimage used by the
+    /// epoch's `const_resolutions`: `(declaring_file, source_name)`.
+    const_declarations: HashMap<(FileId, Spur), InstRef>,
 }
 
 impl BodyRirIndex {
@@ -1565,6 +1730,7 @@ impl BodyRirIndex {
     pub(in crate::sema) fn new(rir: &Rir) -> Self {
         let declarations = RirDeclarationIndex::new(rir);
         let mut named_methods_by_owner = HashMap::new();
+        let mut const_declarations = HashMap::new();
         for shell in declarations.shell_declarations() {
             // `named_method_owner` is `Some` exactly for named methods (free
             // functions, nominals, consts, and destructors carry `None`); the
@@ -1572,10 +1738,18 @@ impl BodyRirIndex {
             // method's own `span.file_id` is its enclosing struct's file (it is
             // lexically inline), so it is the same file the epoch keys by via
             // `struct_by_file_name(struct_span.file_id, type_name)`.
+            let inst = rir.get(shell.declaration);
+            if let InstData::ConstDecl { name, .. } = inst.data {
+                // First edge wins, matching the bound const candidate index.
+                // Duplicate `(file, name)` declarations are rejected before a
+                // frozen epoch can expose a `ConstInfo`.
+                const_declarations
+                    .entry((inst.span.file_id, name))
+                    .or_insert(shell.declaration);
+            }
             let Some(owner) = shell.named_method_owner else {
                 continue;
             };
-            let inst = rir.get(shell.declaration);
             if let InstData::FnDecl { name, .. } = inst.data {
                 // First edge wins, mirroring `RirDeclarationIndex`'s
                 // `named_method_owners.or_insert` and the epoch's E0418 rejection
@@ -1588,6 +1762,7 @@ impl BodyRirIndex {
         Self {
             declarations,
             named_methods_by_owner,
+            const_declarations,
         }
     }
 
@@ -1614,6 +1789,18 @@ impl BodyRirIndex {
     ) -> Option<InstRef> {
         self.named_methods_by_owner
             .get(&(owner_file, owner_type_name, method_name))
+            .copied()
+    }
+
+    /// The const declaration for the exact epoch storage key
+    /// `(declaring_file, source_name)`.
+    pub(in crate::sema) fn const_declaration(
+        &self,
+        declaring_file: FileId,
+        source_name: Spur,
+    ) -> Option<InstRef> {
+        self.const_declarations
+            .get(&(declaring_file, source_name))
             .copied()
     }
 
@@ -1649,6 +1836,7 @@ mod tests {
         nominals: HashMap<Key, DurableNominal<Key, Module>>,
         functions: HashMap<Key, DurableFunction<Key, Module>>,
         methods: HashMap<Key, DurableMethod<Key, Module>>,
+        consts: HashMap<Key, DurableConst<Key, Module>>,
         anonymous_shapes: HashMap<AnonKey, DurableAnonymousShape<Key, Module>>,
         /// Force a chosen definition relocation for a producer key, so a test can
         /// point two DISTINCT producer keys at one stable-content string (and thus
@@ -1670,6 +1858,18 @@ mod tests {
 
         fn method(&self, key: &Key) -> Option<DurableMethod<Key, Module>> {
             self.methods.get(key).cloned()
+        }
+    }
+
+    impl DurableConstSource<Key, Module> for MapSource {
+        fn constant(&self, key: &Key) -> Option<DurableConst<Key, Module>> {
+            self.consts.get(key).cloned()
+        }
+
+        fn function_name(&self, key: &Key) -> Option<Arc<str>> {
+            self.functions
+                .contains_key(key)
+                .then(|| Arc::from(format!("fn{key}")))
         }
     }
 
@@ -1695,6 +1895,7 @@ mod tests {
             nominals: nominals.into_iter().collect(),
             functions: HashMap::new(),
             methods: HashMap::new(),
+            consts: HashMap::new(),
             anonymous_shapes: HashMap::new(),
             def_component_overrides: HashMap::new(),
         }
@@ -1717,6 +1918,22 @@ mod tests {
             nominals: nominals.into_iter().collect(),
             functions: functions.into_iter().collect(),
             methods: methods.into_iter().collect(),
+            consts: HashMap::new(),
+            anonymous_shapes: HashMap::new(),
+            def_component_overrides: HashMap::new(),
+        })
+    }
+
+    fn const_pool(
+        nominals: impl IntoIterator<Item = (Key, DurableNominal<Key, Module>)>,
+        functions: impl IntoIterator<Item = (Key, DurableFunction<Key, Module>)>,
+        consts: impl IntoIterator<Item = (Key, DurableConst<Key, Module>)>,
+    ) -> BodyIdentityPool<Key, Module, MapSource> {
+        BodyIdentityPool::new(MapSource {
+            nominals: nominals.into_iter().collect(),
+            functions: functions.into_iter().collect(),
+            methods: HashMap::new(),
+            consts: consts.into_iter().collect(),
             anonymous_shapes: HashMap::new(),
             def_component_overrides: HashMap::new(),
         })
@@ -1733,6 +1950,7 @@ mod tests {
             nominals: nominals.into_iter().collect(),
             functions: HashMap::new(),
             methods: HashMap::new(),
+            consts: HashMap::new(),
             anonymous_shapes: anonymous_shapes.into_iter().collect(),
             def_component_overrides: def_component_overrides.into_iter().collect(),
         })
@@ -3724,9 +3942,167 @@ mod tests {
         );
     }
 
+    // ----- Const identity family (RUE-1091 flip-prep) ------------------------
+
+    fn durable_const(
+        is_public: bool,
+        ty: DType,
+        value: SemanticImportConstValue<Key, Module>,
+    ) -> DurableConst<Key, Module> {
+        DurableConst {
+            is_public,
+            ty,
+            value,
+        }
+    }
+
+    #[test]
+    fn const_info_mints_once_and_assembles_request_span() {
+        let mut pool = const_pool(
+            [(
+                1,
+                named(
+                    "Point",
+                    "pkg/main.rue",
+                    true,
+                    struct_body(vec![("x", DType::I32)], false, false),
+                ),
+            )],
+            [(2, durable_function(Vec::new(), DType::I32, false, false))],
+            [
+                (
+                    10,
+                    durable_const(
+                        true,
+                        DType::ComptimeType,
+                        SemanticImportConstValue::Type(DType::Nominal(1)),
+                    ),
+                ),
+                (
+                    11,
+                    durable_const(
+                        false,
+                        DType::ComptimeType,
+                        SemanticImportConstValue::Function(2),
+                    ),
+                ),
+            ],
+        );
+
+        let first = pool
+            .resolve_const(
+                &10,
+                ConstIdentityHandle {
+                    span: Span::with_file(FileId::new(7), 3, 9),
+                },
+            )
+            .unwrap();
+        let second = pool
+            .resolve_const(
+                &10,
+                ConstIdentityHandle {
+                    span: Span::with_file(FileId::new(7), 20, 25),
+                },
+            )
+            .unwrap();
+        assert!(first.is_pub);
+        assert_eq!(first.ty, Type::COMPTIME_TYPE);
+        let ConstValue::Type(first_ty) = first.value else {
+            panic!("type-valued const");
+        };
+        let ConstValue::Type(second_ty) = second.value else {
+            panic!("type-valued const");
+        };
+        assert_eq!(first_ty, second_ty, "repeat consult re-minted the type");
+        assert_eq!(render(pool.type_pool(), first_ty), "Point");
+        assert_ne!(
+            first.span, second.span,
+            "the cached durable subset does not capture a request span"
+        );
+
+        let callable = pool
+            .resolve_const(
+                &11,
+                ConstIdentityHandle {
+                    span: Span::new(0, 1),
+                },
+            )
+            .unwrap();
+        let ConstValue::Function(symbol) = callable.value else {
+            panic!("function-valued const");
+        };
+        assert_eq!(pool.resolve_symbol(symbol), "fn2");
+    }
+
+    #[test]
+    fn const_partial_failure_poisons_and_never_mints_anonymous() {
+        let anon = anon_key(AnonymousNominalKind::Struct, 5, 0);
+        let mut pool = const_pool(
+            [(
+                1,
+                named(
+                    "Shell",
+                    "pkg/main.rue",
+                    false,
+                    struct_body(Vec::new(), false, false),
+                ),
+            )],
+            [],
+            [(
+                10,
+                durable_const(
+                    false,
+                    DType::Nominal(1),
+                    SemanticImportConstValue::Type(DType::AnonymousNominal(anon)),
+                ),
+            )],
+        );
+        let handle = ConstIdentityHandle {
+            span: Span::new(0, 1),
+        };
+        assert_eq!(
+            pool.resolve_const(&10, handle).unwrap_err(),
+            IdentityMintError::MissingAnonymous
+        );
+        assert!(
+            pool.struct_ids.contains_key(&1),
+            "the declared const type minted before its value failed"
+        );
+        assert!(
+            pool.anon_nominals.is_empty(),
+            "const assembly never calls anonymous minting"
+        );
+
+        // Even replacing the source record cannot revive a poisoned key: a
+        // repeat consult re-errors instead of publishing partial prior state.
+        pool.source.consts.insert(
+            10,
+            durable_const(false, DType::I32, SemanticImportConstValue::Integer(1)),
+        );
+        assert_eq!(
+            pool.resolve_const(&10, handle).unwrap_err(),
+            IdentityMintError::MissingAnonymous
+        );
+    }
+
+    #[test]
+    fn missing_const_record_stops_without_approximation() {
+        let mut pool = const_pool([], [], []);
+        assert_eq!(
+            pool.resolve_const(
+                &99,
+                ConstIdentityHandle {
+                    span: Span::new(0, 1),
+                },
+            )
+            .unwrap_err(),
+            IdentityMintError::MissingConst
+        );
+    }
+
     // ----- RIR-index answer surface (r4a-2c) ---------------------------------
     //
-    // Twin-parity for the three endpoint seam ops. Each test builds a real
+    // Twin-parity for the endpoint seam ops. Each test builds a real
     // program's `Rir` through the production lex/parse/astgen path, binds its
     // declarations through the epoch, and compares the pool-side `BodyRirIndex`
     // answers against the epoch's `EpochFacts` over the SAME `Rir` — then the
@@ -3926,6 +4302,51 @@ mod tests {
         let gadget_bump = index.named_method_declaration(file, gadget, bump);
         assert!(widget_bump.is_some() && gadget_bump.is_some());
         assert_ne!(widget_bump, gadget_bump, "same-named methods stay distinct");
+    }
+
+    #[test]
+    fn body_rir_index_const_declaration_uses_epoch_storage_preimage() {
+        let file = FileId::new(4);
+        let source = r#"
+            const LIMIT: i64 = 7;
+            const FLAG: bool = true;
+            fn main() -> i32 { 0 }
+        "#;
+        let (rir, interner) = lower_rir(source, file);
+        let index = BodyRirIndex::new(&rir);
+        let bound = bind(&rir, &interner, "pkg/main.rue", file);
+
+        for name in ["LIMIT", "FLAG"] {
+            let symbol = interner.get(name).unwrap();
+            let declaration = index
+                .const_declaration(file, symbol)
+                .unwrap_or_else(|| panic!("{name} has a const declaration"));
+            assert!(matches!(
+                rir.get(declaration).data,
+                InstData::ConstDecl { .. }
+            ));
+            let epoch = bound
+                .epoch_const_info(file, symbol)
+                .unwrap_or_else(|| panic!("{name} has epoch ConstInfo"));
+            assert_eq!(
+                rir.get(declaration).span,
+                epoch.span,
+                "the RIR handle and epoch storage entry join on `(file, name)`"
+            );
+        }
+
+        let limit = interner.get("LIMIT").unwrap();
+        assert_eq!(
+            index.const_declaration(FileId::new(99), limit),
+            None,
+            "the same name in a different file does not alias"
+        );
+        assert_eq!(
+            interner
+                .get("MISSING")
+                .and_then(|name| index.const_declaration(file, name)),
+            None
+        );
     }
 
     #[test]

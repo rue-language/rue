@@ -105,9 +105,9 @@ pub use aggregate_resolution::{
 };
 pub use body_endpoint::ProviderEndpointFacts;
 pub use body_identity::{
-    DurableAnonymousShape, DurableAnonymousSource, DurableCallableSource, DurableFunction,
-    DurableMethod, DurableNominal, DurableNominalBody, DurableNominalSource,
-    DurableSignatureParameter,
+    DurableAnonymousShape, DurableAnonymousSource, DurableCallableSource, DurableConst,
+    DurableConstSource, DurableFunction, DurableMethod, DurableNominal, DurableNominalBody,
+    DurableNominalSource, DurableSignatureParameter,
 };
 pub use call_resolution::ProviderCallFacts;
 

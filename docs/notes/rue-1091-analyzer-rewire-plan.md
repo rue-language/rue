@@ -522,6 +522,40 @@ declaration-level cross-path truth. Both are pinned in
 `provider_type_facts_deferred_shapes_are_documented_gaps`; the pool minting of both is the delivered
 keystone.
 
+## Rider: const identity flip-prep (recorded landing RUE-1091 const arms)
+
+**(a) Exact RIR preimage.** `BodyRirIndex` now indexes source `ConstDecl` handles by the exact
+`const_resolutions` storage preimage `(declaring_file, source_name)`. It does not key on a semantic
+candidate token, issued definition token, or another session-local id. The located `InstRef`
+supplies only the current request's declaration span; durable type/value facts never borrow from
+that RIR arena.
+
+**(b) Durable value-const assembly.** `BodyIdentityPool` now has a delimited const family:
+`DurableConst` / `DurableConstSource`, a mint-once durable subset cache, a separate poison map, and
+`ConstIdentityHandle` for the RIR-carried span. Declared types and type-valued payloads resolve
+through the existing nominal/type pool, so recursive nominal graphs retain its
+declare-then-complete discipline. Function and string values intern their durable source content
+in the pool's own symbol space. A partial failure poisons the const key; repeats re-error instead of
+re-running or exposing partially minted state.
+
+**(c) Differential and inertness.** The compiler test tail assembles scalar, nominal type-valued,
+function-valued, and string `ConstInfo` records through the production `DurableDeclSource` adapter
+plus `ProviderEndpointFacts`' real RIR registration path, then compares them with the LIVE epoch's
+independently bound records. The pool/RIR machinery remains pre-flip only: no production analyzer
+call site consumes it, and the existing crate-level dead-code discipline remains in force.
+
+**(d) Honest STOPs and the r6b hard boundary.** Module bindings remain refused: their durable target
+module is real, but the pool still lacks the body-local module-registry identity needed to mint the
+epoch's `Type::Module`; the differential pins LIVE-epoch success versus pool `None`. A missing
+declaration-level durable const record likewise returns `MissingConst`, never an inferred value.
+Const payload materialization uses `BodyIdentityPool::resolve`, whose anonymous arm is lookup-only;
+it never calls `find_or_create_anon`. Therefore a producer rooted at an uninstalled const candidate
+whose epoch digest relocation contains session-local `d\u{1}{issuer}\u{1}{slot}` /
+`m\u{1}{issuer}\u{1}{slot}` remains permanently outside pool minting scope, exactly as the r6b
+rider requires. Body-level anonymous type results and generated `Str(N)` type-syntax results still
+have no declaration-level durable cross-path truth and remain pinned by
+`provider_type_facts_deferred_shapes_are_documented_gaps`.
+
 ---
 
 ## Rider: well-known Option identities from the pool and the export-as-produced ruling (recorded landing r6c)

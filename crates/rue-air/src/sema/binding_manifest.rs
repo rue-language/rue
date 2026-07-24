@@ -2560,6 +2560,33 @@ impl<'a> BoundSema<'a> {
             .collect()
     }
 
+    /// RUE-1091 flip-prep surface: the LIVE epoch's value-constant info for the
+    /// exact storage key `(declaring_file, source_name)`. The compiler
+    /// differential compares this independent declaration-binding result with
+    /// the body pool's durable-record + RIR-handle assembly.
+    pub fn epoch_const_info(
+        &self,
+        declaring_file: FileId,
+        source_name: Spur,
+    ) -> Option<super::info::ConstInfo> {
+        self.sema
+            .value_const(&(declaring_file, source_name))
+            .cloned()
+    }
+
+    /// The module-binding twin used to pin the const pool's current STOP: the
+    /// epoch has an exact module-valued `ConstInfo`, while the pool refuses it
+    /// until a durable module key can mint a body-local module-registry id.
+    pub fn epoch_module_binding_info(
+        &self,
+        declaring_file: FileId,
+        source_name: Spur,
+    ) -> Option<super::info::ConstInfo> {
+        self.sema
+            .module_binding(&(declaring_file, source_name))
+            .cloned()
+    }
+
     /// RUE-1091 slice r4b-3 flip-era surface: the epoch's `MethodInfo` for a
     /// `(file, type_name, method)` named method, exposed so the rue-compiler
     /// differential compares the provider-driven `ProviderCallFacts` method

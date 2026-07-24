@@ -28,10 +28,11 @@ use rue_span::FileId;
 use super::BodySema;
 use super::anon_structs::IssuedAnonymousNominalKey;
 use super::body_identity::{
-    BodyIdentityPool, BodyRirIndex, DurableAnonymousSource, DurableNominalSource,
+    BodyIdentityPool, BodyRirIndex, ConstIdentityHandle, DurableAnonymousSource,
+    DurableConstSource, DurableNominalSource,
 };
 use super::declaration_index::RirDestructorDeclaration;
-use super::info::{FunctionInfo, MethodInfo};
+use super::info::{ConstInfo, FunctionInfo, MethodInfo};
 use super::provider::BodyFactProvider;
 use crate::intern_pool::TypeInternPool;
 use crate::types::{EnumId, ModuleId, StructId, Type};
@@ -492,6 +493,7 @@ impl<K> Default for EndpointOverlay<K> {
 pub struct ProviderEndpointFacts<'a, P, S, K, M> {
     provider: &'a P,
     pool: RefCell<BodyIdentityPool<K, M, S>>,
+    rir: &'a Rir,
     rir_index: BodyRirIndex,
     /// The whole-program RIR interner. The RIR-index ops resolve their `&str`
     /// keys through this interner (the shared `Rir`'s symbol space), distinct
@@ -523,6 +525,7 @@ where
         Self {
             provider,
             pool: RefCell::new(BodyIdentityPool::new(source)),
+            rir,
             rir_index: BodyRirIndex::new(rir),
             rir_interner,
             overlay: RefCell::new(EndpointOverlay::default()),
@@ -766,6 +769,45 @@ where
     /// the pool lives behind a [`RefCell`].
     pub fn with_type_pool<R>(&self, read: impl FnOnce(&TypeInternPool) -> R) -> R {
         read(self.pool.borrow().type_pool())
+    }
+}
+
+impl<P, S, K, M> ProviderEndpointFacts<'_, P, S, K, M>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M> + DurableAnonymousSource<K, M> + DurableConstSource<K, M>,
+    K: Clone + Eq + Hash,
+    M: Clone + Eq + Hash,
+{
+    /// Assemble the value constant identified by durable `key`, joining it to
+    /// the exact current-RIR declaration at `(declaring_file, source_name)`.
+    ///
+    /// The RIR side supplies only the request-local span. The pool side supplies
+    /// only declaration-level durable type/value truth. If either side is absent,
+    /// or a nested identity cannot be minted exactly, this returns `None`.
+    pub fn const_info(
+        &self,
+        key: &K,
+        declaring_file: FileId,
+        source_name: &str,
+    ) -> Option<ConstInfo> {
+        let name = self.rir_interner.get(source_name)?;
+        let declaration = self.rir_index.const_declaration(declaring_file, name)?;
+        self.pool
+            .borrow_mut()
+            .resolve_const(
+                key,
+                ConstIdentityHandle {
+                    span: self.rir.get(declaration).span,
+                },
+            )
+            .ok()
+    }
+
+    /// Resolve a pool-owned const symbol for index-independent differential
+    /// comparison. Function and string values use the pool's own interner.
+    pub fn resolve_const_symbol(&self, symbol: Spur) -> String {
+        self.pool.borrow().resolve_symbol(symbol).to_owned()
     }
 }
 

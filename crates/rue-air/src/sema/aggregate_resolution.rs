@@ -326,13 +326,12 @@ pub(crate) fn is_accessible<P: AggregateFacts>(
 //   - file_path (is_accessible)                                             → O
 // Deferred here, each with its unblocking slice named (reported, never silently
 // answered wrong):
-//   - value_const / module_binding / resolve_const_info_in_file → the flip's
-//     const-declaration RIR handle (the const twin of the fn/method handles): a
-//     `ConstInfo` carries a declaration `span` the position-free provider
-//     boundary omits and a comptime-evaluated `value` the durable const payload
-//     carries but the pool has no const-minting arm for yet. The const
-//     fall-through of every `select_*` above therefore answers `Absent` where the
-//     epoch answers `Const`; the differential pins this const-arm divergence.
+//   - value_const / module_binding / resolve_const_info_in_file → the flip. The
+//     pool's const-minting arm and exact RIR declaration handle now exist
+//     (`body_identity.rs`, flip-prep), but this aggregate driver deliberately
+//     remains unwired pre-flip. The const fall-through of every `select_*` above
+//     therefore answers `Absent` where the epoch answers `Const`; the
+//     differential pins this const-arm divergence.
 //   - module (module_def) and the module spines
 //     ([`resolve_aggregate_module_ref`] / [`resolve_visibility_module_ref`]) →
 //     the flip: `module` answers a rue-air-internal `ModuleId` registry index the
@@ -345,8 +344,8 @@ pub(crate) fn is_accessible<P: AggregateFacts>(
 
 /// The winner [`select_module_type_member`] selects, projected to a pool
 /// [`Type`] a differential renders index-independently. `Const` is the pinned
-/// deferred arm (the pool has no const-minting surface yet), never a resolved
-/// value.
+/// deferred arm (the const identity machinery is inert until this driver is
+/// wired at the flip), never a resolved value.
 pub enum ProviderModuleMember {
     Struct(Type),
     Enum(Type),
@@ -534,10 +533,9 @@ where
     S: DurableNominalSource<K, M>,
 {
     fn value_const(&self, _file: FileId, _name: Spur) -> Option<ConstInfo> {
-        // Deferred to the flip: a `ConstInfo` carries a declaration `span` and a
-        // comptime-evaluated `value` the position-free boundary omits (needs the
-        // const-declaration RIR handle + a pool const-minting arm). The const
-        // fall-through of the `select_*` logic answers `Absent`; pinned.
+        // Deferred to the flip: the pool const arm + RIR handle are landed but
+        // intentionally not installed under this production-shaped seam yet.
+        // The const fall-through of the `select_*` logic answers `Absent`; pinned.
         None
     }
 
