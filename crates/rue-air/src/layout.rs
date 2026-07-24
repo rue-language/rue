@@ -25,6 +25,30 @@
 /// derive their byte quantities from this constant so they cannot drift apart.
 pub const SLOT_BYTES: u64 = 8;
 
+/// Call-boundary stack alignment shared by both supported targets.
+pub const STACK_FRAME_ALIGNMENT: u64 = 16;
+
+/// Largest aligned frame or transient call area representable by the signed
+/// 32-bit displacements used throughout both machine backends.
+///
+/// Rounding the architectural `i32::MAX` bound down keeps the subsequent
+/// alignment operation inside the same representable range.
+pub const MAX_FUNCTION_FRAME_BYTES: u64 =
+    (i32::MAX as u64 / STACK_FRAME_ALIGNMENT) * STACK_FRAME_ALIGNMENT;
+
+/// [`MAX_FUNCTION_FRAME_BYTES`] expressed as slot-shaped frame cells.
+pub const MAX_FUNCTION_FRAME_SLOTS: u64 = MAX_FUNCTION_FRAME_BYTES / SLOT_BYTES;
+
+/// Add one slot-shaped region to a cumulative function-frame total.
+///
+/// This is the semantic-analysis boundary: it rejects cumulative locals or
+/// parameters before their per-slot metadata is allocated.
+#[inline]
+pub fn checked_function_frame_slots(current: u32, additional: u32) -> Option<u32> {
+    let total = u64::from(current).checked_add(u64::from(additional))?;
+    (total <= MAX_FUNCTION_FRAME_SLOTS).then_some(total as u32)
+}
+
 /// The physical layout of a materializable type.
 ///
 /// `size` counts every byte the value occupies including tail padding, `stride`

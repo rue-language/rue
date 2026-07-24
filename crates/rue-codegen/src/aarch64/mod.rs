@@ -38,7 +38,7 @@ use crate::regalloc::RegAllocDebugInfo;
 // Re-export from parent
 pub use super::{EmittedCode, EmittedRelocation};
 
-fn prepare_backend(
+pub(crate) fn prepare_backend(
     cfg: &ValidatedCfg,
     type_pool: &FrozenTypeInternPool,
     interner: &ThreadedRodeo,
@@ -48,7 +48,9 @@ fn prepare_backend(
     crate::codegen_pipeline::prepare_mir(
         cfg,
         type_pool,
+        cfg_lower::ARG_REGS.len() as u32,
         cfg_lower::RET_REGS.len() as u32,
+        crate::frame_layout::SavedRegScheme::Aarch64,
         || CfgLower::new_with_symbols(cfg, type_pool, interner, target, symbols).lower(),
         |mir, existing_slots| RegAlloc::new(mir, existing_slots).allocate_with_spills(),
         |mir| {
@@ -104,6 +106,7 @@ where
         &local_strings,
     )
     .with_sret(prepared.has_sret)
+    .with_frame_layout(prepared.frame_layout)
     .with_param_homing(prepared.param_homing.clone());
     let emitted = emit(emitter)?;
     Ok((emitted, local_strings))
@@ -234,18 +237,35 @@ pub fn generate_regalloc_info(
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<RegAllocDebugInfo<Reg>> {
-    let num_locals = cfg.num_locals();
-    let num_params = cfg.num_params();
-    let has_sret =
-        crate::cfg_lower::fn_uses_sret_return(cfg, type_pool, cfg_lower::RET_REGS.len() as u32);
+    let has_sret = crate::codegen_pipeline::validate_pre_lowering_budget(
+        cfg,
+        type_pool,
+        cfg_lower::ARG_REGS.len() as u32,
+        cfg_lower::RET_REGS.len() as u32,
+        crate::frame_layout::SavedRegScheme::Aarch64,
+    )?;
 
     // Lower CFG to Aarch64Mir with virtual registers
     let mir = CfgLower::new(cfg, type_pool, interner, target).lower()?;
 
     // Allocate physical registers with debug info
-    let existing_slots = num_locals + num_params + has_sret as u32;
-    let (_mir, _num_spills, _used_callee_saved, debug_info) =
+    let existing_slots = crate::codegen_pipeline::checked_slot_sum([
+        cfg.num_locals(),
+        cfg.num_params(),
+        u32::from(has_sret),
+    ])
+    .ok_or_else(|| crate::codegen_pipeline::frame_budget_error(cfg, None))?;
+    let (_mir, num_spills, used_callee_saved, debug_info) =
         RegAlloc::new(mir, existing_slots).allocate_with_debug()?;
+    let total_slots = existing_slots
+        .checked_add(num_spills)
+        .ok_or_else(|| crate::codegen_pipeline::frame_budget_error(cfg, None))?;
+    crate::frame_layout::FrameLayout::try_new(
+        crate::frame_layout::SavedRegScheme::Aarch64,
+        used_callee_saved.len(),
+        total_slots,
+    )
+    .map_err(|_| crate::codegen_pipeline::frame_budget_error(cfg, None))?;
 
     Ok(debug_info)
 }

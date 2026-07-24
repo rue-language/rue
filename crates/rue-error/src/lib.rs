@@ -368,6 +368,7 @@ impl ErrorCode {
     pub const MOVE_OUT_OF_INDEX: Self = Self(904);
     pub const ARRAY_REPEAT_NON_COPY: Self = Self(905);
     pub const TYPE_TOO_LARGE: Self = Self(906);
+    pub const FUNCTION_FRAME_TOO_LARGE: Self = Self(907);
 
     // ========================================================================
     // Linker/target errors (E1000-E1099)
@@ -1572,6 +1573,13 @@ pub enum ErrorKind {
     /// zero-sized).
     #[error("type '{type_name}' exceeds the maximum supported object size ({max_bytes} bytes)")]
     TypeTooLarge { type_name: String, max_bytes: u64 },
+    /// A function's cumulative locals, parameter homes, sret cell, spills, or
+    /// transient outgoing call area exceeds the backend displacement budget.
+    #[error(
+        "function stack frame or outgoing call area exceeds the maximum supported size \
+         ({max_bytes} bytes)"
+    )]
+    FunctionFrameTooLarge { max_bytes: u64 },
     /// Assignment into an array (element write, or a write through an element)
     /// while one or more of its elements are moved out (RUE-186). Reinstating
     /// per-element ownership through writes is not supported; the whole array
@@ -1912,6 +1920,7 @@ impl ErrorKind {
             ErrorKind::MoveOutOfIndex { .. } => ErrorCode::MOVE_OUT_OF_INDEX,
             ErrorKind::ArrayRepeatNonCopy { .. } => ErrorCode::ARRAY_REPEAT_NON_COPY,
             ErrorKind::TypeTooLarge { .. } => ErrorCode::TYPE_TOO_LARGE,
+            ErrorKind::FunctionFrameTooLarge { .. } => ErrorCode::FUNCTION_FRAME_TOO_LARGE,
             ErrorKind::AssignToPartiallyMovedArray { .. } => {
                 ErrorCode::ASSIGN_TO_PARTIALLY_MOVED_ARRAY
             }

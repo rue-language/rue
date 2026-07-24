@@ -1,0 +1,16 @@
+[section]
+id = "diagnostics.function_frame_too_large"
+name = "Oversized function frames and call areas (E0907)"
+description = "Cumulative function storage exceeding the backend displacement budget is rejected before per-slot metadata or machine code is produced (RUE-780)."
+
+[[case]]
+name = "cumulative_locals_exceed_frame_budget"
+source = """
+fn main() -> i32 {
+    let a = [0; 134217728];
+    let b = [0; 134217728];
+    a[0] + b[0]
+}
+"""
+compile_fail = true
+error_contains = ["[E0907]", "function stack frame or outgoing call area", "2147483632"]

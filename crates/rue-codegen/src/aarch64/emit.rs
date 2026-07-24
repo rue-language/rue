@@ -371,6 +371,8 @@ pub struct Emitter<'a> {
     callee_saved: Vec<Reg>,
     /// Whether a stack frame was emitted (prologue was executed).
     has_frame: bool,
+    /// Canonical checked layout supplied by the production pipeline.
+    frame_layout: Option<crate::frame_layout::FrameLayout>,
     /// String constants (for StringConstPtr/StringConstLen)
     strings: &'a [String],
     /// Byte offset where the current instruction started (for recording).
@@ -416,6 +418,7 @@ impl<'a> Emitter<'a> {
             has_sret: false,
             callee_saved: callee_saved.to_vec(),
             has_frame: false,
+            frame_layout: None,
             strings,
             inst_start: 0,
             emit_asm: false,
@@ -438,6 +441,14 @@ impl<'a> Emitter<'a> {
     /// register assignment, and reserves the sret pointer frame slot.
     pub fn with_sret(mut self, has_sret: bool) -> Self {
         self.has_sret = has_sret;
+        self
+    }
+
+    pub(crate) fn with_frame_layout(
+        mut self,
+        frame_layout: crate::frame_layout::FrameLayout,
+    ) -> Self {
+        self.frame_layout = Some(frame_layout);
         self
     }
 
@@ -615,9 +626,15 @@ impl<'a> Emitter<'a> {
         // sret pointer slot, if any.
         let total_slots = self.num_locals + self.num_params + self.has_sret as u32;
         if total_slots > 0 {
-            let stack_size = crate::frame_layout::align_frame_size(
-                crate::frame_layout::slot_region_bytes(total_slots),
-            );
+            let frame = self.frame_layout.unwrap_or_else(|| {
+                crate::frame_layout::FrameLayout::try_new(
+                    crate::frame_layout::SavedRegScheme::Aarch64,
+                    self.callee_saved.len(),
+                    total_slots,
+                )
+                .expect("emitter frame must fit the checked function-frame budget")
+            });
+            let stack_size = frame.frame_size() as i32 - frame.saved_area_bytes();
             if stack_size > 0 {
                 self.begin_inst();
                 self.emit_sub_imm(Reg::Sp, Reg::Sp, stack_size as u32);
@@ -1440,9 +1457,15 @@ impl<'a> Emitter<'a> {
             // Must mirror the prologue's allocation exactly: locals + ALL
             // params + the sret pointer slot.
             let total_slots = self.num_locals + self.num_params + self.has_sret as u32;
-            let stack_size = crate::frame_layout::align_frame_size(
-                crate::frame_layout::slot_region_bytes(total_slots),
-            );
+            let frame = self.frame_layout.unwrap_or_else(|| {
+                crate::frame_layout::FrameLayout::try_new(
+                    crate::frame_layout::SavedRegScheme::Aarch64,
+                    self.callee_saved.len(),
+                    total_slots,
+                )
+                .expect("emitter frame must fit the checked function-frame budget")
+            });
+            let stack_size = frame.frame_size() as i32 - frame.saved_area_bytes();
             if stack_size > 0 {
                 self.begin_inst();
                 self.emit_add_imm(Reg::Sp, Reg::Sp, stack_size as u32);

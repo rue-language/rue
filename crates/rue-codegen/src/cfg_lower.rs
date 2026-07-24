@@ -286,6 +286,7 @@ pub fn type_uses_sret_return(
 
 /// Does this function return its value via the sret convention?
 /// See [`type_uses_sret_return`] for the convention.
+#[cfg(test)]
 pub(crate) fn fn_uses_sret_return(
     cfg: &Cfg,
     type_pool: &FrozenTypeInternPool,

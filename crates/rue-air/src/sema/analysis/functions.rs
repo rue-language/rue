@@ -426,27 +426,17 @@ impl<'a> BodySema<'a> {
             debug_assert!(matches!(mode, RirParamMode::Inout | RirParamMode::Borrow));
         }
 
-        let mut param_vec: Vec<ParamInfo> = Vec::new();
-        let mut param_by_ref: Vec<bool> = Vec::new();
-        let mut param_writable: Vec<bool> = Vec::new();
-
-        // Add parameters to the param vec, tracking ABI slot offsets.
-        // Each parameter starts at the next available ABI slot.
-        // For struct parameters, the slot count is the number of fields.
-        let mut next_abi_slot: u32 = 0;
-        for (pname, ptype, mode, is_comptime) in params.iter() {
+        // Classify and total every parameter before allocating per-slot mode
+        // metadata. This makes a cumulatively oversized signature fail with
+        // E0907 instead of first attempting a displacement-sized allocation
+        // (RUE-780).
+        let mut num_param_slots = 0_u32;
+        let mut param_layouts = Vec::with_capacity(params.len());
+        for (pname, ptype, mode, _) in params.iter() {
             // Only the synthetic `self` entry of a `mut self` method can be a
             // mutable by-value binding; ordinary parameters have no `mut`
             // form.
             let is_mut_binding = self_is_mut && *pname == self_sym && *mode == RirParamMode::Normal;
-            param_vec.push(ParamInfo {
-                name: *pname,
-                abi_slot: next_abi_slot,
-                ty: *ptype,
-                mode: *mode,
-                is_comptime: *is_comptime,
-                is_mut: is_mut_binding,
-            });
             // Inout and Borrow parameters are passed by reference.
             // Comptime parameters are VALUE params (like `comptime n: i32`), passed by value.
             // Normal parameters are passed by value.
@@ -483,18 +473,38 @@ impl<'a> BodySema<'a> {
                 // frame: reject an oversized type (E0906, RUE-561).
                 self.require_layout_slots(*ptype, self.rir.get(body).span)?
             };
-            for _ in 0..slot_count {
-                param_by_ref.push(is_by_ref);
-                // "Writable" means the body may store to the slot: `inout`
-                // (by-ref, written back to the caller) or a `mut self`
-                // receiver (by-value, callee-local). Optimizers and the
-                // oracle contract read this to know the slot can change
-                // between reads.
-                param_writable.push(*mode == RirParamMode::Inout || is_mut_binding);
-            }
+            self.reserve_frame_slots(&mut num_param_slots, slot_count, self.rir.get(body).span)?;
+            param_layouts.push((is_by_ref, is_mut_binding, slot_count));
+        }
+
+        let mut param_vec: Vec<ParamInfo> = Vec::with_capacity(params.len());
+        let mut param_by_ref: Vec<bool> = Vec::with_capacity(num_param_slots as usize);
+        let mut param_writable: Vec<bool> = Vec::with_capacity(num_param_slots as usize);
+
+        // Publish the already-validated offsets and per-slot modes.
+        let mut next_abi_slot = 0_u32;
+        for ((pname, ptype, mode, is_comptime), (is_by_ref, is_mut_binding, slot_count)) in
+            params.iter().zip(param_layouts)
+        {
+            param_vec.push(ParamInfo {
+                name: *pname,
+                abi_slot: next_abi_slot,
+                ty: *ptype,
+                mode: *mode,
+                is_comptime: *is_comptime,
+                is_mut: is_mut_binding,
+            });
+            param_by_ref.resize(param_by_ref.len() + slot_count as usize, is_by_ref);
+            // "Writable" means the body may store to the slot: `inout`
+            // (by-ref, written back to the caller) or a `mut self` receiver
+            // (by-value, callee-local).
+            param_writable.resize(
+                param_writable.len() + slot_count as usize,
+                *mode == RirParamMode::Inout || is_mut_binding,
+            );
             next_abi_slot += slot_count;
         }
-        let num_param_slots = next_abi_slot;
+        debug_assert_eq!(next_abi_slot, num_param_slots);
         let param_modes = ParamSlotModes::new(param_by_ref, param_writable);
 
         // The callee owns its pass-by-value (Normal) parameters and must drop

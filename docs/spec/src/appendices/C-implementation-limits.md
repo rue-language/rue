@@ -59,6 +59,12 @@ Practical limits on array size are determined by available memory and platform c
 
 The current implementation limits any single object (including an array type) to 2,147,483,647 bytes (`i32::MAX`), matching the code generator's frame-offset addressing range. A type whose layout exceeds this limit is rejected with a diagnostic (E0906) wherever a value of the type would be materialized — a variable, a parameter, or a `@size_of`/`@align_of` query.
 
+The cumulative storage for one function is limited to 2,147,483,632 bytes: the
+largest 16-byte-aligned value within that same signed displacement range.
+Locals, parameter homes, hidden return storage, register-allocation spills, and
+the simultaneous outgoing call area all count toward this checked budget.
+Exceeding it is rejected with diagnostic E0907.
+
 ## Identifier Limits
 
 {{ rule(id="C.5:1", cat="informative") }}

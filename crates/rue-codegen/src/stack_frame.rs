@@ -276,29 +276,26 @@ fn generate_x86_64_stack_frame(
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<StackFrameInfo> {
-    use crate::x86_64::{CfgLower, RegAlloc};
-
     let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
     // sret returns reserve one extra frame slot for the incoming buffer
     // pointer and shift user args by one ABI slot (RUE-106).
-    let has_sret = crate::cfg_lower::fn_uses_sret_return(cfg, type_pool, 6);
-    let sret_slots = has_sret as u32;
-
-    // Lower CFG to X86Mir with virtual registers
-    let mir = CfgLower::new(cfg, type_pool, interner).lower()?;
-
-    // Allocate physical registers (may add spill slots)
-    let existing_slots = num_locals + num_params + sret_slots;
-    let (_mir, num_spills, used_callee_saved) =
-        RegAlloc::new(mir, existing_slots).allocate_with_spills()?;
+    let prepared = crate::x86_64::prepare_backend(
+        cfg,
+        type_pool,
+        interner,
+        crate::MachineSymbolResolver::default(),
+    )?;
+    let has_sret = prepared.has_sret;
+    let sret_slots = u32::from(has_sret);
+    let num_spills = prepared.total_locals - prepared.num_locals_original;
+    let used_callee_saved = &prepared.used_callee_saved;
 
     // Calculate stack layout through the byte-based frame-layout authority
     // (ALL params get frame slots: the prologue copies stack-passed args into
     // the frame param area). Every slot cell is one frame cell today.
-    use crate::frame_layout::{FrameLayout, SavedRegScheme, frame_cell_bytes};
-    let total_slots = num_locals + num_spills + num_params + sret_slots;
-    let frame = FrameLayout::new(SavedRegScheme::X86_64, used_callee_saved.len(), total_slots);
+    use crate::frame_layout::frame_cell_bytes;
+    let frame = prepared.frame_layout;
     let stack_size = frame.frame_size() as i32;
 
     let mut slots = Vec::new();
@@ -418,34 +415,27 @@ fn generate_aarch64_stack_frame(
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<StackFrameInfo> {
-    use crate::aarch64::{CfgLower, RegAlloc};
-
     let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
     // sret returns reserve one extra frame slot for the incoming buffer
     // pointer and shift user args by one ABI slot (RUE-106).
-    let has_sret = crate::cfg_lower::fn_uses_sret_return(cfg, type_pool, 8);
-    let sret_slots = has_sret as u32;
-
-    // Lower CFG to Aarch64Mir with virtual registers
-    let mir = CfgLower::new(cfg, type_pool, interner, target).lower()?;
-
-    // Allocate physical registers (may add spill slots)
-    let existing_slots = num_locals + num_params + sret_slots;
-    let (_mir, num_spills, used_callee_saved) =
-        RegAlloc::new(mir, existing_slots).allocate_with_spills()?;
+    let prepared = crate::aarch64::prepare_backend(
+        cfg,
+        type_pool,
+        interner,
+        target,
+        crate::MachineSymbolResolver::default(),
+    )?;
+    let has_sret = prepared.has_sret;
+    let sret_slots = u32::from(has_sret);
+    let num_spills = prepared.total_locals - prepared.num_locals_original;
+    let used_callee_saved = &prepared.used_callee_saved;
 
     // Calculate stack layout for AArch64 through the byte-based frame-layout
     // authority. Callee-saved registers are saved in pairs (16 bytes per pair)
     // and the FP/LR pair (16 bytes) sits above them; ALL params get frame slots
     // (the prologue copies stack-passed args into the frame param area).
-    use crate::frame_layout::{FrameLayout, SavedRegScheme};
-    let total_slots = num_locals + num_spills + num_params + sret_slots;
-    let frame = FrameLayout::new(
-        SavedRegScheme::Aarch64,
-        used_callee_saved.len(),
-        total_slots,
-    );
+    let frame = prepared.frame_layout;
     let frame_size = frame.frame_size() as usize;
 
     // Every FP-relative location below is derived from the same frame-layout
