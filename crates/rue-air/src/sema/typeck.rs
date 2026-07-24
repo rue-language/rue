@@ -3241,6 +3241,28 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         }
     }
 
+    /// Reserve a cumulative local or parameter frame region without allowing
+    /// individually valid layouts to overflow the function-wide displacement
+    /// budget (RUE-780).
+    pub(crate) fn reserve_frame_slots(
+        &self,
+        current: &mut u32,
+        additional: u32,
+        span: Span,
+    ) -> CompileResult<u32> {
+        let start = *current;
+        *current =
+            crate::layout::checked_function_frame_slots(start, additional).ok_or_else(|| {
+                CompileError::new(
+                    ErrorKind::FunctionFrameTooLarge {
+                        max_bytes: crate::layout::MAX_FUNCTION_FRAME_BYTES,
+                    },
+                    span,
+                )
+            })?;
+        Ok(start)
+    }
+
     /// Checked companion to [`Self::abi_slot_count`]: `None` when the type's
     /// layout overflows or exceeds [`MAX_TYPE_SLOTS`] (RUE-561). Computed in
     /// u64 with checked arithmetic so large array lengths cannot truncate to

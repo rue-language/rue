@@ -18,11 +18,44 @@
 //! authority; conversion between a slot-shaped value and narrow memory happens
 //! at explicit pack/unpack boundaries, not in frame arithmetic.
 
-use rue_air::layout::SLOT_BYTES;
+use rue_air::layout::{MAX_FUNCTION_FRAME_BYTES, SLOT_BYTES, STACK_FRAME_ALIGNMENT};
 
-/// Call-boundary stack alignment. Both supported targets keep the frame
-/// 16-byte aligned at calls.
-pub const STACK_FRAME_ALIGNMENT: u64 = 16;
+/// A frame or transient call area exceeded the one displacement-sized budget
+/// shared by semantic analysis, lowering, emission, and presentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameBudgetExceeded;
+
+/// Convert a byte count into an aligned, backend-immediate-sized stack region.
+#[inline]
+pub fn checked_aligned_region_bytes(bytes: u64) -> Result<u32, FrameBudgetExceeded> {
+    let aligned = bytes
+        .checked_add(STACK_FRAME_ALIGNMENT - 1)
+        .ok_or(FrameBudgetExceeded)?
+        / STACK_FRAME_ALIGNMENT
+        * STACK_FRAME_ALIGNMENT;
+    if aligned > MAX_FUNCTION_FRAME_BYTES {
+        return Err(FrameBudgetExceeded);
+    }
+    Ok(aligned as u32)
+}
+
+/// Validate one outgoing call's simultaneous stack reservation: hidden return
+/// storage, compact by-value argument copies, and stack-passed ABI slots.
+pub fn checked_call_area_bytes(
+    stack_slots: u64,
+    sret_storage_bytes: u64,
+    indirect_argument_bytes: u64,
+) -> Result<u32, FrameBudgetExceeded> {
+    let stack_bytes = stack_slots
+        .checked_mul(frame_cell_bytes())
+        .ok_or(FrameBudgetExceeded)?;
+    let stack_bytes = u64::from(checked_aligned_region_bytes(stack_bytes)?);
+    let total = sret_storage_bytes
+        .checked_add(indirect_argument_bytes)
+        .and_then(|bytes| bytes.checked_add(stack_bytes))
+        .ok_or(FrameBudgetExceeded)?;
+    checked_aligned_region_bytes(total)
+}
 
 /// Byte size of one frame storage cell holding a slot-shaped value fragment.
 ///
@@ -50,7 +83,8 @@ pub fn slot_offset_pre_saved(slot: u32) -> i32 {
 /// Total byte span of `num_slots` contiguous frame cells.
 #[inline]
 pub fn slot_region_bytes(num_slots: u32) -> i32 {
-    frame_cell_bytes() as i32 * num_slots as i32
+    i32::try_from(frame_cell_bytes() * u64::from(num_slots))
+        .expect("frame slot region must be validated before offset calculation")
 }
 
 /// FP-relative byte offset of frame slot `slot` on AArch64, matching the
@@ -84,8 +118,11 @@ pub fn aarch64_callee_saved_pair_offset(pair_index: usize) -> i32 {
 /// Round a frame byte size up to [`STACK_FRAME_ALIGNMENT`].
 #[inline]
 pub fn align_frame_size(bytes: i32) -> i32 {
-    let align = STACK_FRAME_ALIGNMENT as i32;
-    ((bytes + align - 1) / align) * align
+    i32::try_from(
+        checked_aligned_region_bytes(bytes as u64)
+            .expect("frame size must be validated before alignment"),
+    )
+    .expect("validated frame size fits i32")
 }
 
 /// How a target saves the registers that sit between the frame pointer and the
@@ -138,12 +175,34 @@ pub struct FrameLayout {
 impl FrameLayout {
     /// Build a frame layout for `num_slots` slot cells sitting below the saved
     /// registers described by `scheme`.
-    pub fn new(scheme: SavedRegScheme, num_callee_saved: usize, num_slots: u32) -> Self {
-        Self {
-            scheme,
-            saved_area_bytes: scheme.saved_area_bytes(num_callee_saved),
-            num_slots,
+    pub fn try_new(
+        scheme: SavedRegScheme,
+        num_callee_saved: usize,
+        num_slots: u32,
+    ) -> Result<Self, FrameBudgetExceeded> {
+        let saved_area_bytes = scheme.saved_area_bytes(num_callee_saved);
+        let slot_bytes = frame_cell_bytes()
+            .checked_mul(u64::from(num_slots))
+            .ok_or(FrameBudgetExceeded)?;
+        let unaligned = match scheme {
+            SavedRegScheme::X86_64 => saved_area_bytes
+                .checked_add(slot_bytes)
+                .ok_or(FrameBudgetExceeded)?,
+            SavedRegScheme::Aarch64 => slot_bytes,
+        };
+        checked_aligned_region_bytes(unaligned)?;
+        if scheme == SavedRegScheme::Aarch64
+            && saved_area_bytes
+                .checked_add(u64::from(checked_aligned_region_bytes(slot_bytes)?))
+                .is_none_or(|bytes| bytes > MAX_FUNCTION_FRAME_BYTES)
+        {
+            return Err(FrameBudgetExceeded);
         }
+        Ok(Self {
+            scheme,
+            saved_area_bytes,
+            num_slots,
+        })
     }
 
     /// Bytes reserved for saved registers between the frame pointer and the
@@ -221,7 +280,7 @@ mod tests {
     #[test]
     fn frame_size_matches_prior_x86_64_rounding() {
         // round16(callee_saved_size + total_slots * 8).
-        let layout = FrameLayout::new(SavedRegScheme::X86_64, 1, 2);
+        let layout = FrameLayout::try_new(SavedRegScheme::X86_64, 1, 2).unwrap();
         // saved = 8, slots = 16 -> round16(24) = 32.
         assert_eq!(layout.frame_size(), 32);
         assert_eq!(layout.slot_offset(0), -8 - 8);
@@ -257,9 +316,27 @@ mod tests {
     #[test]
     fn frame_size_matches_prior_aarch64_rounding() {
         // fp_lr(16) + callee_saved_pairs*16 + round16(total_slots * 8).
-        let layout = FrameLayout::new(SavedRegScheme::Aarch64, 1, 3);
+        let layout = FrameLayout::try_new(SavedRegScheme::Aarch64, 1, 3).unwrap();
         // saved = 16 + 16 = 32, slots = 24 -> round16(24) = 32; total = 64.
         assert_eq!(layout.frame_size(), 64);
         assert_eq!(layout.slot_offset(0), -32 - 8);
+    }
+
+    #[test]
+    fn cumulative_frame_budget_covers_alignment_and_saved_areas() {
+        let max_slots = (MAX_FUNCTION_FRAME_BYTES / frame_cell_bytes()) as u32;
+        assert!(FrameLayout::try_new(SavedRegScheme::X86_64, 0, max_slots).is_ok());
+        assert!(FrameLayout::try_new(SavedRegScheme::X86_64, 1, max_slots).is_err());
+        assert!(FrameLayout::try_new(SavedRegScheme::Aarch64, 0, max_slots).is_err());
+    }
+
+    #[test]
+    fn outgoing_call_budget_checks_every_simultaneous_region() {
+        assert_eq!(checked_call_area_bytes(1, 16, 16), Ok(48));
+        assert!(
+            checked_call_area_bytes(1, MAX_FUNCTION_FRAME_BYTES, 0).is_err(),
+            "alignment plus one stack slot must exceed the displacement budget"
+        );
+        assert!(checked_call_area_bytes(u64::MAX, 0, 0).is_err());
     }
 }

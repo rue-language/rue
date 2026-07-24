@@ -832,8 +832,8 @@ struct SpillSlotAllocator {
     /// ever reusable) rescans the whole growing slot list per spill — O(spills²)
     /// (RUE-302).
     min_slot_end: Option<usize>,
-    /// Base offset for spill slots (after existing locals).
-    base_offset: i32,
+    /// Number of occupied frame slots before the spill region.
+    base_slots: u32,
 }
 
 impl SpillSlotAllocator {
@@ -845,10 +845,7 @@ impl SpillSlotAllocator {
         Self {
             slots: Vec::new(),
             min_slot_end: None,
-            // Spill slots continue the frame's slot region after the existing
-            // locals/params, so the first spill homes at the same offset the
-            // frame-layout authority gives slot `existing_locals`.
-            base_offset: crate::frame_layout::slot_offset_pre_saved(existing_locals),
+            base_slots: existing_locals,
         }
     }
 
@@ -896,7 +893,11 @@ impl SpillSlotAllocator {
     /// Get the stack offset for a given spill slot index (each spill cell is
     /// one frame cell below the previous, continuing the slot region).
     fn offset_for_slot(&self, slot_index: usize) -> i32 {
-        self.base_offset - crate::frame_layout::slot_region_bytes(slot_index as u32)
+        let one_based_slot = u64::from(self.base_slots)
+            .saturating_add(slot_index as u64)
+            .saturating_add(1);
+        let bytes = one_based_slot.saturating_mul(rue_air::layout::SLOT_BYTES);
+        i32::try_from(bytes).map_or(i32::MIN, |bytes| -bytes)
     }
 
     /// Get the number of unique spill slots used.
@@ -1074,6 +1075,7 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
     /// Run normal allocation and target rewriting.
     pub fn allocate(mut self) -> CompileResult<B::Mir> {
         self.assign_registers();
+        self.validate_spill_budget()?;
         self.rewrite_instructions()?;
         Ok(self.mir)
     }
@@ -1081,6 +1083,7 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
     /// Run normal allocation and return spill/frame bookkeeping.
     pub fn allocate_with_spills(mut self) -> CompileResult<(B::Mir, u32, Vec<B::Reg>)> {
         self.assign_registers();
+        self.validate_spill_budget()?;
         self.rewrite_instructions()?;
         Ok((self.mir, self.num_spills, self.used_callee_saved))
     }
@@ -1090,6 +1093,7 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
         mut self,
     ) -> CompileResult<(B::Mir, u32, Vec<B::Reg>, RegAllocDebugInfo<B::Reg>)> {
         let debug_info = self.assign_registers_with_debug();
+        self.validate_spill_budget()?;
         self.rewrite_instructions()?;
         Ok((
             self.mir,
@@ -1127,6 +1131,16 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
         self.num_spills = num_spills;
         self.used_callee_saved = used_callee_saved;
         debug_info
+    }
+
+    fn validate_spill_budget(&self) -> CompileResult<()> {
+        rue_air::layout::checked_function_frame_slots(self.existing_locals, self.num_spills)
+            .map(|_| ())
+            .ok_or_else(|| {
+                rue_error::CompileError::without_span(rue_error::ErrorKind::FunctionFrameTooLarge {
+                    max_bytes: rue_air::layout::MAX_FUNCTION_FRAME_BYTES,
+                })
+            })
     }
 
     fn rewrite_instructions(&mut self) -> CompileResult<()> {

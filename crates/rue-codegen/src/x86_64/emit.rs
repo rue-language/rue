@@ -240,6 +240,8 @@ pub struct Emitter<'a> {
     strings: &'a [String],
     /// Whether a stack frame was emitted (prologue was executed).
     has_frame: bool,
+    /// Canonical checked layout supplied by the production pipeline.
+    frame_layout: Option<crate::frame_layout::FrameLayout>,
     /// Byte offset where the current instruction started (for recording).
     inst_start: usize,
     /// Whether to generate assembly text (only needed for --emit asm).
@@ -289,6 +291,7 @@ impl<'a> Emitter<'a> {
             callee_saved: callee_saved.to_vec(),
             strings,
             has_frame: false,
+            frame_layout: None,
             inst_start: 0,
             emit_asm: false,
             param_homing: Vec::new(),
@@ -310,6 +313,14 @@ impl<'a> Emitter<'a> {
     /// register assignment, and reserves the sret pointer frame slot.
     pub fn with_sret(mut self, has_sret: bool) -> Self {
         self.has_sret = has_sret;
+        self
+    }
+
+    pub(crate) fn with_frame_layout(
+        mut self,
+        frame_layout: crate::frame_layout::FrameLayout,
+    ) -> Self {
+        self.frame_layout = Some(frame_layout);
         self
     }
 
@@ -508,13 +519,15 @@ impl<'a> Emitter<'a> {
         // Each slot is one frame cell; the total (including callee-saved
         // pushes) is 16-byte aligned by the frame-layout authority.
         let total_slots = self.num_locals + self.num_params + self.has_sret as u32;
-        let needed_bytes = crate::frame_layout::slot_region_bytes(total_slots);
-        // Account for callee-saved pushes for alignment calculation.
-        // At this point: rbp is set, callee_saved are pushed.
-        // After sub rsp, N: rsp should be 16-byte aligned.
-        let current_offset = self.callee_saved_size();
-        let stack_size =
-            crate::frame_layout::align_frame_size(current_offset + needed_bytes) - current_offset;
+        let frame = self.frame_layout.unwrap_or_else(|| {
+            crate::frame_layout::FrameLayout::try_new(
+                crate::frame_layout::SavedRegScheme::X86_64,
+                self.callee_saved.len(),
+                total_slots,
+            )
+            .expect("emitter frame must fit the checked function-frame budget")
+        });
+        let stack_size = frame.frame_size() as i32 - frame.saved_area_bytes();
 
         if stack_size > 0 {
             // sub rsp, imm32: 48 81 EC imm32
