@@ -5996,6 +5996,7 @@ fn resolve_parsed_semantic_signature(
                             .insert(parameter.name.clone(), ty.clone());
                     }
                     Ok(DurableSemanticParameter {
+                        name: parameter.name.clone(),
                         ty,
                         mode: match parameter.mode {
                             crate::declaration_candidate::DeclarationParameterMode::Value => {
@@ -11844,6 +11845,9 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
     type DeclarationIdentity = crate::semantic_query_nucleus::DeclarationIdentityProjection;
     type Signature = crate::semantic_query_nucleus::ResolvedDeclarationSignature;
     type ConstComptime = crate::semantic_query_nucleus::ConstResolutionProjection;
+    type ComptimeType = crate::durable_semantics::DurableType;
+    type ComptimeValue = crate::durable_semantics::DurableConstValue;
+    type ComptimeCall = crate::semantic_query_nucleus::ComptimeCallResultProjection;
     type AnonymousFacts = Arc<[crate::durable_semantics::DurableAnonymousNominal]>;
     type ProducerBodyFacts = crate::body_query::ProducedAnonymous;
     type ToolchainFacts = crate::BodyToolchainDemand;
@@ -11961,6 +11965,34 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
         match self.nucleus(query) {
             Some(crate::semantic_query_nucleus::SemanticNucleusValue::ConstResolution(value)) => {
                 Some(value)
+            }
+            _ => None,
+        }
+    }
+
+    fn reduce_comptime_call(
+        &self,
+        decl: &crate::declaration_candidate::DeclarationCandidateKey,
+        type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
+        value_arguments: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
+    ) -> Option<crate::semantic_query_nucleus::ComptimeCallResultProjection> {
+        // A comptime-call reduction is a declaration-level fact keyed on the head
+        // declaration plus its bound arguments; it observes the same
+        // semantic-nucleus terminal family the signature/const ops do, so it is
+        // metered as a declaration fact.
+        self.meter()
+            .declaration_facts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let query = crate::semantic_query_nucleus::SemanticNucleusKey::ComptimeCall(
+            crate::semantic_query_nucleus::ComptimeCallQueryKey {
+                declaration: self.declaration_query_key(decl),
+                type_arguments: type_arguments.to_vec().into(),
+                value_arguments: value_arguments.to_vec().into(),
+            },
+        );
+        match self.nucleus(query) {
+            Some(crate::semantic_query_nucleus::SemanticNucleusValue::ComptimeCall(value)) => {
+                Some(value.result)
             }
             _ => None,
         }
@@ -12611,16 +12643,32 @@ impl<'p, 'o, 'db>
 
     fn resolve_array_length(
         &mut self,
-        _scope: &ModuleId,
+        scope: &ModuleId,
         length: &rue_air::ArrayLen,
     ) -> rue_air::SemanticProviderResult<Option<u64>, Self::Abort, Self::Failure> {
+        // r5a tripwire flip: a named array length that is an integer literal or a
+        // scoped `const` now resolves through the boundary (`SignatureFacts`),
+        // matching the epoch's literal/const arms of `resolve_array_length_fact`.
+        // A comptime CALL in length position (`[T; f(n)]`) still routes through
+        // constructor resolution and is honestly deferred here (r6) — this arm
+        // covers only the literal and scoped-const facts.
         match length {
             rue_air::ArrayLen::Literal(value) => Ok(Some(*value)),
-            // A named array length resolves through comptime const evaluation,
-            // which is the inference/comptime slice's demand op (r5).
-            rue_air::ArrayLen::Named(_) => Err(rue_air::SemanticProviderError::Failure(
-                ProviderTypeFactsFailure::Deferred("named array length (r5 comptime)"),
-            )),
+            rue_air::ArrayLen::Named(name) => {
+                if let Ok(value) = name.parse::<u64>() {
+                    return Ok(Some(value));
+                }
+                match SignatureFacts::new(self.provider).const_value_fact(scope, name) {
+                    Some(crate::DurableConstValue::Integer(value)) if value >= 0 => {
+                        Ok(Some(value as u64))
+                    }
+                    _ => Err(rue_air::SemanticProviderError::Failure(
+                        ProviderTypeFactsFailure::Deferred(
+                            "named array length that is not a literal or scoped const (r6)",
+                        ),
+                    )),
+                }
+            }
         }
     }
 
@@ -12685,8 +12733,8 @@ impl<'p, 'o, 'db>
 
     fn root_constructor(
         &mut self,
-        _scope: &ModuleId,
-        _name: &str,
+        scope: &ModuleId,
+        name: &str,
     ) -> rue_air::SemanticProviderResult<
         Option<
             rue_air::SemanticTypeConstructorHead<
@@ -12698,18 +12746,22 @@ impl<'p, 'o, 'db>
         Self::Abort,
         Self::Failure,
     > {
-        // Comptime type-constructor resolution is deferred to r5: the boundary
-        // exposes no argument-parameterized comptime-call op, and a durable
-        // parameter carries no name, so a faithful constructor head cannot be
-        // reconstructed here. Returning `None` leaves a `Name(args)` type call as
-        // an `UnknownType`, which the differential records as an explicit deferral.
-        Ok(None)
+        // r5a tripwire flip: the two capabilities this arm waited on now exist —
+        // durable parameters carry names (part 1) and the boundary exposes an
+        // argument-parameterized comptime-call op (part 2) — so a faithful
+        // constructor head is reconstructed from `signature()` alone through
+        // `SignatureFacts`, no declaration shell required.
+        use rue_air::BodyFactProvider;
+        let resolution =
+            self.provider
+                .lookup_unqualified(scope, rue_air::ProviderNamespace::ModuleItem, name);
+        Ok(SignatureFacts::new(self.provider).constructor_head_fact(scope, resolution, name))
     }
 
     fn module_constructor(
         &mut self,
-        _module: &ModuleId,
-        _name: &str,
+        module: &ModuleId,
+        name: &str,
     ) -> rue_air::SemanticProviderResult<
         Option<
             rue_air::SemanticTypeConstructorHead<
@@ -12721,12 +12773,16 @@ impl<'p, 'o, 'db>
         Self::Abort,
         Self::Failure,
     > {
-        Ok(None)
+        use rue_air::BodyFactProvider;
+        let resolution =
+            self.provider
+                .lookup_qualified(module, rue_air::ProviderNamespace::ModuleItem, name);
+        Ok(SignatureFacts::new(self.provider).constructor_head_fact(module, resolution, name))
     }
 
     fn resolve_value_argument(
         &mut self,
-        _scope: &ModuleId,
+        scope: &ModuleId,
         _constructor: &str,
         _head: &rue_air::SemanticTypeConstructorHead<
             crate::declaration_candidate::DeclarationCandidateKey,
@@ -12734,32 +12790,295 @@ impl<'p, 'o, 'db>
             ModuleId,
         >,
         _parameter_index: usize,
-        _type_arguments: &[(Arc<str>, crate::DurableType)],
-        _value_arguments: &[(Arc<str>, crate::DurableConstValue)],
-        _syntax: &str,
+        type_arguments: &[(Arc<str>, crate::DurableType)],
+        value_arguments: &[(Arc<str>, crate::DurableConstValue)],
+        syntax: &str,
     ) -> rue_air::SemanticProviderResult<crate::DurableConstValue, Self::Abort, Self::Failure> {
-        Err(rue_air::SemanticProviderError::Failure(
-            ProviderTypeFactsFailure::Deferred("comptime value argument (r5)"),
-        ))
+        // r5a tripwire flip: a comptime value argument (literal, a previously
+        // bound argument name, or a scoped `const`) resolves through the boundary.
+        SignatureFacts::new(self.provider)
+            .value_argument_fact(scope, syntax, type_arguments, value_arguments)
+            .ok_or(rue_air::SemanticProviderError::Failure(
+                ProviderTypeFactsFailure::Deferred(
+                    "comptime value argument not resolvable from the boundary (r5a covers \
+                     literals, bound arguments, and scoped consts)",
+                ),
+            ))
     }
 
     fn reduce_comptime_call(
         &mut self,
-        _head: &rue_air::SemanticTypeConstructorHead<
+        head: &rue_air::SemanticTypeConstructorHead<
             crate::declaration_candidate::DeclarationCandidateKey,
             Arc<str>,
             ModuleId,
         >,
-        _type_arguments: &[(Arc<str>, crate::DurableType)],
-        _value_arguments: &[(Arc<str>, crate::DurableConstValue)],
+        type_arguments: &[(Arc<str>, crate::DurableType)],
+        value_arguments: &[(Arc<str>, crate::DurableConstValue)],
     ) -> rue_air::SemanticProviderResult<
         Option<rue_air::SemanticComptimeCallResult<crate::DurableType, crate::DurableConstValue>>,
         Self::Abort,
         Self::Failure,
     > {
-        // Unreachable in r2 (no constructor head resolves); comptime reduction is
-        // the r5 demand op.
-        Ok(None)
+        // r5a tripwire flip: reduction runs through the argument-parameterized
+        // comptime-call boundary op (part 2). A reduction whose result is (or
+        // structurally contains) an anonymous nominal stays deferred — the overlay
+        // cannot yet mint that identity (r4/r6) — so the differential records it as
+        // an honest gap rather than a silent divergence.
+        match SignatureFacts::new(self.provider).reduce_fact(head, type_arguments, value_arguments)
+        {
+            SignatureReduceOutcome::Reduced(result) => Ok(Some(result)),
+            SignatureReduceOutcome::DidNotReduce => Ok(None),
+            SignatureReduceOutcome::DeferredAnonymous => Err(
+                rue_air::SemanticProviderError::Failure(ProviderTypeFactsFailure::Deferred(
+                    "comptime call reducing to an anonymous nominal (r4/r6)",
+                )),
+            ),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `SignatureFacts` — the comptime type-constructor / value-argument ProviderFacts
+// (RUE-1091 r5a).
+//
+// The value-world analog of `ProviderTypeFacts`'s nominal/alias facts, mirroring
+// its `nominal_fact`/`alias_fact` conventions: each method answers one signature-
+// level fact from the exact body-fact provider (`CompilerBodyFactProvider`) and
+// returns owned durable data. It backs the r5a flip of `ProviderTypeFacts`'s
+// comptime-call arms (`root_constructor`/`module_constructor`/
+// `resolve_value_argument`/`reduce_comptime_call`) and the named-const arm of
+// `resolve_array_length`.
+//
+// Two capabilities this slice landed make it possible: durable parameters now
+// carry their source name (part 1), so a constructor head is reconstructed from
+// `signature()` alone — the boundary never exposes the declaration shell the
+// epoch's `constructor_fact` reads — and the boundary exposes an argument-
+// parameterized comptime-call reduction op (part 2), so the reduction runs
+// through the same `ComptimeCall` nucleus terminal the production const path
+// drives.
+//
+// SignatureFacts consults only read-only provider terminals and never mints an
+// overlay identity, so it borrows `&CompilerBodyFactProvider` alone — a comptime
+// call that reduces to an anonymous nominal is deferred to the overlay-owning
+// slices (r4/r6), reported as `SignatureReduceOutcome::DeferredAnonymous`. Every
+// item is `#[cfg(test)]`: a differential adapter behind the same gate as
+// `CompilerBodyFactProvider`, never a selectable production path.
+// ---------------------------------------------------------------------------
+
+/// The comptime type-constructor / value-argument ProviderFacts. Resolves
+/// signature-level comptime facts from the exact body-fact provider.
+#[cfg(test)]
+pub(crate) struct SignatureFacts<'p, 'db> {
+    provider: &'p CompilerBodyFactProvider<'db>,
+}
+
+/// Whether a durable type is, or structurally contains, an anonymous nominal —
+/// the identity the overlay cannot yet mint (RUE-1091 r4/r6). A comptime call
+/// reducing to such a type is an honest r5a deferral, not a divergence.
+#[cfg(test)]
+fn durable_type_uses_anonymous_nominal(ty: &crate::DurableType) -> bool {
+    use crate::DurableType as T;
+    match ty {
+        T::AnonymousNominal(_) => true,
+        T::Array { element, .. }
+        | T::Slice { element, .. }
+        | T::PtrConst(element)
+        | T::PtrMut(element) => durable_type_uses_anonymous_nominal(element),
+        _ => false,
+    }
+}
+
+/// The outcome of a boundary comptime-call reduction: a reduced non-anonymous
+/// type or value, an anonymous-nominal result deferred to r4/r6, or a head that
+/// did not reduce.
+#[cfg(test)]
+enum SignatureReduceOutcome {
+    Reduced(rue_air::SemanticComptimeCallResult<crate::DurableType, crate::DurableConstValue>),
+    DeferredAnonymous,
+    DidNotReduce,
+}
+
+#[cfg(test)]
+impl<'p, 'db> SignatureFacts<'p, 'db> {
+    pub(crate) fn new(provider: &'p CompilerBodyFactProvider<'db>) -> Self {
+        Self { provider }
+    }
+
+    fn candidate_key(
+        module: &ModuleId,
+        category: crate::declaration_candidate::DeclarationCandidateCategory,
+        name: &str,
+    ) -> crate::declaration_candidate::DeclarationCandidateKey {
+        crate::declaration_candidate::DeclarationCandidateKey {
+            module: module.clone(),
+            category,
+            name: Arc::from(name),
+            owner: None,
+            duplicate_discriminator: 0,
+        }
+    }
+
+    fn visibility_domain(module: &ModuleId) -> rue_air::SemanticVisibilityDomain {
+        rue_air::SemanticVisibilityDomain::from_file_path(Some(module.logical_path()))
+    }
+
+    /// The comptime type-constructor head for a callable named in `module`,
+    /// reconstructed from the boundary `signature()` alone. Mirrors
+    /// `ProviderTypeFacts::nominal_fact`: a non-unique or non-callable candidate
+    /// set resolves to `None`, exactly as a missing epoch entry does. The head's
+    /// `parameters` carry each source name (durable, part 1) and the `is_type`
+    /// classification the shared comptime-call logic routes arguments on —
+    /// `is_comptime && ty == comptime type`, the same predicate the epoch's
+    /// `constructor_fact` applies.
+    fn constructor_head_fact(
+        &self,
+        module: &ModuleId,
+        resolution: rue_air::NameResolution,
+        name: &str,
+    ) -> Option<
+        rue_air::SemanticTypeConstructorHead<
+            crate::declaration_candidate::DeclarationCandidateKey,
+            Arc<str>,
+            ModuleId,
+        >,
+    > {
+        use rue_air::BodyFactProvider;
+        let rue_air::NameResolution::Unique(_) =
+            resolution.of_kind(rue_air::ProviderDefinitionKind::Function)
+        else {
+            return None;
+        };
+        let decl = Self::candidate_key(
+            module,
+            crate::declaration_candidate::DeclarationCandidateCategory::Function,
+            name,
+        );
+        // Observe the identity terminal (visibility) and the signature terminal
+        // (parameters + result) — the same two facts the epoch's `constructor_fact`
+        // reads, recorded as dependency edges before the head is returned.
+        let identity = self.provider.declaration_identity(&decl)?;
+        let signature = self.provider.signature(&decl)?;
+        let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
+            parameters,
+            result,
+            ..
+        } = signature.signature
+        else {
+            return None;
+        };
+        let parameters = parameters
+            .iter()
+            .map(|parameter| rue_air::SemanticTypeConstructorParameter {
+                name: parameter.name.clone(),
+                is_comptime: parameter.is_comptime,
+                is_type: parameter.is_comptime
+                    && parameter.ty == crate::durable_semantics::DurableType::ComptimeType,
+            })
+            .collect::<Vec<_>>();
+        Some(rue_air::SemanticTypeConstructorHead {
+            key: decl,
+            site: module.clone(),
+            parameters: parameters.into(),
+            returns_type: result == crate::durable_semantics::DurableType::ComptimeType,
+            is_public: identity.is_public,
+            defining_domain: Self::visibility_domain(module),
+            defining_file: Arc::from(module.logical_path()),
+        })
+    }
+
+    /// The durable value for one comptime value argument. Mirrors the literal /
+    /// bound-argument / scoped-`const` arms of the epoch's `resolve_value_argument`
+    /// (`typeck.rs`) and its nucleus twin: an integer or boolean literal, a value
+    /// already bound to a parameter name, a type argument named by an earlier
+    /// parameter, or a scoped constant resolved through the boundary. Anything
+    /// else is `None` (the caller turns that into an honest deferral).
+    fn value_argument_fact(
+        &self,
+        scope: &ModuleId,
+        syntax: &str,
+        type_arguments: &[(Arc<str>, crate::DurableType)],
+        value_arguments: &[(Arc<str>, crate::DurableConstValue)],
+    ) -> Option<crate::DurableConstValue> {
+        use crate::DurableConstValue as V;
+        let syntax = syntax.trim();
+        if let Ok(value) = syntax.parse::<i128>() {
+            return Some(V::Integer(value));
+        }
+        if syntax == "true" || syntax == "false" {
+            return Some(V::Bool(syntax == "true"));
+        }
+        if let Some((_, value)) = value_arguments
+            .iter()
+            .find(|(name, _)| name.as_ref() == syntax)
+        {
+            return Some(value.clone());
+        }
+        if let Some((_, ty)) = type_arguments
+            .iter()
+            .find(|(name, _)| name.as_ref() == syntax)
+        {
+            return Some(V::Type(ty.clone()));
+        }
+        self.const_value_fact(scope, syntax)
+    }
+
+    /// The durable value of a scoped `const` named `name`, resolved through the
+    /// boundary lookup + `const_comptime` terminals — the value-world analog of
+    /// `ProviderTypeFacts::alias_fact`. `None` for an absent, ambiguous, or
+    /// non-value const.
+    fn const_value_fact(&self, scope: &ModuleId, name: &str) -> Option<crate::DurableConstValue> {
+        use crate::semantic_query_nucleus::ConstResolutionProjection;
+        use rue_air::BodyFactProvider;
+        let resolution =
+            self.provider
+                .lookup_unqualified(scope, rue_air::ProviderNamespace::ModuleItem, name);
+        let rue_air::NameResolution::Unique(_) =
+            resolution.of_kind(rue_air::ProviderDefinitionKind::Const)
+        else {
+            return None;
+        };
+        let decl = Self::candidate_key(
+            scope,
+            crate::declaration_candidate::DeclarationCandidateCategory::ConstCandidate,
+            name,
+        );
+        let ConstResolutionProjection::Value { value, .. } = self.provider.const_comptime(&decl)?
+        else {
+            return None;
+        };
+        Some(*value)
+    }
+
+    /// Reduce a comptime call at the boundary through the argument-parameterized
+    /// comptime-call op, honestly deferring an anonymous-nominal result to r4/r6.
+    fn reduce_fact(
+        &self,
+        head: &rue_air::SemanticTypeConstructorHead<
+            crate::declaration_candidate::DeclarationCandidateKey,
+            Arc<str>,
+            ModuleId,
+        >,
+        type_arguments: &[(Arc<str>, crate::DurableType)],
+        value_arguments: &[(Arc<str>, crate::DurableConstValue)],
+    ) -> SignatureReduceOutcome {
+        use crate::semantic_query_nucleus::ComptimeCallResultProjection as P;
+        use rue_air::BodyFactProvider;
+        match self
+            .provider
+            .reduce_comptime_call(&head.key, type_arguments, value_arguments)
+        {
+            None => SignatureReduceOutcome::DidNotReduce,
+            Some(P::Type(ty)) if durable_type_uses_anonymous_nominal(&ty) => {
+                SignatureReduceOutcome::DeferredAnonymous
+            }
+            Some(P::Type(ty)) => {
+                SignatureReduceOutcome::Reduced(rue_air::SemanticComptimeCallResult::Type(ty))
+            }
+            Some(P::Value(value)) => {
+                SignatureReduceOutcome::Reduced(rue_air::SemanticComptimeCallResult::Value(value))
+            }
+        }
     }
 }
 
@@ -19525,10 +19844,12 @@ mod tests {
     // later slice that adds the fact flips the arm deliberately.
     //   - BuiltinNominal (`str`, `Str(N)`): no builtin-nominal identity fact.
     //   - Slice (`[T]`): no generated slice-struct name fact.
-    //   - comptime type call (`Name(args)`): no argument-parameterized comptime-call
-    //     op, and durable parameters carry no name (r5).
-    //   - AnonymousNominal: produced by a body, materialized in r4/r6.
+    //   - AnonymousNominal: produced by a body / a comptime call reducing to an
+    //     anonymous struct (`Pair()` below), materialized in r4/r6.
     //   - Module / GenericParameter: not reachable as a resolved type-syntax leaf.
+    // The comptime type-call arm itself is NO LONGER a gap — r5a flipped it (see
+    // `provider_type_facts_comptime_calls_match_epoch`); only the anonymous-nominal
+    // RESULT of such a call is still deferred, and that deferral is pinned here.
     #[test]
     fn provider_type_facts_deferred_shapes_are_documented_gaps() {
         let source = "pub struct Point { x: i32 }\n\
@@ -19539,12 +19860,17 @@ mod tests {
         let mut database = RevisionedQueryDatabase::default();
         let revision = revision_for(&mut database, &snapshot);
 
+        // `str`/`[i32]`/`Str(8)`: boundary facts still absent. `Pair()`: the
+        // comptime-call op reduces it (r5a), but its result is an ANONYMOUS
+        // nominal the overlay cannot yet mint, so `reduce_fact` returns
+        // `DeferredAnonymous` and the resolution stays `None` — an honest r4/r6
+        // gap, not the "no comptime-call op" gap r2 recorded.
         for deferred in ["str", "[i32]", "Pair()", "Str(8)"] {
             let (resolved, _m, _d) =
                 resolve_type_via_provider(&database, revision, &scope, deferred, None);
             assert_eq!(
                 resolved, None,
-                "`{deferred}` is a documented r2 deferral and must not resolve yet"
+                "`{deferred}` is a documented deferral and must not resolve yet"
             );
         }
 
@@ -19558,6 +19884,243 @@ mod tests {
             resolved,
             Some(crate::DurableType::Nominal(point.key.clone()))
         );
+    }
+
+    // ---- RUE-1091 r5a: SignatureFacts comptime-call differentials ------------
+    //
+    // These prove the flipped `ProviderTypeFacts` comptime-call arms (backed by
+    // `SignatureFacts` + the argument-parameterized comptime-call boundary op)
+    // reduce a comptime type/value call to the same durable type/value the
+    // production binder assigned. The epoch truth is the production durable const
+    // declaration whose initializer IS the call, produced independently by
+    // `bind_canonical_declaration_semantics`, never the same provider terminal.
+
+    /// The `Const { value }` durable value the production binder assigned to the
+    /// value-const named `name`.
+    fn production_const_value(
+        decls: &[crate::durable_semantics::DurableDeclarationSemantic],
+        name: &str,
+    ) -> crate::DurableConstValue {
+        let decl = durable_decl(decls, crate::StableDefinitionKind::ValueConst, name);
+        match &decl.payload {
+            crate::durable_semantics::DurableDeclarationPayload::Const { value, .. } => {
+                value.clone()
+            }
+            other => panic!("const `{name}` is not a value const: {other:?}"),
+        }
+    }
+
+    /// The declared type of parameter `index` of the value-const-time signature
+    /// the production binder assigned to the callable named `name`.
+    fn production_signature_parameter(
+        decls: &[crate::durable_semantics::DurableDeclarationSemantic],
+        name: &str,
+        index: usize,
+    ) -> crate::DurableType {
+        let decl = durable_decl(decls, crate::StableDefinitionKind::Function, name);
+        match &decl.payload {
+            crate::durable_semantics::DurableDeclarationPayload::Callable {
+                parameters, ..
+            } => parameters[index].ty.clone(),
+            other => panic!("`{name}` is not callable: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn provider_type_facts_comptime_calls_match_epoch() {
+        use crate::DurableType as T;
+        // `Id`/`Nth` reduce a comptime TYPE argument to a passthrough type (the
+        // nucleus comptime-call terminal the boundary op drives can reduce these).
+        // `Nth` additionally binds a comptime VALUE argument — a literal and a
+        // scoped const — so `resolve_value_argument`/`const_value_fact` are on the
+        // passing path. Each is declared as `const C: type = <call>`, so the
+        // production const value is the independent cross-path truth. `Buffer` (an
+        // array-CONSTRUCTING type ctor) is reduced only by the body-level epoch
+        // (`reduce_type_ctor_body`); the nucleus comptime-call op the boundary
+        // drives evaluates the ctor in a const context where `[i32; n]` is an
+        // unsupported aggregate, so it does NOT reduce — an honest r5a boundary,
+        // asserted below.
+        let source = "pub struct Point { x: i32 }\n\
+                      fn Id(comptime T: type) -> type { T }\n\
+                      fn Nth(comptime T: type, comptime k: i32) -> type { T }\n\
+                      fn Buffer(comptime n: i32) -> type { [i32; n] }\n\
+                      const N: i32 = 3;\n\
+                      const IdPoint: type = Id(Point);\n\
+                      const IdI32: type = Id(i32);\n\
+                      const NthP2: type = Nth(Point, 2);\n\
+                      const NthPN: type = Nth(Point, N);\n\
+                      fn main() -> i32 { 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let scope = ModuleId::from_logical_path("m.rue").unwrap();
+        let decls = production_declarations(&snapshot);
+        let point = durable_decl(&decls, crate::StableDefinitionKind::Struct, "Point");
+        let point_type = T::Nominal(point.key.clone());
+
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+
+        // `Id(Point)` — a comptime TYPE argument reduced to the exact nominal
+        // identity the production const `IdPoint` holds. Records the comptime-call
+        // reduction (semantic-nucleus) edge.
+        let (resolved, _m, deps) =
+            resolve_type_via_provider(&database, revision, &scope, "Id(Point)", None);
+        assert_eq!(resolved, Some(point_type.clone()));
+        assert_eq!(
+            production_const_value(&decls, "IdPoint"),
+            crate::DurableConstValue::Type(point_type.clone()),
+            "cross-path: the production const holds the same reduced nominal",
+        );
+        assert!(
+            deps.iter()
+                .any(|node| node.family() == "compiler.semantic-nucleus"),
+            "a comptime call records its reduction (semantic-nucleus) edge: {deps:?}"
+        );
+
+        // `Id(i32)` — the reduction collapses to a primitive; cross-checked
+        // against the production const `IdI32`.
+        let (resolved, _m, _d) =
+            resolve_type_via_provider(&database, revision, &scope, "Id(i32)", None);
+        assert_eq!(resolved, Some(T::I32));
+        assert_eq!(
+            production_const_value(&decls, "IdI32"),
+            crate::DurableConstValue::Type(T::I32),
+        );
+
+        // `Nth(Point, 2)` — a comptime VALUE argument from a LITERAL flows through
+        // `resolve_value_argument`; the reduction passes the type argument through.
+        let (resolved, _m, _d) =
+            resolve_type_via_provider(&database, revision, &scope, "Nth(Point, 2)", None);
+        assert_eq!(resolved, Some(point_type.clone()));
+        assert_eq!(
+            production_const_value(&decls, "NthP2"),
+            crate::DurableConstValue::Type(point_type.clone()),
+        );
+
+        // `Nth(Point, N)` — a comptime VALUE argument resolved through a SCOPED
+        // CONST (`value_argument_fact` -> `const_value_fact`), cross-checked
+        // against the production const `NthPN`.
+        let (resolved, _m, _d) =
+            resolve_type_via_provider(&database, revision, &scope, "Nth(Point, N)", None);
+        assert_eq!(resolved, Some(point_type.clone()));
+        assert_eq!(
+            production_const_value(&decls, "NthPN"),
+            crate::DurableConstValue::Type(point_type),
+        );
+
+        // `Buffer(2)` — array-CONSTRUCTING type ctor: the nucleus comptime-call op
+        // does not reduce it (const-context aggregate), so it stays `None`. This
+        // is the honest r5a boundary between the passthrough/value reductions the
+        // op covers and the body-level `reduce_type_ctor_body` a later slice wires.
+        let (resolved, _m, _d) =
+            resolve_type_via_provider(&database, revision, &scope, "Buffer(2)", None);
+        assert_eq!(
+            resolved, None,
+            "an array-constructing comptime type ctor is not reduced by the nucleus op (r6)"
+        );
+    }
+
+    #[test]
+    fn provider_type_facts_named_array_length_matches_epoch() {
+        use crate::DurableType as T;
+        // A named array length that is a scoped `const` now resolves through
+        // `SignatureFacts::const_value_fact` (r5a flip of `resolve_array_length`).
+        // The production binder's own resolution of the same `[i32; N]` in a
+        // signature is the independent cross-path truth. A comptime CALL in length
+        // position stays deferred (r6).
+        let source = "const N: i32 = 3;\n\
+                      fn use_len(a: [i32; N]) -> i32 { a[0] }\n\
+                      fn main() -> i32 { 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let scope = ModuleId::from_logical_path("m.rue").unwrap();
+        let decls = production_declarations(&snapshot);
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+
+        // `[i32; N]` — the named length `N` resolves to the scoped const's value,
+        // matching the durable signature the binder assigned to `use_len`.
+        let (resolved, _m, _d) =
+            resolve_type_via_provider(&database, revision, &scope, "[i32; N]", None);
+        let expected = T::Array {
+            element: Box::new(T::I32),
+            len: 3,
+        };
+        assert_eq!(resolved, Some(expected.clone()));
+        assert_eq!(
+            production_signature_parameter(&decls, "use_len", 0),
+            expected
+        );
+
+        // `[i32; missing]` — an unresolvable named length stays a deferred/None
+        // resolution (no scoped const `missing` exists).
+        let (resolved, _m, _d) =
+            resolve_type_via_provider(&database, revision, &scope, "[i32; missing]", None);
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn signature_facts_constructor_head_carries_named_typed_parameters() {
+        use rue_air::BodyFactProvider;
+        // SignatureFacts reconstructs the constructor head from `signature()`
+        // alone: the durable parameter names (part 1) become the head's parameter
+        // names, and `is_type` is `is_comptime && ty == comptime type` — the same
+        // predicate the epoch's `constructor_fact` applies from the shell.
+        let source = "fn Wrap(comptime T: type, comptime n: i32) -> type { [T; n] }\n\
+                      fn main() -> i32 { 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let scope = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+
+        let outcome = database.probe_body_facts(
+            revision,
+            semantic_configuration(),
+            "signature-facts:Wrap",
+            |provider| {
+                let facts = SignatureFacts::new(provider);
+                let resolution = provider.lookup_unqualified(
+                    &scope,
+                    rue_air::ProviderNamespace::ModuleItem,
+                    "Wrap",
+                );
+                let head = facts
+                    .constructor_head_fact(&scope, resolution, "Wrap")
+                    .expect("Wrap resolves to a constructor head");
+                let names = head
+                    .parameters
+                    .iter()
+                    .map(|p| (p.name.to_string(), p.is_comptime, p.is_type))
+                    .collect::<Vec<_>>();
+                (head.returns_type, names)
+            },
+        );
+        let (returns_type, names) = outcome.result;
+        assert!(returns_type, "`Wrap` returns a type");
+        assert_eq!(
+            names,
+            vec![
+                ("T".to_string(), true, true),  // comptime type parameter
+                ("n".to_string(), true, false), // comptime value parameter
+            ],
+            "head carries durable parameter names and the type/value split"
+        );
+        // Absent / non-callable heads do not resolve.
+        let outcome = database.probe_body_facts(
+            revision,
+            semantic_configuration(),
+            "signature-facts:absent",
+            |provider| {
+                let facts = SignatureFacts::new(provider);
+                let resolution = provider.lookup_unqualified(
+                    &scope,
+                    rue_air::ProviderNamespace::ModuleItem,
+                    "Missing",
+                );
+                facts
+                    .constructor_head_fact(&scope, resolution, "Missing")
+                    .is_some()
+            },
+        );
+        assert!(!outcome.result, "an absent name has no constructor head");
     }
 
     #[test]

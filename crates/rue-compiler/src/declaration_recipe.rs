@@ -554,11 +554,13 @@ mod tests {
         let payload = DurableDeclarationPayload::Callable {
             parameters: Arc::from([
                 DurableSemanticParameter {
+                    name: Arc::from("first"),
                     ty: DurableType::I32,
                     mode: DurableParameterMode::Borrow,
                     is_comptime: false,
                 },
                 DurableSemanticParameter {
+                    name: Arc::from("second"),
                     ty: DurableType::Bool,
                     mode: DurableParameterMode::Value,
                     is_comptime: true,
@@ -973,6 +975,7 @@ mod tests {
                 is_public: true,
                 payload: DurableDeclarationPayload::Callable {
                     parameters: Arc::from([DurableSemanticParameter {
+                        name: Arc::from("value"),
                         ty: DurableType::I32,
                         mode: DurableParameterMode::Value,
                         is_comptime: false,
