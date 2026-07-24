@@ -20710,8 +20710,8 @@ mod tests {
     // callable-symbol reversal (B) including the bare-owner known-divergence.
     // Deferred with cause (reported, never silently answered wrong): full
     // `method_info` pool assembly needs the receiver→pool identity the endpoint
-    // seam owns (r4b-3); the `ConstInfo`-bearing const arms need a
-    // const-declaration RIR handle the position-free boundary omits; `module_def`
+    // seam owns (r4b-3); the `ConstInfo` pool + RIR handle have since landed as
+    // inert flip-prep but are not wired under this call driver; `module_def`
     // answers an epoch-internal registry index with no provider preimage.
 
     /// The durable declaration set projected into the body identity pool's
@@ -20943,6 +20943,33 @@ mod tests {
                 result: result.clone(),
                 has_self: *has_self,
             })
+        }
+    }
+
+    impl rue_air::DurableConstSource<StableDefinitionKey, ModuleId> for DurableDeclSource {
+        fn constant(
+            &self,
+            key: &StableDefinitionKey,
+        ) -> Option<rue_air::DurableConst<StableDefinitionKey, ModuleId>> {
+            use crate::durable_semantics::DurableDeclarationPayload as Payload;
+            let decl = self.by_key.get(key)?;
+            let Payload::Const { ty, value } = &decl.payload else {
+                // Module bindings deliberately STOP here: their durable target
+                // is real, but the body pool has no module-registry identity arm
+                // from which to mint the epoch-local `Type::Module`.
+                return None;
+            };
+            Some(rue_air::DurableConst {
+                is_public: decl.is_public,
+                ty: ty.clone(),
+                value: value.clone(),
+            })
+        }
+
+        fn function_name(&self, key: &StableDefinitionKey) -> Option<Arc<str>> {
+            use crate::durable_semantics::DurableDeclarationPayload as Payload;
+            matches!(self.by_key.get(key)?.payload, Payload::Callable { .. })
+                .then(|| Arc::from(key.name()))
         }
     }
 
@@ -22673,6 +22700,156 @@ mod tests {
         );
     }
 
+    // ---- RUE-1091 flip-prep: const identity differential --------------------
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct ConstInfoRender {
+        is_pub: bool,
+        ty: String,
+        value: String,
+        span: rue_span::Span,
+    }
+
+    fn render_const_info(
+        info: &rue_air::ConstInfo,
+        pool: &rue_air::TypeInternPool,
+        resolve_symbol: impl Fn(lasso::Spur) -> String,
+    ) -> ConstInfoRender {
+        use rue_air::ConstValue as V;
+        let value = match info.value {
+            V::Integer(value) => format!("integer:{value}"),
+            V::Bool(value) => format!("bool:{value}"),
+            V::Type(value) => format!("type:{}", endpoint_display(pool, value)),
+            V::Function(value) => format!("function:{}", resolve_symbol(value)),
+            V::Unit => "unit".to_owned(),
+            V::String(value) => format!("string:{}", resolve_symbol(value)),
+        };
+        ConstInfoRender {
+            is_pub: info.is_pub,
+            ty: endpoint_display(pool, info.ty),
+            value,
+            span: info.span,
+        }
+    }
+
+    #[test]
+    fn provider_const_info_assembly_matches_live_epoch() {
+        use crate::StableDefinitionKind as Kind;
+
+        // Exercise scalar, nominal type-valued, function-valued, and string
+        // constants. `dep` is the refusal pin: the LIVE epoch has a module
+        // binding, but the pool has no body-local module registry identity and
+        // therefore must STOP rather than approximate a value const.
+        let root = "pub struct Point { x: i32 }\n\
+                    fn helper() -> i32 { 1 }\n\
+                    pub const LIMIT: i64 = 7;\n\
+                    const POINT_KIND: type = Point;\n\
+                    const ALIAS = helper;\n\
+                    const TEXT: str = \"hello\";\n\
+                    const dep = @import(\"dep.rue\");\n\
+                    fn main() -> i32 { 0 }\n";
+        let dep = "pub const DEP_VALUE: i32 = 9;\n";
+        let snapshot = source_snapshot(
+            &[
+                (1, "/project/main.rue", "main.rue", root),
+                (2, "/project/dep.rue", "dep.rue", dep),
+            ],
+            1,
+        );
+        let file = FileId::new(1);
+        let decls = production_declarations(&snapshot);
+        let value_keys = ["LIMIT", "POINT_KIND", "ALIAS", "TEXT"].map(|name| {
+            (
+                name,
+                durable_decl(&decls, Kind::ValueConst, name).key.clone(),
+            )
+        });
+        let module_key = durable_decl(&decls, Kind::ModuleBinding, "dep").key.clone();
+
+        // LIVE epoch side: production parsing/lowering/import registration and
+        // declaration binding, independent of the pool's durable adapter.
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
+        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
+            &merged,
+            &rir,
+            crate::PreviewFeatures::default(),
+            rue_target::Target::X86_64Linux,
+            &imports,
+        )
+        .expect("declarations bind");
+        let interner = rir.semantic_symbols().interner();
+        let epoch = value_keys
+            .iter()
+            .map(|(name, _)| {
+                let symbol = interner.get(name).expect("const source name interned");
+                let info = bound
+                    .epoch_const_info(file, symbol)
+                    .unwrap_or_else(|| panic!("epoch resolves {name}"));
+                let rendered = bound.with_type_pool(|pool| {
+                    render_const_info(&info, pool, |symbol| interner.resolve(&symbol).to_owned())
+                });
+                (*name, rendered)
+            })
+            .collect::<Vec<_>>();
+        let dep_symbol = interner.get("dep").expect("module binding interned");
+        assert!(
+            bound.epoch_module_binding_info(file, dep_symbol).is_some(),
+            "the LIVE epoch resolves the module binding"
+        );
+
+        // Pool side: the production durable declaration adapter plus the real
+        // ProviderEndpointFacts registration primitive, which composes the
+        // exact `(file, name)` RIR handle with the durable const record.
+        let rir_ref = rir.rir();
+        let adapter = DurableDeclSource::from_declarations(&decls);
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let outcome = database.probe_body_facts(
+            revision,
+            semantic_configuration(),
+            "endpoint-const-info",
+            move |provider| {
+                let facts =
+                    rue_air::ProviderEndpointFacts::new(provider, adapter, rir_ref, interner);
+                let mut rendered = Vec::new();
+                for (name, key) in value_keys {
+                    let info = facts
+                        .const_info(&key, file, name)
+                        .unwrap_or_else(|| panic!("pool resolves {name}"));
+                    let again = facts
+                        .const_info(&key, file, name)
+                        .unwrap_or_else(|| panic!("pool re-resolves {name}"));
+                    let first = facts.with_type_pool(|pool| {
+                        render_const_info(&info, pool, |symbol| facts.resolve_const_symbol(symbol))
+                    });
+                    let second = facts.with_type_pool(|pool| {
+                        render_const_info(&again, pool, |symbol| facts.resolve_const_symbol(symbol))
+                    });
+                    assert_eq!(first, second, "repeat consult re-minted {name}");
+                    rendered.push((name, first));
+                }
+
+                assert!(
+                    facts.const_info(&module_key, file, "dep").is_none(),
+                    "module binding STOP: no body-local module identity is approximated"
+                );
+                rendered
+            },
+        );
+        assert_eq!(
+            outcome.result, epoch,
+            "pool-assembled ConstInfo diverged from the LIVE epoch"
+        );
+        assert!(
+            outcome.dependencies.is_empty(),
+            "const assembly uses durable metadata + RIR only: {:?}",
+            outcome.dependencies
+        );
+    }
+
     // ---- RUE-1091 r4b-3: aggregate ProviderFacts differentials ----------------
     //
     // These prove `rue_air::ProviderAggregateFacts` (the provider-driven
@@ -22690,10 +22867,10 @@ mod tests {
     // Scope landed here: struct/enum-by-file-name (P, pool mint via the overlay
     // reverse), the builtins (P, pool pre-registered set), and `is_accessible`
     // (O, request-local file paths). Deferred with cause (pinned, never silently
-    // answered wrong): the const fall-through (`value_const` / `module_binding`) →
-    // the flip's const-declaration RIR handle, so a const member selects `Absent`
-    // where the epoch selects `Const`; `module_def` + the module spines → the
-    // flip; `source_path` → the flip.
+    // answered wrong): the const pool + RIR handle now exist (flip-prep above)
+    // but remain intentionally unwired under this aggregate driver, so a const
+    // member selects `Absent` where the epoch selects `Const`; `module_def` + the
+    // module spines → the flip; `source_path` → the flip.
 
     /// The tag + index-independent display of a [`rue_air::ProviderModuleMember`],
     /// rendered through the pool that minted its type.
