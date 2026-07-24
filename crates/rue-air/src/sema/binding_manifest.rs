@@ -2399,6 +2399,18 @@ impl<'a> BoundSema<'a> {
     pub fn binding_work(&self) -> DeclarationBindingWork {
         self.binding_work
     }
+
+    /// The request-local [`BodySema`] whose declaration maps this bind
+    /// populated — the exact reference [`super::body_endpoint::EpochFacts`]
+    /// wraps. Test-only: the pool-arc twin-parity tests
+    /// (`body_identity.rs`) read the epoch's populated `FunctionInfo` /
+    /// `MethodInfo` / RIR-index answers through this handle to compare against
+    /// the provider-side pool + RIR index.
+    #[cfg(test)]
+    pub(in crate::sema) fn body_sema(&self) -> &super::BodySema<'a> {
+        &self.sema
+    }
+
     /// Materialize the owned manifest on demand. Ordinary body analysis does
     /// not pay for this additional RIR traversal.
     pub fn binding_manifest(&self) -> &SemanticBindingManifest {

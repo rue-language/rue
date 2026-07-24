@@ -81,9 +81,10 @@ use std::hash::Hash;
 use std::sync::Arc;
 
 use lasso::{Spur, ThreadedRodeo};
-use rue_rir::{InstRef, RirParamMode};
+use rue_rir::{InstData, InstRef, Rir, RirParamMode};
 use rue_span::{FileId, Span};
 
+use super::declaration_index::{RirDeclarationIndex, RirDestructorDeclaration};
 use super::info::{FunctionInfo, MethodInfo};
 use crate::types::{EnumDef, EnumId, LangItem, StructDef, StructField, StructId, Type};
 use crate::{
@@ -856,6 +857,132 @@ where
             comptime.push(parameter.is_comptime);
         }
         Ok(self.param_arena.alloc(names, types, modes, comptime))
+    }
+}
+
+/// The body-scoped RIR answer surface for the endpoint seam (slice r4a-2c): the
+/// provider-side equivalent of the three endpoint ops `one_body.rs` consumes
+/// through [`super::body_endpoint::EpochFacts`] — `first_free_function`,
+/// `named_method_declaration`, and `destructor`.
+///
+/// # The shared-`Rir` input, not durable state
+///
+/// Every answer is an [`InstRef`] into the whole-program `rir: &Rir` this index
+/// was built from — a body-query *input*, never durable. The design checkpoint
+/// fixed this: "Projection is a metadata join and must never inspect RIR"; the
+/// RIR index is the *other* leg, the query-input side that resolves durable
+/// declaration identities into the current arena's instruction handles. The
+/// returned handles are valid only against that exact `Rir`, exactly as
+/// [`RirDeclarationIndex`]'s are, so a caller composes them with the same `Rir`
+/// its [`FunctionIdentityHandle`] / [`MethodIdentityHandle`] index into.
+///
+/// # New-vs-reuse: a thin façade over the body-independent production index
+///
+/// [`RirDeclarationIndex`] is already body-independent — `RirDeclarationIndex::
+/// new(rir)` is built from the shared `Rir` alone, its `InstRef`s locate that
+/// arena, and it already answers `first_free_function` and `destructors`
+/// verbatim (they are the tables [`super::body_endpoint::EpochFacts`] delegates
+/// to). So this index **re-uses it wholesale** for those two ops rather than
+/// duplicating the arena walk.
+///
+/// The one op the production index does not expose as a keyed point lookup is
+/// `named_method_declaration`: the epoch answers it from the *`Sema`-side*
+/// `named_method_declarations` map keyed by a pool-minted [`StructId`]
+/// (`declarations.rs`), which the pool-free RIR index cannot hold. But that
+/// `StructId` is only an *intermediate* the epoch computes from `struct_by_file_
+/// name(file, type_name)` — a bijection (duplicate `(file, name)` is E0418), so
+/// its durable-available preimage `(owner_file, owner_type_name)` is an exact
+/// substitute key. This index therefore re-keys the owner→method edges
+/// [`RirDeclarationIndex`] already collected (retained on `shell_declarations`'
+/// `named_method_owner`) into a `(FileId, type_name, method_name) → InstRef`
+/// point map — the sole additive surface. No keying input is pool-minted; every
+/// key is RIR-derivable from the shared `Rir`.
+///
+/// Inert per the pool arc: `#![cfg_attr(not(test), allow(dead_code))]` on this
+/// module. There are zero production callers; the flip slice (r4b) wires it
+/// under body analysis.
+pub(in crate::sema) struct BodyRirIndex {
+    /// Production's body-independent declaration index, re-used verbatim for
+    /// `first_free_function` and `destructor`.
+    declarations: RirDeclarationIndex,
+    /// The one additive keyed surface: named-method declarations keyed by the
+    /// durable-available `(owner_file, owner_type_name, method_name)` preimage
+    /// of the epoch's `(StructId, method_name)` key.
+    named_methods_by_owner: HashMap<(FileId, Spur, Spur), InstRef>,
+}
+
+impl BodyRirIndex {
+    /// Build the index from the shared whole-program `Rir`. Constructs one
+    /// [`RirDeclarationIndex`] and derives the named-method point map from the
+    /// owner edges it already classified — no second arena walk of the method
+    /// universe, no durable metadata, no pool.
+    pub(in crate::sema) fn new(rir: &Rir) -> Self {
+        let declarations = RirDeclarationIndex::new(rir);
+        let mut named_methods_by_owner = HashMap::new();
+        for shell in declarations.shell_declarations() {
+            // `named_method_owner` is `Some` exactly for named methods (free
+            // functions, nominals, consts, and destructors carry `None`); the
+            // owner is the enclosing struct's source-name symbol. A named
+            // method's own `span.file_id` is its enclosing struct's file (it is
+            // lexically inline), so it is the same file the epoch keys by via
+            // `struct_by_file_name(struct_span.file_id, type_name)`.
+            let Some(owner) = shell.named_method_owner else {
+                continue;
+            };
+            let inst = rir.get(shell.declaration);
+            if let InstData::FnDecl { name, .. } = inst.data {
+                // First edge wins, mirroring `RirDeclarationIndex`'s
+                // `named_method_owners.or_insert` and the epoch's E0418 rejection
+                // of a duplicate `(struct, method)`.
+                named_methods_by_owner
+                    .entry((inst.span.file_id, owner, name))
+                    .or_insert(shell.declaration);
+            }
+        }
+        Self {
+            declarations,
+            named_methods_by_owner,
+        }
+    }
+
+    /// The first free-function RIR declaration for `(source, file)`. The exact
+    /// answer [`super::body_endpoint::EpochFacts::first_free_function`] returns.
+    pub(in crate::sema) fn first_free_function(
+        &self,
+        source: Spur,
+        file_id: FileId,
+    ) -> Option<InstRef> {
+        self.declarations.first_free_function(source, Some(file_id))
+    }
+
+    /// The named-method RIR declaration for a named struct owner, keyed by the
+    /// durable-available `(owner_file, owner_type_name, method_name)` preimage of
+    /// the epoch's `(StructId, method_name)` key. Equal to
+    /// [`super::body_endpoint::EpochFacts::named_method_declaration`] under the
+    /// `struct_by_file_name` bijection.
+    pub(in crate::sema) fn named_method_declaration(
+        &self,
+        owner_file: FileId,
+        owner_type_name: Spur,
+        method_name: Spur,
+    ) -> Option<InstRef> {
+        self.named_methods_by_owner
+            .get(&(owner_file, owner_type_name, method_name))
+            .copied()
+    }
+
+    /// The destructor declaration record for `(file, type_name)`. The exact
+    /// scan [`super::body_endpoint::EpochFacts::destructor`] performs.
+    pub(in crate::sema) fn destructor(
+        &self,
+        file: u32,
+        type_name: Spur,
+    ) -> Option<RirDestructorDeclaration> {
+        self.declarations
+            .destructors()
+            .iter()
+            .find(|record| record.span.file_id.index() == file && record.type_name == type_name)
+            .copied()
     }
 }
 
@@ -2274,6 +2401,406 @@ mod tests {
         assert_eq!(
             pool.resolve_method(&9, method_handle()).unwrap_err(),
             IdentityMintError::MissingCallable
+        );
+    }
+
+    // ----- RIR-index answer surface (r4a-2c) ---------------------------------
+    //
+    // Twin-parity for the three endpoint seam ops. Each test builds a real
+    // program's `Rir` through the production lex/parse/astgen path, binds its
+    // declarations through the epoch, and compares the pool-side `BodyRirIndex`
+    // answers against the epoch's `EpochFacts` over the SAME `Rir` — then the
+    // capstone assembles a complete `FunctionInfo` / `MethodInfo` from the index
+    // (2c) + a durable signature (2b, resolving types through 2a) and proves it
+    // equals production's populated info struct field-for-field.
+
+    use crate::sema::body_endpoint::{BodyEndpointProvider, endpoint_facts};
+    use crate::sema::{BodySema, BoundSema, Sema};
+
+    /// Lower one source file to `Rir` through the production frontend.
+    fn lower_rir(source: &str, file_id: FileId) -> (Rir, ThreadedRodeo) {
+        use rue_lexer::Lexer;
+        use rue_parser::Parser;
+        use rue_rir::AstGen;
+        let interner = ThreadedRodeo::default();
+        let lexer = Lexer::with_interner_and_file_id(source, interner, file_id);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        let parser = Parser::new(tokens, interner);
+        let (ast, interner) = parser.parse().unwrap();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
+        (rir, interner)
+    }
+
+    /// Bind declarations through the epoch so `functions`, `methods`,
+    /// `named_method_declarations`, and the `type_pool` are populated — the
+    /// state the `EpochFacts` twin reads.
+    fn bind<'a>(
+        rir: &'a Rir,
+        interner: &'a ThreadedRodeo,
+        module_path: &str,
+        file_id: FileId,
+    ) -> BoundSema<'a> {
+        use rue_error::PreviewFeatures;
+        let mut sema = Sema::new_synthetic(rir, interner, PreviewFeatures::new());
+        sema.set_symbol_paths(HashMap::from([(file_id, module_path.to_owned())]));
+        sema.bind_declarations_for_test().unwrap()
+    }
+
+    /// Fill a [`FunctionIdentityHandle`] from a free-function declaration the
+    /// RIR index located: exactly the request/RIR reads production performs
+    /// (`binding_manifest.rs`) — `body` and the `@allow` flags off the RIR, the
+    /// pre-resolution return symbol, the RIR-only `is_extern`/`is_c_export`.
+    fn fn_handle_from_rir(sema: &BodySema<'_>, declaration: InstRef) -> FunctionIdentityHandle {
+        let inst = sema.rir.get(declaration);
+        let InstData::FnDecl {
+            body,
+            return_type,
+            is_extern,
+            is_c_export,
+            directives,
+            ..
+        } = &inst.data
+        else {
+            panic!("free-function declaration must be a FnDecl");
+        };
+        let dirs = sema.rir.directives(directives);
+        FunctionIdentityHandle {
+            body: *body,
+            declaration,
+            span: inst.span,
+            return_type_sym: *return_type,
+            is_extern: *is_extern,
+            is_c_export: *is_c_export,
+            allow_unused_function: sema.has_allow_directive(dirs.iter(), "unused_function"),
+            allow_unused_variable: sema.has_allow_directive(dirs.iter(), "unused_variable"),
+            allow_unreachable_code: sema.has_allow_directive(dirs.iter(), "unreachable_code"),
+            file_id: inst.span.file_id,
+        }
+    }
+
+    /// Fill a [`MethodIdentityHandle`] from a method declaration the RIR index
+    /// located: `self_mode` / `self_is_mut` are RIR `FnDecl` facts, `body` and
+    /// `span` request-carried.
+    fn method_handle_from_rir(sema: &BodySema<'_>, declaration: InstRef) -> MethodIdentityHandle {
+        let inst = sema.rir.get(declaration);
+        let InstData::FnDecl {
+            body,
+            self_mode,
+            self_is_mut,
+            ..
+        } = &inst.data
+        else {
+            panic!("method declaration must be a FnDecl");
+        };
+        MethodIdentityHandle {
+            body: *body,
+            span: inst.span,
+            self_mode: *self_mode,
+            self_is_mut: *self_is_mut,
+        }
+    }
+
+    #[test]
+    fn body_rir_index_first_free_function_matches_epoch() {
+        let file = FileId::new(7);
+        let source = r#"
+            struct Named {
+                value: i32,
+                fn collide() -> i32 { 10 }
+            }
+            fn collide() -> i32 { 40 }
+            fn helper() -> i32 { 1 }
+            fn main() -> i32 { collide() }
+        "#;
+        let (rir, interner) = lower_rir(source, file);
+        let index = BodyRirIndex::new(&rir);
+        let bound = bind(&rir, &interner, "pkg/main.rue", file);
+        let facts = endpoint_facts(bound.body_sema());
+
+        for name in ["collide", "helper", "main", "nonexistent"] {
+            let sym = interner.get(name);
+            let pool_ans = sym.and_then(|s| index.first_free_function(s, file));
+            let epoch_ans = sym.and_then(|s| facts.first_free_function(s, file));
+            assert_eq!(pool_ans, epoch_ans, "first_free_function parity for {name}");
+        }
+
+        // The free `collide` resolves; the same-named associated function is not
+        // a free candidate (it is a named method).
+        let collide = interner.get("collide").unwrap();
+        assert!(index.first_free_function(collide, file).is_some());
+        // A wrong file fails closed on both sides.
+        assert_eq!(index.first_free_function(collide, FileId::new(99)), None);
+        assert_eq!(facts.first_free_function(collide, FileId::new(99)), None);
+    }
+
+    #[test]
+    fn body_rir_index_destructor_matches_epoch() {
+        let file = FileId::new(5);
+        let source = r#"
+            struct Foo { x: i32 }
+            drop fn Foo(self) {}
+            struct Bar { y: i32 }
+        "#;
+        let (rir, interner) = lower_rir(source, file);
+        let index = BodyRirIndex::new(&rir);
+        let bound = bind(&rir, &interner, "pkg/main.rue", file);
+        let facts = endpoint_facts(bound.body_sema());
+
+        let foo = interner.get("Foo").unwrap();
+        let pool_foo = index.destructor(file.index(), foo);
+        let epoch_foo = facts.destructor(file.index(), foo);
+        assert_eq!(pool_foo, epoch_foo, "destructor record parity for Foo");
+        assert!(pool_foo.is_some(), "Foo has a destructor");
+
+        // Bar has no destructor; both sides fail closed.
+        let bar = interner.get("Bar").unwrap();
+        assert_eq!(index.destructor(file.index(), bar), None);
+        assert_eq!(facts.destructor(file.index(), bar), None);
+    }
+
+    #[test]
+    fn body_rir_index_named_method_declaration_matches_epoch() {
+        let file = FileId::new(3);
+        let source = r#"
+            struct Widget {
+                id: u32,
+                fn bump(self, delta: i32) -> u32 { self.id }
+                fn reset() -> u32 { 0 }
+            }
+            struct Gadget {
+                n: i32,
+                fn bump(self) -> i32 { self.n }
+            }
+        "#;
+        let (rir, interner) = lower_rir(source, file);
+        let index = BodyRirIndex::new(&rir);
+        let bound = bind(&rir, &interner, "pkg/main.rue", file);
+        let facts = endpoint_facts(bound.body_sema());
+
+        for (type_name, method) in [
+            ("Widget", "bump"),
+            ("Widget", "reset"),
+            ("Gadget", "bump"),
+            ("Widget", "nonexistent"),
+        ] {
+            let owner = interner.get(type_name).unwrap();
+            let method_sym = interner.get(method);
+            // The epoch keys by the pool-minted StructId; the index keys by the
+            // durable-available (file, type_name) preimage of that StructId.
+            let struct_id = facts.struct_by_file_name(file, owner).unwrap();
+            let epoch_ans = method_sym.and_then(|m| facts.named_method_declaration(struct_id, m));
+            let pool_ans = method_sym.and_then(|m| index.named_method_declaration(file, owner, m));
+            assert_eq!(
+                pool_ans, epoch_ans,
+                "named_method parity for {type_name}.{method}"
+            );
+        }
+
+        // Widget.bump and Gadget.bump share a method name but are distinct
+        // declarations — the owner file+name disambiguates without a StructId.
+        let widget = interner.get("Widget").unwrap();
+        let gadget = interner.get("Gadget").unwrap();
+        let bump = interner.get("bump").unwrap();
+        let widget_bump = index.named_method_declaration(file, widget, bump);
+        let gadget_bump = index.named_method_declaration(file, gadget, bump);
+        assert!(widget_bump.is_some() && gadget_bump.is_some());
+        assert_ne!(widget_bump, gadget_bump, "same-named methods stay distinct");
+    }
+
+    #[test]
+    fn provider_assembles_function_info_composing_2a_2b_2c() {
+        // The pool-arc capstone: a provider assembles a complete `FunctionInfo`
+        // from the RIR index (2c handle) + the durable signature (2b, whose
+        // `Point` parameter resolves through 2a), byte-equal to production.
+        let file = FileId::new(7);
+        let source = r#"
+            pub struct Point { x: i64, y: i64 }
+            @allow(unused_function)
+            pub fn make(p: Point, n: i32) -> i64 { 0 }
+            fn main() -> i32 { 0 }
+        "#;
+        let (rir, interner) = lower_rir(source, file);
+        let index = BodyRirIndex::new(&rir);
+        let bound = bind(&rir, &interner, "pkg/main.rue", file);
+        let bs = bound.body_sema();
+        let facts = endpoint_facts(bs);
+
+        // Production's populated FunctionInfo for `make`.
+        let make_src = interner.get("make").unwrap();
+        let internal = facts.function_by_file_name(file, make_src).unwrap();
+        let prod = facts.function_info(internal).unwrap();
+
+        // 2c: the RIR index locates the declaration; fill the request/RIR handle.
+        let declaration = index.first_free_function(make_src, file).unwrap();
+        assert_eq!(
+            declaration, prod.declaration,
+            "index locates the epoch's declaration"
+        );
+        let handle = fn_handle_from_rir(bs, declaration);
+
+        // 2b + 2a: mint the durable-signature subset from a durable source.
+        let mut pool = callable_pool(
+            [(
+                1,
+                named(
+                    "Point",
+                    "pkg/main.rue",
+                    true,
+                    struct_body(vec![("x", DType::I64), ("y", DType::I64)], false, false),
+                ),
+            )],
+            [(
+                0,
+                durable_function(
+                    vec![
+                        param("p", DType::Nominal(1), SemanticParameterMode::Value, false),
+                        param("n", DType::I32, SemanticParameterMode::Value, false),
+                    ],
+                    DType::I64,
+                    true,
+                    false,
+                ),
+            )],
+            [],
+        );
+        let info = pool.resolve_function(&0, handle).unwrap();
+
+        // 2c fields: verbatim RIR passthrough == production, field-for-field.
+        assert_eq!(info.body, prod.body);
+        assert_eq!(info.declaration, prod.declaration);
+        assert_eq!(info.span, prod.span);
+        assert_eq!(info.return_type_sym, prod.return_type_sym);
+        assert_eq!(info.is_extern, prod.is_extern);
+        assert_eq!(info.is_c_export, prod.is_c_export);
+        assert_eq!(info.allow_unused_function, prod.allow_unused_function);
+        assert!(
+            info.allow_unused_function,
+            "the @allow(unused_function) flag flowed through the handle"
+        );
+        assert_eq!(info.allow_unused_variable, prod.allow_unused_variable);
+        assert_eq!(info.allow_unreachable_code, prod.allow_unreachable_code);
+        assert_eq!(info.file_id, prod.file_id);
+
+        // 2b / 2a fields: durable-derived, compared index-independently.
+        assert_eq!(info.is_generic, prod.is_generic);
+        assert_eq!(info.is_pub, prod.is_pub);
+        assert_eq!(info.is_unchecked, prod.is_unchecked);
+        assert_eq!(
+            render(pool.type_pool(), info.return_type),
+            render(&bs.type_pool, prod.return_type),
+            "return type display parity"
+        );
+        assert_param_range_equal(
+            &pool,
+            info.params,
+            &bs.param_arena,
+            bs.interner,
+            prod.params,
+            &bs.type_pool,
+        );
+        // The `Point` parameter resolved through 2a to a nominal.
+        assert_eq!(
+            render(pool.type_pool(), pool.param_arena().types(info.params)[0]),
+            "Point"
+        );
+    }
+
+    #[test]
+    fn provider_assembles_method_info_composing_2a_2b_2c() {
+        // The method twin of the capstone: assemble a complete `MethodInfo` from
+        // the RIR index (2c) + durable method signature (2b, receiver `Widget`
+        // through 2a) and prove it equals production's method info.
+        let file = FileId::new(3);
+        let source = r#"
+            pub struct Widget {
+                id: u32,
+                fn bump(self, delta: i32) -> u32 { self.id }
+            }
+        "#;
+        let (rir, interner) = lower_rir(source, file);
+        let index = BodyRirIndex::new(&rir);
+        let bound = bind(&rir, &interner, "pkg/main.rue", file);
+        let bs = bound.body_sema();
+        let facts = endpoint_facts(bs);
+
+        let widget = interner.get("Widget").unwrap();
+        let bump = interner.get("bump").unwrap();
+        let struct_id = facts.struct_by_file_name(file, widget).unwrap();
+        let prod = facts.method_info(struct_id, bump).unwrap();
+
+        // 2c: the RIR index locates the method declaration; fill the handle.
+        let declaration = index.named_method_declaration(file, widget, bump).unwrap();
+        assert_eq!(
+            Some(declaration),
+            facts.named_method_declaration(struct_id, bump),
+            "index locates the epoch's method declaration"
+        );
+        let handle = method_handle_from_rir(bs, declaration);
+
+        // 2b + 2a: mint the durable method subset (receiver resolves through 2a).
+        let mut pool = callable_pool(
+            [(
+                1,
+                named(
+                    "Widget",
+                    "pkg/main.rue",
+                    true,
+                    struct_body(vec![("id", DType::U32)], false, false),
+                ),
+            )],
+            [],
+            [(
+                0,
+                durable_method(
+                    DType::Nominal(1),
+                    vec![param(
+                        "delta",
+                        DType::I32,
+                        SemanticParameterMode::Value,
+                        false,
+                    )],
+                    DType::U32,
+                    true,
+                ),
+            )],
+        );
+        let info = pool.resolve_method(&0, handle).unwrap();
+
+        // 2c passthrough.
+        assert_eq!(info.body, prod.body);
+        assert_eq!(info.span, prod.span);
+        assert_eq!(info.self_mode, prod.self_mode);
+        assert_eq!(info.self_is_mut, prod.self_is_mut);
+
+        // 2b / 2a durable-derived: receiver, has_self, return type, params.
+        assert_eq!(info.has_self, prod.has_self);
+        assert!(info.has_self);
+        assert_eq!(
+            render(pool.type_pool(), info.struct_type),
+            render(&bs.type_pool, prod.struct_type),
+            "receiver display parity"
+        );
+        assert_eq!(
+            pool.type_pool()
+                .struct_symbol_name(info.struct_type.as_struct().unwrap()),
+            bs.type_pool
+                .struct_symbol_name(prod.struct_type.as_struct().unwrap()),
+            "receiver symbol name parity"
+        );
+        assert_eq!(
+            render(pool.type_pool(), info.return_type),
+            render(&bs.type_pool, prod.return_type),
+            "return type display parity"
+        );
+        assert_param_range_equal(
+            &pool,
+            info.params,
+            &bs.param_arena,
+            bs.interner,
+            prod.params,
+            &bs.type_pool,
         );
     }
 }

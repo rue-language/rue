@@ -424,6 +424,18 @@ from the symbol → confirm the nominal and member via the existing `lookup_unqu
 index; that is the boundary-honest form of "a reverse index built from the durable declaration set,"
 and it fails closed on absent, ambiguous-receiver, wrong-`self`-form, and non-matching-render inputs.
 
+**r4a-2c review carry-forwards (r4b obligations, not defects).**
+- **Span-source equivalence is a contract, not a coincidence.** The capstone handle fills
+  `span`/`file_id` from the declaration's `inst.span`; production's FunctionInfo sources them from
+  `shell.declaration_span`. They coincide for inline declarations, and r4b's real handle-fill must
+  preserve `inst.span == shell.declaration_span` (or source from the shell) — assert it, don't
+  assume it.
+- **The endpoint trait's `named_method_declaration(StructId, name)` signature needs a seam
+  translation in r4b.** The pool answers by the durable preimage `(owner_file, owner_type_name,
+  method_name)` and mints its own StructIds, so the pool-backed impl must either rethread the seam
+  to pass the preimage (the one_body.rs consumer already computes it at the call site) or keep a
+  `StructId → (file, name)` reverse map. Prefer rethreading.
+
 **r4a-1 review carry-forwards (recorded obligations, not defects).**
 - **Bare-owner reversal divergence → r4b differential xfail.** The epoch's callable index contains
   BARE symbols for builtin / lang-item / anonymous owners (`struct_symbol_name` exempts them from
