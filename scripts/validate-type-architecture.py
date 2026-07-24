@@ -92,6 +92,7 @@ PUBLIC_TYPE_DECLARATION_ALLOWLIST = {
     ("rue-air", "semantic_type_resolution.rs", "SemanticTypeConstructorHead"): "value-only constructor selection metadata",
     ("rue-air", "semantic_type_resolution.rs", "SemanticTypeSyntaxFailure"): "semantic resolution policy failure schema",
     ("rue-air", "semantic_identity.rs", "TypeInstanceKey"): "canonical cross-boundary type identity",
+    ("rue-air", "sema/aggregate_resolution.rs", "ProviderQualifiedType"): "provider-side qualified-type selection result (RUE-1091 flip-era surface, inert pre-flip)",
     ("rue-air", "sema/binding_manifest.rs", "SemanticExportType"): "stable semantic export schema",
     ("rue-air", "sema/binding_manifest.rs", "SemanticAnonymousMethodType"): "source semantic export method-type schema",
     ("rue-air", "sema/one_body.rs", "SemanticProducedAnonymousMethodType"): "body-produced semantic method-type schema",

@@ -254,17 +254,31 @@ pub(in crate::sema) fn resolve_static_call_reference<P: CallResolutionFacts>(
 //   - named_method_declaration                                        → P (BodyRirIndex)
 //   - named_method_by_callable_symbol                                 → B (callable_symbol_method)
 //   - function_contains / resolve_function_name_local                 → C (lookup)
-// Deferred here, each with its unblocking slice named (reported, never silently
-// answered wrong):
-//   - method_info / named_method_info → r4b-3 (the endpoint seam that owns
-//     receiver→pool identity; the durable method key's receiver preimage is the
-//     owner nominal, threaded there).
-//   - value_const / module_binding / resolve_const_info_in_file → r4b-3: a
-//     `ConstInfo` carries a declaration `span` the position-free provider
-//     boundary omits, needing a const-declaration RIR handle (the const twin of
-//     the function/method handles).
-//   - module_def → r4b-3 / the flip: it answers a rue-air-internal `ModuleId`
-//     registry index the provider has no durable preimage for.
+// Disposition (updated by slice r4b-3, which owned this backlog):
+//   - method_info / named_method_info → LANDED (r4b-3). The receiver preimage
+//     `(owner_file, owner_type_name)` threads through the durable method key: the
+//     inherent `method_info` composes the pool's durable method subset (receiver
+//     through 2a) with the RIR handle the RIR index locates for the preimage. The
+//     rue-compiler differential recovers the receiver by joining the method key's
+//     `owner()` back to the owner nominal's durable key.
+//   - value_const / module_binding / resolve_const_info_in_file → RE-DEFERRED to
+//     the flip. Sharpened reason: a `ConstInfo` carries both a declaration `span`
+//     the position-free provider boundary omits (needs a const-declaration RIR
+//     handle — the const twin of the function/method handles) AND a
+//     comptime-evaluated `value` the durable const payload carries but the body
+//     identity pool has no const-minting arm for yet. Both are flip-slice work.
+//   - module_def → RE-DEFERRED to the flip. Sharpened reason: it answers a
+//     rue-air-internal `ModuleId` registry index the provider has no durable
+//     preimage for; the module-facts + logical-path composition an equivalent
+//     could be built from belongs with the flip's module registry.
+//   - named_method_declaration (the `StructId`-keyed CallResolutionFacts /
+//     BodyEndpointProvider trait op) → RE-DEFERRED to the side-B fill / flip. The
+//     pool mints its own `StructId`s and exposes no `StructId → (owner_file,
+//     owner_type_name)` reverse surface, so a clean StructId-keyed trait
+//     translation is not available now; this driver answers the op by its
+//     provider-natural preimage (the inherent `named_method_declaration`), the
+//     r4a-2c "prefer rethreading" resolution — the analyzer computes the preimage
+//     at the call site, so the trait rethreading is a flip concern.
 //   - source_function_name under specialization → r5 (the specialization name
 //     map); identity otherwise.
 // ---------------------------------------------------------------------------

@@ -387,13 +387,17 @@ pub(in crate::sema) fn resolve_instance_type<P: BodyEndpointProvider>(
 // Deferred here, each with its unblocking slice named (reported, never silently
 // answered wrong):
 //   - the `(StructId, name)`-keyed `BodyEndpointProvider::named_method_
-//     declaration` trait op → r4b-3 (the endpoint seam owns receiver→pool
-//     identity). This driver answers the op by its provider-natural preimage
-//     `(owner_file, owner_type_name, method)` on an inherent method, exactly as
-//     `ProviderCallFacts` does; the `StructId`-keyed trait signature stays a
-//     r4b-3 seam translation and returns `None` here.
+//     declaration` trait op → RE-DEFERRED by r4b-3 to the side-B fill / flip. The
+//     pool mints its own `StructId`s and exposes no `StructId → (owner_file,
+//     owner_type_name)` reverse surface, so a clean trait translation is not
+//     available now; this driver answers the op by its provider-natural preimage
+//     `(owner_file, owner_type_name, method)` on an inherent method (the r4a-2c
+//     "prefer rethreading" resolution), and the `StructId`-keyed trait signature
+//     returns `None` here.
 //   - `function_info` / `function_by_file_name` → r4b-1's `ProviderCallFacts`
-//     (the call family); `method_info` → r4b-3 (receiver→pool identity).
+//     (the call family); `method_info` → r4b-3's `ProviderCallFacts::method_info`
+//     (receiver→pool identity now threaded through the durable method key). Both
+//     stay `None` on THIS endpoint driver — they belong to the call family.
 //   - `module_endpoint` / `module_id_for_file` (the `Module` arm) → module
 //     identity is a pool-refused arm; the endpoint-seam module registry is
 //     r4b-3 / the flip.
