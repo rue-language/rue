@@ -13,13 +13,14 @@ use crate::intern_pool::TypeInternPool;
 use crate::scope::ScopedContext;
 use crate::sema::ConstValue;
 use crate::types::{
-    ArrayLen, PtrMutability, StructId, TypeKind, parse_array_type_syntax,
+    ArrayLen, ModuleId, PtrMutability, StructId, TypeKind, parse_array_type_syntax,
     parse_pointer_type_syntax, parse_type_call_syntax,
 };
 use lasso::{Spur, ThreadedRodeo};
 use rue_rir::{InstData, InstRef, RepeatCount, Rir};
 use rue_span::{FileId, Span};
 use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Exact callable selections made while the test-only one-body transaction is
 /// generating constraints.  These observations are consumed only when HM
@@ -226,6 +227,37 @@ pub struct MethodSig {
     pub return_type: InferType,
 }
 
+/// Demand-population seam for the inference context (RUE-1091 slice r5b).
+///
+/// Constraint generation consults the thirteen declaration-universe families
+/// purely by key. Rather than eagerly project the whole universe into owned
+/// `HashMap`s before any body is analyzed (the O(universe)-per-body term
+/// RUE-1083 removes), the production path implements this trait over the frozen
+/// declaration state and materializes each consulted signature/type on first
+/// lookup. Every method answers exactly the same value the eager projection
+/// would have held for that key; the non-`Copy` signature families return owned
+/// `Rc` handles because a demand cache cannot lend a `'a` borrow across the
+/// generator's `&mut self` recursion.
+///
+/// Unit tests keep constructing the generator from literal maps (the eager
+/// path, `lazy == None`); only the production body pipeline installs a lazy
+/// provider.
+pub(crate) trait LazyInferenceFacts {
+    fn func_sig(&self, name: Spur) -> Option<Rc<FunctionSig>>;
+    fn method_sig(&self, key: (StructId, Spur)) -> Option<Rc<MethodSig>>;
+    fn builtin_struct_type(&self, name: Spur) -> Option<Type>;
+    fn struct_type_by_file(&self, key: (FileId, Spur)) -> Option<Type>;
+    fn builtin_enum_type(&self, name: Spur) -> Option<Type>;
+    fn enum_type_by_file(&self, key: (FileId, Spur)) -> Option<Type>;
+    fn const_type(&self, key: (FileId, Spur)) -> Option<Type>;
+    fn const_type_alias(&self, key: (FileId, Spur)) -> Option<Type>;
+    fn const_value(&self, key: (FileId, Spur)) -> Option<i128>;
+    fn const_function_alias(&self, key: (FileId, Spur)) -> Option<Spur>;
+    fn module_binding_type(&self, key: (FileId, Spur)) -> Option<Type>;
+    fn module_file_id(&self, module: ModuleId) -> Option<FileId>;
+    fn function_by_file(&self, key: (FileId, Spur)) -> Option<Spur>;
+}
+
 /// Context for constraint generation within a single function.
 pub struct ConstraintContext<'a> {
     /// Local variables in scope.
@@ -303,18 +335,28 @@ pub struct ConstraintGenerator<'a> {
     constraints: Vec<Constraint>,
     /// Mapping from RIR instruction to its inferred type.
     expr_types: HashMap<InstRef, InferType>,
-    /// Function signatures (for call type checking).
-    functions: &'a HashMap<Spur, FunctionSig>,
-    /// Built-in struct types, which have no defining source file.
-    builtin_structs: &'a HashMap<Spur, Type>,
+    /// Function signatures (for call type checking). `None` when the generator
+    /// is driven by a lazy provider (`lazy`), which materializes signatures on
+    /// demand; unit tests still supply an eager map.
+    functions: Option<&'a HashMap<Spur, FunctionSig>>,
+    /// Built-in struct types, which have no defining source file. `None` under
+    /// a lazy provider (see `functions`).
+    builtin_structs: Option<&'a HashMap<Spur, Type>>,
     /// Module-local struct types ((defining file, source name) -> Type::new_struct(id)).
     structs_by_file_name: Option<&'a HashMap<(FileId, Spur), Type>>,
-    /// Built-in enum types, which have no defining source file.
-    builtin_enums: &'a HashMap<Spur, Type>,
+    /// Built-in enum types, which have no defining source file. `None` under a
+    /// lazy provider (see `functions`).
+    builtin_enums: Option<&'a HashMap<Spur, Type>>,
     /// Module-local enum types ((defining file, source name) -> Type::new_enum(id)).
     enums_by_file_name: Option<&'a HashMap<(FileId, Spur), Type>>,
-    /// Method signatures: (struct_id, method_name) -> MethodSig
-    methods: &'a HashMap<(StructId, Spur), MethodSig>,
+    /// Method signatures: (struct_id, method_name) -> MethodSig. `None` under a
+    /// lazy provider (see `functions`).
+    methods: Option<&'a HashMap<(StructId, Spur), MethodSig>>,
+    /// Demand-population provider (RUE-1091 slice r5b). When present, the
+    /// thirteen declaration-universe families are materialized on first consult
+    /// through this seam instead of read from eager maps. `None` in unit tests,
+    /// which construct the generator from literal maps.
+    lazy: Option<&'a dyn LazyInferenceFacts>,
     /// Type variables allocated for integer literals.
     /// These start as unbound and need to be defaulted to i32 if unconstrained.
     int_literal_vars: Vec<TypeVarId>,
@@ -468,12 +510,66 @@ impl<'a> ConstraintGenerator<'a> {
             type_vars: TypeVarAllocator::new(),
             constraints: Vec::new(),
             expr_types: HashMap::new(),
-            functions,
-            builtin_structs,
+            functions: Some(functions),
+            builtin_structs: Some(builtin_structs),
             structs_by_file_name: None,
-            builtin_enums,
+            builtin_enums: Some(builtin_enums),
             enums_by_file_name: None,
-            methods,
+            methods: Some(methods),
+            lazy: None,
+            int_literal_vars: Vec::new(),
+            string_literal_vars: Vec::new(),
+            string_literal_default,
+            strbuf_type,
+            type_subst,
+            const_types: None,
+            const_type_aliases: None,
+            module_binding_types: None,
+            functions_by_file_name: None,
+            module_file_ids: None,
+            comptime_local_bindings: None,
+            comptime_alias_types: HashMap::new(),
+            alias_scope_stack: Vec::new(),
+            inline_ctor_head_types: None,
+            extra_method_sigs: None,
+            const_values: None,
+            const_function_aliases: None,
+            comptime_values: None,
+            type_pool,
+            body_dependencies: Vec::new(),
+        }
+    }
+
+    /// Create a generator driven by a demand-population provider (RUE-1091
+    /// slice r5b).
+    ///
+    /// The eager family maps stay `None`; every keyed consult of the thirteen
+    /// declaration-universe families routes through `lazy`, which materializes
+    /// only the signatures and types the body actually names. This is the
+    /// production body-analysis path — the eager `new`/`with_type_subst`
+    /// constructors remain for unit tests that build literal maps.
+    pub(crate) fn with_lazy_facts(
+        rir: &'a Rir,
+        interner: &'a ThreadedRodeo,
+        type_pool: &'a TypeInternPool,
+        type_subst: Option<&'a HashMap<Spur, Type>>,
+        lazy: &'a dyn LazyInferenceFacts,
+    ) -> Self {
+        let strbuf_type = type_pool.lang_item_type(crate::LangItem::StrBuf);
+        let string_literal_default = Type::ERROR;
+        Self {
+            rir,
+            interner,
+            type_vars: TypeVarAllocator::new(),
+            constraints: Vec::new(),
+            expr_types: HashMap::new(),
+            functions: None,
+            builtin_structs: None,
+            structs_by_file_name: None,
+            builtin_enums: None,
+            enums_by_file_name: None,
+            methods: None,
+            lazy: Some(lazy),
             int_literal_vars: Vec::new(),
             string_literal_vars: Vec::new(),
             string_literal_default,
@@ -716,6 +812,9 @@ impl<'a> ConstraintGenerator<'a> {
     /// (`resolve_const_info_in_file`) so inference and checking agree, and a
     /// same-named constant in an unrelated module cannot perturb a local length.
     fn scoped_const_value(&self, sym: Spur, file_id: FileId) -> Option<i128> {
+        if let Some(lazy) = self.lazy {
+            return lazy.const_value((file_id, sym));
+        }
         self.const_values
             .and_then(|values| values.get(&(file_id, sym)).copied())
     }
@@ -725,6 +824,9 @@ impl<'a> ConstraintGenerator<'a> {
     /// [`Self::scoped_const_value`]: a `const T = SomeType(...)` in the current
     /// module resolves; a same-named alias elsewhere is qualified, not bare.
     fn scoped_const_type_alias(&self, sym: Spur, file_id: FileId) -> Option<Type> {
+        if let Some(lazy) = self.lazy {
+            return lazy.const_type_alias((file_id, sym));
+        }
         self.const_type_aliases
             .and_then(|aliases| aliases.get(&(file_id, sym)).copied())
     }
@@ -761,12 +863,129 @@ impl<'a> ConstraintGenerator<'a> {
         }
     }
 
-    /// Look up a method signature, falling back to the late-registered
-    /// (anonymous-struct) signatures when the shared map misses (RUE-164).
-    fn method_sig(&self, key: &(StructId, Spur)) -> Option<&'a MethodSig> {
+    /// Look up a method signature.
+    ///
+    /// Under the lazy provider (production) this materializes the method
+    /// signature on demand — including late-registered anonymous-struct methods,
+    /// which the provider reads from the live method tables, subsuming the eager
+    /// `extra_method_sigs` reconciliation (RUE-164). The eager (unit-test) path
+    /// still consults the literal map plus `extra_method_sigs`.
+    fn method_sig(&self, key: &(StructId, Spur)) -> Option<Rc<MethodSig>> {
+        if let Some(lazy) = self.lazy {
+            return lazy.method_sig(*key);
+        }
         self.methods
-            .get(key)
+            .and_then(|methods| methods.get(key))
             .or_else(|| self.extra_method_sigs.and_then(|sigs| sigs.get(key)))
+            .map(|sig| Rc::new(sig.clone()))
+    }
+
+    /// Look up a function signature by internal key. Materialized on demand
+    /// under the lazy provider; the eager path clones from the literal map.
+    fn func_sig(&self, name: Spur) -> Option<Rc<FunctionSig>> {
+        if let Some(lazy) = self.lazy {
+            return lazy.func_sig(name);
+        }
+        self.functions
+            .and_then(|functions| functions.get(&name))
+            .map(|sig| Rc::new(sig.clone()))
+    }
+
+    /// Look up a built-in struct type by source name.
+    fn builtin_struct_type(&self, name: Spur) -> Option<Type> {
+        if let Some(lazy) = self.lazy {
+            return lazy.builtin_struct_type(name);
+        }
+        self.builtin_structs
+            .and_then(|builtins| builtins.get(&name).copied())
+    }
+
+    /// Look up a module-local struct type by (defining file, source name).
+    fn struct_type_by_file(&self, key: (FileId, Spur)) -> Option<Type> {
+        if let Some(lazy) = self.lazy {
+            return lazy.struct_type_by_file(key);
+        }
+        self.structs_by_file_name
+            .and_then(|map| map.get(&key).copied())
+    }
+
+    /// Look up a built-in enum type by source name.
+    fn builtin_enum_type(&self, name: Spur) -> Option<Type> {
+        if let Some(lazy) = self.lazy {
+            return lazy.builtin_enum_type(name);
+        }
+        self.builtin_enums
+            .and_then(|builtins| builtins.get(&name).copied())
+    }
+
+    /// Look up a module-local enum type by (defining file, source name).
+    fn enum_type_by_file(&self, key: (FileId, Spur)) -> Option<Type> {
+        if let Some(lazy) = self.lazy {
+            return lazy.enum_type_by_file(key);
+        }
+        self.enums_by_file_name
+            .and_then(|map| map.get(&key).copied())
+    }
+
+    /// Look up a file-level constant's declared type by (declaring file, name).
+    fn const_type(&self, key: (FileId, Spur)) -> Option<Type> {
+        if let Some(lazy) = self.lazy {
+            return lazy.const_type(key);
+        }
+        self.const_types.and_then(|map| map.get(&key).copied())
+    }
+
+    /// Look up a file-level type alias by (declaring file, name).
+    fn const_type_alias(&self, key: (FileId, Spur)) -> Option<Type> {
+        if let Some(lazy) = self.lazy {
+            return lazy.const_type_alias(key);
+        }
+        self.const_type_aliases
+            .and_then(|map| map.get(&key).copied())
+    }
+
+    /// Look up a file-level integer constant value by (declaring file, name).
+    fn const_value(&self, key: (FileId, Spur)) -> Option<i128> {
+        if let Some(lazy) = self.lazy {
+            return lazy.const_value(key);
+        }
+        self.const_values.and_then(|map| map.get(&key).copied())
+    }
+
+    /// Look up a module-binding type by (declaring file, name).
+    fn module_binding_type(&self, key: (FileId, Spur)) -> Option<Type> {
+        if let Some(lazy) = self.lazy {
+            return lazy.module_binding_type(key);
+        }
+        self.module_binding_types
+            .and_then(|map| map.get(&key).copied())
+    }
+
+    /// Look up a function-valued-constant callee alias by (declaring file, name).
+    fn const_function_alias(&self, key: (FileId, Spur)) -> Option<Spur> {
+        if let Some(lazy) = self.lazy {
+            return lazy.const_function_alias(key);
+        }
+        self.const_function_aliases
+            .and_then(|map| map.get(&key).copied())
+    }
+
+    /// Resolve a module registry file identity.
+    fn module_file_id(&self, module: ModuleId) -> Option<FileId> {
+        if let Some(lazy) = self.lazy {
+            return lazy.module_file_id(module);
+        }
+        self.module_file_ids
+            .and_then(|map| map.get(&module).copied())
+    }
+
+    /// Look up a source-level function key by (defining file, source name).
+    fn function_by_file(&self, key: (FileId, Spur)) -> Option<Spur> {
+        if let Some(lazy) = self.lazy {
+            return lazy.function_by_file(key);
+        }
+        self.functions_by_file_name
+            .and_then(|map| map.get(&key).copied())
     }
 
     /// Resolve a field's declared type on a concrete struct type.
@@ -1056,20 +1275,14 @@ impl<'a> ConstraintGenerator<'a> {
                     local.ty.clone()
                 } else if let Some(param) = ctx.params.get(name) {
                     param.ty.clone()
-                } else if let Some(binding_ty) = self
-                    .module_binding_types
-                    .and_then(|bindings| bindings.get(&(span.file_id, *name)))
-                {
+                } else if let Some(binding_ty) = self.module_binding_type((span.file_id, *name)) {
                     self.body_dependencies
                         .push(InferenceBodyDependency::ModuleBinding(span.file_id, *name));
                     // Module binding declared in this file (`const m =
                     // @import(...)`): per-file scoped and distinct from the
                     // file's value-constant namespace (RUE-113).
-                    self.type_to_infer(*binding_ty)
-                } else if let Some(const_ty) = self
-                    .const_types
-                    .and_then(|consts| consts.get(&(span.file_id, *name)))
-                {
+                    self.type_to_infer(binding_ty)
+                } else if let Some(const_ty) = self.const_type((span.file_id, *name)) {
                     self.body_dependencies
                         .push(InferenceBodyDependency::ValueConst {
                             file: span.file_id,
@@ -1082,7 +1295,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // types for `const m = @import(...)`). Yielding it here
                     // anchors expressions like `N + 1` and `m.go() + 1` to the
                     // declaration's concrete type (RUE-142).
-                    self.type_to_infer(*const_ty)
+                    self.type_to_infer(const_ty)
                 } else {
                     // Unknown variable - will be caught during semantic analysis
                     InferType::Concrete(Type::ERROR)
@@ -1111,10 +1324,7 @@ impl<'a> ConstraintGenerator<'a> {
                         .comptime_alias_types
                         .get(ty_sym)
                         .copied()
-                        .or_else(|| {
-                            self.const_type_aliases
-                                .and_then(|aliases| aliases.get(&(span.file_id, *ty_sym)).copied())
-                        })
+                        .or_else(|| self.const_type_alias((span.file_id, *ty_sym)))
                         .map(|ty| self.type_to_infer(ty))
                         .or_else(|| {
                             self.resolve_type_name(self.interner.resolve(ty_sym), span.file_id)
@@ -1246,15 +1456,9 @@ impl<'a> ConstraintGenerator<'a> {
 
             // Function call
             InstData::Call { name, args } => {
-                let alias_target = self
-                    .const_function_aliases
-                    .and_then(|aliases| aliases.get(&(span.file_id, *name)))
-                    .copied();
-                let function_key = alias_target.or_else(|| {
-                    self.functions_by_file_name
-                        .and_then(|functions| functions.get(&(span.file_id, *name)))
-                        .copied()
-                });
+                let alias_target = self.const_function_alias((span.file_id, *name));
+                let function_key =
+                    alias_target.or_else(|| self.function_by_file((span.file_id, *name)));
                 let args = self.rir.call_args(args);
                 if alias_target.is_some() {
                     self.body_dependencies
@@ -1279,7 +1483,7 @@ impl<'a> ConstraintGenerator<'a> {
                         self.generate(arg.value, ctx);
                     }
                     InferType::Concrete(Type::UNIT)
-                } else if let Some(func) = function_key.and_then(|key| self.functions.get(&key)) {
+                } else if let Some(func) = function_key.and_then(|key| self.func_sig(key)) {
                     if !func.is_generic && call_contract_matches(&args, &func.param_modes) {
                         self.body_dependencies
                             .push(InferenceBodyDependency::Function {
@@ -1335,7 +1539,7 @@ impl<'a> ConstraintGenerator<'a> {
                         if call_contract_matches(&args, &func.param_modes) {
                             self.body_dependencies.extend(generic_body_dependency(
                                 function_key.expect("resolved signature has a function key"),
-                                func,
+                                &func,
                                 &type_subst,
                                 &value_subst,
                                 &arg_infos,
@@ -1849,7 +2053,7 @@ impl<'a> ConstraintGenerator<'a> {
                 } else if intrinsic_name == "target_arch" {
                     // @target_arch: returns Arch enum
                     if let Some(arch_spur) = self.interner.get("Arch") {
-                        if let Some(&arch_ty) = self.builtin_enums.get(&arch_spur) {
+                        if let Some(arch_ty) = self.builtin_enum_type(arch_spur) {
                             InferType::Concrete(arch_ty)
                         } else {
                             InferType::Concrete(Type::ERROR)
@@ -1860,7 +2064,7 @@ impl<'a> ConstraintGenerator<'a> {
                 } else if intrinsic_name == "target_os" {
                     // @target_os: returns Os enum
                     if let Some(os_spur) = self.interner.get("Os") {
-                        if let Some(&os_ty) = self.builtin_enums.get(&os_spur) {
+                        if let Some(os_ty) = self.builtin_enum_type(os_spur) {
                             InferType::Concrete(os_ty)
                         } else {
                             InferType::Concrete(Type::ERROR)
@@ -1871,7 +2075,7 @@ impl<'a> ConstraintGenerator<'a> {
                 } else if intrinsic_name == "target_data_model" {
                     // @target_data_model: returns DataModel enum
                     if let Some(dm_spur) = self.interner.get("DataModel") {
-                        if let Some(&dm_ty) = self.builtin_enums.get(&dm_spur) {
+                        if let Some(dm_ty) = self.builtin_enum_type(dm_spur) {
                             InferType::Concrete(dm_ty)
                         } else {
                             InferType::Concrete(Type::ERROR)
@@ -2254,25 +2458,15 @@ impl<'a> ConstraintGenerator<'a> {
                         _ => None,
                     };
                     module_id
-                        .and_then(|module_id| {
-                            self.module_file_ids
-                                .and_then(|module_file_ids| module_file_ids.get(&module_id))
-                                .copied()
-                        })
-                        .and_then(|file_id| {
-                            self.structs_by_file_name
-                                .and_then(|structs| structs.get(&(file_id, *type_name)))
-                                .copied()
-                        })
+                        .and_then(|module_id| self.module_file_id(module_id))
+                        .and_then(|file_id| self.struct_type_by_file((file_id, *type_name)))
                 } else {
                     self.type_subst
                         .and_then(|subst| subst.get(type_name).copied())
                         .or_else(|| self.comptime_alias_types.get(type_name).copied())
                         .or_else(|| {
-                            self.structs_by_file_name
-                                .and_then(|structs| structs.get(&(span.file_id, *type_name)))
-                                .copied()
-                                .or_else(|| self.builtin_structs.get(type_name).copied())
+                            self.struct_type_by_file((span.file_id, *type_name))
+                                .or_else(|| self.builtin_struct_type(*type_name))
                         })
                 };
 
@@ -2386,16 +2580,9 @@ impl<'a> ConstraintGenerator<'a> {
                         let member_const = match &base_info.ty {
                             InferType::Concrete(ty) if ty.is_module() => ty
                                 .as_module()
-                                .and_then(|module_id| {
-                                    self.module_file_ids
-                                        .and_then(|ids| ids.get(&module_id))
-                                        .copied()
-                                })
+                                .and_then(|module_id| self.module_file_id(module_id))
                                 .and_then(|file_id| {
-                                    self.const_types
-                                        .and_then(|consts| consts.get(&(file_id, *field)))
-                                        .copied()
-                                        .map(|ty| (file_id, ty))
+                                    self.const_type((file_id, *field)).map(|ty| (file_id, ty))
                                 }),
                             _ => None,
                         };
@@ -2421,16 +2608,8 @@ impl<'a> ConstraintGenerator<'a> {
                         let member_module_ty = match &base_info.ty {
                             InferType::Concrete(ty) if ty.is_module() => ty
                                 .as_module()
-                                .and_then(|module_id| {
-                                    self.module_file_ids
-                                        .and_then(|ids| ids.get(&module_id))
-                                        .copied()
-                                })
-                                .and_then(|file_id| {
-                                    self.module_binding_types
-                                        .and_then(|m| m.get(&(file_id, *field)))
-                                        .copied()
-                                }),
+                                .and_then(|module_id| self.module_file_id(module_id))
+                                .and_then(|file_id| self.module_binding_type((file_id, *field))),
                             _ => None,
                         };
                         match member_const_ty.or(member_module_ty) {
@@ -2511,9 +2690,8 @@ impl<'a> ConstraintGenerator<'a> {
                 let resolved = match count {
                     RepeatCount::Literal(n) => Some(*n),
                     RepeatCount::Named(sym) => self
-                        .const_values
-                        .and_then(|cv| cv.get(&(span.file_id, *sym)))
-                        .and_then(|v| u64::try_from(*v).ok()),
+                        .const_value((span.file_id, *sym))
+                        .and_then(|v| u64::try_from(v).ok()),
                 };
                 match resolved {
                     Some(length) => InferType::Array {
@@ -2706,21 +2884,12 @@ impl<'a> ConstraintGenerator<'a> {
                     // `m.go() + 1` to the member declaration (RUE-142).
                     InferType::Concrete(ty) if ty.is_module() => {
                         let module_id = ty.as_module().expect("module type has a module id");
-                        let module_file = self
-                            .module_file_ids
-                            .and_then(|ids| ids.get(&module_id))
-                            .copied();
-                        let alias_target = module_file.and_then(|file_id| {
-                            self.const_function_aliases
-                                .and_then(|aliases| aliases.get(&(file_id, *method)))
-                                .copied()
-                        });
+                        let module_file = self.module_file_id(module_id);
+                        let alias_target = module_file
+                            .and_then(|file_id| self.const_function_alias((file_id, *method)));
                         let function_key = alias_target.or_else(|| {
-                            module_file.and_then(|file_id| {
-                                self.functions_by_file_name
-                                    .and_then(|m| m.get(&(file_id, *method)))
-                                    .copied()
-                            })
+                            module_file
+                                .and_then(|file_id| self.function_by_file((file_id, *method)))
                         });
                         if let (Some(file), Some(_)) = (module_file, alias_target) {
                             self.body_dependencies
@@ -2731,7 +2900,7 @@ impl<'a> ConstraintGenerator<'a> {
                                     qualified: true,
                                 });
                         }
-                        if let Some(func) = function_key.and_then(|key| self.functions.get(&key)) {
+                        if let Some(func) = function_key.and_then(|key| self.func_sig(key)) {
                             #[cfg(test)]
                             if !func.is_generic
                                 && call_contract_matches(&call_args, &func.param_modes)
@@ -2809,7 +2978,7 @@ impl<'a> ConstraintGenerator<'a> {
                                     self.body_dependencies.extend(generic_body_dependency(
                                         function_key
                                             .expect("resolved module signature has a function key"),
-                                        func,
+                                        &func,
                                         &type_subst,
                                         &value_subst,
                                         &arg_infos,
@@ -3357,16 +3526,11 @@ impl<'a> ConstraintGenerator<'a> {
                 // unconstrained — an integer-literal expression argument then
                 // defaulted to i32 and was zero-extended into the declared
                 // 64-bit slot (miscompile, RUE-633).
-                self.const_type_aliases
-                    .and_then(|aliases| aliases.get(&(file_id, *type_name)).copied())
+                self.const_type_alias((file_id, *type_name))
                     .filter(|ty| ty.as_struct().is_some())
             })
-            .or_else(|| {
-                self.structs_by_file_name
-                    .and_then(|structs| structs.get(&(file_id, *type_name)))
-                    .copied()
-            })
-            .or_else(|| self.builtin_structs.get(type_name).copied())
+            .or_else(|| self.struct_type_by_file((file_id, *type_name)))
+            .or_else(|| self.builtin_struct_type(*type_name))
     }
 
     fn enum_type_for(&self, type_name: &Spur, file_id: FileId) -> Option<Type> {
@@ -3383,33 +3547,23 @@ impl<'a> ConstraintGenerator<'a> {
                 // File-level const enum aliases, for the same reason as
                 // `struct_type_for` (RUE-633): a construction rooted at the
                 // alias must constrain its payload arguments.
-                self.const_type_aliases
-                    .and_then(|aliases| aliases.get(&(file_id, *type_name)).copied())
+                self.const_type_alias((file_id, *type_name))
                     .filter(|ty| ty.is_enum())
             })
-            .or_else(|| {
-                self.enums_by_file_name
-                    .and_then(|enums| enums.get(&(file_id, *type_name)))
-                    .copied()
-            })
-            .or_else(|| self.builtin_enums.get(type_name).copied())
+            .or_else(|| self.enum_type_by_file((file_id, *type_name)))
+            .or_else(|| self.builtin_enum_type(*type_name))
     }
 
     fn enum_type_for_module(&self, module: InstRef, type_name: &Spur) -> Option<Type> {
         let file_id = self.module_member_file(module)?;
-        self.enums_by_file_name
-            .and_then(|enums| enums.get(&(file_id, *type_name)))
-            .copied()
-            .or_else(|| {
-                // A type-valued const member (`pub const Opt = Option(i64)`)
-                // is as good as a declaration here (RUE-630/RUE-633): without
-                // it the qualified alias head left the whole chain
-                // unconstrained.
-                self.const_type_aliases
-                    .and_then(|aliases| aliases.get(&(file_id, *type_name)))
-                    .copied()
-                    .filter(|ty| ty.is_enum())
-            })
+        self.enum_type_by_file((file_id, *type_name)).or_else(|| {
+            // A type-valued const member (`pub const Opt = Option(i64)`)
+            // is as good as a declaration here (RUE-630/RUE-633): without
+            // it the qualified alias head left the whole chain
+            // unconstrained.
+            self.const_type_alias((file_id, *type_name))
+                .filter(|ty| ty.is_enum())
+        })
     }
 
     /// Struct analogue of [`Self::enum_type_for_module`], for
@@ -3420,17 +3574,12 @@ impl<'a> ConstraintGenerator<'a> {
     /// value at run time (the RUE-633 miscompile family).
     fn struct_type_for_module(&self, module: InstRef, type_name: &Spur) -> Option<Type> {
         let file_id = self.module_member_file(module)?;
-        self.structs_by_file_name
-            .and_then(|structs| structs.get(&(file_id, *type_name)))
-            .copied()
-            .or_else(|| {
-                // Type-valued const members participate like declarations —
-                // see `enum_type_for_module` (RUE-630/RUE-633).
-                self.const_type_aliases
-                    .and_then(|aliases| aliases.get(&(file_id, *type_name)))
-                    .copied()
-                    .filter(|ty| ty.as_struct().is_some())
-            })
+        self.struct_type_by_file((file_id, *type_name)).or_else(|| {
+            // Type-valued const members participate like declarations —
+            // see `enum_type_for_module` (RUE-630/RUE-633).
+            self.const_type_alias((file_id, *type_name))
+                .filter(|ty| ty.as_struct().is_some())
+        })
     }
 
     /// The defining file of `module`'s target: a `VarRef` naming an imported
@@ -3444,18 +3593,12 @@ impl<'a> ConstraintGenerator<'a> {
         let inst = self.rir.get(module);
         match &inst.data {
             InstData::VarRef { name, .. } => {
-                let module_ty = self
-                    .module_binding_types
-                    .and_then(|bindings| bindings.get(&(inst.span.file_id, *name)))
-                    .copied()?;
+                let module_ty = self.module_binding_type((inst.span.file_id, *name))?;
                 self.module_file(module_ty)
             }
             InstData::FieldGet { base, field } => {
                 let base_file = self.module_member_file(*base)?;
-                let module_ty = self
-                    .module_binding_types
-                    .and_then(|bindings| bindings.get(&(base_file, *field)))
-                    .copied()?;
+                let module_ty = self.module_binding_type((base_file, *field))?;
                 self.module_file(module_ty)
             }
             _ => None,
@@ -3464,9 +3607,7 @@ impl<'a> ConstraintGenerator<'a> {
 
     fn module_file(&self, module_ty: Type) -> Option<FileId> {
         let module_id = module_ty.as_module()?;
-        self.module_file_ids
-            .and_then(|module_file_ids| module_file_ids.get(&module_id))
-            .copied()
+        self.module_file_id(module_id)
     }
 
     /// Get the inferred type for a pattern.
@@ -3514,10 +3655,10 @@ impl<'a> ConstraintGenerator<'a> {
                     return Some(ty);
                 }
             }
-            if let Some(&ty) = self.builtin_structs.get(sym) {
+            if let Some(ty) = self.builtin_struct_type(*sym) {
                 return Some(ty);
             }
-            if let Some(&ty) = self.builtin_enums.get(sym) {
+            if let Some(ty) = self.builtin_enum_type(*sym) {
                 return Some(ty);
             }
             None
@@ -3607,9 +3748,7 @@ impl<'a> ConstraintGenerator<'a> {
                 .and_then(|m| m.get(name).copied())
                 .or_else(|| {
                     let file_id = self.rir.get(inst).span.file_id;
-                    self.const_values
-                        .and_then(|m| m.get(&(file_id, *name)).copied())
-                        .map(Integer)
+                    self.const_value((file_id, *name)).map(Integer)
                 }),
             InstData::Neg { operand } => match self.eval_comptime_value(*operand)? {
                 Integer(n) => Some(Integer(n.checked_neg()?)),
@@ -3920,22 +4059,16 @@ impl<'a> ConstraintGenerator<'a> {
 
         // Check for struct types (including builtin String)
         if let Some(name_spur) = self.interner.get(name) {
-            if let Some(ty) = self
-                .structs_by_file_name
-                .and_then(|types| types.get(&(file_id, name_spur)).copied())
-            {
+            if let Some(ty) = self.struct_type_by_file((file_id, name_spur)) {
                 return Some(InferType::Concrete(ty));
             }
-            if let Some(ty) = self
-                .enums_by_file_name
-                .and_then(|types| types.get(&(file_id, name_spur)).copied())
-            {
+            if let Some(ty) = self.enum_type_by_file((file_id, name_spur)) {
                 return Some(InferType::Concrete(ty));
             }
-            if let Some(&struct_ty) = self.builtin_structs.get(&name_spur) {
+            if let Some(struct_ty) = self.builtin_struct_type(name_spur) {
                 return Some(InferType::Concrete(struct_ty));
             }
-            if let Some(&enum_ty) = self.builtin_enums.get(&name_spur) {
+            if let Some(enum_ty) = self.builtin_enum_type(name_spur) {
                 return Some(InferType::Concrete(enum_ty));
             }
             if let Some(alias_ty) = self.scoped_const_type_alias(name_spur, file_id) {

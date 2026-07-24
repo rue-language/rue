@@ -67,6 +67,7 @@ pub use binding_manifest::{
 pub use context::ConstValue;
 pub use declaration_index::RirDeclarationIndexWork;
 pub use inference_ctx::InferenceContext;
+pub(crate) use inference_ctx::SemaInferenceFacts;
 use info::ConstResolution;
 pub use info::{AnonMethodSig, AnonMethodType, ConstInfo, FunctionInfo, MethodInfo};
 pub use known_symbols::KnownSymbols;
@@ -179,6 +180,10 @@ impl DeclarationNamespace {
             .filter_map(|(key, value)| value.value().map(|info| (key, info)))
     }
 
+    // Only the `#[cfg(test)]` namespace-boundary snapshot enumerates module
+    // bindings wholesale now; per-body inference resolves them by key through
+    // the demand-population provider (RUE-1091 slice r5b).
+    #[cfg_attr(not(test), allow(dead_code))]
     fn module_binding_consts(&self) -> impl Iterator<Item = (&(FileId, Spur), &ConstInfo)> {
         self.const_resolutions
             .iter()

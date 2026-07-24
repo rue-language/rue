@@ -2771,10 +2771,10 @@ mod tests {
         // The inference-side signature must carry the identical source-mode
         // vector rather than a type-only shadow of MethodInfo (RUE-634).
         let inference = sema.build_inference_context();
-        let signature = inference
-            .method_sigs
-            .get(&(struct_id, method_name))
-            .unwrap();
+        let facts = crate::sema::SemaInferenceFacts::new(&inference, &sema);
+        let signature =
+            crate::inference::LazyInferenceFacts::method_sig(&facts, (struct_id, method_name))
+                .unwrap();
         assert_eq!(
             signature.param_modes,
             vec![
@@ -2809,11 +2809,13 @@ mod tests {
         sema.generated_structs.insert(name, generated_id);
 
         let inference = sema.build_inference_context();
+        let facts = crate::sema::SemaInferenceFacts::new(&inference, &sema);
         assert_eq!(
-            inference
-                .struct_types_by_file_name
-                .get(&(FileId::new(0), name)),
-            Some(&Type::new_struct(source_id))
+            crate::inference::LazyInferenceFacts::struct_type_by_file(
+                &facts,
+                (FileId::new(0), name)
+            ),
+            Some(Type::new_struct(source_id))
         );
     }
 

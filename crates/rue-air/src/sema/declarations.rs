@@ -20,7 +20,6 @@ use rue_span::{FileId, Span};
 
 use super::{ConstInfo, ConstValue, DeclarationPhase, InferenceContext, Sema};
 use super::{FunctionInfo, MethodInfo};
-use crate::inference::{FunctionSig, MethodSig};
 use crate::path_norm::{mangle_symbol_component, normalize_module_path};
 use crate::types::StructField;
 use crate::types::{EnumDef, EnumId, StructDef, StructId, Type, TypeKind};
@@ -110,193 +109,21 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         })
     }
 
-    /// Build an `InferenceContext` from the collected type information.
+    /// Build the demand-population [`InferenceContext`] for constraint
+    /// generation (RUE-1091 slice r5b).
     ///
-    /// This should be called after the collection phase and builds the
-    /// pre-computed maps needed for Hindley-Milner type inference.
-    /// Building this once and reusing for all function analyses avoids
-    /// the O(n²) cost of rebuilding these maps per function.
-    ///
-    /// # Performance
-    ///
-    /// This converts all function/method signatures to use `InferType`
-    /// (which handles arrays structurally rather than by ID). This conversion
-    /// is done once instead of per-function.
+    /// Formerly this eagerly converted every function/method signature and
+    /// projected every struct/enum/const family into owned `HashMap`s — an
+    /// O(universe) pass paid before any body was analyzed (and, on the
+    /// per-body-query hot path, paid afresh for every reached body). It now
+    /// returns a context whose signature caches start empty and materialize on
+    /// first consult through [`SemaInferenceFacts`], so only the signatures and
+    /// types a body actually names are converted. The only eager work retained
+    /// is a small snapshot of the generated-nominal overlays, which must be
+    /// frozen at this point so a nominal generated while analyzing a later body
+    /// cannot retroactively perturb an earlier body's type resolution.
     pub fn build_inference_context(&self) -> InferenceContext {
-        // Build function signatures with InferType for constraint generation
-        let func_sigs: HashMap<Spur, FunctionSig> = self
-            .functions
-            .iter()
-            .map(|(name, info)| {
-                (
-                    *name,
-                    FunctionSig {
-                        param_types: self
-                            .param_arena
-                            .types(info.params)
-                            .iter()
-                            .map(|t| self.type_to_infer_type(*t))
-                            .collect(),
-                        return_type: self.type_to_infer_type(info.return_type),
-                        is_generic: info.is_generic,
-                        param_modes: self.param_arena.modes(info.params).to_vec(),
-                        param_comptime: self.param_arena.comptime(info.params).to_vec(),
-                        param_comptime_type: self.comptime_type_param_flags(info),
-                        param_names: self.param_arena.names(info.params).to_vec(),
-                        param_type_syms: self
-                            .rir
-                            .params(info.rir_params(self.rir))
-                            .iter()
-                            .map(|p| p.ty)
-                            .collect(),
-                        return_type_sym: info.return_type_sym,
-                    },
-                )
-            })
-            .collect();
-
-        // Builtins have no defining source module. Every source declaration
-        // appears only in the by-file map below.
-        let mut builtin_struct_types: HashMap<Spur, Type> = self
-            .builtin_structs
-            .iter()
-            .map(|(name, id)| (*name, Type::new_struct(*id)))
-            .collect();
-        for (name, id) in &self.generated_structs {
-            if self.type_pool.struct_def(*id).is_builtin {
-                builtin_struct_types.insert(*name, Type::new_struct(*id));
-            }
-        }
-        let mut struct_types_by_file_name: HashMap<(FileId, Spur), Type> = self
-            .structs_by_file_name
-            .iter()
-            .map(|(key, id)| (*key, Type::new_struct(*id)))
-            .collect();
-        for (name, id) in &self.generated_structs {
-            let file_id = self.type_pool.struct_def(*id).file_id;
-            struct_types_by_file_name
-                .entry((file_id, *name))
-                .or_insert(Type::new_struct(*id));
-        }
-
-        let builtin_enum_types: HashMap<Spur, Type> = self
-            .builtin_enums
-            .iter()
-            .map(|(name, id)| (*name, Type::new_enum(*id)))
-            .collect();
-
-        let mut enum_types_by_file_name: HashMap<(FileId, Spur), Type> = self
-            .enums_by_file_name
-            .iter()
-            .map(|(key, id)| (*key, Type::new_enum(*id)))
-            .collect();
-        for (name, id) in &self.generated_enums {
-            let file_id = self.type_pool.enum_def(*id).file_id;
-            enum_types_by_file_name
-                .entry((file_id, *name))
-                .or_insert(Type::new_enum(*id));
-        }
-
-        // Build method signatures with InferType for constraint generation
-        let method_sigs: HashMap<(StructId, Spur), MethodSig> = self
-            .methods
-            .iter()
-            .chain(self.anonymous_methods.iter())
-            .map(|((struct_id, method_name), info)| {
-                (
-                    (*struct_id, *method_name),
-                    MethodSig {
-                        struct_type: info.struct_type,
-                        has_self: info.has_self,
-                        param_types: self
-                            .param_arena
-                            .types(info.params)
-                            .iter()
-                            .map(|t| self.type_to_infer_type(*t))
-                            .collect(),
-                        param_modes: self.param_arena.modes(info.params).to_vec(),
-                        return_type: self.type_to_infer_type(info.return_type),
-                    },
-                )
-            })
-            .collect();
-
-        // Constant types (resolved during declaration gathering) so a const
-        // reference in a function body infers to its declared type instead of
-        // `<error>` (RUE-142).
-        // All four const maps are keyed by (declaring file, name), built from
-        // the by-file table: same-named constants in sibling modules are
-        // distinct declarations, so every inference lookup carries the
-        // reference file or receiver-module identity (RUE-638).
-        let const_types: HashMap<(FileId, Spur), Type> = self
-            .value_consts()
-            .map(|(key, info)| {
-                let ty = match info.value {
-                    ConstValue::Type(_) => Type::COMPTIME_TYPE,
-                    _ => info.ty,
-                };
-                (*key, ty)
-            })
-            .collect();
-
-        // File-level type aliases (`const T = SomeType(...)`) map the alias
-        // name to the concrete type value it denotes. Constraint generation
-        // consults this in type positions; expression positions still use
-        // `const_types` above and see the binding itself as `type`.
-        let const_type_aliases: HashMap<(FileId, Spur), Type> = self
-            .value_consts()
-            .filter_map(|(key, info)| match info.value {
-                ConstValue::Type(ty) => Some((*key, ty)),
-                _ => None,
-            })
-            .collect();
-
-        // Integer constant values, so an array length naming a `const`
-        // (`[i32; K]`) resolves to a concrete length during inference (RUE-16).
-        let const_values: HashMap<(FileId, Spur), i128> = self
-            .value_consts()
-            .filter_map(|(key, info)| info.value.as_int_value().map(|v| (*key, v)))
-            .collect();
-
-        // Function-valued constants are callable aliases only. Constraint
-        // generation uses this map to type `alias(...)` like the real callee.
-        let const_function_aliases: HashMap<(FileId, Spur), Spur> = self
-            .value_consts()
-            .filter_map(|(key, info)| info.value.as_function().map(|callee| (*key, callee)))
-            .collect();
-
-        // Module-binding types (`const utils = @import(...)`), keyed by the
-        // declaring file: bindings are per-file scoped (RUE-113), so a
-        // reference resolves against the file it appears in.
-        let module_binding_types: HashMap<(FileId, Spur), Type> = self
-            .module_binding_consts()
-            .map(|(key, info)| (*key, info.ty))
-            .collect();
-
-        let module_file_ids: HashMap<crate::types::ModuleId, FileId> =
-            (0..self.module_registry.len())
-                .map(|index| {
-                    let module_id = crate::types::ModuleId::new(index as u32);
-                    let module_def = self.module_registry.get_def(module_id);
-                    (module_id, module_def.file_id)
-                })
-                .collect();
-
-        InferenceContext {
-            func_sigs,
-            builtin_struct_types,
-            struct_types_by_file_name,
-            builtin_enum_types,
-            enum_types_by_file_name,
-            method_sigs,
-            const_types,
-            const_type_aliases,
-            const_values,
-            const_function_aliases,
-            module_binding_types,
-            module_file_ids,
-            functions_by_file_name: self.functions_by_file_name.clone(),
-        }
+        InferenceContext::new(self)
     }
     /// Check if a directive list contains the @copy directive
     pub(crate) fn has_copy_directive<'r>(
