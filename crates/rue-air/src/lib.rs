@@ -24,6 +24,7 @@ pub mod layout;
 mod module_registry;
 mod param_arena;
 mod path_norm;
+mod provider_body_analysis;
 mod runtime_call;
 mod scope;
 mod sema;
@@ -68,6 +69,7 @@ pub use layout::{Layout, LayoutKind, PaddingRange, SLOT_BYTES};
 pub use module_registry::ModuleRegistry;
 pub use param_arena::{ParamArena, ParamRange};
 pub use path_norm::{mangle_symbol_component, normalize_module_path, unmangle_symbol_component};
+pub use provider_body_analysis::{ProviderBodyAnalysisContext, analyze_provider_body};
 pub use runtime_call::{
     OptionVariant, RuntimeAirArgument, RuntimeAirType, RuntimeCallActivation, RuntimeCallKind,
     RuntimeOperandOrigin,

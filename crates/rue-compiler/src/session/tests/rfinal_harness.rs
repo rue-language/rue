@@ -1,9 +1,10 @@
 //! RUE-1091 rFinal whole-body differential harness.
 //!
-//! Side A is the production `BodyTransaction` path. Side B — previously an
-//! explicit unimplemented slot — is now the provider-driven fact replay: for
-//! every body in the shape corpus it re-supplies each fact the production
-//! analysis consumed through the five real provider drivers
+//! Side A is the production `BodyTransaction` path. Side B is the test-only
+//! provider-driven analyzer: for every body in the shape corpus it starts from
+//! the requested RIR body and discovers its own demand through
+//! `analyze_provider_body`, materializing each discovered fact through the five
+//! real provider drivers
 //! (`ProviderTypeFacts`, `SignatureFacts` via the comptime-call arms,
 //! `ProviderCallFacts`, `ProviderEndpointFacts`, `ProviderAggregateFacts`)
 //! plus the body-local `BodySemanticOverlay`, and records exactly the query
@@ -13,9 +14,9 @@
 //! declaration set (`bind_canonical_declaration_semantics` — the r4b-3
 //! sanctioned fill source), the shared whole-program RIR (a body-query input),
 //! the `CompilerBodyFactProvider` boundary, and the drivers' own pools and
-//! overlays. The production side's published `BodyTransaction` serves only as
-//! the differential's DEMAND ORACLE (which facts a body consumes) — the fact
-//! VALUES on side B always come from the drivers.
+//! overlays. The production side's published `BodyTransaction` is compared
+//! only after side B finishes: it is never passed into the analyzer or used to
+//! choose a provider query.
 //!
 //! Divergences are never silently tolerated: every fact side B cannot yet
 //! supply lands in the named [`SIDE_B_FACT_EXCEPTIONS`] table, and every
@@ -57,7 +58,7 @@ enum HarnessError {
 
 struct ProductionAnalyzer;
 
-/// Side B: the provider-driven fact replay over the five drivers + overlay.
+/// Side B: provider-driven body analysis over the five drivers + overlay.
 struct ProviderFactsOverlayAnalyzer;
 
 struct DirectProductionInputs {
@@ -475,17 +476,10 @@ struct SideBFactException {
     reason: &'static str,
 }
 
-const SIDE_B_FACT_EXCEPTIONS: &[SideBFactException] = &[
-    SideBFactException {
-        name: "comptime_call_reduces_to_anonymous_nominal",
-        reason: "r6b rider (d): the pool mints the identity; the type-syntax reduction result \
-                 is a body-level durable value with no declaration-level cross-path truth",
-    },
-    SideBFactException {
-        name: "drop_glue_overlay_method_installation",
-        reason: "drop-glue instance keys belong to the flip's overlay method installation",
-    },
-];
+const SIDE_B_FACT_EXCEPTIONS: &[SideBFactException] = &[SideBFactException {
+    name: "drop_glue_overlay_method_installation",
+    reason: "drop-glue instance keys belong to the flip's overlay method installation",
+}];
 
 /// The materialization families a side-B edge may belong to — "edges at
 /// materialization, never at render".
@@ -537,18 +531,11 @@ const EDGE_FAMILY_EXCEPTIONS: &[EdgeFamilyException] = &[
                  richer post-flip truth the epoch's table reads mask",
     },
     EdgeFamilyException {
-        family: "compiler.semantic-nucleus",
+        family: "compiler.declaration-shell",
         side: EdgeExceptionSide::ProviderOnly,
-        reason: "declaration identity/signature/const facts consulted through the boundary \
-                 record their nucleus terminals; the epoch reads the same facts from bound \
-                 tables edge-free",
-    },
-    EdgeFamilyException {
-        family: "compiler.semantic-nucleus",
-        side: EdgeExceptionSide::EpochOnly,
-        reason: "for bodies whose side-B facts are all pool-answered (r4b-1 P-ops record no \
-                 boundary edge), the production transaction still roots the nucleus terminals \
-                 of its declaration prefix; the flip re-points that prefix at the drivers",
+        reason: "the body-local analyzer asks the exact requested producer instance for its \
+                 anonymous output; reconstructing that instance is backed by its declaration \
+                 shell and does not enumerate a declaration universe",
     },
 ];
 
@@ -576,14 +563,16 @@ struct CapturedBody {
     observation_counters: Vec<u8>,
 }
 
-/// The durable demand oracle side B replays: WHAT the production body consumed
-/// (durable-keyed references + produced anonymous nominals) and the edge
-/// families its retained terminal recorded. Fact VALUES never come from here.
+/// Production peer captured for the post-analysis differential. Only
+/// `instance` is an input to side B; references and edge families are read
+/// after provider demand discovery completes.
 #[derive(Debug, Clone)]
-struct BodyDemandOracle {
+struct ProductionDemandPeer {
     body: String,
+    /// The request identity is an input to both analyzers, not discovered
+    /// demand. Side B may use it to locate the requested RIR body.
+    instance: crate::FunctionInstanceKey,
     references: Vec<BodyReference>,
-    produced: Vec<crate::durable_semantics::DurableAnonymousNominal>,
     failed: bool,
     edge_families: BTreeSet<String>,
 }
@@ -825,16 +814,17 @@ impl ProductionAnalyzer {
         case: &HarnessCase,
         requested_body_order: &[&str],
     ) -> Result<Vec<CapturedBody>, HarnessError> {
-        Ok(self.capture_with_oracle(case, requested_body_order)?.0)
+        Ok(self.capture_with_peer(case, requested_body_order)?.0)
     }
 
-    /// Capture the production side AND the per-body durable demand oracle side
-    /// B replays through the drivers.
-    fn capture_with_oracle(
+    /// Capture production for the post-analysis differential. Side B receives
+    /// only the same requested body identity, never production's discovered
+    /// references.
+    fn capture_with_peer(
         &self,
         case: &HarnessCase,
         requested_body_order: &[&str],
-    ) -> Result<(Vec<CapturedBody>, Vec<BodyDemandOracle>), HarnessError> {
+    ) -> Result<(Vec<CapturedBody>, Vec<ProductionDemandPeer>), HarnessError> {
         let source = SourceSnapshot::single("main.rue", case.source)
             .map_err(|error| HarnessError::Compile(error.to_string()))?;
         let options = CompileOptions::default();
@@ -876,7 +866,7 @@ impl ProductionAnalyzer {
         let case_overlay_snapshot = crate::unstable::overlay_materialization_metrics(&session);
         let direct = DirectProductionInputs::build(case.source)?;
         let mut captured = Vec::new();
-        let mut oracles = Vec::new();
+        let mut peers = Vec::new();
         // This is the actual body-analysis schedule permutation: each call
         // executes production `analyze_body_query` against one shared immutable
         // corpus input in the requested order. Terminal capture below supplies
@@ -902,35 +892,29 @@ impl ProductionAnalyzer {
                 counters,
                 &directly_analyzed,
             )?;
-            let (references, produced, failed) = match &directly_analyzed {
-                crate::body_query::BodyTransaction::Success {
-                    references,
-                    produced_anonymous_nominals,
-                    ..
-                } => (
-                    references.0.to_vec(),
-                    produced_anonymous_nominals.0.to_vec(),
-                    false,
-                ),
+            let (references, failed) = match &directly_analyzed {
+                crate::body_query::BodyTransaction::Success { references, .. } => {
+                    (references.0.to_vec(), false)
+                }
                 crate::body_query::BodyTransaction::DeterministicFailure { references, .. } => {
-                    (references.0.to_vec(), Vec::new(), true)
+                    (references.0.to_vec(), true)
                 }
             };
-            oracles.push(BodyDemandOracle {
+            peers.push(ProductionDemandPeer {
                 body: (*body).to_owned(),
+                instance: key.instance.clone(),
                 references,
-                produced,
                 failed,
                 edge_families,
             });
             captured.push(capture);
         }
-        Ok((captured, oracles))
+        Ok((captured, peers))
     }
 }
 
 // ---------------------------------------------------------------------------
-// Side B (provider drivers + overlay) replay
+// Side B (provider-driven body analyzer)
 // ---------------------------------------------------------------------------
 
 /// One replayed body on side B: the canonical driver-fact lines, the named
@@ -943,6 +927,63 @@ struct SideBBody {
     exceptions: BTreeSet<&'static str>,
     edge_families: BTreeSet<String>,
     edge_identities: BTreeSet<String>,
+    discovered_references: BTreeSet<BodyReference>,
+}
+
+fn reference_definition_roots(reference: &BodyReference) -> BTreeSet<crate::StableDefinitionKey> {
+    fn function(
+        instance: &crate::FunctionInstanceKey,
+        roots: &mut BTreeSet<crate::StableDefinitionKey>,
+    ) {
+        match instance {
+            crate::FunctionInstanceKey::Definition(key) => {
+                roots.insert(key.clone());
+            }
+            crate::FunctionInstanceKey::Specialization { base, .. } => function(base, roots),
+            crate::FunctionInstanceKey::AnonymousMember { owner, .. }
+            | crate::FunctionInstanceKey::DropGlue(owner) => ty(owner, roots),
+        }
+    }
+    fn producer(
+        producer: &rue_air::StableProducerId<crate::StableDefinitionKey, ModuleId>,
+        roots: &mut BTreeSet<crate::StableDefinitionKey>,
+    ) {
+        match producer {
+            rue_air::StableProducerId::Definition(key) => {
+                roots.insert(key.clone());
+            }
+            rue_air::StableProducerId::Function(instance) => function(instance, roots),
+        }
+    }
+    fn ty(value: &crate::TypeInstanceKey, roots: &mut BTreeSet<crate::StableDefinitionKey>) {
+        use rue_air::{NominalInstanceKey as N, TypeInstanceKey as T};
+        match value {
+            T::Nominal(N::Named(key)) => {
+                roots.insert(key.clone());
+            }
+            T::Nominal(N::Anonymous(identity)) => {
+                producer(&identity.producer, roots);
+                for argument_type in identity.arguments.types.iter() {
+                    ty(argument_type, roots);
+                }
+            }
+            T::Array { element, .. }
+            | T::Slice { element, .. }
+            | T::PtrConst(element)
+            | T::PtrMut(element) => ty(element, roots),
+            _ => {}
+        }
+    }
+
+    let mut roots = BTreeSet::new();
+    match reference {
+        BodyReference::Callable(instance) => function(instance, &mut roots),
+        BodyReference::Definition(key) => {
+            roots.insert(key.clone());
+        }
+        BodyReference::Type(value) => ty(value, &mut roots),
+    }
+    roots
 }
 
 /// Side-B durable inputs for one case: the parsed/merged program, the shared
@@ -1317,6 +1358,10 @@ struct ReplayCtx<'a, 'db, 'r> {
     overlay: crate::body_overlay::BodySemanticOverlay,
     decls: &'r [crate::durable_semantics::DurableDeclarationSemantic],
     module_files: &'r BTreeMap<ModuleId, FileId>,
+    scope: ModuleId,
+    body_key: crate::StableDefinitionKey,
+    rir: &'r rue_rir::Rir,
+    rir_interner: &'r lasso::ThreadedRodeo,
     tokens: BTreeMap<crate::StableDefinitionKey, rue_air::SemanticDefinitionToken>,
     replayed_nominals: BTreeSet<crate::StableDefinitionKey>,
     replayed_functions: BTreeSet<crate::StableDefinitionKey>,
@@ -1326,6 +1371,7 @@ struct ReplayCtx<'a, 'db, 'r> {
     agg_seed: Vec<(crate::StableDefinitionKey, String)>,
     facts: Vec<String>,
     exceptions: BTreeSet<&'static str>,
+    discovered_references: BTreeSet<BodyReference>,
 }
 
 fn durable_nominal_has_destructor(
@@ -1913,6 +1959,89 @@ impl<'a, 'db, 'r> ReplayCtx<'a, 'db, 'r> {
             .clone()
     }
 
+    fn candidate(
+        &self,
+        name: &str,
+        category: DeclarationCandidateCategory,
+    ) -> DeclarationCandidateKey {
+        DeclarationCandidateKey {
+            module: self.scope.clone(),
+            category,
+            name: Arc::from(name),
+            owner: None,
+            duplicate_discriminator: 0,
+        }
+    }
+
+    fn selected_named(
+        &mut self,
+        name: &str,
+        kind: rue_air::ProviderDefinitionKind,
+        category: DeclarationCandidateCategory,
+    ) -> Option<crate::StableDefinitionKey> {
+        use rue_air::BodyFactProvider;
+        let resolution = self
+            .provider
+            .lookup_unqualified(&self.scope, rue_air::ProviderNamespace::ModuleItem, name)
+            .of_kind(kind);
+        if !matches!(resolution, rue_air::NameResolution::Unique(_)) {
+            return None;
+        }
+        let candidate = self.candidate(name, category);
+        let identity = self.provider.declaration_identity(&candidate)?;
+        Some(identity.key)
+    }
+
+    fn receiver_identity(&mut self, receiver: rue_rir::InstRef) -> Option<ReceiverTypeIdentity> {
+        match &self.rir.get(receiver).data {
+            rue_rir::InstData::StructInit {
+                module: None,
+                type_name,
+                ..
+            } => {
+                let name = self.rir_interner.resolve(type_name).to_owned();
+                let key = self.selected_named(
+                    &name,
+                    rue_air::ProviderDefinitionKind::Struct,
+                    DeclarationCandidateCategory::Struct,
+                )?;
+                Some(ReceiverTypeIdentity::new(
+                    key.module().clone(),
+                    key.name(),
+                    DeclarationCandidateCategory::Struct,
+                ))
+            }
+            rue_rir::InstData::VarRef { name, .. } if self.rir_interner.resolve(name) == "self" => {
+                let owner = self.body_key.owner()?;
+                Some(ReceiverTypeIdentity::new(
+                    self.body_key.module().clone(),
+                    owner.name(),
+                    candidate_category(owner.kind())?,
+                ))
+            }
+            rue_rir::InstData::VarRef { name, .. } => {
+                let name = self.rir_interner.resolve(name).to_owned();
+                let key = self.selected_named(
+                    &name,
+                    rue_air::ProviderDefinitionKind::Struct,
+                    DeclarationCandidateCategory::Struct,
+                )?;
+                self.replay_named_nominal(&key);
+                self.discovered_references.insert(BodyReference::Type(
+                    crate::TypeInstanceKey::Nominal(rue_air::NominalInstanceKey::Named(
+                        key.clone(),
+                    )),
+                ));
+                Some(ReceiverTypeIdentity::new(
+                    key.module().clone(),
+                    key.name(),
+                    DeclarationCandidateCategory::Struct,
+                ))
+            }
+            _ => None,
+        }
+    }
+
     /// The rFinal freeze-hook exercise (r4a-2a rider): drop/linearity reads are
     /// un-finalized until the pool-side freeze runs at the same point
     /// production freezes; afterwards every minted type answers.
@@ -1959,25 +2088,300 @@ impl<'a, 'db, 'r> ReplayCtx<'a, 'db, 'r> {
     }
 }
 
+impl rue_air::ProviderBodyAnalysisContext for ReplayCtx<'_, '_, '_> {
+    fn demand_value(&mut self, name: &str, _span: rue_span::Span) {
+        use rue_air::BodyFactProvider;
+        if let Some(key) = self.selected_named(
+            name,
+            rue_air::ProviderDefinitionKind::Const,
+            DeclarationCandidateCategory::ConstCandidate,
+        ) {
+            let candidate = self.candidate(name, DeclarationCandidateCategory::ConstCandidate);
+            let _ = self.provider.const_comptime(&candidate);
+            self.discovered_references
+                .insert(BodyReference::Definition(key));
+        }
+    }
+
+    fn demand_call(&mut self, name: &str, arguments: &[rue_rir::InstRef], _span: rue_span::Span) {
+        use rue_air::BodyFactProvider;
+        if let Some((owner_name, member_name)) = name.split_once('.') {
+            let Some(owner) = self.selected_named(
+                owner_name,
+                rue_air::ProviderDefinitionKind::Struct,
+                DeclarationCandidateCategory::Struct,
+            ) else {
+                self.facts.push(format!(
+                    "body-walk associated call `{name}` => absent owner"
+                ));
+                return;
+            };
+            self.replay_named_nominal(&owner);
+            self.discovered_references.insert(BodyReference::Type(
+                crate::TypeInstanceKey::Nominal(rue_air::NominalInstanceKey::Named(owner.clone())),
+            ));
+            let receiver = ReceiverTypeIdentity::new(
+                owner.module().clone(),
+                owner.name(),
+                DeclarationCandidateCategory::Struct,
+            );
+            let candidates = self.provider.method_candidates(&receiver, member_name);
+            let mut associated = candidates
+                .iter()
+                .filter(|candidate| candidate.kind == rue_air::MemberKind::AssociatedFunction);
+            if let Some(selected) = associated.next()
+                && associated.next().is_none()
+            {
+                let _ = self.provider.signature(&selected.declaration);
+                if let Some(identity) = self.provider.declaration_identity(&selected.declaration) {
+                    self.discovered_references.insert(BodyReference::Callable(
+                        crate::FunctionInstanceKey::Definition(identity.key.clone()),
+                    ));
+                    self.replay_definition(&identity.key);
+                }
+            }
+            return;
+        }
+        let Some(key) = self.selected_named(
+            name,
+            rue_air::ProviderDefinitionKind::Function,
+            DeclarationCandidateCategory::Function,
+        ) else {
+            // The keyed absent lookup above is itself the complete demand for
+            // a missing call head.
+            self.facts
+                .push(format!("body-walk call `{name}` => absent"));
+            return;
+        };
+        let candidate = self.candidate(name, DeclarationCandidateCategory::Function);
+        let signature = self.provider.signature(&candidate);
+        assert!(signature.is_some(), "selected call head has a signature");
+
+        // The base callable is the conservative identity for the discovery
+        // report. Comptime-call reduction below records the exact
+        // argument-parameterized fact; production references may spell the
+        // resulting specialization more narrowly.
+        self.discovered_references.insert(BodyReference::Callable(
+            crate::FunctionInstanceKey::Definition(key.clone()),
+        ));
+        self.replay_definition(&key);
+
+        // Bind the primitive comptime arguments that are expressible directly
+        // in RIR and drive the real argument-parameterized provider operation.
+        if let Some(signature) = signature
+            && let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
+                parameters,
+                result,
+                ..
+            } = &signature.signature
+        {
+            let mut type_arguments = Vec::new();
+            let mut value_arguments = Vec::new();
+            for (parameter, argument) in parameters.iter().zip(arguments) {
+                if !parameter.is_comptime {
+                    continue;
+                }
+                match &self.rir.get(*argument).data {
+                    rue_rir::InstData::TypeConst { type_name } => {
+                        let syntax = self.rir_interner.resolve(type_name);
+                        if let Some(ty) = durable_type_for_primitive_syntax(syntax) {
+                            type_arguments.push((parameter.name.clone(), ty));
+                        }
+                    }
+                    rue_rir::InstData::IntConst(value) => value_arguments.push((
+                        parameter.name.clone(),
+                        crate::durable_semantics::DurableConstValue::Integer(*value as i128),
+                    )),
+                    rue_rir::InstData::BoolConst(value) => value_arguments.push((
+                        parameter.name.clone(),
+                        crate::durable_semantics::DurableConstValue::Bool(*value),
+                    )),
+                    rue_rir::InstData::UnitConst => value_arguments.push((
+                        parameter.name.clone(),
+                        crate::durable_semantics::DurableConstValue::Unit,
+                    )),
+                    _ => {}
+                }
+            }
+            if !type_arguments.is_empty() || !value_arguments.is_empty() || parameters.is_empty() {
+                let _ = self.provider.reduce_comptime_call(
+                    &candidate,
+                    &type_arguments,
+                    &value_arguments,
+                );
+            }
+            if matches!(result, crate::durable_semantics::DurableType::ComptimeType) {
+                let producer = crate::FunctionInstanceKey::Specialization {
+                    base: Box::new(crate::FunctionInstanceKey::Definition(key)),
+                    arguments: crate::CanonicalArguments::default(),
+                };
+                let _ = self.provider.producer_instance_body_facts(&producer);
+            }
+        }
+    }
+
+    fn demand_type(&mut self, syntax: &str, _span: rue_span::Span) {
+        let mut facts = ProviderTypeFacts::new(self.provider, &mut self.overlay);
+        if let Ok(resolved) = rue_air::resolve_semantic_type_syntax(&mut facts, &self.scope, syntax)
+        {
+            collect_durable_type_references(&resolved, &mut self.discovered_references);
+        }
+    }
+
+    fn demand_struct(
+        &mut self,
+        _module: Option<rue_rir::InstRef>,
+        type_name: &str,
+        _span: rue_span::Span,
+    ) {
+        if let Some(key) = self.selected_named(
+            type_name,
+            rue_air::ProviderDefinitionKind::Struct,
+            DeclarationCandidateCategory::Struct,
+        ) {
+            self.replay_named_nominal(&key);
+            self.discovered_references.insert(BodyReference::Type(
+                crate::TypeInstanceKey::Nominal(rue_air::NominalInstanceKey::Named(key)),
+            ));
+        }
+    }
+
+    fn demand_enum(
+        &mut self,
+        _module: Option<rue_rir::InstRef>,
+        type_name: &str,
+        _span: rue_span::Span,
+    ) {
+        if let Some(key) = self.selected_named(
+            type_name,
+            rue_air::ProviderDefinitionKind::Enum,
+            DeclarationCandidateCategory::Enum,
+        ) {
+            self.replay_named_nominal(&key);
+            self.discovered_references.insert(BodyReference::Type(
+                crate::TypeInstanceKey::Nominal(rue_air::NominalInstanceKey::Named(key)),
+            ));
+        }
+    }
+
+    fn demand_method(&mut self, receiver: rue_rir::InstRef, method: &str, _span: rue_span::Span) {
+        use rue_air::BodyFactProvider;
+        let receiver_inst = receiver;
+        let Some(receiver) = self.receiver_identity(receiver_inst) else {
+            return;
+        };
+        let wanted = match &self.rir.get(receiver_inst).data {
+            rue_rir::InstData::VarRef { name, .. } if self.rir_interner.resolve(name) != "self" => {
+                rue_air::MemberKind::AssociatedFunction
+            }
+            _ => rue_air::MemberKind::Method,
+        };
+        let candidates = self.provider.method_candidates(&receiver, method);
+        let mut methods = candidates
+            .iter()
+            .filter(|candidate| candidate.kind == wanted);
+        let Some(selected) = methods.next() else {
+            return;
+        };
+        if methods.next().is_some() {
+            return;
+        }
+        let _ = self.provider.signature(&selected.declaration);
+        if let Some(identity) = self.provider.declaration_identity(&selected.declaration) {
+            self.discovered_references.insert(BodyReference::Callable(
+                crate::FunctionInstanceKey::Definition(identity.key.clone()),
+            ));
+            self.replay_definition(&identity.key);
+        }
+    }
+
+    fn demand_operator(
+        &mut self,
+        receiver: rue_rir::InstRef,
+        operator: rue_air::OperatorName,
+        _span: rue_span::Span,
+    ) {
+        use rue_air::BodyFactProvider;
+        let Some(receiver) = self.receiver_identity(receiver) else {
+            return;
+        };
+        for candidate in self.provider.operator_candidates(&receiver, operator) {
+            let _ = self.provider.signature(&candidate.declaration);
+        }
+    }
+
+    fn demand_const_value(&mut self, name: &str, span: rue_span::Span) {
+        self.demand_value(name, span);
+    }
+
+    fn demand_anonymous_nominal(&mut self, instruction: rue_rir::InstRef, _span: rue_span::Span) {
+        self.facts
+            .push(format!("body-walk anonymous nominal at {instruction}"));
+    }
+}
+
+fn durable_type_for_primitive_syntax(
+    syntax: &str,
+) -> Option<crate::durable_semantics::DurableType> {
+    use crate::durable_semantics::DurableType as T;
+    Some(match syntax {
+        "i8" => T::I8,
+        "i16" => T::I16,
+        "i32" => T::I32,
+        "i64" => T::I64,
+        "u8" => T::U8,
+        "u16" => T::U16,
+        "u32" => T::U32,
+        "u64" => T::U64,
+        "bool" => T::Bool,
+        "()" => T::Unit,
+        "!" => T::Never,
+        "type" => T::ComptimeType,
+        _ => return None,
+    })
+}
+
+fn collect_durable_type_references(
+    ty: &crate::durable_semantics::DurableType,
+    references: &mut BTreeSet<BodyReference>,
+) {
+    use crate::durable_semantics::DurableType as T;
+    match ty {
+        T::Nominal(key) => {
+            references.insert(BodyReference::Type(crate::TypeInstanceKey::Nominal(
+                rue_air::NominalInstanceKey::Named(key.clone()),
+            )));
+        }
+        T::Array { element, .. }
+        | T::Slice { element, .. }
+        | T::PtrConst(element)
+        | T::PtrMut(element) => collect_durable_type_references(element, references),
+        _ => {}
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_body_replay(
     provider: &CompilerBodyFactProvider<'_>,
     decls: &[crate::durable_semantics::DurableDeclarationSemantic],
     module_files: &BTreeMap<ModuleId, FileId>,
-    references: &[BodyReference],
-    produced_union: &[crate::durable_semantics::DurableAnonymousNominal],
-    absent_lookups: &[&str],
-    body_key: Option<&crate::StableDefinitionKey>,
+    body_key: &crate::StableDefinitionKey,
+    body_instance: &crate::FunctionInstanceKey,
     rir: &rue_rir::Rir,
     rir_interner: &lasso::ThreadedRodeo,
 ) -> (
     Vec<String>,
     BTreeSet<&'static str>,
     Vec<(crate::StableDefinitionKey, String)>,
+    BTreeSet<BodyReference>,
 ) {
     use rue_air::BodyFactProvider;
+    let produced = match provider.producer_instance_body_facts(body_instance) {
+        Some(crate::body_query::ProducedAnonymous::Produced(produced)) => produced.0.to_vec(),
+        Some(crate::body_query::ProducedAnonymous::ProducerFailed(_)) | None => Vec::new(),
+    };
     let identity = rue_air::ProviderIdentityContext::new(
-        DurableDeclSource::from_declarations(decls).with_anonymous_nominals(produced_union),
+        DurableDeclSource::from_declarations(decls).with_anonymous_nominals(&produced),
     );
     let endpoint = rue_air::ProviderEndpointFacts::with_identity(
         provider,
@@ -1995,7 +2399,7 @@ fn run_body_replay(
             .expect("the body-local module registry accepts each canonical module");
     }
     let mut producer_instances = BTreeMap::new();
-    for nominal in produced_union {
+    for nominal in &produced {
         let canonical = nominal.identity.with_canonical_producer().into_owned();
         if let rue_air::StableProducerId::Function(instance) = &nominal.identity.producer {
             producer_instances.insert(canonical, instance.as_ref().clone());
@@ -2009,6 +2413,10 @@ fn run_body_replay(
         overlay: crate::body_overlay::BodySemanticOverlay::new(),
         decls,
         module_files,
+        scope: body_key.module().clone(),
+        body_key: body_key.clone(),
+        rir,
+        rir_interner,
         tokens: BTreeMap::new(),
         replayed_nominals: BTreeSet::new(),
         replayed_functions: BTreeSet::new(),
@@ -2018,34 +2426,70 @@ fn run_body_replay(
         agg_seed: Vec::new(),
         facts: Vec::new(),
         exceptions: BTreeSet::new(),
+        discovered_references: BTreeSet::new(),
     };
 
-    for reference in references {
-        ctx.replay_reference(reference);
+    let declaration = match body_key.kind() {
+        crate::StableDefinitionKind::Function => ctx
+            .endpoint
+            .first_free_function(body_key.name(), ctx.file_of(body_key.module())),
+        crate::StableDefinitionKind::Method | crate::StableDefinitionKind::AssociatedFunction => {
+            let owner = body_key.owner().expect("member body has an owner");
+            ctx.endpoint.named_method_declaration(
+                ctx.file_of(body_key.module()),
+                owner.name(),
+                body_key.name(),
+            )
+        }
+        crate::StableDefinitionKind::Destructor => {
+            let owner = body_key.owner().expect("destructor body has an owner");
+            ctx.endpoint
+                .destructor(ctx.file_of(body_key.module()), owner.name())
+        }
+        _ => None,
+    }
+    .expect("provider endpoint locates the requested body declaration");
+    let body = match &rir.get(declaration).data {
+        rue_rir::InstData::FnDecl { body, .. } | rue_rir::InstData::DropFnDecl { body, .. } => {
+            *body
+        }
+        other => panic!("requested body declaration has unexpected RIR: {other:?}"),
+    };
+
+    // A member/destructor body's receiver nominal is part of the requested
+    // body-local context even when the body mentions it only as `self`.
+    if let Some(owner) = body_key.owner() {
+        let owner = crate::StableDefinitionKey::from_stable_parts(
+            owner.module().clone(),
+            crate::StableDefinitionNamespace::Type,
+            owner.kind(),
+            owner.name(),
+            None,
+        );
+        ctx.replay_named_nominal(&owner);
+        ctx.discovered_references
+            .insert(BodyReference::Type(crate::TypeInstanceKey::Nominal(
+                rue_air::NominalInstanceKey::Named(owner),
+            )));
     }
 
-    // Failure-body demands: the driver classifies each consulted-and-absent
-    // name through the keyed lookup boundary — the provider-era observation the
-    // production diagnostic path masks.
-    for name in absent_lookups {
-        let module = ctx.any_module();
-        let present = ctx.calls.function_contains_in_module(&module, name);
-        assert!(!present, "`{name}` must be absent through the boundary");
-        let mut type_facts = ProviderTypeFacts::new(ctx.provider, &mut ctx.overlay);
-        let resolved = rue_air::resolve_semantic_type_syntax(&mut type_facts, &module, name);
-        assert!(
-            resolved.is_err(),
-            "`{name}` must not resolve as a type either"
-        );
-        ctx.facts.push(format!(
-            "absent `{name}` classified Absent via keyed lookup"
-        ));
+    // Flip-A's real analyzer entry. Demand begins at the requested RIR body,
+    // not at production's published references.
+    rue_air::analyze_provider_body(&mut ctx, rir, rir_interner, body);
+    // Materialize the discovered durable identities through the same five
+    // drivers used by the detailed fact differential. This is deliberately a
+    // replay of the NEW analyzer's own output, never production's transaction.
+    for reference in ctx.discovered_references.clone() {
+        ctx.replay_reference(&reference);
     }
+    ctx.facts.push(format!(
+        "body-walk discovered {} durable reference(s)",
+        ctx.discovered_references.len()
+    ));
 
     // The body's own trusted-toolchain demand set, observed through the
     // boundary op (function bodies carry the derivable candidate key).
-    if let Some(body_key) = body_key
-        && body_key.kind() == crate::StableDefinitionKind::Function
+    if body_key.kind() == crate::StableDefinitionKind::Function
         && let Some(candidate) = candidate_for(body_key)
     {
         let demand = provider.trusted_toolchain_facts(&candidate);
@@ -2061,9 +2505,10 @@ fn run_body_replay(
         facts,
         exceptions,
         agg_seed,
+        discovered_references,
         ..
     } = ctx;
-    (facts, exceptions, agg_seed)
+    (facts, exceptions, agg_seed, discovered_references)
 }
 
 /// Replay the aggregate facts for every named nominal the body consumed —
@@ -2143,22 +2588,17 @@ impl ProviderFactsOverlayAnalyzer {
         revision: rue_query::Revision,
         case_name: &'static str,
         body: &str,
-        oracle: &BodyDemandOracle,
-        produced_union: &[crate::durable_semantics::DurableAnonymousNominal],
-        absent_lookups: &[&str],
+        peer: &ProductionDemandPeer,
         run_tag: &str,
     ) -> SideBBody {
         let decls = inputs.decls.clone();
         let module_files = inputs.module_files.clone();
-        let mut references = oracle.references.clone();
-        references.sort();
-        references.dedup();
-        let produced_union = produced_union.to_vec();
         let body_key = decls
             .iter()
             .map(|decl| decl.key.clone())
             .find(|key| key.kind().owns_body() && key.name() == body);
-        let absent: Vec<&str> = absent_lookups.to_vec();
+        let body_key = body_key.expect("requested body has a durable declaration");
+        let body_instance = peer.instance.clone();
         let rir = inputs.rir.rir();
         let interner = inputs.rir.semantic_symbols().interner();
         let label = format!("side-b:{run_tag}:{case_name}:{body}");
@@ -2168,16 +2608,14 @@ impl ProviderFactsOverlayAnalyzer {
                     provider,
                     &decls,
                     &module_files,
-                    &references,
-                    &produced_union,
-                    &absent,
-                    body_key.as_ref(),
+                    &body_key,
+                    &body_instance,
                     rir,
                     interner,
                 )
             });
-        let (mut facts, exceptions, agg_seed) = outcome.result;
-        if oracle.failed {
+        let (mut facts, exceptions, agg_seed, discovered_references) = outcome.result;
+        if peer.failed {
             facts.push(
                 "production body failed deterministically; side B classified its absences \
                  through the keyed lookup boundary"
@@ -2204,6 +2642,7 @@ impl ProviderFactsOverlayAnalyzer {
             exceptions,
             edge_families,
             edge_identities,
+            discovered_references,
         }
     }
 
@@ -2211,39 +2650,20 @@ impl ProviderFactsOverlayAnalyzer {
         &self,
         case: &HarnessCase,
         inputs: &SideBCase,
-        oracles: &[BodyDemandOracle],
+        peers: &[ProductionDemandPeer],
         requested_body_order: &[&str],
         database: &RevisionedQueryDatabase,
         revision: rue_query::Revision,
         run_tag: &str,
     ) -> Vec<SideBBody> {
-        let produced_union: Vec<_> = {
-            let mut union: BTreeMap<crate::AnonymousNominalKey, _> = BTreeMap::new();
-            for oracle in oracles {
-                for nominal in &oracle.produced {
-                    union.insert(nominal.identity.clone(), nominal.clone());
-                }
-            }
-            union.into_values().collect()
-        };
         requested_body_order
             .iter()
             .map(|body| {
-                let oracle = oracles
+                let peer = peers
                     .iter()
-                    .find(|oracle| oracle.body == *body)
-                    .unwrap_or_else(|| panic!("no oracle for body `{body}`"));
-                self.replay_body(
-                    inputs,
-                    database,
-                    revision,
-                    case.name,
-                    body,
-                    oracle,
-                    &produced_union,
-                    case.absent_lookups,
-                    run_tag,
-                )
+                    .find(|peer| peer.body == *body)
+                    .unwrap_or_else(|| panic!("no production peer for body `{body}`"));
+                self.replay_body(inputs, database, revision, case.name, body, peer, run_tag)
             })
             .collect()
     }
@@ -2296,7 +2716,7 @@ fn side_a_is_self_equal_across_full_shape_corpus_and_schedule_permutations() {
 // `drop_glue_overlay_method_installation` is deliberately absent: this corpus
 // publishes no drop-glue/anonymous-member instance reference, so the row is a
 // documented reserve for the arm that would hit it, not an expected hit.
-const EXPECTED_FACT_EXCEPTION_HITS: &[&str] = &["comptime_call_reduces_to_anonymous_nominal"];
+const EXPECTED_FACT_EXCEPTION_HITS: &[&str] = &[];
 
 #[test]
 fn side_b_provider_drivers_supply_previously_stubbed_facts() {
@@ -2311,9 +2731,11 @@ fn side_b_provider_drivers_supply_previously_stubbed_facts() {
     );
     let mut hit: BTreeSet<&'static str> = BTreeSet::new();
     for case in SHAPE_CORPUS {
-        let (_, oracles) = production
-            .capture_with_oracle(case, case.bodies)
-            .unwrap_or_else(|error| panic!("oracle capture failed for {}: {error:?}", case.name));
+        let (_, peers) = production
+            .capture_with_peer(case, case.bodies)
+            .unwrap_or_else(|error| {
+                panic!("production capture failed for {}: {error:?}", case.name)
+            });
         let inputs = SideBCase::build_single(case.source)
             .unwrap_or_else(|error| panic!("side-b inputs failed for {}: {error:?}", case.name));
         let mut database = RevisionedQueryDatabase::default();
@@ -2322,7 +2744,7 @@ fn side_b_provider_drivers_supply_previously_stubbed_facts() {
         let forward = analyzer.replay_case(
             case,
             &inputs,
-            &oracles,
+            &peers,
             case.bodies,
             &database,
             revision,
@@ -2335,7 +2757,7 @@ fn side_b_provider_drivers_supply_previously_stubbed_facts() {
         let mut reverse = analyzer.replay_case(
             case,
             &inputs,
-            &oracles,
+            &peers,
             &reversed_order,
             &database,
             revision,
@@ -2373,6 +2795,35 @@ fn side_b_provider_drivers_supply_previously_stubbed_facts() {
                     body.body
                 );
             }
+            let peer = peers
+                .iter()
+                .find(|peer| peer.body == body.body)
+                .expect("side-B body has a production differential peer");
+            let production_roots = peer
+                .references
+                .iter()
+                .flat_map(reference_definition_roots)
+                .collect::<BTreeSet<_>>();
+            let provider_roots = body
+                .discovered_references
+                .iter()
+                .flat_map(reference_definition_roots)
+                .collect::<BTreeSet<_>>();
+            assert_eq!(
+                provider_roots, production_roots,
+                "body-local provider demand discovery diverged for {}::{}; facts={:?}",
+                case.name, body.body, body.facts
+            );
+            for absent in case.absent_lookups {
+                assert!(
+                    body.facts
+                        .iter()
+                        .any(|fact| fact.contains(&format!("call `{absent}` => absent"))),
+                    "body-local analyzer did not discover absent call `{absent}` in {}::{}",
+                    case.name,
+                    body.body
+                );
+            }
         }
     }
     let expected: BTreeSet<&str> = EXPECTED_FACT_EXCEPTION_HITS.iter().copied().collect();
@@ -2388,25 +2839,27 @@ fn side_b_edge_sets_match_production_with_recorded_exceptions() {
     let production = ProductionAnalyzer;
     let mut hit_rows: BTreeSet<&'static str> = BTreeSet::new();
     for case in SHAPE_CORPUS {
-        let (_, oracles) = production
-            .capture_with_oracle(case, case.bodies)
-            .unwrap_or_else(|error| panic!("oracle capture failed for {}: {error:?}", case.name));
+        let (_, peers) = production
+            .capture_with_peer(case, case.bodies)
+            .unwrap_or_else(|error| {
+                panic!("production capture failed for {}: {error:?}", case.name)
+            });
         let inputs = SideBCase::build_single(case.source).unwrap();
         let mut database = RevisionedQueryDatabase::default();
         let revision = inputs.revision(&mut database);
         let side_b = analyzer.replay_case(
             case,
             &inputs,
-            &oracles,
+            &peers,
             case.bodies,
             &database,
             revision,
             "edge",
         );
 
-        let side_a_families: BTreeSet<&str> = oracles
+        let side_a_families: BTreeSet<&str> = peers
             .iter()
-            .flat_map(|oracle| oracle.edge_families.iter().map(String::as_str))
+            .flat_map(|peer| peer.edge_families.iter().map(String::as_str))
             .collect();
         let side_b_families: BTreeSet<&str> = side_b
             .iter()
@@ -2461,7 +2914,7 @@ fn side_b_unrelated_same_named_const_preserves_recorded_edges() {
     let case = &SHAPE_CORPUS[0];
     assert_eq!(case.name, "plain_functions");
     let production = ProductionAnalyzer;
-    let (_, oracles) = production.capture_with_oracle(case, case.bodies).unwrap();
+    let (_, peers) = production.capture_with_peer(case, case.bodies).unwrap();
     let analyzer = ProviderFactsOverlayAnalyzer;
 
     let baseline_inputs = SideBCase::build_single(case.source).unwrap();
@@ -2470,7 +2923,7 @@ fn side_b_unrelated_same_named_const_preserves_recorded_edges() {
     let baseline = analyzer.replay_case(
         case,
         &baseline_inputs,
-        &oracles,
+        &peers,
         case.bodies,
         &baseline_db,
         baseline_revision,
@@ -2510,7 +2963,7 @@ fn side_b_unrelated_same_named_const_preserves_recorded_edges() {
     let extended = analyzer.replay_case(
         case,
         &extended_inputs,
-        &oracles,
+        &peers,
         case.bodies,
         &extended_db,
         extended_revision,
@@ -2593,7 +3046,7 @@ fn side_b_forced_eviction_and_cancellation_leave_no_partial_state() {
     // invisibly (identical facts + edge identities).
     let case = &SHAPE_CORPUS[0];
     let production = ProductionAnalyzer;
-    let (_, oracles) = production.capture_with_oracle(case, case.bodies).unwrap();
+    let (_, peers) = production.capture_with_peer(case, case.bodies).unwrap();
     let analyzer = ProviderFactsOverlayAnalyzer;
     let inputs = SideBCase::build_single(case.source).unwrap();
     // A tiny retention floor so filler pressure genuinely evicts.
@@ -2603,7 +3056,7 @@ fn side_b_forced_eviction_and_cancellation_leave_no_partial_state() {
     let baseline = analyzer.replay_case(
         case,
         &inputs,
-        &oracles,
+        &peers,
         case.bodies,
         &database,
         revision,
@@ -2648,7 +3101,7 @@ fn side_b_forced_eviction_and_cancellation_leave_no_partial_state() {
     let after_cancel = analyzer.replay_case(
         case,
         &inputs,
-        &oracles,
+        &peers,
         case.bodies,
         &database,
         revision,
@@ -2681,7 +3134,7 @@ fn side_b_forced_eviction_and_cancellation_leave_no_partial_state() {
     let after_eviction = analyzer.replay_case(
         case,
         &inputs,
-        &oracles,
+        &peers,
         case.bodies,
         &database,
         revision,
