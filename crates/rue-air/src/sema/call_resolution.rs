@@ -95,9 +95,15 @@ pub(in crate::sema) trait CallResolutionFacts {
     /// `Sema::named_method_by_callable_symbol`.
     fn named_method_by_callable_symbol(&self, name: Spur) -> Option<(StructId, Spur, MethodInfo)>;
 
-    /// The named-method RIR declaration for `(struct, name)`. Mirrors
-    /// `named_method_declarations.get`.
-    fn named_method_declaration(&self, struct_id: StructId, name: Spur) -> Option<InstRef>;
+    /// The named-method RIR declaration for the durable-available
+    /// `(owner_file, owner_type_name, method_name)` preimage. Mirrors
+    /// `structs_by_file_name.get` followed by `named_method_declarations.get`.
+    fn named_method_declaration(
+        &self,
+        owner_file: FileId,
+        owner_type_name: Spur,
+        method_name: Spur,
+    ) -> Option<InstRef>;
 
     /// The module definition for a module id. Mirrors
     /// `module_registry.get_def`.
@@ -159,10 +165,19 @@ impl CallResolutionFacts for EpochFacts<'_, '_> {
             .map(|(struct_id, method, info)| (struct_id, method, *info))
     }
 
-    fn named_method_declaration(&self, struct_id: StructId, name: Spur) -> Option<InstRef> {
+    fn named_method_declaration(
+        &self,
+        owner_file: FileId,
+        owner_type_name: Spur,
+        method_name: Spur,
+    ) -> Option<InstRef> {
+        let struct_id = self
+            .sema
+            .structs_by_file_name
+            .get(&(owner_file, owner_type_name))?;
         self.sema
             .named_method_declarations
-            .get(&(struct_id, name))
+            .get(&(*struct_id, method_name))
             .copied()
     }
 
@@ -271,14 +286,10 @@ pub(in crate::sema) fn resolve_static_call_reference<P: CallResolutionFacts>(
 //     rue-air-internal `ModuleId` registry index the provider has no durable
 //     preimage for; the module-facts + logical-path composition an equivalent
 //     could be built from belongs with the flip's module registry.
-//   - named_method_declaration (the `StructId`-keyed CallResolutionFacts /
-//     BodyEndpointProvider trait op) → RE-DEFERRED to the side-B fill / flip. The
-//     pool mints its own `StructId`s and exposes no `StructId → (owner_file,
-//     owner_type_name)` reverse surface, so a clean StructId-keyed trait
-//     translation is not available now; this driver answers the op by its
-//     provider-natural preimage (the inherent `named_method_declaration`), the
-//     r4a-2c "prefer rethreading" resolution — the analyzer computes the preimage
-//     at the call site, so the trait rethreading is a flip concern.
+//   - named_method_declaration → LANDED (flip-prep). Both seams now take the
+//     provider-natural `(owner_file, owner_type_name, method_name)` preimage;
+//     the epoch adapter alone translates it through `structs_by_file_name` to
+//     the epoch map's `(StructId, method_name)` key.
 //   - source_function_name under specialization → r5 (the specialization name
 //     map); identity otherwise.
 // ---------------------------------------------------------------------------
@@ -401,14 +412,9 @@ where
     /// `named_method_declarations.get` under the `struct_by_file_name`
     /// bijection.
     ///
-    /// This driver keys the op by the preimage DIRECTLY (provider-natural), which
-    /// IS the r4a-2c "prefer rethreading" resolution: it never mints or consults a
-    /// pool `StructId`, so the endpoint seam's production trait signature stays
-    /// untouched. The `StructId`-keyed `CallResolutionFacts::named_method_
-    /// declaration(StructId, name)` trait impl — which must map its incoming
-    /// `StructId` back to this preimage — is the endpoint-seam slice r4b-3's
-    /// concern (it owns receiver→pool identity); r4b-1 exposes the preimage-keyed
-    /// answer the flip will drive.
+    /// This driver keys the op by the preimage directly (provider-natural), the
+    /// r4a-2c "prefer rethreading" resolution. It never mints or consults a pool
+    /// `StructId`; the production seam now carries this same preimage.
     pub fn named_method_declaration(
         &self,
         owner_file: FileId,
