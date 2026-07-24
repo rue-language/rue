@@ -391,42 +391,6 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     }
 }
 
-/// A fixed-seed FNV-1a 128-bit hasher. Unlike the standard-library
-/// `DefaultHasher`, its algorithm and seed are pinned in source, so the digest
-/// of one byte stream is identical across every compile of the same program —
-/// warm, fresh, or differently scheduled. It is used only to spell stable
-/// anonymous-symbol names; it is not a cryptographic hash.
-struct StableFnv1a128(u128);
-
-impl StableFnv1a128 {
-    /// The 128-bit FNV-1a offset basis.
-    const OFFSET_BASIS: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
-    /// The 128-bit FNV-1a prime.
-    const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
-
-    fn new() -> Self {
-        Self(Self::OFFSET_BASIS)
-    }
-
-    fn digest(self) -> u128 {
-        self.0
-    }
-}
-
-impl std::hash::Hasher for StableFnv1a128 {
-    fn finish(&self) -> u64 {
-        // Truncation is never used for identity; `digest()` reads all 128 bits.
-        self.0 as u64
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.0 ^= u128::from(byte);
-            self.0 = self.0.wrapping_mul(Self::PRIME);
-        }
-    }
-}
-
 impl<D: DeclarationPhase> Sema<'_, D> {
     /// Stable, allocation-order-independent digest of a producer-nominal
     /// anonymous identity (ADR-0066, RUE-1089).
@@ -442,8 +406,6 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     /// of the same program therefore derive the same digest for one producer
     /// key, and distinct producer keys derive distinct digests.
     fn stable_anonymous_identity_digest(&self, identity: &IssuedAnonymousNominalKey) -> u128 {
-        use std::hash::Hash;
-
         // Test-only forced-collision seam (RUE-1089, Theme 4b): point specific
         // keys at a chosen digest so two DISTINCT producer keys collide,
         // exercising the fail-closed registry without a real 128-bit hash
@@ -456,9 +418,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         let stable: crate::AnonymousNominalKey<String, String> =
             self.stable_anonymous_identity_content(identity);
 
-        let mut hasher = StableFnv1a128::new();
-        stable.hash(&mut hasher);
-        hasher.digest()
+        crate::stable_digest::stable_anonymous_identity_digest(&stable)
     }
 
     /// Relocate an anonymous identity to its request-independent `(String, String)`

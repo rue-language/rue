@@ -32,6 +32,7 @@ mod semantic_identity;
 mod semantic_import;
 mod semantic_type_resolution;
 pub mod specialize;
+pub mod stable_digest;
 mod type_encoding;
 #[cfg(test)]
 mod type_properties;
