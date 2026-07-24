@@ -2487,6 +2487,31 @@ impl<'a> BoundSema<'a> {
             .map(crate::types::Type::new_struct)
     }
 
+    /// RUE-1091 slice r6b flip-era surface: every anonymous nominal [`Type`] the
+    /// epoch minted during declaration binding, exposed so the rue-compiler
+    /// differential compares the provider-driven pool
+    /// [`super::body_identity::BodyIdentityPool::find_or_create_anon`] against the
+    /// LIVE epoch's own `find_or_create_anon_struct` / `find_or_create_anon_enum`
+    /// materialization (never the shared digest fn alone). Each id is drawn from
+    /// the `anon_*_identities` maps the anonymous-install path populated; a caller
+    /// pairs a minted nominal to the epoch's by its `__anon_*_{digest}` name and
+    /// compares the full index-independent render / metadata via
+    /// [`Self::with_type_pool`] — the digest name matching independently on both
+    /// sides is itself the byte-equal-relocation proof.
+    pub fn epoch_anonymous_types(&self) -> Vec<crate::types::Type> {
+        self.sema
+            .anon_struct_identities
+            .values()
+            .map(|id| crate::types::Type::new_struct(*id))
+            .chain(
+                self.sema
+                    .anon_enum_identities
+                    .values()
+                    .map(|id| crate::types::Type::new_enum(*id)),
+            )
+            .collect()
+    }
+
     /// RUE-1091 slice r4b-3 flip-era surface: the epoch's `MethodInfo` for a
     /// `(file, type_name, method)` named method, exposed so the rue-compiler
     /// differential compares the provider-driven `ProviderCallFacts` method
