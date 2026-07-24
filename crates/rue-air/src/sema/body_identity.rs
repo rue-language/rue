@@ -1807,18 +1807,27 @@ mod tests {
     fn builtin_nominal_and_str_resolve_to_preregistered() {
         let mut pool = pool([]);
 
-        // Builtin enum (Arch) resolves to the pre-registered enum.
-        let arch = pool
-            .resolve(&DType::BuiltinNominal {
-                name: Arc::from("Arch"),
-                kind: SemanticImportNominalKind::Enum,
-            })
-            .unwrap();
-        assert_eq!(render(pool.type_pool(), arch), "Arch");
-        assert_eq!(
-            pool.type_pool().enum_symbol_name(arch.as_enum().unwrap()),
-            "Arch"
-        );
+        // The three `@target_*` builtin enums (`Arch`/`Os`/`DataModel`, the
+        // `rue_builtins::BUILTIN_ENUMS` set the `@target_arch`/`@target_os`/
+        // `@target_data_model` intrinsics consume) all resolve to the
+        // pre-registered enum — the provider-era answer for the target-config
+        // family is the pre-registered builtin plus body-local target
+        // selection, so it needs no new fact (RUE-1091 r6a, deliverable 4).
+        for name in ["Arch", "Os", "DataModel"] {
+            let enum_ty = pool
+                .resolve(&DType::BuiltinNominal {
+                    name: Arc::from(name),
+                    kind: SemanticImportNominalKind::Enum,
+                })
+                .unwrap();
+            assert_eq!(render(pool.type_pool(), enum_ty), name);
+            assert_eq!(
+                pool.type_pool()
+                    .enum_symbol_name(enum_ty.as_enum().unwrap()),
+                name,
+                "{name} keeps its bare builtin symbol"
+            );
+        }
 
         // The core `str` identity.
         let str_ty = pool

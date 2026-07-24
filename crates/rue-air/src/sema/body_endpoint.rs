@@ -401,12 +401,14 @@ pub(in crate::sema) fn resolve_instance_type<P: BodyEndpointProvider>(
 //   - `module_endpoint` / `module_id_for_file` (the `Module` arm) → module
 //     identity is a pool-refused arm; the endpoint-seam module registry is
 //     r4b-3 / the flip.
-//   - `anon_struct` / `anon_enum` (the anonymous arm) → r6 (anonymous
+//   - `anon_struct` / `anon_enum` (the anonymous arm) → r6b (anonymous
 //     mint-from-digest and the well-known `Option` facts); the pool resolves an
 //     issued anonymous by lookup only.
-//   - `generated_struct` (the `Slice` arm) and builtin names beyond the
-//     pre-registered `BUILTIN_ENUMS` + `str` set → r6 (builtin / slice name
-//     facts).
+//   - `generated_struct` (the `Slice` arm) is ANSWERED as of r6a: a caller seeds
+//     each generated slice with `register_generated_slice` and the arm resolves
+//     the minted fat-pointer struct. Builtin names beyond the pre-registered
+//     `BUILTIN_ENUMS` + `str` set (`Str(N)`) → r6b (generated-struct
+//     classification with the anonymous / generated family).
 //   - `source_function_name` under specialization → r5; identity otherwise.
 // ---------------------------------------------------------------------------
 
@@ -439,6 +441,14 @@ struct EndpointOverlay<K> {
     next_slot: u32,
     tokens: HashMap<SemanticDefinitionToken, EndpointEntry>,
     by_file_name: HashMap<(u32, Spur), K>,
+    /// Generated slice-struct identities minted on demand (RUE-1091 r6a): the
+    /// provider-side analog of the epoch's `generated_structs` name→id map. A
+    /// caller seeds one per `[T]` slice with [`ProviderEndpointFacts::
+    /// register_generated_slice`] (exactly as it seeds a named nominal with
+    /// [`ProviderEndpointFacts::register_named_nominal`]), so the `Slice` arm of
+    /// [`resolve_instance_type`] resolves the generated-struct name the epoch
+    /// mints during declaration gathering.
+    generated_slices: HashMap<Spur, StructId>,
 }
 
 impl<K> Default for EndpointOverlay<K> {
@@ -447,6 +457,7 @@ impl<K> Default for EndpointOverlay<K> {
             next_slot: 0,
             tokens: HashMap::new(),
             by_file_name: HashMap::new(),
+            generated_slices: HashMap::new(),
         }
     }
 }
@@ -525,12 +536,48 @@ where
         token
     }
 
+    /// Mint (on first sight) the generated slice struct for a `[T]` slice and
+    /// record its name→id under the pool's own interner, so the `Slice` arm of
+    /// [`resolve_instance_type`] resolves the generated-struct name through
+    /// [`BodyEndpointProvider::generated_struct`] (RUE-1091 r6a — the builtin /
+    /// slice name facts). The pool mints the fat-pointer struct byte-identically
+    /// to the epoch's `get_or_create_slice_struct_from_element`
+    /// (`import_type_local`'s slice arm), and dedups on repeat, so a second
+    /// consult of the same `(element, name)` returns the same id and mints
+    /// nothing new. The `element` is the slice's durable element type; a caller
+    /// supplies the same durable element the epoch's slice carries.
+    pub fn register_generated_slice(
+        &self,
+        element: &SemanticImportType<K, M>,
+        name: &str,
+    ) -> Option<StructId>
+    where
+        M: Clone,
+    {
+        let symbol = self.pool.borrow().intern_name(name);
+        let id = self
+            .pool
+            .borrow_mut()
+            .resolve(&SemanticImportType::Slice {
+                element: Box::new(element.clone()),
+                name: Arc::from(name),
+            })
+            .ok()?
+            .as_struct()?;
+        self.overlay
+            .borrow_mut()
+            .generated_slices
+            .insert(symbol, id);
+        Some(id)
+    }
+
     /// (P) Materialize a canonical type-instance key into a concrete pool
     /// [`Type`], reusing the provider-generic [`resolve_instance_type`] driven
     /// over this pool-backed [`BodyEndpointProvider`]. Every arm the pool
     /// supports resolves; a deferred arm (module identity, generic parameter,
-    /// anonymous mint, builtin/slice name beyond the pre-registered set) fails
-    /// closed to `MissingStableIdentity`, exactly as the pool refuses it.
+    /// anonymous mint, `Str(N)` builtin name) fails closed to
+    /// `MissingStableIdentity`, exactly as the pool refuses it. Generated slice
+    /// names resolve once seeded with [`Self::register_generated_slice`] (r6a).
     pub fn resolve_instance_type(
         &self,
         value: &TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
@@ -683,21 +730,26 @@ where
     }
 
     fn builtin_or_generated_struct(&self, name: Spur) -> Option<StructId> {
-        let name = self.pool.borrow().resolve_symbol(name).to_owned();
+        let owned = self.pool.borrow().resolve_symbol(name).to_owned();
         self.pool
             .borrow_mut()
             .resolve(&SemanticImportType::BuiltinNominal {
-                name: Arc::from(name.as_str()),
+                name: Arc::from(owned.as_str()),
                 kind: SemanticImportNominalKind::Struct,
             })
-            .ok()?
-            .as_struct()
+            .ok()
+            .and_then(|ty| ty.as_struct())
+            // Mirror the epoch's `builtin_structs.or_else(generated_structs)`:
+            // a generated slice struct answers here too (RUE-1091 r6a).
+            .or_else(|| self.generated_struct(name))
     }
 
-    fn generated_struct(&self, _name: Spur) -> Option<StructId> {
-        // Generated / slice struct names beyond the pool's pre-registered set
-        // are r6 (builtin / slice name facts). The `Slice` arm fails closed.
-        None
+    fn generated_struct(&self, name: Spur) -> Option<StructId> {
+        // The generated slice-struct name, minted and recorded by
+        // `register_generated_slice` (RUE-1091 r6a — builtin / slice name
+        // facts). A name never seeded fails closed, exactly as the epoch's
+        // `generated_structs.get` misses.
+        self.overlay.borrow().generated_slices.get(&name).copied()
     }
 
     fn builtin_enum(&self, name: Spur) -> Option<EnumId> {
