@@ -62,7 +62,7 @@ impl ElfSectionLayout {
 
     /// .rodata section index (2 if present, otherwise unused).
     fn rodata(&self) -> u16 {
-        debug_assert!(
+        assert!(
             self.has_rodata,
             "rodata index requested but rodata not present"
         );

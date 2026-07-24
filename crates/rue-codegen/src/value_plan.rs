@@ -1511,7 +1511,10 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
             Some(ValueKind::Call)
         }
         CfgInstData::Intrinsic { runtime, name, .. } => {
-            debug_assert!(runtime.is_none_or(|runtime| runtime.validate()));
+            assert!(
+                runtime.is_none_or(|runtime| runtime.validate()),
+                "intrinsic runtime metadata must be valid before codegen"
+            );
             let args = ctx.cfg.get_intrinsic_args(&inst.data);
             let name_string = adapter.resolve_intrinsic_symbol(*name);
             let values: Vec<IntrinsicArgPlan> = args

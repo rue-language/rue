@@ -240,6 +240,18 @@ sh_test(
     env = _CLI_TEST_ENV,
 )
 
+# Required release coverage is deliberately bounded: compile the real driver
+# and CLI harness under //platforms:release, then run the representative
+# differential-opt corpus through that release-built compiler. The scheduled
+# full-release workflow owns exhaustive //... coverage off the PR critical
+# path (RUE-1129).
+sh_test(
+    name = "release-smoke",
+    test = "//crates/rue-cli-tests:rue-cli-tests",
+    args = ["--quiet", "differential_opt"],
+    env = _CLI_TEST_ENV,
+)
+
 # RUE-1116: parallel CI shards of the CLI corpus. Same harness and declared
 # inputs as //:cli-tests, but each sets RUE_CLI_TEST_SHARD=k/N so it runs a
 # stable hash-partitioned 1/N slice; the shards' union is the full corpus. They
@@ -360,6 +372,22 @@ sh_test(
     name = "required-ci-container-pin-tool-tests",
     test = "scripts/test-required-ci-container-pins.py",
     resources = ["scripts/validate-required-ci-container-pins.py"],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
+sh_test(
+    name = "debug-assert-policy-tool-tests",
+    test = "scripts/test-debug-assert-policy.py",
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
+sh_test(
+    name = "release-configuration-tool-tests",
+    test = "scripts/test-release-configuration.py",
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },

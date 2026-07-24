@@ -299,7 +299,7 @@ pub(crate) fn narrow_scalar_access(
         // i64/u64/pointers occupy a full slot; aggregates never take this path.
         _ => return None,
     };
-    debug_assert_eq!(
+    assert_eq!(
         u64::from(width),
         type_pool.layout(ty).size,
         "narrow scalar width must equal the compact physical size"

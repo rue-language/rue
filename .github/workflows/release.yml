@@ -1,0 +1,52 @@
+name: Full release suite
+
+# Exhaustive release-mode defense in depth lives off the required PR critical
+# path (RUE-1129). Required CI still analyzes the exact release rustc flags and
+# runs a focused end-to-end release smoke on every PR and merge-group commit.
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: full release suite (linux-x64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dotslash
+        uses: facebook/install-dotslash@v2
+
+      - name: Cache dotslash artifacts
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/dotslash
+          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          restore-keys: |
+            dotslash-linux-x64-
+
+      - name: Provision remote build cache
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          if [ -z "${BUILDBUDDY_API_KEY:-}" ]; then
+            echo "BUILDBUDDY_API_KEY unavailable; building without the remote cache."
+            exit 0
+          fi
+          scripts/provision-build-cache install
+          scripts/provision-build-cache apply
+
+      # The monolithic //:cli-tests target owns the complete CLI corpus here.
+      # Exclude its CI-only hash shards so the same corpus is not repeated four
+      # additional times by the //... expansion.
+      - name: Run full release suite
+        run: >-
+          scripts/ci-timed "full release suite" --
+          ./buck2 test //... --exclude rue_cli_shard
+          --target-platforms //platforms:release
