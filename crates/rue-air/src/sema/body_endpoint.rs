@@ -414,9 +414,12 @@ pub(in crate::sema) fn resolve_instance_type<P: BodyEndpointProvider>(
 //   - `module_endpoint` / `module_id_for_file` (the `Module` arm) → module
 //     identity is a pool-refused arm; the endpoint-seam module registry is
 //     r4b-3 / the flip.
-//   - `anon_struct` / `anon_enum` (the anonymous arm) → r6b (anonymous
-//     mint-from-digest and the well-known `Option` facts); the pool resolves an
-//     issued anonymous by lookup only.
+//   - `anon_struct` / `anon_enum` (the anonymous arm) is ANSWERED as of r6b: a
+//     caller seeds the issued→durable seam with `register_anonymous_nominal`
+//     and the arms mint through the pool's `find_or_create_anon`; an unseeded
+//     issued key still fails closed. The well-known `Option` facts are ANSWERED
+//     as of r6c: `install_well_known_option_types` ports the trusted registry
+//     onto the same machinery, recording the export-as-produced ruling.
 //   - `generated_struct` (the `Slice` arm) is ANSWERED as of r6a: a caller seeds
 //     each generated slice with `register_generated_slice` and the arm resolves
 //     the minted fat-pointer struct. Builtin names beyond the pre-registered
@@ -549,6 +552,67 @@ where
     /// refuses it (fail-closed).
     pub fn mint_anonymous(&self, durable: &crate::AnonymousNominalKey<K, M>) -> Option<Type> {
         self.pool.borrow_mut().find_or_create_anon(durable).ok()
+    }
+
+    /// Install the per-body well-known `Option(payload)` registry (RUE-1112)
+    /// through the pool — the provider-facing port of the epoch's
+    /// `BoundSema::install_well_known_option_types` (RUE-1091 r6c). `nominals`
+    /// are the durable identities of the trusted-std `Option` enums the
+    /// per-body demand loop resolved; each mints through the pool's ordinary
+    /// anonymous machinery so its full materialization is byte-identical to
+    /// the epoch install's, and each is recorded under the export-as-produced
+    /// ruling: the installing body EXPORTS these identities as produced
+    /// anonymous nominals (the flip-era baseline subtraction consults
+    /// [`Self::is_well_known_option_identity`]), never leaking them as
+    /// imports. `option_by_payload` records the demand map fallible-intrinsic
+    /// resolution consults. Fail-closed: `None` on any refusal (non-enum
+    /// shape, absent shape, digest collision, a registry pair naming an
+    /// identity the install never minted, unresolvable registry type) —
+    /// a refusal is fatal for the requesting body, exactly as the epoch's
+    /// failed install fails the body query deterministically. A refusal also
+    /// POISONS the pool's well-known registry: repeat installs re-error (still
+    /// `None` here) and the accessors below answer as if nothing was installed
+    /// — no observable partial success, matching the atomicity of the epoch's
+    /// by-value install (which drops the whole mutated `BoundSema` on failure).
+    pub fn install_well_known_option_types(
+        &self,
+        nominals: &[crate::AnonymousNominalKey<K, M>],
+        option_by_payload: &[(SemanticImportType<K, M>, SemanticImportType<K, M>)],
+    ) -> Option<()>
+    where
+        K: Ord,
+        M: Ord,
+    {
+        self.pool
+            .borrow_mut()
+            .install_well_known_option_types(nominals, option_by_payload)
+            .ok()
+    }
+
+    /// Whether a durable identity (any producer spelling — entry
+    /// canonicalization applies) is a well-known `Option` identity installed
+    /// on this driver's pool: the export-as-produced ruling the flip-era
+    /// baseline subtraction consults (RUE-1091 r6c).
+    pub fn is_well_known_option_identity(&self, durable: &crate::AnonymousNominalKey<K, M>) -> bool
+    where
+        K: Ord,
+        M: Ord,
+    {
+        self.pool.borrow().is_well_known_option_identity(durable)
+    }
+
+    /// The number of well-known `Option` identities installed on this driver's
+    /// pool.
+    pub fn well_known_option_identity_count(&self) -> usize {
+        self.pool.borrow().well_known_option_identity_count()
+    }
+
+    /// The trusted std `Option` enum minted for a demanded payload type, or
+    /// `None` when the payload was never demanded — the pool-backed answer to
+    /// the epoch's `well_known_option_by_payload` consult
+    /// (`resolve_option_result_type`).
+    pub fn well_known_option_for_payload(&self, payload: Type) -> Option<Type> {
+        self.pool.borrow().well_known_option_for_payload(payload)
     }
 
     /// Mint an overlay [`SemanticDefinitionToken`] standing for a durable nominal

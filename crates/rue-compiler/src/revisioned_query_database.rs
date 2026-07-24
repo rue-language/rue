@@ -22158,6 +22158,306 @@ mod tests {
         );
     }
 
+    // RUE-1091 r6c: the well-known `Option` cross-path differential. The trusted
+    // std `Option(payload)` specializations a body's fallible intrinsics demand
+    // (RUE-1112) are produced through BOTH installs — the LIVE epoch's
+    // `install_well_known_option_types` (importing the projected registry and
+    // minting through `find_or_create_anon_enum`) and the provider-side pool's
+    // `install_well_known_option_types` (minting the same durable identities
+    // through `find_or_create_anon` via the real `DurableDeclSource` adapter) —
+    // and their full materializations are asserted equal: the shared-digest
+    // `__anon_enum_{digest} { … }` names, mangled symbols, copyability,
+    // visibility, and variant vocabulary. Both sides start from the SAME
+    // declaration-level durable truth (the nucleus `ComptimeCall` terminals the
+    // production demand loop roots), so agreement is a real cross-path proof.
+    //
+    // The export-as-produced ruling is asserted on both sides: the epoch records
+    // each installed identity in `well_known_option_identities` (the set
+    // `analyze_one_body` subtracts from its initial anonymous baseline, making
+    // the single export funnel publish them as PRODUCED anonymous nominals of
+    // the analyzed body — never pre-existing imports); the pool records the
+    // identical canonical identities under `is_well_known_option_identity`, the
+    // predicate the flip-era baseline subtraction consults.
+    #[test]
+    fn provider_well_known_option_install_matches_epoch() {
+        use crate::semantic_query_nucleus::{
+            ComptimeCallResultProjection as ResultProjection, SemanticNucleusKey as Key,
+            SemanticNucleusValue as V,
+        };
+        use std::collections::HashSet;
+
+        // The freestanding fallible-intrinsic program plus the trusted `Option`
+        // module published at its trusted logical path — exactly the presence
+        // condition `plan_well_known_option_demands` requires. `main` names
+        // `@parse_i64` and `@parse_u32`, so the program demands two payloads.
+        let root = FileId::new(1);
+        let option = FileId::new(2);
+        let physical = HashMap::from([
+            (root, "/project/main.rue".to_owned()),
+            (option, "/sdk/option.rue".to_owned()),
+        ]);
+        let logical = HashMap::from([
+            (root, "main.rue".to_owned()),
+            (option, crate::OPTION_MODULE_LOGICAL_PATH.to_owned()),
+        ]);
+        let metadata = SourceMetadata::new_with_trusted_standard_library(
+            root,
+            physical,
+            logical,
+            HashSet::from([option]),
+        )
+        .unwrap();
+        let snapshot = SourceSnapshot::new(
+            metadata,
+            vec![
+                (
+                    root,
+                    Arc::new(
+                        "fn main() -> i32 { let a = @parse_i64(\"1\"); \
+                         let b = @parse_u32(\"2\"); 0 }"
+                            .to_owned(),
+                    ),
+                ),
+                (
+                    option,
+                    Arc::new(
+                        "pub fn Option(comptime T: type) -> type { enum { Some(T), None } }"
+                            .to_owned(),
+                    ),
+                ),
+            ],
+        )
+        .unwrap();
+
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
+        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        let rir = crate::lower_canonical_rir(&merged).unwrap();
+
+        // The production demand catalogue: one entry per demanded payload, each
+        // carrying the exact `ComptimeCall` the per-body demand loop roots.
+        let demands = crate::well_known_option::plan_well_known_option_demands(
+            &merged,
+            &rir,
+            &semantic_configuration(),
+        );
+        assert_eq!(demands.len(), 2, "i64 and u32 payloads are demanded");
+
+        // Resolve each demand through the nucleus — the declaration-level
+        // durable truth BOTH installs consume — assembling the same
+        // `WellKnownOptionResolution` the production `body_transaction` builds.
+        let mut nucleus_db = RevisionedQueryDatabase::default();
+        let nucleus_revision = nucleus_db.source_revision(
+            &super::super::session::ExactSourceInput::new(&snapshot),
+            &snapshot,
+        );
+        let mut option_by_payload = Vec::new();
+        let mut nominals: BTreeMap<
+            crate::AnonymousNominalKey,
+            crate::durable_semantics::DurableAnonymousNominal,
+        > = BTreeMap::new();
+        for demand in demands.iter() {
+            let value = request_semantic_nucleus(
+                &nucleus_db,
+                nucleus_revision,
+                Key::ComptimeCall(demand.call.clone()),
+            );
+            let V::ComptimeCall(projection) = value else {
+                panic!("trusted Option comptime call did not resolve: {value:?}");
+            };
+            let ResultProjection::Type(option_type) = &projection.result else {
+                panic!(
+                    "Option(payload) must resolve to a type: {:?}",
+                    projection.result
+                );
+            };
+            option_by_payload.push((demand.payload.clone(), option_type.clone()));
+            for nominal in projection.anonymous_nominals.iter() {
+                nominals.insert(nominal.identity.clone(), nominal.clone());
+            }
+        }
+        let resolution = crate::body_query::WellKnownOptionResolution {
+            option_by_payload: Arc::from(option_by_payload),
+            anonymous_nominals: Arc::from(nominals.into_values().collect::<Vec<_>>()),
+        };
+        assert_eq!(
+            resolution.anonymous_nominals.len(),
+            2,
+            "one trusted Option enum per demanded payload"
+        );
+        assert!(
+            resolution.anonymous_nominals.iter().all(|nominal| matches!(
+                nominal.shape,
+                crate::durable_semantics::DurableAnonymousNominalShape::Enum { .. }
+            )),
+            "the trusted registry holds enum shapes only"
+        );
+
+        // ------------------------------------------------------------------
+        // The LIVE epoch install path: bind through the production declaration
+        // recipe, project the registry against the SAME definition set that
+        // issued the epoch's endpoints, and install — exactly the production
+        // `body_transaction` sequence.
+        // ------------------------------------------------------------------
+        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let (bound, definitions) =
+            crate::canonical_semantic::bind_query_owned_declarations_with_definitions_for_test(
+                &merged,
+                &rir,
+                crate::PreviewFeatures::default(),
+                rue_target::Target::X86_64Linux,
+                &imports,
+            )
+            .expect("declarations bind");
+        let (nominal_exports, pair_exports) =
+            crate::durable_semantics::project_durable_option_registry(
+                &merged,
+                &definitions,
+                &resolution,
+            )
+            .expect("the registry projects against the bound definition set");
+        let bound = bound
+            .install_well_known_option_types(&nominal_exports, &pair_exports)
+            .expect("the epoch installs the well-known registry");
+
+        // The export-as-produced ruling, epoch side: every installed identity is
+        // recorded for the baseline subtraction, so the single export funnel
+        // publishes it as a produced anonymous nominal.
+        let epoch_types = bound.epoch_well_known_option_types();
+        assert_eq!(
+            epoch_types.len(),
+            2,
+            "the epoch marked both Option enums for produced export"
+        );
+        let mut epoch_renders: Vec<EndpointNominalRender> = bound.with_type_pool(|pool| {
+            epoch_types
+                .iter()
+                .map(|ty| endpoint_nominal_render(pool, *ty))
+                .collect()
+        });
+        epoch_renders.sort_by(|a, b| a.display.cmp(&b.display));
+        for render in &epoch_renders {
+            assert!(
+                render.display.starts_with("__anon_enum_"),
+                "the epoch spells the digest name: {}",
+                render.display
+            );
+        }
+        // The epoch's demand registry answers each payload with its enum.
+        let epoch_registry = bound.epoch_well_known_option_registry();
+        assert_eq!(epoch_registry.len(), 2);
+        let epoch_option_for = |payload: rue_air::Type| {
+            epoch_registry
+                .iter()
+                .find(|(candidate, _)| *candidate == payload)
+                .map(|(_, option)| *option)
+                .unwrap_or_else(|| panic!("the epoch registry answers {payload:?}"))
+        };
+        let epoch_i64_render = bound.with_type_pool(|pool| {
+            endpoint_nominal_render(pool, epoch_option_for(rue_air::Type::I64))
+        });
+        let epoch_u32_render = bound.with_type_pool(|pool| {
+            endpoint_nominal_render(pool, epoch_option_for(rue_air::Type::U32))
+        });
+        assert!(
+            epoch_i64_render.display.ends_with(" { Some(i64), None }"),
+            "the i64 registry entry is the Option(i64) enum: {}",
+            epoch_i64_render.display
+        );
+        assert!(
+            epoch_u32_render.display.ends_with(" { Some(u32), None }"),
+            "the u32 registry entry is the Option(u32) enum: {}",
+            epoch_u32_render.display
+        );
+
+        // ------------------------------------------------------------------
+        // The provider-side pool install: the same durable identities and
+        // registry pairs, minted through `BodyIdentityPool::
+        // install_well_known_option_types` over the real `DurableDeclSource`
+        // adapter built from the independently produced durable declarations.
+        // ------------------------------------------------------------------
+        let decls = production_declarations(&snapshot);
+        let adapter = DurableDeclSource::from_declarations(&decls)
+            .with_anonymous_nominals(&resolution.anonymous_nominals);
+        let identities: Vec<crate::AnonymousNominalKey> = resolution
+            .anonymous_nominals
+            .iter()
+            .map(|nominal| nominal.identity.clone())
+            .collect();
+        let pairs: Vec<(crate::DurableType, crate::DurableType)> =
+            resolution.option_by_payload.iter().cloned().collect();
+
+        let rir_ref = rir.rir();
+        let interner = rir.semantic_symbols().interner();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let outcome = database.probe_body_facts(
+            revision,
+            semantic_configuration(),
+            "well-known-option-install",
+            move |provider| {
+                let facts =
+                    rue_air::ProviderEndpointFacts::new(provider, adapter, rir_ref, interner);
+                facts
+                    .install_well_known_option_types(&identities, &pairs)
+                    .expect("the pool installs the well-known registry");
+                // Idempotent: a repeat install dedups onto the same identities.
+                facts
+                    .install_well_known_option_types(&identities, &pairs)
+                    .expect("a repeat install is a pure dedup");
+
+                // The export-as-produced ruling, pool side: each installed
+                // identity answers the baseline-subtraction predicate.
+                assert_eq!(facts.well_known_option_identity_count(), 2);
+                for identity in &identities {
+                    assert!(
+                        facts.is_well_known_option_identity(identity),
+                        "an installed identity carries the produced ruling"
+                    );
+                }
+
+                // Materializations, fetched by dedup lookup (nothing re-mints).
+                let renders: Vec<EndpointNominalRender> = identities
+                    .iter()
+                    .map(|identity| {
+                        let ty = facts
+                            .mint_anonymous(identity)
+                            .expect("an installed identity resolves by dedup");
+                        facts.with_type_pool(|pool| endpoint_nominal_render(pool, ty))
+                    })
+                    .collect();
+                let i64_option = facts
+                    .well_known_option_for_payload(rue_air::Type::I64)
+                    .expect("the pool registry answers i64");
+                let u32_option = facts
+                    .well_known_option_for_payload(rue_air::Type::U32)
+                    .expect("the pool registry answers u32");
+                let i64_render =
+                    facts.with_type_pool(|pool| endpoint_nominal_render(pool, i64_option));
+                let u32_render =
+                    facts.with_type_pool(|pool| endpoint_nominal_render(pool, u32_option));
+                (renders, i64_render, u32_render)
+            },
+        );
+        let (mut pool_renders, pool_i64_render, pool_u32_render) = outcome.result;
+        pool_renders.sort_by(|a, b| a.display.cmp(&b.display));
+
+        // The crux: both installs materialized byte-identical identities — the
+        // shared-digest names, mangled symbols, shape, copyability, and
+        // visibility all agree across the two independent paths.
+        assert_eq!(
+            pool_renders, epoch_renders,
+            "the pool's well-known Option install diverged from the LIVE epoch"
+        );
+        assert_eq!(
+            pool_i64_render, epoch_i64_render,
+            "the i64 demand registry entries diverged"
+        );
+        assert_eq!(
+            pool_u32_render, epoch_u32_render,
+            "the u32 demand registry entries diverged"
+        );
+    }
+
     // RUE-1091 r6a: the `Slice` arm resolves once a caller seeds the generated
     // slice struct with `register_generated_slice`, minting the fat-pointer
     // struct byte-identically to the LIVE epoch's generated slice — the positive

@@ -524,6 +524,85 @@ keystone.
 
 ---
 
+## Rider: well-known Option identities from the pool and the export-as-produced ruling (recorded landing r6c)
+
+**(a) What landed.** The trusted-std well-known `Option` install (RUE-1112) is ported onto the
+provider/pool side: `BodyIdentityPool::install_well_known_option_types`
+(`crates/rue-air/src/sema/body_identity.rs`) is the pool analog of the epoch's
+`BoundSema::install_well_known_option_types` (`binding_manifest.rs`). It takes the durable
+identities of the resolved `Option(payload)` enum specializations plus the durable
+`(payload, option)` demand pairs, mints each enum through the r6b anonymous machinery
+(`find_or_create_anon` — shared digest, entry-enforced wrapper collapse, fail-closed collision
+guard), and records the demand map (`well_known_option_for_payload`, the pool answer to
+`resolve_option_result_type`'s `well_known_option_by_payload` consult). The provider-facing entry
+mirrors the r6b anon-arm approach: `ProviderEndpointFacts::install_well_known_option_types` /
+`is_well_known_option_identity` / `well_known_option_for_payload`
+(`sema/body_endpoint.rs`). Everything is inert pre-flip (`#![cfg_attr(not(test),
+allow(dead_code))]` / `cfg(test)`-only reachability; no production call sites).
+
+**(b) The export-as-produced ruling, as implemented.** In the epoch, the install records each
+materialized identity in `Sema::well_known_option_identities`; `analyze_one_body`
+(`one_body.rs:853`) subtracts exactly that set from `one_body_initial_anonymous_identities`, so
+the single export funnel (`produced_anonymous_nominals` → `semantic_body_export.rs`, durable
+keying at export) publishes the registry-rooted enums as PRODUCED anonymous nominals of the
+analyzed body — never as pre-existing imports with no producer. The pool port carries the same
+ruling as data: every installed identity is recorded (canonical producer form) in a pool-owned
+well-known identity set whose membership predicate
+(`BodyIdentityPool::is_well_known_option_identity`, surfaced as
+`ProviderEndpointFacts::is_well_known_option_identity`) is the flip-era baseline subtraction —
+the flip's export wiring consults it exactly where the epoch consults
+`well_known_option_identities.contains`. No production export code was touched; the ruling is
+proven pre-flip by materialization + registry equality against the LIVE epoch install (below)
+plus both sides' recorded identity sets agreeing in cardinality and digest identity.
+
+**(c) Cross-path differential.** `provider_well_known_option_install_matches_epoch`
+(`revisioned_query_database.rs` test tail) drives BOTH installs from the SAME declaration-level
+durable truth — the nucleus `ComptimeCall` terminals the production demand loop roots
+(`plan_well_known_option_demands` → per-demand `SemanticNucleusKey::ComptimeCall`), for a
+two-payload program (`@parse_i64` + `@parse_u32`) with the trusted `\0rue-std/option.rue` module
+present. The epoch side binds through the production declaration recipe, projects the registry
+against the SAME `BoundDefinitionSet` that issued the epoch's endpoints
+(`project_durable_option_registry`, via the new test helper
+`bind_query_owned_declarations_with_definitions_for_test`), and installs; the pool side installs
+the raw durable identities through the real `DurableDeclSource` adapter. Asserted equal per
+identity: the shared-digest `__anon_enum_{digest} { Some(T), None }` names (digest byte-equality
+via the relocation), mangled symbols, copyability, visibility, and variant vocabulary; plus the
+`(payload → option)` registry answers for both payloads, and the produced-ruling sets on both
+sides. Epoch read surface added for the differential: `BoundSema::epoch_well_known_option_types`
+/ `epoch_well_known_option_registry`. Pool-side failure semantics are unit-pinned in
+`body_identity.rs`: non-enum shape refused (`WellKnownShapeMismatch`, the pool spelling of the
+epoch's `NominalShapeMismatch`) with zero publication for the refused key, absent shape fails
+closed, a demand pair naming an identity the install never minted fails closed
+(`MissingAnonymous` — registry-endpoint resolution is lookup-only against the installed
+anonymous identities, exactly as the epoch's `import_export_type` anonymous arm refuses an
+identity absent from `anon_enum_identities`; it never mints), the bounded fixpoint tolerates
+nested payloads in EITHER batch order (the epoch's pending loop), wrapper-form identities
+collapse on entry, and repeat successful installs are pure dedups. The ATOMICITY shape differs
+from the epoch and is closed by poisoning: the epoch's install takes `self` by value and returns
+`Result<Self, _>`, so a failed install drops the whole mutated `BoundSema` and partial effects
+are structurally unobservable; the pool's install mutates in place, so ANY failure instead
+POISONS the well-known registry (`well_known_poisoned`, the well-known analog of the pool's
+`poisoned`/`callable_poisoned` discipline) — repeat installs re-error with the recorded refusal
+and `is_well_known_option_identity` / `well_known_option_identity_count` /
+`well_known_option_for_payload` answer as if nothing was installed, restoring the epoch's
+no-observable-partial-success guarantee (pinned by the mixed-batch partial-failure and
+uninstalled-registry-identity unit tests).
+
+**(d) STOPs / deferrals.** No new STOP: every consulted fact has declaration-level durable truth
+(the demand catalogue is durable-planned; each specialization is a memoized nucleus terminal;
+producers root at the installed trusted `Option` function endpoint, inside the r6b rider's (c)
+minting scope — const-candidate-rooted producers remain out of scope as recorded there). The
+r6b deferrals stand unchanged: `Pair()` / `Str(8)` TYPE-SYNTAX classification stays pinned in
+`provider_type_facts_deferred_shapes_are_documented_gaps`, and the `Option(StrBuf)` demand is
+exercised only at the planner level here (its payload nominal resolves through the ordinary r4a-2a
+`mint_named` path; the trusted `StrBuf` module fixture is flip-corpus work, with the rFinal
+`trusted_well_known_option_registry` carry-forward still naming the production-path gap). Method
+BODIES / dispatch for anonymous nominals remain with the flip's overlay method installation, and
+capture export (`type_captures`/`value_captures`) stays on the durable nominal itself — the pool
+mints identity + materialization only, exactly the funnel's need.
+
+---
+
 ## 4. RISKS (top 5 for this rewire)
 
 | # | Risk | Mitigation |

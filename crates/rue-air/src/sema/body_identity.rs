@@ -56,11 +56,15 @@
 //!   underlying `resolve` refuses them. A comptime-*value* parameter (concrete
 //!   type, `is_comptime = true`) resolves fully and marks `is_generic`; only a
 //!   comptime-*type* parameter referencing a generic parameter refuses;
-//! - **anonymous nominal minting** — an issued anonymous nominal is resolved by
-//!   lookup here (exactly as `resolve_instance_type`'s anonymous arm looks up an
-//!   already-issued id via `anon_struct`/`anon_enum`); the id-minting from a
-//!   structural digest, together with the well-known `Option` facts, is later
-//!   work (r6);
+//! - **anonymous method dispatch / bodies** —
+//!   [`BodyIdentityPool::find_or_create_anon`] (r6b) mints the producer-nominal
+//!   anonymous struct / enum from its durable identity + shape, and
+//!   [`BodyIdentityPool::install_well_known_option_types`] (r6c) ports the
+//!   trusted well-known `Option` registry onto that machinery, but method
+//!   BODIES and dispatch registration still need the request-local
+//!   whole-program `Rir` and belong to the flip's overlay method installation;
+//!   an issued anonymous key with no registered durable identity still
+//!   resolves by lookup only ([`BodyIdentityPool::register_issued_anonymous`]);
 //! - **module identity** and generic-parameter substitution (endpoint /
 //!   inference families) — these arms are *refused*, never approximated;
 //! - **drop metadata** — the destructor symbol and the transitive
@@ -256,6 +260,13 @@ pub(in crate::sema) enum IdentityMintError {
     /// refused and neither its nominal nor its symbol is published. Carries the
     /// digest both keys hash to.
     AnonymousDigestCollision(u128),
+    /// A well-known `Option` registry install named an anonymous nominal whose
+    /// durable shape is not an enum. The pool analog of the epoch install's
+    /// `DeclarationInstallFailure::NominalShapeMismatch`
+    /// (`install_well_known_option_types`, `binding_manifest.rs`): the trusted
+    /// registry holds `Option` ENUM specializations only, so a non-enum shape
+    /// is refused before any id or symbol is minted.
+    WellKnownShapeMismatch,
     /// An arm outside slice r4a-2a's scope (module identity, generic parameter).
     Deferred(&'static str),
 }
@@ -305,6 +316,41 @@ pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
     /// rather than re-running the partial mint (whose parameters may already sit
     /// orphaned in the append-only arena) — the callable analog of `poisoned`.
     callable_poisoned: HashMap<K, IdentityMintError>,
+    /// Per-body well-known `Option(payload)` registry (RUE-1112, ported for
+    /// RUE-1091 r6c): the pool analog of `Sema::well_known_option_by_payload`.
+    /// Maps an expected payload [`Type`] to the trusted standard-library
+    /// `Option` enum minted for that payload, populated narrowly by
+    /// [`Self::install_well_known_option_types`] before body analysis — never
+    /// from the body's own composition/import universe. The flip-era consumer
+    /// is fallible-intrinsic resolution (`resolve_option_result_type`).
+    well_known_option_by_payload: HashMap<Type, Type>,
+    /// Anonymous enum identities (canonical producer form) minted by the
+    /// well-known `Option` registry install for this body — the pool analog of
+    /// `Sema::well_known_option_identities`, which is THE export-as-produced
+    /// ruling: the export funnel (`one_body.rs` /
+    /// `produced_anonymous_nominals`) subtracts these identities from the
+    /// initial anonymous baseline so the installing body EXPORTS them as
+    /// produced anonymous nominals — exactly as a body materializing
+    /// `Option(payload)` through the ordinary annotation/comptime path would —
+    /// never leaking them as pre-existing imports with no producer. The
+    /// flip-era baseline computation consults
+    /// [`Self::is_well_known_option_identity`] to apply the same subtraction.
+    /// A `BTreeSet`, matching the epoch set's deterministic order.
+    well_known_option_identities: std::collections::BTreeSet<AnonymousNominalKey<K, M>>,
+    /// The recorded refusal of a FAILED well-known `Option` install — the
+    /// well-known analog of `poisoned` / `callable_poisoned`. The epoch's
+    /// install takes `self` by value and returns `Result<Self, _>`, so its
+    /// failure drops the whole mutated `BoundSema` and no partial effect is
+    /// ever observable; the pool's install mutates in place, so a mid-batch
+    /// refusal would otherwise leave earlier keys' rulings and already-recorded
+    /// demand pairs observable. This poison closes that gap: a repeat install
+    /// re-errors with the recorded refusal (never re-running the partial
+    /// install), and every well-known accessor
+    /// ([`Self::is_well_known_option_identity`],
+    /// [`Self::well_known_option_identity_count`],
+    /// [`Self::well_known_option_for_payload`]) answers as if nothing was
+    /// installed — no observable partial success either way.
+    well_known_poisoned: Option<IdentityMintError>,
 }
 
 /// The durable-signature-derived subset of a [`FunctionInfo`], minted once and
@@ -412,6 +458,9 @@ where
             function_sigs: HashMap::new(),
             method_sigs: HashMap::new(),
             callable_poisoned: HashMap::new(),
+            well_known_option_by_payload: HashMap::new(),
+            well_known_option_identities: std::collections::BTreeSet::new(),
+            well_known_poisoned: None,
         }
     }
 
@@ -835,6 +884,216 @@ where
         };
         self.anon_nominals.insert(key.clone(), ty);
         Ok(ty)
+    }
+
+    /// Install the per-body well-known `Option(payload)` registry (RUE-1112)
+    /// into this pool — the provider-driven port of the epoch's
+    /// `BoundSema::install_well_known_option_types` (`binding_manifest.rs`),
+    /// RUE-1091 slice r6c.
+    ///
+    /// `nominals` are the durable identities of the trusted-std `Option` enum
+    /// specializations the per-body demand loop resolved; each is minted through
+    /// the ordinary anonymous machinery ([`Self::find_or_create_anon`]) so its
+    /// `__anon_enum_{digest}` name, copyability, visibility, and mangled symbol
+    /// are byte-identical to the epoch install's `find_or_create_anon_enum`
+    /// materialization. `option_by_payload` pairs each demanded payload type
+    /// with its resolved `Option` type; both endpoints are pure mints/dedups
+    /// once the enums are installed, recorded so fallible-intrinsic resolution
+    /// binds the trusted `Option` under `?` even when the body never
+    /// `@import`s it.
+    ///
+    /// # The export-as-produced ruling
+    ///
+    /// Every installed identity is recorded (canonical producer form) in the
+    /// pool's well-known identity set. That set is the pool-side carrier of the
+    /// epoch's `well_known_option_identities` ruling: the export funnel
+    /// (`semantic_body_export.rs` via `one_body.rs`'s baseline subtraction)
+    /// treats these identities as PRODUCED anonymous nominals of the analyzed
+    /// body — the body that binds a fallible intrinsic's `Option` is the body
+    /// that produces it — never as pre-existing imports with no producer. The
+    /// flip-era baseline computation consults
+    /// [`Self::is_well_known_option_identity`] to apply the same subtraction
+    /// the epoch applies at `one_body_initial_anonymous_identities` capture.
+    ///
+    /// # Failure semantics
+    ///
+    /// The refusals mirror the epoch install: a non-enum durable shape is
+    /// refused ([`IdentityMintError::WellKnownShapeMismatch`], the pool
+    /// spelling of `DeclarationInstallFailure::NominalShapeMismatch`) BEFORE
+    /// any id or symbol is minted for that key; an absent shape or
+    /// unresolvable registry type fails closed. A bounded fixpoint tolerates a
+    /// nominal whose payload references another not-yet-installed well-known
+    /// nominal (the trusted `Option` shapes are flat today, so one pass
+    /// suffices); a round with no progress returns the blocking refusal. Any
+    /// error is a fatal refusal for the requesting body — exactly as the
+    /// epoch's failed install fails the body query deterministically — never
+    /// an approximation.
+    ///
+    /// The ATOMICITY shape differs and is closed by poisoning: the epoch's
+    /// install takes `self` by value and returns `Result<Self, _>`, so its
+    /// failure drops the whole mutated `BoundSema` — partial effects are
+    /// structurally unobservable. This install mutates in place, so ANY
+    /// failure instead POISONS the well-known registry (`well_known_poisoned`,
+    /// the well-known analog of the file's `poisoned` / `callable_poisoned`
+    /// discipline): a repeat install re-errors with the recorded refusal
+    /// rather than re-running the partial install, and every well-known
+    /// accessor answers as if nothing was installed — restoring the epoch's
+    /// no-observable-partial-success guarantee.
+    pub(in crate::sema) fn install_well_known_option_types(
+        &mut self,
+        nominals: &[AnonymousNominalKey<K, M>],
+        option_by_payload: &[(SemanticImportType<K, M>, SemanticImportType<K, M>)],
+    ) -> Result<(), IdentityMintError>
+    where
+        K: Ord,
+        M: Ord,
+    {
+        // A failed install poisoned the whole well-known registry: re-error
+        // with the recorded refusal, exactly as `mint_named` re-errors a
+        // poisoned key instead of re-running the partial mint.
+        if let Some(err) = &self.well_known_poisoned {
+            return Err(err.clone());
+        }
+        match self.install_well_known_option_types_inner(nominals, option_by_payload) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                self.well_known_poisoned = Some(err.clone());
+                Err(err)
+            }
+        }
+    }
+
+    /// The install body, separated so [`Self::install_well_known_option_types`]
+    /// can record ANY refusal it returns into `well_known_poisoned` before
+    /// surfacing it.
+    fn install_well_known_option_types_inner(
+        &mut self,
+        nominals: &[AnonymousNominalKey<K, M>],
+        option_by_payload: &[(SemanticImportType<K, M>, SemanticImportType<K, M>)],
+    ) -> Result<(), IdentityMintError>
+    where
+        K: Ord,
+        M: Ord,
+    {
+        let mut pending: Vec<&AnonymousNominalKey<K, M>> = nominals.iter().collect();
+        while !pending.is_empty() {
+            let mut progressed = false;
+            let mut next = Vec::new();
+            let mut blocking = None;
+            for key in pending {
+                let canonical = key.with_canonical_producer();
+                // The trusted registry holds `Option` ENUM specializations
+                // only; refuse a non-enum shape before minting anything for
+                // this key (the epoch's `NominalShapeMismatch` check runs
+                // before its `find_or_create_anon_enum` call).
+                match self.source.anonymous_shape(canonical.as_ref()) {
+                    Some(DurableAnonymousShape::Enum { .. }) => {}
+                    Some(DurableAnonymousShape::Struct { .. }) => {
+                        return Err(IdentityMintError::WellKnownShapeMismatch);
+                    }
+                    None => return Err(IdentityMintError::MissingAnonymousShape),
+                }
+                match self.find_or_create_anon(canonical.as_ref()) {
+                    Ok(_) => {
+                        progressed = true;
+                        self.well_known_option_identities
+                            .insert(canonical.into_owned());
+                    }
+                    // A payload referencing a not-yet-minted well-known
+                    // anonymous nominal: retry after the rest of the round.
+                    // Enum mints resolve every payload BEFORE registering, so
+                    // a blocked mint published nothing and the retry is clean.
+                    Err(IdentityMintError::MissingAnonymous) => {
+                        blocking = Some(IdentityMintError::MissingAnonymous);
+                        next.push(key);
+                    }
+                    Err(err) => return Err(err),
+                }
+            }
+            if !progressed {
+                return Err(blocking.unwrap_or(IdentityMintError::MissingAnonymous));
+            }
+            pending = next;
+        }
+        // Record the demand map. Both endpoints are pure dedups/lookups now
+        // that the enums are minted (the epoch's `import_export_type` pair).
+        for (payload, option) in option_by_payload {
+            let payload_ty = self.resolve_well_known_registry_type(payload)?;
+            let option_ty = self.resolve_well_known_registry_type(option)?;
+            self.well_known_option_by_payload
+                .insert(payload_ty, option_ty);
+        }
+        Ok(())
+    }
+
+    /// Resolve one well-known registry endpoint type. An anonymous nominal is a
+    /// pure LOOKUP against the already-installed anonymous identities (the
+    /// probe is entry-canonicalized first, per the r6b contract), failing
+    /// closed with [`IdentityMintError::MissingAnonymous`] on a miss — the pool
+    /// analog of the epoch's lookup-only `import_export_type` anonymous arm
+    /// (`anon_enum_identities.get(..).ok_or(MissingNominal)`), which refuses a
+    /// registry pair naming an identity its install never materialized. It
+    /// never mints: minting here would publish an identity outside the ruling
+    /// set exactly where the epoch fails closed. Every other durable type
+    /// resolves through the ordinary [`Self::resolve`] machinery, refusing
+    /// exactly what it refuses.
+    fn resolve_well_known_registry_type(
+        &mut self,
+        value: &SemanticImportType<K, M>,
+    ) -> Result<Type, IdentityMintError> {
+        match value {
+            SemanticImportType::AnonymousNominal(key) => self
+                .anon_nominals
+                .get(key.with_canonical_producer().as_ref())
+                .copied()
+                .ok_or(IdentityMintError::MissingAnonymous),
+            other => self.resolve(other),
+        }
+    }
+
+    /// Whether `key` (in any producer spelling — entry canonicalization
+    /// applies) names a well-known `Option` identity installed on this pool.
+    /// The pool analog of `sema.well_known_option_identities.contains(..)`,
+    /// which the export funnel's baseline subtraction consults so installed
+    /// identities are EXPORTED as produced anonymous nominals, never leaked as
+    /// imports (the r6c export-as-produced ruling). A poisoned registry (a
+    /// failed install — see `well_known_poisoned`) answers `false` for every
+    /// key: as if nothing was installed.
+    pub(in crate::sema) fn is_well_known_option_identity(
+        &self,
+        key: &AnonymousNominalKey<K, M>,
+    ) -> bool
+    where
+        K: Ord,
+        M: Ord,
+    {
+        self.well_known_poisoned.is_none()
+            && self
+                .well_known_option_identities
+                .contains(key.with_canonical_producer().as_ref())
+    }
+
+    /// The number of well-known `Option` identities installed on this pool.
+    /// A poisoned registry (a failed install — see `well_known_poisoned`)
+    /// answers `0`: as if nothing was installed.
+    pub(in crate::sema) fn well_known_option_identity_count(&self) -> usize {
+        if self.well_known_poisoned.is_some() {
+            return 0;
+        }
+        self.well_known_option_identities.len()
+    }
+
+    /// The trusted std `Option` enum minted for a demanded payload type, or
+    /// `None` when the payload was never demanded. The pool analog of
+    /// `sema.well_known_option_by_payload.get(..)`, the map fallible-intrinsic
+    /// resolution (`resolve_option_result_type`) consults. A poisoned registry
+    /// (a failed install — see `well_known_poisoned`) answers `None` for every
+    /// payload: as if nothing was installed.
+    pub(in crate::sema) fn well_known_option_for_payload(&self, payload: Type) -> Option<Type> {
+        if self.well_known_poisoned.is_some() {
+            return None;
+        }
+        self.well_known_option_by_payload.get(&payload).copied()
     }
 
     /// The stable presentation digest of an anonymous producer identity: relocate
@@ -2558,6 +2817,351 @@ mod tests {
         assert_eq!(
             pool.find_or_create_anon(&key),
             Err(IdentityMintError::MissingAnonymousShape)
+        );
+    }
+
+    /// The well-known `Option` install (r6c) mints the trusted enum through the
+    /// ordinary anonymous machinery, records the export-as-produced ruling
+    /// (the identity is a well-known identity, membership canonical under
+    /// entry canonicalization), and records the payload→option demand map.
+    /// A repeat install is a pure dedup.
+    #[test]
+    fn well_known_option_install_records_produced_ruling_and_registry() {
+        use crate::semantic_identity::FunctionInstanceKey;
+        let key = anon_key(AnonymousNominalKind::Enum, 30, 0);
+        let shape = DurableAnonymousShape::Enum {
+            variants: vec![
+                (Arc::from("Some"), vec![DType::I64]),
+                (Arc::from("None"), vec![]),
+            ],
+        };
+        let mut pool = anon_pool([], [(key.clone(), shape)], []);
+
+        pool.install_well_known_option_types(
+            std::slice::from_ref(&key),
+            &[(DType::I64, DType::AnonymousNominal(key.clone()))],
+        )
+        .unwrap();
+
+        // The enum minted through the ordinary anonymous machinery.
+        let minted = pool.find_or_create_anon(&key).unwrap();
+        let def = pool.type_pool().enum_def(minted.as_enum().unwrap());
+        assert!(def.name.starts_with("__anon_enum_"));
+        assert!(
+            def.name.ends_with(" { Some(i64), None }"),
+            "the trusted enum renders its payloads: {}",
+            def.name
+        );
+
+        // The export-as-produced ruling: the identity is recorded as
+        // well-known, so the flip-era baseline subtraction exports it as a
+        // produced anonymous nominal instead of leaking it as an import.
+        assert!(pool.is_well_known_option_identity(&key));
+        assert_eq!(pool.well_known_option_identity_count(), 1);
+        // Membership is canonical: a wrapper-form spelling of the same
+        // producer answers the same ruling (entry canonicalization).
+        if let StableProducerId::Definition(producer) = &key.producer {
+            let wrapped = AnonymousNominalKey {
+                producer: StableProducerId::Function(Box::new(
+                    FunctionInstanceKey::Specialization {
+                        base: Box::new(FunctionInstanceKey::Definition(*producer)),
+                        arguments: CanonicalArguments::default(),
+                    },
+                )),
+                ..key.clone()
+            };
+            // A Definition-producer key is already canonical, so exercise the
+            // wrapper collapse through a Function spelling of a DIFFERENT key:
+            // the wrapped form of an uninstalled producer is NOT well-known.
+            assert!(!pool.is_well_known_option_identity(&wrapped));
+        }
+        // An unrelated identity is not well-known.
+        assert!(!pool.is_well_known_option_identity(&anon_key(AnonymousNominalKind::Enum, 31, 0)));
+
+        // The demand registry answers the payload lookup with the minted enum.
+        assert_eq!(pool.well_known_option_for_payload(Type::I64), Some(minted));
+        assert_eq!(pool.well_known_option_for_payload(Type::U32), None);
+
+        // Idempotent: a repeat install dedups onto the same identity.
+        pool.install_well_known_option_types(
+            std::slice::from_ref(&key),
+            &[(DType::I64, DType::AnonymousNominal(key.clone()))],
+        )
+        .unwrap();
+        assert_eq!(pool.well_known_option_identity_count(), 1);
+        assert_eq!(pool.find_or_create_anon(&key).unwrap(), minted);
+    }
+
+    /// The well-known install accepts a WRAPPER-form identity (the
+    /// empty-argument specialization spelling): the ruling and mint both land
+    /// under the canonical form, so a canonical-form consult finds them —
+    /// entry-enforced wrapper collapse, per the r6b rider.
+    #[test]
+    fn well_known_option_install_canonicalizes_wrapper_form_identities() {
+        use crate::semantic_identity::FunctionInstanceKey;
+        let collapsed = AnonymousNominalKey {
+            kind: AnonymousNominalKind::Enum,
+            producer: StableProducerId::Function(Box::new(FunctionInstanceKey::Definition(40u32))),
+            anchor: rue_rir::RirStructuralAnchor::new(vec![
+                rue_rir::RirStructuralPathSegment::AnonymousType(0),
+            ]),
+            arguments: CanonicalArguments::default(),
+        };
+        let wrapped = AnonymousNominalKey {
+            producer: StableProducerId::Function(Box::new(FunctionInstanceKey::Specialization {
+                base: Box::new(FunctionInstanceKey::Definition(40u32)),
+                arguments: CanonicalArguments::default(),
+            })),
+            ..collapsed.clone()
+        };
+        let shape = DurableAnonymousShape::Enum {
+            variants: vec![
+                (Arc::from("Some"), vec![DType::U32]),
+                (Arc::from("None"), vec![]),
+            ],
+        };
+        // The durable universe keys shapes canonically (the source contract).
+        let mut pool = anon_pool([], [(collapsed.clone(), shape)], []);
+
+        pool.install_well_known_option_types(
+            std::slice::from_ref(&wrapped),
+            &[(DType::U32, DType::AnonymousNominal(wrapped.clone()))],
+        )
+        .unwrap();
+
+        // One identity, answered under BOTH spellings.
+        assert_eq!(pool.well_known_option_identity_count(), 1);
+        assert!(pool.is_well_known_option_identity(&collapsed));
+        assert!(pool.is_well_known_option_identity(&wrapped));
+        assert_eq!(
+            pool.find_or_create_anon(&collapsed).unwrap(),
+            pool.well_known_option_for_payload(Type::U32).unwrap(),
+        );
+    }
+
+    /// A non-enum durable shape is refused (the pool spelling of the epoch's
+    /// `NominalShapeMismatch`) and NOTHING is published for the refused key —
+    /// no id, no ruling entry, no registry entry.
+    #[test]
+    fn well_known_option_install_refuses_non_enum_shape() {
+        let key = anon_key(AnonymousNominalKind::Struct, 50, 0);
+        let shape = DurableAnonymousShape::Struct {
+            fields: vec![(Arc::from("v"), DType::I32)],
+            struct_method_names: Vec::new(),
+        };
+        let mut pool = anon_pool([], [(key.clone(), shape)], []);
+        assert_eq!(
+            pool.install_well_known_option_types(
+                std::slice::from_ref(&key),
+                &[(DType::I32, DType::AnonymousNominal(key.clone()))],
+            ),
+            Err(IdentityMintError::WellKnownShapeMismatch)
+        );
+        assert_eq!(
+            pool.resolve(&DType::AnonymousNominal(key.clone())),
+            Err(IdentityMintError::MissingAnonymous),
+            "the refused key published no id"
+        );
+        assert!(!pool.is_well_known_option_identity(&key));
+        assert_eq!(pool.well_known_option_identity_count(), 0);
+        assert_eq!(pool.well_known_option_for_payload(Type::I32), None);
+    }
+
+    /// An identity with no durable shape fails the install closed, exactly as
+    /// the epoch's exhausted fixpoint fails with `MissingNominal`.
+    #[test]
+    fn well_known_option_install_missing_shape_fails_closed() {
+        let key = anon_key(AnonymousNominalKind::Enum, 60, 0);
+        let mut pool = anon_pool([], [], []);
+        assert_eq!(
+            pool.install_well_known_option_types(std::slice::from_ref(&key), &[]),
+            Err(IdentityMintError::MissingAnonymousShape)
+        );
+    }
+
+    /// A batch of [valid enum, invalid struct]: the struct refusal fails the
+    /// install AND poisons the whole well-known registry, so the valid enum's
+    /// mid-batch publication is unobservable — membership false, count zero,
+    /// registry answers absent — and a repeat install re-errors with the
+    /// recorded refusal instead of re-running the partial install. This is the
+    /// pool's spelling of the epoch install's by-value atomicity (its failure
+    /// drops the whole mutated `BoundSema`), via the file's poisoning
+    /// discipline (`poisoned` / `callable_poisoned`).
+    #[test]
+    fn well_known_option_install_partial_failure_poisons_registry() {
+        let good = anon_key(AnonymousNominalKind::Enum, 80, 0);
+        let bad = anon_key(AnonymousNominalKind::Struct, 81, 0);
+        let good_shape = DurableAnonymousShape::Enum {
+            variants: vec![
+                (Arc::from("Some"), vec![DType::I64]),
+                (Arc::from("None"), vec![]),
+            ],
+        };
+        let bad_shape = DurableAnonymousShape::Struct {
+            fields: vec![(Arc::from("v"), DType::I32)],
+            struct_method_names: Vec::new(),
+        };
+        let mut pool = anon_pool(
+            [],
+            [(good.clone(), good_shape), (bad.clone(), bad_shape)],
+            [],
+        );
+        assert_eq!(
+            pool.install_well_known_option_types(
+                &[good.clone(), bad.clone()],
+                &[(DType::I64, DType::AnonymousNominal(good.clone()))],
+            ),
+            Err(IdentityMintError::WellKnownShapeMismatch)
+        );
+        // No observable partial success: the valid enum DID mint mid-batch
+        // through the ordinary anonymous machinery, but the well-known
+        // registry answers as if nothing was installed.
+        assert!(!pool.is_well_known_option_identity(&good));
+        assert_eq!(pool.well_known_option_identity_count(), 0);
+        assert_eq!(pool.well_known_option_for_payload(Type::I64), None);
+        // A repeat install re-errors with the recorded refusal — even a batch
+        // that would succeed on its own cannot resurrect a poisoned registry.
+        assert_eq!(
+            pool.install_well_known_option_types(std::slice::from_ref(&good), &[]),
+            Err(IdentityMintError::WellKnownShapeMismatch),
+            "poisoned well-known registry re-errors"
+        );
+        assert!(!pool.is_well_known_option_identity(&good));
+    }
+
+    /// A demand pair naming an `Option` identity the install never minted is
+    /// refused: registry-endpoint resolution is LOOKUP-ONLY (the pool analog of
+    /// the epoch's `import_export_type` anonymous arm, which refuses an
+    /// identity absent from `anon_enum_identities`), so the uninstalled
+    /// identity fails closed with `MissingAnonymous` even though its durable
+    /// shape exists and a minting arm would silently succeed. The failure
+    /// poisons the registry, so the pair recorded before it is unobservable.
+    #[test]
+    fn well_known_option_install_refuses_uninstalled_registry_identity() {
+        let installed = anon_key(AnonymousNominalKind::Enum, 90, 0);
+        let uninstalled = anon_key(AnonymousNominalKind::Enum, 91, 0);
+        let installed_shape = DurableAnonymousShape::Enum {
+            variants: vec![
+                (Arc::from("Some"), vec![DType::I64]),
+                (Arc::from("None"), vec![]),
+            ],
+        };
+        // The uninstalled identity HAS a durable enum shape: only a
+        // lookup-only registry arm refuses it, a minting arm would leak it.
+        let uninstalled_shape = DurableAnonymousShape::Enum {
+            variants: vec![
+                (Arc::from("Some"), vec![DType::U32]),
+                (Arc::from("None"), vec![]),
+            ],
+        };
+        let mut pool = anon_pool(
+            [],
+            [
+                (installed.clone(), installed_shape),
+                (uninstalled.clone(), uninstalled_shape),
+            ],
+            [],
+        );
+        assert_eq!(
+            pool.install_well_known_option_types(
+                std::slice::from_ref(&installed),
+                &[
+                    (DType::I64, DType::AnonymousNominal(installed.clone())),
+                    (DType::U32, DType::AnonymousNominal(uninstalled.clone())),
+                ],
+            ),
+            Err(IdentityMintError::MissingAnonymous)
+        );
+        // The refused pair's identity was never minted by the failed resolve —
+        // no silent success, no unproduced-import leak.
+        assert_eq!(
+            pool.resolve(&DType::AnonymousNominal(uninstalled.clone())),
+            Err(IdentityMintError::MissingAnonymous),
+            "the lookup-only registry arm minted nothing"
+        );
+        // And nothing partial is observable: the pair recorded before the
+        // refusal (and the installed enum's ruling) sit behind the poison.
+        assert!(!pool.is_well_known_option_identity(&installed));
+        assert_eq!(pool.well_known_option_identity_count(), 0);
+        assert_eq!(pool.well_known_option_for_payload(Type::I64), None);
+        assert_eq!(
+            pool.install_well_known_option_types(std::slice::from_ref(&installed), &[]),
+            Err(IdentityMintError::MissingAnonymous),
+            "poisoned well-known registry re-errors"
+        );
+    }
+
+    /// The bounded fixpoint tolerates install order: an enum whose payload
+    /// references another well-known nominal installed later in the same batch
+    /// is retried after that dependency mints — mirroring the epoch install's
+    /// pending loop. BOTH batch orders are run ([outer, inner] exercises the
+    /// round-two retry, [inner, outer] the single-pass order) and must agree
+    /// on the minted digests/names and the registry answers.
+    #[test]
+    fn well_known_option_install_fixpoint_orders_nested_payloads() {
+        let inner = anon_key(AnonymousNominalKind::Enum, 70, 0);
+        let outer = anon_key(AnonymousNominalKind::Enum, 71, 0);
+        let inner_shape = DurableAnonymousShape::Enum {
+            variants: vec![
+                (Arc::from("Some"), vec![DType::I32]),
+                (Arc::from("None"), vec![]),
+            ],
+        };
+        let outer_shape = DurableAnonymousShape::Enum {
+            variants: vec![
+                (
+                    Arc::from("Some"),
+                    vec![DType::AnonymousNominal(inner.clone())],
+                ),
+                (Arc::from("None"), vec![]),
+            ],
+        };
+        // One fresh pool per batch order; returns the digest-bearing names so
+        // the orders can be asserted identical across pools.
+        let run = |batch: &[AnonKey]| -> (String, String) {
+            let mut pool = anon_pool(
+                [],
+                [
+                    (inner.clone(), inner_shape.clone()),
+                    (outer.clone(), outer_shape.clone()),
+                ],
+                [],
+            );
+            pool.install_well_known_option_types(
+                batch,
+                &[
+                    (DType::I32, DType::AnonymousNominal(inner.clone())),
+                    (
+                        DType::AnonymousNominal(inner.clone()),
+                        DType::AnonymousNominal(outer.clone()),
+                    ),
+                ],
+            )
+            .unwrap();
+            assert_eq!(pool.well_known_option_identity_count(), 2);
+            assert!(pool.is_well_known_option_identity(&outer));
+            assert!(pool.is_well_known_option_identity(&inner));
+            let inner_ty = pool.find_or_create_anon(&inner).unwrap();
+            let outer_ty = pool.find_or_create_anon(&outer).unwrap();
+            let outer_def = pool.type_pool().enum_def(outer_ty.as_enum().unwrap());
+            assert_eq!(outer_def.variant_payload(0), &[inner_ty]);
+            // The registry answers both demand pairs with the minted enums.
+            assert_eq!(
+                pool.well_known_option_for_payload(Type::I32),
+                Some(inner_ty)
+            );
+            assert_eq!(pool.well_known_option_for_payload(inner_ty), Some(outer_ty));
+            let inner_def = pool.type_pool().enum_def(inner_ty.as_enum().unwrap());
+            (inner_def.name.clone(), outer_def.name.clone())
+        };
+        // OUTER first: its payload consult blocks on the not-yet-minted inner
+        // enum in round one and succeeds in round two.
+        let outer_first = run(&[outer.clone(), inner.clone()]);
+        // INNER first: every mint lands in round one.
+        let inner_first = run(&[inner.clone(), outer.clone()]);
+        assert_eq!(
+            outer_first, inner_first,
+            "batch order must not change the minted digests/names or registry answers"
         );
     }
 

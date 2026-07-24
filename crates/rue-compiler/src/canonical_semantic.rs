@@ -323,6 +323,29 @@ impl CanonicalPreparedDeclarations<'_> {
     }
 }
 
+/// The shared test recipe under [`query_owned_declaration_shells_for_test`] and
+/// [`bind_query_owned_declarations_with_definitions_for_test`]: project the
+/// query-owned declaration shells and prepare them through the production
+/// `prepare_query_declaration_shells` path.
+#[cfg(test)]
+fn prepared_query_declarations_for_test<'a>(
+    merged: &CanonicalMergedProgram,
+    rir: &'a CanonicalRirOutput,
+    preview_features: rue_error::PreviewFeatures,
+    target: crate::Target,
+    imports: &CanonicalImportGraph,
+) -> MultiErrorResult<CanonicalPreparedDeclarations<'a>> {
+    let options = CompileOptions {
+        preview_features,
+        target,
+        ..CompileOptions::default()
+    };
+    let query_shells =
+        crate::revisioned_query_database::projected_declaration_shells_for_test(merged)?;
+    prepare_query_declaration_shells(merged, rir, &options, imports, &query_shells)
+        .map_err(|failure| failure.errors)
+}
+
 #[cfg(test)]
 pub(crate) fn query_owned_declaration_shells_for_test<'a>(
     merged: &CanonicalMergedProgram,
@@ -331,15 +354,8 @@ pub(crate) fn query_owned_declaration_shells_for_test<'a>(
     target: crate::Target,
     imports: &CanonicalImportGraph,
 ) -> MultiErrorResult<rue_air::DeclarationShells<'a>> {
-    let options = CompileOptions {
-        preview_features,
-        target,
-        ..CompileOptions::default()
-    };
-    let query_shells =
-        crate::revisioned_query_database::projected_declaration_shells_for_test(merged)?;
-    let prepared = prepare_query_declaration_shells(merged, rir, &options, imports, &query_shells)
-        .map_err(|failure| failure.errors)?;
+    let prepared =
+        prepared_query_declarations_for_test(merged, rir, preview_features, target, imports)?;
     Ok(prepared.shells)
 }
 
@@ -353,6 +369,28 @@ pub(crate) fn bind_query_owned_declarations_for_test<'a>(
 ) -> MultiErrorResult<rue_air::BoundSema<'a>> {
     query_owned_declaration_shells_for_test(merged, rir, preview_features, target, imports)?
         .resolve_declarations_for_test()
+}
+
+/// The [`bind_query_owned_declarations_for_test`] recipe, additionally handing
+/// back the [`BoundDefinitionSet`] whose stable identity endpoints were
+/// installed into the returned epoch. The RUE-1091 r6c differential needs both:
+/// the production well-known `Option` projection
+/// (`project_durable_option_registry`) resolves durable keys through the SAME
+/// definition set that issued the epoch's endpoints, exactly as the production
+/// `body_transaction` install does.
+#[cfg(test)]
+pub(crate) fn bind_query_owned_declarations_with_definitions_for_test<'a>(
+    merged: &CanonicalMergedProgram,
+    rir: &'a CanonicalRirOutput,
+    preview_features: rue_error::PreviewFeatures,
+    target: crate::Target,
+    imports: &CanonicalImportGraph,
+) -> MultiErrorResult<(rue_air::BoundSema<'a>, BoundDefinitionSet)> {
+    let prepared =
+        prepared_query_declarations_for_test(merged, rir, preview_features, target, imports)?;
+    let definitions = prepared.definitions;
+    let bound = prepared.shells.resolve_declarations_for_test()?;
+    Ok((bound, definitions))
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
