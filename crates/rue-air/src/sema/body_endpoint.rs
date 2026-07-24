@@ -34,6 +34,7 @@ use super::body_identity::{
 use super::declaration_index::RirDestructorDeclaration;
 use super::info::{ConstInfo, FunctionInfo, MethodInfo};
 use super::provider::BodyFactProvider;
+use super::provider_module_registry::ProviderModuleRegistry;
 use crate::intern_pool::TypeInternPool;
 use crate::types::{EnumId, ModuleId, StructId, Type};
 use crate::{
@@ -412,9 +413,9 @@ pub(in crate::sema) fn resolve_instance_type<P: BodyEndpointProvider>(
 //     (the call family); `method_info` → r4b-3's `ProviderCallFacts::method_info`
 //     (receiver→pool identity now threaded through the durable method key). Both
 //     stay `None` on THIS endpoint driver — they belong to the call family.
-//   - `module_endpoint` / `module_id_for_file` (the `Module` arm) → module
-//     identity is a pool-refused arm; the endpoint-seam module registry is
-//     r4b-3 / the flip.
+//   - `module_endpoint` / `module_id_for_file` (the `Module` arm) → O: answered
+//     by the body-local module overlay registered from the durable module
+//     identity + its current request file.
 //   - `anon_struct` / `anon_enum` (the anonymous arm) is ANSWERED as of r6b: a
 //     caller seeds the issued→durable seam with `register_anonymous_nominal`
 //     and the arms mint through the pool's `find_or_create_anon`; an unseeded
@@ -458,6 +459,7 @@ struct EndpointOverlay<K> {
     next_slot: u32,
     tokens: HashMap<SemanticDefinitionToken, EndpointEntry>,
     by_file_name: HashMap<(u32, Spur), K>,
+    module_tokens: HashMap<SemanticModuleToken, SemanticModuleEndpoint>,
     /// Generated slice-struct identities minted on demand (RUE-1091 r6a): the
     /// provider-side analog of the epoch's `generated_structs` name→id map. A
     /// caller seeds one per `[T]` slice with [`ProviderEndpointFacts::
@@ -474,6 +476,7 @@ impl<K> Default for EndpointOverlay<K> {
             next_slot: 0,
             tokens: HashMap::new(),
             by_file_name: HashMap::new(),
+            module_tokens: HashMap::new(),
             generated_slices: HashMap::new(),
         }
     }
@@ -500,6 +503,7 @@ pub struct ProviderEndpointFacts<'a, P, S, K, M> {
     /// from the pool's own interner the nominal ops key on.
     rir_interner: &'a ThreadedRodeo,
     overlay: RefCell<EndpointOverlay<K>>,
+    module_registry: RefCell<ProviderModuleRegistry<M>>,
     /// The issued→durable anonymous seam (RUE-1091 r6b): the anonymous producer
     /// key `resolve_instance_type` carries is in the issued-token domain, so a
     /// caller seeds the durable key it stands for with
@@ -529,6 +533,7 @@ where
             rir_index: BodyRirIndex::new(rir),
             rir_interner,
             overlay: RefCell::new(EndpointOverlay::default()),
+            module_registry: RefCell::new(ProviderModuleRegistry::default()),
             anon_by_issued: RefCell::new(HashMap::new()),
         }
     }
@@ -648,6 +653,55 @@ where
         token
     }
 
+    /// Mint (or return) the body-local module token and compact module id for a
+    /// durable module identity at its current request file. This is the
+    /// provider-side analog of the epoch's `stable_module_endpoints` +
+    /// `module_registry`: the durable identity prevents two registrations of
+    /// one module from minting distinct units, while the file is the exact
+    /// declaration-level request fact consumed by the endpoint lookup.
+    ///
+    /// A conflicting durable→file or file→durable registration is rejected
+    /// rather than guessed. The flip fills this from the admitted durable module
+    /// set keyed by `BodyFactProvider::ModuleRef`, paired with the canonical
+    /// module projection's current file handle.
+    pub fn register_module(
+        &self,
+        module: M,
+        file: FileId,
+        file_path: &str,
+        import_path: &str,
+        durable_id: &str,
+    ) -> Option<SemanticModuleToken> {
+        let id = self.module_registry.borrow_mut().register(
+            module,
+            file,
+            file_path,
+            import_path,
+            durable_id,
+        )?;
+        let token = SemanticModuleToken::new(OVERLAY_ISSUER, id.index());
+        let mut overlay = self.overlay.borrow_mut();
+        overlay.module_tokens.insert(
+            token,
+            SemanticModuleEndpoint {
+                token,
+                file: file.index(),
+            },
+        );
+        Some(token)
+    }
+
+    /// Recover the current request file for a module type minted by this
+    /// driver's body-local registry. Used by the cross-path differential to
+    /// compare index-independent module identity.
+    pub fn module_file(&self, ty: Type) -> Option<FileId> {
+        let id = ty.as_module()?;
+        self.module_registry
+            .borrow()
+            .get(id)
+            .map(|definition| definition.file_id)
+    }
+
     /// Mint (on first sight) the generated slice struct for a `[T]` slice and
     /// record its name→id under the pool's own interner, so the `Slice` arm of
     /// [`resolve_instance_type`] resolves the generated-struct name through
@@ -686,7 +740,7 @@ where
     /// (P) Materialize a canonical type-instance key into a concrete pool
     /// [`Type`], reusing the provider-generic [`resolve_instance_type`] driven
     /// over this pool-backed [`BodyEndpointProvider`]. Every arm the pool
-    /// supports resolves; a deferred arm (module identity, generic parameter,
+    /// supports resolves; a deferred arm (generic parameter, an unregistered
     /// anonymous mint, `Str(N)` builtin name) fails closed to
     /// `MissingStableIdentity`, exactly as the pool refuses it. Generated slice
     /// names resolve once seeded with [`Self::register_generated_slice`] (r6a).
@@ -837,10 +891,8 @@ where
         })
     }
 
-    fn module_endpoint(&self, _token: SemanticModuleToken) -> Option<SemanticModuleEndpoint> {
-        // Module identity is a pool-refused arm; the endpoint-seam module
-        // registry is r4b-3 / the flip. The `Module` arm fails closed here.
-        None
+    fn module_endpoint(&self, token: SemanticModuleToken) -> Option<SemanticModuleEndpoint> {
+        self.overlay.borrow().module_tokens.get(&token).copied()
     }
 
     fn function_by_file_name(&self, _file: FileId, _name: Spur) -> Option<Spur> {
@@ -980,9 +1032,8 @@ where
         None
     }
 
-    fn module_id_for_file(&self, _file: u32) -> Option<ModuleId> {
-        // Module identity is a pool-refused arm (see `module_endpoint`).
-        None
+    fn module_id_for_file(&self, file: u32) -> Option<ModuleId> {
+        self.module_registry.borrow().id_for_file(FileId::new(file))
     }
 
     fn intern_array(&self, element: Type, len: u64) -> Option<Type> {

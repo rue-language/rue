@@ -425,10 +425,9 @@ index; that is the boundary-honest form of "a reverse index built from the durab
 and it fails closed on absent, ambiguous-receiver, wrong-`self`-form, and non-matching-render inputs.
 
 **r4b-3 review carry-forwards (flip obligations, not defects).**
-- **The aggregate driver's `by_file_name` overlay needs a stated flip-era fill source.** Its
-  zero-provider-edge property is complete only if the flip fills it from the durable declaration
-  set (keys already carry module/kind/name), or records edges at an upstream lookup. The flip
-  slice states which and asserts the edge story (also doc'd at `register_named_nominal`).
+- **The aggregate driver's `by_file_name` overlay fill source is now stated and pinned.** See the
+  flip-prep rider below: the flip fills it from the admitted durable declaration set, so the fill
+  itself records no provider edge; the provider lookup that selected a name remains the edge.
 - **The production receiver-join adapter must be keyed.** The test fixture's
   `DurableCallableSource::method` recovers the owner nominal by linear scan; the flip-era
   production adapter keys the `owner() → owner-nominal` recovery.
@@ -457,6 +456,74 @@ and it fails closed on absent, ambiguous-receiver, wrong-`self`-form, and non-ma
   edge-differential must treat the RICHER provider-era edge set as the new truth after the flip
   (the finer dependencies are the more-correct incremental behavior), not force the op to suppress
   edges to match the epoch's index-masked footprint.
+
+---
+
+## Rider: flip-prep module registry and overlay fill provenance (recorded landing residue)
+
+The flip has one body-local module registry computation:
+`provider_module_registry::ProviderModuleRegistry`. It deduplicates on the durable
+`BodyFactProvider::ModuleRef`, mints the compact rue-air `ModuleId`, and stores the canonical module
+projection's current `FileId`, physical path, and import/logical path. The endpoint, call, and
+aggregate drivers all delegate their module registration/lookup to that computation:
+`ProviderEndpointFacts::register_module` supplies `module_endpoint` +
+`module_id_for_file`, `ProviderCallFacts::register_module` supplies `module_def`, and
+`ProviderAggregateFacts::register_module` supplies `AggregateFacts::module`. A conflicting
+durable→file/path or file→durable registration fails closed. The
+`provider_endpoint_facts_resolve_instance_type_matches_epoch` differential compares all three
+provider projections with the LIVE epoch registry and pins dedup plus conflict refusal.
+
+### Fill-source provenance at flip time
+
+Every public `register_*` entry point on a provider-era overlay has one source:
+
+- `ProviderEndpointFacts::register_named_nominal`: the nominal's stable key comes from the durable
+  type/signature fact that caused materialization; file/name/kind come from that declaration's
+  candidate handle plus `BodyFactProvider::declaration_identity`. The driver performs only the
+  body-local key→token/id materialization. The named struct+enum rows in
+  `provider_endpoint_facts_resolve_instance_type_matches_epoch` pin this source.
+- `ProviderEndpointFacts::register_anonymous_nominal`: the issued identity is body-local producer
+  output; its durable anonymous identity comes from `BodyFactProvider::anonymous_facts` for
+  declaration-produced shapes or `producer_body_facts` for a reached producer body. The positive
+  struct/enum differentials
+  `provider_endpoint_facts_anonymous_arm_mints_after_registration` and
+  `provider_endpoint_facts_anonymous_enum_mints_match_epoch` pin both materializations.
+- `ProviderEndpointFacts::register_generated_slice`: the durable
+  `SemanticImportType::Slice { element, name }` is the already-resolved signature/type fact; the
+  driver mints the body-local fat-pointer nominal. The r6a slice differential pins the fill.
+- `ProviderEndpointFacts::register_module`, `ProviderCallFacts::register_module`, and
+  `ProviderAggregateFacts::register_module`: the durable module handle is the admitted module-set
+  key (the same key under which `module_declaration_sets` is observed); file/path/import-path are
+  current canonical module-projection inputs. These are registry/materialization facts, not name
+  winners, so registration itself records no provider edge. The module-registry differential named
+  above pins all three consumers against the LIVE epoch.
+- `ProviderAggregateFacts::register_named_nominal`: fill from the admitted durable declaration set
+  (`bind_canonical_declaration_semantics` / the flip's keyed equivalent), whose stable key already
+  carries module/kind/name; the canonical module projection supplies the current `FileId`. No
+  provider edge is invented by this index fill. The struct/enum rows in
+  `provider_aggregate_facts_nominal_and_builtin_match_epoch` construct the driver from exactly that
+  durable set and pin epoch parity.
+- `ProviderAggregateFacts::register_file_path`: fill from request-local source metadata, the same
+  body-local presentation input as RIR spans. It is deliberately not claimed as declaration-level
+  durable truth. `provider_aggregate_facts_is_accessible_matches_epoch` registers the identical
+  physical paths on both sides and pins every visibility row.
+
+### Honest STOPs
+
+The registry residue is closed, but neighboring aggregate/call paths still have deliberately
+unwired compositions that must not be inferred from registry data:
+
+- The durable const identity and exact declaration RIR handle now exist, but
+  `value_const` / `module_binding` are not yet registered into the aggregate/call drivers. The
+  aggregate const-arm differential continues to pin provider `Absent` versus epoch `Const`.
+  Module bindings require the flip to compose that const materialization with the now-real module
+  registry; neither fact substitutes for the missing composition.
+- aggregate `source_path(span)` is request/RIR presentation state, not declaration truth. It remains
+  a flip-time body-local input; no durable provider fact is claimed for it.
+
+This residue is inert before the flip: production still uses the epoch implementations. No new
+public `Type`-named surface was introduced; the shared registry seam is
+`pub(in crate::sema)`.
 
 ---
 
@@ -545,9 +612,10 @@ independently bound records. The pool/RIR machinery remains pre-flip only: no pr
 call site consumes it, and the existing crate-level dead-code discipline remains in force.
 
 **(d) Honest STOPs and the r6b hard boundary.** Module bindings remain refused: their durable target
-module is real, but the pool still lacks the body-local module-registry identity needed to mint the
-epoch's `Type::Module`; the differential pins LIVE-epoch success versus pool `None`. A missing
-declaration-level durable const record likewise returns `MissingConst`, never an inferred value.
+module and the provider drivers' body-local module registry are real, but const-payload
+materialization is not yet composed with that registry to mint the epoch's `Type::Module`; the
+differential pins LIVE-epoch success versus pool `None`. A missing declaration-level durable const
+record likewise returns `MissingConst`, never an inferred value.
 Const payload materialization uses `BodyIdentityPool::resolve`, whose anonymous arm is lookup-only;
 it never calls `find_or_create_anon`. Therefore a producer rooted at an uninstalled const candidate
 whose epoch digest relocation contains session-local `d\u{1}{issuer}\u{1}{slot}` /

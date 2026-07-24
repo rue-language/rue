@@ -2469,6 +2469,45 @@ impl<'a> BoundSema<'a> {
             })
     }
 
+    /// RUE-1091 flip-prep surface: resolve the module whose stable endpoint
+    /// names `file` through the LIVE epoch endpoint + module-registry path. This
+    /// is the independent side of the provider module-overlay differential; the
+    /// returned compact id is epoch-relative, so the differential compares the
+    /// module endpoint/file relationship rather than raw indices.
+    pub fn epoch_module_type(&self, file: FileId) -> Option<crate::types::Type> {
+        use super::body_endpoint::{endpoint_facts, resolve_instance_type};
+        let endpoint = self
+            .sema
+            .stable_module_endpoints
+            .values()
+            .find(|endpoint| endpoint.file == file.index())?;
+        let facts = endpoint_facts(&self.sema);
+        resolve_instance_type(&facts, &crate::TypeInstanceKey::Module(endpoint.token)).ok()
+    }
+
+    /// Recover the current request file for an epoch module type. This is the
+    /// index-independent projection compared with
+    /// `ProviderEndpointFacts::module_file`.
+    pub fn epoch_module_file(&self, ty: crate::types::Type) -> Option<FileId> {
+        let id = ty.as_module()?;
+        Some(self.sema.module_registry.get_def(id).file_id)
+    }
+
+    /// Owned, index-independent presentation facts for an epoch module type.
+    pub fn epoch_module_fact(
+        &self,
+        ty: crate::types::Type,
+    ) -> Option<(FileId, String, String, String)> {
+        let id = ty.as_module()?;
+        let definition = self.sema.module_registry.get_def(id);
+        Some((
+            definition.file_id,
+            definition.file_path,
+            definition.import_path,
+            definition.durable_id,
+        ))
+    }
+
     /// RUE-1091 slice r6a flip-era surface: the epoch's resolved generated
     /// slice-struct [`Type`] for a generated-struct name, exposed so the
     /// rue-compiler differential compares the provider-driven

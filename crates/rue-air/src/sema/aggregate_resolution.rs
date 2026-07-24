@@ -13,6 +13,7 @@ use rue_span::FileId;
 
 use super::body_identity::{BodyIdentityPool, DurableNominalSource};
 use super::context::{ConstValue, LocalVar};
+use super::provider_module_registry::ProviderModuleRegistry;
 use super::{ConstInfo, DeclarationPhase, Sema};
 use crate::intern_pool::TypeInternPool;
 use crate::types::{EnumId, ModuleId, StructId, Type};
@@ -332,12 +333,12 @@ pub(crate) fn is_accessible<P: AggregateFacts>(
 //     remains unwired pre-flip. The const fall-through of every `select_*` above
 //     therefore answers `Absent` where the epoch answers `Const`; the
 //     differential pins this const-arm divergence.
-//   - module (module_def) and the module spines
-//     ([`resolve_aggregate_module_ref`] / [`resolve_visibility_module_ref`]) →
-//     the flip: `module` answers a rue-air-internal `ModuleId` registry index the
-//     provider has no durable preimage for. The spines are gated behind
-//     `module_binding` (deferred), so they never reach `module`, and this driver
-//     exposes no spine wrapper.
+//   - module (module_def) → LANDED (flip-prep): `ProviderModuleRegistry` mints
+//     the body-local compact id from the durable module handle and stores the
+//     current request file/path/import-path facts. The module spines
+//     ([`resolve_aggregate_module_ref`] / [`resolve_visibility_module_ref`])
+//     remain gated behind `module_binding` (deferred), but their registry answer
+//     is ready.
 //   - source_path → the flip: consumed only by inline `aggregates.rs` diagnostic
 //     paths, never by the provider-generic selection logic this driver drives.
 // ---------------------------------------------------------------------------
@@ -384,6 +385,7 @@ pub enum ProviderStructHead {
 /// by a caller through `&mut self` registration before any consult.
 pub struct ProviderAggregateFacts<K, M, S> {
     pool: RefCell<BodyIdentityPool<K, M, S>>,
+    modules: RefCell<ProviderModuleRegistry<M>>,
     /// The provider-side analog of the epoch's `structs_by_file_name` /
     /// `enums_by_file_name` key maps: `(file, pool-interned name) → durable key`,
     /// populated on demand as a caller registers a nominal. The `Spur` is the
@@ -410,6 +412,7 @@ where
     pub fn new(source: S) -> Self {
         Self {
             pool: RefCell::new(BodyIdentityPool::new(source)),
+            modules: RefCell::new(ProviderModuleRegistry::default()),
             by_file_name: HashMap::new(),
             file_paths: HashMap::new(),
         }
@@ -437,6 +440,34 @@ where
     /// [`Self::is_accessible`] reproduces the epoch's visibility domain exactly.
     pub fn register_file_path(&mut self, file: FileId, path: &str) {
         self.file_paths.insert(file, path.to_owned());
+    }
+
+    /// Register one durable module and its request-local presentation facts in
+    /// the body-local module registry. The returned compact id is the provider
+    /// counterpart of the epoch's canonical `ModuleId`; downstream aggregate
+    /// spines recover the exact file/import paths through [`AggregateFacts::module`].
+    pub fn register_module(
+        &self,
+        module: M,
+        file: FileId,
+        file_path: &str,
+        import_path: &str,
+        durable_id: &str,
+    ) -> Option<ModuleId> {
+        self.modules
+            .borrow_mut()
+            .register(module, file, file_path, import_path, durable_id)
+    }
+
+    /// Owned, index-independent module facts for a registered compact id.
+    pub fn module_fact(&self, module: ModuleId) -> Option<(FileId, String, String)> {
+        self.modules.borrow().get(module).map(|definition| {
+            (
+                definition.file_id,
+                definition.file_path,
+                definition.import_path,
+            )
+        })
     }
 
     /// (P) The struct declared as `(file, name)`, minted through the pool's 2a
@@ -587,15 +618,16 @@ where
             .as_enum()
     }
 
-    fn module(&self, _module: ModuleId) -> AggregateModuleFact {
-        // Deferred to the flip: `module_def` answers a rue-air-internal `ModuleId`
-        // registry index with no durable provider preimage. Unreachable while
-        // `module_binding` is deferred (the module spines short-circuit before
-        // reaching this op); a benign empty fact keeps the refusal total.
+    fn module(&self, module: ModuleId) -> AggregateModuleFact {
+        let definition = self
+            .modules
+            .borrow()
+            .get(module)
+            .expect("provider module id must be registered before aggregate resolution");
         AggregateModuleFact {
-            file: FileId::DEFAULT,
-            file_path: String::new(),
-            import_path: String::new(),
+            file: definition.file_id,
+            file_path: definition.file_path,
+            import_path: definition.import_path,
         }
     }
 
