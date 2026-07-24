@@ -12155,6 +12155,614 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// `ProviderTypeFacts` — the type-syntax/nominal ProviderFacts (RUE-1091 r2).
+//
+// A second implementation of rue-air's provider-generic type-syntax resolution
+// traits (`SemanticModulePathProvider`/`SemanticTypeSyntaxProvider`), the pair
+// the production `SemaTypeSyntaxProvider` (rue-air `typeck.rs`) also implements.
+// Where production reads the whole-epoch tables (`structs_by_file_name`,
+// `enums_by_file_name`, `value_const`, `type_pool`), this impl answers every
+// point query from the exact body-fact provider (`CompilerBodyFactProvider`) and
+// materializes each consulted nominal into the task-owned overlay. The shared
+// `resolve_semantic_type_syntax` logic is unchanged: only the fact source
+// differs, so a differential proves the two impls resolve every type-syntax
+// shape identically.
+//
+// Owned type domain: T = `DurableType` (`SemanticImportType`), the pool-free
+// durable type algebra that IS the byte-identity representation the published
+// body compares on. A demand-materialized overlay assigns nominal identities by
+// stable key, never by an epoch `type_pool` index, so the differential compares
+// the resolved durable structure and the materialized nominal metadata, not a
+// pool-relative `StructId`.
+//
+// Scope of r2 (per the plan's r2 section): primitives, root/module struct/enum,
+// root/module type aliases, and the structural wrappers array/`ptr const`/`ptr
+// mut`. Deferred with cause (differential documents each): comptime type-ctor
+// calls and their value arguments (the boundary exposes no argument-parameterized
+// comptime-call op, and `DurableSemanticParameter` carries no parameter name —
+// r5); builtin `str`/`Str(...)` and slice generated-struct names (no builtin/slice
+// name fact on the boundary — later slices); anonymous producer nominals (r4) and
+// well-known `Option` (r6). Every operation is `#[cfg(test)]`: this is a
+// differential adapter behind the same gate as `CompilerBodyFactProvider`, never
+// a selectable production path.
+// ---------------------------------------------------------------------------
+
+/// A recoverable failure surfaced by [`ProviderTypeFacts`]. Aborts never reach
+/// the trait surface — `CompilerBodyFactProvider` captures them and returns the
+/// op's absence sentinel — so the abort associated type is [`Infallible`].
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProviderTypeFactsFailure {
+    /// A shape whose facts the body-fact boundary does not yet expose in r2. The
+    /// message names the deferring slice so a differential can assert the exact
+    /// boundary rather than a generic miss.
+    Deferred(&'static str),
+}
+
+/// The type-syntax/nominal ProviderFacts: resolves type syntax from the exact
+/// body-fact provider and materializes consulted nominals into the overlay.
+#[cfg(test)]
+pub(crate) struct ProviderTypeFacts<'p, 'o, 'db> {
+    provider: &'p CompilerBodyFactProvider<'db>,
+    overlay: &'o mut crate::body_overlay::BodySemanticOverlay,
+}
+
+#[cfg(test)]
+fn provider_definition_category(
+    kind: rue_air::ProviderDefinitionKind,
+) -> crate::declaration_candidate::DeclarationCandidateCategory {
+    use crate::declaration_candidate::DeclarationCandidateCategory as Cat;
+    match kind {
+        rue_air::ProviderDefinitionKind::Function => Cat::Function,
+        rue_air::ProviderDefinitionKind::Struct => Cat::Struct,
+        rue_air::ProviderDefinitionKind::Enum => Cat::Enum,
+        rue_air::ProviderDefinitionKind::Const => Cat::ConstCandidate,
+        rue_air::ProviderDefinitionKind::Destructor => Cat::Destructor,
+    }
+}
+
+/// The durable type for a primitive type-syntax name, mirroring
+/// `rue_air::Type::from_primitive_name` in the durable algebra.
+#[cfg(test)]
+fn primitive_durable_type(name: &str) -> Option<crate::DurableType> {
+    use crate::DurableType as T;
+    Some(match name {
+        "i8" => T::I8,
+        "i16" => T::I16,
+        "i32" => T::I32,
+        "i64" => T::I64,
+        "u8" => T::U8,
+        "u16" => T::U16,
+        "u32" => T::U32,
+        "u64" => T::U64,
+        "usize" => T::U64,
+        "isize" => T::I64,
+        "bool" => T::Bool,
+        "()" => T::Unit,
+        "!" => T::Never,
+        "type" => T::ComptimeType,
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+impl<'p, 'o, 'db> ProviderTypeFacts<'p, 'o, 'db> {
+    pub(crate) fn new(
+        provider: &'p CompilerBodyFactProvider<'db>,
+        overlay: &'o mut crate::body_overlay::BodySemanticOverlay,
+    ) -> Self {
+        Self { provider, overlay }
+    }
+
+    fn candidate_key(
+        module: &ModuleId,
+        category: crate::declaration_candidate::DeclarationCandidateCategory,
+        name: &str,
+    ) -> crate::declaration_candidate::DeclarationCandidateKey {
+        crate::declaration_candidate::DeclarationCandidateKey {
+            module: module.clone(),
+            category,
+            name: Arc::from(name),
+            owner: None,
+            duplicate_discriminator: 0,
+        }
+    }
+
+    fn visibility_domain(module: &ModuleId) -> rue_air::SemanticVisibilityDomain {
+        rue_air::SemanticVisibilityDomain::from_file_path(Some(module.logical_path()))
+    }
+
+    /// Resolve a nominal (`want` = Struct or Enum) named in `module` from the
+    /// candidate set, materialize its durable metadata into the overlay, and
+    /// return the type fact the shared logic filters on. Absent, kind-mismatched,
+    /// and ambiguous candidate sets all resolve to `None`, exactly as a missing
+    /// epoch-table entry does.
+    fn nominal_fact(
+        &mut self,
+        module: &ModuleId,
+        resolution: rue_air::NameResolution,
+        name: &str,
+        want: rue_air::ProviderDefinitionKind,
+    ) -> Option<rue_air::SemanticTypeFact<crate::DurableType, ModuleId>> {
+        use rue_air::BodyFactProvider;
+        let candidate = match resolution.of_kind(want) {
+            rue_air::NameResolution::Unique(candidate) => candidate,
+            _ => return None,
+        };
+        let decl = Self::candidate_key(module, provider_definition_category(want), name);
+        let identity = self.provider.declaration_identity(&decl)?;
+        let signature = self.provider.signature(&decl)?;
+        let key = identity.key.clone();
+        let payload = crate::semantic_query_nucleus::DeclarationSemanticValue::from_signature(
+            identity,
+            signature.signature,
+        )
+        .payload;
+        self.overlay.materialize_nominal(&key, &payload);
+        Some(rue_air::SemanticTypeFact {
+            value: crate::DurableType::Nominal(key),
+            site: module.clone(),
+            is_public: candidate.is_public,
+            defining_domain: Self::visibility_domain(module),
+            defining_file: Arc::from(module.logical_path()),
+        })
+    }
+
+    /// Resolve a type alias (a `const` whose comptime value is a type) named in
+    /// `module`, returning the aliased durable type. A non-type const, or a const
+    /// absent from the candidate set, resolves to `None`.
+    fn alias_fact(
+        &mut self,
+        module: &ModuleId,
+        resolution: rue_air::NameResolution,
+        name: &str,
+    ) -> Option<rue_air::SemanticTypeFact<crate::DurableType, ModuleId>> {
+        use crate::semantic_query_nucleus::ConstResolutionProjection;
+        use rue_air::BodyFactProvider;
+        let candidate = match resolution.of_kind(rue_air::ProviderDefinitionKind::Const) {
+            rue_air::NameResolution::Unique(candidate) => candidate,
+            _ => return None,
+        };
+        let decl = Self::candidate_key(
+            module,
+            crate::declaration_candidate::DeclarationCandidateCategory::ConstCandidate,
+            name,
+        );
+        let ConstResolutionProjection::Value { value, .. } = self.provider.const_comptime(&decl)?
+        else {
+            return None;
+        };
+        let crate::DurableConstValue::Type(ty) = *value else {
+            return None;
+        };
+        Some(rue_air::SemanticTypeFact {
+            value: ty,
+            site: module.clone(),
+            is_public: candidate.is_public,
+            defining_domain: Self::visibility_domain(module),
+            defining_file: Arc::from(module.logical_path()),
+        })
+    }
+
+    /// Resolve a module binding (a `const` bound to `@import(...)`) named in
+    /// `module`, the value-world analog of the epoch's
+    /// `resolve_module_binding_in_file`.
+    fn module_binding_fact(
+        &mut self,
+        module: &ModuleId,
+        name: &str,
+        qualified: bool,
+    ) -> Option<rue_air::SemanticModuleBinding<ModuleId, ModuleId>> {
+        use crate::semantic_query_nucleus::ConstResolutionProjection;
+        use rue_air::BodyFactProvider;
+        let resolution = if qualified {
+            self.provider
+                .lookup_qualified(module, rue_air::ProviderNamespace::ModuleItem, name)
+        } else {
+            self.provider
+                .lookup_unqualified(module, rue_air::ProviderNamespace::ModuleItem, name)
+        };
+        let candidate = match resolution.of_kind(rue_air::ProviderDefinitionKind::Const) {
+            rue_air::NameResolution::Unique(candidate) => candidate,
+            _ => return None,
+        };
+        let decl = Self::candidate_key(
+            module,
+            crate::declaration_candidate::DeclarationCandidateCategory::ConstCandidate,
+            name,
+        );
+        let ConstResolutionProjection::ModuleBinding { target, .. } =
+            self.provider.const_comptime(&decl)?
+        else {
+            return None;
+        };
+        Some(rue_air::SemanticModuleBinding {
+            target,
+            site: module.clone(),
+            is_public: candidate.is_public,
+            defining_domain: Self::visibility_domain(module),
+            defining_file: Arc::from(module.logical_path()),
+        })
+    }
+}
+
+#[cfg(test)]
+impl<'p, 'o, 'db> rue_air::SemanticModulePathProvider<ModuleId, ModuleId, ModuleId>
+    for ProviderTypeFacts<'p, 'o, 'db>
+{
+    type Abort = std::convert::Infallible;
+    type Failure = ProviderTypeFactsFailure;
+
+    fn root_module_binding(
+        &mut self,
+        scope: &ModuleId,
+        name: &str,
+    ) -> rue_air::SemanticProviderResult<
+        Option<rue_air::SemanticModuleBinding<ModuleId, ModuleId>>,
+        Self::Abort,
+        Self::Failure,
+    > {
+        Ok(self.module_binding_fact(scope, name, false))
+    }
+
+    fn module_binding(
+        &mut self,
+        module: &ModuleId,
+        name: &str,
+    ) -> rue_air::SemanticProviderResult<
+        Option<rue_air::SemanticModuleBinding<ModuleId, ModuleId>>,
+        Self::Abort,
+        Self::Failure,
+    > {
+        Ok(self.module_binding_fact(module, name, true))
+    }
+
+    fn module_display_name(&self, module: &ModuleId) -> Arc<str> {
+        Arc::from(module.logical_path())
+    }
+
+    fn accessing_domain(&self, scope: &ModuleId) -> rue_air::SemanticVisibilityDomain {
+        Self::visibility_domain(scope)
+    }
+}
+
+#[cfg(test)]
+impl<'p, 'o, 'db>
+    rue_air::SemanticTypeSyntaxProvider<
+        ModuleId,
+        ModuleId,
+        ModuleId,
+        crate::declaration_candidate::DeclarationCandidateKey,
+        Arc<str>,
+        crate::DurableType,
+        crate::DurableConstValue,
+    > for ProviderTypeFacts<'p, 'o, 'db>
+{
+    fn substituted_type(
+        &mut self,
+        _scope: &ModuleId,
+        _name: &str,
+    ) -> rue_air::SemanticProviderResult<Option<crate::DurableType>, Self::Abort, Self::Failure>
+    {
+        // No lexical comptime substitutions in a bare type-syntax resolution;
+        // substitution-bearing scopes are the inference/comptime slices (r5).
+        Ok(None)
+    }
+
+    fn primitive_type(
+        &mut self,
+        name: &str,
+    ) -> rue_air::SemanticProviderResult<Option<crate::DurableType>, Self::Abort, Self::Failure>
+    {
+        Ok(primitive_durable_type(name))
+    }
+
+    fn builtin_type(
+        &mut self,
+        _scope: &ModuleId,
+        _name: &str,
+    ) -> rue_air::SemanticProviderResult<Option<crate::DurableType>, Self::Abort, Self::Failure>
+    {
+        // `str` is a builtin nominal the epoch materializes into `type_pool`; the
+        // body-fact boundary exposes no builtin-nominal identity fact yet, so this
+        // shape is deferred (a later slice adds the builtin/well-known fact).
+        Ok(None)
+    }
+
+    fn root_struct_type(
+        &mut self,
+        scope: &ModuleId,
+        name: &str,
+    ) -> rue_air::SemanticProviderResult<
+        Option<rue_air::SemanticTypeFact<crate::DurableType, ModuleId>>,
+        Self::Abort,
+        Self::Failure,
+    > {
+        use rue_air::BodyFactProvider;
+        let resolution =
+            self.provider
+                .lookup_unqualified(scope, rue_air::ProviderNamespace::ModuleItem, name);
+        Ok(self.nominal_fact(
+            scope,
+            resolution,
+            name,
+            rue_air::ProviderDefinitionKind::Struct,
+        ))
+    }
+
+    fn root_enum_type(
+        &mut self,
+        scope: &ModuleId,
+        name: &str,
+    ) -> rue_air::SemanticProviderResult<
+        Option<rue_air::SemanticTypeFact<crate::DurableType, ModuleId>>,
+        Self::Abort,
+        Self::Failure,
+    > {
+        use rue_air::BodyFactProvider;
+        let resolution =
+            self.provider
+                .lookup_unqualified(scope, rue_air::ProviderNamespace::ModuleItem, name);
+        Ok(self.nominal_fact(
+            scope,
+            resolution,
+            name,
+            rue_air::ProviderDefinitionKind::Enum,
+        ))
+    }
+
+    fn root_type_alias(
+        &mut self,
+        scope: &ModuleId,
+        name: &str,
+    ) -> rue_air::SemanticProviderResult<
+        Option<rue_air::SemanticTypeFact<crate::DurableType, ModuleId>>,
+        Self::Abort,
+        Self::Failure,
+    > {
+        use rue_air::BodyFactProvider;
+        let resolution =
+            self.provider
+                .lookup_unqualified(scope, rue_air::ProviderNamespace::ModuleItem, name);
+        Ok(self.alias_fact(scope, resolution, name))
+    }
+
+    fn module_struct_type(
+        &mut self,
+        module: &ModuleId,
+        name: &str,
+    ) -> rue_air::SemanticProviderResult<
+        Option<rue_air::SemanticTypeFact<crate::DurableType, ModuleId>>,
+        Self::Abort,
+        Self::Failure,
+    > {
+        use rue_air::BodyFactProvider;
+        let resolution =
+            self.provider
+                .lookup_qualified(module, rue_air::ProviderNamespace::ModuleItem, name);
+        Ok(self.nominal_fact(
+            module,
+            resolution,
+            name,
+            rue_air::ProviderDefinitionKind::Struct,
+        ))
+    }
+
+    fn module_enum_type(
+        &mut self,
+        module: &ModuleId,
+        name: &str,
+    ) -> rue_air::SemanticProviderResult<
+        Option<rue_air::SemanticTypeFact<crate::DurableType, ModuleId>>,
+        Self::Abort,
+        Self::Failure,
+    > {
+        use rue_air::BodyFactProvider;
+        let resolution =
+            self.provider
+                .lookup_qualified(module, rue_air::ProviderNamespace::ModuleItem, name);
+        Ok(self.nominal_fact(
+            module,
+            resolution,
+            name,
+            rue_air::ProviderDefinitionKind::Enum,
+        ))
+    }
+
+    fn module_type_alias(
+        &mut self,
+        module: &ModuleId,
+        name: &str,
+    ) -> rue_air::SemanticProviderResult<
+        Option<rue_air::SemanticTypeFact<crate::DurableType, ModuleId>>,
+        Self::Abort,
+        Self::Failure,
+    > {
+        use rue_air::BodyFactProvider;
+        let resolution =
+            self.provider
+                .lookup_qualified(module, rue_air::ProviderNamespace::ModuleItem, name);
+        Ok(self.alias_fact(module, resolution, name))
+    }
+
+    fn observe_selected_named_type(
+        &mut self,
+        _name: &str,
+        _kind: rue_air::SemanticTypeFactKind,
+        _fact: &rue_air::SemanticTypeFact<crate::DurableType, ModuleId>,
+    ) -> rue_air::SemanticProviderResult<(), Self::Abort, Self::Failure> {
+        // The dependency edge is recorded by the provider op that materialized
+        // the fact (lookup / signature / const-comptime terminal), never at this
+        // observation and never at render.
+        Ok(())
+    }
+
+    fn observe_materialized_type(
+        &mut self,
+        _ty: &crate::DurableType,
+    ) -> rue_air::SemanticProviderResult<(), Self::Abort, Self::Failure> {
+        Ok(())
+    }
+
+    fn allows_qualified_paths(&self, _scope: &ModuleId) -> bool {
+        true
+    }
+
+    fn resolve_array_length(
+        &mut self,
+        _scope: &ModuleId,
+        length: &rue_air::ArrayLen,
+    ) -> rue_air::SemanticProviderResult<Option<u64>, Self::Abort, Self::Failure> {
+        match length {
+            rue_air::ArrayLen::Literal(value) => Ok(Some(*value)),
+            // A named array length resolves through comptime const evaluation,
+            // which is the inference/comptime slice's demand op (r5).
+            rue_air::ArrayLen::Named(_) => Err(rue_air::SemanticProviderError::Failure(
+                ProviderTypeFactsFailure::Deferred("named array length (r5 comptime)"),
+            )),
+        }
+    }
+
+    fn array_type(
+        &mut self,
+        element: crate::DurableType,
+        length: Option<u64>,
+    ) -> rue_air::SemanticProviderResult<crate::DurableType, Self::Abort, Self::Failure> {
+        Ok(crate::DurableType::Array {
+            element: Box::new(element),
+            len: length.expect("concrete type resolution always resolves array lengths"),
+        })
+    }
+
+    fn ptr_const_type(
+        &mut self,
+        pointee: crate::DurableType,
+    ) -> rue_air::SemanticProviderResult<crate::DurableType, Self::Abort, Self::Failure> {
+        Ok(crate::DurableType::PtrConst(Box::new(pointee)))
+    }
+
+    fn ptr_mut_type(
+        &mut self,
+        pointee: crate::DurableType,
+    ) -> rue_air::SemanticProviderResult<crate::DurableType, Self::Abort, Self::Failure> {
+        Ok(crate::DurableType::PtrMut(Box::new(pointee)))
+    }
+
+    fn preflight_slice(
+        &mut self,
+        _scope: &ModuleId,
+        _syntax: &str,
+    ) -> rue_air::SemanticProviderResult<(), Self::Abort, Self::Failure> {
+        Ok(())
+    }
+
+    fn slice_type(
+        &mut self,
+        _scope: &ModuleId,
+        _syntax: &str,
+        _element: crate::DurableType,
+    ) -> rue_air::SemanticProviderResult<crate::DurableType, Self::Abort, Self::Failure> {
+        // The slice's durable form carries the generated slice-struct name, a fact
+        // the epoch mints during materialization and the body-fact boundary does
+        // not expose; deferred to a later slice.
+        Err(rue_air::SemanticProviderError::Failure(
+            ProviderTypeFactsFailure::Deferred("slice generated-struct name"),
+        ))
+    }
+
+    fn builtin_type_call(
+        &mut self,
+        _scope: &ModuleId,
+        _name: &str,
+        _arguments: &[String],
+    ) -> rue_air::SemanticProviderResult<Option<crate::DurableType>, Self::Abort, Self::Failure>
+    {
+        // `Str(N)` is a builtin fixed-capacity string constructor materialized in
+        // the epoch; deferred with the other builtin-nominal facts.
+        Ok(None)
+    }
+
+    fn root_constructor(
+        &mut self,
+        _scope: &ModuleId,
+        _name: &str,
+    ) -> rue_air::SemanticProviderResult<
+        Option<
+            rue_air::SemanticTypeConstructorHead<
+                crate::declaration_candidate::DeclarationCandidateKey,
+                Arc<str>,
+                ModuleId,
+            >,
+        >,
+        Self::Abort,
+        Self::Failure,
+    > {
+        // Comptime type-constructor resolution is deferred to r5: the boundary
+        // exposes no argument-parameterized comptime-call op, and a durable
+        // parameter carries no name, so a faithful constructor head cannot be
+        // reconstructed here. Returning `None` leaves a `Name(args)` type call as
+        // an `UnknownType`, which the differential records as an explicit deferral.
+        Ok(None)
+    }
+
+    fn module_constructor(
+        &mut self,
+        _module: &ModuleId,
+        _name: &str,
+    ) -> rue_air::SemanticProviderResult<
+        Option<
+            rue_air::SemanticTypeConstructorHead<
+                crate::declaration_candidate::DeclarationCandidateKey,
+                Arc<str>,
+                ModuleId,
+            >,
+        >,
+        Self::Abort,
+        Self::Failure,
+    > {
+        Ok(None)
+    }
+
+    fn resolve_value_argument(
+        &mut self,
+        _scope: &ModuleId,
+        _constructor: &str,
+        _head: &rue_air::SemanticTypeConstructorHead<
+            crate::declaration_candidate::DeclarationCandidateKey,
+            Arc<str>,
+            ModuleId,
+        >,
+        _parameter_index: usize,
+        _type_arguments: &[(Arc<str>, crate::DurableType)],
+        _value_arguments: &[(Arc<str>, crate::DurableConstValue)],
+        _syntax: &str,
+    ) -> rue_air::SemanticProviderResult<crate::DurableConstValue, Self::Abort, Self::Failure> {
+        Err(rue_air::SemanticProviderError::Failure(
+            ProviderTypeFactsFailure::Deferred("comptime value argument (r5)"),
+        ))
+    }
+
+    fn reduce_comptime_call(
+        &mut self,
+        _head: &rue_air::SemanticTypeConstructorHead<
+            crate::declaration_candidate::DeclarationCandidateKey,
+            Arc<str>,
+            ModuleId,
+        >,
+        _type_arguments: &[(Arc<str>, crate::DurableType)],
+        _value_arguments: &[(Arc<str>, crate::DurableConstValue)],
+    ) -> rue_air::SemanticProviderResult<
+        Option<rue_air::SemanticComptimeCallResult<crate::DurableType, crate::DurableConstValue>>,
+        Self::Abort,
+        Self::Failure,
+    > {
+        // Unreachable in r2 (no constructor head resolves); comptime reduction is
+        // the r5 demand op.
+        Ok(None)
+    }
+}
+
 /// The recorded edges and captured result of one provider-observation probe.
 #[cfg(test)]
 struct ProviderProbeOutcome<R> {
@@ -18658,6 +19266,297 @@ mod tests {
             recorded_family(&outcome.dependencies, "compiler.lookup-import")
                 .iter()
                 .any(|node| node.key().contains("mixed.rue")),
+        );
+    }
+
+    // ---- RUE-1091 r2: type-syntax/nominal ProviderFacts differentials -------
+    //
+    // These prove `ProviderTypeFacts` (BodyFactProvider + overlay) resolves every
+    // type-syntax shape in r2's scope to the same durable type the production
+    // binder assigned, and materializes each consulted nominal into the overlay
+    // with byte-identical durable metadata. The epoch truth is the independently
+    // produced durable declaration set (`bind_canonical_declaration_semantics`),
+    // never the same provider terminal, so agreement is a real cross-path proof.
+
+    /// The production durable declaration set for a snapshot — the epoch truth
+    /// the provider resolution is diffed against.
+    fn production_declarations(
+        snapshot: &SourceSnapshot,
+    ) -> Arc<[crate::durable_semantics::DurableDeclarationSemantic]> {
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(snapshot).unwrap();
+        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let (_definitions, query_declarations, _work) =
+            crate::bound_definitions::bind_canonical_declaration_semantics(
+                &merged,
+                &rir,
+                crate::PreviewFeatures::default(),
+                rue_target::Target::X86_64Linux,
+            )
+            .unwrap();
+        query_declarations
+    }
+
+    fn durable_decl<'a>(
+        decls: &'a [crate::durable_semantics::DurableDeclarationSemantic],
+        kind: crate::StableDefinitionKind,
+        name: &str,
+    ) -> &'a crate::durable_semantics::DurableDeclarationSemantic {
+        decls
+            .iter()
+            .find(|record| record.key.kind() == kind && record.key.name() == name)
+            .unwrap_or_else(|| panic!("no production {kind:?} named {name}"))
+    }
+
+    /// Resolve `syntax` through `ProviderTypeFacts` inside one probe, returning
+    /// the resolved durable type (or `None` when resolution failed / deferred),
+    /// the overlay metadata materialized for `materialized_key`, and the exact
+    /// query edges the resolution recorded.
+    fn resolve_type_via_provider(
+        database: &RevisionedQueryDatabase,
+        revision: Revision,
+        scope: &ModuleId,
+        syntax: &str,
+        materialized_key: Option<&StableDefinitionKey>,
+    ) -> (
+        Option<crate::DurableType>,
+        Option<crate::DurableDeclarationPayload>,
+        Vec<rue_query::NodeIdentity>,
+    ) {
+        let key = materialized_key.cloned();
+        // The probe node is memoized by label, so each resolution needs a
+        // distinct label or a repeat would reuse the first probe's terminal and
+        // never run its closure.
+        let label = format!("type-syntax:{syntax}");
+        let outcome =
+            database.probe_body_facts(revision, semantic_configuration(), &label, |provider| {
+                let mut overlay = crate::body_overlay::BodySemanticOverlay::new();
+                let mut facts = ProviderTypeFacts::new(provider, &mut overlay);
+                let resolved =
+                    rue_air::resolve_semantic_type_syntax(&mut facts, scope, syntax).ok();
+                // Resolve a second time through the same overlay: resolution is
+                // idempotent and a repeated consultation materializes no second
+                // copy (the overlay's minted-once contract).
+                let count_after_first = overlay.materialized_nominal_count();
+                let mut facts = ProviderTypeFacts::new(provider, &mut overlay);
+                let re_resolved =
+                    rue_air::resolve_semantic_type_syntax(&mut facts, scope, syntax).ok();
+                assert_eq!(
+                    resolved, re_resolved,
+                    "repeat resolution of {syntax} diverged"
+                );
+                assert_eq!(
+                    overlay.materialized_nominal_count(),
+                    count_after_first,
+                    "repeat resolution of {syntax} materialized a second overlay copy"
+                );
+                let materialized = key
+                    .as_ref()
+                    .and_then(|key| overlay.materialized_nominal(key).cloned());
+                (resolved, materialized)
+            });
+        let (resolved, materialized) = outcome.result;
+        (resolved, materialized, outcome.dependencies)
+    }
+
+    #[test]
+    fn provider_type_facts_resolve_nominals_and_alias_match_epoch() {
+        use crate::DurableType as T;
+        use crate::StableDefinitionKind as K;
+        let source = "pub struct Point { x: i32, y: i32 }\n\
+                      pub enum Shape { Circle, Square }\n\
+                      pub const Alias: type = Point;\n\
+                      fn main() -> i32 { 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let scope = ModuleId::from_logical_path("m.rue").unwrap();
+        let decls = production_declarations(&snapshot);
+        let point = durable_decl(&decls, K::Struct, "Point");
+        let shape = durable_decl(&decls, K::Enum, "Shape");
+
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+
+        // Root struct: resolves to the exact stable identity the production binder
+        // assigned to `Point`, via the module-index lookup — not the epoch table —
+        // and materializes `Point`'s durable metadata into the overlay byte for
+        // byte.
+        let (resolved, materialized, deps) =
+            resolve_type_via_provider(&database, revision, &scope, "Point", Some(&point.key));
+        assert_eq!(resolved, Some(T::Nominal(point.key.clone())));
+        assert_eq!(
+            materialized.as_ref(),
+            Some(&point.payload),
+            "the overlay materialized Point's durable metadata identically to production"
+        );
+        // Edges land at materialization: the resolution recorded the `Point`
+        // name-lookup terminal and its declaration (semantic-nucleus) terminal.
+        assert!(
+            deps.iter().any(|node| node.family() == "compiler.lookup-name"
+                && node.key().contains("Point")),
+            "recorded the Point name-lookup edge: {deps:?}"
+        );
+        assert!(
+            deps.iter()
+                .any(|node| node.family() == "compiler.semantic-nucleus"),
+            "recorded a declaration (signature/identity) edge at materialization: {deps:?}"
+        );
+        // The resolved fact's `is_public`/`defining_file` are provider-sourced
+        // but not differentially checked here: they are consumed by
+        // resolution/visibility, not by durable nominal identity, and their
+        // byte-identity is covered by the render/visibility differential
+        // (rFinal), not this slice.
+
+        // Root enum: same cross-path identity agreement + materialization.
+        let (resolved, materialized, _deps) =
+            resolve_type_via_provider(&database, revision, &scope, "Shape", Some(&shape.key));
+        assert_eq!(resolved, Some(T::Nominal(shape.key.clone())));
+        assert_eq!(materialized.as_ref(), Some(&shape.payload));
+
+        // Root type alias: a `const` bound to a type resolves to that type — here
+        // the nominal the alias points at, so `Alias` and `Point` collapse to the
+        // same durable identity, exactly as the epoch resolves an alias head.
+        let (resolved, _materialized, _deps) =
+            resolve_type_via_provider(&database, revision, &scope, "Alias", None);
+        assert_eq!(resolved, Some(T::Nominal(point.key.clone())));
+    }
+
+    #[test]
+    fn provider_type_facts_resolve_primitive_and_structural_shapes() {
+        use crate::DurableType as T;
+        let source = "fn main() -> i32 { 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let scope = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+
+        // Enumerate the `SemanticImportType` (durable) arms r2 covers structurally.
+        // Each is resolved through the shared logic driven by ProviderTypeFacts;
+        // primitives and structural wrappers consult no declaration fact, so they
+        // record no dependency edge (proven below).
+        let primitive_cases: &[(&str, T)] = &[
+            ("i8", T::I8),
+            ("i16", T::I16),
+            ("i32", T::I32),
+            ("i64", T::I64),
+            ("u8", T::U8),
+            ("u16", T::U16),
+            ("u32", T::U32),
+            ("u64", T::U64),
+            ("usize", T::U64),
+            ("isize", T::I64),
+            ("bool", T::Bool),
+            ("()", T::Unit),
+            ("!", T::Never),
+            ("type", T::ComptimeType),
+        ];
+        for (syntax, expected) in primitive_cases {
+            let (resolved, _materialized, deps) =
+                resolve_type_via_provider(&database, revision, &scope, syntax, None);
+            assert_eq!(resolved.as_ref(), Some(expected), "primitive `{syntax}`");
+            assert!(
+                deps.is_empty(),
+                "a primitive consults no declaration fact and records no edge: `{syntax}` -> {deps:?}"
+            );
+        }
+
+        let structural_cases: &[(&str, T)] = &[
+            (
+                "[i32; 2]",
+                T::Array {
+                    element: Box::new(T::I32),
+                    len: 2,
+                },
+            ),
+            (
+                "[u8; 4]",
+                T::Array {
+                    element: Box::new(T::U8),
+                    len: 4,
+                },
+            ),
+            ("ptr const i32", T::PtrConst(Box::new(T::I32))),
+            ("ptr mut u64", T::PtrMut(Box::new(T::U64))),
+            (
+                "ptr const [i32; 2]",
+                T::PtrConst(Box::new(T::Array {
+                    element: Box::new(T::I32),
+                    len: 2,
+                })),
+            ),
+        ];
+        for (syntax, expected) in structural_cases {
+            let (resolved, _materialized, deps) =
+                resolve_type_via_provider(&database, revision, &scope, syntax, None);
+            assert_eq!(resolved.as_ref(), Some(expected), "structural `{syntax}`");
+            assert!(
+                deps.is_empty(),
+                "structural `{syntax}` records no edge: {deps:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_type_facts_absent_and_kind_mismatch_do_not_resolve() {
+        let source = "pub struct Point { x: i32 }\n\
+                      pub enum Shape { A, B }\n\
+                      fn main() -> i32 { 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let scope = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+
+        // An absent name has no candidate and does not resolve (UnknownType).
+        let (resolved, _m, _d) =
+            resolve_type_via_provider(&database, revision, &scope, "Missing", None);
+        assert_eq!(resolved, None, "an absent type name does not resolve");
+
+        // A name that exists but as the wrong kind (a function used as a type) is
+        // kind-filtered out of the nominal candidate set and does not resolve — the
+        // candidate-set-not-winner contract, applied in the shared logic.
+        let (resolved, _m, _d) =
+            resolve_type_via_provider(&database, revision, &scope, "main", None);
+        assert_eq!(resolved, None, "a function name does not resolve as a type");
+    }
+
+    // Explicit enumeration of the `SemanticImportType` arms this family does NOT
+    // yet cover, each with the boundary fact it waits on. Documented as
+    // not-yet-resolvable (never silently green): a deferred shape resolves to
+    // `None` through ProviderTypeFacts today, and the differential pins that so a
+    // later slice that adds the fact flips the arm deliberately.
+    //   - BuiltinNominal (`str`, `Str(N)`): no builtin-nominal identity fact.
+    //   - Slice (`[T]`): no generated slice-struct name fact.
+    //   - comptime type call (`Name(args)`): no argument-parameterized comptime-call
+    //     op, and durable parameters carry no name (r5).
+    //   - AnonymousNominal: produced by a body, materialized in r4/r6.
+    //   - Module / GenericParameter: not reachable as a resolved type-syntax leaf.
+    #[test]
+    fn provider_type_facts_deferred_shapes_are_documented_gaps() {
+        let source = "pub struct Point { x: i32 }\n\
+                      fn Pair() -> type { struct { a: i32 } }\n\
+                      fn main() -> i32 { 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let scope = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+
+        for deferred in ["str", "[i32]", "Pair()", "Str(8)"] {
+            let (resolved, _m, _d) =
+                resolve_type_via_provider(&database, revision, &scope, deferred, None);
+            assert_eq!(
+                resolved, None,
+                "`{deferred}` is a documented r2 deferral and must not resolve yet"
+            );
+        }
+
+        // A covered nominal in the same body still resolves — the deferrals do not
+        // poison the family.
+        let decls = production_declarations(&snapshot);
+        let point = durable_decl(&decls, crate::StableDefinitionKind::Struct, "Point");
+        let (resolved, _m, _d) =
+            resolve_type_via_provider(&database, revision, &scope, "Point", None);
+        assert_eq!(
+            resolved,
+            Some(crate::DurableType::Nominal(point.key.clone()))
         );
     }
 
