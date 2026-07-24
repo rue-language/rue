@@ -397,7 +397,11 @@ pub struct Parser {
         let mut binds: u64 = 0;
         if self.eat(token.LPAREN) {
             while !self.at(token.RPAREN) && !self.eof() {
-                let b = self.expect(token.IDENT);
+                let b = if self.at(token.UNDERSCORE) {
+                    self.bump()
+                } else {
+                    self.expect(token.IDENT)
+                };
                 binds = self.append(binds, self.add(ast.IDENT, b.value, b.start, b.end, 0, 0, 0));
                 if !self.eat(token.COMMA) { break; }
             }
