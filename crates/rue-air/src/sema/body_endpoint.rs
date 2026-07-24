@@ -770,6 +770,32 @@ where
     pub fn with_type_pool<R>(&self, read: impl FnOnce(&TypeInternPool) -> R) -> R {
         read(self.pool.borrow().type_pool())
     }
+
+    /// Freeze the pool's containment metadata — the pool-side `freeze()` seam
+    /// hook the r4a-2a rider defers to the slice that wires the pool under body
+    /// analysis (RUE-1091 rFinal). A caller invokes this at the same point
+    /// production calls `finalize_containment_metadata` (after every nominal
+    /// the body consumes has been minted, before any drop/ownership read);
+    /// `None` on a containment cycle (fail-closed). Before the freeze,
+    /// [`Self::type_needs_drop`] / [`Self::type_carries_linear`] answer `None`.
+    pub fn finalize_containment_metadata(&self) -> Option<()> {
+        self.pool.borrow().finalize_containment_metadata()
+    }
+
+    /// Whether a minted type transitively needs drop, or `None` before the
+    /// [`Self::finalize_containment_metadata`] freeze. The pool mints every
+    /// nominal with `destructor: None` (drop metadata is out of the pool's
+    /// minting scope), so destructor-symbol parity remains flip work — the
+    /// harness records that as a named gap, never a silent divergence.
+    pub fn type_needs_drop(&self, ty: Type) -> Option<bool> {
+        self.pool.borrow().type_needs_drop(ty)
+    }
+
+    /// Whether a minted type transitively carries a linear component, or `None`
+    /// before the freeze.
+    pub fn type_carries_linear(&self, ty: Type) -> Option<bool> {
+        self.pool.borrow().type_carries_linear(ty)
+    }
 }
 
 impl<P, S, K, M> ProviderEndpointFacts<'_, P, S, K, M>

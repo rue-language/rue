@@ -6351,7 +6351,7 @@ impl RevisionedQueryDatabase {
     /// Construct the database with an explicit declaration-keyed memo
     /// retention. Production uses [`DECLARATION_QUERY_MEMO_RETENTION`];
     /// eviction-lifecycle tests pass a small cap so exceeding it stays cheap.
-    fn with_declaration_memo_retention(declaration_memo_retention: usize) -> Self {
+    pub(crate) fn with_declaration_memo_retention(declaration_memo_retention: usize) -> Self {
         let runtime = QueryRuntime::new(1);
         let module_store = Arc::new(Mutex::new(ModuleInputStore::default()));
         #[cfg(test)]
@@ -13247,11 +13247,11 @@ impl<'p, 'db> SignatureFacts<'p, 'db> {
 
 /// The recorded edges and captured result of one provider-observation probe.
 #[cfg(test)]
-struct ProviderProbeOutcome<R> {
+pub(crate) struct ProviderProbeOutcome<R> {
     /// The value the probe closure produced.
-    result: R,
+    pub(crate) result: R,
     /// Every dependency node the provider ops recorded, in observation order.
-    dependencies: Vec<rue_query::NodeIdentity>,
+    pub(crate) dependencies: Vec<rue_query::NodeIdentity>,
 }
 
 #[cfg(test)]
@@ -13270,7 +13270,7 @@ impl RevisionedQueryDatabase {
     /// the exact set of query edges the provider recorded, so a test proves both
     /// the returned facts (differential vs the production epoch) and that each op
     /// recorded exactly its backing terminal.
-    fn probe_body_facts<R>(
+    pub(crate) fn probe_body_facts<R>(
         &self,
         revision: Revision,
         configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
@@ -13324,7 +13324,7 @@ impl RevisionedQueryDatabase {
     /// while the promotion still targets the same evolving root. Returns whether a
     /// root was published (and therefore promoted); a canceled request publishes
     /// no root and its observed pins release with the request, never promoted.
-    fn publish_lookup_root(
+    pub(crate) fn publish_lookup_root(
         &self,
         revision: Revision,
         configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
@@ -13369,8 +13369,417 @@ impl RevisionedQueryDatabase {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Shared test support for the provider differentials and the rFinal harness
+// (`session/tests/rfinal_harness.rs`): the durable declaration adapter the
+// body identity pool consults and the index-independent pool renders. Test
+// only; the flip's production adapter replaces `DurableDeclSource` with a
+// keyed production source (r4b-3 receiver-join obligation).
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    /// The production durable declaration set for a snapshot — the epoch truth
+    /// the provider resolution is diffed against.
+    pub(crate) fn production_declarations(
+        snapshot: &SourceSnapshot,
+    ) -> Arc<[crate::durable_semantics::DurableDeclarationSemantic]> {
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(snapshot).unwrap();
+        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let (_definitions, query_declarations, _work) =
+            crate::bound_definitions::bind_canonical_declaration_semantics(
+                &merged,
+                &rir,
+                crate::PreviewFeatures::default(),
+                rue_target::Target::X86_64Linux,
+            )
+            .unwrap();
+        query_declarations
+    }
+
+    pub(crate) fn durable_decl<'a>(
+        decls: &'a [crate::durable_semantics::DurableDeclarationSemantic],
+        kind: crate::StableDefinitionKind,
+        name: &str,
+    ) -> &'a crate::durable_semantics::DurableDeclarationSemantic {
+        decls
+            .iter()
+            .find(|record| record.key.kind() == kind && record.key.name() == name)
+            .unwrap_or_else(|| panic!("no production {kind:?} named {name}"))
+    }
+    /// The durable declaration set projected into the body identity pool's
+    /// durable source vocabulary. Reads r2's stable-keyed metadata by key — the
+    /// pool consults it on demand (dedup / poison), the O(consumed) shape.
+    pub(crate) struct DurableDeclSource {
+        by_key: std::collections::HashMap<
+            StableDefinitionKey,
+            crate::durable_semantics::DurableDeclarationSemantic,
+        >,
+        anon_by_identity: std::collections::HashMap<
+            crate::AnonymousNominalKey,
+            crate::durable_semantics::DurableAnonymousNominal,
+        >,
+    }
+
+    impl DurableDeclSource {
+        pub(crate) fn from_declarations(
+            decls: &[crate::durable_semantics::DurableDeclarationSemantic],
+        ) -> Self {
+            Self {
+                by_key: decls.iter().map(|d| (d.key.clone(), d.clone())).collect(),
+                anon_by_identity: std::collections::HashMap::new(),
+            }
+        }
+
+        /// Seed the durable anonymous nominals the pool mints from (RUE-1091 r6b).
+        /// The durable anonymous universe is keyed by the CANONICAL producer form
+        /// (the `DurableAnonymousSource` contract — the pool collapses its
+        /// incoming key on entry and consults shapes under that form), so the
+        /// adapter indexes each nominal by the shared collapse rather than its
+        /// as-projected identity: the declaration-SIGNATURE projection retains an
+        /// empty-argument specialization wrapper production body-export does not.
+        pub(crate) fn with_anonymous_nominals(
+            mut self,
+            anonymous: &[crate::durable_semantics::DurableAnonymousNominal],
+        ) -> Self {
+            self.anon_by_identity = anonymous
+                .iter()
+                .map(|nominal| {
+                    (
+                        nominal.identity.with_canonical_producer().into_owned(),
+                        nominal.clone(),
+                    )
+                })
+                .collect();
+            self
+        }
+    }
+    /// Relocate a durable `StableDefinitionKey` to the exact stable-symbol content
+    /// the epoch's `stable_definition_symbol_component` (rue-air `anon_structs.rs`)
+    /// emits for its installed endpoint, so the pool and the epoch spell the same
+    /// `__anon_*_{digest}` name (RUE-1091 r6b). The durable key carries the module
+    /// logical path, name, owner NAME, and kind — the same four parts the epoch's
+    /// endpoint carries — fed to the ONE shared format assembly
+    /// (`rue_air::stable_digest::stable_definition_component`) the epoch also
+    /// renders through.
+    fn durable_definition_symbol_component(key: &StableDefinitionKey) -> String {
+        rue_air::stable_digest::stable_definition_component(
+            key.module().logical_path(),
+            key.name(),
+            key.owner().map(|owner| owner.name()),
+            key.kind() as u8,
+        )
+    }
+
+    fn durable_module_symbol_component(module: &ModuleId) -> String {
+        rue_air::stable_digest::stable_module_component(module.logical_path())
+    }
+
+    fn durable_anonymous_shape(
+        shape: &crate::durable_semantics::DurableAnonymousNominalShape,
+    ) -> rue_air::DurableAnonymousShape<StableDefinitionKey, ModuleId> {
+        use crate::durable_semantics::DurableAnonymousNominalShape as S;
+        match shape {
+            S::Struct { fields, methods } => rue_air::DurableAnonymousShape::Struct {
+                fields: fields.iter().map(|(n, t)| (n.clone(), t.clone())).collect(),
+                struct_method_names: methods.iter().map(|m| m.name.clone()).collect(),
+            },
+            S::Enum { variants } => rue_air::DurableAnonymousShape::Enum {
+                variants: variants
+                    .iter()
+                    .map(|(n, payload)| (n.clone(), payload.to_vec()))
+                    .collect(),
+            },
+        }
+    }
+
+    impl rue_air::DurableAnonymousSource<StableDefinitionKey, ModuleId> for DurableDeclSource {
+        fn anonymous_shape(
+            &self,
+            key: &crate::AnonymousNominalKey,
+        ) -> Option<rue_air::DurableAnonymousShape<StableDefinitionKey, ModuleId>> {
+            self.anon_by_identity
+                .get(key)
+                .map(|nominal| durable_anonymous_shape(&nominal.shape))
+        }
+
+        fn definition_symbol_component(&self, key: &StableDefinitionKey) -> String {
+            durable_definition_symbol_component(key)
+        }
+
+        fn module_symbol_component(&self, module: &ModuleId) -> String {
+            durable_module_symbol_component(module)
+        }
+    }
+
+    fn provider_durable_param(
+        parameter: &crate::durable_semantics::DurableSemanticParameter,
+    ) -> rue_air::DurableSignatureParameter<StableDefinitionKey, ModuleId> {
+        use crate::durable_semantics::DurableParameterMode as Mode;
+        rue_air::DurableSignatureParameter {
+            name: parameter.name.clone(),
+            ty: parameter.ty.clone(),
+            mode: match parameter.mode {
+                Mode::Value => rue_air::SemanticParameterMode::Value,
+                Mode::Borrow => rue_air::SemanticParameterMode::Borrow,
+                Mode::Inout => rue_air::SemanticParameterMode::Inout,
+            },
+            is_comptime: parameter.is_comptime,
+        }
+    }
+
+    impl rue_air::DurableNominalSource<StableDefinitionKey, ModuleId> for DurableDeclSource {
+        fn nominal(
+            &self,
+            key: &StableDefinitionKey,
+        ) -> Option<rue_air::DurableNominal<StableDefinitionKey, ModuleId>> {
+            use crate::durable_semantics::DurableDeclarationPayload as Payload;
+            let decl = self.by_key.get(key)?;
+            let body = match &decl.payload {
+                Payload::Struct {
+                    fields,
+                    is_copy,
+                    is_linear,
+                } => rue_air::DurableNominalBody::Struct {
+                    fields: fields.iter().map(|(n, t)| (n.clone(), t.clone())).collect(),
+                    is_copy: *is_copy,
+                    is_linear: *is_linear,
+                },
+                Payload::Enum { variants } => rue_air::DurableNominalBody::Enum {
+                    variants: variants
+                        .iter()
+                        .map(|(n, payload)| (n.clone(), payload.to_vec()))
+                        .collect(),
+                },
+                _ => return None,
+            };
+            Some(rue_air::DurableNominal {
+                name: Arc::from(decl.key.name()),
+                module_path: Arc::from(decl.key.module().logical_path()),
+                is_public: decl.is_public,
+                // A user nominal in the durable set: builtin/lang-item/`@repr(c)`
+                // are trusted-provenance / declaration side facts the durable
+                // payload does not carry, so this differential's user corpora
+                // leave them at their non-set defaults.
+                is_builtin: false,
+                lang_item: None,
+                is_repr_c: false,
+                body,
+            })
+        }
+    }
+
+    impl rue_air::DurableCallableSource<StableDefinitionKey, ModuleId> for DurableDeclSource {
+        fn function(
+            &self,
+            key: &StableDefinitionKey,
+        ) -> Option<rue_air::DurableFunction<StableDefinitionKey, ModuleId>> {
+            use crate::durable_semantics::DurableDeclarationPayload as Payload;
+            let decl = self.by_key.get(key)?;
+            let Payload::Callable {
+                parameters,
+                result,
+                has_self,
+                is_unchecked,
+            } = &decl.payload
+            else {
+                return None;
+            };
+            // A `self`-taking callable is a method, not a free function.
+            if *has_self {
+                return None;
+            }
+            Some(rue_air::DurableFunction {
+                parameters: parameters.iter().map(provider_durable_param).collect(),
+                result: result.clone(),
+                is_public: decl.is_public,
+                is_unchecked: *is_unchecked,
+            })
+        }
+
+        fn method(
+            &self,
+            key: &StableDefinitionKey,
+        ) -> Option<rue_air::DurableMethod<StableDefinitionKey, ModuleId>> {
+            // r4b-3: the durable method key's receiver preimage is its owner
+            // nominal. The `Callable` payload carries the explicit parameters and
+            // result (self is separate, tracked by `has_self`); the receiver type
+            // is the owner nominal, recovered by joining the method key's
+            // `owner()` (module + kind + name) back to the owner nominal's own
+            // durable key in this set, so the pool resolves it through the same 2a
+            // nominal machinery as any parameter type.
+            use crate::durable_semantics::DurableDeclarationPayload as Payload;
+            let decl = self.by_key.get(key)?;
+            let Payload::Callable {
+                parameters,
+                result,
+                has_self,
+                ..
+            } = &decl.payload
+            else {
+                return None;
+            };
+            // A free function (no self) is not a method.
+            if !*has_self {
+                return None;
+            }
+            let owner = key.owner()?;
+            let owner_key = self
+                .by_key
+                .keys()
+                .find(|candidate| {
+                    candidate.owner().is_none()
+                        && candidate.module() == owner.module()
+                        && candidate.kind() == owner.kind()
+                        && candidate.name() == owner.name()
+                })?
+                .clone();
+            Some(rue_air::DurableMethod {
+                receiver: rue_air::SemanticImportType::Nominal(owner_key),
+                parameters: parameters.iter().map(provider_durable_param).collect(),
+                result: result.clone(),
+                has_self: *has_self,
+            })
+        }
+    }
+
+    impl rue_air::DurableConstSource<StableDefinitionKey, ModuleId> for DurableDeclSource {
+        fn constant(
+            &self,
+            key: &StableDefinitionKey,
+        ) -> Option<rue_air::DurableConst<StableDefinitionKey, ModuleId>> {
+            use crate::durable_semantics::DurableDeclarationPayload as Payload;
+            let decl = self.by_key.get(key)?;
+            let Payload::Const { ty, value } = &decl.payload else {
+                // Module bindings deliberately STOP here: their durable target
+                // is real, but the body pool has no module-registry identity arm
+                // from which to mint the epoch-local `Type::Module`.
+                return None;
+            };
+            Some(rue_air::DurableConst {
+                is_public: decl.is_public,
+                ty: ty.clone(),
+                value: value.clone(),
+            })
+        }
+
+        fn function_name(&self, key: &StableDefinitionKey) -> Option<Arc<str>> {
+            use crate::durable_semantics::DurableDeclarationPayload as Payload;
+            matches!(self.by_key.get(key)?.payload, Payload::Callable { .. })
+                .then(|| Arc::from(key.name()))
+        }
+    }
+    /// The index-independent render of a nominal pool [`rue_air::Type`]: the
+    /// display, copyability, visibility, mangled symbol, and member vocabulary a
+    /// differential compares across two independently-minted pools (the pool
+    /// mints its own ids; parity is a display/metadata property).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) struct EndpointNominalRender {
+        pub(crate) display: String,
+        pub(crate) is_copy: bool,
+        pub(crate) is_pub: bool,
+        pub(crate) symbol: String,
+        pub(crate) members: Vec<(String, String)>,
+    }
+
+    /// Render any pool [`rue_air::Type`] to its display, recursing through pool
+    /// indices so it is index-independent and safe to compare across two pools.
+    pub(crate) fn endpoint_display(pool: &rue_air::TypeInternPool, ty: rue_air::Type) -> String {
+        use rue_air::TypeKind;
+        match ty.kind() {
+            TypeKind::I8 => "i8".into(),
+            TypeKind::I16 => "i16".into(),
+            TypeKind::I32 => "i32".into(),
+            TypeKind::I64 => "i64".into(),
+            TypeKind::U8 => "u8".into(),
+            TypeKind::U16 => "u16".into(),
+            TypeKind::U32 => "u32".into(),
+            TypeKind::U64 => "u64".into(),
+            TypeKind::Bool => "bool".into(),
+            TypeKind::Unit => "()".into(),
+            TypeKind::Never => "!".into(),
+            TypeKind::ComptimeType => "type".into(),
+            TypeKind::Struct(id) => pool.struct_def(id).name,
+            TypeKind::Enum(id) => pool.enum_def(id).name,
+            TypeKind::Array(id) => {
+                let (element, len) = pool.array_def(id);
+                format!("[{}; {}]", endpoint_display(pool, element), len)
+            }
+            TypeKind::PtrConst(id) => {
+                format!(
+                    "ptr const {}",
+                    endpoint_display(pool, pool.ptr_const_def(id))
+                )
+            }
+            TypeKind::PtrMut(id) => {
+                format!("ptr mut {}", endpoint_display(pool, pool.ptr_mut_def(id)))
+            }
+            other => format!("{other:?}"),
+        }
+    }
+
+    /// Index-independent copyability, mirroring `Sema::is_type_copy`.
+    pub(crate) fn endpoint_is_copy(pool: &rue_air::TypeInternPool, ty: rue_air::Type) -> bool {
+        use rue_air::TypeKind;
+        match ty.kind() {
+            TypeKind::Struct(id) => pool.struct_def(id).is_copy,
+            TypeKind::Enum(id) => pool
+                .enum_def(id)
+                .variant_payloads
+                .iter()
+                .flatten()
+                .all(|&ty| endpoint_is_copy(pool, ty)),
+            TypeKind::Array(id) => endpoint_is_copy(pool, pool.array_def(id).0),
+            _ => true,
+        }
+    }
+
+    /// Render a nominal (struct or enum) pool [`rue_air::Type`] to its
+    /// index-independent metadata.
+    pub(crate) fn endpoint_nominal_render(
+        pool: &rue_air::TypeInternPool,
+        ty: rue_air::Type,
+    ) -> EndpointNominalRender {
+        use rue_air::TypeKind;
+        match ty.kind() {
+            TypeKind::Struct(id) => {
+                let def = pool.struct_def(id);
+                EndpointNominalRender {
+                    display: def.name.clone(),
+                    is_copy: def.is_copy,
+                    is_pub: def.is_pub,
+                    symbol: pool.struct_symbol_name(id),
+                    members: def
+                        .fields
+                        .iter()
+                        .map(|field| (field.name.clone(), endpoint_display(pool, field.ty)))
+                        .collect(),
+                }
+            }
+            TypeKind::Enum(id) => {
+                let def = pool.enum_def(id);
+                EndpointNominalRender {
+                    display: def.name.clone(),
+                    is_copy: endpoint_is_copy(pool, ty),
+                    is_pub: def.is_pub,
+                    symbol: pool.enum_symbol_name(id),
+                    members: def
+                        .variants
+                        .iter()
+                        .map(|variant| (variant.clone(), String::new()))
+                        .collect(),
+                }
+            }
+            other => panic!("endpoint_nominal_render expects a nominal, got {other:?}"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_support::*;
     use super::*;
     use crate::{
         CompilerSession, DiscoverySourceAssembler, FileMetadataFingerprint, ImportDiscoveryContext,
@@ -19760,36 +20169,6 @@ mod tests {
     // produced durable declaration set (`bind_canonical_declaration_semantics`),
     // never the same provider terminal, so agreement is a real cross-path proof.
 
-    /// The production durable declaration set for a snapshot — the epoch truth
-    /// the provider resolution is diffed against.
-    fn production_declarations(
-        snapshot: &SourceSnapshot,
-    ) -> Arc<[crate::durable_semantics::DurableDeclarationSemantic]> {
-        let parsed = crate::parsed_modules::parse_source_snapshot_modules(snapshot).unwrap();
-        let merged = crate::merge_parsed_modules(&parsed).unwrap();
-        let rir = crate::lower_canonical_rir(&merged).unwrap();
-        let (_definitions, query_declarations, _work) =
-            crate::bound_definitions::bind_canonical_declaration_semantics(
-                &merged,
-                &rir,
-                crate::PreviewFeatures::default(),
-                rue_target::Target::X86_64Linux,
-            )
-            .unwrap();
-        query_declarations
-    }
-
-    fn durable_decl<'a>(
-        decls: &'a [crate::durable_semantics::DurableDeclarationSemantic],
-        kind: crate::StableDefinitionKind,
-        name: &str,
-    ) -> &'a crate::durable_semantics::DurableDeclarationSemantic {
-        decls
-            .iter()
-            .find(|record| record.key.kind() == kind && record.key.name() == name)
-            .unwrap_or_else(|| panic!("no production {kind:?} named {name}"))
-    }
-
     /// Resolve `syntax` through `ProviderTypeFacts` inside one probe, returning
     /// the resolved durable type (or `None` when resolution failed / deferred),
     /// the overlay metadata materialized for `materialized_key`, and the exact
@@ -20714,265 +21093,6 @@ mod tests {
     // inert flip-prep but are not wired under this call driver; `module_def`
     // answers an epoch-internal registry index with no provider preimage.
 
-    /// The durable declaration set projected into the body identity pool's
-    /// durable source vocabulary. Reads r2's stable-keyed metadata by key — the
-    /// pool consults it on demand (dedup / poison), the O(consumed) shape.
-    struct DurableDeclSource {
-        by_key: HashMap<StableDefinitionKey, crate::durable_semantics::DurableDeclarationSemantic>,
-        anon_by_identity:
-            HashMap<crate::AnonymousNominalKey, crate::durable_semantics::DurableAnonymousNominal>,
-    }
-
-    impl DurableDeclSource {
-        fn from_declarations(
-            decls: &[crate::durable_semantics::DurableDeclarationSemantic],
-        ) -> Self {
-            Self {
-                by_key: decls.iter().map(|d| (d.key.clone(), d.clone())).collect(),
-                anon_by_identity: HashMap::new(),
-            }
-        }
-
-        /// Seed the durable anonymous nominals the pool mints from (RUE-1091 r6b).
-        /// The durable anonymous universe is keyed by the CANONICAL producer form
-        /// (the `DurableAnonymousSource` contract — the pool collapses its
-        /// incoming key on entry and consults shapes under that form), so the
-        /// adapter indexes each nominal by the shared collapse rather than its
-        /// as-projected identity: the declaration-SIGNATURE projection retains an
-        /// empty-argument specialization wrapper production body-export does not.
-        fn with_anonymous_nominals(
-            mut self,
-            anonymous: &[crate::durable_semantics::DurableAnonymousNominal],
-        ) -> Self {
-            self.anon_by_identity = anonymous
-                .iter()
-                .map(|nominal| {
-                    (
-                        nominal.identity.with_canonical_producer().into_owned(),
-                        nominal.clone(),
-                    )
-                })
-                .collect();
-            self
-        }
-    }
-
-    /// Relocate a durable `StableDefinitionKey` to the exact stable-symbol content
-    /// the epoch's `stable_definition_symbol_component` (rue-air `anon_structs.rs`)
-    /// emits for its installed endpoint, so the pool and the epoch spell the same
-    /// `__anon_*_{digest}` name (RUE-1091 r6b). The durable key carries the module
-    /// logical path, name, owner NAME, and kind — the same four parts the epoch's
-    /// endpoint carries — fed to the ONE shared format assembly
-    /// (`rue_air::stable_digest::stable_definition_component`) the epoch also
-    /// renders through.
-    fn durable_definition_symbol_component(key: &StableDefinitionKey) -> String {
-        rue_air::stable_digest::stable_definition_component(
-            key.module().logical_path(),
-            key.name(),
-            key.owner().map(|owner| owner.name()),
-            key.kind() as u8,
-        )
-    }
-
-    fn durable_module_symbol_component(module: &ModuleId) -> String {
-        rue_air::stable_digest::stable_module_component(module.logical_path())
-    }
-
-    fn durable_anonymous_shape(
-        shape: &crate::durable_semantics::DurableAnonymousNominalShape,
-    ) -> rue_air::DurableAnonymousShape<StableDefinitionKey, ModuleId> {
-        use crate::durable_semantics::DurableAnonymousNominalShape as S;
-        match shape {
-            S::Struct { fields, methods } => rue_air::DurableAnonymousShape::Struct {
-                fields: fields.iter().map(|(n, t)| (n.clone(), t.clone())).collect(),
-                struct_method_names: methods.iter().map(|m| m.name.clone()).collect(),
-            },
-            S::Enum { variants } => rue_air::DurableAnonymousShape::Enum {
-                variants: variants
-                    .iter()
-                    .map(|(n, payload)| (n.clone(), payload.to_vec()))
-                    .collect(),
-            },
-        }
-    }
-
-    impl rue_air::DurableAnonymousSource<StableDefinitionKey, ModuleId> for DurableDeclSource {
-        fn anonymous_shape(
-            &self,
-            key: &crate::AnonymousNominalKey,
-        ) -> Option<rue_air::DurableAnonymousShape<StableDefinitionKey, ModuleId>> {
-            self.anon_by_identity
-                .get(key)
-                .map(|nominal| durable_anonymous_shape(&nominal.shape))
-        }
-
-        fn definition_symbol_component(&self, key: &StableDefinitionKey) -> String {
-            durable_definition_symbol_component(key)
-        }
-
-        fn module_symbol_component(&self, module: &ModuleId) -> String {
-            durable_module_symbol_component(module)
-        }
-    }
-
-    fn provider_durable_param(
-        parameter: &crate::durable_semantics::DurableSemanticParameter,
-    ) -> rue_air::DurableSignatureParameter<StableDefinitionKey, ModuleId> {
-        use crate::durable_semantics::DurableParameterMode as Mode;
-        rue_air::DurableSignatureParameter {
-            name: parameter.name.clone(),
-            ty: parameter.ty.clone(),
-            mode: match parameter.mode {
-                Mode::Value => rue_air::SemanticParameterMode::Value,
-                Mode::Borrow => rue_air::SemanticParameterMode::Borrow,
-                Mode::Inout => rue_air::SemanticParameterMode::Inout,
-            },
-            is_comptime: parameter.is_comptime,
-        }
-    }
-
-    impl rue_air::DurableNominalSource<StableDefinitionKey, ModuleId> for DurableDeclSource {
-        fn nominal(
-            &self,
-            key: &StableDefinitionKey,
-        ) -> Option<rue_air::DurableNominal<StableDefinitionKey, ModuleId>> {
-            use crate::durable_semantics::DurableDeclarationPayload as Payload;
-            let decl = self.by_key.get(key)?;
-            let body = match &decl.payload {
-                Payload::Struct {
-                    fields,
-                    is_copy,
-                    is_linear,
-                } => rue_air::DurableNominalBody::Struct {
-                    fields: fields.iter().map(|(n, t)| (n.clone(), t.clone())).collect(),
-                    is_copy: *is_copy,
-                    is_linear: *is_linear,
-                },
-                Payload::Enum { variants } => rue_air::DurableNominalBody::Enum {
-                    variants: variants
-                        .iter()
-                        .map(|(n, payload)| (n.clone(), payload.to_vec()))
-                        .collect(),
-                },
-                _ => return None,
-            };
-            Some(rue_air::DurableNominal {
-                name: Arc::from(decl.key.name()),
-                module_path: Arc::from(decl.key.module().logical_path()),
-                is_public: decl.is_public,
-                // A user nominal in the durable set: builtin/lang-item/`@repr(c)`
-                // are trusted-provenance / declaration side facts the durable
-                // payload does not carry, so this differential's user corpora
-                // leave them at their non-set defaults.
-                is_builtin: false,
-                lang_item: None,
-                is_repr_c: false,
-                body,
-            })
-        }
-    }
-
-    impl rue_air::DurableCallableSource<StableDefinitionKey, ModuleId> for DurableDeclSource {
-        fn function(
-            &self,
-            key: &StableDefinitionKey,
-        ) -> Option<rue_air::DurableFunction<StableDefinitionKey, ModuleId>> {
-            use crate::durable_semantics::DurableDeclarationPayload as Payload;
-            let decl = self.by_key.get(key)?;
-            let Payload::Callable {
-                parameters,
-                result,
-                has_self,
-                is_unchecked,
-            } = &decl.payload
-            else {
-                return None;
-            };
-            // A `self`-taking callable is a method, not a free function.
-            if *has_self {
-                return None;
-            }
-            Some(rue_air::DurableFunction {
-                parameters: parameters.iter().map(provider_durable_param).collect(),
-                result: result.clone(),
-                is_public: decl.is_public,
-                is_unchecked: *is_unchecked,
-            })
-        }
-
-        fn method(
-            &self,
-            key: &StableDefinitionKey,
-        ) -> Option<rue_air::DurableMethod<StableDefinitionKey, ModuleId>> {
-            // r4b-3: the durable method key's receiver preimage is its owner
-            // nominal. The `Callable` payload carries the explicit parameters and
-            // result (self is separate, tracked by `has_self`); the receiver type
-            // is the owner nominal, recovered by joining the method key's
-            // `owner()` (module + kind + name) back to the owner nominal's own
-            // durable key in this set, so the pool resolves it through the same 2a
-            // nominal machinery as any parameter type.
-            use crate::durable_semantics::DurableDeclarationPayload as Payload;
-            let decl = self.by_key.get(key)?;
-            let Payload::Callable {
-                parameters,
-                result,
-                has_self,
-                ..
-            } = &decl.payload
-            else {
-                return None;
-            };
-            // A free function (no self) is not a method.
-            if !*has_self {
-                return None;
-            }
-            let owner = key.owner()?;
-            let owner_key = self
-                .by_key
-                .keys()
-                .find(|candidate| {
-                    candidate.owner().is_none()
-                        && candidate.module() == owner.module()
-                        && candidate.kind() == owner.kind()
-                        && candidate.name() == owner.name()
-                })?
-                .clone();
-            Some(rue_air::DurableMethod {
-                receiver: rue_air::SemanticImportType::Nominal(owner_key),
-                parameters: parameters.iter().map(provider_durable_param).collect(),
-                result: result.clone(),
-                has_self: *has_self,
-            })
-        }
-    }
-
-    impl rue_air::DurableConstSource<StableDefinitionKey, ModuleId> for DurableDeclSource {
-        fn constant(
-            &self,
-            key: &StableDefinitionKey,
-        ) -> Option<rue_air::DurableConst<StableDefinitionKey, ModuleId>> {
-            use crate::durable_semantics::DurableDeclarationPayload as Payload;
-            let decl = self.by_key.get(key)?;
-            let Payload::Const { ty, value } = &decl.payload else {
-                // Module bindings deliberately STOP here: their durable target
-                // is real, but the body pool has no module-registry identity arm
-                // from which to mint the epoch-local `Type::Module`.
-                return None;
-            };
-            Some(rue_air::DurableConst {
-                is_public: decl.is_public,
-                ty: ty.clone(),
-                value: value.clone(),
-            })
-        }
-
-        fn function_name(&self, key: &StableDefinitionKey) -> Option<Arc<str>> {
-            use crate::durable_semantics::DurableDeclarationPayload as Payload;
-            matches!(self.by_key.get(key)?.payload, Payload::Callable { .. })
-                .then(|| Arc::from(key.name()))
-        }
-    }
-
     /// Render a pool `Type` to a comparable display through the minted pool, the
     /// index-independent parity the 2a/2b contract asserts (never a pool-relative
     /// index).
@@ -21503,111 +21623,6 @@ mod tests {
     // and well-known `Option` → r6; builtin / slice names beyond the pool's
     // pre-registered `BUILTIN_ENUMS` + `str` set → r6; the `(StructId, name)`
     // endpoint-trait seam → r4b-3.
-
-    /// The index-independent render of a nominal pool [`rue_air::Type`]: the
-    /// display, copyability, visibility, mangled symbol, and member vocabulary a
-    /// differential compares across two independently-minted pools (the pool
-    /// mints its own ids; parity is a display/metadata property).
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct EndpointNominalRender {
-        display: String,
-        is_copy: bool,
-        is_pub: bool,
-        symbol: String,
-        members: Vec<(String, String)>,
-    }
-
-    /// Render any pool [`rue_air::Type`] to its display, recursing through pool
-    /// indices so it is index-independent and safe to compare across two pools.
-    fn endpoint_display(pool: &rue_air::TypeInternPool, ty: rue_air::Type) -> String {
-        use rue_air::TypeKind;
-        match ty.kind() {
-            TypeKind::I8 => "i8".into(),
-            TypeKind::I16 => "i16".into(),
-            TypeKind::I32 => "i32".into(),
-            TypeKind::I64 => "i64".into(),
-            TypeKind::U8 => "u8".into(),
-            TypeKind::U16 => "u16".into(),
-            TypeKind::U32 => "u32".into(),
-            TypeKind::U64 => "u64".into(),
-            TypeKind::Bool => "bool".into(),
-            TypeKind::Unit => "()".into(),
-            TypeKind::Never => "!".into(),
-            TypeKind::ComptimeType => "type".into(),
-            TypeKind::Struct(id) => pool.struct_def(id).name,
-            TypeKind::Enum(id) => pool.enum_def(id).name,
-            TypeKind::Array(id) => {
-                let (element, len) = pool.array_def(id);
-                format!("[{}; {}]", endpoint_display(pool, element), len)
-            }
-            TypeKind::PtrConst(id) => {
-                format!(
-                    "ptr const {}",
-                    endpoint_display(pool, pool.ptr_const_def(id))
-                )
-            }
-            TypeKind::PtrMut(id) => {
-                format!("ptr mut {}", endpoint_display(pool, pool.ptr_mut_def(id)))
-            }
-            other => format!("{other:?}"),
-        }
-    }
-
-    /// Index-independent copyability, mirroring `Sema::is_type_copy`.
-    fn endpoint_is_copy(pool: &rue_air::TypeInternPool, ty: rue_air::Type) -> bool {
-        use rue_air::TypeKind;
-        match ty.kind() {
-            TypeKind::Struct(id) => pool.struct_def(id).is_copy,
-            TypeKind::Enum(id) => pool
-                .enum_def(id)
-                .variant_payloads
-                .iter()
-                .flatten()
-                .all(|&ty| endpoint_is_copy(pool, ty)),
-            TypeKind::Array(id) => endpoint_is_copy(pool, pool.array_def(id).0),
-            _ => true,
-        }
-    }
-
-    /// Render a nominal (struct or enum) pool [`rue_air::Type`] to its
-    /// index-independent metadata.
-    fn endpoint_nominal_render(
-        pool: &rue_air::TypeInternPool,
-        ty: rue_air::Type,
-    ) -> EndpointNominalRender {
-        use rue_air::TypeKind;
-        match ty.kind() {
-            TypeKind::Struct(id) => {
-                let def = pool.struct_def(id);
-                EndpointNominalRender {
-                    display: def.name.clone(),
-                    is_copy: def.is_copy,
-                    is_pub: def.is_pub,
-                    symbol: pool.struct_symbol_name(id),
-                    members: def
-                        .fields
-                        .iter()
-                        .map(|field| (field.name.clone(), endpoint_display(pool, field.ty)))
-                        .collect(),
-                }
-            }
-            TypeKind::Enum(id) => {
-                let def = pool.enum_def(id);
-                EndpointNominalRender {
-                    display: def.name.clone(),
-                    is_copy: endpoint_is_copy(pool, ty),
-                    is_pub: def.is_pub,
-                    symbol: pool.enum_symbol_name(id),
-                    members: def
-                        .variants
-                        .iter()
-                        .map(|variant| (variant.clone(), String::new()))
-                        .collect(),
-                }
-            }
-            other => panic!("endpoint_nominal_render expects a nominal, got {other:?}"),
-        }
-    }
 
     #[test]
     fn provider_endpoint_facts_resolve_instance_type_matches_epoch() {
