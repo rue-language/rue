@@ -21665,6 +21665,9 @@ mod tests {
         let point_sym = interner.get("Point").expect("Point interned");
         let holder_sym = interner.get("Holder").expect("Holder interned");
         let color_sym = interner.get("Color").expect("Color interned");
+        let durable_module = merged.ast().modules()[0].module_id().clone();
+        let conflicting_durable_module =
+            crate::ModuleId::from_logical_path("other.rue").expect("second durable module id");
 
         let epoch_point = bound
             .epoch_nominal_type(file, point_sym)
@@ -21675,6 +21678,20 @@ mod tests {
         let epoch_color = bound
             .epoch_nominal_type(file, color_sym)
             .expect("epoch resolves Color");
+        let epoch_module = bound
+            .epoch_module_type(file)
+            .expect("epoch resolves the module endpoint through its registry");
+        let epoch_module_file = bound
+            .epoch_module_file(epoch_module)
+            .expect("epoch module type reverses to its current file");
+        let epoch_module_fact = bound
+            .epoch_module_fact(epoch_module)
+            .expect("epoch module type carries presentation facts");
+        let epoch_aggregate_module_fact = (
+            epoch_module_fact.0,
+            epoch_module_fact.1.clone(),
+            epoch_module_fact.2.clone(),
+        );
         let epoch_point_render =
             bound.with_type_pool(|pool| endpoint_nominal_render(pool, epoch_point));
         let epoch_holder_render =
@@ -21693,6 +21710,8 @@ mod tests {
         let mut database = RevisionedQueryDatabase::default();
         let revision = revision_for(&mut database, &snapshot);
         let adapter = DurableDeclSource::from_declarations(&decls);
+        let call_adapter = DurableDeclSource::from_declarations(&decls);
+        let aggregate_adapter = DurableDeclSource::from_declarations(&decls);
 
         let outcome = database.probe_body_facts(
             revision,
@@ -21751,11 +21770,59 @@ mod tests {
                     })
                     .expect("builtin str resolves through the pool's pre-registered set");
 
-                // A `Module` token constructed here is irrelevant — the arm
-                // fails closed before any lookup.
-                let _ = MTok::new(0, 0);
+                let module_import_path = durable_module.logical_path().to_owned();
+                let module_token = facts
+                    .register_module(
+                        durable_module.clone(),
+                        file,
+                        "/m.rue",
+                        &module_import_path,
+                        &module_import_path,
+                    )
+                    .expect("durable module registration is consistent");
+                assert_eq!(
+                    facts.register_module(
+                        durable_module.clone(),
+                        file,
+                        "/m.rue",
+                        &module_import_path,
+                        &module_import_path,
+                    ),
+                    Some(module_token),
+                    "repeat durable module registration dedups"
+                );
+                assert!(
+                    facts
+                        .register_module(
+                            durable_module.clone(),
+                            FileId::new(2),
+                            "/other.rue",
+                            &module_import_path,
+                            &module_import_path,
+                        )
+                        .is_none(),
+                    "one durable module cannot acquire a conflicting file"
+                );
+                assert!(
+                    facts
+                        .register_module(
+                            conflicting_durable_module,
+                            file,
+                            "/other.rue",
+                            "other.rue",
+                            "other.rue",
+                        )
+                        .is_none(),
+                    "a second durable module cannot claim an already-registered file"
+                );
+                let module_ty = facts
+                    .resolve_instance_type(&T::Module(module_token))
+                    .expect("module arm resolves through provider module facts");
+                let module_file = facts
+                    .module_file(module_ty)
+                    .expect("provider module type reverses to its current file");
 
-                facts.with_type_pool(|pool| {
+                let endpoint_render = facts.with_type_pool(|pool| {
                     (
                         endpoint_nominal_render(pool, point_ty),
                         endpoint_nominal_render(pool, holder_ty),
@@ -21765,12 +21832,62 @@ mod tests {
                         endpoint_display(pool, ptr_mut_ty),
                         endpoint_display(pool, i64_ty),
                         endpoint_display(pool, str_ty),
+                        module_file,
                     )
-                })
+                });
+
+                let call_facts =
+                    rue_air::ProviderCallFacts::new(provider, call_adapter, rir_ref, interner);
+                let call_module = call_facts
+                    .register_module(
+                        durable_module.clone(),
+                        file,
+                        "/m.rue",
+                        &module_import_path,
+                        &module_import_path,
+                    )
+                    .expect("call driver registers durable module facts");
+                let call_module_fact = call_facts
+                    .module_def(call_module)
+                    .map(|definition| {
+                        (
+                            definition.file_id,
+                            definition.file_path,
+                            definition.import_path,
+                            definition.durable_id,
+                        )
+                    })
+                    .expect("call driver answers module_def");
+
+                let aggregate_facts = rue_air::ProviderAggregateFacts::new(aggregate_adapter);
+                let aggregate_module = aggregate_facts
+                    .register_module(
+                        durable_module,
+                        file,
+                        "/m.rue",
+                        &module_import_path,
+                        &module_import_path,
+                    )
+                    .expect("aggregate driver registers durable module facts");
+                let aggregate_module_fact = aggregate_facts
+                    .module_fact(aggregate_module)
+                    .expect("aggregate driver answers module facts");
+
+                (endpoint_render, call_module_fact, aggregate_module_fact)
             },
         );
-        let (point_r, holder_r, color_r, array_d, ptr_const_d, ptr_mut_d, i64_d, str_d) =
-            outcome.result;
+        let (endpoint_render, call_module_fact, aggregate_module_fact) = outcome.result;
+        let (
+            point_r,
+            holder_r,
+            color_r,
+            array_d,
+            ptr_const_d,
+            ptr_mut_d,
+            i64_d,
+            str_d,
+            provider_module_file,
+        ) = endpoint_render;
 
         // Named-nominal arm (struct): full metadata parity against the LIVE epoch.
         assert_eq!(
@@ -21811,6 +21928,18 @@ mod tests {
         assert_eq!(
             str_d, "str",
             "builtin str renders as the pre-registered nominal"
+        );
+        assert_eq!(
+            provider_module_file, epoch_module_file,
+            "module endpoint + registry resolution matches the LIVE epoch"
+        );
+        assert_eq!(
+            call_module_fact, epoch_module_fact,
+            "call module_def matches the LIVE epoch"
+        );
+        assert_eq!(
+            aggregate_module_fact, epoch_aggregate_module_fact,
+            "aggregate module facts match the LIVE epoch"
         );
 
         // The P-op path consults the pool (durable source) + overlay, not the

@@ -50,6 +50,7 @@ mod metadata;
 mod one_body;
 mod output;
 pub mod provider;
+mod provider_module_registry;
 mod semantic_body_export;
 mod typeck;
 mod visibility;

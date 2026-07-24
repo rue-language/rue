@@ -31,6 +31,7 @@
 //! callable-symbol single-candidate check) stays inside that point query,
 //! matching the `body_endpoint` convention.
 
+use std::cell::RefCell;
 use std::hash::Hash;
 
 use lasso::{Spur, ThreadedRodeo};
@@ -44,6 +45,7 @@ use super::body_identity::{
 };
 use super::info::{ConstInfo, FunctionInfo, MethodInfo};
 use super::provider::BodyFactProvider;
+use super::provider_module_registry::ProviderModuleRegistry;
 use crate::types::{ModuleDef, ModuleId, StructId};
 
 /// The exact call/method/operator-resolution fact boundary consumed by the
@@ -276,16 +278,15 @@ pub(in crate::sema) fn resolve_static_call_reference<P: CallResolutionFacts>(
 //     through 2a) with the RIR handle the RIR index locates for the preimage. The
 //     rue-compiler differential recovers the receiver by joining the method key's
 //     `owner()` back to the owner nominal's durable key.
-//   - value_const / module_binding / resolve_const_info_in_file → RE-DEFERRED to
-//     the flip. Sharpened reason: a `ConstInfo` carries both a declaration `span`
-//     the position-free provider boundary omits (needs a const-declaration RIR
-//     handle — the const twin of the function/method handles) AND a
-//     comptime-evaluated `value` the durable const payload carries but the body
-//     identity pool has no const-minting arm for yet. Both are flip-slice work.
-//   - module_def → RE-DEFERRED to the flip. Sharpened reason: it answers a
-//     rue-air-internal `ModuleId` registry index the provider has no durable
-//     preimage for; the module-facts + logical-path composition an equivalent
-//     could be built from belongs with the flip's module registry.
+//   - value_const / module_binding / resolve_const_info_in_file → the flip. The
+//     pool's const-minting arm and exact RIR declaration handle now exist
+//     (`body_identity.rs`, flip-prep), but this call driver deliberately remains
+//     unwired pre-flip. Module bindings additionally require composing that const
+//     identity with this driver's now-real module registry.
+//   - module_def → LANDED (flip-prep): `ProviderModuleRegistry` mints the
+//     body-local compact id from the durable module handle and stores its
+//     current request file/path/import-path facts; this driver exposes the
+//     owned definition through `module_def`.
 //   - named_method_declaration → LANDED (flip-prep). Both seams now take the
 //     provider-natural `(owner_file, owner_type_name, method_name)` preimage;
 //     the epoch adapter alone translates it through `structs_by_file_name` to
@@ -309,6 +310,7 @@ pub(in crate::sema) fn resolve_static_call_reference<P: CallResolutionFacts>(
 pub struct ProviderCallFacts<'a, P, S, K, M> {
     provider: &'a P,
     pool: BodyIdentityPool<K, M, S>,
+    modules: RefCell<ProviderModuleRegistry<M>>,
     rir_index: BodyRirIndex,
     rir: &'a Rir,
     /// The whole-program RIR interner. Input names arrive already interned here
@@ -331,6 +333,7 @@ where
         Self {
             provider,
             pool: BodyIdentityPool::new(source),
+            modules: RefCell::new(ProviderModuleRegistry::default()),
             rir_index: BodyRirIndex::new(rir),
             rir,
             rir_interner,
@@ -356,6 +359,28 @@ where
     /// parity is asserted through resolved strings.
     pub fn resolve_symbol(&self, symbol: Spur) -> &str {
         self.pool.resolve_symbol(symbol)
+    }
+
+    /// Register one durable module and its current request/presentation facts.
+    /// Module-member call resolution uses the returned body-local compact id;
+    /// [`Self::module_def`] recovers the same owned definition the epoch
+    /// `CallResolutionFacts::module_def` consult returns.
+    pub fn register_module(
+        &self,
+        module: M,
+        file: FileId,
+        file_path: &str,
+        import_path: &str,
+        durable_id: &str,
+    ) -> Option<ModuleId> {
+        self.modules
+            .borrow_mut()
+            .register(module, file, file_path, import_path, durable_id)
+    }
+
+    /// The registered provider-era module definition for a compact id.
+    pub fn module_def(&self, module: ModuleId) -> Option<ModuleDef> {
+        self.modules.borrow().get(module)
     }
 
     /// (P) Assemble a [`FunctionInfo`] for a durable free-function key, composing
