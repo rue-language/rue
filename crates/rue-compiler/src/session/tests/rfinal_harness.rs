@@ -152,6 +152,13 @@ const SHAPE_CORPUS: &[HarnessCase] = &[
         expected_failure: false,
     },
     HarnessCase {
+        name: "three_body_permutation",
+        source: "fn first() -> i32 { 11 } fn second() -> i32 { 22 } \
+                 fn main() -> i32 { first() + second() }",
+        bodies: &["first", "second", "main"],
+        expected_failure: false,
+    },
+    HarnessCase {
         name: "method",
         source: "struct Counter { value: i32, fn get(self) -> i32 { self.value } } \
                  fn main() -> i32 { Counter { value: 3 }.get() }",
@@ -398,8 +405,11 @@ const REVIEW_CARRY_FORWARDS: &[NamedCoverage] = &[
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct ObservationCounters {
     declaration_context: rue_air::PerBodyDeclarationContextWork,
-    provider: crate::unstable::ProviderObservationMetrics,
-    overlay: crate::unstable::OverlayMaterializationMetrics,
+    // These session-owned metrics are captured once after case setup. Direct
+    // production body analysis does not mutate them, so they are deliberately
+    // framed as case snapshots rather than per-body work until side B lands.
+    case_provider_snapshot: crate::unstable::ProviderObservationMetrics,
+    case_overlay_snapshot: crate::unstable::OverlayMaterializationMetrics,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -678,8 +688,8 @@ impl WholeBodyAnalyzer for ProductionAnalyzer {
             Err(_) if case.expected_failure => None,
             Err(errors) => return Err(HarnessError::Compile(errors.to_string())),
         };
-        let provider = crate::unstable::provider_observation_metrics(&session);
-        let overlay = crate::unstable::overlay_materialization_metrics(&session);
+        let case_provider_snapshot = crate::unstable::provider_observation_metrics(&session);
+        let case_overlay_snapshot = crate::unstable::overlay_materialization_metrics(&session);
         let direct = DirectProductionInputs::build(case.source)?;
         let mut captured = Vec::new();
         // This is the actual body-analysis schedule permutation: each call
@@ -696,8 +706,8 @@ impl WholeBodyAnalyzer for ProductionAnalyzer {
             let (directly_analyzed, declaration_context) = direct.analyze(&key)?;
             let counters = ObservationCounters {
                 declaration_context,
-                provider,
-                overlay,
+                case_provider_snapshot,
+                case_overlay_snapshot,
             };
             captured.push(capture_terminal(
                 &session,
@@ -854,6 +864,57 @@ fn identity_variant_inventory_is_exhaustive_and_constructible() {
         ("type_module", T::Module("module")),
         ("type_generic_parameter", T::GenericParameter(0)),
     ];
+    fn guard_type_inventory(value: &T) {
+        match value {
+            T::I8 => {}
+            T::I16 => {}
+            T::I32 => {}
+            T::I64 => {}
+            T::U8 => {}
+            T::U16 => {}
+            T::U32 => {}
+            T::U64 => {}
+            T::Bool => {}
+            T::Unit => {}
+            T::Never => {}
+            T::ComptimeType => {}
+            T::BuiltinNominal { kind, name } => {
+                let _ = (kind, name);
+            }
+            T::Nominal(nominal) => match nominal {
+                NominalInstanceKey::Builtin { kind, name } => {
+                    let _ = (kind, name);
+                }
+                NominalInstanceKey::Named(definition) => {
+                    let _ = definition;
+                }
+                NominalInstanceKey::Anonymous(anonymous) => {
+                    let _ = anonymous;
+                }
+            },
+            T::Array { element, len } => {
+                let _ = (element, len);
+            }
+            T::Slice { element, name } => {
+                let _ = (element, name);
+            }
+            T::PtrConst(pointee) => {
+                let _ = pointee;
+            }
+            T::PtrMut(pointee) => {
+                let _ = pointee;
+            }
+            T::Module(module) => {
+                let _ = module;
+            }
+            T::GenericParameter(index) => {
+                let _ = index;
+            }
+        }
+    }
+    for (_, value) in &types {
+        guard_type_inventory(value);
+    }
     assert_eq!(
         types.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
         TYPE_INSTANCE_KEY_COVERAGE
@@ -877,6 +938,29 @@ fn identity_variant_inventory_is_exhaustive_and_constructible() {
         ("argument_unit", V::Unit),
         ("argument_string", V::String(Arc::from("value"))),
     ];
+    fn guard_argument_inventory(value: &V) {
+        match value {
+            V::Integer(integer) => {
+                let _ = integer;
+            }
+            V::Bool(boolean) => {
+                let _ = boolean;
+            }
+            V::Type(ty) => {
+                let _ = ty;
+            }
+            V::Function(function) => {
+                let _ = function;
+            }
+            V::Unit => {}
+            V::String(string) => {
+                let _ = string;
+            }
+        }
+    }
+    for (_, value) in &values {
+        guard_argument_inventory(value);
+    }
     assert_eq!(
         values.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
         CANONICAL_ARGUMENT_VALUE_COVERAGE
