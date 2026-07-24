@@ -2364,9 +2364,15 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                 }
 
                 sema.body_analysis_work.named_method_record_lookups += 1;
-                let Some(method_ref) =
-                    call_facts(sema).named_method_declaration(struct_id, method_name)
-                else {
+                let owner_name = sema
+                    .interner
+                    .get(&type_name_str)
+                    .expect("named struct definition must retain its interned source name");
+                let Some(method_ref) = call_facts(sema).named_method_declaration(
+                    struct_def.file_id,
+                    owner_name,
+                    method_name,
+                ) else {
                     debug_assert!(
                         false,
                         "gathered named MethodInfo must have a private declaration record"

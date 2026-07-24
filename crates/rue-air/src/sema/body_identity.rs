@@ -2604,10 +2604,9 @@ mod tests {
         ] {
             let owner = interner.get(type_name).unwrap();
             let method_sym = interner.get(method);
-            // The epoch keys by the pool-minted StructId; the index keys by the
-            // durable-available (file, type_name) preimage of that StructId.
-            let struct_id = facts.struct_by_file_name(file, owner).unwrap();
-            let epoch_ans = method_sym.and_then(|m| facts.named_method_declaration(struct_id, m));
+            // Both seams now take the durable-available
+            // (file, type_name, method_name) preimage.
+            let epoch_ans = method_sym.and_then(|m| facts.named_method_declaration(file, owner, m));
             let pool_ans = method_sym.and_then(|m| index.named_method_declaration(file, owner, m));
             assert_eq!(
                 pool_ans, epoch_ans,
@@ -2751,7 +2750,7 @@ mod tests {
         let declaration = index.named_method_declaration(file, widget, bump).unwrap();
         assert_eq!(
             Some(declaration),
-            facts.named_method_declaration(struct_id, bump),
+            facts.named_method_declaration(file, widget, bump),
             "index locates the epoch's method declaration"
         );
         let handle = method_handle_from_rir(bs, declaration);

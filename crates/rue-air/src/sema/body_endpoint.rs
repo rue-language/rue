@@ -101,8 +101,14 @@ pub(in crate::sema) trait BodyEndpointProvider {
     /// The first free-function RIR declaration for `(source, file)`.
     fn first_free_function(&self, source: Spur, file_id: FileId) -> Option<InstRef>;
 
-    /// The named-method RIR declaration for `(struct, name)`.
-    fn named_method_declaration(&self, struct_id: StructId, name: Spur) -> Option<InstRef>;
+    /// The named-method RIR declaration for the durable-available
+    /// `(owner_file, owner_type_name, method_name)` preimage.
+    fn named_method_declaration(
+        &self,
+        owner_file: FileId,
+        owner_type_name: Spur,
+        method_name: Spur,
+    ) -> Option<InstRef>;
 
     /// The destructor declaration record for `(file, type_name)`.
     fn destructor(&self, file: u32, type_name: Spur) -> Option<RirDestructorDeclaration>;
@@ -211,10 +217,19 @@ impl BodyEndpointProvider for EpochFacts<'_, '_> {
             .first_free_function(source, Some(file_id))
     }
 
-    fn named_method_declaration(&self, struct_id: StructId, name: Spur) -> Option<InstRef> {
+    fn named_method_declaration(
+        &self,
+        owner_file: FileId,
+        owner_type_name: Spur,
+        method_name: Spur,
+    ) -> Option<InstRef> {
+        let struct_id = self
+            .sema
+            .structs_by_file_name
+            .get(&(owner_file, owner_type_name))?;
         self.sema
             .named_method_declarations
-            .get(&(struct_id, name))
+            .get(&(*struct_id, method_name))
             .copied()
     }
 
@@ -386,14 +401,10 @@ pub(in crate::sema) fn resolve_instance_type<P: BodyEndpointProvider>(
 //   - `nominal_contains_in_module`                                          → C
 // Deferred here, each with its unblocking slice named (reported, never silently
 // answered wrong):
-//   - the `(StructId, name)`-keyed `BodyEndpointProvider::named_method_
-//     declaration` trait op → RE-DEFERRED by r4b-3 to the side-B fill / flip. The
-//     pool mints its own `StructId`s and exposes no `StructId → (owner_file,
-//     owner_type_name)` reverse surface, so a clean trait translation is not
-//     available now; this driver answers the op by its provider-natural preimage
-//     `(owner_file, owner_type_name, method)` on an inherent method (the r4a-2c
-//     "prefer rethreading" resolution), and the `StructId`-keyed trait signature
-//     returns `None` here.
+//   - `named_method_declaration` → LANDED (flip-prep): the production seam now
+//     takes the provider-natural `(owner_file, owner_type_name, method_name)`
+//     preimage already computed by its analyzer caller, so this driver answers
+//     it directly from the RIR index without minting a pool `StructId`.
 //   - `function_info` / `function_by_file_name` → r4b-1's `ProviderCallFacts`
 //     (the call family); `method_info` → r4b-3's `ProviderCallFacts::method_info`
 //     (receiver→pool identity now threaded through the durable method key). Both
@@ -549,10 +560,8 @@ where
 
     /// (R) The named-method RIR declaration for `(owner_file, owner_type_name,
     /// method)` — the durable-available preimage of the epoch's `(StructId,
-    /// method)` key, answered by [`BodyRirIndex`]. Keyed by the preimage DIRECTLY
-    /// (provider-natural), the r4a-2c "prefer rethreading" resolution: the
-    /// `StructId`-keyed `BodyEndpointProvider::named_method_declaration` trait
-    /// signature stays a r4b-3 seam translation (it returns `None` here).
+    /// method)` key, answered by [`BodyRirIndex`]. Keyed by the preimage directly
+    /// (provider-natural), matching the production seam.
     pub fn named_method_declaration(
         &self,
         owner_file: FileId,
@@ -752,10 +761,14 @@ where
         None
     }
 
-    fn named_method_declaration(&self, _struct_id: StructId, _name: Spur) -> Option<InstRef> {
-        // The `StructId`-keyed seam translation is r4b-3; the preimage-keyed
-        // answer is the inherent `named_method_declaration(FileId, &str, &str)`.
-        None
+    fn named_method_declaration(
+        &self,
+        owner_file: FileId,
+        owner_type_name: Spur,
+        method_name: Spur,
+    ) -> Option<InstRef> {
+        self.rir_index
+            .named_method_declaration(owner_file, owner_type_name, method_name)
     }
 
     fn destructor(&self, _file: u32, _type_name: Spur) -> Option<RirDestructorDeclaration> {

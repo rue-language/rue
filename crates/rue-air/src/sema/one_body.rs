@@ -1561,8 +1561,11 @@ fn analyze_named_method(
             CompileError::without_span(ErrorKind::UndefinedFunction(endpoint.name.to_string())),
         );
     };
-    let Some(declaration) = endpoint_facts(sema).named_method_declaration(struct_id, method_name)
-    else {
+    let Some(declaration) = endpoint_facts(sema).named_method_declaration(
+        FileId::new(endpoint.file),
+        owner_symbol,
+        method_name,
+    ) else {
         return fail(
             sema,
             None,
