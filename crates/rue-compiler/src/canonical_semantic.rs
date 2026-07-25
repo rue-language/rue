@@ -1888,6 +1888,7 @@ pub(crate) fn analyze_body_query(
                 )),
             )),
             references: BodyReferences(Arc::from(Vec::<BodyReference>::new())),
+            lookup_observations: Arc::from([]),
         }
     };
     #[cfg(test)]
@@ -2118,13 +2119,15 @@ pub(crate) fn analyze_body_query(
     };
     drop(install_span);
     let analyze_span = info_span!("body_analyze").entered();
-    let outcome = bound.analyze_one_body_instance(
+    let lookup_collector = rue_air::BodyLookupCollector::new();
+    let outcome = bound.analyze_one_body_instance_recording_lookups(
         &key.instance,
         |definition| definitions.semantic_token_for_key(definition),
         |module| definitions.module_token_for(merged, module),
         cancellation
             .is_canceled()
             .then_some(rue_air::OneBodyInterruption::Canceled),
+        lookup_collector.clone(),
     );
     drop(analyze_span);
     // Keep cancellation responsive across the synchronous AIR callback. The
@@ -2145,7 +2148,46 @@ pub(crate) fn analyze_body_query(
         definitions: &definitions,
         merged,
     };
-    publish_one_body_outcome(outcome, &resolver, &deterministic_failure)
+    let mut transaction = publish_one_body_outcome(outcome, &resolver, &deterministic_failure)?;
+    let module_for_file = |file| {
+        merged
+            .ast()
+            .modules()
+            .iter()
+            .find(|module| module.file_id().index() == file)
+            .map(|module| module.module_id().clone())
+    };
+    let lookup_observations = lookup_collector
+        .observations()
+        .iter()
+        .filter_map(|observation| {
+            use crate::body_query::{BodyLookupKey as Key, BodyLookupNamespace as Namespace};
+            Some(match observation {
+                rue_air::BodyLookupObservation::ModuleItem { file, name } => Key::Name {
+                    module: module_for_file(*file)?,
+                    namespace: Namespace::ModuleItem,
+                    name: name.clone(),
+                },
+                rue_air::BodyLookupObservation::Destructor { file, type_name } => Key::Name {
+                    module: module_for_file(*file)?,
+                    namespace: Namespace::Destructor,
+                    name: type_name.clone(),
+                },
+                rue_air::BodyLookupObservation::Member {
+                    owner_file,
+                    owner_name,
+                    member_name,
+                } => Key::Member {
+                    module: module_for_file(*owner_file)?,
+                    owner_name: owner_name.clone(),
+                    member_name: member_name.clone(),
+                },
+            })
+        })
+        .collect::<Vec<_>>()
+        .into();
+    transaction.install_lookup_observations(lookup_observations);
+    Ok(transaction)
 }
 
 /// The stable-identity back-projection publication needs to convert one
@@ -2396,6 +2438,7 @@ pub(crate) fn publish_one_body_outcome(
                 body: Box::new(body),
                 references,
                 produced_anonymous_nominals,
+                lookup_observations: Arc::from([]),
             })
         }
         rue_air::OneBodyTransactionOutcome::DeterministicFailure { errors, references } => {
@@ -2405,7 +2448,11 @@ pub(crate) fn publish_one_body_outcome(
             // invariant violation as a cancellation.
             let references = map_references(references)
                 .unwrap_or_else(|_| BodyReferences(Arc::from(Vec::<BodyReference>::new())));
-            Ok(BodyTransaction::DeterministicFailure { errors, references })
+            Ok(BodyTransaction::DeterministicFailure {
+                errors,
+                references,
+                lookup_observations: Arc::from([]),
+            })
         }
         // A non-terminal outcome is a request to observe a deferred producer, not
         // a deterministic failure; the coordinator reschedules it.
@@ -2453,6 +2500,7 @@ pub(crate) fn analyze_body_via_overlay(
                 )),
             )),
             references: BodyReferences(Arc::from(Vec::<BodyReference>::new())),
+            lookup_observations: Arc::from([]),
         }
     };
 

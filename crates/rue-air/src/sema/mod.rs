@@ -82,16 +82,16 @@ pub use one_body::{
 };
 pub use output::{
     AnalyzedBodyOwnerEvent, AnalyzedCallableKind, AnalyzedFunction, BodyAnalysisFailure,
-    BodyAnalysisWork, BodyNamedDependencyEvent, BodyOwnerEndpoint, BodyOwnerKind, BodyOwnerToken,
-    BuiltinTypeCallHead, DeclarationBuiltinTypeCallHeadDependencyEvent,
-    DeclarationTypeCallHeadDependencyEvent, DeclarationTypeDependencyEvent,
-    DeclarationTypeDependencyKind, DeclarationTypeDependencySourceKind,
-    DeclarationTypeDependencyTargetKind, ImplicitDropDependencySourceEvent,
-    ImplicitNamedDestructorDependencyEvent, NamedConstDependencyEvent,
-    NamedConstDependencyTargetEvent, NamedDestructorDependencyEvent, NamedMethodDependencyEvent,
-    NamedMethodDependencyTargetEvent, OrdinaryFreeFunctionDependencyEvent, ParamSlotModes,
-    PerBodyDeclarationContextWork, SemaOutput, SourceParamAbi,
-    SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
+    BodyAnalysisWork, BodyLookupCollector, BodyLookupObservation, BodyNamedDependencyEvent,
+    BodyOwnerEndpoint, BodyOwnerKind, BodyOwnerToken, BuiltinTypeCallHead,
+    DeclarationBuiltinTypeCallHeadDependencyEvent, DeclarationTypeCallHeadDependencyEvent,
+    DeclarationTypeDependencyEvent, DeclarationTypeDependencyKind,
+    DeclarationTypeDependencySourceKind, DeclarationTypeDependencyTargetKind,
+    ImplicitDropDependencySourceEvent, ImplicitNamedDestructorDependencyEvent,
+    NamedConstDependencyEvent, NamedConstDependencyTargetEvent, NamedDestructorDependencyEvent,
+    NamedMethodDependencyEvent, NamedMethodDependencyTargetEvent,
+    OrdinaryFreeFunctionDependencyEvent, ParamSlotModes, PerBodyDeclarationContextWork, SemaOutput,
+    SourceParamAbi, SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
 };
 pub use provider::{
     BodyFactProvider, DropCopyMetadata, ImportResolution, MemberCandidate, MemberKind,
@@ -381,6 +381,7 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     pub(crate) body_owner_tokens:
         HashMap<(u32, String, Option<String>, BodyOwnerKind), BodyOwnerToken>,
     pub(crate) body_named_dependencies: Vec<BodyNamedDependencyEvent>,
+    pub(crate) body_lookup_collector: Option<BodyLookupCollector>,
     pub(crate) one_body_error_recovery: bool,
     pub(crate) one_body_recovered_errors: Vec<rue_error::CompileError>,
     pub(crate) one_body_inference_failure_incomplete: bool,
@@ -581,6 +582,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             body_dependency_observer,
             body_owner_tokens,
             body_named_dependencies,
+            body_lookup_collector,
             one_body_error_recovery,
             one_body_recovered_errors,
             one_body_inference_failure_incomplete,
@@ -664,6 +666,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             body_dependency_observer,
             body_owner_tokens,
             body_named_dependencies,
+            body_lookup_collector,
             one_body_error_recovery,
             one_body_recovered_errors,
             one_body_inference_failure_incomplete,
@@ -923,6 +926,46 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         self.body_analysis_work.named_const_dependency_events += 1;
     }
 
+    pub(crate) fn record_body_module_item_lookup(&self, file: FileId, name: Spur) {
+        let Some(collector) = &self.body_lookup_collector else {
+            return;
+        };
+        collector.record(BodyLookupObservation::ModuleItem {
+            file: file.index(),
+            name: std::sync::Arc::from(self.interner.resolve(&name)),
+        });
+    }
+
+    pub(crate) fn record_body_destructor_lookup(&self, file: FileId, type_name: Spur) {
+        let Some(collector) = &self.body_lookup_collector else {
+            return;
+        };
+        collector.record(BodyLookupObservation::Destructor {
+            file: file.index(),
+            type_name: std::sync::Arc::from(self.interner.resolve(&type_name)),
+        });
+    }
+
+    pub(crate) fn record_body_member_lookup(&self, owner: StructId, member: Spur) {
+        let Some(collector) = &self.body_lookup_collector else {
+            return;
+        };
+        if self.anonymous_struct_ids.contains(&owner) {
+            return;
+        }
+        let Some(definition) = self.type_pool.try_struct_def(owner) else {
+            return;
+        };
+        if definition.is_builtin {
+            return;
+        }
+        collector.record(BodyLookupObservation::Member {
+            owner_file: definition.file_id.index(),
+            owner_name: std::sync::Arc::from(definition.name),
+            member_name: std::sync::Arc::from(self.interner.resolve(&member)),
+        });
+    }
+
     pub(crate) fn record_body_callable_dependency(&mut self, symbol: Spur) {
         let Some(source) = self.body_dependency_observer.clone() else {
             return;
@@ -1179,6 +1222,7 @@ impl<'a> Sema<'a> {
             body_dependency_observer: None,
             body_owner_tokens: HashMap::new(),
             body_named_dependencies: Vec::new(),
+            body_lookup_collector: None,
             one_body_error_recovery: false,
             one_body_recovered_errors: Vec::new(),
             one_body_inference_failure_incomplete: false,

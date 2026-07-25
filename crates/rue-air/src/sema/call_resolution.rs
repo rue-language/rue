@@ -138,26 +138,32 @@ impl CallResolutionFacts for EpochFacts<'_, '_> {
     }
 
     fn resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur> {
+        self.sema.record_body_module_item_lookup(file, name);
         self.sema.resolve_function_name_local(name, file)
     }
 
     fn resolve_const_info_in_file(&self, name: Spur, file: FileId) -> Option<ConstInfo> {
+        self.sema.record_body_module_item_lookup(file, name);
         self.sema.resolve_const_info_in_file(name, file).cloned()
     }
 
     fn value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
+        self.sema.record_body_module_item_lookup(file, name);
         self.sema.value_const(&(file, name)).cloned()
     }
 
     fn module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
+        self.sema.record_body_module_item_lookup(file, name);
         self.sema.module_binding(&(file, name)).cloned()
     }
 
     fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
+        self.sema.record_body_member_lookup(struct_id, name);
         self.sema.method_info((struct_id, name)).copied()
     }
 
     fn named_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
+        self.sema.record_body_member_lookup(struct_id, name);
         self.sema.methods.get(&(struct_id, name)).copied()
     }
 
@@ -173,10 +179,13 @@ impl CallResolutionFacts for EpochFacts<'_, '_> {
         owner_type_name: Spur,
         method_name: Spur,
     ) -> Option<InstRef> {
+        self.sema
+            .record_body_module_item_lookup(owner_file, owner_type_name);
         let struct_id = self
             .sema
             .structs_by_file_name
             .get(&(owner_file, owner_type_name))?;
+        self.sema.record_body_member_lookup(*struct_id, method_name);
         self.sema
             .named_method_declarations
             .get(&(*struct_id, method_name))

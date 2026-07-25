@@ -58,18 +58,22 @@ impl<'s, 'a, D: DeclarationPhase> EpochFacts<'s, 'a, D> {
 
 impl<D: DeclarationPhase> AggregateFacts for EpochFacts<'_, '_, D> {
     fn value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
+        self.sema.record_body_module_item_lookup(file, name);
         self.sema.value_const(&(file, name)).cloned()
     }
 
     fn module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
+        self.sema.record_body_module_item_lookup(file, name);
         self.sema.module_binding(&(file, name)).cloned()
     }
 
     fn struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId> {
+        self.sema.record_body_module_item_lookup(file, name);
         self.sema.structs_by_file_name.get(&(file, name)).copied()
     }
 
     fn enum_in_file(&self, file: FileId, name: Spur) -> Option<EnumId> {
+        self.sema.record_body_module_item_lookup(file, name);
         self.sema.enums_by_file_name.get(&(file, name)).copied()
     }
 
