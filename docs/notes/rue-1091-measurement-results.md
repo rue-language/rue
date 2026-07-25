@@ -1,4 +1,36 @@
-# RUE-1091 post-flip measurement results
+# RUE-1091 measurement ledger
+
+This file contains two deliberately separate evidence tracks. They must not
+be merged into one "before/after" claim.
+
+## Current-production value audit
+
+The reproducible user-value audit is run by
+[`scripts/rue-value-audit.py`](../../scripts/rue-value-audit.py), using the
+fixture matrix in [`benchmarks/value-audit/manifest.toml`](../../benchmarks/value-audit/manifest.toml).
+Its candidate baseline is the current production compiler. A historical
+pre-query revision is retained only as context; if it cannot consume the
+modern benchmark/session protocol, the runner uses a thin cold black-box
+compile fallback and records warm scenarios as unsupported. It is incorrect to
+call that historical result post-flip evidence or to backport the modern
+incrementality harness solely to make the comparison complete.
+
+The value-audit gates are exact correctness/locality inputs, warm unrelated
+edit improvement of at least 50%, warm isolated body-edit improvement of at
+least 25%, claimed wins exceeding three times the larger MAD, cold wall/RSS
+regression no greater than `max(2%, 3 * larger MAD)`, repeated-edit RSS
+stabilization within a 5% band when a persistent-session protocol exists, and
+Caldera cold wall time at or below 300 seconds. The report records medians,
+MADs, hashes, host provenance, raw alternating samples, and unsupported cases.
+
+This is the current-production value audit, not the activation ledger below.
+
+## Future post-flip activation evidence
+
+The staged gauntlet and result template below remain the authoritative plan for
+the future post-flip run. Stage 8/9 values must not be filled with a
+current-production value-audit row, and a pre-flip `ALLOW_FAIL` is only
+plumbing validation for that future gauntlet.
 
 Use this template for the authoritative run after the analyzer flip. The runner
 retains a `summary.tsv` plus one full log per stage:
