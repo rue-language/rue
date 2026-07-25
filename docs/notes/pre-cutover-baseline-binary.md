@@ -151,11 +151,25 @@ headroom on this host while leaving today's failures unambiguous:
 Nothing about the verdict changes: every program still fails, by 4x to 14x. The
 change buys robustness on slower hosts, which is what an absolute gate is for.
 
-That said, the absolute gate was always the fallback, and it is no longer the
-only option. With a buildable baseline binary the role-vs-role pair comparison is
-available, and it is host-independent by construction because both roles run on
-the same machine in the same run. A run that supplies the baseline should be read
-pair-first; the absolute gate is what reports when no baseline is supplied.
+### The multiplier is no longer the thing standing between you and a false failure
+
+Raising 4x to 6x bought headroom but did not fix the shape of the problem: an
+absolute budget compares a wall time on an unknown host against a constant
+calibrated elsewhere, and no multiplier is simultaneously tight enough to mean
+something and loose enough to be safe everywhere. Picking a better constant just
+moves the failure mode.
+
+The runner now decides per run instead. When a distinct historical baseline
+binary is supplied, the role-vs-role pair comparison is available and is
+host-independent by construction — both roles run on the same machine in the
+same run — so the absolute budget is reported as `advisory` and does not decide
+the scenario. With no baseline it stays the hard gate it was designed to be,
+because then it is the only thing that reports at all. The run records which
+mode applied in `comparison_provenance.absolute_cold_budget`.
+
+That makes the 6x multiplier a fallback calibration rather than a load-bearing
+threshold. It still matters for a bare run; it no longer stands between a
+repaired compiler and a false failure on a slow host.
 
 ## Reproducing
 
