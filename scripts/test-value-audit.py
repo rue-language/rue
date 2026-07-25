@@ -425,6 +425,132 @@ class ValueAuditTests(unittest.TestCase):
         self.assertEqual(manifest["protocol"]["paired_samples"], 7)
         self.assertEqual(manifest["protocol"]["warmup"], 1)
 
+    def regressed_workloads(self):
+        return [
+            workload for workload in value_audit.WORKLOADS
+            if workload["family"] == "regressed_example"
+        ]
+
+    def cold_role(self, median_ms):
+        return {
+            "status": "pass",
+            "protocol": "black_box_compile",
+            "wall": {"median": median_ms, "mad": 0.0},
+            "rss": {"median": 100.0, "mad": 0.0},
+        }
+
+    def test_every_regressed_example_is_a_cold_only_workload_with_a_budget(self):
+        names = {workload["name"] for workload in self.regressed_workloads()}
+        self.assertEqual(names, {"rill", "mosaic", "harbor", "lattice", "meridian"})
+        manifest_workloads = {item["name"]: item for item in self.manifest["workload"]}
+        for workload in self.regressed_workloads():
+            entry = manifest_workloads[workload["name"]]
+            self.assertEqual(entry["supported_scenarios"], ["cold"])
+            self.assertGreater(workload["cold_wall_seconds"], 0)
+            self.assertGreater(workload["cold_timeout_seconds"], workload["cold_wall_seconds"])
+            self.assertIn(workload["family"], value_audit.DIRECTORY_ROOTED_FAMILIES)
+
+    def test_absolute_cold_budget_fails_a_same_binary_run(self):
+        """The gate is per-role, so it verdicts without a historical binary.
+
+        Every pair is `unsupported` here because all three roles share one
+        binary hash. The workload must still fail on its own observed wall time,
+        otherwise the regressed-example rows would report nothing until a
+        pre-cutover baseline binary exists.
+        """
+        rill = next(item for item in self.regressed_workloads() if item["name"] == "rill")
+        roles = {
+            role: {**self.cold_role(rill["cold_wall_seconds"] * 1000 * 5), "binary_sha256": "same"}
+            for role in ("historical_baseline", "current_production", "candidate")
+        }
+        result = value_audit.scenario_verdict(
+            "cold", roles,
+            {**rill, "supported_scenarios": ["cold"]},
+            self.manifest["scenario_policy"]["cold"], self.thresholds,
+        )
+        self.assertEqual(result["status"], "fail")
+        self.assertTrue(all(
+            pair["status"] == "unsupported"
+            for name, pair in result["pairs"].items() if "_vs_" in name
+        ))
+        self.assertEqual(
+            result["pairs"]["current_production"]["budget_seconds"],
+            rill["cold_wall_seconds"],
+        )
+
+    def test_cold_budget_under_gate_does_not_fail(self):
+        rill = next(item for item in self.regressed_workloads() if item["name"] == "rill")
+        roles = {
+            role: {**self.cold_role(rill["cold_wall_seconds"] * 1000 * 0.5), "binary_sha256": "same"}
+            for role in ("historical_baseline", "current_production", "candidate")
+        }
+        result = value_audit.scenario_verdict(
+            "cold", roles,
+            {**rill, "supported_scenarios": ["cold"]},
+            self.manifest["scenario_policy"]["cold"], self.thresholds,
+        )
+        self.assertNotEqual(result["status"], "fail")
+
+    def reject_mutation(self, mutate):
+        drifted = {key: value for key, value in self.manifest.items()}
+        mutate(drifted)
+        original_loader = value_audit.tomllib.load
+        value_audit.tomllib.load = lambda _stream, drifted=drifted: drifted
+        try:
+            with self.assertRaises(ValueError):
+                value_audit.load_audit_manifest(ROOT)
+        finally:
+            value_audit.tomllib.load = original_loader
+
+    def test_caldera_budget_drift_from_thresholds_is_rejected(self):
+        def mutate(drifted):
+            drifted["workload"] = [dict(item) for item in self.manifest["workload"]]
+            caldera = next(item for item in drifted["workload"] if item["name"] == "caldera")
+            caldera["cold_wall_seconds"] = 299
+        self.reject_mutation(mutate)
+
+    def test_cold_gate_above_its_process_timeout_is_rejected(self):
+        def mutate(drifted):
+            drifted["workload"] = [dict(item) for item in self.manifest["workload"]]
+            rill = next(item for item in drifted["workload"] if item["name"] == "rill")
+            rill["cold_timeout_seconds"] = rill["cold_wall_seconds"]
+        self.reject_mutation(mutate)
+
+    def test_historical_reference_cannot_be_promoted_to_role_evidence(self):
+        def mutate(drifted):
+            drifted["historical_reference"] = dict(self.manifest["historical_reference"])
+            drifted["historical_reference"]["usable_as_role_evidence"] = True
+        self.reject_mutation(mutate)
+
+        def mutate_protocol(drifted):
+            drifted["historical_reference"] = dict(self.manifest["historical_reference"])
+            drifted["historical_reference"]["produced_by_this_protocol"] = True
+        self.reject_mutation(mutate_protocol)
+
+    def test_cold_gate_detached_from_its_reference_is_rejected(self):
+        def mutate(drifted):
+            drifted["historical_reference"] = dict(self.manifest["historical_reference"])
+            drifted["historical_reference"]["cold_gate_multiplier"] = 8.0
+        self.reject_mutation(mutate)
+
+    def test_reference_that_does_not_separate_regression_from_gate_is_rejected(self):
+        def mutate(drifted):
+            reference = dict(self.manifest["historical_reference"])
+            programs = {name: dict(entry) for name, entry in reference["programs"].items()}
+            programs["rill"]["post_cutover_seconds"] = programs["rill"]["pre_cutover_seconds"] * 1.1
+            reference["programs"] = programs
+            drifted["historical_reference"] = reference
+        self.reject_mutation(mutate)
+
+    def test_reference_programs_must_match_the_regressed_workloads(self):
+        def mutate(drifted):
+            reference = dict(self.manifest["historical_reference"])
+            programs = {name: dict(entry) for name, entry in reference["programs"].items()}
+            del programs["meridian"]
+            reference["programs"] = programs
+            drifted["historical_reference"] = reference
+        self.reject_mutation(mutate)
+
 
 if __name__ == "__main__":
     unittest.main()

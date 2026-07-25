@@ -90,9 +90,70 @@ WORKLOADS = (
         "root": "examples/caldera/main.rue",
         "warm_runner": "unsupported: no persistent-session black-box protocol",
         "scaling_runner": None,
+        "cold_wall_seconds": 300.0,
+        "cold_timeout_seconds": 330.0,
         "description": "Large maintained application graph with a 300-second cold budget.",
     },
+    # The five programs the RUE-1026/RUE-1027 query cutover regressed.  Their
+    # cold gates come from the checked-in `[historical_reference]` table; see the
+    # manifest for how `cold_wall_seconds` is derived and why the process timeout
+    # is far looser than the gate.
+    {
+        "name": "rill",
+        "family": "regressed_example",
+        "root": "examples/rill/main.rue",
+        "warm_runner": "unsupported: no persistent-session black-box protocol",
+        "scaling_runner": None,
+        "cold_wall_seconds": 1.28,
+        "cold_timeout_seconds": 120.0,
+        "description": "Bytecode language and VM; 0.32s pre-cutover reference.",
+    },
+    {
+        "name": "mosaic",
+        "family": "regressed_example",
+        "root": "examples/mosaic/main.rue",
+        "warm_runner": "unsupported: no persistent-session black-box protocol",
+        "scaling_runner": None,
+        "cold_wall_seconds": 1.96,
+        "cold_timeout_seconds": 120.0,
+        "description": "Medium multi-module application; 0.49s pre-cutover reference.",
+    },
+    {
+        "name": "harbor",
+        "family": "regressed_example",
+        "root": "examples/harbor/main.rue",
+        "warm_runner": "unsupported: no persistent-session black-box protocol",
+        "scaling_runner": None,
+        "cold_wall_seconds": 3.56,
+        "cold_timeout_seconds": 300.0,
+        "description": "52-module application graph; 0.89s pre-cutover reference.",
+    },
+    {
+        "name": "lattice",
+        "family": "regressed_example",
+        "root": "examples/lattice/main.rue",
+        "warm_runner": "unsupported: no persistent-session black-box protocol",
+        "scaling_runner": None,
+        "cold_wall_seconds": 4.6,
+        "cold_timeout_seconds": 300.0,
+        "description": "131-module application graph; 1.15s pre-cutover reference.",
+    },
+    {
+        "name": "meridian",
+        "family": "regressed_example",
+        "root": "examples/meridian/main.rue",
+        "warm_runner": "unsupported: no persistent-session black-box protocol",
+        "scaling_runner": None,
+        "cold_wall_seconds": 22.8,
+        "cold_timeout_seconds": 900.0,
+        "description": "265-module application graph; 5.7s pre-cutover reference.",
+    },
 )
+
+# Workload families whose root names a directory-shaped program, so the recorded
+# source digest must cover the whole tracked module graph rather than the root
+# file alone.
+DIRECTORY_ROOTED_FAMILIES = {"representative", "caldera", "regressed_example"}
 
 PRECOMMITTED_THRESHOLDS = {
     "warm_unrelated_declaration_improvement": 0.50,
@@ -328,7 +389,84 @@ def load_audit_manifest(root: Path) -> dict[str, Any]:
         supported = item.get("supported_scenarios")
         if not isinstance(supported, list) or not set(supported).issubset(SCENARIOS):
             raise ValueError(f"workload {item.get('name')} has invalid supported_scenarios")
+        for key in ("cold_wall_seconds", "cold_timeout_seconds"):
+            expected_budget = expected_workload.get(key)
+            actual_budget = item.get(key)
+            if expected_budget is None:
+                if actual_budget is not None:
+                    raise ValueError(f"workload {item.get('name')} declares an unexpected {key}")
+                continue
+            if not isinstance(actual_budget, (int, float)) or float(actual_budget) != expected_budget:
+                raise ValueError(f"workload {item.get('name')} {key} drifted from the runner")
+        gate = item.get("cold_wall_seconds")
+        bound = item.get("cold_timeout_seconds")
+        if gate is not None and (bound is None or bound <= gate):
+            raise ValueError(
+                f"workload {item.get('name')} must bound its process timeout above its cold gate "
+                "so an over-budget compile fails the gate instead of crashing the run"
+            )
+    caldera = next(item for item in workloads if item.get("name") == "caldera")
+    if caldera.get("cold_wall_seconds") != thresholds["caldera_wall_seconds"]:
+        raise ValueError("the Caldera cold gate must restate thresholds.caldera_wall_seconds exactly")
+    if caldera.get("cold_timeout_seconds") != (
+        thresholds["caldera_wall_seconds"] + protocol["caldera_timeout_headroom_seconds"]
+    ):
+        raise ValueError(
+            "the Caldera process timeout must be its gate plus the manifest-pinned headroom"
+        )
+    _validate_historical_reference(manifest, expected_workloads)
     return manifest
+
+
+def _validate_historical_reference(
+    manifest: dict[str, Any], expected_workloads: dict[str, dict[str, Any]]
+) -> None:
+    """Cross-check the checked-in pre-cutover reference against the cold gates.
+
+    The reference is prose evidence transcribed from
+    `docs/notes/rue-1083-closure-evidence.md`, not a run of this protocol. It is
+    validated here for exactly two properties: that it cannot be mistaken for
+    role evidence, and that every `regressed_example` cold gate is the declared
+    multiple of its reference rather than a hand-tuned number that drifted away
+    from the regression it is supposed to measure.
+    """
+    reference = manifest.get("historical_reference")
+    if not isinstance(reference, dict):
+        raise ValueError("value-audit manifest must carry the historical reference table")
+    if reference.get("produced_by_this_protocol") is not False:
+        raise ValueError("the historical reference must declare that this protocol did not produce it")
+    if reference.get("usable_as_role_evidence") is not False:
+        raise ValueError("the historical reference must declare that it is not role evidence")
+    multiplier = reference.get("cold_gate_multiplier")
+    if not isinstance(multiplier, (int, float)) or multiplier <= 1:
+        raise ValueError("the historical reference must declare a cold gate multiplier above one")
+    programs = reference.get("programs")
+    if not isinstance(programs, dict):
+        raise ValueError("the historical reference must name its per-program measurements")
+    regressed = {
+        name for name, workload in expected_workloads.items()
+        if workload["family"] == "regressed_example"
+    }
+    if set(programs) != regressed:
+        raise ValueError("the historical reference programs drifted from the regressed_example workloads")
+    for name, entry in programs.items():
+        pre = entry.get("pre_cutover_seconds") if isinstance(entry, dict) else None
+        post = entry.get("post_cutover_seconds") if isinstance(entry, dict) else None
+        if not isinstance(pre, (int, float)) or pre <= 0:
+            raise ValueError(f"historical reference for {name} needs a positive pre-cutover value")
+        if not isinstance(post, (int, float)) or post <= pre:
+            raise ValueError(
+                f"historical reference for {name} must record a post-cutover regression above its reference"
+            )
+        gate = expected_workloads[name]["cold_wall_seconds"]
+        if abs(gate - pre * multiplier) > 0.005:
+            raise ValueError(
+                f"cold gate for {name} is not {multiplier}x its pre-cutover reference"
+            )
+        if post <= gate:
+            raise ValueError(
+                f"cold gate for {name} does not separate the reference from the recorded regression"
+            )
 
 
 def median_mad(values: list[float]) -> dict[str, Any]:
@@ -930,15 +1068,21 @@ def scenario_verdict(
     for role, row in role_rows.items():
         if row.get("status") == "fail":
             pairs.setdefault(role, {"status": "fail", "reason": "role evidence failed"})
+        # Absolute cold budgets are per-role and need no pairing, so a workload
+        # that declares one still returns a real verdict in a same-binary smoke
+        # where no historical role binary exists.
+        budget = workload.get("cold_wall_seconds")
         if (
             scenario == "cold"
-            and workload["family"] == "caldera"
+            and budget is not None
             and row.get("wall", {}).get("median") is not None
-            and row["wall"]["median"] > thresholds["caldera_wall_seconds"] * 1000
+            and row["wall"]["median"] > budget * 1000
         ):
             pairs.setdefault(role, {
                 "status": "fail",
-                "reason": f"Caldera cold wall time exceeds the {thresholds['caldera_wall_seconds']}-second budget",
+                "reason": f"cold wall time exceeds the {budget:g}-second budget for {workload['name']}",
+                "budget_seconds": budget,
+                "observed_seconds": row["wall"]["median"] / 1000,
             })
     statuses = [value.get("status") for value in pairs.values()]
     if "fail" in statuses:
@@ -1059,7 +1203,7 @@ def run_audit(args: argparse.Namespace) -> dict[str, Any]:
             "supported_scenarios": manifest_workloads[workload["name"]]["supported_scenarios"],
             "root": str(root_source),
             "source_sha256": sha256_paths(
-                tracked_files(root_source.parent) if workload["family"] in {"representative", "caldera"} else [root_source],
+                tracked_files(root_source.parent) if workload["family"] in DIRECTORY_ROOTED_FAMILIES else [root_source],
                 root,
             ),
             "scenarios": {},
@@ -1069,12 +1213,8 @@ def run_audit(args: argparse.Namespace) -> dict[str, Any]:
             workdir = Path(temp)
             for scenario in SCENARIOS:
                 timeout = args.timeout
-                if workload["family"] == "caldera" and scenario == "cold":
-                    timeout = max(
-                        timeout,
-                        thresholds["caldera_wall_seconds"]
-                        + audit_manifest["protocol"]["caldera_timeout_headroom_seconds"],
-                    )
+                if scenario == "cold" and workload.get("cold_timeout_seconds") is not None:
+                    timeout = max(timeout, workload["cold_timeout_seconds"])
                 role_rows: dict[str, dict[str, Any]] = {}
                 for pair_index in range(args.iterations):
                     order = list(ROLES) if pair_index % 2 == 0 else list(reversed(ROLES))
