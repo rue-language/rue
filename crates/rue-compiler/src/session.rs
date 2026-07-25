@@ -10340,6 +10340,45 @@ impl CompilerSession {
             .revisioned
             .retained_body_transaction_origins_for_test(revision, names)
     }
+
+    /// Return the actual retained ordinary-body transaction values for test
+    /// oracles. This deliberately bypasses the aggregate semantic root so a
+    /// warm/fresh comparison checks each body's body, references, produced
+    /// nominals, and deterministic failure payload directly.
+    pub(crate) fn retained_body_transactions_for_test(
+        &self,
+        names: &[String],
+    ) -> BTreeMap<String, crate::BodyTransaction> {
+        let revision = self
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .expect("the acceptance corpus has a semantic revision");
+        self.queries
+            .revisioned
+            .retained_body_transactions_for_test(revision, names)
+    }
+
+    /// Return one exact retained body transaction using the complete semantic
+    /// function-instance identity. This includes specialized and anonymous
+    /// bodies that have no ordinary declaration name.
+    pub(crate) fn retained_body_transaction_for_test(
+        &self,
+        options: &CompileOptions,
+        instance: &crate::FunctionInstanceKey,
+    ) -> Option<crate::BodyTransaction> {
+        let revision = self.queries.revisioned.current_semantic_revision()?;
+        let key = crate::body_query::BodyQueryKey {
+            instance: instance.clone(),
+            configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration {
+                target: options.target,
+                preview_features: StablePreviewFeatures::new(&options.preview_features),
+            },
+        };
+        self.queries
+            .revisioned
+            .retained_body_transaction_for_test(revision, key)
+    }
 }
 
 #[cfg(test)]

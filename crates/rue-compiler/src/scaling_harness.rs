@@ -118,6 +118,10 @@
 //! output, but the gate itself compares the observed baseline and grown values:
 //! the post-identity-cut constant may change while remaining flat.
 
+use crate::unstable::{
+    DiscoverySourceAssembler, ImportDemandMode, begin_import_input_request,
+    import_demand_frontier_for_roots, import_observation_ledger, publish_import_observation_batch,
+};
 use crate::*;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -442,9 +446,27 @@ fn render_diagnostics(errors: &CompileErrors) -> String {
 /// * on failure, the full ordered diagnostic presentation.
 fn assert_warm_fresh_parity(
     label: &str,
+    warm_session: &mut CompilerSession,
+    fresh_session: &mut CompilerSession,
+    source: &SourceSnapshot,
+    options: &CompileOptions,
+    body_names: &[String],
     warm: &Result<Arc<CanonicalSemanticOutput>, CompileErrors>,
     fresh: &Result<Arc<CanonicalSemanticOutput>, CompileErrors>,
 ) {
+    let successful_body_transactions = |session: &CompilerSession,
+                                        output: &CanonicalSemanticOutput|
+     -> BTreeMap<String, crate::BodyTransaction> {
+        output
+            .functions()
+            .iter()
+            .filter_map(|function| {
+                session
+                    .retained_body_transaction_for_test(options, &function.semantic_identity)
+                    .map(|transaction| (format!("{:?}", function.semantic_identity), transaction))
+            })
+            .collect()
+    };
     match (warm, fresh) {
         (Ok(warm), Ok(fresh)) => {
             assert_eq!(
@@ -452,12 +474,103 @@ fn assert_warm_fresh_parity(
                 fresh.unstable_parity_snapshot(),
                 "{label}: warm/fresh semantic parity snapshot diverged"
             );
+
+            let warm_bodies = successful_body_transactions(warm_session, warm);
+            let fresh_bodies = successful_body_transactions(fresh_session, fresh);
+            assert_eq!(
+                warm_bodies.keys().collect::<Vec<_>>(),
+                fresh_bodies.keys().collect::<Vec<_>>(),
+                "{label}: warm/fresh retained body identities diverged"
+            );
+            for name in warm_bodies.keys() {
+                assert!(
+                    crate::transaction_equal(&warm_bodies[name], &fresh_bodies[name]),
+                    "{label}: exact BodyTransaction diverged for {name}\n warm={:?}\n fresh={:?}",
+                    warm_bodies[name],
+                    fresh_bodies[name]
+                );
+            }
+
+            assert_eq!(
+                format!("{:?}", warm.functions()),
+                format!("{:?}", fresh.functions()),
+                "{label}: full AIR/CFG public artifacts diverged"
+            );
+            assert_eq!(
+                warm.durable_ordinary_body_payloads(),
+                fresh.durable_ordinary_body_payloads(),
+                "{label}: durable ordinary bodies diverged"
+            );
+            assert_eq!(
+                warm.durable_specialized_body_payloads(),
+                fresh.durable_specialized_body_payloads(),
+                "{label}: durable specialized bodies diverged"
+            );
+            assert_eq!(
+                format!("{:?}", warm.durable_cfgs()),
+                format!("{:?}", fresh.durable_cfgs()),
+                "{label}: durable CFG artifacts diverged"
+            );
+            assert_eq!(
+                format!("{:?}", warm.warnings()),
+                format!("{:?}", fresh.warnings()),
+                "{label}: ordered semantic warnings diverged"
+            );
+            assert_eq!(
+                format!("{:?}", warm_session.latest_diagnostics()),
+                format!("{:?}", fresh_session.latest_diagnostics()),
+                "{label}: ordered diagnostic snapshots diverged"
+            );
+
+            let warm_executable = warm_session.oracle_executable(source, options);
+            let fresh_executable = fresh_session.oracle_executable(source, options);
+            match (warm_executable, fresh_executable) {
+                (Ok(warm), Ok(fresh)) => {
+                    assert_eq!(warm.elf, fresh.elf, "{label}: executable bytes diverged");
+                    assert_eq!(
+                        format!("{:?}", warm.warnings),
+                        format!("{:?}", fresh.warnings),
+                        "{label}: executable warnings diverged"
+                    );
+                }
+                (Err(warm), Err(fresh)) => assert_eq!(
+                    render_diagnostics(&warm),
+                    render_diagnostics(&fresh),
+                    "{label}: executable failure diagnostics diverged"
+                ),
+                (Ok(_), Err(fresh)) => panic!(
+                    "{label}: warm executable succeeded but fresh failed:\n{}",
+                    render_diagnostics(&fresh)
+                ),
+                (Err(warm), Ok(_)) => panic!(
+                    "{label}: warm executable failed but fresh succeeded:\n{}",
+                    render_diagnostics(&warm)
+                ),
+            }
         }
         (Err(warm), Err(fresh)) => {
             assert_eq!(
                 render_diagnostics(warm),
                 render_diagnostics(fresh),
                 "{label}: warm/fresh failure diagnostics diverged"
+            );
+            let warm_bodies = warm_session.retained_body_transactions_for_test(body_names);
+            let fresh_bodies = fresh_session.retained_body_transactions_for_test(body_names);
+            assert_eq!(
+                warm_bodies.keys().collect::<Vec<_>>(),
+                fresh_bodies.keys().collect::<Vec<_>>(),
+                "{label}: warm/fresh failed-body identities diverged"
+            );
+            for name in warm_bodies.keys() {
+                assert!(
+                    crate::transaction_equal(&warm_bodies[name], &fresh_bodies[name]),
+                    "{label}: exact failed BodyTransaction diverged for {name}"
+                );
+            }
+            assert_eq!(
+                format!("{:?}", warm_session.latest_diagnostics()),
+                format!("{:?}", fresh_session.latest_diagnostics()),
+                "{label}: ordered failure diagnostic snapshots diverged"
             );
         }
         (Ok(_), Err(fresh)) => panic!(
@@ -1207,7 +1320,17 @@ impl EditScenario {
         fresh.update(&self.rev2.snapshot()).into_result().unwrap();
         let fresh_rev2 = fresh.canonical_semantic(&options);
 
-        assert_warm_fresh_parity(self.label, &warm_rev2, &fresh_rev2);
+        let rev2_source = self.rev2.snapshot();
+        assert_warm_fresh_parity(
+            self.label,
+            &mut warm,
+            &mut fresh,
+            &rev2_source,
+            &options,
+            body_names,
+            &warm_rev2,
+            &fresh_rev2,
+        );
 
         let succeeded = warm_rev2.is_ok();
         let measure = warm_rev2
@@ -1239,6 +1362,149 @@ fn corpus_body_names(reached_bodies: usize) -> Vec<String> {
         .map(|index| format!("b{index}"))
         .chain(std::iter::once("main".to_owned()))
         .collect()
+}
+
+/// Run one small source edit through the same production session path used by
+/// the scaling rows. The exact oracle is deliberately shared by all of these
+/// cases so a new edit shape cannot accidentally fall back to comparing only a
+/// root semantic projection.
+fn run_source_edit(
+    label: &str,
+    rev1_source: &str,
+    rev2_source: &str,
+    body_names: &[&str],
+) -> BTreeSet<String> {
+    let options = CompileOptions::default();
+    let rev1 = SourceSnapshot::single("main.rue", rev1_source).unwrap();
+    let rev2 = SourceSnapshot::single("main.rue", rev2_source).unwrap();
+    let body_names = body_names
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect::<Vec<_>>();
+
+    let mut warm = CompilerSession::new();
+    warm.update(&rev1).into_result().unwrap();
+    warm.canonical_semantic(&options).ok();
+    let before = warm.retained_body_transaction_origins_for_test(&body_names);
+    warm.update(&rev2).into_result().unwrap();
+    let warm_result = warm.canonical_semantic(&options);
+    let after = warm.retained_body_transaction_origins_for_test(&body_names);
+
+    let mut fresh = CompilerSession::new();
+    fresh.update(&rev2).into_result().unwrap();
+    let fresh_result = fresh.canonical_semantic(&options);
+    assert_warm_fresh_parity(
+        label,
+        &mut warm,
+        &mut fresh,
+        &rev2,
+        &options,
+        &body_names,
+        &warm_result,
+        &fresh_result,
+    );
+    changed_body_origins(&before, &after)
+}
+
+fn import_source(
+    value: i32,
+    epoch: u64,
+) -> (SourceSnapshot, ImportDiscoveryContext, AcceptedReadManifest) {
+    let context = ImportDiscoveryContext::new(epoch, "/p", None, "scaling-import").unwrap();
+    let root = Arc::new("const a = @import(\"a.rue\"); fn main() -> i32 { a.value() }".to_owned());
+    let imported = Arc::new(format!("pub fn value() -> i32 {{ {value} }}"));
+    let mut assembler = DiscoverySourceAssembler::new(
+        context.clone(),
+        "/p/main.rue",
+        "/p/main.rue",
+        PhysicalFileIdentity::new(1086, 1),
+        FileMetadataFingerprint::new(root.len() as u64, epoch, epoch),
+        root,
+    )
+    .unwrap();
+    assembler
+        .add_explicit(
+            "/p/a.rue",
+            "/p/a.rue",
+            PhysicalFileIdentity::new(1086, 2),
+            FileMetadataFingerprint::new(imported.len() as u64, epoch, epoch),
+            imported,
+        )
+        .unwrap();
+    (
+        assembler.snapshot().unwrap(),
+        context,
+        assembler.accepted_read_manifest(),
+    )
+}
+
+fn close_import_source(
+    session: &mut CompilerSession,
+    source: &SourceSnapshot,
+    context: ImportDiscoveryContext,
+    accepted_reads: AcceptedReadManifest,
+) {
+    let mut revision =
+        begin_import_input_request(session, source, context.clone(), accepted_reads.clone())
+            .unwrap();
+    loop {
+        let ledger = import_observation_ledger(session, revision).unwrap();
+        let plan = session
+            .stage_import_discovery(
+                source,
+                context.clone(),
+                accepted_reads.shared_slice(),
+                ledger.clone(),
+            )
+            .unwrap();
+        let frontier = import_demand_frontier_for_roots(
+            session,
+            revision,
+            &plan,
+            ImportDemandMode::Rooted,
+            &plan.demand_roots(),
+        )
+        .unwrap();
+        if frontier.requests().is_empty() {
+            session.close_import_discovery(ledger).unwrap();
+            return;
+        }
+        let observations = frontier
+            .requests()
+            .iter()
+            .cloned()
+            .map(|request| {
+                let read = accepted_reads
+                    .iter()
+                    .find(|read| read.requested_path() == request.requested_path())
+                    .expect("the import fixture accepts every demanded read");
+                let module = source
+                    .files()
+                    .find(|file| source.module_id(file.file_id) == Some(read.module()))
+                    .expect("the accepted import belongs to the fixture snapshot");
+                ImportObservation::accepted(
+                    request.clone(),
+                    AcceptedImportSource::new(
+                        request.requested_path(),
+                        read.canonical_path(),
+                        read.metadata_identity(),
+                        read.metadata_fingerprint(),
+                        Arc::new(module.source.to_owned()),
+                    )
+                    .unwrap(),
+                )
+                .unwrap()
+            })
+            .collect();
+        revision = publish_import_observation_batch(
+            session,
+            &frontier,
+            source,
+            accepted_reads.clone(),
+            observations,
+        )
+        .unwrap();
+    }
 }
 
 fn rue_1121_exact_recompute_set_row(
@@ -1391,7 +1657,16 @@ fn invalidation_single_body_edit_declaration_work_does_not_rerun() {
         .as_ref()
         .map(|output| Measure::from_work(&output.work()))
         .expect("single-body-edit fresh rev2 compiles");
-    assert_warm_fresh_parity("single body edit", &warm_rev2, &fresh_rev2);
+    assert_warm_fresh_parity(
+        "single body edit",
+        &mut warm,
+        &mut fresh,
+        &rev2_snap,
+        &options,
+        &body_names,
+        &warm_rev2,
+        &fresh_rev2,
+    );
 
     // A body-text-only edit is already narrow today: it has exactly one body
     // transaction, and the independent fresh measurement proves that this is
@@ -1467,7 +1742,16 @@ fn main() -> i32 { left() + right() + control() }
         .map(|output| Measure::from_work(&output.work()))
         .expect("declaration-value-edit fresh rev2 compiles");
 
-    assert_warm_fresh_parity("declaration value edit", &warm_rev2, &fresh_rev2);
+    assert_warm_fresh_parity(
+        "declaration value edit",
+        &mut warm,
+        &mut fresh,
+        &rev2_snap,
+        &options,
+        &body_names,
+        &warm_rev2,
+        &fresh_rev2,
+    );
 
     let mut report = Report::new("invalidation: declaration value edit");
     report.push(rue_1121_exact_recompute_set_row(
@@ -1539,7 +1823,16 @@ fn invalidation_negative_lookup_becoming_positive_invalidates_consumers() {
         .expect("fresh rev2 compiles");
 
     // Shared full-parity oracle: warm negative->positive result equals fresh.
-    assert_warm_fresh_parity("negative->positive", &warm_rev2, &fresh_rev2);
+    assert_warm_fresh_parity(
+        "negative->positive",
+        &mut warm,
+        &mut fresh,
+        &rev2_snap,
+        &options,
+        &body_names,
+        &warm_rev2,
+        &fresh_rev2,
+    );
 
     // The exact repaired set is the new declaration plus `main`, its only
     // consumer. `control` is independently reached yet unrelated, so it must
@@ -1560,6 +1853,118 @@ fn invalidation_negative_lookup_becoming_positive_invalidates_consumers() {
         3,
     ));
     report.emit();
+}
+
+#[test]
+fn correctness_oracle_noop_edit_preserves_every_body_terminal() {
+    let source = "fn isolated() -> i32 { 1 }\nfn main() -> i32 { isolated() }\n";
+    let changed = run_source_edit("no-op edit", source, source, &["isolated", "main"]);
+    assert!(
+        changed.is_empty(),
+        "a no-op must retain every body terminal"
+    );
+}
+
+#[test]
+fn correctness_oracle_signature_edit_follows_transitive_fanout() {
+    let rev1 = "fn leaf() -> i32 { 1 }\nfn middle() -> i32 { leaf() }\nfn control() -> i32 { 9 }\nfn main() -> i32 { middle() }\n";
+    let rev2 = "fn leaf() -> i64 { 1 }\nfn middle() -> i64 { leaf() }\nfn control() -> i32 { 9 }\nfn main() -> i64 { middle() }\n";
+    let changed = run_source_edit(
+        "signature and transitive fanout edit",
+        rev1,
+        rev2,
+        &["leaf", "middle", "control", "main"],
+    );
+    assert_eq!(
+        changed,
+        BTreeSet::from(["leaf".to_owned(), "middle".to_owned(), "main".to_owned()]),
+        "signature changes must reach direct and transitive consumers, not control"
+    );
+}
+
+#[test]
+fn correctness_oracle_diagnostic_introduce_and_repair() {
+    let good = "fn helper() -> i32 { 1 }\nfn main() -> i32 { helper() }\n";
+    let bad = "fn helper() -> i32 { 1 }\nfn main() -> i32 { missing() }\n";
+    let repaired = run_source_edit("diagnostic introduce", good, bad, &["main"]);
+    assert!(
+        repaired.contains("main"),
+        "introducing a missing lookup must replace the consumer body terminal"
+    );
+
+    let repaired = run_source_edit("diagnostic repair", bad, good, &["helper", "main"]);
+    assert!(
+        repaired.contains("main"),
+        "repairing a missing lookup must publish a fresh successful consumer terminal"
+    );
+}
+
+#[test]
+fn correctness_oracle_rename_delete_and_visibility_edits() {
+    let renamed = run_source_edit(
+        "declaration rename",
+        "fn helper() -> i32 { 1 }\nfn main() -> i32 { helper() }\n",
+        "fn renamed() -> i32 { 1 }\nfn main() -> i32 { renamed() }\n",
+        &["renamed", "main"],
+    );
+    assert!(
+        renamed.contains("main"),
+        "renaming a declaration and its call site must refresh the consumer"
+    );
+
+    let _deleted = run_source_edit(
+        "unused declaration deletion",
+        "fn unused() -> i32 { 1 }\nfn main() -> i32 { 0 }\n",
+        "fn main() -> i32 { 0 }\n",
+        &["main"],
+    );
+
+    let _visibility = run_source_edit(
+        "visibility edit",
+        "fn helper() -> i32 { 1 }\nfn main() -> i32 { helper() }\n",
+        "pub fn helper() -> i32 { 1 }\nfn main() -> i32 { helper() }\n",
+        &["helper", "main"],
+    );
+}
+
+#[test]
+fn correctness_oracle_import_edit_compares_imported_body_and_linked_bytes() {
+    let options = CompileOptions::default();
+    let (rev1, context1, reads1) = import_source(1, 1);
+    let (rev2, context2, reads2) = import_source(2, 2);
+
+    let mut warm = CompilerSession::new();
+    warm.update(&rev1).into_result().unwrap();
+    close_import_source(&mut warm, &rev1, context1, reads1);
+    warm.semantic(&options).unwrap();
+    let before =
+        warm.retained_body_transaction_origins_for_test(&["value".to_owned(), "main".to_owned()]);
+    warm.update(&rev2).into_result().unwrap();
+    close_import_source(&mut warm, &rev2, context2, reads2);
+    let warm_result = warm.canonical_semantic(&options);
+    let after =
+        warm.retained_body_transaction_origins_for_test(&["value".to_owned(), "main".to_owned()]);
+
+    let mut fresh = CompilerSession::new();
+    fresh.update(&rev2).into_result().unwrap();
+    let (_, fresh_context, fresh_reads) = import_source(2, 2);
+    close_import_source(&mut fresh, &rev2, fresh_context, fresh_reads);
+    let fresh_result = fresh.canonical_semantic(&options);
+
+    assert_warm_fresh_parity(
+        "imported body edit",
+        &mut warm,
+        &mut fresh,
+        &rev2,
+        &options,
+        &["value".to_owned(), "main".to_owned()],
+        &warm_result,
+        &fresh_result,
+    );
+    assert!(
+        changed_body_origins(&before, &after).contains("main"),
+        "changing an imported value must refresh its root consumer"
+    );
 }
 
 // ---------------------------------------------------------------------------
