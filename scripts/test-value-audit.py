@@ -56,6 +56,19 @@ class ValueAuditTests(unittest.TestCase):
             value_audit.locality_check("warm_unrelated_declaration", row)["status"],
             "pass",
         )
+        benchmark_row = {
+            "required_vs_reused_work": {
+                "semantic_bodies": {"required": 0, "reused": 0},
+                "cfgs": {"required": 0, "reused": 128},
+                "semantic_queries": {"required": 1, "reused": 0},
+            }
+        }
+        self.assertEqual(
+            value_audit.locality_check(
+                "warm_unrelated_declaration", benchmark_row
+            )["status"],
+            "pass",
+        )
 
     def test_old_protocol_is_explicitly_supported_as_black_box(self):
         self.assertEqual(value_audit.parse_rss("maximum resident set size: 123", "darwin"), 123)

@@ -840,7 +840,32 @@ where
 
 fn with_parity(mut scenario: Value, evidence: Value) -> Value {
     scenario["differential_parity"] = evidence;
+    scenario["required_vs_reused_work"] = work_projection(&scenario);
     scenario
+}
+
+/// Stable black-box work projection consumed by the value-audit runner.
+/// Keep this schema independent of the detailed counter ledger: the runner
+/// needs only required-versus-reused artifact counts for locality gates.
+fn work_projection(scenario: &Value) -> Value {
+    json!({
+        "modules": {
+            "required": count(scenario, &["parse", "modules_reparsed"]),
+            "reused": count(scenario, &["parse", "modules_reused"]),
+        },
+        "semantic_bodies": {
+            "required": count(scenario, &["semantic_work", "bodies_attempted"]),
+            "reused": count(scenario, &["semantic_work", "durable_bodies", "reused_bodies"]),
+        },
+        "cfgs": {
+            "required": count(scenario, &["semantic_work", "cfg", "builds_attempted"]),
+            "reused": count(scenario, &["semantic_work", "cfg", "reuses"]),
+        },
+        "semantic_queries": {
+            "required": count(scenario, &["queries", "semantic_executions"]),
+            "reused": count(scenario, &["queries", "semantic_reuses"]),
+        },
+    })
 }
 
 fn completion_workloads(functions: usize) -> Vec<Value> {
@@ -1480,6 +1505,18 @@ fn assert_completion_structure(scenarios: &[Value], functions: usize) {
     assert_declaration_epoch_work(cold, 1, 1, 1, 0, 0);
 
     let noop = get("completion_exact_noop");
+    for name in [
+        "completion_exact_noop",
+        "completion_unrelated_edit",
+        "completion_changed_reachable_body",
+        "completion_reverse_closure",
+    ] {
+        let projection = &get(name)["required_vs_reused_work"];
+        for artifact in ["modules", "semantic_bodies", "cfgs", "semantic_queries"] {
+            assert!(projection[artifact]["required"].is_u64());
+            assert!(projection[artifact]["reused"].is_u64());
+        }
+    }
     assert_eq!(count(noop, &["queries", "semantic_executions"]), 0);
     assert_eq!(count(noop, &["queries", "semantic_reuses"]), 1);
 
