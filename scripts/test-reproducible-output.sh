@@ -10,6 +10,7 @@ set -euo pipefail
 : "${RUE_BINARY:?RUE_BINARY must point to the Rue compiler}"
 : "${RUE_REPRO_FIXTURE:?RUE_REPRO_FIXTURE must point to the reproducibility fixture}"
 : "${RUE_STD_DIR:?RUE_STD_DIR must point to the Rue standard library}"
+: "${RUE_EXAMPLES_DIR:?RUE_EXAMPLES_DIR must point to the examples directory}"
 export RUE_STD_PATH="$RUE_STD_DIR"
 
 scratch="$(mktemp -d)"
@@ -383,6 +384,66 @@ compile_semantic_order_pair() {
     assert_macos_signature "$output_b"
 }
 
+# RUE-1083: a real, maintained multi-module program, checked the same way.
+#
+# Everything above compiles `reproducibility/fixture`, a corpus built for this
+# test. That left a gap: no program anyone actually maintains was checked for
+# byte-stable output, and a genuine nondeterminism bug lived in drop-flag slot
+# allocation without any suite noticing. It surfaced only when the incrementality
+# value audit compared two compiles of `examples/rill/main.rue` and got different
+# executables.
+#
+# Rill is the cheap end of the regressed-example set and exercises what the
+# purpose-built fixture does not: a 19-file import graph with real destructors
+# and moved-out struct fields, which is exactly the shape that drives
+# `arm_field_drop_flags`. This deliberately reuses the same perturbations as
+# `compile_pair` — root-path length, mtimes, manifest spelling, parallelism,
+# umask, TMPDIR, TZ, and SOURCE_DATE_EPOCH — so a failure means the compiler,
+# not the environment.
+assert_example_reproducible() {
+    local name="$1" opt="$2"
+    local src="$RUE_EXAMPLES_DIR/$name"
+    if [ ! -d "$src" ]; then
+        printf 'FAIL: example corpus %s is missing at %s\n' "$name" "$src" >&2
+        return 1
+    fi
+
+    local dir_a="$root_a/examples/$name"
+    local dir_b="$root_b/examples/$name"
+    rm -rf "$dir_a" "$dir_b"
+    mkdir -p "$dir_a" "$dir_b"
+    cp -R "$src/." "$dir_a/"
+    cp -R "$src/." "$dir_b/"
+    find "$dir_a" -type f -name '*.rue' -exec touch -t 200001010000 {} +
+    find "$dir_b" -type f -name '*.rue' -exec touch -t 203001010000 {} +
+
+    local output_a="$root_a/tmp/example-$name-o$opt"
+    local output_b="$root_b/tmp/example-$name-o$opt"
+    (
+        umask 022
+        cd "$dir_a"
+        env \
+            LC_ALL=C \
+            SOURCE_DATE_EPOCH=1 \
+            TMPDIR="$root_a/tmp" \
+            TZ=UTC \
+            "$RUE_BINARY" "-O$opt" -j1 main.rue -o "$output_a"
+    )
+    (
+        umask 077
+        env \
+            LC_ALL=C \
+            SOURCE_DATE_EPOCH=2000000000 \
+            TMPDIR="$root_b/tmp" \
+            TZ=Pacific/Honolulu \
+            "$RUE_BINARY" "-O$opt" -j32 "$dir_b/./main.rue" -o "$output_b"
+    )
+
+    assert_identical "example $name native -O$opt program" "$output_a" "$output_b"
+    assert_macos_signature "$output_a"
+    assert_macos_signature "$output_b"
+}
+
 assert_relocated_symbol_names
 assert_source_order_independent_ir
 
@@ -424,3 +485,6 @@ compile_pair 0
 compile_pair 2
 compile_semantic_order_pair 0
 compile_semantic_order_pair 2
+
+assert_example_reproducible rill 0
+assert_example_reproducible rill 2
