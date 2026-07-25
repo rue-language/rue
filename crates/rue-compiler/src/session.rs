@@ -1380,6 +1380,17 @@ pub struct CompilerSession {
     /// Cumulative clone-from-template probe accounting. Zero unless the probe
     /// has been enabled; never charged by a production compile.
     clone_probe_meter: Arc<crate::clone_probe::CloneProbeMeter>,
+    /// Whether each rooted attempt also analyzes every body inside an
+    /// independently built epoch and compares the two published transactions
+    /// (RUE-1135). `false` on every ordinary compile: this is the base's parity
+    /// oracle, not a second production path, and it roughly doubles semantic
+    /// work when on.
+    shared_declaration_base_differential: bool,
+    /// Cumulative declaration-base accounting (RUE-1135). Unlike the probe meter
+    /// this is charged by every compile: the base is the production path, and
+    /// these counters are what account for the drop in the per-body
+    /// prepare/project/install/endpoint counters.
+    declaration_base_meter: Arc<crate::declaration_base_meter::DeclarationBaseMeter>,
     /// The test-only shared recipe cache. Constructed on first acquisition so
     /// container creation is metered once and later acquisitions are metered as
     /// reuse. Never populated on the production path.
@@ -2933,6 +2944,19 @@ impl CompilerSession {
         &self,
     ) -> crate::clone_probe::CloneProbeMetrics {
         self.clone_probe_meter.snapshot()
+    }
+
+    /// Turn the RUE-1135 declaration-base parity oracle on or off for subsequent
+    /// semantic requests. Validation only; see [`crate::canonical_semantic`].
+    pub(crate) fn enable_shared_declaration_base_differential(&mut self, enabled: bool) {
+        self.shared_declaration_base_differential = enabled;
+    }
+
+    /// An owned snapshot of the declaration-base meter.
+    pub(crate) fn declaration_base_metrics(
+        &self,
+    ) -> crate::declaration_base_meter::DeclarationBaseMetrics {
+        self.declaration_base_meter.snapshot()
     }
 
     fn resume_canceled_query(
@@ -6688,6 +6712,12 @@ impl CompilerSession {
         // `None` on every ordinary compile.
         let clone_probe_mode = self.clone_from_template_probe;
         let clone_probe_meter = Arc::clone(&self.clone_probe_meter);
+        let declaration_base_mode = if self.shared_declaration_base_differential {
+            crate::canonical_semantic::SharedDeclarationBaseMode::Differential
+        } else {
+            crate::canonical_semantic::SharedDeclarationBaseMode::Shared
+        };
+        let declaration_base_meter = Arc::clone(&self.declaration_base_meter);
         let mut body_produced_anonymous = BTreeMap::new();
         let mut body_query_errors = BTreeMap::new();
         let mut body_query_reference_cache = BTreeMap::new();
@@ -7032,6 +7062,15 @@ impl CompilerSession {
                 // with the attempt, so it can never outlive its revision.
                 let shared_projection =
                     crate::canonical_semantic::SharedDeclarationProjection::new();
+                // RUE-1135: the whole bound declaration epoch is body-invariant
+                // for a request, so this rooted attempt builds it once and
+                // derives each reached body's epoch from it. Created here and
+                // dropped with the attempt, so a failed or canceled request
+                // cannot leave a base behind for the next one.
+                let shared_base = crate::canonical_semantic::SharedDeclarationBase::new(
+                    declaration_base_mode,
+                    Arc::clone(&declaration_base_meter),
+                );
                 while let Some(instance) = priority_pending.pop().or_else(|| pending.pop_first()) {
                     let popped_depth = instance_depth.get(&instance).copied().unwrap_or(0);
                     // Producer-nominal identity is exact: a reached anonymous
@@ -7343,6 +7382,7 @@ impl CompilerSession {
                                     &key,
                                     cancellation,
                                     &shared_projection,
+                                    &shared_base,
                                     &mut stage_context,
                                 ),
                             };
@@ -7364,6 +7404,13 @@ impl CompilerSession {
                             context.durable_source_records_copied +=
                                 stage_context.durable_source_records_copied;
                             context.endpoints_installed += stage_context.endpoints_installed;
+                            context.declaration_bases_built +=
+                                stage_context.declaration_bases_built;
+                            context.body_epochs_derived += stage_context.body_epochs_derived;
+                            context.declaration_units_shared +=
+                                stage_context.declaration_units_shared;
+                            context.body_local_units_copied +=
+                                stage_context.body_local_units_copied;
                             match &transaction {
                                 Ok(crate::body_query::BodyTransaction::Success {
                                     body, ..

@@ -17,6 +17,10 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("canonical_semantic", include_str!("canonical_semantic.rs")),
     ("clone_probe", include_str!("clone_probe.rs")),
     (
+        "declaration_base_meter",
+        include_str!("declaration_base_meter.rs"),
+    ),
+    (
         "declaration_candidate",
         include_str!("declaration_candidate.rs"),
     ),
@@ -1421,13 +1425,15 @@ fn unstable_views_do_not_alias_query_engine_records() {
         reexports,
         [
             "pubusecrate::clone_probe::{CloneProbeMetrics,CloneProbeMode};",
+            "pubusecrate::declaration_base_meter::DeclarationBaseMetrics;",
             "pubusecrate::diagnostic::{ColorChoice,DiagnosticFormatter,JsonDiagnostic,JsonDiagnosticFormatter,JsonSpan,JsonSuggestion,MultiFileFormatter,MultiFileJsonFormatter,SourceInfo,};",
             "pubusecrate::import_discovery::{DiscoverySourceAssembler,ImportDemandFrontier,ImportDemandMode,ImportDemandRoots,ImportInputRevision,};",
             "pubusecrate::recipe_cache::RecipeCacheMetrics;",
             "pubusecrate::session::{ClosedDiscoveryContinuation,SemanticParkOutcome,TrustedSuccessorDelta};",
         ],
         "unstable may reexport only reviewed presentation, source-assembly, Phase-2 demand, \
-         recipe-cache metering, and clone-from-template probe (RUE-1133, measurement-only) helpers"
+         recipe-cache metering, declaration-base metering (RUE-1135), and clone-from-template \
+         probe (RUE-1133, measurement-only) helpers"
     );
 
     let facade = include_str!("lib.rs");

@@ -76,6 +76,8 @@
 //! requires the source modes and comptime flags: defaulting either would erase
 //! part of the callable signature and can desynchronize caller and callee ABI.
 
+use std::sync::Arc;
+
 use crate::types::Type;
 use lasso::Spur;
 use rue_rir::RirParamMode;
@@ -124,12 +126,9 @@ impl ParamRange {
     }
 }
 
-/// Central storage for all function/method parameter data.
-///
-/// Stores parameter names, types, modes, and comptime flags in separate
-/// contiguous arrays for optimal cache locality during type checking.
+/// The contiguous parameter storage one arena layer owns.
 #[derive(Debug, Default, Clone)]
-pub struct ParamArena {
+struct ParamStore {
     /// All parameter names, indexed by position in the arena.
     /// For functions without named args, this may contain placeholder values.
     names: Vec<Spur>,
@@ -144,6 +143,33 @@ pub struct ParamArena {
     comptime: Vec<bool>,
 }
 
+/// Central storage for all function/method parameter data.
+///
+/// Stores parameter names, types, modes, and comptime flags in separate
+/// contiguous arrays for optimal cache locality during type checking.
+///
+/// # Immutable base, append-only local layer (RUE-1135)
+///
+/// An arena may sit on top of an immutable `base` arena shared by every body of
+/// one request. Positions below `base_len` live in the base and are never
+/// written again; every allocation appends to the local layer and is numbered
+/// from `base_len` upwards, so a `ParamRange` means the same thing in the base
+/// and in each body layered on it. This is a true base plus append-only overlay
+/// rather than copy-on-write: a body that allocates parameters copies nothing
+/// that the base already holds. A range never straddles the boundary, because
+/// each range is allocated in one call into one layer.
+#[derive(Debug, Default, Clone)]
+pub struct ParamArena {
+    /// The shared immutable prefix, if this arena was derived from one. A base
+    /// arena is itself always flat (`base: None`), so lookup is one branch.
+    base: Option<Arc<ParamStore>>,
+    /// Number of parameters owned by `base`. Local position `i` is arena
+    /// position `base_len + i`.
+    base_len: usize,
+    /// Parameters this arena allocated itself.
+    local: ParamStore,
+}
+
 impl ParamArena {
     /// Creates a new, empty parameter arena.
     pub fn new() -> Self {
@@ -155,16 +181,70 @@ impl ParamArena {
     /// Use when the approximate number of total parameters is known.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            names: Vec::with_capacity(capacity),
-            types: Vec::with_capacity(capacity),
-            modes: Vec::with_capacity(capacity),
-            comptime: Vec::with_capacity(capacity),
+            base: None,
+            base_len: 0,
+            local: ParamStore {
+                names: Vec::with_capacity(capacity),
+                types: Vec::with_capacity(capacity),
+                modes: Vec::with_capacity(capacity),
+                comptime: Vec::with_capacity(capacity),
+            },
+        }
+    }
+
+    /// A fresh arena that shares this one's parameters as an immutable base and
+    /// appends its own allocations above them (RUE-1135).
+    ///
+    /// Flattening first keeps every derived arena exactly one layer deep, so a
+    /// lookup is a single branch no matter how many times an arena is derived.
+    pub(crate) fn derive_overlay(&self) -> Self {
+        let base_len = self.total_params();
+        let base = match (&self.base, self.local.types.is_empty()) {
+            // Already flat: share the store this arena owns.
+            (None, _) => Arc::new(self.local.clone()),
+            // Nothing was appended locally: reuse the base store as-is.
+            (Some(base), true) => Arc::clone(base),
+            // A layered arena that grew: flatten once so the derived arena stays
+            // one level deep.
+            (Some(base), false) => {
+                let mut flat = (**base).clone();
+                flat.names.extend_from_slice(&self.local.names);
+                flat.types.extend_from_slice(&self.local.types);
+                flat.modes.extend_from_slice(&self.local.modes);
+                flat.comptime.extend_from_slice(&self.local.comptime);
+                Arc::new(flat)
+            }
+        };
+        Self {
+            base: Some(base),
+            base_len,
+            local: ParamStore::default(),
         }
     }
 
     /// Returns the total number of parameters stored in the arena.
     pub fn total_params(&self) -> usize {
-        self.types.len()
+        self.base_len + self.local.types.len()
+    }
+
+    /// The layer a range was allocated in, plus the range's offset inside it.
+    /// A range never straddles the base boundary: each is allocated in one call.
+    #[inline]
+    fn layer(&self, range: ParamRange) -> (&ParamStore, usize, usize) {
+        if range.start() >= self.base_len {
+            let start = range.start() - self.base_len;
+            (&self.local, start, start + range.len())
+        } else {
+            let base = self
+                .base
+                .as_deref()
+                .expect("a range below base_len requires a base layer");
+            debug_assert!(
+                range.end() <= self.base_len,
+                "a parameter range must not straddle the shared base boundary"
+            );
+            (base, range.start(), range.end())
+        }
     }
 
     /// Allocates storage for a function's parameters.
@@ -181,20 +261,22 @@ impl ParamArena {
         modes: impl IntoIterator<Item = RirParamMode>,
         comptime: impl IntoIterator<Item = bool>,
     ) -> ParamRange {
-        let start = self.types.len() as u32;
+        let local_start = self.local.types.len();
+        let start = self.total_params() as u32;
 
-        // Extend all vectors from the iterators
-        self.names.extend(names);
-        let names_len = self.names.len() - start as usize;
+        // Extend all vectors from the iterators. Allocation is append-only and
+        // always lands in the local layer, never in the shared base.
+        self.local.names.extend(names);
+        let names_len = self.local.names.len() - local_start;
 
-        self.types.extend(types);
-        let types_len = self.types.len() - start as usize;
+        self.local.types.extend(types);
+        let types_len = self.local.types.len() - local_start;
 
-        self.modes.extend(modes);
-        let modes_len = self.modes.len() - start as usize;
+        self.local.modes.extend(modes);
+        let modes_len = self.local.modes.len() - local_start;
 
-        self.comptime.extend(comptime);
-        let comptime_len = self.comptime.len() - start as usize;
+        self.local.comptime.extend(comptime);
+        let comptime_len = self.local.comptime.len() - local_start;
 
         // Verify all lengths match
         assert_eq!(
@@ -235,25 +317,40 @@ impl ParamArena {
     /// Returns the parameter names for a range.
     #[inline]
     pub fn names(&self, range: ParamRange) -> &[Spur] {
-        &self.names[range.start()..range.end()]
+        let (store, start, end) = self.layer(range);
+        &store.names[start..end]
     }
 
     /// Returns the parameter types for a range.
     #[inline]
     pub fn types(&self, range: ParamRange) -> &[Type] {
-        &self.types[range.start()..range.end()]
+        let (store, start, end) = self.layer(range);
+        &store.types[start..end]
     }
 
     /// Returns the parameter modes for a range.
     #[inline]
     pub fn modes(&self, range: ParamRange) -> &[RirParamMode] {
-        &self.modes[range.start()..range.end()]
+        let (store, start, end) = self.layer(range);
+        &store.modes[start..end]
     }
 
     /// Returns the comptime flags for a range.
     #[inline]
     pub fn comptime(&self, range: ParamRange) -> &[bool] {
-        &self.comptime[range.start()..range.end()]
+        let (store, start, end) = self.layer(range);
+        &store.comptime[start..end]
+    }
+
+    /// Parameters this arena allocated itself — the ones a body-local overlay
+    /// actually paid for, excluding everything it shares with its base.
+    pub fn local_params(&self) -> usize {
+        self.local.types.len()
+    }
+
+    /// Parameters this arena reads from a shared immutable base without copying.
+    pub fn shared_params(&self) -> usize {
+        self.base_len
     }
 
     /// Returns an iterator over all parameter data for a range.

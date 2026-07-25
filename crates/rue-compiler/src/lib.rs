@@ -42,6 +42,7 @@ mod canonical_lower;
 mod canonical_merge;
 mod canonical_semantic;
 mod clone_probe;
+mod declaration_base_meter;
 mod declaration_candidate;
 mod declaration_recipe;
 mod definition_snapshot;

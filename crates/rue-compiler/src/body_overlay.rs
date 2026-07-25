@@ -698,6 +698,9 @@ mod tests {
             // exactly as it did before RUE-1132 shared the projection across the
             // bodies of a request.
             let shared_projection = crate::canonical_semantic::SharedDeclarationProjection::new();
+            // Likewise a base private to this call: the point of the comparison is
+            // one body's own epoch, not one shared across a request (RUE-1135).
+            let shared_base = crate::canonical_semantic::SharedDeclarationBase::isolated();
             crate::canonical_semantic::analyze_body_query(
                 &self.merged,
                 &self.rir,
@@ -710,6 +713,7 @@ mod tests {
                 key,
                 cancellation,
                 &shared_projection,
+                &shared_base,
                 &mut work,
             )
         }

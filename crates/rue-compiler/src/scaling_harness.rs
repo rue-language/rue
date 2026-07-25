@@ -225,6 +225,11 @@ fn unrelated_module_snapshot_with_main_and_suffix(
 struct Measure {
     /// Cold reached-body analyses that paid the declaration-context cost.
     cold_bodies: usize,
+    /// Declaration prefixes actually built for the request (RUE-1135). The
+    /// prepare/project/install/endpoint stages are charged here, once per
+    /// declaration base rather than once per body, so this is the counter that
+    /// says how many times the O(declarations) prefix really ran.
+    declaration_prefixes: usize,
     /// Σ_body declaration-shell predeclarations (the per-body "prepare" term),
     /// sourced from the prepare stage's own output.
     shells_total: usize,
@@ -278,7 +283,12 @@ impl Measure {
         let body = &work.body_analysis;
         let ctx = &body.per_body_declaration_context;
         Self {
-            cold_bodies: ctx.cold_body_preparations,
+            // Cold reached bodies. Since RUE-1135 the per-body epoch is derived
+            // from one request-scoped base, so the count of bodies that paid for
+            // an epoch is the derivation count; `cold_body_preparations` counts
+            // the prefixes, which is now a per-request quantity.
+            cold_bodies: ctx.body_epochs_derived,
+            declaration_prefixes: ctx.cold_body_preparations,
             shells_total: ctx.shells_prepared,
             projections_total: ctx.projections_performed,
             semantics_total: ctx.semantics_installed,
@@ -1110,6 +1120,22 @@ fn run_fixed_bodies_growing_declarations(bodies: usize, ladder: &[usize]) {
             historical_grown.cold_bodies,
             0,
         ));
+        // RUE-1135: one declaration base serves the whole request, so the
+        // O(declarations) prefix runs exactly once no matter how many bodies
+        // the request reaches. A body that rebuilt its own epoch would push
+        // this straight back to `cold_bodies`.
+        report.push(Row::linear_hard(
+            format!(
+                "RUE-1135 declaration prefixes @ {bodies} bodies, +{} decls: {} \
+                 across {} cold bodies",
+                decls - baseline_decls,
+                grown.declaration_prefixes,
+                grown.cold_bodies,
+            ),
+            grown.declaration_prefixes,
+            1,
+            0,
+        ));
         // RUE-1121 acceptance rows consume only stage-sourced counters. The
         // RUE-1090 verdict below deliberately remains limited to its original
         // project/install/endpoint exact-ratio decision.
@@ -1126,12 +1152,19 @@ fn run_fixed_bodies_growing_declarations(bodies: usize, ladder: &[usize]) {
                 .checked_mul(grown.cold_bodies)
                 .expect("RUE-1121 context witness overflow")
         };
+        // Since RUE-1135 every one of these stages is charged once per request:
+        // the declaration base is built once and each body derives its epoch
+        // from it, so each witness is now a single whole universe rather than
+        // `universe · cold_bodies`. `per_body_witness` is retained because a
+        // regression back to per-body construction must blow past a band that
+        // still names the old shape rather than quietly fitting inside it.
+        let _ = per_body_witness;
         for (counter, baseline_total, grown_total, witness) in [
             (
                 "shells prepared",
                 baseline.shells_total,
                 grown.shells_total,
-                per_body_witness(historical_grown.per_body_shells),
+                historical_grown.per_body_shells,
             ),
             (
                 "projections",
@@ -1143,13 +1176,13 @@ fn run_fixed_bodies_growing_declarations(bodies: usize, ladder: &[usize]) {
                 "semantics installed",
                 baseline.semantics_total,
                 grown.semantics_total,
-                per_body_witness(historical_grown.per_body_semantics),
+                historical_grown.per_body_semantics,
             ),
             (
                 "endpoints",
                 baseline.endpoints_total,
                 grown.endpoints_total,
-                per_body_witness(historical_grown.per_body_endpoints),
+                historical_grown.per_body_endpoints,
             ),
         ] {
             report.push(rue_1121_exact_flat_context_row(
@@ -1359,19 +1392,34 @@ fn run_fixed_declarations_growing_bodies(decls: usize, ladder: &[usize]) {
             grown.cold_bodies
         );
 
-        // Hard: each per-body declaration-context counter equals its exact
-        // corpus-derived closed form. These grow with `bodies` on this axis, so
-        // asserting the closed form (not a scaled measured baseline) catches a
-        // uniform per-body regression.
+        // RUE-1135 changed the SHAPE of the prepare/install/endpoint counters
+        // exactly as RUE-1132 changed the projection: the whole declaration
+        // epoch is body-invariant, so it is built once per request and every
+        // body derives its epoch from that base. Each of these is therefore a
+        // TOTAL row against one universe rather than a per-body row — strictly
+        // stronger, because a regression to per-body construction lands at
+        // `U · cold_bodies` and fails here immediately instead of being hidden
+        // by the integer-division quotient at large body counts.
         report.push(Row::linear_hard(
             format!(
-                "per-body prepare (shells) @ {decls} decls: {bodies} bodies={} (corpus U={})",
-                grown.per_body_shells(),
-                predicted.per_body_shells
+                "RUE-1135 shared prepare (shells) @ {decls} decls: {bodies} bodies \
+                 total={} (corpus U={}, charged once per request)",
+                grown.shells_total, predicted.per_body_shells
             ),
-            grown.per_body_shells(),
+            grown.shells_total,
             predicted.per_body_shells,
             1,
+        ));
+        // The declaration base itself: one per request, whatever the body count.
+        report.push(Row::linear_hard(
+            format!(
+                "RUE-1135 declaration prefixes @ {decls} decls: {bodies} bodies \
+                 prefixes={} across {} cold bodies",
+                grown.declaration_prefixes, grown.cold_bodies
+            ),
+            grown.declaration_prefixes,
+            1,
+            0,
         ));
         // RUE-1132 changed the SHAPE of this counter, so it is no longer a
         // per-body linear row. The declaration projection is body-invariant and
@@ -1393,21 +1441,21 @@ fn run_fixed_declarations_growing_bodies(decls: usize, ladder: &[usize]) {
         ));
         report.push(Row::linear_hard(
             format!(
-                "per-body install (semantics) @ {decls} decls: {bodies} bodies={} (corpus U={})",
-                grown.per_body_semantics(),
-                predicted.per_body_semantics
+                "RUE-1135 shared install (semantics) @ {decls} decls: {bodies} bodies \
+                 total={} (corpus U={}, charged once per request)",
+                grown.semantics_total, predicted.per_body_semantics
             ),
-            grown.per_body_semantics(),
+            grown.semantics_total,
             predicted.per_body_semantics,
             1,
         ));
         report.push(Row::linear_hard(
             format!(
-                "per-body endpoints @ {decls} decls: {bodies} bodies={} (corpus 2U+1={})",
-                grown.per_body_endpoints(),
-                predicted.per_body_endpoints
+                "RUE-1135 shared endpoints @ {decls} decls: {bodies} bodies \
+                 total={} (corpus 2U+1={}, charged once per request)",
+                grown.endpoints_total, predicted.per_body_endpoints
             ),
-            grown.per_body_endpoints(),
+            grown.endpoints_total,
             predicted.per_body_endpoints,
             1,
         ));

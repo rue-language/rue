@@ -126,6 +126,9 @@ impl DirectProductionInputs {
         // declaration-context work in isolation, so it must not inherit a
         // projection another body already paid for (RUE-1132).
         let shared_projection = crate::canonical_semantic::SharedDeclarationProjection::new();
+        // Likewise a base private to this call: the point of the comparison is
+        // one body's own epoch, not one shared across a request (RUE-1135).
+        let shared_base = crate::canonical_semantic::SharedDeclarationBase::isolated();
         let transaction = crate::canonical_semantic::analyze_body_query(
             &self.merged,
             &self.rir,
@@ -138,6 +141,7 @@ impl DirectProductionInputs {
             key,
             &rue_query::CancellationToken::new(),
             &shared_projection,
+            &shared_base,
             &mut work,
         )
         .map_err(|abort| HarnessError::Compile(format!("{abort:?}")))?;

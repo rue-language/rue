@@ -312,9 +312,41 @@ pub struct FrozenTypeInternPool {
     inner: Arc<TypeInternPoolInner>,
 }
 
+/// A semantic epoch's canonical type universe, optionally layered on an
+/// immutable base shared with every other body of the same request (RUE-1135).
+///
+/// # Base plus append-only overlay
+///
+/// Pool indices below `base_len` live in `base` and are read straight out of
+/// it; interning appends to this layer and numbers entries from `base_len`
+/// upwards, so a canonical `Type` means the same thing in the base and in every
+/// epoch layered on it. This is a true base plus append-only overlay, not
+/// copy-on-write of the inner store: a body that interns a type copies nothing
+/// the base already holds.
+///
+/// `overrides`/`override_facts` are the escape hatch that keeps the layering
+/// *sound* rather than merely fast. A phase that does mutate an already-interned
+/// entry — destructor assignment, containment finalization — writes a body-local
+/// copy of that one entry instead of touching the shared base. Those maps are
+/// empty on the body path, which is why reads check them only when non-empty.
 #[derive(Debug, Clone)]
 struct TypeInternPoolInner {
-    /// All composite type data, indexed by the payload in a canonical `Type`.
+    /// The shared immutable prefix, if this universe was derived from one. A
+    /// base is itself always flat, so a lookup is one branch deep.
+    base: Option<Arc<TypeInternPoolInner>>,
+
+    /// Number of entries owned by `base`. Local entry `i` is pool index
+    /// `base_len + i`.
+    base_len: usize,
+
+    /// Base entries this epoch rewrote, keyed by pool index. Empty unless a
+    /// mutation reached below `base_len`.
+    overrides: HashMap<usize, TypeData>,
+
+    /// Base containment facts this epoch rewrote, keyed by pool index.
+    override_facts: HashMap<usize, Option<TypeContainmentFacts>>,
+
+    /// Composite type data this epoch interned itself, from `base_len` up.
     types: Vec<TypeData>,
 
     /// Structural type deduplication: (element, len) -> canonical array `Type`.
@@ -326,9 +358,9 @@ struct TypeInternPoolInner {
     /// Structural type deduplication: pointee -> canonical ptr mut `Type`.
     ptr_mut_map: HashMap<Type, Type>,
 
-    /// Ownership facts indexed in lockstep with `types`. `None` is permitted
-    /// only while declaration shells or a metadata mutation await the next
-    /// canonical containment pass.
+    /// Ownership facts indexed in lockstep with `types` (so also from
+    /// `base_len` up). `None` is permitted only while declaration shells or a
+    /// metadata mutation await the next canonical containment pass.
     containment_facts: Vec<Option<TypeContainmentFacts>>,
 
     /// Nominal struct lookup: (defining file, source name) -> canonical `Type`.
@@ -412,8 +444,205 @@ fn compact_enum_tag(variant_count: usize) -> (u64, u64) {
 }
 
 impl TypeInternPoolInner {
+    fn empty() -> Self {
+        Self {
+            base: None,
+            base_len: 0,
+            overrides: HashMap::new(),
+            override_facts: HashMap::new(),
+            types: Vec::new(),
+            array_map: HashMap::new(),
+            ptr_const_map: HashMap::new(),
+            ptr_mut_map: HashMap::new(),
+            containment_facts: Vec::new(),
+            struct_by_file_name: HashMap::new(),
+            enum_by_file_name: HashMap::new(),
+            symbol_paths: HashMap::new(),
+            struct_lang_items: HashMap::new(),
+            lang_item_structs: HashMap::new(),
+            repr_c_structs: HashSet::new(),
+        }
+    }
+
+    /// Total entries visible in this universe: the shared base plus this
+    /// epoch's own appends.
+    #[inline]
+    fn entry_count(&self) -> usize {
+        self.base_len + self.types.len()
+    }
+
+    /// The entry at `index`, or `None` if the index is past the universe.
+    #[inline]
+    fn try_entry(&self, index: usize) -> Option<&TypeData> {
+        if index >= self.base_len {
+            return self.types.get(index - self.base_len);
+        }
+        if !self.overrides.is_empty()
+            && let Some(entry) = self.overrides.get(&index)
+        {
+            return Some(entry);
+        }
+        self.base.as_ref().and_then(|base| base.types.get(index))
+    }
+
+    #[inline]
+    fn entry(&self, index: usize) -> &TypeData {
+        self.try_entry(index)
+            .unwrap_or_else(|| panic!("type pool index {index} is out of range"))
+    }
+
+    /// A mutable handle to the entry at `index`.
+    ///
+    /// An index inside the shared base is promoted into this epoch's private
+    /// `overrides` first: the base is immutable and shared with sibling bodies,
+    /// so it is copied one entry at a time and never written through.
+    fn try_entry_mut(&mut self, index: usize) -> Option<&mut TypeData> {
+        if index >= self.base_len {
+            return self.types.get_mut(index - self.base_len);
+        }
+        if !self.overrides.contains_key(&index) {
+            let entry = self.base.as_ref()?.types.get(index)?.clone();
+            self.overrides.insert(index, entry);
+        }
+        self.overrides.get_mut(&index)
+    }
+
+    fn entry_mut(&mut self, index: usize) -> &mut TypeData {
+        self.try_entry_mut(index)
+            .unwrap_or_else(|| panic!("type pool index {index} is out of range"))
+    }
+
+    /// Append one entry with its containment facts, returning its pool index.
+    fn push_entry(&mut self, entry: TypeData, facts: Option<TypeContainmentFacts>) -> usize {
+        let index = self.entry_count();
+        self.types.push(entry);
+        self.containment_facts.push(facts);
+        index
+    }
+
+    fn facts_at(&self, index: usize) -> Option<Option<TypeContainmentFacts>> {
+        if index >= self.base_len {
+            return self.containment_facts.get(index - self.base_len).copied();
+        }
+        if !self.override_facts.is_empty()
+            && let Some(facts) = self.override_facts.get(&index)
+        {
+            return Some(*facts);
+        }
+        self.base
+            .as_ref()
+            .and_then(|base| base.containment_facts.get(index).copied())
+    }
+
+    fn set_facts(&mut self, index: usize, value: Option<TypeContainmentFacts>) {
+        if index >= self.base_len {
+            self.containment_facts[index - self.base_len] = value;
+        } else {
+            self.override_facts.insert(index, value);
+        }
+    }
+
+    fn lookup_array(&self, key: &(Type, u64)) -> Option<Type> {
+        self.array_map.get(key).copied().or_else(|| {
+            self.base
+                .as_ref()
+                .and_then(|base| base.array_map.get(key).copied())
+        })
+    }
+
+    fn lookup_ptr_const(&self, pointee: &Type) -> Option<Type> {
+        self.ptr_const_map.get(pointee).copied().or_else(|| {
+            self.base
+                .as_ref()
+                .and_then(|base| base.ptr_const_map.get(pointee).copied())
+        })
+    }
+
+    fn lookup_ptr_mut(&self, pointee: &Type) -> Option<Type> {
+        self.ptr_mut_map.get(pointee).copied().or_else(|| {
+            self.base
+                .as_ref()
+                .and_then(|base| base.ptr_mut_map.get(pointee).copied())
+        })
+    }
+
+    fn lookup_struct_by_file_name(&self, key: &(FileId, Spur)) -> Option<Type> {
+        self.struct_by_file_name.get(key).copied().or_else(|| {
+            self.base
+                .as_ref()
+                .and_then(|base| base.struct_by_file_name.get(key).copied())
+        })
+    }
+
+    fn lookup_enum_by_file_name(&self, key: &(FileId, Spur)) -> Option<Type> {
+        self.enum_by_file_name.get(key).copied().or_else(|| {
+            self.base
+                .as_ref()
+                .and_then(|base| base.enum_by_file_name.get(key).copied())
+        })
+    }
+
+    /// Collapse the base and this epoch's overlay into one flat universe.
+    ///
+    /// Used where a layered representation cannot be carried further: freezing
+    /// the pool for post-semantic phases, and re-basing a derived pool so every
+    /// overlay stays exactly one level deep.
+    fn flatten(&self) -> Self {
+        let Some(base) = self.base.as_ref() else {
+            return self.clone();
+        };
+        let mut flat = (**base).clone();
+        for (&index, entry) in &self.overrides {
+            flat.types[index] = entry.clone();
+        }
+        for (&index, facts) in &self.override_facts {
+            flat.containment_facts[index] = *facts;
+        }
+        flat.types.extend(self.types.iter().cloned());
+        flat.containment_facts
+            .extend(self.containment_facts.iter().copied());
+        flat.array_map.extend(self.array_map.iter());
+        flat.ptr_const_map.extend(self.ptr_const_map.iter());
+        flat.ptr_mut_map.extend(self.ptr_mut_map.iter());
+        flat.struct_by_file_name
+            .extend(self.struct_by_file_name.iter());
+        flat.enum_by_file_name.extend(self.enum_by_file_name.iter());
+        flat.symbol_paths = self.symbol_paths.clone();
+        flat.struct_lang_items = self.struct_lang_items.clone();
+        flat.lang_item_structs = self.lang_item_structs.clone();
+        flat.repr_c_structs = self.repr_c_structs.clone();
+        flat
+    }
+
+    /// A fresh universe that reads this one as an immutable base and appends its
+    /// own entries above it (RUE-1135).
+    fn derive_overlay(&self) -> Self {
+        let base = if self.base.is_none() {
+            Arc::new(self.clone())
+        } else {
+            Arc::new(self.flatten())
+        };
+        Self {
+            base_len: base.entry_count(),
+            base: Some(base),
+            overrides: HashMap::new(),
+            override_facts: HashMap::new(),
+            types: Vec::new(),
+            array_map: HashMap::new(),
+            ptr_const_map: HashMap::new(),
+            ptr_mut_map: HashMap::new(),
+            containment_facts: Vec::new(),
+            struct_by_file_name: HashMap::new(),
+            enum_by_file_name: HashMap::new(),
+            symbol_paths: self.symbol_paths.clone(),
+            struct_lang_items: self.struct_lang_items.clone(),
+            lang_item_structs: self.lang_item_structs.clone(),
+            repr_c_structs: self.repr_c_structs.clone(),
+        }
+    }
+
     fn next_pool_index(&self) -> u32 {
-        checked_pool_index(self.types.len())
+        checked_pool_index(self.entry_count())
             .expect("type intern pool exceeds the 24-bit Type payload capacity")
     }
 
@@ -427,9 +656,8 @@ impl TypeInternPoolInner {
     }
 
     fn containment_edges(&self) -> Vec<Vec<usize>> {
-        self.types
-            .iter()
-            .map(|entry| match entry {
+        (0..self.entry_count())
+            .map(|index| match self.entry(index) {
                 TypeData::Struct(data) => data
                     .def
                     .fields
@@ -463,7 +691,7 @@ impl TypeInternPoolInner {
         path.iter()
             .copied()
             .chain(std::iter::once(repeated))
-            .filter_map(|index| match &self.types[index] {
+            .filter_map(|index| match self.entry(index) {
                 TypeData::Struct(data) => Some(data.def.name.clone()),
                 TypeData::Enum(data) => Some(data.def.name.clone()),
                 TypeData::Array { .. }
@@ -477,7 +705,7 @@ impl TypeInternPoolInner {
     }
 
     fn type_for_index(&self, index: usize) -> Type {
-        match &self.types[index] {
+        match self.entry(index) {
             TypeData::Struct(_) | TypeData::DeclaredStruct(_) => {
                 Type::new_struct(StructId::from_pool_index(index as u32))
             }
@@ -502,6 +730,7 @@ impl TypeInternPoolInner {
         &mut self,
     ) -> Result<TypeContainmentWork, TypeContainmentCycle> {
         debug_assert_eq!(self.types.len(), self.containment_facts.len());
+        let entry_count = self.entry_count();
         let edges = self.containment_edges();
         let work = TypeContainmentWork {
             nodes: edges.len(),
@@ -546,9 +775,9 @@ impl TypeInternPoolInner {
             }
         }
 
-        let mut facts = vec![TypeContainmentFacts::default(); self.types.len()];
+        let mut facts = vec![TypeContainmentFacts::default(); entry_count];
         for &index in &postorder {
-            let mut value = match &self.types[index] {
+            let mut value = match self.entry(index) {
                 TypeData::Struct(data) => TypeContainmentFacts {
                     carries_linear: data.def.is_linear,
                     needs_drop: data.def.destructor.is_some(),
@@ -561,7 +790,7 @@ impl TypeInternPoolInner {
                 | TypeData::DeclaredStruct(_)
                 | TypeData::DeclaredEnum(_) => continue,
             };
-            let has_values = !matches!(self.types[index], TypeData::Array { len: 0, .. });
+            let has_values = !matches!(self.entry(index), TypeData::Array { len: 0, .. });
             if has_values {
                 for &child in &edges[index] {
                     value.carries_linear |= facts[child].carries_linear;
@@ -572,30 +801,23 @@ impl TypeInternPoolInner {
         }
 
         for (index, value) in facts.iter().copied().enumerate() {
-            if value.carries_linear {
-                if let TypeData::Struct(data) = &mut self.types[index] {
-                    data.def.is_linear = true;
-                }
+            if value.carries_linear
+                && let TypeData::Struct(data) = self.entry_mut(index)
+            {
+                data.def.is_linear = true;
             }
         }
-        self.containment_facts = facts.into_iter().map(Some).collect();
+        for (index, value) in facts.into_iter().enumerate() {
+            self.set_facts(index, Some(value));
+        }
         Ok(work)
     }
 
     fn facts_for_type(&self, ty: Type) -> Option<TypeContainmentFacts> {
         match ty.kind() {
-            TypeKind::Struct(id) => self
-                .containment_facts
-                .get(id.pool_index() as usize)
-                .copied()?,
-            TypeKind::Enum(id) => self
-                .containment_facts
-                .get(id.pool_index() as usize)
-                .copied()?,
-            TypeKind::Array(id) => self
-                .containment_facts
-                .get(id.pool_index() as usize)
-                .copied()?,
+            TypeKind::Struct(id) => self.facts_at(id.pool_index() as usize)?,
+            TypeKind::Enum(id) => self.facts_at(id.pool_index() as usize)?,
+            TypeKind::Array(id) => self.facts_at(id.pool_index() as usize)?,
             TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => Some(TypeContainmentFacts::default()),
             _ => Some(TypeContainmentFacts::default()),
         }
@@ -646,16 +868,18 @@ impl TypeInternPoolInner {
     }
 
     fn invalidate_containment_metadata(&mut self) {
-        self.containment_facts.fill(None);
+        for index in 0..self.entry_count() {
+            self.set_facts(index, None);
+        }
     }
 
     #[inline]
     fn data(&self, index: u32) -> &TypeData {
-        &self.types[index as usize]
+        self.entry(index as usize)
     }
 
     fn try_struct_def(&self, id: StructId) -> Option<&StructDef> {
-        match self.types.get(id.0 as usize)? {
+        match self.try_entry(id.0 as usize)? {
             TypeData::Struct(data) => Some(&data.def),
             _ => None,
         }
@@ -665,7 +889,7 @@ impl TypeInternPoolInner {
     /// nominal shell. Definition, layout, durable, and backend reads use the
     /// complete-only helpers above and below.
     fn struct_declaration_metadata(&self, id: StructId) -> Option<StructDeclarationMetadata> {
-        match self.types.get(id.0 as usize)? {
+        match self.try_entry(id.0 as usize)? {
             TypeData::DeclaredStruct(data) => Some(StructDeclarationMetadata {
                 name: data.def.name.clone(),
                 is_copy: data.def.is_copy,
@@ -680,7 +904,7 @@ impl TypeInternPoolInner {
     }
 
     fn struct_metadata(&self, id: StructId) -> Option<StructDeclarationMetadata> {
-        match self.types.get(id.0 as usize)? {
+        match self.try_entry(id.0 as usize)? {
             TypeData::DeclaredStruct(data) | TypeData::Struct(data) => {
                 Some(StructDeclarationMetadata {
                     name: data.def.name.clone(),
@@ -703,7 +927,7 @@ impl TypeInternPoolInner {
 
     fn struct_def_mut(&mut self, id: StructId) -> &mut StructDef {
         let pool_index = id.pool_index() as usize;
-        match self.types.get_mut(pool_index) {
+        match self.try_entry_mut(pool_index) {
             Some(TypeData::Struct(data)) => &mut data.def,
             other => panic!(
                 "Expected complete struct at pool index {}, got {:?}",
@@ -713,14 +937,14 @@ impl TypeInternPoolInner {
     }
 
     fn try_enum_def(&self, id: EnumId) -> Option<&EnumDef> {
-        match self.types.get(id.0 as usize)? {
+        match self.try_entry(id.0 as usize)? {
             TypeData::Enum(data) => Some(&data.def),
             _ => None,
         }
     }
 
     fn enum_declaration_metadata(&self, id: EnumId) -> Option<EnumDeclarationMetadata> {
-        match self.types.get(id.0 as usize)? {
+        match self.try_entry(id.0 as usize)? {
             TypeData::DeclaredEnum(data) => Some(EnumDeclarationMetadata {
                 name: data.def.name.clone(),
                 variants: data.def.variants.clone(),
@@ -732,7 +956,7 @@ impl TypeInternPoolInner {
     }
 
     fn enum_metadata(&self, id: EnumId) -> Option<EnumDeclarationMetadata> {
-        match self.types.get(id.0 as usize)? {
+        match self.try_entry(id.0 as usize)? {
             TypeData::DeclaredEnum(data) | TypeData::Enum(data) => Some(EnumDeclarationMetadata {
                 name: data.def.name.clone(),
                 variants: data.def.variants.clone(),
@@ -756,7 +980,7 @@ impl TypeInternPoolInner {
     }
 
     fn try_array_def(&self, id: ArrayTypeId) -> Option<(Type, u64)> {
-        match self.types.get(id.0 as usize)? {
+        match self.try_entry(id.0 as usize)? {
             TypeData::Array { element, len } => Some((*element, *len)),
             _ => None,
         }
@@ -824,8 +1048,7 @@ impl TypeInternPoolInner {
             TypeKind::PtrMut(id) => (id.pool_index(), PoolEntryKind::PtrMut),
         };
         let entry = self
-            .types
-            .get(index as usize)
+            .try_entry(index as usize)
             .ok_or(TypeValidationError::PoolIndexOutOfRange)?;
         if entry.kind() != expected {
             return if matches!(entry, TypeData::ReservedStruct) {
@@ -899,8 +1122,7 @@ impl TypeInternPoolInner {
             _ => unreachable!("primitive and non-pool kinds returned above"),
         };
         let entry = self
-            .types
-            .get(index as usize)
+            .try_entry(index as usize)
             .ok_or(TypeValidationError::PoolIndexOutOfRange)?;
         if entry.kind() != expected {
             return if matches!(entry, TypeData::ReservedStruct) {
@@ -1394,13 +1616,13 @@ impl TypeInternPoolInner {
                 .try_array_def(id)
                 .map(|(element, len)| format!("[{}; {}]", self.safe_type_name(element), len))
                 .unwrap_or_else(|| format!("<array#{}>", id.0)),
-            Some(TypeKind::PtrConst(id)) => match self.types.get(id.pool_index() as usize) {
+            Some(TypeKind::PtrConst(id)) => match self.try_entry(id.pool_index() as usize) {
                 Some(TypeData::PtrConst { pointee }) => {
                     format!("ptr const {}", self.safe_type_name(*pointee))
                 }
                 _ => format!("<ptr const#{}>", id.0),
             },
-            Some(TypeKind::PtrMut(id)) => match self.types.get(id.pool_index() as usize) {
+            Some(TypeKind::PtrMut(id)) => match self.try_entry(id.pool_index() as usize) {
                 Some(TypeData::PtrMut { pointee }) => {
                     format!("ptr mut {}", self.safe_type_name(*pointee))
                 }
@@ -1426,10 +1648,10 @@ impl TypeInternPoolInner {
             struct_count: 0,
             enum_count: 0,
             array_count: 0,
-            total: self.types.len(),
+            total: self.entry_count(),
         };
-        for data in &self.types {
-            match data {
+        for index in 0..self.entry_count() {
+            match self.entry(index) {
                 TypeData::DeclaredStruct(_) | TypeData::Struct(_) => stats.struct_count += 1,
                 TypeData::DeclaredEnum(_) | TypeData::Enum(_) => stats.enum_count += 1,
                 TypeData::Array { .. } => stats.array_count += 1,
@@ -1444,19 +1666,7 @@ impl TypeInternPool {
     /// Create a new empty pool.
     pub fn new() -> Self {
         Self {
-            inner: RwLock::new(TypeInternPoolInner {
-                types: Vec::new(),
-                array_map: HashMap::new(),
-                ptr_const_map: HashMap::new(),
-                ptr_mut_map: HashMap::new(),
-                containment_facts: Vec::new(),
-                struct_by_file_name: HashMap::new(),
-                enum_by_file_name: HashMap::new(),
-                symbol_paths: HashMap::new(),
-                struct_lang_items: HashMap::new(),
-                lang_item_structs: HashMap::new(),
-                repr_c_structs: HashSet::new(),
-            }),
+            inner: RwLock::new(TypeInternPoolInner::empty()),
         }
     }
 
@@ -1466,10 +1676,14 @@ impl TypeInternPool {
     /// remain separate: type definitions retain stable string names rather than
     /// storing a [`Spur`] from a CFG or codegen request.
     pub fn freeze(self) -> FrozenTypeInternPool {
-        let mut inner = self
+        let inner = self
             .inner
             .into_inner()
             .unwrap_or_else(PoisonError::into_inner);
+        // Post-semantic phases index the pool directly and never intern, so the
+        // frozen universe is materialized flat: the request-scoped base and this
+        // epoch's overlay collapse into one store here (RUE-1135).
+        let mut inner = inner.flatten();
         if let Some((index, entry)) = inner
             .types
             .iter()
@@ -1617,7 +1831,7 @@ impl TypeInternPool {
         // Fast path: check with read lock
         {
             let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-            if let Some(&existing) = inner.struct_by_file_name.get(&key) {
+            if let Some(existing) = inner.lookup_struct_by_file_name(&key) {
                 return (
                     existing.as_struct().expect("struct lookup kind invariant"),
                     false,
@@ -1629,7 +1843,7 @@ impl TypeInternPool {
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
 
         // Double-check after acquiring write lock
-        if let Some(&existing) = inner.struct_by_file_name.get(&key) {
+        if let Some(existing) = inner.lookup_struct_by_file_name(&key) {
             return (
                 existing.as_struct().expect("struct lookup kind invariant"),
                 false,
@@ -1649,8 +1863,7 @@ impl TypeInternPool {
             };
             data.def.is_linear = true;
         }
-        inner.types.push(entry);
-        inner.containment_facts.push(facts);
+        inner.push_entry(entry, facts);
         inner.struct_by_file_name.insert(key, ty);
 
         (struct_id, true)
@@ -1662,7 +1875,7 @@ impl TypeInternPool {
         let key = (shell.file_id, name);
         {
             let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-            if let Some(&existing) = inner.struct_by_file_name.get(&key) {
+            if let Some(existing) = inner.lookup_struct_by_file_name(&key) {
                 return (
                     existing.as_struct().expect("struct lookup kind invariant"),
                     false,
@@ -1671,7 +1884,7 @@ impl TypeInternPool {
         }
 
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
-        if let Some(&existing) = inner.struct_by_file_name.get(&key) {
+        if let Some(existing) = inner.lookup_struct_by_file_name(&key) {
             return (
                 existing.as_struct().expect("struct lookup kind invariant"),
                 false,
@@ -1680,10 +1893,10 @@ impl TypeInternPool {
 
         let pool_index = inner.next_pool_index();
         let ty = Type::new_struct(StructId::from_pool_index(pool_index));
-        inner
-            .types
-            .push(TypeData::DeclaredStruct(StructData { name, def: shell }));
-        inner.containment_facts.push(None);
+        inner.push_entry(
+            TypeData::DeclaredStruct(StructData { name, def: shell }),
+            None,
+        );
         inner.struct_by_file_name.insert(key, ty);
         (StructId::from_pool_index(pool_index), true)
     }
@@ -1712,8 +1925,7 @@ impl TypeInternPool {
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
 
         let pool_index = inner.next_pool_index();
-        inner.types.push(TypeData::ReservedStruct);
-        inner.containment_facts.push(None);
+        inner.push_entry(TypeData::ReservedStruct, None);
 
         StructId::from_pool_index(pool_index)
     }
@@ -1740,20 +1952,22 @@ impl TypeInternPool {
 
         // Verify this is a valid reserved slot
         assert!(
-            pool_index < inner.types.len(),
+            pool_index < inner.entry_count(),
             "Invalid reserved struct ID: index {} out of bounds (len {})",
             pool_index,
-            inner.types.len()
+            inner.entry_count()
         );
 
         assert!(
-            matches!(inner.types.get(pool_index), Some(TypeData::ReservedStruct)),
+            matches!(inner.try_entry(pool_index), Some(TypeData::ReservedStruct)),
             "pool index {} is not a reserved struct entry",
             pool_index
         );
 
         assert!(
-            !inner.struct_by_file_name.contains_key(&(def.file_id, name)),
+            inner
+                .lookup_struct_by_file_name(&(def.file_id, name))
+                .is_none(),
             "Struct with this name already exists"
         );
 
@@ -1767,8 +1981,8 @@ impl TypeInternPool {
             };
             data.def.is_linear = true;
         }
-        inner.types[pool_index] = entry;
-        inner.containment_facts[pool_index] = facts;
+        *inner.entry_mut(pool_index) = entry;
+        inner.set_facts(pool_index, facts);
 
         // Register in the defining-file lookup.
         inner
@@ -1781,8 +1995,7 @@ impl TypeInternPool {
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
         let pool_index = struct_id.pool_index() as usize;
         let entry = inner
-            .types
-            .get_mut(pool_index)
+            .try_entry_mut(pool_index)
             .unwrap_or_else(|| panic!("Invalid declared struct ID: {pool_index}"));
         match entry {
             TypeData::DeclaredStruct(data) => {
@@ -1807,7 +2020,7 @@ impl TypeInternPool {
         }
         // Named declarations are still collecting explicit linear/destructor
         // metadata. Keep their facts unknown until semantic finalization.
-        inner.containment_facts[pool_index] = None;
+        inner.set_facts(pool_index, None);
     }
 
     /// Register a new enum (nominal - no deduplication).
@@ -1820,7 +2033,7 @@ impl TypeInternPool {
         // Fast path: check with read lock
         {
             let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-            if let Some(&existing) = inner.enum_by_file_name.get(&key) {
+            if let Some(existing) = inner.lookup_enum_by_file_name(&key) {
                 return (
                     existing.as_enum().expect("enum lookup kind invariant"),
                     false,
@@ -1832,7 +2045,7 @@ impl TypeInternPool {
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
 
         // Double-check after acquiring write lock
-        if let Some(&existing) = inner.enum_by_file_name.get(&key) {
+        if let Some(existing) = inner.lookup_enum_by_file_name(&key) {
             return (
                 existing.as_enum().expect("enum lookup kind invariant"),
                 false,
@@ -1846,8 +2059,7 @@ impl TypeInternPool {
 
         let entry = TypeData::Enum(EnumData { name, def });
         let facts = inner.incremental_facts(&entry);
-        inner.types.push(entry);
-        inner.containment_facts.push(facts);
+        inner.push_entry(entry, facts);
         inner.enum_by_file_name.insert(key, ty);
 
         (enum_id, true)
@@ -1859,7 +2071,7 @@ impl TypeInternPool {
         let key = (shell.file_id, name);
         {
             let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-            if let Some(&existing) = inner.enum_by_file_name.get(&key) {
+            if let Some(existing) = inner.lookup_enum_by_file_name(&key) {
                 return (
                     existing.as_enum().expect("enum lookup kind invariant"),
                     false,
@@ -1868,7 +2080,7 @@ impl TypeInternPool {
         }
 
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
-        if let Some(&existing) = inner.enum_by_file_name.get(&key) {
+        if let Some(existing) = inner.lookup_enum_by_file_name(&key) {
             return (
                 existing.as_enum().expect("enum lookup kind invariant"),
                 false,
@@ -1877,10 +2089,7 @@ impl TypeInternPool {
 
         let pool_index = inner.next_pool_index();
         let ty = Type::new_enum(EnumId::from_pool_index(pool_index));
-        inner
-            .types
-            .push(TypeData::DeclaredEnum(EnumData { name, def: shell }));
-        inner.containment_facts.push(None);
+        inner.push_entry(TypeData::DeclaredEnum(EnumData { name, def: shell }), None);
         inner.enum_by_file_name.insert(key, ty);
         (EnumId::from_pool_index(pool_index), true)
     }
@@ -1890,8 +2099,7 @@ impl TypeInternPool {
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
         let pool_index = enum_id.pool_index() as usize;
         let entry = inner
-            .types
-            .get_mut(pool_index)
+            .try_entry_mut(pool_index)
             .unwrap_or_else(|| panic!("Invalid declared enum ID: {pool_index}"));
         match entry {
             TypeData::DeclaredEnum(data) => {
@@ -1914,7 +2122,7 @@ impl TypeInternPool {
                 pool_index, other
             ),
         }
-        inner.containment_facts[pool_index] = None;
+        inner.set_facts(pool_index, None);
     }
 
     /// Intern an array after validating its canonical child in this pool.
@@ -1925,7 +2133,7 @@ impl TypeInternPool {
         {
             let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
             inner.validate_structural_child(element)?;
-            if let Some(&existing) = inner.array_map.get(&key) {
+            if let Some(existing) = inner.lookup_array(&key) {
                 return Ok(existing);
             }
         }
@@ -1935,7 +2143,7 @@ impl TypeInternPool {
         inner.validate_structural_child(element)?;
 
         // Double-check after acquiring write lock
-        if let Some(&existing) = inner.array_map.get(&key) {
+        if let Some(existing) = inner.lookup_array(&key) {
             return Ok(existing);
         }
 
@@ -1945,8 +2153,7 @@ impl TypeInternPool {
 
         let entry = TypeData::Array { element, len };
         let facts = inner.incremental_facts(&entry);
-        inner.types.push(entry);
-        inner.containment_facts.push(facts);
+        inner.push_entry(entry, facts);
         inner.array_map.insert(key, ty);
 
         Ok(ty)
@@ -1958,7 +2165,7 @@ impl TypeInternPool {
         {
             let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
             inner.validate_structural_child(pointee)?;
-            if let Some(&existing) = inner.ptr_const_map.get(&pointee) {
+            if let Some(existing) = inner.lookup_ptr_const(&pointee) {
                 return Ok(existing);
             }
         }
@@ -1968,7 +2175,7 @@ impl TypeInternPool {
         inner.validate_structural_child(pointee)?;
 
         // Double-check after acquiring write lock
-        if let Some(&existing) = inner.ptr_const_map.get(&pointee) {
+        if let Some(existing) = inner.lookup_ptr_const(&pointee) {
             return Ok(existing);
         }
 
@@ -1978,8 +2185,7 @@ impl TypeInternPool {
 
         let entry = TypeData::PtrConst { pointee };
         let facts = inner.incremental_facts(&entry);
-        inner.types.push(entry);
-        inner.containment_facts.push(facts);
+        inner.push_entry(entry, facts);
         inner.ptr_const_map.insert(pointee, ty);
 
         Ok(ty)
@@ -1991,7 +2197,7 @@ impl TypeInternPool {
         {
             let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
             inner.validate_structural_child(pointee)?;
-            if let Some(&existing) = inner.ptr_mut_map.get(&pointee) {
+            if let Some(existing) = inner.lookup_ptr_mut(&pointee) {
                 return Ok(existing);
             }
         }
@@ -2001,7 +2207,7 @@ impl TypeInternPool {
         inner.validate_structural_child(pointee)?;
 
         // Double-check after acquiring write lock
-        if let Some(&existing) = inner.ptr_mut_map.get(&pointee) {
+        if let Some(existing) = inner.lookup_ptr_mut(&pointee) {
             return Ok(existing);
         }
 
@@ -2011,8 +2217,7 @@ impl TypeInternPool {
 
         let entry = TypeData::PtrMut { pointee };
         let facts = inner.incremental_facts(&entry);
-        inner.types.push(entry);
-        inner.containment_facts.push(facts);
+        inner.push_entry(entry, facts);
         inner.ptr_mut_map.insert(pointee, ty);
 
         Ok(ty)
@@ -2021,19 +2226,19 @@ impl TypeInternPool {
     /// Look up a struct by defining file and source name.
     pub fn get_struct_by_file_name(&self, file_id: FileId, name: Spur) -> Option<Type> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        inner.struct_by_file_name.get(&(file_id, name)).copied()
+        inner.lookup_struct_by_file_name(&(file_id, name))
     }
 
     /// Look up an enum by defining file and source name.
     pub fn get_enum_by_file_name(&self, file_id: FileId, name: Spur) -> Option<Type> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        inner.enum_by_file_name.get(&(file_id, name)).copied()
+        inner.lookup_enum_by_file_name(&(file_id, name))
     }
 
     /// Look up an array type by element and length.
     pub fn get_array(&self, element: Type, len: u64) -> Option<Type> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        inner.array_map.get(&(element, len)).copied()
+        inner.lookup_array(&(element, len))
     }
 
     /// Get type data for a composite type.
@@ -2052,7 +2257,7 @@ impl TypeInternPool {
             _ => return None,
         };
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        let entry = inner.types.get(pool_index as usize)?;
+        let entry = inner.try_entry(pool_index as usize)?;
         (entry.kind() == expected
             && !matches!(
                 entry,
@@ -2070,8 +2275,7 @@ impl TypeInternPool {
             self.inner
                 .read()
                 .unwrap_or_else(PoisonError::into_inner)
-                .types
-                .get(id.pool_index() as usize),
+                .try_entry(id.pool_index() as usize),
             Some(TypeData::DeclaredStruct(_) | TypeData::Struct(_))
         )
     }
@@ -2085,8 +2289,7 @@ impl TypeInternPool {
             self.inner
                 .read()
                 .unwrap_or_else(PoisonError::into_inner)
-                .types
-                .get(id.pool_index() as usize),
+                .try_entry(id.pool_index() as usize),
             Some(TypeData::DeclaredEnum(_) | TypeData::Enum(_))
         )
     }
@@ -2188,7 +2391,7 @@ impl TypeInternPool {
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
         assert!(
             matches!(
-                inner.types.get(struct_id.0 as usize),
+                inner.try_entry(struct_id.0 as usize),
                 Some(TypeData::DeclaredStruct(_) | TypeData::Struct(_))
             ),
             "language items can only be assigned to registered structs"
@@ -2522,14 +2725,14 @@ impl TypeInternPool {
     /// structs (e.g., for drop glue synthesis).
     pub fn all_struct_ids(&self) -> Vec<StructId> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        inner
-            .types
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, data)| match data {
+        // Every index of the whole universe, base included: an overlay's local
+        // vector is offset by `base_len` and enumerating it alone would both
+        // hide the base's nominals and misnumber the overlay's own.
+        (0..inner.entry_count())
+            .filter_map(|index| match inner.entry(index) {
                 TypeData::DeclaredStruct(_) | TypeData::Struct(_) => {
                     Some(StructId::from_pool_index(
-                        checked_pool_index(idx).expect("type pool index invariant"),
+                        checked_pool_index(index).expect("type pool index invariant"),
                     ))
                 }
                 _ => None,
@@ -2543,13 +2746,10 @@ impl TypeInternPool {
     /// enums.
     pub fn all_enum_ids(&self) -> Vec<EnumId> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        inner
-            .types
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, data)| match data {
+        (0..inner.entry_count())
+            .filter_map(|index| match inner.entry(index) {
                 TypeData::DeclaredEnum(_) | TypeData::Enum(_) => Some(EnumId::from_pool_index(
-                    checked_pool_index(idx).expect("type pool index invariant"),
+                    checked_pool_index(index).expect("type pool index invariant"),
                 )),
                 _ => None,
             })
@@ -2562,13 +2762,10 @@ impl TypeInternPool {
     /// arrays (e.g., for drop glue synthesis).
     pub fn all_array_ids(&self) -> Vec<ArrayTypeId> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        inner
-            .types
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, data)| match data {
+        (0..inner.entry_count())
+            .filter_map(|index| match inner.entry(index) {
                 TypeData::Array { .. } => Some(ArrayTypeId::from_pool_index(
-                    checked_pool_index(idx).expect("type pool index invariant"),
+                    checked_pool_index(index).expect("type pool index invariant"),
                 )),
                 _ => None,
             })
@@ -2578,7 +2775,30 @@ impl TypeInternPool {
     /// Get the number of composite types in the pool.
     pub fn len(&self) -> usize {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        inner.types.len()
+        inner.entry_count()
+    }
+
+    /// Composite types this epoch interned itself — what a body-local overlay
+    /// actually paid for, excluding everything read from its shared base.
+    pub fn local_len(&self) -> usize {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        inner.types.len() + inner.overrides.len()
+    }
+
+    /// Composite types read from a shared immutable base without copying.
+    pub fn shared_len(&self) -> usize {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        inner.base_len
+    }
+
+    /// A fresh pool that reads this one as an immutable base and appends its own
+    /// entries above it (RUE-1135). Every canonical `Type` the base issued keeps
+    /// meaning exactly the same thing in the derived pool.
+    pub(crate) fn derive_overlay(&self) -> Self {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        Self {
+            inner: RwLock::new(inner.derive_overlay()),
+        }
     }
 
     /// Check if the pool is empty (no composite types).
@@ -2716,6 +2936,7 @@ impl FrozenTypeInternPool {
     /// success boundary rejects recovery-only graphs.
     pub fn validate_for_success(&self) -> Result<(), TypeValidationError> {
         for (index, entry) in self.inner.types.iter().enumerate() {
+            debug_assert!(self.inner.base.is_none(), "a frozen pool is flat");
             let index = checked_pool_index(index).expect("type pool index invariant");
             let ty = match entry {
                 TypeData::Struct(_) => Type::new_struct(StructId::from_pool_index(index)),
@@ -2937,19 +3158,7 @@ impl Clone for TypeInternPool {
     fn clone(&self) -> Self {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         Self {
-            inner: RwLock::new(TypeInternPoolInner {
-                types: inner.types.clone(),
-                array_map: inner.array_map.clone(),
-                ptr_const_map: inner.ptr_const_map.clone(),
-                ptr_mut_map: inner.ptr_mut_map.clone(),
-                containment_facts: inner.containment_facts.clone(),
-                struct_by_file_name: inner.struct_by_file_name.clone(),
-                enum_by_file_name: inner.enum_by_file_name.clone(),
-                symbol_paths: inner.symbol_paths.clone(),
-                struct_lang_items: inner.struct_lang_items.clone(),
-                lang_item_structs: inner.lang_item_structs.clone(),
-                repr_c_structs: inner.repr_c_structs.clone(),
-            }),
+            inner: RwLock::new(inner.clone()),
         }
     }
 }

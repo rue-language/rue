@@ -33,6 +33,16 @@
 //! counters fall — because the work moved into a copy, which
 //! [`CloneProbeMetrics`] then reports in full. Reading the two together is the
 //! point: neither is allowed to hide the other.
+//!
+//! Since RUE-1135 production also builds that prefix once per request, so the
+//! probe is no longer the only arm whose stage counters read one prefix. The
+//! comparison it still supports is the one it was built for: what each arm does
+//! *instead* of rebuilding. The probe copies a whole epoch per body and charges
+//! [`CloneProbeMetrics::units`]; production derives from the shared base and
+//! charges `declaration_units_shared`. That difference is what the RUE-1133
+//! measurement priced, and it is what
+//! `the_clone_arm_charges_one_prefix_and_reports_the_copy_that_replaced_it`
+//! pins.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -352,6 +362,10 @@ fn absorb_work(total: &mut PerBodyDeclarationContextWork, stage: &PerBodyDeclara
     total.durable_source_records_inspected += stage.durable_source_records_inspected;
     total.durable_source_records_copied += stage.durable_source_records_copied;
     total.endpoints_installed += stage.endpoints_installed;
+    total.declaration_bases_built += stage.declaration_bases_built;
+    total.body_epochs_derived += stage.body_epochs_derived;
+    total.declaration_units_shared += stage.declaration_units_shared;
+    total.body_local_units_copied += stage.body_local_units_copied;
 }
 
 #[cfg(test)]
@@ -434,12 +448,15 @@ mod tests {
         assert!(metrics.bodies_analyzed >= 9, "{metrics:?}");
     }
 
-    // The ordinary per-body declaration-context counters stay honest. In the
-    // clone arm the prepare/project/install/endpoint stages really do run once
-    // per revision instead of once per body, so those counters record ONE
-    // prefix — they are not reclassified, hidden, or left reading a per-body
-    // total the compiler no longer performs. The copied units then account for
-    // what replaced them, and the two must be read together.
+    // The ordinary per-body declaration-context counters stay honest across both
+    // arms. Each builds the prepare/project/install/endpoint prefix exactly once
+    // per revision — the probe because it retains a template, production because
+    // RUE-1135 retains a declaration base — so those counters record ONE prefix
+    // and are not reclassified or left reading a per-body total the compiler no
+    // longer performs. What separates the arms is what replaced the rebuild: the
+    // probe copies the epoch per body and reports every unit it moved;
+    // production derives from the base and reports what it shared instead. The
+    // two accountings must be read together, and neither may hide the other.
     #[test]
     fn the_clone_arm_charges_one_prefix_and_reports_the_copy_that_replaced_it() {
         let snapshot = corpus(8, 16);
@@ -459,13 +476,29 @@ mod tests {
             "the clone arm prepares exactly one epoch for the revision"
         );
         assert_eq!(
-            rebuild_context.cold_body_preparations, clone_metrics.bodies_analyzed as usize,
-            "the rebuild arm prepares one epoch per reached body"
+            rebuild_context.cold_body_preparations, 1,
+            "production prepares exactly one declaration base for the request"
+        );
+        assert_eq!(
+            clone_context.shells_prepared, rebuild_context.shells_prepared,
+            "both arms build the identical prefix, once: \
+             clone={clone_context:?} production={rebuild_context:?}"
+        );
+        // The difference between the arms is what each did instead of
+        // rebuilding. Production served every body from the base and copied only
+        // its per-body owned state; the probe copied a whole epoch per body.
+        assert_eq!(
+            rebuild_context.body_epochs_derived, clone_metrics.bodies_analyzed as usize,
+            "production derives one epoch per reached body: {rebuild_context:?}"
+        );
+        assert_eq!(
+            clone_context.body_epochs_derived, 0,
+            "the probe path never touches the declaration base: {clone_context:?}"
         );
         assert!(
-            clone_context.shells_prepared * 2 < rebuild_context.shells_prepared,
-            "the clone arm must not still be charging a per-body prefix: \
-             clone={clone_context:?} rebuild={rebuild_context:?}"
+            rebuild_context.declaration_units_shared > clone_metrics.units.total_units_copied() / 2,
+            "production reads the units the probe copies: production={rebuild_context:?} \
+             probe={clone_metrics:?}"
         );
 
         // The work did not vanish, it changed shape: the probe reports every
