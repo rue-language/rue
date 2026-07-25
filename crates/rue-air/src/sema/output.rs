@@ -497,6 +497,14 @@ pub struct SemaOutput {
 /// These counters deliberately expose no request-local RIR instruction handles.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BodyAnalysisWork {
+    /// Production body transactions whose analysis closure actually ran.
+    pub body_analyses_computed: usize,
+    /// Production body transactions satisfied by a retained terminal or
+    /// compatible join without entering the analysis closure.
+    pub body_analyses_reused: usize,
+    /// Previously retained body transactions whose dependencies turned red and
+    /// therefore entered a new computation for the current revision.
+    pub body_analyses_invalidated: usize,
     pub ordinary_body_import_attempts: usize,
     pub ordinary_body_import_successes: usize,
     pub ordinary_body_import_failures: usize,
@@ -632,6 +640,14 @@ pub struct PerBodyDeclarationContextWork {
     /// Charged by the per-body prepare stage the moment it commits to real work,
     /// so a warm-reused body (which never enters the stage) contributes nothing.
     pub cold_body_preparations: usize,
+    /// Declaration shells inspected by the per-body prepare stage.
+    pub declarations_inspected: usize,
+    /// Compact module definitions registered by the per-body semantic epoch.
+    pub modules_registered: usize,
+    /// RIR declaration indexes constructed for this body.
+    pub rir_indexes_constructed: usize,
+    /// Raw RIR instructions visited while constructing those indexes.
+    pub rir_instructions_visited: usize,
     /// Declaration shells the per-body prepare stage actually materialized,
     /// summed across every cold reached-body analysis. This is sourced from the
     /// prepare stage's *output* (`shell_records.len()`), not from the input
@@ -652,6 +668,10 @@ pub struct PerBodyDeclarationContextWork {
     /// stage from its own output, before install; a body that fails during
     /// prepare contributes nothing here.
     pub projections_performed: usize,
+    /// Durable-source records inspected by the per-body projection join.
+    pub durable_source_records_inspected: usize,
+    /// Durable-source records copied into current-revision exports.
+    pub durable_source_records_copied: usize,
     /// Stable-identity and body-owner endpoints the per-body endpoint stage
     /// actually installed, summed across every cold reached-body analysis.
     /// Charged only when the endpoint stage runs (after a successful install),

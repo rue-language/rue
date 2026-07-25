@@ -7215,6 +7215,8 @@ impl CompilerSession {
                         }
                         _ => false,
                     };
+                    let attempted_before = queried_body_work.bodies_attempted;
+                    let had_retained_body = self.queries.revisioned.has_retained_body_key(&key);
                     let transaction = self.queries.revisioned.body_transaction(
                         runtime_revision,
                         key.clone(),
@@ -7225,6 +7227,10 @@ impl CompilerSession {
                         cancellation.clone(),
                         |selected_anonymous, well_known| {
                             queried_body_work.bodies_attempted += 1;
+                            queried_body_work.body_analyses_computed += 1;
+                            if had_retained_body {
+                                queried_body_work.body_analyses_invalidated += 1;
+                            }
                             // Every cold reached-body analysis re-prepares,
                             // re-projects, and re-installs the entire declaration
                             // universe inside `analyze_body_query` before it
@@ -7278,9 +7284,19 @@ impl CompilerSession {
                             // work (whatever actually ran) into the running total.
                             let context = &mut queried_body_work.per_body_declaration_context;
                             context.cold_body_preparations += stage_context.cold_body_preparations;
+                            context.declarations_inspected += stage_context.declarations_inspected;
+                            context.modules_registered += stage_context.modules_registered;
+                            context.rir_indexes_constructed +=
+                                stage_context.rir_indexes_constructed;
+                            context.rir_instructions_visited +=
+                                stage_context.rir_instructions_visited;
                             context.shells_prepared += stage_context.shells_prepared;
                             context.semantics_installed += stage_context.semantics_installed;
                             context.projections_performed += stage_context.projections_performed;
+                            context.durable_source_records_inspected +=
+                                stage_context.durable_source_records_inspected;
+                            context.durable_source_records_copied +=
+                                stage_context.durable_source_records_copied;
                             context.endpoints_installed += stage_context.endpoints_installed;
                             match &transaction {
                                 Ok(crate::body_query::BodyTransaction::Success {
@@ -7406,6 +7422,13 @@ impl CompilerSession {
                             abort,
                         )) => return Err(SemanticRequestControl::Abort(abort)),
                     };
+                    if queried_body_work.bodies_attempted == attempted_before {
+                        // The body transaction returned a retained terminal
+                        // without entering the production analysis closure.
+                        // Count this at the query boundary so durable AIR
+                        // imports and query-terminal reuse remain distinct.
+                        queried_body_work.body_analyses_reused += 1;
+                    }
                     let rue_query::QueryOutcome::Success(transaction) = transaction.outcome()
                     else {
                         unreachable!("BodyTransaction publishes typed values")
@@ -12292,7 +12315,17 @@ mod tests {
             ordinary.work().binding.declaration_resolution_invocations,
             0
         );
-        assert_eq!(reused.work().body_analysis, ordinary.work().body_analysis);
+        let warm_body_work = reused.work().body_analysis;
+        let fresh_body_work = ordinary.work().body_analysis;
+        assert_eq!(warm_body_work.body_analyses_computed, 1);
+        assert_eq!(warm_body_work.body_analyses_reused, 0);
+        assert_eq!(warm_body_work.body_analyses_invalidated, 1);
+        assert_eq!(fresh_body_work.body_analyses_computed, 1);
+        assert_eq!(fresh_body_work.body_analyses_reused, 0);
+        assert_eq!(fresh_body_work.body_analyses_invalidated, 0);
+        let mut normalized_warm_body_work = warm_body_work;
+        normalized_warm_body_work.body_analyses_invalidated = 0;
+        assert_eq!(normalized_warm_body_work, fresh_body_work);
         assert_eq!(
             format!("{:?}", reused.functions()),
             format!("{:?}", ordinary.functions())

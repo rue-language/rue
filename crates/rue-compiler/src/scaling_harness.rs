@@ -124,7 +124,7 @@ use crate::unstable::{
 };
 use crate::*;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
 };
 
@@ -176,6 +176,31 @@ impl Corpus {
     }
 }
 
+fn unrelated_module_snapshot(unrelated_modules: usize) -> SourceSnapshot {
+    let mut physical = HashMap::new();
+    let mut logical = HashMap::new();
+    let mut contents = Vec::new();
+    physical.insert(FileId::DEFAULT, "main.rue".to_owned());
+    logical.insert(FileId::DEFAULT, "main.rue".to_owned());
+    contents.push((
+        FileId::DEFAULT,
+        Arc::new("fn main() -> i32 { 0 }".to_owned()),
+    ));
+    for index in 0..unrelated_modules {
+        let file = FileId::new(index as u32 + 1);
+        let path = format!("unrelated{index}.rue");
+        physical.insert(file, path.clone());
+        logical.insert(file, path.clone());
+        contents.push((
+            file,
+            Arc::new(format!("fn unrelated{index}() -> i32 {{ {index} }}")),
+        ));
+    }
+    let metadata = SourceMetadata::new(FileId::DEFAULT, physical, logical)
+        .expect("unrelated module metadata is valid");
+    SourceSnapshot::new(metadata, contents).expect("unrelated module snapshot is valid")
+}
+
 // ---------------------------------------------------------------------------
 // Measurement
 // ---------------------------------------------------------------------------
@@ -202,6 +227,17 @@ struct Measure {
     /// AIR instructions produced — genuine per-body body work, independent of the
     /// unrelated-declaration universe.
     air_instructions: usize,
+    body_analyses_computed: usize,
+    body_analyses_reused: usize,
+    body_analyses_invalidated: usize,
+    cfg_builds: usize,
+    cfg_imports: usize,
+    declarations_inspected: usize,
+    modules_registered: usize,
+    rir_indexes_constructed: usize,
+    rir_instructions_visited: usize,
+    durable_source_records_inspected: usize,
+    durable_source_records_copied: usize,
 }
 
 impl Measure {
@@ -215,6 +251,15 @@ impl Measure {
         Self::from_work(&output.work())
     }
 
+    fn cold_snapshot(snapshot: SourceSnapshot) -> Self {
+        let mut session = CompilerSession::new();
+        session.update(&snapshot).into_result().unwrap();
+        let output = session
+            .canonical_semantic(&CompileOptions::default())
+            .expect("synthetic snapshot compiles");
+        Self::from_work(&output.work())
+    }
+
     fn from_work(work: &CanonicalSemanticWork) -> Self {
         let body = &work.body_analysis;
         let ctx = &body.per_body_declaration_context;
@@ -225,6 +270,17 @@ impl Measure {
             semantics_total: ctx.semantics_installed,
             endpoints_total: ctx.endpoints_installed,
             air_instructions: body.air_instructions_produced,
+            body_analyses_computed: body.body_analyses_computed,
+            body_analyses_reused: body.body_analyses_reused,
+            body_analyses_invalidated: body.body_analyses_invalidated,
+            cfg_builds: work.cfg.cfg_builds_attempted,
+            cfg_imports: work.cfg.cfg_import_attempts,
+            declarations_inspected: ctx.declarations_inspected,
+            modules_registered: ctx.modules_registered,
+            rir_indexes_constructed: ctx.rir_indexes_constructed,
+            rir_instructions_visited: ctx.rir_instructions_visited,
+            durable_source_records_inspected: ctx.durable_source_records_inspected,
+            durable_source_records_copied: ctx.durable_source_records_copied,
         }
     }
 
@@ -249,6 +305,13 @@ impl Measure {
     fn per_body_endpoints(&self) -> usize {
         self.endpoints_total / self.cold_bodies.max(1)
     }
+}
+
+fn assert_exact_zero_slope(label: &str, baseline: usize, grown: usize) {
+    assert_eq!(
+        baseline, grown,
+        "{label}: unrelated-universe growth changed a fixed-reach work counter"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -817,6 +880,70 @@ fn run_fixed_bodies_growing_declarations(bodies: usize, ladder: &[usize]) {
     for &decls in ladder.iter().skip(1) {
         let grown = Measure::cold(&Corpus::new(bodies, decls));
         let historical_grown = CorpusWitness::predict(bodies, decls);
+        for (counter, baseline_value, grown_value) in [
+            (
+                "body analyses computed",
+                baseline.body_analyses_computed,
+                grown.body_analyses_computed,
+            ),
+            (
+                "body analyses reused",
+                baseline.body_analyses_reused,
+                grown.body_analyses_reused,
+            ),
+            (
+                "body analyses invalidated",
+                baseline.body_analyses_invalidated,
+                grown.body_analyses_invalidated,
+            ),
+            ("CFG builds", baseline.cfg_builds, grown.cfg_builds),
+            ("CFG imports", baseline.cfg_imports, grown.cfg_imports),
+            (
+                "AIR instructions",
+                baseline.air_instructions,
+                grown.air_instructions,
+            ),
+        ] {
+            assert_exact_zero_slope(counter, baseline_value, grown_value);
+        }
+        for (counter, baseline_value, grown_value) in [
+            (
+                "declarations inspected",
+                baseline.declarations_inspected,
+                grown.declarations_inspected,
+            ),
+            (
+                "modules registered",
+                baseline.modules_registered,
+                grown.modules_registered,
+            ),
+            (
+                "RIR indexes constructed",
+                baseline.rir_indexes_constructed,
+                grown.rir_indexes_constructed,
+            ),
+            (
+                "RIR instructions visited",
+                baseline.rir_instructions_visited,
+                grown.rir_instructions_visited,
+            ),
+            (
+                "durable source records inspected",
+                baseline.durable_source_records_inspected,
+                grown.durable_source_records_inspected,
+            ),
+            (
+                "durable source records copied",
+                baseline.durable_source_records_copied,
+                grown.durable_source_records_copied,
+            ),
+        ] {
+            report.push(Row::Met {
+                label: format!(
+                    "production work {counter}: baseline={baseline_value}, grown={grown_value}"
+                ),
+            });
+        }
         // The fixed-body source topology is itself an exact acceptance fact:
         // unrelated declarations add no reached bodies, so cold preparation
         // count cannot hide a context regression by changing its denominator.
@@ -1199,6 +1326,57 @@ fn scaling_smoke_fixed_bodies_growing_declarations() {
 }
 
 #[test]
+fn scaling_smoke_fixed_reach_growing_unrelated_modules_keeps_body_work_flat() {
+    let baseline = Measure::cold_snapshot(unrelated_module_snapshot(0));
+    for modules in [1, 2, 4] {
+        let grown = Measure::cold_snapshot(unrelated_module_snapshot(modules));
+        for (counter, baseline_value, grown_value) in [
+            (
+                "module-universe body analyses computed",
+                baseline.body_analyses_computed,
+                grown.body_analyses_computed,
+            ),
+            (
+                "module-universe body analyses reused",
+                baseline.body_analyses_reused,
+                grown.body_analyses_reused,
+            ),
+            (
+                "module-universe body analyses invalidated",
+                baseline.body_analyses_invalidated,
+                grown.body_analyses_invalidated,
+            ),
+            (
+                "module-universe CFG builds",
+                baseline.cfg_builds,
+                grown.cfg_builds,
+            ),
+            (
+                "module-universe CFG imports",
+                baseline.cfg_imports,
+                grown.cfg_imports,
+            ),
+            (
+                "module-universe AIR instructions",
+                baseline.air_instructions,
+                grown.air_instructions,
+            ),
+        ] {
+            assert_exact_zero_slope(counter, baseline_value, grown_value);
+        }
+        assert_eq!(
+            grown.modules_registered,
+            baseline.modules_registered + modules,
+            "module registration work must account for every supplied module"
+        );
+        assert!(
+            grown.rir_instructions_visited > baseline.rir_instructions_visited,
+            "the RIR universe must expose added unrelated module instructions"
+        );
+    }
+}
+
+#[test]
 fn rue_1090_gate_accepts_a_flat_changed_constant() {
     // The frozen rule is flatness, not equality with the historical 201-count
     // baseline. A producer-nominal cut may change the constant work amount.
@@ -1556,8 +1734,14 @@ fn rue_1121_edit_recompute_row(
     );
     Row::envelope(
         format!(
-            "{label}: warm body transactions={} (exact target {}, independently measured fresh {})",
-            warm.cold_bodies, exact_recomputed_bodies, fresh.cold_bodies,
+            "{label}: warm body transactions={} computed={} reused={} invalidated={} \
+             (exact target {}, independently measured fresh {})",
+            warm.cold_bodies,
+            warm.body_analyses_computed,
+            warm.body_analyses_reused,
+            warm.body_analyses_invalidated,
+            exact_recomputed_bodies,
+            fresh.cold_bodies,
         ),
         warm.cold_bodies,
         exact_recomputed_bodies,
@@ -1838,7 +2022,37 @@ fn invalidation_negative_lookup_becoming_positive_invalidates_consumers() {
     // consumer. `control` is independently reached yet unrelated, so it must
     // remain green. The separately measured fresh body count proves the target
     // is strictly cheaper than a full revision-2 compile.
+    //
+    // This is an explicit diagnostic for the current production discrepancy,
+    // not a weakened equality gate: provenance includes newly retained bodies
+    // (`control` and `extra`) and the retained-key lifecycle counter includes
+    // only `main`, the one body that existed before the failed revision. The
+    // exact-set row below remains the RUE-1091 gate for the repaired behavior.
+    assert_eq!(
+        rev1_origins.keys().cloned().collect::<BTreeSet<_>>(),
+        BTreeSet::from(["main".to_owned()])
+    );
+    assert_eq!(
+        rev2_origins.keys().cloned().collect::<BTreeSet<_>>(),
+        BTreeSet::from(["control".to_owned(), "extra".to_owned(), "main".to_owned()])
+    );
+    assert_eq!(
+        recomputed,
+        BTreeSet::from(["control".to_owned(), "extra".to_owned(), "main".to_owned()])
+    );
+    assert_eq!(warm_measure.body_analyses_computed, 3);
+    assert_eq!(warm_measure.body_analyses_reused, 0);
+    assert_eq!(warm_measure.body_analyses_invalidated, 1);
     let mut report = Report::new("invalidation: negative->positive lookup (with control body)");
+    report.push(Row::Met {
+        label: format!(
+            "diagnostic provenance rev1={rev1_origins:?} rev2={rev2_origins:?} \
+             changed={recomputed:?}; lifecycle computed={} reused={} invalidated={}",
+            warm_measure.body_analyses_computed,
+            warm_measure.body_analyses_reused,
+            warm_measure.body_analyses_invalidated,
+        ),
+    });
     report.push(rue_1121_exact_recompute_set_row(
         "negative-to-positive lookup recomputes the exact body set",
         &recomputed,

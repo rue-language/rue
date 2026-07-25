@@ -225,6 +225,10 @@ pub struct DeclarationBindingWork {
     pub durable_payloads_installed: usize,
     /// Size of the input RIR, not a claim that binding visited every entry.
     pub input_rir_instructions: usize,
+    /// Canonical modules inserted into this semantic epoch's compact registry.
+    /// This is a production-path count of registration work, not a module
+    /// universe size inferred by a consumer.
+    pub modules_registered: usize,
     pub declaration_index_build_invocations: usize,
     pub indexed_free_functions: usize,
     pub indexed_named_methods: usize,
@@ -3830,6 +3834,7 @@ impl DeclarationBindingWork {
     pub(super) fn from_inputs(
         input_rir_instructions: usize,
         index: RirDeclarationIndexWork,
+        modules_registered: usize,
     ) -> Self {
         Self {
             bind_invocations: 1,
@@ -3844,6 +3849,7 @@ impl DeclarationBindingWork {
             durable_install_invocations: 0,
             durable_payloads_installed: 0,
             input_rir_instructions,
+            modules_registered,
             declaration_index_build_invocations: index.build_invocations,
             indexed_free_functions: index.free_functions_indexed,
             indexed_named_methods: index.named_methods_indexed,
