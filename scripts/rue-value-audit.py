@@ -1037,7 +1037,14 @@ def scenario_verdict(
     workload: dict[str, Any],
     scenario_policy: dict[str, Any],
     thresholds: dict[str, Any],
+    baseline_available: bool = False,
 ) -> dict[str, Any]:
+    """Decide one scenario.
+
+    `baseline_available` says whether this run supplied a genuinely distinct
+    historical baseline binary. It decides how an absolute `cold_wall_seconds`
+    breach is reported — see the gate below for why.
+    """
     pairs: dict[str, Any] = {}
     required = scenario_policy["required"]
     if scenario not in workload["supported_scenarios"]:
@@ -1119,9 +1126,25 @@ def scenario_verdict(
     for role, row in role_rows.items():
         if row.get("status") == "fail":
             pairs.setdefault(role, {"status": "fail", "reason": "role evidence failed"})
-        # Absolute cold budgets are per-role and need no pairing, so a workload
-        # that declares one still returns a real verdict in a same-binary smoke
-        # where no historical role binary exists.
+        # The absolute cold budget is per-role and needs no pairing, which is
+        # what makes it useful with no baseline binary: it is the only thing
+        # that reports at all when every pair is unsupported.
+        #
+        # It is also intrinsically host-sensitive. It compares a wall time on
+        # whatever machine is running against a constant calibrated on a
+        # different one, so no multiplier is simultaneously tight enough to mean
+        # something and loose enough to be safe everywhere. A measured host ran
+        # 2.4x the reference figures and left as little as 1.2x headroom over
+        # its OWN pre-cutover cost; see
+        # docs/notes/pre-cutover-baseline-binary.md.
+        #
+        # When a distinct historical baseline IS supplied, the role-vs-role pair
+        # comparison above is available and is host-independent by construction
+        # — both roles run on the same machine in the same run. The absolute
+        # budget then adds no evidence the pairs do not already carry, and can
+        # only contribute a false failure on a slow host. So it is reported as
+        # `advisory` and does not decide the verdict. Without a baseline it
+        # remains the hard gate it was designed to be.
         budget = workload.get("cold_wall_seconds")
         if (
             scenario == "cold"
@@ -1129,17 +1152,27 @@ def scenario_verdict(
             and row.get("wall", {}).get("median") is not None
             and row["wall"]["median"] > budget * 1000
         ):
-            pairs.setdefault(role, {
-                "status": "fail",
+            over_budget = {
                 "reason": f"cold wall time exceeds the {budget:g}-second budget for {workload['name']}",
                 "budget_seconds": budget,
                 "observed_seconds": row["wall"]["median"] / 1000,
-            })
+            }
+            if baseline_available:
+                over_budget["status"] = "advisory"
+                over_budget["advisory_because"] = (
+                    "a distinct historical baseline is present, so the host-independent "
+                    "pair comparison decides this scenario"
+                )
+            else:
+                over_budget["status"] = "fail"
+            pairs.setdefault(role, over_budget)
     statuses = [value.get("status") for value in pairs.values()]
     if "fail" in statuses:
         status = "fail"
     elif "indeterminate" in statuses or (required and "unsupported" in statuses):
         status = "indeterminate"
+    # `advisory` is an observation, never a verdict: it neither fails a scenario
+    # nor manufactures a pass for one that has no passing evidence of its own.
     elif any(value == "pass" for value in statuses):
         status = "pass"
     else:
@@ -1229,6 +1262,13 @@ def run_audit(args: argparse.Namespace) -> dict[str, Any]:
     binary_hashes = {
         role: report["revisions"][role]["binary_sha256"] for role in ROLES
     }
+    # A distinct historical binary is exactly what makes the pair comparison
+    # real, so the same test that classifies the run also decides whether the
+    # absolute cold budget is a gate or an advisory.
+    baseline_available = (
+        binary_hashes["historical_baseline"] is not None
+        and binary_hashes["historical_baseline"] != binary_hashes["current_production"]
+    )
     if len(set(binary_hashes.values())) == 1:
         report["comparison_provenance"] = {
             "classification": "same_binary_protocol_smoke",
@@ -1241,6 +1281,11 @@ def run_audit(args: argparse.Namespace) -> dict[str, Any]:
             "historical_comparison_valid": True,
             "claim_scope": "role comparisons are linked to explicit source/build provenance and binary hashes",
         }
+    report["comparison_provenance"]["absolute_cold_budget"] = (
+        "advisory; the host-independent pair comparison decides cold scenarios"
+        if baseline_available
+        else "enforced; no distinct historical baseline binary was supplied"
+    )
     statuses: list[str] = []
     selected = set(args.workloads) if args.workloads else {workload["name"] for workload in WORKLOADS}
     for workload in WORKLOADS:
@@ -1357,6 +1402,7 @@ def run_audit(args: argparse.Namespace) -> dict[str, Any]:
                     row,
                     scenario_policy[scenario],
                     thresholds,
+                    baseline_available,
                 )
                 row["scenarios"][scenario] = {"roles": role_rows, "verdict": verdict}
                 statuses.append(verdict["status"])

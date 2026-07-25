@@ -65,6 +65,33 @@ exists:
 - `cold_timeout_seconds` is deliberately far above the gate, so an over-budget
   compile is recorded as a gate failure instead of raising out of the run.
 
+### The absolute gate is enforced only without a baseline
+
+An absolute budget compares a wall time on whatever host is running against a
+constant calibrated on a different one. There is no multiplier that is
+simultaneously tight enough to mean something and loose enough to be safe
+everywhere: a measured host ran 2.4x the reference figures and left as little as
+1.2x headroom over its own pre-cutover cost
+([`docs/notes/pre-cutover-baseline-binary.md`](../../docs/notes/pre-cutover-baseline-binary.md)).
+
+So the runner decides per run, using the same distinct-binary test that
+classifies the comparison:
+
+| historical baseline binary | absolute cold budget |
+|---|---|
+| absent, or identical to current | **enforced** — a breach fails the scenario |
+| distinct | **advisory** — reported, does not decide the verdict |
+
+With a distinct baseline the role-vs-role pair comparison is available and is
+host-independent by construction, because both roles run on the same machine in
+the same run. The absolute budget then adds nothing the pairs do not already
+carry and can only contribute a false failure on a slow host. The run records
+which mode applied in `comparison_provenance.absolute_cold_budget`.
+
+An advisory is an observation, never a verdict: it cannot fail a scenario, and
+it cannot manufacture a pass for a scenario that has no passing evidence of its
+own. A genuine pair failure still fails.
+
 Cost: these are cold-driver workloads under the same one-warmup, seven-paired-
 sample protocol as every other row, and `meridian` currently compiles in minutes
 rather than seconds. Expect the full matrix to run for hours on one host, in the

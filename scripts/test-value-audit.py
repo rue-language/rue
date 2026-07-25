@@ -491,6 +491,85 @@ class ValueAuditTests(unittest.TestCase):
         )
         self.assertNotEqual(result["status"], "fail")
 
+    def cold_roles(self, median_ms, *, distinct_baseline):
+        """Three cold role rows, optionally with a genuinely distinct baseline."""
+        rows = {}
+        for role in ("historical_baseline", "current_production", "candidate"):
+            rows[role] = {
+                **self.cold_role(median_ms),
+                "binary_sha256": (
+                    "historical" if distinct_baseline and role == "historical_baseline" else "same"
+                ),
+            }
+        return rows
+
+    def test_over_budget_is_advisory_when_a_real_baseline_is_present(self):
+        """With a baseline, the host-independent pair comparison decides.
+
+        The absolute budget is calibrated on a different machine, so once a
+        distinct historical binary makes the pair comparison available, an
+        over-budget row must not be able to fail the scenario on its own.
+        """
+        rill = next(item for item in self.regressed_workloads() if item["name"] == "rill")
+        roles = self.cold_roles(rill["cold_wall_seconds"] * 1000 * 5, distinct_baseline=True)
+        result = value_audit.scenario_verdict(
+            "cold", roles,
+            {**rill, "supported_scenarios": ["cold"]},
+            self.manifest["scenario_policy"]["cold"], self.thresholds,
+            True,
+        )
+        self.assertNotEqual(result["status"], "fail")
+        advisory = [
+            pair for name, pair in result["pairs"].items()
+            if "_vs_" not in name and pair.get("status") == "advisory"
+        ]
+        self.assertTrue(advisory, f"expected an advisory row: {result['pairs']}")
+        self.assertEqual(advisory[0]["budget_seconds"], rill["cold_wall_seconds"])
+        self.assertIn("advisory_because", advisory[0])
+
+    def test_over_budget_still_fails_without_a_baseline(self):
+        """No baseline means no pair evidence, so the budget stays a hard gate."""
+        rill = next(item for item in self.regressed_workloads() if item["name"] == "rill")
+        roles = self.cold_roles(rill["cold_wall_seconds"] * 1000 * 5, distinct_baseline=False)
+        result = value_audit.scenario_verdict(
+            "cold", roles,
+            {**rill, "supported_scenarios": ["cold"]},
+            self.manifest["scenario_policy"]["cold"], self.thresholds,
+            False,
+        )
+        self.assertEqual(result["status"], "fail")
+
+    def test_advisory_alone_never_manufactures_a_pass(self):
+        """An advisory is an observation, not passing evidence.
+
+        Every pair here is unsupported, so the scenario must not become a pass
+        merely because the only other row present is an advisory.
+        """
+        rill = next(item for item in self.regressed_workloads() if item["name"] == "rill")
+        roles = self.cold_roles(rill["cold_wall_seconds"] * 1000 * 5, distinct_baseline=True)
+        for role in roles:
+            roles[role]["status"] = "unsupported"
+        result = value_audit.scenario_verdict(
+            "cold", roles,
+            {**rill, "supported_scenarios": ["cold"]},
+            self.manifest["scenario_policy"]["cold"], self.thresholds,
+            True,
+        )
+        self.assertNotEqual(result["status"], "pass")
+
+    def test_a_real_pair_failure_still_fails_with_a_baseline(self):
+        """Downgrading the absolute gate must not soften the pair verdict."""
+        rill = next(item for item in self.regressed_workloads() if item["name"] == "rill")
+        roles = self.cold_roles(rill["cold_wall_seconds"] * 1000 * 5, distinct_baseline=True)
+        roles["current_production"]["status"] = "fail"
+        result = value_audit.scenario_verdict(
+            "cold", roles,
+            {**rill, "supported_scenarios": ["cold"]},
+            self.manifest["scenario_policy"]["cold"], self.thresholds,
+            True,
+        )
+        self.assertEqual(result["status"], "fail")
+
     def reject_mutation(self, mutate):
         drifted = {key: value for key, value in self.manifest.items()}
         mutate(drifted)
