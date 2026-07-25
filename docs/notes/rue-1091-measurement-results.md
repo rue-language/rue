@@ -23,12 +23,22 @@ edit improvement of at least 50%, warm isolated body-edit improvement of at
 least 25%, claimed wins exceeding three times the larger MAD, cold wall/RSS
 regression no greater than `max(2%, 3 * larger MAD)`, repeated-edit RSS
 stabilization within a 5% band when a persistent-session protocol exists, and
-Caldera cold wall time at or below 300 seconds. Caldera process timeout includes
-only the manifest-pinned headroom beyond that gate so an over-budget compile is
-recorded as a failure. Cold RSS is part of the cold pair verdict, not a
-detached annotation. The report records medians, MADs, explicit role
-provenance, hashes, host provenance, raw alternating samples, and
+and per-workload absolute cold wall budgets. Caldera keeps its 300-second
+budget; `rill`, `mosaic`, `harbor`, `lattice`, and `meridian` carry budgets
+derived from the pre-cutover figures recorded in
+[`rue-1083-closure-evidence.md`](rue-1083-closure-evidence.md). Each workload's
+process timeout sits above its own budget so an over-budget compile is recorded
+as a gate failure rather than raising out of the run. Those budgets are checked
+per role without pairing, so they return a verdict even when no historical
+baseline binary exists and every pair is unsupported. Cold RSS is part of the
+cold pair verdict, not a detached annotation. The report records medians, MADs,
+explicit role provenance, hashes, host provenance, raw alternating samples, and
 unsupported/indeterminate cases.
+
+The pre-cutover figures are transcribed prose evidence from a local
+release-build comparison, not a run of this protocol. They give the absolute
+gates a checked-in reference; they are never reported as a measured role row,
+and the runner rejects a manifest that claims otherwise.
 
 This is the current-production value audit, not the activation ledger below.
 

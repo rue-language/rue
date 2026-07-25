@@ -34,6 +34,36 @@ treated as zero work. A run using one binary for all three roles is classified
 as `same_binary_protocol_smoke`; it validates protocol and fail-closed gates,
 not historical/current/candidate value.
 
+## Regressed-example cold workloads
+
+`rill`, `mosaic`, `harbor`, `lattice`, and `meridian` are the five large example
+programs the RUE-1026/RUE-1027 query cutover regressed. All five are `--skip`ped
+from `//:cli-tests` and the large-example compile guard is stubbed, so this audit
+is currently the only place their cold cost is gated.
+
+Each carries an absolute `cold_wall_seconds` gate derived from the checked-in
+`[historical_reference]` table, which transcribes the pre-cutover and
+post-cutover figures from
+[`docs/notes/rue-1083-closure-evidence.md`](../../docs/notes/rue-1083-closure-evidence.md).
+That reference is prose evidence from a local release-build comparison on the
+maintainer's host — it is not a run of this protocol, it is not attributable to
+a role binary, and the runner refuses to let it be declared role evidence.
+
+Two properties make these rows useful before a historical baseline binary
+exists:
+
+- The gate is **per-role and absolute**, so it produces a real verdict even in a
+  `same_binary_protocol_smoke` where every pair is `unsupported`. Role-vs-role
+  cold comparison still needs the pre-cutover binary; the gate does not.
+- `cold_timeout_seconds` is deliberately far above the gate, so an over-budget
+  compile is recorded as a gate failure instead of raising out of the run.
+
+Cost: these are cold-driver workloads under the same one-warmup, seven-paired-
+sample protocol as every other row, and `meridian` currently compiles in minutes
+rather than seconds. Expect the full matrix to run for hours on one host, in the
+same class as the existing Caldera row. Use `--workloads` to select a subset
+while iterating.
+
 The existing session benchmark emits versioned full-parity evidence and
 production computed/reused/invalidated counters. Required warm locality gates
 use manifest-authoritative exact or upper bounds; full-program reparsing,

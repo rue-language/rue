@@ -21,6 +21,49 @@ cold_regression_fraction = 0.02
 repeated_edit_rss_band = 0.05
 caldera_wall_seconds = 300
 
+# Pre-cutover compile times for the five large example programs the
+# RUE-1026/RUE-1027 declaration/body query cutover regressed, transcribed from
+# the reproduction table in docs/notes/rue-1083-closure-evidence.md.
+#
+# Provenance discipline: these are local release-build measurements against
+# pre-cutover trunk on the maintainer's host.  They were NOT produced by this
+# audit protocol, they are not attributable to a role binary, and the runner
+# must never surface them as a measured role row.  They exist to give the
+# absolute cold gates below a checked-in reference instead of leaving the only
+# numbers the project must beat in prose.
+[historical_reference]
+source = "docs/notes/rue-1083-closure-evidence.md"
+kind = "local_release_build_comparison"
+produced_by_this_protocol = false
+usable_as_role_evidence = false
+# `cold_wall_seconds` on each regressed_example workload below is
+# `cold_gate_multiplier * pre_cutover_seconds`.  The multiplier is a
+# host-variance allowance over a reference measured on a different machine, not
+# a performance target: the target is the reference value itself.  Every one of
+# these programs is currently 20x to 77x its reference, so the allowance cannot
+# mask the regression it exists to measure.
+cold_gate_multiplier = 4.0
+
+[historical_reference.programs.rill]
+pre_cutover_seconds = 0.32
+post_cutover_seconds = 6.4
+
+[historical_reference.programs.mosaic]
+pre_cutover_seconds = 0.49
+post_cutover_seconds = 14.5
+
+[historical_reference.programs.harbor]
+pre_cutover_seconds = 0.89
+post_cutover_seconds = 65.0
+
+[historical_reference.programs.lattice]
+pre_cutover_seconds = 1.15
+post_cutover_seconds = 69.0
+
+[historical_reference.programs.meridian]
+pre_cutover_seconds = 5.7
+post_cutover_seconds = 438.0
+
 # A required scenario must have complete evidence for every role that is
 # compared.  A missing binary, malformed row, or unsupported protocol makes
 # the scenario indeterminate; it can never silently become a passing result.
@@ -159,3 +202,65 @@ family = "caldera"
 root = "../../examples/caldera/main.rue"
 warm_runner = "unsupported: no persistent-session black-box protocol"
 supported_scenarios = ["cold"]
+# Restated from `thresholds.caldera_wall_seconds` and
+# `protocol.caldera_timeout_headroom_seconds`; the runner rejects drift between
+# them so there is one source of truth and one cold-budget code path.
+cold_wall_seconds = 300
+cold_timeout_seconds = 330
+
+# The five large example programs the query cutover regressed.  Each is
+# `--skip`ped from //:cli-tests today (BUCK), so the audit is currently the only
+# place their cold cost is gated at all.  They are cold-driver workloads with no
+# persistent-session protocol, exactly like `medium_ordinary_rue`.
+#
+# `cold_wall_seconds` is the absolute per-role gate and is checked without any
+# role-vs-role pairing, so these rows produce a real verdict even in a
+# same-binary protocol smoke where no historical binary exists.
+# `cold_timeout_seconds` is only the process bound: it is deliberately far above
+# the gate so an over-budget compile is recorded as a gate failure rather than
+# crashing the run.
+
+[[workload]]
+name = "rill"
+family = "regressed_example"
+root = "../../examples/rill/main.rue"
+warm_runner = "unsupported: no persistent-session black-box protocol"
+supported_scenarios = ["cold"]
+cold_wall_seconds = 1.28
+cold_timeout_seconds = 120
+
+[[workload]]
+name = "mosaic"
+family = "regressed_example"
+root = "../../examples/mosaic/main.rue"
+warm_runner = "unsupported: no persistent-session black-box protocol"
+supported_scenarios = ["cold"]
+cold_wall_seconds = 1.96
+cold_timeout_seconds = 120
+
+[[workload]]
+name = "harbor"
+family = "regressed_example"
+root = "../../examples/harbor/main.rue"
+warm_runner = "unsupported: no persistent-session black-box protocol"
+supported_scenarios = ["cold"]
+cold_wall_seconds = 3.56
+cold_timeout_seconds = 300
+
+[[workload]]
+name = "lattice"
+family = "regressed_example"
+root = "../../examples/lattice/main.rue"
+warm_runner = "unsupported: no persistent-session black-box protocol"
+supported_scenarios = ["cold"]
+cold_wall_seconds = 4.6
+cold_timeout_seconds = 300
+
+[[workload]]
+name = "meridian"
+family = "regressed_example"
+root = "../../examples/meridian/main.rue"
+warm_runner = "unsupported: no persistent-session black-box protocol"
+supported_scenarios = ["cold"]
+cold_wall_seconds = 22.8
+cold_timeout_seconds = 900
