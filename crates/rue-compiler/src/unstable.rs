@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use crate::canonical_semantic::CanonicalSemanticFailurePhase as SemanticFailurePhase;
 
+pub use crate::clone_probe::{CloneProbeMetrics, CloneProbeMode};
 pub use crate::diagnostic::{
     ColorChoice, DiagnosticFormatter, JsonDiagnostic, JsonDiagnosticFormatter, JsonSpan,
     JsonSuggestion, MultiFileFormatter, MultiFileJsonFormatter, SourceInfo,
@@ -277,6 +278,31 @@ pub fn overlay_materialization_metrics(
     session: &crate::CompilerSession,
 ) -> OverlayMaterializationMetrics {
     session.overlay_materialization_metrics()
+}
+
+/// Selects the RUE-1133 clone-from-template probe (RUE-1091 ordered probe #1)
+/// for every subsequent semantic request on this session.
+///
+/// The probe builds the bound declaration epoch once per revision and
+/// deep-copies it per reached body instead of rebuilding it per body. It is
+/// **measurement instrumentation, never a production boundary**: copying an
+/// epoch per body is still O(declarations × bodies), and a cheap copy is
+/// performance evidence only — it narrows no dependency and proves nothing
+/// about exact invalidation.
+///
+/// Pass `None` to restore the ordinary per-body rebuild. Nothing enables this
+/// implicitly; only the measurement harnesses call it.
+pub fn enable_clone_from_template_probe(
+    session: &mut crate::CompilerSession,
+    mode: Option<CloneProbeMode>,
+) {
+    session.enable_clone_from_template_probe(mode);
+}
+
+/// A snapshot of the clone-from-template probe meter. Every field reads zero on
+/// a session that never enabled the probe. See [`CloneProbeMetrics`].
+pub fn clone_from_template_probe_metrics(session: &crate::CompilerSession) -> CloneProbeMetrics {
+    session.clone_from_template_probe_metrics()
 }
 
 /// A snapshot of the lookup-family pressure metrics (RUE-1091, ADR-0066 §4): the

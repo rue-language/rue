@@ -1732,20 +1732,75 @@ fn project_produced_anonymous_nominals(
         .map(|values| crate::body_query::BodyProducedAnonymousNominals(values.into()))
 }
 
-/// Materialize one fresh declaration epoch and analyze exactly one stable
-/// function instance. The epoch is discarded after its canonical projections
-/// cross the stable bridge.
-pub(crate) fn analyze_body_query(
+/// One fully bound declaration epoch and the definition universe issued with it.
+///
+/// Production builds exactly one of these per reached body inside
+/// [`analyze_body_query`] and discards it after the body publishes. The
+/// RUE-1133 clone-from-template probe (RUE-1091 ordered probe #1) builds one per
+/// revision and deep-copies it per body instead, so the derivation cost and the
+/// structural copy cost of the same epoch can be measured separately. Both
+/// consume it through [`analyze_body_in_epoch`], so the two arms differ in how
+/// the epoch was obtained and in nothing else.
+pub(crate) struct BoundBodyEpoch<'a> {
+    bound: rue_air::BoundSema<'a>,
+    definitions: BoundDefinitionSet,
+}
+
+impl<'a> BoundBodyEpoch<'a> {
+    /// Deep-copy this epoch for one body (RUE-1133 probe #1, measurement only),
+    /// charging the copied units to `units`. The issued definition universe is
+    /// shared by reference rather than copied: it is immutable durable data that
+    /// body analysis only reads, so copying it would overstate the epoch cost.
+    pub(crate) fn clone_from_template(&self, units: &mut rue_air::EpochCloneUnits) -> Self {
+        Self {
+            bound: self.bound.clone_from_template(units),
+            definitions: self.definitions.clone(),
+        }
+    }
+}
+
+/// Render a deterministic body-query stage failure for `instance`.
+///
+/// Preparation, projection, and installation failures are invariant violations,
+/// not cancellations. Each is surfaced as a failed body transaction so the
+/// coordinator renders a real compiler diagnostic instead of a disguised abort
+/// that panics the uncanceled session.
+pub(crate) fn body_stage_failure(
+    instance: &crate::FunctionInstanceKey,
+    stage: &str,
+    detail: String,
+) -> crate::body_query::BodyTransaction {
+    use crate::body_query::{BodyReference, BodyReferences, BodyTransaction};
+
+    BodyTransaction::DeterministicFailure {
+        errors: crate::CompileErrors::from(crate::CompileError::without_span(
+            rue_error::ErrorKind::InternalError(format!(
+                "canonical body query stage `{stage}` failed for body instance {instance:?}: {detail}"
+            )),
+        )),
+        references: BodyReferences(Arc::from(Vec::<BodyReference>::new())),
+    }
+}
+
+/// Materialize one fresh declaration epoch: prepare shells, project durable
+/// declaration semantics, install them, and install the stable endpoints and the
+/// per-body well-known `Option` registry.
+///
+/// This is the O(declarations) per-body prefix RUE-1091 exists to remove. It is
+/// factored out of [`analyze_body_query`] so the clone-from-template probe can
+/// run it once per revision instead of once per body while both arms keep
+/// consuming the identical epoch shape.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_bound_body_epoch<'a>(
     merged: &CanonicalMergedProgram,
-    rir: &CanonicalRirOutput,
+    rir: &'a CanonicalRirOutput,
     options: &CompileOptions,
     imports: &CanonicalImportGraph,
     query_shells: &[rue_air::SemanticDeclarationShell],
     query_declarations: &[DurableDeclarationSemantic],
     query_anonymous_nominals: &[crate::durable_semantics::DurableAnonymousNominal],
     well_known: &crate::body_query::WellKnownOptionResolution,
-    key: &crate::body_query::BodyQueryKey,
-    cancellation: &rue_query::CancellationToken,
+    instance: &crate::FunctionInstanceKey,
     // Per-body declaration-context work is accrued here, at the stage sources,
     // as each stage actually performs it — never from the coordinator's input
     // slice lengths. The out-parameter carries partial work when a stage fails
@@ -1753,34 +1808,9 @@ pub(crate) fn analyze_body_query(
     // or endpoint work), so the structural gate observes a shortcut added inside
     // any stage and never charges installation for a body that never installed.
     work: &mut PerBodyDeclarationContextWork,
-) -> Result<crate::body_query::BodyTransaction, rue_query::QueryAbort> {
-    use crate::body_query::{BodyReference, BodyReferences, BodyTransaction};
-
-    if cancellation.is_canceled() {
-        return Err(rue_query::QueryAbort::Canceled);
-    }
-    // Deterministic preparation, projection, and installation failures are
-    // invariant violations, not cancellations. Each is surfaced as a failed body
-    // transaction so the coordinator renders a real compiler diagnostic instead
-    // of a disguised abort that panics the uncanceled session.
-    let deterministic_failure = |stage: &str, detail: String| -> BodyTransaction {
-        BodyTransaction::DeterministicFailure {
-            errors: crate::CompileErrors::from(crate::CompileError::without_span(
-                rue_error::ErrorKind::InternalError(format!(
-                    "canonical body query stage `{stage}` failed for body instance {:?}: {detail}",
-                    key.instance,
-                )),
-            )),
-            references: BodyReferences(Arc::from(Vec::<BodyReference>::new())),
-        }
-    };
-    #[cfg(test)]
-    if INJECT_BODY_QUERY_STAGE_FAILURE.with(Cell::get) {
-        return Ok(deterministic_failure(
-            "injected_body_query_stage",
-            "test body query stage failure injection".into(),
-        ));
-    }
+) -> Result<BoundBodyEpoch<'a>, crate::body_query::BodyTransaction> {
+    let deterministic_failure =
+        |stage: &str, detail: String| body_stage_failure(instance, stage, detail);
     // Per-reached-body pipeline stages are timed as sibling leaves so
     // `--time-passes` can split the whole-program-rebuild cost RUE-1083 traced
     // to `analyze_body_query`. Each guard is dropped before the next stage so
@@ -1793,7 +1823,7 @@ pub(crate) fn analyze_body_query(
         match prepare_query_declaration_shells(merged, rir, options, imports, query_shells) {
             Ok(prepared) => prepared,
             Err(failure) => {
-                return Ok(deterministic_failure(
+                return Err(deterministic_failure(
                     "prepare_query_declaration_shells",
                     format!("{} ({:?})", failure.errors, failure.failure),
                 ));
@@ -1821,7 +1851,7 @@ pub(crate) fn analyze_body_query(
     ) {
         Ok(projected) => projected,
         Err(failure) => {
-            return Ok(deterministic_failure(
+            return Err(deterministic_failure(
                 "project_durable_declaration_semantics",
                 format!("{failure:?}"),
             ));
@@ -1834,7 +1864,7 @@ pub(crate) fn analyze_body_query(
     ) {
         Ok(projected_anonymous) => projected_anonymous,
         Err(failure) => {
-            return Ok(deterministic_failure(
+            return Err(deterministic_failure(
                 "project_durable_anonymous_nominals",
                 format!("{failure:?}"),
             ));
@@ -1860,7 +1890,7 @@ pub(crate) fn analyze_body_query(
     {
         Ok(bound) => bound,
         Err(failure) => {
-            return Ok(deterministic_failure(
+            return Err(deterministic_failure(
                 "install_declaration_semantics_with_anonymous",
                 format!("{failure:?}"),
             ));
@@ -1884,7 +1914,7 @@ pub(crate) fn analyze_body_query(
     ) {
         Ok(definitions) => definitions,
         Err(failure) => {
-            return Ok(deterministic_failure(
+            return Err(deterministic_failure(
                 "issue_bound_definitions",
                 format!("{failure:?}"),
             ));
@@ -1901,7 +1931,7 @@ pub(crate) fn analyze_body_query(
             .filter(|record| record.stable_key().kind().owns_body())
             .map(|record| record.stable_key()))
     {
-        return Ok(deterministic_failure(
+        return Err(deterministic_failure(
             "provisional_body_owner_key_equality",
             "provisional body-owner keys do not match the issued definition universe".into(),
         ));
@@ -1911,7 +1941,7 @@ pub(crate) fn analyze_body_query(
     let bound = match bound.install_body_owner_tokens(&body_owner_endpoints) {
         Ok(bound) => bound,
         Err(failure) => {
-            return Ok(deterministic_failure(
+            return Err(deterministic_failure(
                 "install_body_owner_tokens",
                 format!("{failure:?}"),
             ));
@@ -1926,7 +1956,7 @@ pub(crate) fn analyze_body_query(
     ) {
         Ok(bound) => bound,
         Err(failure) => {
-            return Ok(deterministic_failure(
+            return Err(deterministic_failure(
                 "install_stable_identity_endpoints",
                 format!("{failure:?}"),
             ));
@@ -1959,7 +1989,7 @@ pub(crate) fn analyze_body_query(
             ) {
                 Ok(projected) => projected,
                 Err(failure) => {
-                    return Ok(deterministic_failure(
+                    return Err(deterministic_failure(
                         "project_durable_option_registry",
                         format!("{failure:?}"),
                     ));
@@ -1970,7 +2000,7 @@ pub(crate) fn analyze_body_query(
         {
             Ok(bound) => bound,
             Err(failure) => {
-                return Ok(deterministic_failure(
+                return Err(deterministic_failure(
                     "install_well_known_option_types",
                     format!("{failure:?}"),
                 ));
@@ -1978,6 +2008,22 @@ pub(crate) fn analyze_body_query(
         }
     };
     drop(install_span);
+    Ok(BoundBodyEpoch { bound, definitions })
+}
+
+/// Analyze exactly one stable function instance inside an already bound epoch,
+/// then publish its durable transaction. The epoch is consumed: whether it was
+/// derived for this body (production) or copied from a template (the RUE-1133
+/// probe), body analysis owns it from here.
+pub(crate) fn analyze_body_in_epoch(
+    epoch: BoundBodyEpoch<'_>,
+    merged: &CanonicalMergedProgram,
+    key: &crate::body_query::BodyQueryKey,
+    cancellation: &rue_query::CancellationToken,
+) -> Result<crate::body_query::BodyTransaction, rue_query::QueryAbort> {
+    let BoundBodyEpoch { bound, definitions } = epoch;
+    let deterministic_failure =
+        |stage: &str, detail: String| body_stage_failure(&key.instance, stage, detail);
     let analyze_span = info_span!("body_analyze").entered();
     let outcome = bound.analyze_one_body_instance(
         &key.instance,
@@ -2007,6 +2053,52 @@ pub(crate) fn analyze_body_query(
         merged,
     };
     publish_one_body_outcome(outcome, &resolver, &deterministic_failure)
+}
+
+/// Materialize one fresh declaration epoch and analyze exactly one stable
+/// function instance. The epoch is discarded after its canonical projections
+/// cross the stable bridge.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn analyze_body_query(
+    merged: &CanonicalMergedProgram,
+    rir: &CanonicalRirOutput,
+    options: &CompileOptions,
+    imports: &CanonicalImportGraph,
+    query_shells: &[rue_air::SemanticDeclarationShell],
+    query_declarations: &[DurableDeclarationSemantic],
+    query_anonymous_nominals: &[crate::durable_semantics::DurableAnonymousNominal],
+    well_known: &crate::body_query::WellKnownOptionResolution,
+    key: &crate::body_query::BodyQueryKey,
+    cancellation: &rue_query::CancellationToken,
+    work: &mut PerBodyDeclarationContextWork,
+) -> Result<crate::body_query::BodyTransaction, rue_query::QueryAbort> {
+    if cancellation.is_canceled() {
+        return Err(rue_query::QueryAbort::Canceled);
+    }
+    #[cfg(test)]
+    if INJECT_BODY_QUERY_STAGE_FAILURE.with(Cell::get) {
+        return Ok(body_stage_failure(
+            &key.instance,
+            "injected_body_query_stage",
+            "test body query stage failure injection".into(),
+        ));
+    }
+    let epoch = match build_bound_body_epoch(
+        merged,
+        rir,
+        options,
+        imports,
+        query_shells,
+        query_declarations,
+        query_anonymous_nominals,
+        well_known,
+        &key.instance,
+        work,
+    ) {
+        Ok(epoch) => epoch,
+        Err(failure) => return Ok(failure),
+    };
+    analyze_body_in_epoch(epoch, merged, key, cancellation)
 }
 
 /// The stable-identity back-projection publication needs to convert one

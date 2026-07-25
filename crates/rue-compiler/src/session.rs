@@ -1369,6 +1369,17 @@ pub struct CompilerSession {
     /// on the production path. Exposed through the unstable surface, mirroring the
     /// recipe-cache meter.
     overlay_materialization_meter: Arc<crate::body_overlay::OverlayMaterializationCounters>,
+    /// Clone-from-template probe selection (RUE-1133; RUE-1091 ordered probe
+    /// #1). `None` on every ordinary compile: the probe is measurement-only
+    /// instrumentation that a harness must ask for explicitly through
+    /// [`crate::unstable::enable_clone_from_template_probe`]. When set, each
+    /// reached body is analyzed from a copy of one per-revision bound epoch
+    /// instead of rebuilding the epoch, so the derivation cost and the
+    /// structural copy cost can be measured apart.
+    clone_from_template_probe: Option<crate::clone_probe::CloneProbeMode>,
+    /// Cumulative clone-from-template probe accounting. Zero unless the probe
+    /// has been enabled; never charged by a production compile.
+    clone_probe_meter: Arc<crate::clone_probe::CloneProbeMeter>,
     /// The test-only shared recipe cache. Constructed on first acquisition so
     /// container creation is metered once and later acquisitions are metered as
     /// reuse. Never populated on the production path.
@@ -2905,6 +2916,23 @@ impl CompilerSession {
 
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Select (or clear) the RUE-1133 clone-from-template probe for subsequent
+    /// semantic requests. Measurement only; see [`crate::clone_probe`].
+    pub(crate) fn enable_clone_from_template_probe(
+        &mut self,
+        mode: Option<crate::clone_probe::CloneProbeMode>,
+    ) {
+        self.clone_from_template_probe = mode;
+    }
+
+    /// An owned snapshot of the clone-from-template probe meter. Zero on any
+    /// session that never enabled the probe.
+    pub(crate) fn clone_from_template_probe_metrics(
+        &self,
+    ) -> crate::clone_probe::CloneProbeMetrics {
+        self.clone_probe_meter.snapshot()
     }
 
     fn resume_canceled_query(
@@ -6655,6 +6683,11 @@ impl CompilerSession {
         let mut durable_specialized_body_candidates = Vec::new();
         let mut durable_anonymous_body_candidates = Vec::new();
         let mut queried_body_work = rue_air::BodyAnalysisWork::default();
+        // RUE-1133 clone-from-template probe selection (RUE-1091 ordered probe
+        // #1), read before the body traversal borrows the query database.
+        // `None` on every ordinary compile.
+        let clone_probe_mode = self.clone_from_template_probe;
+        let clone_probe_meter = Arc::clone(&self.clone_probe_meter);
         let mut body_produced_anonymous = BTreeMap::new();
         let mut body_query_errors = BTreeMap::new();
         let mut body_query_reference_cache = BTreeMap::new();
@@ -6984,6 +7017,15 @@ impl CompilerSession {
                 // host driver after the worklist; the demanding body's transaction
                 // never runs on an unsatisfied prerequisite.
                 let mut parked_toolchain: Option<crate::ParkedToolchainModules> = None;
+                // The probe retains one bound epoch for this traversal and
+                // serves each reached body from a copy of it. Measurement only
+                // (RUE-1133); `None` unless a harness enabled it.
+                let mut clone_probe = clone_probe_mode.map(|mode| {
+                    crate::clone_probe::CloneFromTemplateProbe::new(
+                        mode,
+                        Arc::clone(&clone_probe_meter),
+                    )
+                });
                 while let Some(instance) = priority_pending.pop().or_else(|| pending.pop_first()) {
                     let popped_depth = instance_depth.get(&instance).copied().unwrap_or(0);
                     // Producer-nominal identity is exact: a reached anonymous
@@ -7265,21 +7307,37 @@ impl CompilerSession {
                                     .map(|nominal| (nominal.identity.clone(), nominal)),
                             );
                             let body_anonymous = body_anonymous.into_values().collect::<Vec<_>>();
-                            let transaction = crate::canonical_semantic::analyze_body_query(
-                                &merged,
-                                &rir,
-                                options,
-                                &imports,
-                                query_shells,
-                                query_declarations.as_deref().expect(
-                                    "body traversal follows a successful declaration projection",
-                                ),
-                                &body_anonymous,
-                                &well_known,
-                                &key,
-                                cancellation,
-                                &mut stage_context,
+                            let query_declarations = query_declarations.as_deref().expect(
+                                "body traversal follows a successful declaration projection",
                             );
+                            let transaction = match clone_probe.as_mut() {
+                                Some(probe) => probe.analyze_body(
+                                    &merged,
+                                    &rir,
+                                    options,
+                                    &imports,
+                                    query_shells,
+                                    query_declarations,
+                                    &body_anonymous,
+                                    &well_known,
+                                    &key,
+                                    cancellation,
+                                    &mut stage_context,
+                                ),
+                                None => crate::canonical_semantic::analyze_body_query(
+                                    &merged,
+                                    &rir,
+                                    options,
+                                    &imports,
+                                    query_shells,
+                                    query_declarations,
+                                    &body_anonymous,
+                                    &well_known,
+                                    &key,
+                                    cancellation,
+                                    &mut stage_context,
+                                ),
+                            };
                             // Fold the stage-sourced per-body declaration-context
                             // work (whatever actually ran) into the running total.
                             let context = &mut queried_body_work.per_body_declaration_context;

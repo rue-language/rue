@@ -128,7 +128,7 @@ impl ParamRange {
 ///
 /// Stores parameter names, types, modes, and comptime flags in separate
 /// contiguous arrays for optimal cache locality during type checking.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ParamArena {
     /// All parameter names, indexed by position in the arena.
     /// For functions without named args, this may contain placeholder values.

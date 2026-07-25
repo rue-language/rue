@@ -15,6 +15,7 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("canonical_lower", include_str!("canonical_lower.rs")),
     ("canonical_merge", include_str!("canonical_merge.rs")),
     ("canonical_semantic", include_str!("canonical_semantic.rs")),
+    ("clone_probe", include_str!("clone_probe.rs")),
     (
         "declaration_candidate",
         include_str!("declaration_candidate.rs"),
@@ -1118,12 +1119,19 @@ fn per_body_query_boundary_is_stable_independent_and_cache_free() {
     }
     let semantic_entry = item(include_str!("session.rs"), "struct SemanticCacheEntry");
     assert!(!semantic_entry.contains("successful_body_cache"));
-    let body_adapter = item(
-        include_str!("canonical_semantic.rs"),
-        "pub(crate) fn analyze_body_query",
-    );
+    // The per-body epoch is materialized by INSTALLING durable declaration
+    // semantics, never by re-running source declaration resolution. The
+    // installation lives in the epoch builder that `analyze_body_query`
+    // delegates to; the RUE-1133 clone-from-template probe consumes the same
+    // builder, so there is exactly one place this boundary can be weakened.
+    let canonical_semantic = include_str!("canonical_semantic.rs");
+    let epoch_builder = item(canonical_semantic, "pub(crate) fn build_bound_body_epoch");
+    assert!(!epoch_builder.contains(".resolve_declarations_for_test()"));
+    assert!(epoch_builder.contains("install_declaration_semantics_with_anonymous"));
+    let body_adapter = item(canonical_semantic, "pub(crate) fn analyze_body_query");
     assert!(!body_adapter.contains(".resolve_declarations_for_test()"));
-    assert!(body_adapter.contains("install_declaration_semantics_with_anonymous"));
+    assert!(body_adapter.contains("build_bound_body_epoch("));
+    assert!(body_adapter.contains("analyze_body_in_epoch("));
 }
 
 #[test]
@@ -1412,12 +1420,14 @@ fn unstable_views_do_not_alias_query_engine_records() {
     assert_eq!(
         reexports,
         [
+            "pubusecrate::clone_probe::{CloneProbeMetrics,CloneProbeMode};",
             "pubusecrate::diagnostic::{ColorChoice,DiagnosticFormatter,JsonDiagnostic,JsonDiagnosticFormatter,JsonSpan,JsonSuggestion,MultiFileFormatter,MultiFileJsonFormatter,SourceInfo,};",
             "pubusecrate::import_discovery::{DiscoverySourceAssembler,ImportDemandFrontier,ImportDemandMode,ImportDemandRoots,ImportInputRevision,};",
             "pubusecrate::recipe_cache::RecipeCacheMetrics;",
             "pubusecrate::session::{ClosedDiscoveryContinuation,SemanticParkOutcome,TrustedSuccessorDelta};",
         ],
-        "unstable may reexport only reviewed presentation, source-assembly, Phase-2 demand, and recipe-cache metering helpers"
+        "unstable may reexport only reviewed presentation, source-assembly, Phase-2 demand, \
+         recipe-cache metering, and clone-from-template probe (RUE-1133, measurement-only) helpers"
     );
 
     let facade = include_str!("lib.rs");

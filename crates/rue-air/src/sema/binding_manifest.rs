@@ -384,8 +384,9 @@ impl SemanticBindingManifest {
     }
 }
 
+#[derive(Clone)]
 pub struct BoundSema<'a> {
-    sema: super::BodySema<'a>,
+    pub(super) sema: super::BodySema<'a>,
     manifest: OnceLock<SemanticBindingManifest>,
     binding_work: DeclarationBindingWork,
 }

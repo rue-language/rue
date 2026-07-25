@@ -65,7 +65,7 @@ pub(super) struct RirShellDeclaration {
 /// Ordered vectors preserve RIR order, including duplicates in invalid input.
 /// Hash tables are used only for point lookup; their iteration order never
 /// drives diagnostics, allocation, or generated artifacts.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct RirDeclarationIndex {
     free_functions: Vec<InstRef>,
     free_functions_by_file_name: HashMap<(FileId, Spur), Vec<InstRef>>,
@@ -89,7 +89,7 @@ pub(super) struct RirDeclarationIndex {
 /// they have been joined to the current RIR arena. Synthetic component tests
 /// use shells discovered from that synthetic arena. The declaration resolver
 /// never falls back to the independent RIR declaration index.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct BoundConstCandidateIndex {
     candidates: Vec<InstRef>,
     candidate_set: HashSet<InstRef>,

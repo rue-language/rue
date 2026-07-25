@@ -23,7 +23,7 @@ pub trait CanonicalImportView {
     ) -> CompileResult<()>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct CanonicalImportContext {
     by_file: HashMap<FileId, String>,
     sites: BTreeMap<(String, u32, String), ModuleId>,

@@ -37,6 +37,7 @@ mod body_endpoint;
 mod body_identity;
 mod builtins;
 mod call_resolution;
+mod clone_probe;
 mod comptime_eval;
 mod context;
 mod control_flow;
@@ -66,6 +67,7 @@ pub use binding_manifest::{
     SemanticDefinitionIdentity, SemanticExportConstValue, SemanticExportFailure,
     SemanticExportParameter, SemanticExportType, SemanticNominalIdentity, SemanticParameterMode,
 };
+pub use clone_probe::EpochCloneUnits;
 pub use context::ConstValue;
 pub use declaration_index::RirDeclarationIndexWork;
 pub use inference_ctx::InferenceContext;
@@ -141,13 +143,16 @@ pub(crate) struct EpochLocalConstCandidateEndpoint {
 /// binding, it is consumed into [`SourceDeclarations`], whose maps are
 /// structurally read-only.
 #[doc(hidden)]
+#[derive(Clone)]
 pub struct MutableDeclarations(DeclarationNamespace);
 
 /// The closed source declaration namespace consumed by body analysis.
 #[doc(hidden)]
+#[derive(Clone)]
 pub struct SourceDeclarations(DeclarationNamespace);
 
 #[doc(hidden)]
+#[derive(Clone)]
 pub struct DeclarationNamespace {
     functions: HashMap<Spur, FunctionInfo>,
     functions_by_file_name: HashMap<(FileId, Spur), Spur>,
@@ -289,6 +294,16 @@ pub(crate) struct DeferredOwnershipGate {
 }
 
 /// Semantic analyzer that converts RIR to AIR.
+///
+/// `Clone` deep-copies the entire request-local semantic epoch — the
+/// declaration namespace, the type pool, the parameter arena, the module
+/// registry, and every endpoint table — while sharing only the two borrowed
+/// inputs (`rir`, `interner`). It exists for the RUE-1133 clone-from-template
+/// probe (RUE-1091 ordered probe #1) and is a **measurement instrument, not a
+/// production boundary**: copying an epoch per body is still
+/// O(declarations × bodies), which is exactly the cost the probe is built to
+/// quantify. Nothing on the production body path clones a `Sema`.
+#[derive(Clone)]
 pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     declarations: D,
     pub(crate) rir: &'a Rir,

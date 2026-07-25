@@ -44,8 +44,9 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use rue_compiler::unstable::{
-    DiscoverySourceAssembler, ImportDemandMode, begin_import_input_request,
-    committed_import_discovery, import_demand_frontier_for_roots, import_observation_ledger,
+    CloneProbeMode, DiscoverySourceAssembler, ImportDemandMode, begin_import_input_request,
+    clone_from_template_probe_metrics, committed_import_discovery,
+    enable_clone_from_template_probe, import_demand_frontier_for_roots, import_observation_ledger,
     publish_import_observation_batch,
 };
 use rue_compiler::{
@@ -415,6 +416,69 @@ fn warm_edit(corpus: &Corpus, discovery: Discovery, variant: Variant, name: &str
     named(name, with_parity(value, parity))
 }
 
+/// The RUE-1133 clone-from-template probe (RUE-1091 ordered probe #1) over this
+/// exact corpus point, cold.
+///
+/// The scaling bench measures the probe's *time* on a single-file corpus. What
+/// this workload adds is the multi-module import path: it is the only synthetic
+/// corpus here whose bodies are reached through real import discovery, so it is
+/// where a per-revision template could plausibly stop being valid for a body.
+/// The run is deliberately counters-only, matching the rest of this workload —
+/// it records how many templates one revision needed, how many units each body's
+/// copy moved, and whether the clone published the same program as a freshly
+/// derived epoch.
+fn clone_probe(corpus: &Corpus, discovery: Discovery) -> Value {
+    let options = CompileOptions::default();
+    let base = corpus.snapshot(Variant::Base);
+    let mut session = CompilerSession::new();
+    enable_clone_from_template_probe(&mut session, Some(CloneProbeMode::Differential));
+    session.update(&base).into_result().unwrap();
+    close(discovery, &mut session, &base);
+    session.semantic(&options).unwrap();
+    let metrics = clone_from_template_probe_metrics(&session);
+
+    assert_eq!(
+        metrics.parity_mismatches,
+        0,
+        "a body analyzed from a cloned declaration epoch published a different \
+         transaction than one analyzed from a freshly derived epoch at \
+         {} bodies / {} modules under {} discovery",
+        corpus.bodies,
+        corpus.modules,
+        discovery.name()
+    );
+    assert_eq!(
+        metrics.parity_comparisons, metrics.bodies_analyzed,
+        "every reached body must be compared in the differential arm"
+    );
+    let units = metrics.units;
+    let per_body = metrics
+        .templates_cloned
+        .checked_ilog10()
+        .map(|_| units.total_units_copied() / metrics.templates_cloned)
+        .unwrap_or_else(|| units.total_units_copied() / metrics.templates_cloned.max(1));
+    named(
+        "clone_from_template_probe",
+        json!({
+            "bodies_analyzed": metrics.bodies_analyzed,
+            "templates_built": metrics.templates_built,
+            "templates_cloned": metrics.templates_cloned,
+            "template_input_misses": metrics.template_input_misses,
+            "parity_comparisons": metrics.parity_comparisons,
+            "parity_mismatches": metrics.parity_mismatches,
+            "units_copied": {
+                "declaration_namespace": units.declaration_namespace_entries_copied,
+                "type_pool": units.type_pool_entries_copied,
+                "parameters": units.parameter_entries_copied,
+                "modules": units.module_registry_entries_copied,
+                "endpoints": units.endpoint_entries_copied,
+                "total": units.total_units_copied(),
+                "per_cloned_body": per_body,
+            },
+        }),
+    )
+}
+
 fn cold(corpus: &Corpus, discovery: Discovery) -> Value {
     let options = CompileOptions::default();
     let base = corpus.snapshot(Variant::Base);
@@ -435,6 +499,7 @@ fn configuration(bodies: usize, modules: usize, discovery: Discovery) -> Value {
             Variant::UnrelatedEdit,
             "warm_unrelated_body",
         ),
+        clone_probe(&corpus, discovery),
     ];
     let cold_bodies = count(&scenarios[0], &["semantic_work", "bodies_attempted"]);
     assert_eq!(

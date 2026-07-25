@@ -82,7 +82,7 @@ pub use sema::{
     DeclarationTypeDependencySourceKind, DeclarationTypeDependencyTargetKind, DropCopyMetadata,
     DurableAnonymousShape, DurableAnonymousSource, DurableCallableSource, DurableConst,
     DurableConstSource, DurableFunction, DurableMethod, DurableNominal, DurableNominalBody,
-    DurableNominalSource, DurableSignatureParameter, FunctionInfo,
+    DurableNominalSource, DurableSignatureParameter, EpochCloneUnits, FunctionInfo,
     ImplicitDropDependencySourceEvent, ImplicitNamedDestructorDependencyEvent, ImportResolution,
     MemberCandidate, MemberKind, MethodInfo, NameCandidate, NameResolution,
     NamedConstDependencyEvent, NamedConstDependencyTargetEvent, NamedDestructorDependencyEvent,

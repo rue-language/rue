@@ -18,6 +18,23 @@ pub struct ModuleRegistry {
     defs: RwLock<Vec<ModuleDef>>,
 }
 
+/// Deep-copies every registered module under a read lock, for the RUE-1133
+/// clone-from-template probe (RUE-1091 ordered probe #1). Copying a registry is
+/// a measurement instrument for what a per-body epoch costs structurally, never
+/// a production sharing boundary.
+impl Clone for ModuleRegistry {
+    fn clone(&self) -> Self {
+        Self {
+            defs: RwLock::new(
+                self.defs
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone(),
+            ),
+        }
+    }
+}
+
 impl ModuleRegistry {
     /// Create a new empty registry.
     pub fn new() -> Self {

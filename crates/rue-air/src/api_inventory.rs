@@ -63,6 +63,88 @@ fn one_body_authority_is_repository_wide_and_production() {
     );
 }
 
+/// A whole semantic epoch is cloneable, and that is a hazard worth guarding.
+///
+/// `BoundSema: Clone` exists for exactly one reason: the RUE-1133
+/// clone-from-template probe (RUE-1091 ordered probe #1), which copies a bound
+/// declaration epoch per body to measure what deriving one costs. RUE-1091's
+/// repair explicitly forbids a cloneable semantic epoch surviving as a
+/// production path, so this test pins every source in the repository that can
+/// reach such a copy: the probe itself, and the measurement-only modules that
+/// select it. A production path that started cloning an epoch fails here.
+#[test]
+fn epoch_cloning_stays_confined_to_the_measurement_probe() {
+    fn visit(directory: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(directory).expect("read Rust source directory") {
+            let path = entry.expect("read source entry").path();
+            if path.is_dir() {
+                visit(&path, files);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                files.push(path);
+            }
+        }
+    }
+
+    let root = std::env::current_dir().expect("repository working directory");
+    let crates = root.join("crates");
+    assert!(
+        crates.is_dir(),
+        "inventory must run from the repository root"
+    );
+    let mut files = Vec::new();
+    visit(&crates, &mut files);
+    files.sort();
+
+    let marker = ["clone_from", "_template"].concat();
+    let mut sites = Vec::new();
+    for path in &files {
+        let source = std::fs::read_to_string(path).expect("read Rust source");
+        if source.contains(&marker) {
+            sites.push(path.strip_prefix(&root).unwrap_or(path).to_path_buf());
+        }
+    }
+    let permitted = [
+        // The metered copy itself.
+        "crates/rue-air/src/sema/clone_probe.rs",
+        // The compiler-side epoch wrapper the probe copies, the probe driver,
+        // and the session/unstable selector that must be asked explicitly.
+        "crates/rue-compiler/src/canonical_semantic.rs",
+        "crates/rue-compiler/src/clone_probe.rs",
+        "crates/rue-compiler/src/session.rs",
+        "crates/rue-compiler/src/unstable.rs",
+        // Measurement harnesses.
+        "crates/rue-compiler-session-bench/src/module_axis.rs",
+        "crates/rue-scaling-bench/src/main.rs",
+        // The pre-existing overlay recipe-template counter of the same name,
+        // and the two inventories that name these paths.
+        "crates/rue-compiler/src/body_overlay.rs",
+        "crates/rue-compiler/src/api_inventory.rs",
+        "crates/rue-air/src/api_inventory.rs",
+    ];
+    let unexpected = sites
+        .iter()
+        .filter(|path| !permitted.contains(&path.to_string_lossy().as_ref()))
+        .collect::<Vec<_>>();
+    assert!(
+        unexpected.is_empty(),
+        "a source outside the RUE-1133 measurement probe reached epoch cloning: {unexpected:?}"
+    );
+
+    // There is exactly one epoch copy, and it is the metered entry point, so a
+    // copy can never go unaccounted.
+    let manifest = include_str!("sema/binding_manifest.rs");
+    assert!(
+        manifest.contains("pub struct BoundSema<'a> {"),
+        "BoundSema moved without updating the inventory"
+    );
+    let probe = include_str!("sema/clone_probe.rs");
+    assert_eq!(
+        probe.matches("self.clone()").count(),
+        1,
+        "the metered entry point must be the sole epoch copy"
+    );
+}
+
 #[test]
 fn retired_whole_program_body_driver_is_an_explicit_test_oracle_only() {
     let analysis = include_str!("sema/analysis.rs");

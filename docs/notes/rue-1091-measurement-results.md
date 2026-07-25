@@ -42,6 +42,17 @@ and the runner rejects a manifest that claims otherwise.
 
 This is the current-production value audit, not the activation ledger below.
 
+## Executed probes
+
+RUE-1091's ordered probe #1 — clone-from-template, feasibility measurement only
+— has been run. Its result and the explicit read it produces on whether an
+epoch-sharing repair can reach pre-cutover parity are in
+[`rue-1133-clone-from-template-probe.md`](rue-1133-clone-from-template-probe.md),
+with raw evidence in
+[`../benchmarks/rue-1133-clone-from-template-probe.jsonl`](../benchmarks/rue-1133-clone-from-template-probe.jsonl).
+It is neither a value-audit row nor activation evidence: a cheap copy narrows no
+dependency and cannot satisfy any RUE-1091 acceptance criterion.
+
 ## Future post-flip activation evidence
 
 The staged gauntlet and result template below remain the authoritative plan for

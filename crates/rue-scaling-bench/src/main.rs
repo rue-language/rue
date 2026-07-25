@@ -65,6 +65,7 @@
 
 use std::time::{Duration, Instant};
 
+use rue_compiler::unstable::{CloneProbeMetrics, CloneProbeMode};
 use rue_compiler::{CompileOptions, CompilerSession, SourceSnapshot};
 
 #[cfg(rue_benchmark_allocations)]
@@ -190,6 +191,9 @@ enum Mode {
     Timing,
     Memory,
     Alloc,
+    /// RUE-1133 clone-from-template probe: one point on the declaration-size
+    /// curve measured in both arms, plus a parity run.
+    Probe,
 }
 
 struct Config {
@@ -199,6 +203,9 @@ struct Config {
     iterations: usize,
     warm: bool,
     json: bool,
+    /// RUE-1133 probe arm applied to `timing`, `memory`, and `alloc` runs.
+    /// `--mode probe` drives both arms itself and ignores this.
+    clone_probe: Option<CloneProbeMode>,
 }
 
 fn parse_config() -> Config {
@@ -208,6 +215,7 @@ fn parse_config() -> Config {
     let mut iterations = 5usize;
     let mut warm = false;
     let mut json = false;
+    let mut clone_probe = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -217,6 +225,7 @@ fn parse_config() -> Config {
                     Some("timing") => Mode::Timing,
                     Some("memory") => Mode::Memory,
                     Some("alloc") => Mode::Alloc,
+                    Some("probe") => Mode::Probe,
                     other => {
                         eprintln!("unknown --mode {other:?} (timing|memory|alloc)");
                         std::process::exit(2);
@@ -228,6 +237,17 @@ fn parse_config() -> Config {
             "--iterations" => iterations = parse_usize(args.next(), "--iterations").max(1),
             "--warm" => warm = true,
             "--json" => json = true,
+            "--clone-probe" => {
+                clone_probe = match args.next().as_deref() {
+                    Some("clone") => Some(CloneProbeMode::CloneOnly),
+                    Some("differential") => Some(CloneProbeMode::Differential),
+                    Some("off") => None,
+                    other => {
+                        eprintln!("unknown --clone-probe {other:?} (off|clone|differential)");
+                        std::process::exit(2);
+                    }
+                };
+            }
             "-h" | "--help" => {
                 print_help();
                 std::process::exit(0);
@@ -245,6 +265,7 @@ fn parse_config() -> Config {
         iterations,
         warm,
         json,
+        clone_probe,
     }
 }
 
@@ -261,7 +282,7 @@ fn parse_usize(value: Option<String>, flag: &str) -> usize {
 fn print_help() {
     eprintln!(
         "RUE-1086 scaling measurement runner\n\n\
-         USAGE: rue-scaling-bench [--mode timing|memory|alloc] [--bodies N] \
+         USAGE: rue-scaling-bench [--mode timing|memory|alloc|probe] [--bodies N] \
          [--decls N] [--iterations N] [--warm] [--json]\n\n\
          --mode timing   wall time of a compile (default); reports `semantic` \
          and `pre_link` intervals\n\
@@ -269,6 +290,10 @@ fn print_help() {
          process, warm labeled session_peak_including_priming\n\
          --mode alloc    allocation count/bytes (needs the -allocations binary); \
          warm reports the edit DELTA plus a whole-run total\n\
+         --mode probe    RUE-1133 clone-from-template probe: rebuild arm vs \
+         clone arm at one curve point, plus a parity run\n\
+         --clone-probe M run timing/memory/alloc under the probe \
+         (off|clone|differential)\n\
          --warm          measure warm single-body-edit latency (two revisions)\n\
          --bodies N      reached bodies (default 1000)\n\
          --decls N       unrelated declarations (default 100)\n\
@@ -296,10 +321,11 @@ struct Intervals {
 /// generation, stopping before linking. `semantic` remains the useful
 /// semantic-only sub-interval. Snapshot construction is corpus setup and stays
 /// outside both intervals.
-fn cold_intervals(bodies: usize, decls: usize) -> Intervals {
+fn cold_intervals(bodies: usize, decls: usize, clone_probe: Option<CloneProbeMode>) -> Intervals {
     let options = CompileOptions::default();
     let source = snapshot(corpus_source(bodies, decls));
     let mut session = CompilerSession::new();
+    rue_compiler::unstable::enable_clone_from_template_probe(&mut session, clone_probe);
     let start = Instant::now();
     session
         .update(&source)
@@ -320,13 +346,14 @@ fn cold_intervals(bodies: usize, decls: usize) -> Intervals {
 /// edit — so `pre_link` runs from immediately before `session.update(rev2)`
 /// through object generation. `semantic` remains the semantic-only
 /// sub-interval; rev2 snapshot construction stays outside both.
-fn warm_intervals(bodies: usize, decls: usize) -> Intervals {
+fn warm_intervals(bodies: usize, decls: usize, clone_probe: Option<CloneProbeMode>) -> Intervals {
     let options = CompileOptions::default();
     let rev1 = corpus_source(bodies, decls);
     let rev2 = rev1.replacen("fn b0() -> i32 { 0 }", "fn b0() -> i32 { 123 }", 1);
     assert_ne!(rev1, rev2, "the warm edit must change source");
 
     let mut session = CompilerSession::new();
+    rue_compiler::unstable::enable_clone_from_template_probe(&mut session, clone_probe);
     session
         .update(&snapshot(rev1))
         .into_result()
@@ -353,9 +380,9 @@ fn warm_intervals(bodies: usize, decls: usize) -> Intervals {
 
 fn measure_intervals(config: &Config) -> Intervals {
     if config.warm {
-        warm_intervals(config.bodies, config.decls)
+        warm_intervals(config.bodies, config.decls, config.clone_probe)
     } else {
-        cold_intervals(config.bodies, config.decls)
+        cold_intervals(config.bodies, config.decls, config.clone_probe)
     }
 }
 
@@ -463,6 +490,197 @@ fn emit_timing_json(
 }
 
 // ---------------------------------------------------------------------------
+// Clone-from-template probe mode (RUE-1133 / RUE-1091 ordered probe #1)
+// ---------------------------------------------------------------------------
+//
+// One point on the declaration-size curve, measured in both arms:
+//
+//   rebuild arm — production today: every reached body derives the whole
+//                 declaration epoch before analyzing its one body.
+//   clone arm   — the probe: the epoch is derived once for the revision and
+//                 deep-copied per body.
+//
+// The difference is the derivation cost the rewire can delete. What is LEFT in
+// the clone arm is the structural floor: the cost of moving a whole declaration
+// epoch per body, which no scheme that still materializes per-body declaration
+// state can get below. A parity run then establishes that the clone arm
+// publishes the same program, so the timing comparison is about one variable.
+
+/// One cold semantic-only compile, returning the `semantic` interval and the
+/// probe meter afterwards.
+fn probe_semantic(
+    bodies: usize,
+    decls: usize,
+    clone_probe: Option<CloneProbeMode>,
+) -> (Duration, CloneProbeMetrics) {
+    let options = CompileOptions::default();
+    let source = snapshot(corpus_source(bodies, decls));
+    let mut session = CompilerSession::new();
+    rue_compiler::unstable::enable_clone_from_template_probe(&mut session, clone_probe);
+    session
+        .update(&source)
+        .into_result()
+        .expect("corpus parses");
+    let started = Instant::now();
+    session.semantic(&options).expect("corpus compiles");
+    let semantic = started.elapsed();
+    (
+        semantic,
+        rue_compiler::unstable::clone_from_template_probe_metrics(&session),
+    )
+}
+
+fn run_probe(config: &Config) {
+    eprintln!(
+        "\n== clone-from-template probe (RUE-1133) : {} bodies x {} decls, {} iterations ==",
+        config.bodies, config.decls, config.iterations
+    );
+    // One untimed warmup per arm keeps allocator/OS first-touch noise out of the
+    // samples, exactly as timing mode does.
+    probe_semantic(config.bodies, config.decls, None);
+    probe_semantic(config.bodies, config.decls, Some(CloneProbeMode::CloneOnly));
+
+    let mut rebuild_samples = Vec::with_capacity(config.iterations);
+    let mut clone_samples = Vec::with_capacity(config.iterations);
+    let mut metrics = CloneProbeMetrics::default();
+    for _ in 0..config.iterations {
+        rebuild_samples.push(probe_semantic(config.bodies, config.decls, None).0);
+        let (elapsed, sample) =
+            probe_semantic(config.bodies, config.decls, Some(CloneProbeMode::CloneOnly));
+        clone_samples.push(elapsed);
+        metrics = sample;
+    }
+    let rebuild = summarize(rebuild_samples.clone());
+    let clone = summarize(clone_samples.clone());
+
+    // The parity run is separate and never timed: it analyzes every body twice
+    // and compares the published transactions.
+    let (_, parity) = probe_semantic(
+        config.bodies,
+        config.decls,
+        Some(CloneProbeMode::Differential),
+    );
+
+    eprintln!(
+        "  rebuild arm semantic : min={:?} median={:?} mean={:?} max={:?}",
+        rebuild.min, rebuild.median, rebuild.mean, rebuild.max
+    );
+    eprintln!(
+        "  clone arm   semantic : min={:?} median={:?} mean={:?} max={:?}",
+        clone.min, clone.median, clone.mean, clone.max
+    );
+    let speedup = rebuild.median.as_secs_f64() / clone.median.as_secs_f64().max(f64::MIN_POSITIVE);
+    eprintln!("  median clone-arm speedup : {speedup:.2}x");
+    eprintln!(
+        "  probe: bodies={} templates_built={} templates_cloned={} template_input_misses={}",
+        metrics.bodies_analyzed,
+        metrics.templates_built,
+        metrics.templates_cloned,
+        metrics.template_input_misses
+    );
+    eprintln!(
+        "  probe timing (in-session): template_build={:?} clone={:?} analyze={:?}",
+        Duration::from_nanos(metrics.template_build_nanos),
+        Duration::from_nanos(metrics.clone_nanos),
+        Duration::from_nanos(metrics.analyze_nanos)
+    );
+    let units = metrics.units;
+    eprintln!(
+        "  units copied: declaration_namespace={} type_pool={} parameters={} modules={} endpoints={} total={}",
+        units.declaration_namespace_entries_copied,
+        units.type_pool_entries_copied,
+        units.parameter_entries_copied,
+        units.module_registry_entries_copied,
+        units.endpoint_entries_copied,
+        units.total_units_copied()
+    );
+    if metrics.templates_cloned > 0 {
+        eprintln!(
+            "  units per cloned body: {}",
+            units.total_units_copied() / metrics.templates_cloned
+        );
+    }
+    eprintln!(
+        "  parity: comparisons={} mismatches={}",
+        parity.parity_comparisons, parity.parity_mismatches
+    );
+    assert_eq!(
+        parity.parity_mismatches, 0,
+        "a clone-arm body published a different transaction than the rebuild arm; \
+         the probe's timing result would be meaningless"
+    );
+
+    if config.json {
+        emit_probe_json(config, &rebuild_samples, &clone_samples, &metrics, &parity);
+    }
+}
+
+/// Machine-readable per-sample probe JSON, matching the raw-evidence shape the
+/// timing mode already emits.
+fn emit_probe_json(
+    config: &Config,
+    rebuild_samples: &[Duration],
+    clone_samples: &[Duration],
+    metrics: &CloneProbeMetrics,
+    parity: &CloneProbeMetrics,
+) {
+    let ns = |samples: &[Duration]| {
+        samples
+            .iter()
+            .map(|d| d.as_nanos().to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let summary = |samples: &[Duration]| {
+        let s = summarize(samples.to_vec());
+        format!(
+            "\"min_ns\":{},\"median_ns\":{},\"mean_ns\":{},\"max_ns\":{}",
+            s.min.as_nanos(),
+            s.median.as_nanos(),
+            s.mean.as_nanos(),
+            s.max.as_nanos()
+        )
+    };
+    let units = metrics.units;
+    println!(
+        "{{\"kind\":\"clone_from_template_probe\",\"issue\":\"RUE-1133\",\
+         \"bodies\":{},\"decls\":{},\"iterations\":{},\"commit\":\"{}\",\"nproc\":{},\
+         \"rebuild_semantic\":{{\"samples_ns\":[{}],{}}},\
+         \"clone_semantic\":{{\"samples_ns\":[{}],{}}},\
+         \"probe\":{{\"bodies_analyzed\":{},\"templates_built\":{},\"templates_cloned\":{},\
+         \"template_input_misses\":{},\"template_build_nanos\":{},\"clone_nanos\":{},\
+         \"analyze_nanos\":{}}},\
+         \"units\":{{\"declaration_namespace\":{},\"type_pool\":{},\"parameters\":{},\
+         \"modules\":{},\"endpoints\":{},\"total\":{}}},\
+         \"parity\":{{\"comparisons\":{},\"mismatches\":{}}}}}",
+        config.bodies,
+        config.decls,
+        config.iterations,
+        commit_hash(),
+        nproc(),
+        ns(rebuild_samples),
+        summary(rebuild_samples),
+        ns(clone_samples),
+        summary(clone_samples),
+        metrics.bodies_analyzed,
+        metrics.templates_built,
+        metrics.templates_cloned,
+        metrics.template_input_misses,
+        metrics.template_build_nanos,
+        metrics.clone_nanos,
+        metrics.analyze_nanos,
+        units.declaration_namespace_entries_copied,
+        units.type_pool_entries_copied,
+        units.parameter_entries_copied,
+        units.module_registry_entries_copied,
+        units.endpoint_entries_copied,
+        units.total_units_copied(),
+        parity.parity_comparisons,
+        parity.parity_mismatches,
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Memory mode
 // ---------------------------------------------------------------------------
 
@@ -471,9 +689,10 @@ fn emit_timing_json(
 /// it so its own warmup does not inflate the reported cold peak.
 const INTERNAL_COLD_PEAK: &str = "--internal-cold-peak";
 
-fn run_internal_cold_peak(bodies: usize, decls: usize) -> ! {
+fn run_internal_cold_peak(bodies: usize, decls: usize, clone_probe: Option<CloneProbeMode>) -> ! {
     let options = CompileOptions::default();
     let mut session = CompilerSession::new();
+    rue_compiler::unstable::enable_clone_from_template_probe(&mut session, clone_probe);
     session
         .update(&snapshot(corpus_source(bodies, decls)))
         .into_result()
@@ -499,7 +718,7 @@ fn run_memory(config: &Config) {
         // A process HWM cannot separate the warm-edit peak from the rev1 priming
         // that necessarily precedes it, so this is labeled honestly as the whole
         // session's peak including priming.
-        warm_intervals(config.bodies, config.decls);
+        warm_intervals(config.bodies, config.decls, config.clone_probe);
         match peak_memory_bytes() {
             Some(bytes) => eprintln!(
                 "  session_peak_including_priming={:.1} MiB ({bytes} bytes)",
@@ -512,7 +731,7 @@ fn run_memory(config: &Config) {
 
     // Cold peak: measured in a child process with no warmup so this process's
     // own warmup/allocator state cannot pollute the high-water mark.
-    match cold_peak_via_child(config.bodies, config.decls) {
+    match cold_peak_via_child(config.bodies, config.decls, config.clone_probe) {
         Some(Some(bytes)) => eprintln!(
             "  cold_peak_resident (isolated child process)={:.1} MiB ({bytes} bytes)",
             bytes as f64 / (1024.0 * 1024.0)
@@ -521,7 +740,7 @@ fn run_memory(config: &Config) {
         None => {
             // Child spawn/exec failed: fall back to an in-process measurement,
             // clearly labeled as not isolated.
-            cold_intervals(config.bodies, config.decls);
+            cold_intervals(config.bodies, config.decls, config.clone_probe);
             match peak_memory_bytes() {
                 Some(bytes) => eprintln!(
                     "  cold_peak_resident (in-process fallback, not isolated)={:.1} MiB ({bytes} bytes)",
@@ -536,16 +755,26 @@ fn run_memory(config: &Config) {
 /// Spawn this executable as a child that performs one isolated cold compile.
 /// Returns `None` if the child could not be run at all, `Some(None)` if the
 /// child reports the platform is unsupported, and `Some(Some(bytes))` on success.
-fn cold_peak_via_child(bodies: usize, decls: usize) -> Option<Option<u64>> {
+fn cold_peak_via_child(
+    bodies: usize,
+    decls: usize,
+    clone_probe: Option<CloneProbeMode>,
+) -> Option<Option<u64>> {
     let exe = std::env::current_exe().ok()?;
-    let output = std::process::Command::new(exe)
+    let mut command = std::process::Command::new(exe);
+    command
         .arg(INTERNAL_COLD_PEAK)
         .arg("--bodies")
         .arg(bodies.to_string())
         .arg("--decls")
-        .arg(decls.to_string())
-        .output()
-        .ok()?;
+        .arg(decls.to_string());
+    if let Some(mode) = clone_probe {
+        command.arg("--clone-probe").arg(match mode {
+            CloneProbeMode::CloneOnly => "clone",
+            CloneProbeMode::Differential => "differential",
+        });
+    }
+    let output = command.output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -581,6 +810,10 @@ fn run_alloc(config: &Config) {
             assert_ne!(rev1, rev2, "the warm edit must change source");
 
             let mut session = CompilerSession::new();
+            rue_compiler::unstable::enable_clone_from_template_probe(
+                &mut session,
+                config.clone_probe,
+            );
             session
                 .update(&snapshot(rev1))
                 .into_result()
@@ -625,7 +858,7 @@ fn run_alloc(config: &Config) {
         } else {
             allocation::begin();
             let intervals_start = allocation::snapshot();
-            cold_compile_for_alloc(config.bodies, config.decls);
+            cold_compile_for_alloc(config.bodies, config.decls, config.clone_probe);
             let after = allocation::snapshot();
             allocation::finish();
             let allocations = after
@@ -654,9 +887,10 @@ fn run_alloc(config: &Config) {
 }
 
 #[cfg(rue_benchmark_allocations)]
-fn cold_compile_for_alloc(bodies: usize, decls: usize) {
+fn cold_compile_for_alloc(bodies: usize, decls: usize, clone_probe: Option<CloneProbeMode>) {
     let options = CompileOptions::default();
     let mut session = CompilerSession::new();
+    rue_compiler::unstable::enable_clone_from_template_probe(&mut session, clone_probe);
     session
         .update(&snapshot(corpus_source(bodies, decls)))
         .into_result()
@@ -672,15 +906,23 @@ fn main() {
     if raw.iter().any(|arg| arg == INTERNAL_COLD_PEAK) {
         let mut bodies = 1_000usize;
         let mut decls = 100usize;
+        let mut clone_probe = None;
         let mut iter = raw.iter().skip(1);
         while let Some(arg) = iter.next() {
             match arg.as_str() {
                 "--bodies" => bodies = iter.next().and_then(|v| v.parse().ok()).unwrap_or(bodies),
                 "--decls" => decls = iter.next().and_then(|v| v.parse().ok()).unwrap_or(decls),
+                "--clone-probe" => {
+                    clone_probe = match iter.next().map(String::as_str) {
+                        Some("clone") => Some(CloneProbeMode::CloneOnly),
+                        Some("differential") => Some(CloneProbeMode::Differential),
+                        _ => None,
+                    };
+                }
                 _ => {}
             }
         }
-        run_internal_cold_peak(bodies, decls);
+        run_internal_cold_peak(bodies, decls, clone_probe);
     }
 
     let config = parse_config();
@@ -689,5 +931,6 @@ fn main() {
         Mode::Timing => run_timing(&config),
         Mode::Memory => run_memory(&config),
         Mode::Alloc => run_alloc(&config),
+        Mode::Probe => run_probe(&config),
     }
 }
