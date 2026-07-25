@@ -63,6 +63,11 @@ WORKLOADS = (
         "root": "benchmarks/stress/many_functions.rue",
         "session_mode": "modules",
         "session_modules": 128,
+        # `f000` is edited and `main` calls it: the exact reverse closure is two
+        # bodies. Production currently reanalyzes one and imports `main`
+        # durably, so this is an upper bound that a correct implementation stays
+        # under rather than a prediction of the observed value.
+        "warm_leaf_body_reverse_closure": 2,
         "warm_runner": "rue-compiler-session-bench --modules 128",
         "scaling_runner": "rue-scaling-bench --bodies 1000 --decls 100",
         "description": "Generated declaration-volume and completion locality corpus.",
@@ -72,6 +77,10 @@ WORKLOADS = (
         "family": "representative",
         "root": "benchmarks/scenarios/representative/main.rue",
         "session_mode": "representative",
+        # `labels.adjustment` is edited, `report.adjust` calls it, and `main`
+        # calls `report.adjust`: an exact reverse closure of three bodies. The
+        # other three bodies in the fixture are outside it.
+        "warm_leaf_body_reverse_closure": 3,
         "warm_runner": "rue-compiler-session-bench --representative",
         "scaling_runner": None,
         "description": "Tracked multi-module application-shaped fixture from benchmarks/manifest.toml.",
@@ -398,6 +407,21 @@ def load_audit_manifest(root: Path) -> dict[str, Any]:
                 continue
             if not isinstance(actual_budget, (int, float)) or float(actual_budget) != expected_budget:
                 raise ValueError(f"workload {item.get('name')} {key} drifted from the runner")
+        expected_closure = expected_workload.get("warm_leaf_body_reverse_closure")
+        actual_closure = item.get("warm_leaf_body_reverse_closure")
+        if expected_closure is None:
+            if actual_closure is not None:
+                raise ValueError(
+                    f"workload {item.get('name')} declares a leaf closure for a scenario it does not support"
+                )
+        elif actual_closure != expected_closure:
+            raise ValueError(
+                f"workload {item.get('name')} leaf reverse closure drifted from the runner"
+            )
+        if ("warm_leaf_body" in supported) != (actual_closure is not None):
+            raise ValueError(
+                f"workload {item.get('name')} must declare a leaf reverse closure exactly when it supports warm_leaf_body"
+            )
         gate = item.get("cold_wall_seconds")
         bound = item.get("cold_timeout_seconds")
         if gate is not None and (bound is None or bound <= gate):
@@ -690,10 +714,30 @@ def unavailable_counter(value: Any) -> bool:
     )
 
 
+def warm_unit_scale(workload: dict[str, Any], scenario: str) -> int:
+    """How many units of production work the scenario's edit legitimately costs.
+
+    The manifest's locality bounds are stated *per recomputed unit*, not per
+    request. A leaf edit does not cost one unit: exact reverse invalidation
+    recomputes the edited body and its direct reverse callers, and that count is
+    a property of the fixture's call graph rather than of the gate. Multiplying
+    the per-unit bounds by the workload's declared closure size keeps the gate
+    tight without failing an implementation that is behaving correctly.
+
+    Every other scenario is a single unit: a no-op and an unrelated-declaration
+    edit are bounded at zero, and the fanout scenario already carries its own
+    explicit allowance in the manifest.
+    """
+    if scenario != "warm_leaf_body":
+        return 1
+    return workload.get("warm_leaf_body_reverse_closure", 1)
+
+
 def locality_check(
     scenario: str,
     row: dict[str, Any],
     policy: dict[str, Any],
+    unit_scale: int = 1,
 ) -> dict[str, Any]:
     evidence_schema = row.get("evidence_schema")
     if evidence_schema != {
@@ -738,9 +782,14 @@ def locality_check(
         for artifact in LOCALITY_COUNTERS
     ):
         return {"status": "unsupported", "reason": "manifest locality bounds are malformed"}
+    if not isinstance(unit_scale, int) or isinstance(unit_scale, bool) or unit_scale < 1:
+        return {"status": "unsupported", "reason": "locality unit scale is not a positive integer"}
     violations = []
     for artifact in LOCALITY_COUNTERS:
-        maximum = maxima[f"max_{artifact}_computed"]
+        # Per-unit bound times the units this edit legitimately recomputes. A
+        # zero per-unit bound stays zero at any scale, so the no-op and
+        # unrelated-edit gates cannot be loosened by this multiplication.
+        maximum = maxima[f"max_{artifact}_computed"] * unit_scale
         values = work[artifact]
         if counter_value(values, "computed") is None:
             return {"status": "unsupported", "reason": f"locality evidence has no computed {artifact} counter"}
@@ -832,7 +881,9 @@ def session_sample(
     if not isinstance(timing_ns, int) or timing_ns <= 0:
         raise RuntimeError(f"session benchmark row {wanted} has no positive wall_time_ns")
     parity_result = parity_check(row)
-    locality = locality_check(scenario, row, locality_policy)
+    locality = locality_check(
+        scenario, row, locality_policy, warm_unit_scale(workload, scenario)
+    )
     evidence_status = "pass"
     if parity_result["status"] != "pass" or locality["status"] == "unsupported":
         evidence_status = "indeterminate"

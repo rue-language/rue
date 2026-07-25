@@ -134,6 +134,13 @@ max_projections_performed_computed = 0
 max_semantics_installed_computed = 0
 max_endpoints_installed_computed = 0
 
+# These bounds are stated PER RECOMPUTED UNIT, not per request. A leaf edit does
+# not legitimately cost one unit: exact reverse invalidation recomputes the
+# edited body and its direct reverse callers, and that count is a property of
+# the fixture's call graph. Each workload declares its own
+# `warm_leaf_body_reverse_closure` and the runner multiplies these bounds by it,
+# so the gate stays tight without failing a correct implementation. A zero bound
+# stays zero at any scale.
 [locality.warm_leaf_body]
 max_modules_computed = 1
 max_rir_computed = 1
@@ -180,6 +187,10 @@ family = "synthetic"
 root = "../stress/many_functions.rue"
 warm_runner = "rue-compiler-session-bench --modules 128"
 scaling_runner = "rue-scaling-bench --bodies 1000 --decls 100"
+# The exact reverse closure of the leaf this workload edits. See the
+# [locality.warm_leaf_body] comment: the bounds there are per recomputed unit
+# and are multiplied by this count.
+warm_leaf_body_reverse_closure = 2
 supported_scenarios = ["cold", "warm_no_op", "warm_unrelated_declaration", "warm_leaf_body", "warm_signature_fanout"]
 
 [[workload]]
@@ -187,6 +198,7 @@ name = "representative_multi_module"
 family = "representative"
 root = "../scenarios/representative/main.rue"
 warm_runner = "rue-compiler-session-bench --representative"
+warm_leaf_body_reverse_closure = 3
 supported_scenarios = ["cold", "warm_no_op", "warm_leaf_body", "warm_signature_fanout"]
 
 [[workload]]
